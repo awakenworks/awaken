@@ -29,7 +29,9 @@ const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 39810);
 let adminToken = '';
 
-type Aggregate = { environment_binding?: string | null };
+type Aggregate = {
+  environment: { phase: 'unmaterialized' } | { phase: 'resident'; binding: string };
+};
 type Event = { type: string; name?: string; content?: unknown };
 
 function sessionAggregate(root: string, sessionId: string): Aggregate {
@@ -108,14 +110,22 @@ async function main(): Promise<void> {
           environment_id: environment.id,
           betas: BETAS,
         });
-        assert.equal(sessionAggregate(E2E_HOME_ROOT, brain.id).environment_binding, null, 'H2 create is sandbox-free');
+        assert.equal(
+          sessionAggregate(E2E_HOME_ROOT, brain.id).environment.phase,
+          'unmaterialized',
+          'H2 create is sandbox-free',
+        );
         await sendManagedMessage(client, brain.id, 'brain', BETAS);
         const brainEvents = await events(client, brain.id);
         assert.ok(
           brainEvents.some((event) => event.type === 'agent.mcp_tool_use' && event.name === 'mcp__calc__add'),
           `H3 dynamic MCP executed in Brain: ${JSON.stringify(brainEvents.map((event) => event.type))}`,
         );
-        assert.equal(sessionAggregate(E2E_HOME_ROOT, brain.id).environment_binding, null, 'H3 MCP never creates Sandbox');
+        assert.equal(
+          sessionAggregate(E2E_HOME_ROOT, brain.id).environment.phase,
+          'unmaterialized',
+          'H3 MCP never creates Sandbox',
+        );
         assert.ok(fixture.calls.some((call: { method: string }) => call.method === 'tools/call'));
         pass('H2/H3 Session creation and dynamic MCP remain sandbox-free');
 
@@ -124,7 +134,11 @@ async function main(): Promise<void> {
           environment_id: environment.id,
           betas: BETAS,
         });
-        assert.equal(sessionAggregate(E2E_HOME_ROOT, hand.id).environment_binding, null, 'H4 Hand Session starts sandbox-free');
+        assert.equal(
+          sessionAggregate(E2E_HOME_ROOT, hand.id).environment.phase,
+          'unmaterialized',
+          'H4 Hand Session starts sandbox-free',
+        );
         await sendManagedMessage(client, hand.id, 'hand', BETAS);
         const handEvents = await events(client, hand.id);
         assert.ok(
@@ -138,9 +152,14 @@ async function main(): Promise<void> {
           ),
           `H5 deferred Hand executed instead of failing placement: ${JSON.stringify(handEvents)}`,
         );
-        const binding = sessionAggregate(E2E_HOME_ROOT, hand.id).environment_binding;
-        assert.ok(binding, `H5 binding is durable after the first Hand tool: ${JSON.stringify(handEvents)}`);
-        const handle = JSON.parse(binding as string) as { sandbox_id?: string; provider_kind?: string };
+        const residency = sessionAggregate(E2E_HOME_ROOT, hand.id).environment;
+        assert.equal(
+          residency.phase,
+          'resident',
+          `H5 binding is durable after the first Hand tool: ${JSON.stringify(handEvents)}`,
+        );
+        assert.ok('binding' in residency && residency.binding);
+        const handle = JSON.parse(residency.binding) as { sandbox_id?: string; provider_kind?: string };
         assert.equal(handle.sandbox_id, hand.id, 'H5 Sandbox is Session-owned');
         assert.ok(handle.provider_kind, 'H5 binding records the selected sandbox provider');
         pass('H4/H5 first Hand tool blocks for one Session-owned Sandbox and persists its binding');

@@ -94,6 +94,7 @@ impl awaken_session_contract::ApplicationSessionContributionApi
             workspace_id: "workspace".into(),
             revision: awaken_session_contract::SessionRevision(2),
             baseline,
+            resource_revision: 0,
             resources: Default::default(),
             mcp: Vec::new(),
             toolsets: Vec::new(),

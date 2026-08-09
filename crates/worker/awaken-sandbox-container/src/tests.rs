@@ -341,6 +341,110 @@ fn memory_store_mounts_are_pulled_out_of_binds_into_memory_mounts() {
     assert_eq!(plan.memory_mounts[0].mount_path, "/workspace/.mnt/notes");
 }
 
+#[test]
+fn host_live_input_projection_has_one_stable_read_only_bind_and_atomic_generations() {
+    /* Cause/effect graph and decision table — HLI1:
+     * C1 Host-bind runtime; C2 initial managed file present/absent; C3 later valid
+     * attach/remove; C4 escaped path. C1 => E1 exactly one read-only stable-root
+     * bind even when C2 is absent. C1+C2 => E2 initial bytes exist below that root.
+     * C1+C3 => E3 replace/add/remove changes the same tree atomically. C1+C4 =>
+     * E4 reject without writing outside the root.
+     *
+     * | Rule | initial | later operation | path valid | effect                    |
+     * | H1   | yes     | none            | yes        | root bind + seeded bytes  |
+     * | H2   | no      | attach          | yes        | same root gains file      |
+     * | H3   | any     | remove          | yes        | file/empty parents gone   |
+     * | H4   | any     | attach          | no         | fail closed               |
+     */
+    let mut guard = None;
+    let staging = staging_dir(&mut guard, "host-live-input-test").unwrap();
+    let initial = staging.join("initial");
+    std::fs::write(&initial, b"generation-a").unwrap();
+    let ordinary = staging.join("ordinary");
+    std::fs::write(&ordinary, b"ordinary").unwrap();
+    let mut binds = vec![
+        BindPlan {
+            source_ref: initial.to_string_lossy().into_owned(),
+            mount_path: "/mnt/session/uploads/workspace/input.txt".into(),
+            read_only: true,
+            content: Some("generation-a".into()),
+            content_bytes: None,
+            secret_content: None,
+            secret_writeback: false,
+            credential_file_path: None,
+        },
+        BindPlan {
+            source_ref: ordinary.to_string_lossy().into_owned(),
+            mount_path: "/acp-config/config.toml".into(),
+            read_only: true,
+            content: Some("ordinary".into()),
+            content_bytes: None,
+            secret_content: None,
+            secret_writeback: false,
+            credential_file_path: None,
+        },
+    ];
+
+    live_inputs::stage_host_projection("host-live-input-test", &mut binds, &mut guard).unwrap();
+    assert_eq!(
+        binds.len(),
+        2,
+        "managed files collapse; ordinary binds remain"
+    );
+    let root_bind = binds
+        .iter()
+        .find(|bind| bind.mount_path == LIVE_INPUTS_ROOT)
+        .expect("one stable live-input root bind");
+    assert!(root_bind.read_only);
+    let root = std::path::Path::new(&root_bind.source_ref);
+    assert_eq!(
+        std::fs::read(root.join("workspace/input.txt")).unwrap(),
+        b"generation-a"
+    );
+
+    live_inputs::project_host_input(
+        root,
+        "/mnt/session/uploads/workspace/next.txt",
+        b"generation-b",
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(root.join("workspace/next.txt")).unwrap(),
+        b"generation-b"
+    );
+    live_inputs::remove_host_input(root, "/mnt/session/uploads/workspace/next.txt").unwrap();
+    assert!(!root.join("workspace/next.txt").exists());
+    assert!(
+        live_inputs::project_host_input(root, "/mnt/session/uploads/../escaped", b"forbidden")
+            .is_err()
+    );
+
+    let mut empty_guard = None;
+    let mut empty_binds = Vec::new();
+    live_inputs::stage_host_projection(
+        "host-live-input-empty-test",
+        &mut empty_binds,
+        &mut empty_guard,
+    )
+    .unwrap();
+    assert_eq!(
+        empty_binds.len(),
+        1,
+        "H2 reserves the root before first attach"
+    );
+    let empty_root = std::path::Path::new(&empty_binds[0].source_ref);
+    live_inputs::project_host_input(
+        empty_root,
+        "/mnt/session/uploads/workspace/first.txt",
+        b"first",
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(empty_root.join("workspace/first.txt")).unwrap(),
+        b"first"
+    );
+}
+
 #[tokio::test]
 async fn memory_store_realizes_as_copy_on_the_container_tier() {
     let rt = Arc::new(FakeRuntime::default());

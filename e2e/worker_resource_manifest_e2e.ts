@@ -9,14 +9,20 @@ import fs, { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deploymentEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import {
+  childDirectories,
+  deploymentEnv,
+  onlyChildDirectory,
+  stopServer,
+  waitForPort,
+  waitForValue,
+} from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38817);
 const WORKER_ADMIN_PORT = Number(process.env.E2E_WORKER_PORT ?? 39817);
-const CONFIG_PORT = Number(process.env.E2E_CONFIG_PORT ?? 40817);
 const BASE = `http://127.0.0.1:${PORT}`;
-const CONFIG_BASE = `http://127.0.0.1:${CONFIG_PORT}`;
+const CONFIG_BASE = BASE;
 const WORKSPACE = `worker-resource-${process.pid}`;
 const THREAD = `resource-session-${process.pid}`;
 const GRANT = 'resource-manifest-e2e';
@@ -251,6 +257,7 @@ function resourceEnvelope(
   workspace = WORKSPACE,
   skill?: any,
   memory?: { memory_store_id: string; config: any },
+  resourceRevision = 1,
 ): any {
   const inputs = fileId === undefined
     ? []
@@ -274,6 +281,10 @@ function resourceEnvelope(
   }
   return {
     workspace_id: workspace,
+    // Resource-generation decision table: exact generation + exact manifest is
+    // an idempotent replay; higher generation may replace it; equal/lower
+    // generation with different content is fenced before mutation.
+    resource_revision: resourceRevision,
     resolved_resources_json: JSON.stringify({ inputs, skills: skill === undefined ? [] : [skill] }),
   };
 }
@@ -315,7 +326,12 @@ function runRequest(
     },
   };
   request.activation.snapshot.resolved_spec.model_candidates = [];
-  request.activation.snapshot.resolved_spec.plugin_config.agent.skill_ids = skillIds;
+  // Skill intersection decision table: the canonical Agent `skills` field
+  // grants selected identities; `session_resources.skills` freezes each exact
+  // version/hash. Present in both => deliver the frozen bytes; absent from Agent
+  // selection => do not expose it; absent from the manifest => no bytes to
+  // materialize. Never add the legacy `skill_ids` alias beside `skills`.
+  request.activation.snapshot.resolved_spec.plugin_config.agent.skills = skillIds;
   request.inference_plaintext_holder = {
     boundary: 'worker', trust_domain: 'awaken.worker',
   };
@@ -382,48 +398,44 @@ async function enqueueAndAwait(request: any, seedWorkerId: string): Promise<void
 
 async function main(): Promise<void> {
   const database = await postgres();
-  const serverStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-cell-'));
   const configStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-config-'));
   const workerStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-worker-'));
-  const shared = {
-    AWAKEN_RESOURCE_DATABASE_URL: database.url,
-    AWAKEN_ADMIN_DB: database.url,
-    AWAKEN_SESSIONS_DB: database.url,
-    AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
-    // Keep the legacy general DSN from selecting an unrelated runtime store.
-    SESSION_DEPLOYMENT_DATABASE_URL: '',
-    AWAKEN_RUNTIME_DISPATCH_DATABASE_URL: '',
-    SESSION_DEPLOYMENT_STORE: '',
-    SESSION_DEPLOYMENT_DISPATCH_BACKEND: '',
-  };
-  const management = spawn(buildAwaken(), ['all-in-one', '--port', String(CONFIG_PORT)], {
+  const management = spawn(buildAwaken(), ['all-in-one', '--port', String(PORT)], {
     cwd: ROOT,
     env: {
       ...process.env,
       ...deploymentEnv(configStorage, {
+        // Management-plane identity decision table for this resource-boundary
+        // scenario: no-login + no Authorization => exercise the resource
+        // contract; embedded/cloud IAM + no Authorization => reject before
+        // multipart ingestion. Authentication behavior has its own E2Es, so
+        // this test selects no-login explicitly instead of weakening the
+        // production-ready Embedded IAM default or retrying an authorization
+        // failure as a transport error.
+        identityMode: 'no-login',
         controlSealKey:
           '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
         databases: {
           resource_database_url: database.url,
           admin_db: database.url,
           sessions_db: database.url,
+          runtime_database_url: database.url,
         },
+        // Coordinator/Resources authority decision table: shared runtime plus
+        // `run_local_pool=false` => this production process owns dispatch and
+        // exact Resource reads while only the registered remote Worker may
+        // execute; a separate scenario cell would own a second Resource store
+        // and could not prove the cross-process projection contract.
+        fields: { run_local_pool: false, acp_clis: [] },
       }),
       AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
     },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-  const cell = spawnServer('echo', PORT, {
-    ...shared,
-    SESSION_DEPLOYMENT_INGRESS: 'durable',
-    SESSION_DEPLOYMENT_STORAGE_DIR: serverStorage,
-    SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL: '1',
-  }).server;
   let worker: ChildProcessWithoutNullStreams | undefined;
   let workerOutput = '';
   try {
-    await waitForPort(CONFIG_PORT, 180_000, management);
-    await waitForPort(PORT, 180_000, cell);
+    await waitForPort(PORT, 180_000, management);
     const fileId = await uploadFile();
     const skill = await uploadSkill();
     const memory = await createMemory();
@@ -464,7 +476,7 @@ async function main(): Promise<void> {
     );
     assert.equal(seedSettle.settled, true);
 
-    const env = { ...process.env, ...shared } as Record<string, string>;
+    const env = { ...process.env } as Record<string, string>;
     delete env.ANTHROPIC_API_KEY;
     delete env.OPENAI_API_KEY;
     Object.assign(env, {
@@ -485,22 +497,36 @@ async function main(): Promise<void> {
     worker.stdout.on('data', (chunk) => (workerOutput += chunk.toString()));
     worker.stderr.on('data', (chunk) => (workerOutput += chunk.toString()));
 
-    const projectedFile = path.join(workerStorage, 'sandboxes', THREAD, '.mnt', MOUNT_PATH);
+    await waitUntilSettled(THREAD).catch((error) => {
+      throw new Error(`${error instanceof Error ? error.message : error}\nworker output:\n${workerOutput}`);
+    });
+    const sandboxParent = path.join(workerStorage, 'sandboxes');
+    const sandboxRoot = onlyChildDirectory(
+      sandboxParent,
+      'the first frozen manifest owns one opaque sandbox root',
+    );
+    // File path decision rule: a requested path already rooted below
+    // `mnt/session/uploads` is preserved; every other safe logical path is
+    // projected below that public root. `uploads/input.txt` therefore proves
+    // the latter as `/mnt/session/uploads/uploads/input.txt`.
+    const projectedFile = path.join(sandboxRoot, 'mnt', 'session', 'uploads', MOUNT_PATH);
     const projectedSkill = path.join(
-      workerStorage,
-      'sandboxes',
-      THREAD,
+      sandboxRoot,
+      'workspace',
       '.skills',
       skill.skill_id,
       'assets',
       'data.bin',
     );
-    await waitUntilSettled(THREAD).catch((error) => {
-      throw new Error(`${error instanceof Error ? error.message : error}\nworker output:\n${workerOutput}`);
+    await waitForFile(projectedFile, FILE_BYTES).catch((error) => {
+      const tree = execFileSync('find', [sandboxRoot, '-maxdepth', '6', '-type', 'f'], {
+        encoding: 'utf8',
+      });
+      throw new Error(
+        `${error instanceof Error ? error.message : error}\nfiles:\n${tree}\nworker output:\n${workerOutput}`,
+      );
     });
-    await waitForFile(projectedFile, FILE_BYTES);
     await waitForFile(projectedSkill, SKILL_BINARY).catch((error) => {
-      const sandboxRoot = path.join(workerStorage, 'sandboxes', THREAD);
       const tree = fs.existsSync(sandboxRoot)
         ? execFileSync('find', [sandboxRoot, '-maxdepth', '5', '-type', 'f'], { encoding: 'utf8' })
         : '<missing sandbox>';
@@ -509,9 +535,20 @@ async function main(): Promise<void> {
 
     // An explicit empty successor is semantically meaningful: it must route to a
     // resource-capable worker and remove the projection from the live Session.
-    await enqueueAndAwait(runRequest(seedClaim.request, 'detach', resourceEnvelope()), seedWorker.id);
+    await enqueueAndAwait(
+      runRequest(
+        seedClaim.request,
+        'detach',
+        resourceEnvelope(undefined, WORKSPACE, undefined, undefined, 2),
+      ),
+      seedWorker.id,
+    ).catch((error) => {
+      throw new Error(
+        `${error instanceof Error ? error.message : error}\nworker output:\n${workerOutput}`,
+      );
+    });
     await waitForFile(projectedFile, undefined);
-    await waitForFile(path.join(workerStorage, 'sandboxes', THREAD, '.skills'), undefined);
+    await waitForFile(path.join(sandboxRoot, 'workspace', '.skills'), undefined);
 
     // Rebinding uses the same immutable shared File bytes; neither the cell nor
     // worker consults a node-local resource copy or current Agent defaults.
@@ -519,7 +556,7 @@ async function main(): Promise<void> {
       runRequest(
         seedClaim.request,
         'reattach',
-        resourceEnvelope(fileId, WORKSPACE, skill),
+        resourceEnvelope(fileId, WORKSPACE, skill, undefined, 3),
         THREAD,
         [skill.skill_id],
       ),
@@ -527,7 +564,7 @@ async function main(): Promise<void> {
     );
     await waitForFile(projectedFile, FILE_BYTES);
     await waitForFile(projectedSkill, SKILL_BINARY);
-    for (const relative of ['files.db', 'memory_fs.db', 'resource-lifecycle.db', 'skills']) {
+    for (const relative of ['files.db', 'memory_fs.db', 'resources.db', 'skills']) {
       assert.equal(
         fs.existsSync(path.join(workerStorage, relative)),
         false,
@@ -544,15 +581,16 @@ async function main(): Promise<void> {
       resourceEnvelope(undefined, WORKSPACE, undefined, memory),
       MEMORY_THREAD,
     );
+    const rootsBeforeMemory = new Set(childDirectories(sandboxParent));
     await enqueueAndAwait(memoryRequest, seedWorker.id);
-    const projectedMemory = path.join(
-      workerStorage,
-      'sandboxes',
-      MEMORY_THREAD,
-      '.mnt',
-      'memory',
-      'fact.md',
+    const rootsAfterMemory = await waitForValue(
+      () => childDirectories(sandboxParent),
+      (roots) => roots.length === rootsBeforeMemory.size + 1,
+      'Memory projection creates one additional opaque sandbox root',
     );
+    const memoryRoot = rootsAfterMemory.find((root) => !rootsBeforeMemory.has(root));
+    assert.ok(memoryRoot, 'the Memory Session has one newly-created sandbox root');
+    const projectedMemory = path.join(memoryRoot, 'workspace', '.mnt', 'memory', 'fact.md');
     await waitForFile(projectedMemory, MEMORY_BYTES);
 
     // The immutable config pin cannot revive a resource after a live lifecycle
@@ -588,11 +626,12 @@ async function main(): Promise<void> {
     );
     foreign.activation.thread_id = foreignThread;
     foreign.session_thread_id = foreignThread;
+    const rootsBeforeForeign = childDirectories(sandboxParent);
     await post('/v1/worker/dispatch/enqueue', { request: foreign }, seedWorker.id);
     await waitForDispatchStatus(foreignThread, 'Leased');
-    assert.equal(
-      fs.existsSync(path.join(workerStorage, 'sandboxes', foreignThread)),
-      false,
+    assert.deepEqual(
+      childDirectories(sandboxParent),
+      rootsBeforeForeign,
       'scope-mismatched resource dispatch failed before sandbox creation',
     );
 
@@ -602,9 +641,7 @@ async function main(): Promise<void> {
     );
   } finally {
     if (worker) await stopServer(worker).catch(() => {});
-    await stopServer(cell).catch(() => {});
     await stopServer(management).catch(() => {});
-    fs.rmSync(serverStorage, { recursive: true, force: true });
     fs.rmSync(configStorage, { recursive: true, force: true });
     fs.rmSync(workerStorage, { recursive: true, force: true });
     if (database.container && !process.env.AWAKEN_E2E_POSTGRES_CONTAINER) {

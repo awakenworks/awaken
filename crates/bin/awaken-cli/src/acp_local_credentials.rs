@@ -186,12 +186,10 @@ async fn prepare_local_acp_with(
     stores: awaken_control::InferenceMaterializationStores,
 ) -> Result<Option<PreparedLocalAcp>, String> {
     let wrapper_root = deployment.data_dir.join("acp-wrappers");
-    let selected_cli_ids = deployment.runtime.acp.as_ref().map(|profile| {
-        profile
-            .cli_ids()
-            .map(str::to_string)
-            .collect::<BTreeSet<_>>()
-    });
+    let selected_cli_ids = deployment
+        .configured_acp_clis
+        .as_ref()
+        .map(|cli_ids| cli_ids.iter().cloned().collect::<BTreeSet<_>>());
     let workspace =
         awaken_runtime_host::SharedHost::provision_local_workspace_at(&deployment.data_dir);
     let probe_cwd = deployment.data_dir.join("acp-probe");
@@ -792,6 +790,7 @@ mod tests {
         // P4 explicitly unselected detected row -> diagnostic only, no acquisition
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        deployment.configured_acp_clis = Some(vec!["codex".to_string()]);
         deployment.runtime.acp = Some(
             awaken_runtime_host::AcpWorkerProfile::new(
                 ["codex".to_string()],

@@ -118,13 +118,23 @@ impl AgUiEncoder {
 
     /// Close a failed live turn without leaving text or tool brackets open.
     pub fn fail(&mut self, message: impl Into<String>) -> Vec<AgUiEvent> {
+        self.fail_with_code("stream_failed", message)
+    }
+
+    /// Preserve the application classification separately from the human
+    /// message in AG-UI's optional `RUN_ERROR.code` field.
+    pub fn fail_with_code(
+        &mut self,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Vec<AgUiEvent> {
         let mut output = self.fact(&Fact::RunStarted);
         output.extend(self.close_text());
         for (tool_call_id, _) in std::mem::take(&mut self.tools) {
             output.push(AgUiEvent::ToolCallEnd { tool_call_id });
         }
         output.extend(self.fact(&Fact::RunFailed {
-            code: "stream_failed".to_string(),
+            code: code.into(),
             message: message.into(),
         }));
         output
@@ -197,10 +207,11 @@ impl Transcoder for AgUiEncoder {
                     run_id: self.run_id.clone(),
                 }]
             }
-            // AG-UI runs end with either RUN_FINISHED or RUN_ERROR; a fault
-            // maps to the latter, code-prefixed so clients can categorize.
+            // AG-UI runs end with either RUN_FINISHED or RUN_ERROR; preserve
+            // the machine classification separately from its human message.
             Fact::RunFailed { code, message } => vec![AgUiEvent::RunError {
-                message: format!("{code}: {message}"),
+                message: message.clone(),
+                code: Some(code.clone()),
             }],
             // An internal continuation-guard round is not an AG-UI wire frame; the
             // committed fold never emits it into this stream.
@@ -570,8 +581,8 @@ mod tests {
         });
         assert!(matches!(
             events.as_slice(),
-            [AgUiEvent::RunError { message }]
-                if message.contains("overloaded") && message.contains("try later")
+            [AgUiEvent::RunError { code: Some(code), message }]
+                if code == "overloaded" && message == "try later"
         ));
     }
 

@@ -3,7 +3,6 @@ pub use awaken_scenario_host::ConfigService
 pub use awaken_scenario_host::ExtMcpProbe
 pub use awaken_scenario_host::HostResume
 pub use awaken_scenario_host::InferenceExecutorMaterializer
-pub use awaken_scenario_host::ManagedHost
 pub use awaken_scenario_host::RunApplicationHost
 pub use awaken_scenario_host::SharedHost
 pub use awaken_scenario_host::SkillContext

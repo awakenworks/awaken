@@ -225,25 +225,10 @@ impl DreamProcessStore for SqliteManagedSessionRepository {
     }
 }
 
-fn postgres_block<T: Send + 'static>(
-    make: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>
-    + Send
-    + 'static,
-) -> T {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => std::thread::spawn(move || handle.block_on(make()))
-            .join()
-            .expect("Dream Postgres bridge thread panicked"),
-        Err(_) => tokio::runtime::Runtime::new()
-            .expect("create Dream Postgres bridge runtime")
-            .block_on(make()),
-    }
-}
-
 impl DreamProcessStore for PostgresManagedSessionRepository {
     fn dream_processes(&self) -> Result<Vec<DreamProcessRecord>, DreamProcessStoreError> {
         let pool = self.pool.clone();
-        postgres_block(move || {
+        awaken_store_runtime::block_on_ambient_runtime(&self.handle, move || {
             Box::pin(async move {
                 sqlx::query("SELECT job_id, data FROM managed_dream ORDER BY job_id")
                     .fetch_all(&pool)
@@ -269,7 +254,7 @@ impl DreamProcessStore for PostgresManagedSessionRepository {
         let pool = self.pool.clone();
         let expected = expected.cloned();
         let data = encode(&record)?;
-        postgres_block(move || {
+        awaken_store_runtime::block_on_ambient_runtime(&self.handle, move || {
             Box::pin(async move {
                 let mut tx = pool.begin().await.map_err(storage)?;
                 let current =
@@ -307,7 +292,7 @@ impl DreamProcessStore for PostgresManagedSessionRepository {
 
     fn dream_policies(&self) -> Result<Vec<DreamPolicyRecord>, DreamProcessStoreError> {
         let pool = self.pool.clone();
-        postgres_block(move || {
+        awaken_store_runtime::block_on_ambient_runtime(&self.handle, move || {
             Box::pin(async move {
                 sqlx::query("SELECT workspace_id, memory_store_id, data FROM managed_dream_policy ORDER BY workspace_id, memory_store_id")
                 .fetch_all(&pool).await.map_err(storage)?.into_iter()
@@ -329,7 +314,7 @@ impl DreamProcessStore for PostgresManagedSessionRepository {
         let pool = self.pool.clone();
         let expected = expected.cloned();
         let data = encode(&record)?;
-        postgres_block(move || {
+        awaken_store_runtime::block_on_ambient_runtime(&self.handle, move || {
             Box::pin(async move {
                 let mut tx = pool.begin().await.map_err(storage)?;
                 let current = sqlx::query("SELECT data FROM managed_dream_policy WHERE workspace_id=$1 AND memory_store_id=$2 FOR UPDATE")
@@ -371,7 +356,7 @@ impl DreamProcessStore for PostgresManagedSessionRepository {
         let expected_policy = expected_policy.clone();
         let policy_data = encode(&policy)?;
         let process_data = encode(&process)?;
-        postgres_block(move || {
+        awaken_store_runtime::block_on_ambient_runtime(&self.handle, move || {
             Box::pin(async move {
                 let mut tx = pool.begin().await.map_err(storage)?;
                 let current = sqlx::query("SELECT data FROM managed_dream_policy WHERE workspace_id=$1 AND memory_store_id=$2 FOR UPDATE")

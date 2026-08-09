@@ -1,0 +1,3 @@
+pub mod awaken_store_runtime
+pub fn awaken_store_runtime::block_on_ambient_runtime<T, F, Fut>(&tokio::runtime::handle::Handle, F) -> T where F: core::ops::function::FnOnce() -> Fut + core::marker::Send + 'static, Fut: core::future::future::Future<Output = T>, T: core::marker::Send + 'static
+pub fn awaken_store_runtime::block_on_owned_runtime<T, F, Fut>(&tokio::runtime::handle::Handle, F) -> T where F: core::ops::function::FnOnce() -> Fut + core::marker::Send + 'static, Fut: core::future::future::Future<Output = T>, T: core::marker::Send + 'static

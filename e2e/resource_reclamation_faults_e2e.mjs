@@ -76,7 +76,7 @@ function sqlite(database, sql) {
 }
 
 function intents(directory) {
-  const database = path.join(directory, 'resource-lifecycle.db');
+  const database = path.join(directory, 'resources.db');
   return sqliteRows(
     database,
     'SELECT data FROM resource_lifecycle_purge_intents ORDER BY intent_id',
@@ -84,7 +84,26 @@ function intents(directory) {
 }
 
 function intentFor(directory, resourceId) {
-  return intents(directory).find((intent) => intent.target.resource_id === resourceId);
+  return intents(directory).find((intent) =>
+    intent.target.resource_id === resourceId
+      || intent.idempotency_key === `file-delete:${WORKSPACE}:${resourceId}`);
+}
+
+function logicalResourceId(intent) {
+  const filePrefix = `file-delete:${WORKSPACE}:`;
+  return intent.target.kind === 'file' && intent.idempotency_key.startsWith(filePrefix)
+    ? intent.idempotency_key.slice(filePrefix.length)
+    : intent.target.resource_id;
+}
+
+function blobForFile(database, fileId) {
+  const blobId = sqliteScalar(
+    database,
+    `SELECT blob_id FROM file_store_file
+       WHERE workspace_id=${sqlQuote(WORKSPACE)} AND id=${sqlQuote(fileId)}`,
+  );
+  assert.ok(blobId, `missing physical blob identity for logical File ${fileId}`);
+  return String(blobId);
 }
 
 async function waitFor(directory, resourceIds, predicate, timeoutMs = 20_000) {
@@ -128,7 +147,7 @@ function seedRepository(root) {
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-reclamation-faults-'));
-  const lifecycle = path.join(directory, 'resource-lifecycle.db');
+  const lifecycle = path.join(directory, 'resources.db');
   const files = path.join(directory, 'files.db');
   let server = start(directory);
   try {
@@ -145,6 +164,25 @@ async function main() {
     const lateGuardError = await upload('late-guard-error', 'late-guard-error.txt');
     const saveConflict = await upload('save-conflict', 'save-conflict.txt');
     const saveFailure = await upload('save-failure', 'save-failure.txt');
+    // Fault-injection identity decision table: File API calls use logical ids;
+    // lifecycle fences/references and blob triggers use the content-addressed
+    // physical id. Resolve that mapping once so no fault silently targets the
+    // wrong aggregate. Skill ids are already physical lifecycle identities.
+    const fileBlobs = new Map([
+      releaseFailure,
+      contended,
+      lateReference,
+      durableBlockers,
+      corruptReference,
+      alreadyOwned,
+      fencedBinding,
+      physicalFailure,
+      combinedFailure,
+      lateGuardError,
+      saveConflict,
+      saveFailure,
+    ].map((fileId) => [fileId, blobForFile(files, fileId)]));
+    const blob = (fileId) => fileBlobs.get(fileId);
     const skillId = `fault-skill-${process.pid}`;
     assert.equal((await json('POST', 'skills', {
       id: skillId,
@@ -202,7 +240,7 @@ async function main() {
       lifecycle,
       `
         INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
-          VALUES ('file', ${sqlQuote(contended)}, 'external-reclaimer');
+          VALUES ('file', ${sqlQuote(blob(contended))}, 'external-reclaimer');
         DELETE FROM resource_lifecycle_references
           WHERE resource_kind = 'skill' AND resource_id = ${sqlQuote(skillId)}
             AND reference_kind = 'retention_hold'
@@ -210,49 +248,49 @@ async function main() {
         INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
           VALUES ('skill', ${sqlQuote(skillId)}, 'external-skill-reclaimer');
         INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
-          VALUES ('file', ${sqlQuote(alreadyOwned)}, ${sqlQuote(alreadyOwnedIntent.intent_id)});
+          VALUES ('file', ${sqlQuote(blob(alreadyOwned))}, ${sqlQuote(alreadyOwnedIntent.intent_id)});
         INSERT INTO resource_lifecycle_references(
           workspace_id, resource_kind, resource_id, reference_kind, reference_id
         ) VALUES
-          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'logical_lifecycle', 'logical-1'),
-          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'workspace_ownership', 'owner-1'),
-          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'agent_binding', 'agent-1'),
-          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'artifact', 'artifact-1'),
-          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'runtime_handle', 'runtime-1'),
-          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'extraction_intent', 'extract-1'),
-          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(durableBlockers)}, 'retention_hold', 'hold-1'),
-          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(corruptReference)}, 'future_unknown_kind', 'bad-1');
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(durableBlockers))}, 'logical_lifecycle', 'logical-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(durableBlockers))}, 'workspace_ownership', 'owner-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(durableBlockers))}, 'agent_binding', 'agent-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(durableBlockers))}, 'artifact', 'artifact-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(durableBlockers))}, 'runtime_handle', 'runtime-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(durableBlockers))}, 'extraction_intent', 'extract-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(durableBlockers))}, 'retention_hold', 'hold-1'),
+          (${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(corruptReference))}, 'future_unknown_kind', 'bad-1');
         CREATE TRIGGER inject_late_reference
           AFTER INSERT ON resource_lifecycle_reclamation_fences
-          WHEN NEW.resource_id = ${sqlQuote(lateReference)}
+          WHEN NEW.resource_id = ${sqlQuote(blob(lateReference))}
         BEGIN
           INSERT INTO resource_lifecycle_references(
             workspace_id, resource_kind, resource_id, reference_kind, reference_id
           ) VALUES (
-            ${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(lateReference)},
+            ${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(lateReference))},
             'session_binding', 'late-session-reference'
           );
         END;
         CREATE TRIGGER reject_release
           BEFORE DELETE ON resource_lifecycle_reclamation_fences
-          WHEN OLD.resource_id = ${sqlQuote(releaseFailure)}
+          WHEN OLD.resource_id = ${sqlQuote(blob(releaseFailure))}
         BEGIN
           SELECT RAISE(ABORT, 'injected release failure');
         END;
         CREATE TRIGGER inject_late_guard_error
           AFTER INSERT ON resource_lifecycle_reclamation_fences
-          WHEN NEW.resource_id = ${sqlQuote(lateGuardError)}
+          WHEN NEW.resource_id = ${sqlQuote(blob(lateGuardError))}
         BEGIN
           INSERT INTO resource_lifecycle_references(
             workspace_id, resource_kind, resource_id, reference_kind, reference_id
           ) VALUES (
-            ${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(lateGuardError)},
+            ${sqlQuote(WORKSPACE)}, 'file', ${sqlQuote(blob(lateGuardError))},
             'future_unknown_kind', 'late-corrupt-reference'
           );
         END;
         CREATE TRIGGER reject_combined_release
           BEFORE DELETE ON resource_lifecycle_reclamation_fences
-          WHEN OLD.resource_id = ${sqlQuote(combinedFailure)}
+          WHEN OLD.resource_id = ${sqlQuote(blob(combinedFailure))}
         BEGIN
           SELECT RAISE(ABORT, 'injected combined release failure');
         END;
@@ -275,13 +313,13 @@ async function main() {
       `
         CREATE TRIGGER reject_physical_purge
           BEFORE DELETE ON file_store_blob
-          WHEN OLD.id = ${sqlQuote(physicalFailure)}
+          WHEN OLD.id = ${sqlQuote(blob(physicalFailure))}
         BEGIN
           SELECT RAISE(ABORT, 'injected physical purge failure');
         END;
         CREATE TRIGGER reject_combined_physical_purge
           BEFORE DELETE ON file_store_blob
-          WHEN OLD.id = ${sqlQuote(combinedFailure)}
+          WHEN OLD.id = ${sqlQuote(blob(combinedFailure))}
         BEGIN
           SELECT RAISE(ABORT, 'injected combined physical purge failure');
         END;
@@ -310,7 +348,7 @@ async function main() {
     sqlite(
       lifecycle,
       `INSERT INTO resource_lifecycle_reclamation_fences(resource_kind, resource_id, intent_id)
-         VALUES ('file', ${sqlQuote(fencedBinding)}, 'external-active-fence');`,
+         VALUES ('file', ${sqlQuote(blob(fencedBinding))}, 'external-active-fence');`,
     );
     const fencedActivation = await json(
       'POST',
@@ -326,7 +364,7 @@ async function main() {
       Number(sqliteScalar(
         lifecycle,
         `SELECT count(*) FROM resource_lifecycle_references
-          WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(fencedBinding)}
+          WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(blob(fencedBinding))}
             AND reference_kind = 'session_binding';`,
       )),
       0,
@@ -334,7 +372,7 @@ async function main() {
     sqlite(
       lifecycle,
       `DELETE FROM resource_lifecycle_reclamation_fences
-        WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(fencedBinding)}
+        WHERE resource_kind = 'file' AND resource_id = ${sqlQuote(blob(fencedBinding))}
           AND intent_id = 'external-active-fence';`,
     );
 
@@ -397,7 +435,7 @@ async function main() {
         && (intent.target.resource_id !== skillId
           || /expected value|key must be a string/u.test(intent.last_error)),
     );
-    const byResource = new Map(failed.map((intent) => [intent.target.resource_id, intent]));
+    const byResource = new Map(failed.map((intent) => [logicalResourceId(intent), intent]));
     assert.match(byResource.get(releaseFailure).last_error, /injected release failure/u);
     assert.match(byResource.get(contended).last_error, /fenced by another reclamation intent/u);
     assert.ok(
@@ -437,15 +475,15 @@ async function main() {
         DROP TRIGGER inject_late_guard_error;
         DROP TRIGGER reject_combined_release;
         DELETE FROM resource_lifecycle_references
-          WHERE resource_id = ${sqlQuote(lateReference)}
+          WHERE resource_id = ${sqlQuote(blob(lateReference))}
             AND reference_id = 'late-session-reference';
         DELETE FROM resource_lifecycle_references
-          WHERE resource_id IN (${sqlQuote(durableBlockers)}, ${sqlQuote(corruptReference)});
+          WHERE resource_id IN (${sqlQuote(blob(durableBlockers))}, ${sqlQuote(blob(corruptReference))});
         DELETE FROM resource_lifecycle_references
-          WHERE resource_id = ${sqlQuote(lateGuardError)}
+          WHERE resource_id = ${sqlQuote(blob(lateGuardError))}
             AND reference_id = 'late-corrupt-reference';
         DELETE FROM resource_lifecycle_reclamation_fences
-          WHERE resource_id = ${sqlQuote(contended)}
+          WHERE resource_id = ${sqlQuote(blob(contended))}
             AND intent_id = 'external-reclaimer';
       `,
     );

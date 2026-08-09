@@ -83,6 +83,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
                     agent_id: baseline.agent_id.clone(),
                     delegate_ids: baseline.delegate_ids.clone(),
                     toolsets: Some(projection.toolsets.clone()),
+                    resource_revision: projection.resource_revision,
                     resources: projection.resources.clone(),
                     model: Some(baseline.execution_model_ref.clone()),
                     runtime: baseline.runtime.clone(),

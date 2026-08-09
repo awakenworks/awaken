@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { closeHttpServer } from './http_server.mjs';
 
 const CONTROL_PORT = Number(process.env.E2E_PORT ?? 38834);
 const CONTROL = `http://127.0.0.1:${CONTROL_PORT}`;
@@ -96,7 +97,7 @@ async function startA2aPeer(): Promise<{
   return {
     endpoint: `http://127.0.0.1:${address.port}`,
     sent,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () => closeHttpServer(server),
   };
 }
 
@@ -227,11 +228,7 @@ async function startFaultProxy(): Promise<{
     requestCounts: () => Object.fromEntries(requestCounts),
     registration: () => registration,
     awaitingSettle,
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
-        server.closeAllConnections();
-      }),
+    close: () => closeHttpServer(server),
   };
 }
 
@@ -403,24 +400,37 @@ async function waitForDispatchStatus(
   );
 }
 
-async function waitForReplacementBinding(
+async function waitForReplacementClaim(
   proxy: {
     registration: () => any;
+    claims: () => Array<{ workerId: string; claimed: any }>;
     requestCounts: () => Record<string, number>;
   },
   workerId: string,
+  runId: string,
   timeoutMs = 120_000,
 ): Promise<void> {
+  // Recovery readiness cause/effect graph: C1 the replacement Worker is
+  // registered; C2 it claims the exact expired Run at a higher epoch; C3 the
+  // frozen backend is remote A2A and requires no local Environment. C1+C2 is
+  // the recovery linearization evidence. C3 -> zero sandbox binds is valid and
+  // must not block the scenario; a local-Sandbox test owns binding/adoption.
+  //
+  // | Rule | C1 registered | C2 exact claim | C3 remote-only | ready | bind required |
+  // | R1   | T             | T              | T              | T     | F             |
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     const registered = proxy.registration()?.registration?.worker_id === workerId;
-    const bindings = proxy.requestCounts()['POST /v1/worker/dispatch/bind_sandbox'] ?? 0;
-    if (registered && bindings >= 2) return;
+    const reclaimed = proxy.claims().some(
+      (entry) => entry.workerId === workerId && entry.claimed?.lease?.run_id === runId,
+    );
+    if (registered && reclaimed) return;
     await sleep(50);
   }
   throw new Error(
-    `replacement Worker ${workerId} did not bind the reclaimed dispatch; ` +
+    `replacement Worker ${workerId} did not claim Run ${runId}; ` +
       `registration=${JSON.stringify(proxy.registration())} ` +
+      `claims=${JSON.stringify(proxy.claims())} ` +
       `requests=${JSON.stringify(proxy.requestCounts())}`,
   );
 }
@@ -525,9 +535,10 @@ async function main(): Promise<void> {
       AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_WORKER_ID: 'recovery-worker-b',
     }).server;
-    await waitForReplacementBinding(
+    await waitForReplacementClaim(
       proxy,
       'recovery-worker-b',
+      runId,
     );
     const epochB = Math.max(
       ...databases.map((database) =>

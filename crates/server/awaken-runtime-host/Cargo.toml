@@ -54,6 +54,7 @@ awaken-tenancy = { workspace = true }
 awaken-run-ingress = { workspace = true }
 awaken-worker-transport-security = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
+awaken-acp-contract = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-credential-vault = { workspace = true }
 awaken-credential-materializer = { workspace = true }

@@ -13,7 +13,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 
-use crate::k8s::{api_conflict, backend};
+use crate::k8s::{api_conflict, backend, install_rustls_crypto_provider};
 use crate::{PackageImageProvisioner, RuntimeError};
 
 const DEFAULT_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
@@ -38,7 +38,7 @@ impl K8sPackageImageProvisioner {
         image_pull_secrets: Vec<String>,
         registry_insecure: bool,
     ) -> Result<Self, RuntimeError> {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        install_rustls_crypto_provider();
         let client = Client::try_default().await.map_err(backend)?;
         Self::new(
             client,

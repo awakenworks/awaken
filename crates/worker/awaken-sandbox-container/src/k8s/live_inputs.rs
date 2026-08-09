@@ -43,10 +43,6 @@ pub(super) fn append_projection(
     });
 }
 
-pub(super) fn manages(bind: &BindPlan) -> bool {
-    bind.read_only && crate::live_input_relative_path(&bind.mount_path).is_some()
-}
-
 fn bytes(bind: &BindPlan) -> Option<&[u8]> {
     bind.content
         .as_deref()
@@ -75,7 +71,10 @@ pub(super) async fn project_manifest(
     // removed File from surviving a host restart; any partial failure is retryable
     // against the same stable Pod and begins by clearing again.
     clear(runtime, container_id).await?;
-    for bind in content_binds(plan).into_iter().filter(|bind| manages(bind)) {
+    for bind in content_binds(plan)
+        .into_iter()
+        .filter(|bind| crate::live_inputs::manages(bind))
+    {
         let contents = bytes(bind)
             .ok_or_else(|| backend("managed live input did not carry resolved bytes"))?;
         project(runtime, container_id, &bind.mount_path, contents).await?;

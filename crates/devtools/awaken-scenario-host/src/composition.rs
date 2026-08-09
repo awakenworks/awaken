@@ -24,7 +24,7 @@ pub(super) fn mount(host: Arc<SharedHost>) -> Router {
     awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
 }
 
-fn mount_with_agent_source(
+pub(super) fn mount_with_agent_source(
     host: Arc<SharedHost>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Router {

@@ -209,18 +209,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 awaken_credential_materializer::PinnedCredentialMaterializer::external_only(
                     materializer.clone(),
                 );
-            awaken_worker::WorkerNodeBuilder::new(
-                awaken_worker_transport_security::WorkerUpstream::new(upstream),
-            )
-            .with_deployment_config(deployment)
-            .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
-            .with_inference_materializer(materializer.clone())
-            .with_credential_materializer(credentials)
-            .with_worker_local_credential_resolver(materializer)
-            .with_standard_manifest(Default::default())
-            .build()?
-            .run_until_shutdown()
-            .await
+            // Worker identity decision table: an explicit E2E identity owns its
+            // own registry slot; an absent identity retains the production
+            // adapter default. Ignoring the explicit identity would alias an
+            // AllInOne worker and leave eligible dispatches permanently pending.
+            let mut upstream = awaken_worker_transport_security::WorkerUpstream::new(upstream);
+            if let Ok(worker_id) = std::env::var("AWAKEN_WORKER_ID") {
+                upstream = upstream.with_worker_id(worker_id);
+            }
+            let mut builder = awaken_worker::WorkerNodeBuilder::new(upstream)
+                .with_deployment_config(deployment)
+                .with_registered_memory_mounter_factory(
+                    awaken_cli::registered_memory_mounter_factory(),
+                )
+                .with_inference_materializer(materializer.clone())
+                .with_credential_materializer(credentials)
+                .with_worker_local_credential_resolver(materializer)
+                .with_standard_manifest(Default::default());
+            if let Ok(address) = std::env::var("AWAKEN_WORKER_ADMIN_LISTEN") {
+                builder = builder.with_admin_listen(address);
+            }
+            builder.build()?.run_until_shutdown().await
         }
         _ => Err("resource Worker fixture requires resource, admin, and storage together".into()),
     }

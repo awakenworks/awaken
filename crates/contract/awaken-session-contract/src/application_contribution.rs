@@ -29,6 +29,12 @@ pub struct FrozenSessionProjection {
     pub workspace_id: String,
     pub revision: SessionRevision,
     pub baseline: SessionBaseline,
+    /// Exact generation owned by `SessionResourceState`. This is distinct from
+    /// the Session root revision above and must survive Control-to-Worker
+    /// realization so a new Run never reconstructs its resource envelope at the
+    /// legacy generation zero.
+    #[serde(default)]
+    pub resource_revision: u64,
     pub resources: ResolvedSessionResources,
     #[serde(default)]
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,

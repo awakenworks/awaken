@@ -847,7 +847,11 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             workspace_id: "workspace".into(),
             revision: awaken_session_contract::SessionRevision(2),
             baseline,
-            resources: Default::default(),
+            resource_revision: 7,
+            resources: awaken_session_contract::ResolvedSessionResources {
+                inputs: Vec::new(),
+                skills: Some(Vec::new()),
+            },
             mcp: Vec::new(),
             toolsets: Vec::new(),
         }
@@ -855,6 +859,23 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
 
     #[derive(Clone, Default)]
     struct PromptRecorder(Arc<Mutex<Vec<ChatRequest>>>);
+
+    #[derive(Default)]
+    struct RepositoryClaimRecorder(Mutex<Vec<Option<awaken_run_ingress::RunClaim>>>);
+
+    #[async_trait::async_trait]
+    impl crate::RepositoryBindingVerifier for RepositoryClaimRecorder {
+        async fn verify(
+            &self,
+            _workspace_id: &str,
+            _repository_id: &str,
+            _config_version: awaken_resource_contract::ConfigVersion,
+            claim: Option<&awaken_run_ingress::RunClaim>,
+        ) -> Result<(), crate::RepositoryBindingVerifierError> {
+            self.0.lock().unwrap().push(claim.cloned());
+            Ok(())
+        }
+    }
 
     #[async_trait::async_trait]
     impl LlmExecutor for PromptRecorder {
@@ -873,7 +894,10 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
 
     let recorder = PromptRecorder::default();
     let observed = recorder.0.clone();
-    let host = SharedHost::new(Arc::new(recorder), "stub");
+    let host = Arc::new(SharedHost::new(Arc::new(recorder), "stub"));
+    let repository_claims = Arc::new(RepositoryClaimRecorder::default());
+    let _managed = crate::ManagedHost::new(host.clone())
+        .with_repository_binding_verifier(repository_claims.clone());
     let frozen = projection("Use the bound Flow project.", true);
     host.install_frozen_session_projection("flow-thread", frozen.clone(), None)
         .await
@@ -881,6 +905,19 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     host.install_frozen_session_projection("flow-thread", frozen, None)
         .await
         .expect("same frozen fingerprint is idempotent");
+
+    // Frozen-projection Resource-generation cause/effect decision table.
+    // C1=projection has an explicit non-legacy Resource generation;
+    // C2=resources are non-default and must be installed. E1=the Runtime's
+    // canonical manifest preserves that exact generation; E2=it never silently
+    // falls back to generation zero. R1 C1+C2=>E1,E2.
+    assert_eq!(
+        host.thread_resource_manifest("flow-thread")
+            .expect("frozen resources installed")
+            .revision,
+        7,
+        "R1 preserves the SessionResourceState generation"
+    );
 
     let spec = host.sandbox_spec("flow-thread");
     assert_eq!(spec.mounts.len(), 1);
@@ -979,6 +1016,50 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             .await
             .is_err(),
         "a bound Session cannot switch frozen baselines"
+    );
+
+    // Frozen-config / live-claim cause/effect decision table:
+    // | Rule | Baseline/config | Claim epoch | Effect |
+    // |---|---|---|---|
+    // | C1 | first exact projection | 1 | install and verify with epoch 1 |
+    // | C2 | exact projection replay | 2 | retain config, reverify with epoch 2 |
+    // | C3 | different baseline | any | reject before replacing config |
+    let mut repository_projection = projection("repository claim", false);
+    repository_projection.resources = effective_repository(
+        "repository-claim",
+        "https://example.invalid/repository.git",
+        "/workspace/repository",
+        None,
+    );
+    let claim = |epoch| awaken_run_ingress::RunClaim {
+        run_id: RunId("repository-claim-run".into()),
+        owner: "repository-worker".into(),
+        epoch,
+    };
+    host.install_frozen_session_projection(
+        "repository-claim-thread",
+        repository_projection.clone(),
+        Some(&claim(1)),
+    )
+    .await
+    .expect("C1 first claim");
+    host.install_frozen_session_projection(
+        "repository-claim-thread",
+        repository_projection,
+        Some(&claim(2)),
+    )
+    .await
+    .expect("C2 replacement claim");
+    assert_eq!(
+        repository_claims
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|claim| claim.as_ref().map(|claim| claim.epoch))
+            .collect::<Vec<_>>(),
+        vec![Some(1), Some(2)],
+        "C2 must not retain the stale claim from C1"
     );
 }
 
@@ -1426,6 +1507,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             agent_id: agent.into(),
             delegate_ids: Vec::new(),
             toolsets: None,
+            resource_revision: 0,
             resources: effective_resources(
                 store
                     .map(|id| TestInput {
@@ -1588,6 +1670,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         agent_id: "agent".into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: resources.clone(),
         model: None,
         runtime: None,
@@ -2175,6 +2258,7 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
                 agent_id: "agent".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: desired,
                 model: None,
                 runtime: None,
@@ -2387,6 +2471,110 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     );
 }
 
+/// Committed-query cause/effect graph after execution provisioning fails:
+/// C1 a frozen read-only File is staged; C2 Workdir cannot enforce immutability;
+/// C3 no runtime/environment becomes resident; C4 a committed-state GET follows.
+/// C1+C2 cause E1 the turn to fail before inference. C3+C4 must cause E2 the
+/// query to open only committed truth, return the empty page, and leave the
+/// execution environment absent instead of retrying the failing provisioning.
+///
+/// | Rule | C1 | C2 | C3 | C4 | E1 turn denied | E2 query succeeds/no env |
+/// |---|---|---|---|---|---|---|
+/// | Q1 | T | T | T | T | T | T |
+#[tokio::test]
+async fn committed_queries_do_not_provision_a_failed_session_environment() {
+    let mut deployment = crate::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = crate::SandboxTier::Local;
+    let host = Arc::new(SharedHost::new_with_deployment(
+        Arc::new(OkModel),
+        "stub",
+        deployment,
+    ));
+    let managed = managed_with_resource_source(host.clone());
+    let file_id = host
+        .file_application()
+        .expect("test composition installs File application")
+        .create_uploaded_file(
+            host.local_workspace(),
+            "query.txt".into(),
+            "text/plain".into(),
+            b"read-only",
+        )
+        .await
+        .expect("create File")
+        .id;
+    managed
+        .prepare_session(
+            "t-query-after-provisioning-denial",
+            awaken_session_contract::SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resource_revision: 0,
+                resources: effective_resources(vec![TestInput {
+                    kind: "file".into(),
+                    id: file_id,
+                    mount_path: "/query.txt".into(),
+                    access: ResourceAccess::ReadOnly,
+                    instructions: None,
+                    initial_branch: None,
+                    initial_commit: None,
+                }]),
+                model: None,
+                runtime: None,
+                environment: session_environment(
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
+            },
+        )
+        .await
+        .expect("stage frozen Session");
+
+    let error = match host
+        .run(
+            None,
+            "t-query-after-provisioning-denial",
+            vec![Message::text(
+                MessageId("denied".into()),
+                Role::User,
+                "must not reach inference",
+            )],
+        )
+        .await
+    {
+        Ok(_) => panic!("Workdir must reject the read-only File"),
+        Err(error) => error,
+    };
+    assert!(error.message.contains("does not enforce read-only"), "Q1");
+    assert!(
+        host.session_environment("t-query-after-provisioning-denial")
+            .await
+            .is_none(),
+        "Q1 failed provisioning must not publish an environment"
+    );
+
+    let feed = host
+        .run_lifecycle_feed("t-query-after-provisioning-denial")
+        .await
+        .expect("committed query must not retry Sandbox provisioning");
+    let page = awaken_agent_contract::RunLifecycleFeed::events_after(
+        &feed,
+        awaken_agent_contract::LifecycleCursor(0),
+        100,
+    )
+    .await
+    .expect("read empty committed lifecycle page");
+    assert!(page.events.is_empty(), "Q1 inference never committed a Run");
+    assert!(
+        host.session_environment("t-query-after-provisioning-denial")
+            .await
+            .is_none(),
+        "Q1 committed query remains free of environment side effects"
+    );
+}
+
 /// Cause-effect graph for the sole Environment projection:
 ///
 /// C1 exact frozen network fact is Unrestricted / Allowlist / None (O constraint)
@@ -2447,6 +2635,7 @@ async fn frozen_environment_network_follows_the_decision_table() {
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
                     toolsets: None,
+                    resource_revision: 0,
                     resources: Default::default(),
                     model: None,
                     runtime: None,
@@ -2476,6 +2665,7 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         agent_id: "a".into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -2514,12 +2704,22 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     assert_eq!(spec.limits.cpu_millis, Some(2000));
     assert_eq!(spec.limits.memory_bytes, Some(4_294_967_296));
 
+    // Workspace/resource cause-effect rules: W1 a nonempty Resource manifest
+    // already carries its Workspace through staging; W2 an empty manifest must
+    // still retain SessionInit.workspace_id. Both effects select the same
+    // workspace-scoped immutable Agent publication; neither may fall back to
+    // the process platform workspace.
+    //
+    // | Rule | resources | Session workspace | retained lookup scope |
+    // | W1 | nonempty | ws | ws |
+    // | W2 | empty | ws | ws |
     // A session with no override keeps the host default (Workdir, no limits).
     let bare = SessionInit {
         workspace_id: "ws".into(),
         agent_id: "a".into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -2529,6 +2729,11 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         ),
     };
     managed.prepare_session("t-bare", bare).await.unwrap();
+    assert_eq!(
+        host.registered_thread_workspace("t-bare").as_deref(),
+        Some("ws"),
+        "W2"
+    );
     assert_eq!(
         host.sandbox_spec("t-bare").isolation,
         IsolationClass::Workdir
@@ -2551,6 +2756,7 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2594,6 +2800,7 @@ async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2688,6 +2895,7 @@ async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2721,6 +2929,7 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2765,6 +2974,7 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2887,6 +3097,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2941,6 +3152,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
                 agent_id: "assistant".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: None,
                 runtime: None,
@@ -2989,6 +3201,7 @@ async fn prepare_session_mounts_an_effective_memory_resource() {
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: effective_resources(
             (agent == "a")
                 .then(|| TestInput {
@@ -3184,6 +3397,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: effective_resources(vec![
                     TestInput {
                         kind: "file".into(),
@@ -3837,10 +4051,20 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         lease_expires_at_unix_ms: u64::MAX,
     };
     let projection = |number: u64, secret: &str| McpGenerationProjection {
-        generation: generation(number),
-        realization_id: format!("realize-{number}"),
-        stage_idempotency_key: format!("stage-{number}"),
-        renewal_binding_fingerprint: format!("binding-{number}"),
+        request: awaken_session_contract::StageMcpAttachment {
+            workspace_id: "workspace-a".into(),
+            generation: generation(number),
+            realization_id: format!("realize-{number}"),
+            stage_idempotency_key: format!("stage-{number}"),
+            name: "docs".into(),
+            target: awaken_session_contract::McpTarget::parse_http(format!(
+                "https://mcp-{number}.example.test"
+            ))
+            .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            selected_plaintext_holder: None,
+        },
         receipt: McpRealizationReceipt {
             generation: generation(number),
             realization_id: format!("realize-{number}"),
@@ -3887,7 +4111,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     host.insert_mcp_projection(projection(1, "secret-one"))
         .unwrap();
     let staged = host.mcp_projection(&generation(1)).unwrap();
-    relay.set_route(&staged.generation, staged.server.as_ref().unwrap());
+    relay.set_route(&staged.request.generation, staged.server.as_ref().unwrap());
     let staged_route = relay.route_url(&generation(1)).expect("P1 staged route");
     assert!(host.active_mcp_projections("mcp-parity").is_empty(), "P1");
 
@@ -3900,7 +4124,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     );
     let acp = project_mcp_transport(
         visible[0].server.as_ref().unwrap(),
-        &visible[0].generation,
+        &visible[0].request.generation,
         Some(&relay),
     )
     .unwrap();
@@ -3914,9 +4138,10 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     host.insert_mcp_projection(projection(2, "secret-two"))
         .unwrap();
     let staged = host.mcp_projection(&generation(2)).unwrap();
-    relay.set_route(&staged.generation, staged.server.as_ref().unwrap());
+    relay.set_route(&staged.request.generation, staged.server.as_ref().unwrap());
     assert_eq!(
         host.active_mcp_projections("mcp-parity")[0]
+            .request
             .generation
             .generation,
         McpGeneration(1),
@@ -3933,7 +4158,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     );
     let replacement = project_mcp_transport(
         visible[0].server.as_ref().unwrap(),
-        &visible[0].generation,
+        &visible[0].request.generation,
         Some(&relay),
     )
     .unwrap();
@@ -3947,6 +4172,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
     host.drain_mcp_projection(&generation(1)).await.unwrap();
     assert_eq!(
         host.active_mcp_projections("mcp-parity")[0]
+            .request
             .generation
             .generation,
         McpGeneration(2),
@@ -3993,10 +4219,18 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
         },
     };
     let projection = McpGenerationProjection {
-        generation: generation.clone(),
-        realization_id: "realize-1".into(),
-        stage_idempotency_key: "stage-1".into(),
-        renewal_binding_fingerprint: "binding-1".into(),
+        request: awaken_session_contract::StageMcpAttachment {
+            workspace_id: "workspace-a".into(),
+            generation: generation.clone(),
+            realization_id: "realize-1".into(),
+            stage_idempotency_key: "stage-1".into(),
+            name: "docs".into(),
+            target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test")
+                .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            selected_plaintext_holder: None,
+        },
         receipt: McpRealizationReceipt {
             generation: generation.clone(),
             realization_id: "realize-1".into(),
@@ -4089,10 +4323,18 @@ async fn worker_authority_loss_revokes_every_session_projection() {
         },
     };
     host.insert_mcp_projection(McpGenerationProjection {
-        generation: generation.clone(),
-        realization_id: "realize-1".into(),
-        stage_idempotency_key: "stage-1".into(),
-        renewal_binding_fingerprint: "binding-1".into(),
+        request: awaken_session_contract::StageMcpAttachment {
+            workspace_id: "workspace-a".into(),
+            generation: generation.clone(),
+            realization_id: "realize-1".into(),
+            stage_idempotency_key: "stage-1".into(),
+            name: "docs".into(),
+            target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test")
+                .unwrap(),
+            prompts_as_skills: false,
+            credential: None,
+            selected_plaintext_holder: None,
+        },
         receipt: McpRealizationReceipt {
             generation: generation.clone(),
             realization_id: "realize-1".into(),
@@ -4159,6 +4401,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: effective_repository(
                     "repo-1",
                     "https://github.com/awaken/example.git",
@@ -4500,6 +4743,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
                     agent_id: "a".into(),
                     delegate_ids: Vec::new(),
                     toolsets: None,
+                    resource_revision: 0,
                     resources,
                     model: None,
                     runtime: None,
@@ -4562,6 +4806,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
                 agent_id: "a".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: effective_repository(
                     "repo-1",
                     "https://github.com/awaken/example.git",
@@ -4639,6 +4884,7 @@ fn bare_session(agent: &str, workspace: &str) -> awaken_session_contract::Sessio
         agent_id: agent.into(),
         delegate_ids: Vec::new(),
         toolsets: None,
+        resource_revision: 0,
         resources: Default::default(),
         model: None,
         runtime: None,
@@ -5966,9 +6212,18 @@ async fn confirm_cannot_answer_a_client_tool() {
 
 /// The happy path for the client-executed binding: a `ClientResult` delivers the
 /// caller-run tool's output, it reaches the model's next inference, and the turn
-/// ends. Complements the Confirm-only resume path the memory tests already cover.
+/// ends. This is the direct-ingress row of the resume-delivery decision table;
+/// `durable_client_result_settles_the_authoritative_dispatch` covers the durable
+/// row against the same model and protocol-neutral Host API.
 #[tokio::test]
 async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
+    // Cause/effect graph: C1 direct ingress; C2 valid committed client-tool
+    // ticket; C3 exact ClientResult. Effects: E1 resume executes inline once;
+    // E2 result reaches the next inference; E3 Run ends. Constraint: no durable
+    // dispatch is authored in direct mode.
+    //
+    // | Rule | ingress | ticket | answer | Effects |
+    // | R1 | direct | valid client tool | exact result | E1+E2+E3 |
     let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
         .with_client_tools(HashSet::from(["lookup".to_string()]));
     let r1 = host
@@ -5999,6 +6254,73 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
     assert_eq!(
         reply, "result was sunny",
         "the delivered client result reached the model's next inference"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn durable_client_result_settles_the_authoritative_dispatch() {
+    // Cause/effect graph: C1 durable ingress; C2 a claimed Run settles Awaiting
+    // on a client-tool ticket; C3 the exact ClientResult arrives; C4 resumed work
+    // ends; C5 resumed work awaits on a new ticket. Effects: E1 input is appended
+    // to the canonical durable Inbox; E2 the Worker alone claims/resumes/settles;
+    // E3 Done removes the dispatch row; E4 Awaiting retains exactly one row; E5
+    // committed result reaches the model. Constraints: direct ingress remains the
+    // R1 path above; one ticket accepts one idempotency identity.
+    //
+    // | Rule | ingress | initial state | resume result | Effect |
+    // | R1 | direct | Awaiting | Ended | inline E1/E2 not applicable (sibling test) |
+    // | R2 | durable | Awaiting(old ticket) | Ended | E1+E2+E3+E5 |
+    // | R3 | durable | Awaiting(old ticket) | Awaiting(new ticket) | E1+E2+E4 |
+    // | R4 | durable | Awaiting(old ticket) | exact retry | one Inbox identity |
+    // R3 is owned by run-ingress worker settle tests; R4 by the resume-identity
+    // test plus each Inbox backend's idempotency-conflict conformance suite.
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("in-memory dispatch"),
+    );
+    let host = Arc::new(
+        SharedHost::new(Arc::new(ClientLookupModel), "stub")
+            .with_client_tools(HashSet::from(["lookup".to_string()]))
+            .with_dispatch_store(dispatch.clone()),
+    );
+    host.ensure_dispatch_pool();
+
+    let first = host
+        .run(None, "t-durable-client", user("hi"))
+        .await
+        .expect("durable turn awaits");
+    assert!(matches!(first.state, RunState::Awaiting), "R2 precondition");
+    let pending = first.pending.expect("client tool ticket");
+    let awaiting = dispatch
+        .list_dispatches()
+        .await
+        .expect("list awaiting dispatch");
+    assert_eq!(awaiting.len(), 1, "one durable dispatch owns the wait");
+    assert_eq!(awaiting[0].run_id, first.run_id);
+    assert_eq!(
+        awaiting[0].state,
+        awaken_run_ingress::DispatchState::Awaiting
+    );
+
+    let resumed = host
+        .resume(
+            "t-durable-client",
+            &pending.tool_use_id,
+            HostResume::ClientResult {
+                content: vec![ContentBlock::text("sunny")],
+                is_error: false,
+            },
+        )
+        .await
+        .expect("durable worker resumes the client result");
+    assert!(matches!(resumed.state, RunState::Ended(_)), "R2/E5");
+    assert!(
+        dispatch
+            .list_dispatches()
+            .await
+            .expect("list settled dispatches")
+            .iter()
+            .all(|summary| summary.run_id != resumed.run_id),
+        "R2/E3: terminal settlement removes the authoritative dispatch row"
     );
 }
 
@@ -6036,6 +6358,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
     let observed = host
         .pending_tool("t-cross-protocol-pending")
         .await
+        .expect("committed ticket read succeeds")
         .expect("committed ticket remains queryable");
     assert_eq!(observed.tool_use_id, expected.tool_use_id);
     assert_eq!(observed.name, "lookup");
@@ -6188,12 +6511,13 @@ async fn end_session_disposes_the_threads_sandbox() {
 async fn host_accepts_only_backend_projections_that_match_the_publication() {
     // Cause graph:
     // C1 immutable publication -> E1 execution backend authority.
-    // C2 frozen baseline projection -> E2 equality check only.
+    // C2 non-default frozen baseline projection -> E2 equality check only;
+    // canonical `default` is Native absence and is not stored redundantly.
     // C3 projection without publication -> E3 reject; a cache cannot become an
     // authoring source merely because the publication is unavailable.
     //
     // | Rule | Publication | Projection | Result |
-    // | H1 | default | default | accept native |
+    // | H1 | default | default (canonical absence) | accept native |
     // | H2 | default | acp:claude | reject mismatch |
     // | H3 | default | absent | accept publication |
     // | H4 | absent | acp:claude | reject missing authority |
@@ -6216,6 +6540,13 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
 
     let matching = published_host();
     matching.register_thread_backend_projection("backend-h1", "default");
+    assert!(
+        matching
+            .session_slots
+            .read("backend-h1", |slot| slot.backend_ref.is_none())
+            .unwrap_or(false),
+        "H1 default has no redundant projection"
+    );
     matching
         .ctx_for("backend-h1", Some("assistant"))
         .await
@@ -6284,6 +6615,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
                 agent_id: "agent-a".into(),
                 delegate_ids: Vec::new(),
                 toolsets: None,
+                resource_revision: 0,
                 resources: Default::default(),
                 model: Some("stub".into()),
                 runtime: Some("default".into()),

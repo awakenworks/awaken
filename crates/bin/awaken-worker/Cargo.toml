@@ -44,6 +44,9 @@ axum = { workspace = true }
 awaken-observability = { workspace = true }
 awaken-worker-contract = { workspace = true }
 awaken-acp-contract = { workspace = true }
+awaken-acp-application = { workspace = true }
+awaken-protocol-acp = { workspace = true }
+awaken-run-executor-acp = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
 async-trait = { workspace = true }
 getrandom = "0.2"
@@ -51,6 +54,9 @@ getrandom = "0.2"
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }
+# Bare in-memory Host construction exists only for explicit test composition;
+# production Worker builds keep the runtime-host test backend unlinked.
+awaken-runtime-host = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -279,6 +279,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
+ "awaken-store-runtime",
  "awaken-tenancy",
  "axum",
  "http-body-util",
@@ -1273,12 +1274,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-outbound-http"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "reqwest 0.12.28",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-protocol-a2a"
 version = "0.0.0"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential",
+ "awaken-outbound-http",
  "awaken-session-contract",
  "axum",
  "http-body-util",
@@ -1513,6 +1524,7 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
+ "awaken-store-runtime",
  "parking_lot",
  "proptest",
  "rusqlite",
@@ -1681,6 +1693,7 @@ name = "awaken-runtime-host"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-acp-contract",
  "awaken-agent-contract",
  "awaken-config-resolver",
  "awaken-credential-materializer",
@@ -1957,6 +1970,7 @@ dependencies = [
  "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
+ "awaken-store-runtime",
  "proptest",
  "rusqlite",
  "serde",
@@ -2035,6 +2049,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-store-runtime"
+version = "1.0.0-dev"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "awaken-store-schema"
 version = "1.0.0-dev"
 dependencies = [
@@ -2102,11 +2123,11 @@ name = "awaken-webhook"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-outbound-http",
  "axum",
  "base64",
  "getrandom 0.2.17",
  "hmac 0.12.1",
- "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2153,11 +2174,14 @@ name = "awaken-worker"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-acp-application",
  "awaken-acp-contract",
  "awaken-credential-materializer",
  "awaken-ext-builtin-tools",
  "awaken-observability",
+ "awaken-protocol-acp",
  "awaken-provisioning-contract",
+ "awaken-run-executor-acp",
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-sandbox-container",

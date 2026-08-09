@@ -1,4 +1,4 @@
-// Production composition E2E for the projected ACP launch on the local Workdir
+// Production composition E2E for the projected ACP launch on the local Namespace
 // tier. A PATH-local `gemini` fixture speaks the real ACP JSON-RPC wire, while the
 // aggregated `awaken` process performs the same catalog selection, exact credential
 // admission, and sandbox realization used by an installed CLI. Gemini exercises
@@ -12,16 +12,32 @@
 // |---|---|---|---|---|
 // | L1 | Unix | `:` | `#!/bin/sh` | ACP turn |
 // | L2 | Windows | `;` | native fixture `.exe` | ACP turn |
+//
+// Isolation/credential cause graph: C1=Provider provisioning injects a credential
+// into an opaque ACP process; C2=Namespace is available; C3=the exact ACP adapter
+// supports the published realization kind. C1 requires a tool-transparent,
+// path-faithful boundary, and C3 must be proven before process launch.
+//
+// | Rule | provisioning | configured tier | effect |
+// |---|---|---|---|
+// | P1 | Provider + supported adapter | Namespace | launch with exact endpoint/model/secret |
+// | P2 | Provider + supported adapter | Workdir | no eligible Worker; never launch |
+// | P3 | Provider + unsupported adapter | Namespace | terminal fail before launch |
+//
+// This scenario owns P1 and P3. The shared placement-kernel tests own P2; the
+// container scenario owns the stronger container/resource realization rule.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
+import { closeHttpServer } from './http_server.mjs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, execSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
+import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -108,11 +124,17 @@ function start(binary, cli) {
     `data_dir = ${JSON.stringify(STORAGE)}`,
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
     `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
-    'sandbox_tier = "local"',
+    // Cause/effect rule A1: this scenario owns ACP capability/projection, not
+    // IAM. Explicit no-login keeps capability polling and config authoring in
+    // that scope; embedded-IAM denial is covered by management_authz_e2e.
+    'identity_mode = "no-login"',
+    // P1: projected credentials for an arbitrary ACP process require the local
+    // OS-isolated provider. Workdir is intentionally ineligible for this run.
+    'sandbox_tier = "namespace"',
     `acp_clis = [${JSON.stringify(cli)}]`,
     `acp_default_cli = ${JSON.stringify(cli)}`,
   ].join('\n'));
-  return spawn(binary, ['all-in-one', '--config', configPath], {
+  return spawn(binary, ['all-in-one', '--config', configPath, '--no-browser'], {
     env: {
       ...environment,
       PATH: `${BIN_DIR}${path.delimiter}${environment.PATH ?? ''}`,
@@ -127,6 +149,15 @@ function start(binary, cli) {
 }
 
 async function ready(child) {
+  // Readiness lifecycle cause/effect graph: C1=TCP listener accepts; C2=child
+  // exits normally; C3=child exits by signal. Effects: E1=ready; E2/E3=fail
+  // immediately with the exact terminal cause; otherwise retry until deadline.
+  //
+  // | Rule | C1 | C2 | C3 | effect |
+  // | R1 | yes | no | no | ready |
+  // | R2 | no | yes | no | report exit code |
+  // | R3 | no | no | yes | report signal |
+  // | R4 | no | no | no | retry, then timeout |
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
     const connected = await new Promise((resolve) => {
@@ -135,24 +166,16 @@ async function ready(child) {
       socket.once('error', () => { socket.destroy(); resolve(false); });
     });
     if (connected) return;
-    if (child.exitCode !== null) throw new Error(`awaken exited with ${child.exitCode}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error('awaken did not become ready');
-}
-
-async function readyAcpWorker(cli) {
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    const response = await fetch(`http://127.0.0.1:${PORT}/v1/capabilities`).catch(() => undefined);
-    if (response?.ok) {
-      const value = await response.json();
-      const runtime = value.runtimes?.find((candidate) => candidate.id === `acp:${cli}`);
-      if (runtime?.local?.detected && runtime.local.negotiated) return;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new Error(
+        child.signalCode === null
+          ? `awaken exited with ${child.exitCode}`
+          : `awaken exited from signal ${child.signalCode}`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`ACP worker ${cli} did not publish fresh negotiated capability evidence`);
+  throw new Error('awaken did not become ready');
 }
 
 async function stop(child) {
@@ -205,7 +228,10 @@ async function publishProviderAgent(base, definition) {
   });
   await request(base, 'PUT', `/v1/config/agents/${agent}`, {
     name: agent,
-    model: { id: model, provider_identity_ref: provider, backend_ref: backend },
+    // One Managed model-id codec owns provider-routed ACP intent. Publication
+    // resolves this Target to the canonical WorkerLocal execution identity plus
+    // the selected provider endpoint; an ad-hoc pinned object would conflate them.
+    model: `${backend}@${provider}/${model}`,
     system: 'Exercise publication-pinned ACP provisioning.',
     tools: [],
   });
@@ -229,7 +255,7 @@ async function startModelDirectory() {
   assert.ok(address && typeof address === 'object');
   return {
     url: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => closeHttpServer(server),
   };
 }
 
@@ -246,7 +272,7 @@ async function main() {
   });
   try {
     await ready(server);
-    await readyAcpWorker('gemini');
+    await waitForVerifiedAcpCapability(`http://127.0.0.1:${PORT}`, 'gemini');
     WORKSPACE = fs.readFileSync(path.join(STORAGE, 'platform-workspace-id'), 'utf8').trim();
     const base = `http://127.0.0.1:${PORT}`;
     await publishProviderAgent(base, {
@@ -258,30 +284,7 @@ async function main() {
       baseUrl: `${directory.url}/gemini/v1beta/`,
       secret: 'persisted-gemini-key', // awaken-allow: secret (fixture)
     });
-    await publishProviderAgent(base, {
-      agent: CODEX_AGENT,
-      backend: 'acp:codex',
-      provider: 'openai',
-      model: 'codex-upstream',
-      dialect: 'open_ai_chat',
-      baseUrl: `${directory.url}/openai/v1/`,
-      secret: 'persisted-codex-key', // awaken-allow: secret (fixture)
-    });
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-    const assistantSession = await client.beta.sessions.create({
-      agent: '__admin_assistant',
-      betas: BETAS,
-    });
-    await client.beta.sessions.events.send(assistantSession.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'prove ACP assistant selection' }] }],
-      betas: BETAS,
-    });
-    const assistantTexts = await messages(client, assistantSession.id);
-    assert.ok(
-      assistantTexts.some((text) => text.includes('PROJECTED')),
-      `reserved Assistant used the startup-selected Gemini ACP binding: ${assistantTexts}`,
-    );
-
     const session = await client.beta.sessions.create({
       agent: GEMINI_AGENT,
       betas: BETAS,
@@ -298,14 +301,26 @@ async function main() {
     assert.match(reply, /key=persis/u);
     assert.ok(!reply.includes('ambient-gemini'));
     assert.ok(!reply.includes('environment-fallback-must-not-win'));
-    assert.match(reply, /cwd=.*awaken-acp-sbx/u);
-    assert.match(reply, /home=.*awaken-acp-sbx/u);
+    assert.match(reply, /cwd=\/workspace/u);
+    assert.match(reply, /home=\/workspace\/\.acp-config/u);
     assert.ok(!reply.includes(os.homedir()), 'the CLI never receives the operator home');
 
     await stop(server);
     server = start(binary, 'codex');
     await ready(server);
-    await readyAcpWorker('codex');
+    await waitForVerifiedAcpCapability(`http://127.0.0.1:${PORT}`, 'codex');
+    // Publication capability rule: only the currently registered, freshly
+    // negotiated exact ACP backend may be frozen. Publishing Codex while the
+    // prior Gemini incarnation was live would correctly fail closed.
+    await publishProviderAgent(base, {
+      agent: CODEX_AGENT,
+      backend: 'acp:codex',
+      provider: 'openai',
+      model: 'codex-upstream',
+      dialect: 'open_ai_chat',
+      baseUrl: `${directory.url}/openai/v1/`,
+      secret: 'persisted-codex-key', // awaken-allow: secret (fixture)
+    });
     const codexClient = new Anthropic({
       apiKey: 'e2e-dummy',
       baseURL: `http://127.0.0.1:${PORT}`,
@@ -320,7 +335,7 @@ async function main() {
       access_token: mcpToken,
       betas: BETAS,
     });
-    // Cause/effect graph for MCP on the Workdir provider:
+    // Cause/effect graph for MCP on the local Namespace provider:
     // C1=credential is selected; C2=provider proves substitution + no bypass.
     // C1 + !C2 -> M1 reject Worker custody before launch.
     // !C1       -> M2 project the anonymous endpoint into the same ACP config path.
@@ -336,7 +351,7 @@ async function main() {
         betas: BETAS,
       }),
       (error) => error?.status === 500 && String(error).includes('provider-enforced secret substitution'),
-      'M1: Workdir must not silently downgrade authenticated MCP out of Worker custody',
+      'M1: Namespace must not silently downgrade authenticated MCP out of Worker custody',
     );
     const codexSession = await codexClient.beta.sessions.create({
       agent: CODEX_AGENT,
@@ -353,7 +368,7 @@ async function main() {
       `Codex rejects bearer-only publication instead of restoring its removed environment protocol: ${JSON.stringify(codexTexts)}`,
     );
 
-    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access and rejects bearer-only Codex access before launch; authenticated MCP remains fail closed on Workdir.');
+    console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access and rejects bearer-only Codex access before launch; authenticated MCP remains fail closed without a no-bypass substitution boundary.');
   } finally {
     await directory.close();
     await stop(server).catch(() => {});

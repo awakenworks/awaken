@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import { spawnProduction, stopServer, waitForPort, waitForValue } from './harness.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -70,7 +70,7 @@ function sqlQuote(value) {
 function catalogRecord(database, kind, id) {
   const rows = sqliteRows(
     database,
-    `SELECT data FROM admin_resource_catalog WHERE kind=${sqlQuote(kind)} AND id=${sqlQuote(id)}`,
+    `SELECT data FROM resource_catalog_entry WHERE kind=${sqlQuote(kind)} AND id=${sqlQuote(id)}`,
   );
   assert.equal(rows.length, 1, `missing ${kind}/${id} catalog aggregate`);
   return JSON.parse(rows[0].data);
@@ -83,7 +83,7 @@ function writeCatalogRecord(database, kind, id, record) {
 function writeCatalogRaw(database, kind, id, data) {
   sqliteExec(
     database,
-    `UPDATE admin_resource_catalog SET data=${sqlQuote(data)} WHERE kind=${
+    `UPDATE resource_catalog_entry SET data=${sqlQuote(data)} WHERE kind=${
       sqlQuote(kind)
     } AND id=${sqlQuote(id)}`,
   );
@@ -138,7 +138,7 @@ function persistPreparedGeneration(database, sessionId) {
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-catalog-corruption-'));
-  const adminDatabase = path.join(directory, 'admin.db');
+  const resourceDatabase = path.join(directory, 'resources.db');
   const sessionsDatabase = path.join(directory, 'sessions.db');
   let server = start(directory);
   try {
@@ -163,13 +163,13 @@ async function main() {
     const repositoryId = `managed:${session.body.id}:repository:0`;
 
     await stop(server, 'SIGKILL');
-    const memoryRecord = catalogRecord(adminDatabase, 'memory_store', memory.body.id);
-    const repositoryRecord = catalogRecord(adminDatabase, 'repository', repositoryId);
-    writeCatalogRecord(adminDatabase, 'memory_store', memory.body.id, {
+    const memoryRecord = catalogRecord(resourceDatabase, 'memory_store', memory.body.id);
+    const repositoryRecord = catalogRecord(resourceDatabase, 'repository', repositoryId);
+    writeCatalogRecord(resourceDatabase, 'memory_store', memory.body.id, {
       ...memoryRecord,
       configs: {},
     });
-    writeCatalogRecord(adminDatabase, 'repository', repositoryId, {
+    writeCatalogRecord(resourceDatabase, 'repository', repositoryId, {
       ...repositoryRecord,
       configs: {},
     });
@@ -204,7 +204,14 @@ async function main() {
     assert.equal(deniedMemoryBinding.status, 400);
     assert.match(JSON.stringify(deniedMemoryBinding.body), /current config version is missing/u);
 
-    const deniedRepository = sessionResources(sessionsDatabase, session.body.id);
+    const deniedRepository = await waitForValue(
+      () => sessionResources(sessionsDatabase, session.body.id),
+      (resources) => resources.pending !== undefined
+        && resources.activations.at(-1).state === 'prepared'
+        && resources.activations.at(-1).attempts === 1
+        && Boolean(resources.activations.at(-1).last_error),
+      'missing catalog config did not produce a durable failed activation receipt',
+    );
     assert.notEqual(deniedRepository.pending, undefined);
     assert.equal(deniedRepository.activations.at(-1).state, 'prepared');
     assert.equal(deniedRepository.activations.at(-1).attempts, 1);
@@ -216,12 +223,17 @@ async function main() {
     // Repair only the missing immutable histories. The already-persisted Session
     // generation remains unchanged and must be the generation that later commits.
     await stop(server, 'SIGKILL');
-    writeCatalogRecord(adminDatabase, 'memory_store', memory.body.id, memoryRecord);
-    writeCatalogRecord(adminDatabase, 'repository', repositoryId, repositoryRecord);
+    writeCatalogRecord(resourceDatabase, 'memory_store', memory.body.id, memoryRecord);
+    writeCatalogRecord(resourceDatabase, 'repository', repositoryId, repositoryRecord);
     server = start(directory);
     await ready(server);
 
-    const recovered = sessionResources(sessionsDatabase, session.body.id);
+    const recovered = await waitForValue(
+      () => sessionResources(sessionsDatabase, session.body.id),
+      (resources) => resources.pending === undefined
+        && resources.activations.at(-1).state === 'active',
+      'repaired catalog generation did not commit',
+    );
     assert.equal(recovered.pending, undefined);
     assert.equal(recovered.activations.at(-1).state, 'active');
     assert.equal(recovered.activations.at(-1).attempts, 2);
@@ -259,7 +271,7 @@ async function main() {
       })],
     ];
     for (const [name, data] of memoryCorruptions) {
-      writeCatalogRaw(adminDatabase, 'memory_store', memory.body.id, data);
+      writeCatalogRaw(resourceDatabase, 'memory_store', memory.body.id, data);
       server = start(directory);
       await ready(server);
       const denied = await json('GET', 'memory_stores');
@@ -268,7 +280,7 @@ async function main() {
       assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
       await stop(server, 'SIGKILL');
     }
-    writeCatalogRecord(adminDatabase, 'memory_store', memory.body.id, memoryRecord);
+    writeCatalogRecord(resourceDatabase, 'memory_store', memory.body.id, memoryRecord);
     server = start(directory);
     await ready(server);
     assert.equal((await json('GET', 'memory_stores')).status, 200);
@@ -306,12 +318,19 @@ async function main() {
     ];
     for (const [name, data] of repositoryCorruptions) {
       await stop(server, 'SIGKILL');
-      writeCatalogRaw(adminDatabase, 'repository', repositoryId, data);
+      writeCatalogRaw(resourceDatabase, 'repository', repositoryId, data);
       persistPreparedGeneration(sessionsDatabase, session.body.id);
       server = start(directory);
       await ready(server);
 
-      const denied = sessionResources(sessionsDatabase, session.body.id);
+      const denied = await waitForValue(
+        () => sessionResources(sessionsDatabase, session.body.id),
+        (resources) => resources.pending !== undefined
+          && resources.activations.at(-1).state === 'prepared'
+          && resources.activations.at(-1).attempts === 1
+          && Boolean(resources.activations.at(-1).last_error),
+        `${name}: corruption did not produce a durable failed activation receipt`,
+      );
       assert.notEqual(denied.pending, undefined, `${name}: pending generation disappeared`);
       assert.equal(denied.activations.at(-1).state, 'prepared', name);
       assert.equal(denied.activations.at(-1).attempts, 1, name);
@@ -319,10 +338,19 @@ async function main() {
       assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
 
       await stop(server, 'SIGKILL');
-      writeCatalogRecord(adminDatabase, 'repository', repositoryId, repositoryRecord);
+      writeCatalogRecord(resourceDatabase, 'repository', repositoryId, repositoryRecord);
       server = start(directory);
       await ready(server);
-      const repaired = sessionResources(sessionsDatabase, session.body.id);
+      // Cause/effect decision table for every corruption rule:
+      // corrupt catalog + HTTP ready => one failed Prepared attempt;
+      // restored catalog + HTTP ready => wait for that same generation to
+      // become Active; listener readiness alone is not a recovery receipt.
+      const repaired = await waitForValue(
+        () => sessionResources(sessionsDatabase, session.body.id),
+        (resources) => resources.pending === undefined
+          && resources.activations.at(-1).state === 'active',
+        `${name}: repaired generation did not commit`,
+      );
       assert.equal(repaired.pending, undefined, `${name}: repaired generation did not commit`);
       assert.equal(repaired.activations.at(-1).state, 'active', name);
       assert.equal(repaired.activations.at(-1).attempts, 2, name);

@@ -397,7 +397,6 @@ pub(super) async fn assemble_runtime_process_router(
     if let Some(materializer) = model_wiring.materializer {
         host_builder = host_builder.with_inference_materializer(materializer);
     }
-    awaken_coordinator::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): the environment advertises only the
     // installed CLI/sandbox capability. Provider coordinates and credentials are
     // realized from the same publication-pinned DB facts as native inference.

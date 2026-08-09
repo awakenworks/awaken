@@ -8,6 +8,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { withServer, pass } from './harness.mjs';
+import { closeHttpServer } from './http_server.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38471);
 const WS = 'ws';
@@ -27,7 +28,7 @@ async function modelDirectory() {
   assert.ok(address && typeof address === 'object');
   return {
     url: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => closeHttpServer(server),
   };
 }
 

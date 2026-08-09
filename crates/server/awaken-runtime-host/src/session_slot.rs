@@ -23,13 +23,13 @@ pub(crate) enum McpProjectionState {
 /// aggregate and is never reconstructed from this slot.
 #[derive(Clone)]
 pub(crate) struct McpGenerationProjection {
-    pub generation: awaken_session_contract::McpGenerationRef,
-    pub realization_id: String,
-    pub stage_idempotency_key: String,
+    /// The one canonical, secret-free effect input. Keep it intact so durable
+    /// dispatch can replay the exact generation on the execution Worker without
+    /// reconstructing a parallel MCP configuration from live transport state.
+    pub request: awaken_session_contract::StageMcpAttachment,
     /// Exact immutable realization identity with only renewable expiry/key
     /// excluded. It prevents a lease extension from changing target,
     /// credential, holder, owner incarnation, epoch, or logical generation.
-    pub renewal_binding_fingerprint: String,
     pub receipt: awaken_session_contract::McpRealizationReceipt,
     pub server: Option<crate::mcp::McpTransportMaterial>,
     pub native_wiring: Option<crate::mcp::McpWiring>,

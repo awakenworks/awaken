@@ -31,8 +31,8 @@ use awaken_file_store::FileStore;
 use awaken_resource_contract::FileCatalog;
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
-    DispatchServiceConfig, DurableRunIngress, RunDispatch, SubmitOptions, SystemClock,
-    WorkerResolver,
+    DispatchServiceConfig, DurableRunIngress, Inbox, PendingInput, RunDispatch, SubmitOptions,
+    SystemClock, WorkerResolver,
 };
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::CancellationToken;
@@ -117,9 +117,11 @@ mod build;
 mod completion;
 pub use completion::remote_worker_placement;
 pub use completion::self_hosted_inference_holder;
+mod credential_capabilities;
 mod run;
 mod session;
 mod session_ctx;
+mod terminal_reconciliation;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -299,6 +301,10 @@ pub struct SharedHost {
     /// its thread. Held here so background submit / cross-thread relay nudge it and
     /// so it lives for the process's lifetime.
     pub(crate) dispatch_pool: std::sync::OnceLock<Arc<DispatchPool<AnyDispatchStore>>>,
+    /// Marks the coordinator-only committed-terminal reconciliation daemon as
+    /// started. The detached task owns only a Weak host reference, so this flag
+    /// prevents duplicate loops without extending the Host lifetime.
+    pub(crate) terminal_reconciliation_started: std::sync::OnceLock<()>,
     /// Wakes a foreground durable submitter the instant the pool settles its run
     /// (event-driven completion), so the durable foreground path never pays a poll
     /// interval. Injected into the pool as its `CompletionSink`.

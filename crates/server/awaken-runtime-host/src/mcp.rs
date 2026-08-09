@@ -470,7 +470,7 @@ impl crate::SharedHost {
             .read(&generation.session_id, |slot| {
                 slot.mcp
                     .iter()
-                    .find(|projection| projection.generation == *generation)
+                    .find(|projection| projection.request.generation == *generation)
                     .cloned()
             })
             .flatten()
@@ -480,12 +480,12 @@ impl crate::SharedHost {
         &self,
         projection: crate::session_slot::McpGenerationProjection,
     ) -> Result<(), HostError> {
-        let thread = projection.generation.session_id.clone();
+        let thread = projection.request.generation.session_id.clone();
         self.session_slots.update(&thread, |slot| {
             if slot
                 .mcp
                 .iter()
-                .any(|existing| existing.generation == projection.generation)
+                .any(|existing| existing.request.generation == projection.request.generation)
             {
                 return Err(HostError::internal(
                     "MCP generation projection already exists with another realization",
@@ -507,20 +507,22 @@ impl crate::SharedHost {
         self.session_slots
             .update(&request.generation.session_id, |slot| {
                 let Some(projection) = slot.mcp.iter_mut().find(|projection| {
-                    projection.generation.session_id == request.generation.session_id
-                        && projection.generation.attachment_id == request.generation.attachment_id
-                        && projection.generation.generation == request.generation.generation
-                        && projection.generation.runtime_incarnation
+                    projection.request.generation.session_id == request.generation.session_id
+                        && projection.request.generation.attachment_id
+                            == request.generation.attachment_id
+                        && projection.request.generation.generation == request.generation.generation
+                        && projection.request.generation.runtime_incarnation
                             == request.generation.runtime_incarnation
-                        && projection.generation.lease_epoch == request.generation.lease_epoch
+                        && projection.request.generation.lease_epoch
+                            == request.generation.lease_epoch
                 }) else {
                     return Ok(None);
                 };
                 if projection.state != crate::session_slot::McpProjectionState::Active
-                    || projection.realization_id != request.realization_id
-                    || projection.renewal_binding_fingerprint != binding
+                    || projection.request.realization_id != request.realization_id
+                    || projection.request.renewal_binding_fingerprint() != binding
                     || request.generation.lease_expires_at_unix_ms
-                        <= projection.generation.lease_expires_at_unix_ms
+                        <= projection.request.generation.lease_expires_at_unix_ms
                 {
                     return Err(HostError::internal(
                         "MCP lease renewal conflicts with the active realization",
@@ -533,8 +535,7 @@ impl crate::SharedHost {
                     actual_realization_kind: projection.receipt.actual_realization_kind,
                     receipt_fingerprint: request.fingerprint(),
                 };
-                projection.generation = request.generation.clone();
-                projection.stage_idempotency_key = request.stage_idempotency_key.clone();
+                projection.request = request.clone();
                 projection.receipt = receipt.clone();
                 Ok(Some(receipt))
             })
@@ -572,14 +573,14 @@ impl crate::SharedHost {
             let Some(index) = slot
                 .mcp
                 .iter()
-                .position(|projection| projection.generation == *generation)
+                .position(|projection| projection.request.generation == *generation)
             else {
                 return Err(HostError::internal("unknown MCP generation projection"));
             };
             match slot.mcp[index].state {
                 crate::session_slot::McpProjectionState::Staged => {
                     for projection in &mut slot.mcp {
-                        if projection.generation.attachment_id == generation.attachment_id
+                        if projection.request.generation.attachment_id == generation.attachment_id
                             && projection.state == crate::session_slot::McpProjectionState::Active
                         {
                             projection.state = crate::session_slot::McpProjectionState::Draining;
@@ -613,7 +614,7 @@ impl crate::SharedHost {
             let Some(projection) = slot
                 .mcp
                 .iter_mut()
-                .find(|projection| projection.generation == *generation)
+                .find(|projection| projection.request.generation == *generation)
             else {
                 // Cleanup is an idempotent exact-generation command. A fresh
                 // Runtime incarnation legitimately has no process-local copy of

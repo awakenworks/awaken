@@ -26,6 +26,27 @@ pub(super) struct SessionRecord {
 }
 
 impl SessionRecord {
+    /// IDs already lowered into tool-use events, plus the MCP subset needed to
+    /// classify later results. One scan owns both projections so refresh and
+    /// local completion cannot grow separate deduplication rules.
+    pub(super) fn projected_tool_ids(&self) -> (HashSet<String>, Vec<String>) {
+        let mut all = HashSet::new();
+        let mut mcp = Vec::new();
+        for event in &self.events {
+            match event.kind {
+                OutboundKind::AgentToolUse { .. } | OutboundKind::AgentCustomToolUse { .. } => {
+                    all.insert(event.id.clone());
+                }
+                OutboundKind::AgentMcpToolUse { .. } => {
+                    all.insert(event.id.clone());
+                    mcp.push(event.id.clone());
+                }
+                _ => {}
+            }
+        }
+        (all, mcp)
+    }
+
     pub(super) fn new(
         agent_id: String,
         session: Session,

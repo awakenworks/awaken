@@ -4,8 +4,8 @@ use awaken_runtime_contract::llm::LlmExecutor;
 
 use super::{
     CredentialMaterializerSupport, InferenceExecutorMaterializer, ResourceManifestSupport,
-    StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder, derive_standard_manifest,
-    grace_window,
+    StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder,
+    configured_container_acp_targets, derive_standard_manifest, grace_window,
 };
 
 struct SchemeMaterializer;
@@ -855,6 +855,53 @@ fn standard_manifest_uses_one_typed_metadata_source() {
     assert_eq!(manifest.zone.as_deref(), Some("zone:test"));
     assert!(manifest.capabilities.contains("operator:test/v1"));
     assert_eq!(manifest.capacity.max_concurrent, 7);
+}
+
+#[test]
+fn configured_container_acp_uses_live_image_probe_targets_only() {
+    // Cause/effect graph: C1=container tier; C2=typed ACP profile; C3=image
+    // identity. Effects: E1=create one image-local live probe target; E2=defer
+    // to the host-discovery source; E3=fail configuration before registration.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | R1 | no  | yes | n/a | E2 no container target |
+    // | R2 | yes | no  | yes | E2 no ACP target |
+    // | R3 | yes | yes | yes | E1 exact container argv + image identity |
+    // | R4 | yes | yes | no  | E3 error |
+    let mut config = deployment();
+    config.acp =
+        Some(awaken_runtime_host::AcpWorkerProfile::new(vec!["gemini".into()], None).unwrap());
+    assert!(
+        configured_container_acp_targets(&config)
+            .unwrap()
+            .is_empty(),
+        "R1"
+    );
+
+    config.sandbox_tier = awaken_runtime_host::SandboxTier::Docker;
+    config.container_image = Some("image@sha256:exact".into());
+    config.acp = None;
+    assert!(
+        configured_container_acp_targets(&config)
+            .unwrap()
+            .is_empty(),
+        "R2"
+    );
+
+    config.acp =
+        Some(awaken_runtime_host::AcpWorkerProfile::new(vec!["gemini".into()], None).unwrap());
+    let targets = configured_container_acp_targets(&config).unwrap();
+    assert_eq!(targets.len(), 1, "R3");
+    assert_eq!(targets[0].cli_id, "gemini", "R3");
+    assert_eq!(
+        targets[0].adapter_version, "container-image:image@sha256:exact",
+        "R3"
+    );
+    assert_eq!(targets[0].argv, ["gemini", "--acp"], "R3");
+
+    config.container_image = None;
+    assert!(configured_container_acp_targets(&config).is_err(), "R4");
 }
 
 #[test]

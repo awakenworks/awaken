@@ -5,7 +5,6 @@
 //! progress. Neither mechanism carries authentication or authorization data.
 
 use std::collections::BTreeSet;
-use std::future::Future;
 
 use async_trait::async_trait;
 use awaken_resource_contract::{
@@ -13,6 +12,7 @@ use awaken_resource_contract::{
     ResourcePurgeIntent, ResourcePurgeRepository, ResourceReclamationFence, ResourceReference,
     ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
+pub(crate) use awaken_store_runtime::block_on_ambient_runtime as block;
 use sqlx::postgres::PgPool;
 use sqlx::{Postgres, Row, Transaction};
 use tokio::runtime::Handle;
@@ -27,20 +27,6 @@ use crate::{
 pub struct PostgresResourceStore {
     pub(crate) pool: PgPool,
     pub(crate) handle: Handle,
-}
-
-/// Run one short synchronous ResourceCatalog port call on the store's async
-/// runtime from a fresh thread, avoiding nested-runtime panics.
-pub(crate) fn block<T, F, Fut>(handle: &Handle, make: F) -> T
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = T>,
-    T: Send + 'static,
-{
-    let handle = handle.clone();
-    std::thread::spawn(move || handle.block_on(make()))
-        .join()
-        .expect("resource store runtime thread panicked")
 }
 
 impl PostgresResourceStore {
@@ -110,8 +96,10 @@ impl PostgresResourceStore {
         .map_err(|error| storage(error.to_string()))?
         .run_bundle(&catalog)
         .await
-        .map(|_| ())
-        .map_err(|error| storage(error.to_string()))
+        .map_err(|error| storage(error.to_string()))?;
+        self.migrate_legacy_memory_stores()
+            .await
+            .map_err(|error| storage(error.to_string()))
     }
 }
 

@@ -1404,6 +1404,12 @@ mod workdir_helper_tests {
         assert_eq!(skills[0].content, "# greet");
     }
 
+    /// Repository realization cause/effect decision table:
+    /// | Rule | Destination | Frozen plan | Effect |
+    /// |---|---|---|---|
+    /// | R1 | absent | valid | clone the exact repository |
+    /// | R2 | already realized | exact replay | succeed without replacing Agent state |
+    /// | R3 | occupied | different remote/checkout | reject without modifying the tree |
     #[tokio::test]
     async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1452,6 +1458,30 @@ mod workdir_helper_tests {
         assert_eq!(
             std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
             "hello"
+        );
+        std::fs::write(repo_dir.join("PRESERVED"), "agent state").unwrap();
+        pc::RepositoryRealizer::realize_repository(&sandbox, &plan, None)
+            .await
+            .expect("R2 exact replay is idempotent");
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.join("PRESERVED")).unwrap(),
+            "agent state",
+            "R2 preserves the existing working tree"
+        );
+        let conflicting = pc::RepositoryRealizationPlan {
+            remote_url: base.join("different.git").to_string_lossy().into_owned(),
+            ..plan.clone()
+        };
+        assert!(
+            pc::RepositoryRealizer::realize_repository(&sandbox, &conflicting, None)
+                .await
+                .is_err(),
+            "R3 conflicting realization fails closed"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
+            "hello",
+            "R3 does not replace the authoritative tree"
         );
         // Provision sets NO committer identity — that is the agent's to own.
         let cfg = std::process::Command::new("git")

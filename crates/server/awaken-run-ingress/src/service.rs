@@ -38,6 +38,11 @@ pub struct DispatchServiceConfig {
     /// a long run is not reclaimed while still executing; `None` disables renewal
     /// (a single in-process daemon needs none). Use well under the lease (ADR-0024).
     pub lease_renewal_interval: Option<Duration>,
+    /// Cadence for reconciling a quiescent Awaiting dispatch or expired Running
+    /// lease against committed terminal Run truth. This repairs commit/settle
+    /// and reconciliation-claim crash gaps without polling every idle queue tick;
+    /// `None` disables it.
+    pub terminal_reconciliation_interval: Option<Duration>,
 }
 
 impl Default for DispatchServiceConfig {
@@ -47,6 +52,7 @@ impl Default for DispatchServiceConfig {
             max_attempts: 5,
             dead_letter_ttl: None,
             lease_renewal_interval: None,
+            terminal_reconciliation_interval: Some(Duration::from_secs(30)),
         }
     }
 }
@@ -177,6 +183,7 @@ async fn run_loop<S: Dispatch + 'static>(
     shutdown: CancellationToken,
     config: DispatchServiceConfig,
 ) {
+    let mut next_terminal_reconciliation = tokio::time::Instant::now();
     loop {
         if shutdown.is_cancelled() {
             break;
@@ -193,6 +200,14 @@ async fn run_loop<S: Dispatch + 'static>(
             let _ = worker.store().purge_dead_letters_before(cutoff).await;
         }
         let _ = worker.store().relay().await;
+        if let Some(interval) = config.terminal_reconciliation_interval
+            && tokio::time::Instant::now() >= next_terminal_reconciliation
+        {
+            if let Err(error) = worker.reconcile_committed_terminals(now, 256).await {
+                tracing::warn!(%error, "terminal dispatch reconciliation failed; retrying");
+            }
+            next_terminal_reconciliation = tokio::time::Instant::now() + interval;
+        }
         let _ = worker.run_until_idle(now).await;
         tokio::select! {
             _ = shutdown.cancelled() => break,

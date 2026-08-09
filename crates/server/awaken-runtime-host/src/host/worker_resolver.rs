@@ -2,74 +2,8 @@
 //! its thread, opening (or reusing) the session through the host.
 
 use super::*;
-
-struct WorkerProjectionSynchronizer<'a> {
-    host: &'a SharedHost,
-    claim: Option<&'a awaken_run_ingress::RunClaim>,
-}
-
-#[async_trait::async_trait]
-impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
-    async fn synchronize_session_projection(
-        &self,
-        session_id: &str,
-        projection: &awaken_session_contract::FrozenSessionProjection,
-        lease: &awaken_session_contract::SessionRealizationLease,
-        _prepare_session: bool,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.host
-            .install_frozen_session_projection(session_id, projection.clone(), self.claim)
-            .await
-            .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
-        self.host
-            .install_session_realization_lease(session_id, lease.clone());
-        Ok(())
-    }
-}
-
-struct WorkerMcpEffects<'a>(&'a SharedHost);
-
-#[async_trait::async_trait]
-impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
-    async fn stage_mcp_attachment(
-        &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
-    {
-        self.0.stage_dispatched_mcp(request).await
-    }
-
-    async fn publish_mcp_generation(
-        &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.0.publish_dispatched_mcp(generation).await
-    }
-
-    async fn drain_mcp_generation(
-        &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.0.drain_dispatched_mcp(generation).await
-    }
-}
-
-async fn adopt_bound_sandbox(
-    host: &SharedHost,
-    encoded: Option<&str>,
-    expected_sandbox_id: &str,
-    run_id: &RunId,
-    recovery: awaken_run_ingress::WorkerRecoveryMode,
-) -> Result<(Option<crate::session_environment::SessionEnvironment>, bool), awaken_run_ingress::Error>
-{
-    host.adopt_bound_session_environment(
-        expected_sandbox_id,
-        encoded,
-        recovery == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
-    )
-    .await
-    .map_err(|error| HostWorkerResolver::execution_error(format!("run {}: {error}", run_id.0)))
-}
+mod claimed_dispatch;
+use claimed_dispatch::{WorkerMcpEffects, WorkerProjectionSynchronizer, adopt_bound_sandbox};
 
 /// Routes a claimed run to the worker that owns its thread, opening (or reusing)
 /// the session through the host. Holds a `Weak` back-reference so the pool's tasks
@@ -80,13 +14,13 @@ pub(crate) struct HostWorkerResolver {
 }
 
 impl HostWorkerResolver {
-    fn execution_error(message: impl Into<String>) -> awaken_run_ingress::Error {
+    pub(super) fn execution_error(message: impl Into<String>) -> awaken_run_ingress::Error {
         awaken_run_ingress::Error::Execution(awaken_runtime_contract::execution::Error::Execution(
             message.into(),
         ))
     }
 
-    fn host(&self) -> Result<Arc<SharedHost>, awaken_run_ingress::Error> {
+    pub(super) fn host(&self) -> Result<Arc<SharedHost>, awaken_run_ingress::Error> {
         self.host
             .upgrade()
             .ok_or_else(|| Self::execution_error("host dropped; pool idling"))
@@ -110,6 +44,84 @@ impl HostWorkerResolver {
         .map_err(|error| Self::execution_error(error.to_string()))
     }
 
+    pub(super) async fn reconcile_dispatched_mcp(
+        host: &SharedHost,
+        session_id: &str,
+        stages: Vec<awaken_session_contract::StageMcpAttachment>,
+    ) -> Result<(), awaken_run_ingress::Error> {
+        use awaken_session_contract::McpAttachmentRealizer as _;
+
+        let existing = host.active_mcp_projections(session_id);
+        let existing_generations = existing
+            .iter()
+            .map(|projection| {
+                awaken_session_contract::stable_fingerprint(&projection.request.generation)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut desired_generations = std::collections::BTreeSet::new();
+        let mut desired_names = std::collections::BTreeSet::new();
+        for stage in &stages {
+            if stage.generation.session_id != session_id
+                || !desired_generations.insert(awaken_session_contract::stable_fingerprint(
+                    &stage.generation,
+                ))
+                || !desired_names.insert(stage.name.clone())
+            {
+                return Err(Self::execution_error(
+                    "dispatched MCP projection has a foreign or duplicate generation/name",
+                ));
+            }
+        }
+
+        let effects = WorkerMcpEffects(host);
+        let mut newly_staged = Vec::new();
+        for stage in stages {
+            match effects.stage_mcp_attachment(stage.clone()).await {
+                Ok(receipt) => {
+                    if !existing_generations.contains(&awaken_session_contract::stable_fingerprint(
+                        &receipt.generation,
+                    )) {
+                        newly_staged.push(receipt.generation.clone());
+                    }
+                    if let Err(error) = effects
+                        .publish_mcp_generation(receipt.generation.clone())
+                        .await
+                    {
+                        for generation in newly_staged {
+                            let _ = effects.drain_mcp_generation(generation).await;
+                        }
+                        return Err(Self::execution_error(format!(
+                            "dispatched MCP publication failed: {error}"
+                        )));
+                    }
+                }
+                Err(error) => {
+                    for generation in newly_staged {
+                        let _ = effects.drain_mcp_generation(generation).await;
+                    }
+                    return Err(Self::execution_error(format!(
+                        "dispatched MCP staging failed: {error}"
+                    )));
+                }
+            }
+        }
+        for projection in existing {
+            if !desired_generations.contains(&awaken_session_contract::stable_fingerprint(
+                &projection.request.generation,
+            )) {
+                effects
+                    .drain_mcp_generation(projection.request.generation)
+                    .await
+                    .map_err(|error| {
+                        Self::execution_error(format!(
+                            "obsolete dispatched MCP drain failed: {error}"
+                        ))
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
     async fn resolve(
         &self,
         host: &SharedHost,
@@ -130,346 +142,6 @@ impl HostWorkerResolver {
             .ok_or_else(|| {
                 Self::execution_error(format!("thread {} has no durable ingress", thread_id.0))
             })
-    }
-
-    /// Resolve the terminal-control path without creating, adopting, or probing a
-    /// Session environment. Cancellation only needs the dispatch fence and the
-    /// thread commit boundary; making it depend on the run's model, credentials,
-    /// placement capabilities, or sandbox would let the failed dependency prevent
-    /// its own termination.
-    async fn cancellation_worker(
-        &self,
-        host: &SharedHost,
-        claimed: &awaken_run_ingress::Claimed,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
-    {
-        let thread_id = claimed.request.session_thread_id();
-        let commit = Arc::new(
-            host.build_commit(&thread_id.0)
-                .await
-                .map_err(|error| Self::execution_error(error.to_string()))?,
-        );
-        let recovery_projection = commit.recovery_projection();
-        let store = host
-            .dispatch_store()
-            .map_err(|error| Self::execution_error(error.to_string()))?;
-        let mut worker = awaken_run_ingress::DispatchWorker::new(
-            Arc::new(awaken_runtime::Runtime::new()),
-            store,
-            commit.clone(),
-            claimed.lease.owner.clone(),
-        );
-        if host.upstream.is_none()
-            && let Some(observer) = host
-                .memory_terminal_observer(
-                    &thread_id.0,
-                    &claimed.request.activation.snapshot,
-                    commit,
-                )
-                .await
-        {
-            worker = worker.with_context(
-                awaken_runtime_contract::RuntimeRunContext::new().with_terminal_observer(observer),
-            );
-        }
-        if matches!(
-            awaken_runtime_contract::resolved::Backend::from_ref(
-                &claimed
-                    .request
-                    .activation
-                    .snapshot
-                    .resolved_spec
-                    .model_binding
-                    .backend_ref
-            ),
-            awaken_runtime_contract::resolved::Backend::Remote { .. }
-        ) {
-            let executor = host.remote_attempt_executor.clone().ok_or_else(|| {
-                Self::execution_error(
-                    "remote cancellation requires a configured remote attempt executor",
-                )
-            })?;
-            worker.install_attempt_executor(executor);
-        }
-        if let Some(upstream) = &host.upstream {
-            let claimed_commit = crate::commit_ingest::remote_claimed_commit(upstream)
-                .map_err(|error| Self::execution_error(error.to_string()))?;
-            worker = worker.with_claimed_commit(claimed_commit);
-        }
-        if let Some(projection) = recovery_projection {
-            worker = worker.with_recovery_projection(projection);
-        }
-        Ok(Arc::new(worker))
-    }
-}
-
-impl SharedHost {
-    /// Exact independent credential-adapter profiles installed in this process.
-    /// Both the process dispatch pool and per-Session durable ingress consume this
-    /// one declaration; neither may infer custody from only the Native adapter.
-    pub(crate) fn local_credential_realization_capabilities(
-        &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        let mut profiles = vec![self.inference_routing.credential_realization_capabilities()];
-        if let (Some(acp), Some(profile)) = (&self.acp, &self.deployment.acp) {
-            profiles.extend(profile.cli_ids().filter_map(|cli| {
-                let backend =
-                    awaken_runtime_contract::resolved::Backend::from_ref(&format!("acp:{cli}"));
-                match acp.credential_realization_capabilities(&backend) {
-                    Ok(capabilities) => Some(capabilities),
-                    Err(error) => {
-                        tracing::error!(backend = %format!("acp:{cli}"), %error,
-                            "configured ACP credential capability is unavailable");
-                        None
-                    }
-                }
-            }));
-        }
-        awaken_runtime_contract::CredentialRealizationCapabilities::alternatives(profiles)
-    }
-}
-
-#[async_trait::async_trait]
-impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
-    fn credential_realization_capabilities(
-        &self,
-    ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
-        self.host
-            .upgrade()
-            .map(|host| host.local_credential_realization_capabilities())
-            .unwrap_or_default()
-    }
-
-    async fn worker_for(
-        &self,
-        thread_id: &awaken_agent_contract::agent::thread::Id,
-        agent_id: Option<&str>,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
-    {
-        let host = self.host()?;
-        // Open the session bound to the claimed run's OWN agent, so `ctx_for` resolves
-        // that agent's published config from the worker's config service — its own
-        // catalog and model binding. A cold worker thus runs the configured model
-        // against a matching fingerprint, with no session-level model registry. An
-        // already-resident session is returned from the cache; a cold thread rebuilds
-        // from committed truth. `None`/empty opens the built-in default agent.
-        self.resolve(&host, thread_id, agent_id, None, None).await
-    }
-
-    async fn worker_for_claimed(
-        &self,
-        claimed: &awaken_run_ingress::Claimed,
-    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
-    {
-        let host = self.host()?;
-        if claimed.cancellation_requested {
-            return self.cancellation_worker(&host, claimed).await;
-        }
-        let thread_id = claimed.request.session_thread_id();
-        let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
-        let agent_id = (!agent_id.is_empty()).then_some(agent_id);
-
-        let dispatched_resources = if let Some(envelope) = &claimed.request.session_resources {
-            let dispatched_scope = claimed
-                .request
-                .execution_scope
-                .as_ref()
-                .map(|scope| scope.0.0.as_str());
-            if envelope.workspace_id.trim().is_empty()
-                || dispatched_scope != Some(envelope.workspace_id.as_str())
-            {
-                return Err(Self::execution_error(format!(
-                    "run {} has a resource manifest outside its execution scope",
-                    claimed.lease.run_id.0
-                )));
-            }
-            let manifest = crate::provisioning::decode_session_resource_envelope(envelope)
-                .map_err(|error| {
-                    Self::execution_error(format!(
-                        "run {} has an invalid Session resource manifest: {error}",
-                        claimed.lease.run_id.0
-                    ))
-                })?;
-            Some(manifest)
-        } else {
-            None
-        };
-
-        // Install the immutable Session runtime projection before resource
-        // staging or context construction. Without this envelope a cold Worker
-        // cannot distinguish eager from on-tool-use provisioning and would
-        // eagerly allocate an unbound Sandbox for a Brain-only run.
-        if let Some(envelope) = &claimed.request.session_runtime {
-            let (environment, toolsets) = crate::provisioning::decode_session_runtime_envelope(
-                envelope,
-            )
-            .map_err(|error| {
-                Self::execution_error(format!(
-                    "run {} has an invalid Session runtime projection: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
-            host.install_environment_projection(&thread_id.0, &environment)
-                .map_err(|error| Self::execution_error(error.to_string()))?;
-            host.session_slots
-                .update(&thread_id.0, |slot| slot.toolsets = toolsets);
-        }
-
-        if let Some(provisioner) = &host.application_session_provisioner {
-            let dispatch: Arc<dyn awaken_run_ingress::DispatchQueue> = host
-                .dispatch_store()
-                .map_err(|error| Self::execution_error(error.to_string()))?;
-            let ownership = awaken_run_ingress::claim_bound_ownership_verifier(
-                dispatch,
-                awaken_run_ingress::RunClaim::from(&claimed.lease),
-                Arc::new(awaken_run_ingress::SystemClock),
-            );
-            ownership.verify_current().await.map_err(|error| {
-                Self::execution_error(format!(
-                    "run {} lost ownership before application provisioning: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
-            let contribution = provisioner
-                .prepare(&claimed.request.activation, &thread_id.0, ownership.clone())
-                .await
-                .map_err(|error| {
-                    Self::execution_error(format!(
-                        "run {} application provisioning failed: {error}",
-                        claimed.lease.run_id.0
-                    ))
-                })?;
-            ownership.verify_current().await.map_err(|error| {
-                Self::execution_error(format!(
-                    "run {} lost ownership during application provisioning: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
-            let control = host.application_session_control.as_ref().ok_or_else(|| {
-                Self::execution_error(
-                    "application Session provisioner has no Control contribution client",
-                )
-            })?;
-            let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
-            let receipt = control
-                .contribute(&claim, contribution)
-                .await
-                .map_err(|error| {
-                    Self::execution_error(format!(
-                        "run {} application contribution failed: {error}",
-                        claimed.lease.run_id.0
-                    ))
-                })?;
-            ownership.verify_current().await.map_err(|error| {
-                Self::execution_error(format!(
-                    "run {} lost ownership during application contribution: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
-            if let Some(dispatched) = &dispatched_resources
-                && (dispatched.workspace_id != receipt.contribution.projection.workspace_id
-                    || dispatched.resources != receipt.contribution.projection.resources)
-            {
-                return Err(Self::execution_error(
-                    "Control contribution projection conflicts with the claimed resource snapshot",
-                ));
-            }
-            Self::realize_application_session(
-                &host,
-                control,
-                &thread_id.0,
-                receipt.realization,
-                Some(&claim),
-            )
-            .await?;
-        } else if let Some(manifest) = &dispatched_resources {
-            let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
-            host.install_dispatched_resources(&thread_id.0, manifest, Some(&claim))
-                .await
-                .map_err(|error| Self::execution_error(error.to_string()))?;
-        }
-
-        // A cold durable Worker installs the frozen projection directly rather
-        // than crossing ManagedHost::prepare_session. Reconstruct the lazy Hand
-        // executor from that immutable projection before SessionCtx is built.
-        let needs_deferred_executor = host
-            .session_slots
-            .read(&thread_id.0, |slot| {
-                slot.deferred_executor.is_none()
-                    && slot
-                        .environment_projection
-                        .as_ref()
-                        .is_some_and(|environment| {
-                            environment.provisioning
-                                == awaken_session_contract::SandboxProvisioning::OnToolUse
-                        })
-            })
-            .unwrap_or(false);
-        if needs_deferred_executor {
-            let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> =
-                Arc::new(crate::lazy_sandbox::DeferredSandboxExecutor::new(
-                    Arc::downgrade(&host),
-                    &thread_id.0,
-                ));
-            host.session_slots
-                .update(&thread_id.0, |slot| slot.deferred_executor = Some(executor));
-        }
-
-        let (adopted, rebuild_binding) = adopt_bound_sandbox(
-            &host,
-            claimed.sandbox.as_deref(),
-            &thread_id.0,
-            &claimed.lease.run_id,
-            claimed.request.placement.recovery,
-        )
-        .await?;
-
-        // A deferred Native Session carries the current lease fence into its
-        // first Sandbox-target tool. Brain-only runs never create or bind one.
-        host.session_slots.update(&thread_id.0, |slot| {
-            if slot.deferred_executor.is_some() {
-                slot.deferred_claim = Some(awaken_run_ingress::RunClaim::from(&claimed.lease));
-            }
-        });
-
-        let worker = self
-            .resolve(
-                &host,
-                thread_id,
-                agent_id,
-                Some(claimed.request.activation.snapshot.clone()),
-                adopted,
-            )
-            .await?;
-
-        // Persist the first placement before executing the claimed run. If the
-        // process dies after this write, the next owner sees the handle and adopts
-        // the same environment; a failed write leaves the run unexecuted/retryable.
-        if claimed.sandbox.is_none() || rebuild_binding {
-            let Some(environment) = host.session_environment(&thread_id.0).await else {
-                // `on_tool_use`: the deferred executor will bind this exact
-                // claim before publishing its first Sandbox. Returning the
-                // worker here lets Brain tools execute without a Sandbox.
-                return Ok(worker);
-            };
-            let encoded = serde_json::to_string(&environment.handle())
-                .map_err(|e| Self::execution_error(e.to_string()))?;
-            let outcome = host
-                .dispatch_store()
-                .map_err(|e| Self::execution_error(e.to_string()))?
-                .bind_sandbox(
-                    &awaken_run_ingress::RunClaim::from(&claimed.lease),
-                    &encoded,
-                )
-                .await
-                .map_err(awaken_run_ingress::Error::from)?;
-            if !outcome.applied() {
-                return Err(Self::execution_error(
-                    "sandbox binding was fenced by a replacement claim",
-                ));
-            }
-        }
-        Ok(worker)
     }
 }
 
@@ -557,6 +229,7 @@ mod tests {
                     agent_id: "agent-a".into(),
                     delegate_ids: Vec::new(),
                     toolsets: None,
+                    resource_revision: 0,
                     resources: Default::default(),
                     model: None,
                     runtime: None,
@@ -612,6 +285,114 @@ mod tests {
             .expect("deferred run available")
     }
 
+    /// Cause/effect decision table for Host-wide legacy reconciliation:
+    ///
+    /// | Rule | Host role | Dispatch | Thread commit | Expected effect |
+    /// |------|-----------|----------|---------------|-----------------|
+    /// | R0 | local pool | any | any | no duplicate coordinator daemon |
+    /// | R1 | coordinator-only | Awaiting | no terminal Run | preserve row and Session state |
+    /// | R2 | coordinator-only | Awaiting | exact Run Ended | environment-free fenced Done |
+    /// | R3 | coordinator-only + R2 | exact settlement | exact terminal | completion tombstone, no Sandbox |
+    ///
+    /// Constraints: each row is read through its own Thread commit boundary;
+    /// neither queue metadata nor environment availability can prove outcome.
+    #[tokio::test]
+    async fn host_reconciles_only_exact_committed_terminals_without_opening_sessions() {
+        use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
+        use awaken_run_ingress::{Clock, DispatchQueue};
+
+        let mut local_pool = SharedHost::new(Arc::new(AdoptionModel), "stub");
+        local_pool.deployment.durable = true;
+        local_pool.deployment.disable_local_pool = false;
+        assert!(
+            !Arc::new(local_pool).ensure_terminal_dispatch_reconciliation(),
+            "R0"
+        );
+
+        let storage = tempfile::tempdir().expect("storage");
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let mut coordinator = SharedHost::new(Arc::new(AdoptionModel), "stub")
+            .with_store_dir(storage.path())
+            .with_dispatch_store(store.clone());
+        coordinator.deployment.durable = true;
+        coordinator.deployment.disable_local_pool = true;
+        let host = Arc::new(coordinator);
+
+        let control = claim(&store, "thread-control", "run-control", "setup", now).await;
+        store
+            .settle(
+                &control.lease.run_id,
+                control.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Awaiting,
+                &[],
+            )
+            .await
+            .expect("quiesce control");
+        let terminal = claim(&store, "thread-terminal", "run-terminal", "setup", now).await;
+        store
+            .settle(
+                &terminal.lease.run_id,
+                terminal.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Awaiting,
+                &[],
+            )
+            .await
+            .expect("quiesce terminal candidate");
+
+        let commit = host
+            .build_commit("thread-terminal")
+            .await
+            .expect("terminal Thread commit");
+        commit_run(
+            &commit,
+            &ThreadId("thread-terminal".to_string()),
+            RunDisposition::ended(RunId("run-terminal".to_string()), EndCause::NaturalEnd),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .expect("record exact terminal truth");
+
+        assert!(host.ensure_terminal_dispatch_reconciliation());
+        assert!(
+            !host.ensure_terminal_dispatch_reconciliation(),
+            "one coordinator daemon"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store
+                    .list_dispatches()
+                    .await
+                    .expect("reconciliation rows")
+                    .len()
+                    == 1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("R2 coordinator daemon reconciles immediately");
+        let rows = store.list_dispatches().await.expect("remaining dispatches");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].run_id, RunId("run-control".to_string()), "R1");
+        assert!(host.session_environment("thread-control").await.is_none());
+        assert!(
+            host.session_environment("thread-terminal").await.is_none(),
+            "R3"
+        );
+        let completions = store
+            .completion_events_after(0, 10)
+            .await
+            .expect("completion tombstone");
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].run_id, RunId("run-terminal".to_string()));
+    }
+
     /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
     /// the immutable dispatch envelope. Legacy absence remains eager, an exact
     /// on-tool-use projection stays sandbox-free during Brain resolution, and a
@@ -645,6 +426,7 @@ mod tests {
         let runtime = crate::provisioning::encode_session_runtime_envelope(
             deferred_environment(),
             Some(Vec::new()),
+            Vec::new(),
         )
         .expect("encode runtime projection");
         store
@@ -706,6 +488,120 @@ mod tests {
             host.session_environment("cold-invalid").await.is_none(),
             "C3"
         );
+    }
+
+    #[tokio::test]
+    async fn dispatched_mcp_effect_projection_decision_table() {
+        // Cause/effect graph: C1 envelope MCP field absent/present; C2 exact
+        // generation valid/foreign/expired; C3 desired set same/empty/replaced.
+        // Effects: E1 legacy absence leaves process state untouched (owned by
+        // the decoder test above); E2 valid exact input uses the canonical
+        // stage+publish implementation; E3 replay is idempotent; E4 explicit
+        // empty drains the old projection; E5 malformed/failed input performs
+        // no replacement and fails the claimed Run closed.
+        //
+        // | Rule | field | generation | desired | effect |
+        // | R1 | absent | n/a | n/a | legacy/no mutation |
+        // | R2 | present | exact/live | add | one active projection |
+        // | R3 | present | exact/live | same | idempotent one |
+        // | R4 | present | n/a | empty | drain all |
+        // | R5 | present | foreign/expired | replace | reject, retain prior |
+        let legacy = awaken_run_ingress::SessionRuntimeEnvelope::new(
+            serde_json::json!({
+                "environment": deferred_environment(),
+                "toolsets": null
+            })
+            .to_string(),
+        );
+        assert!(
+            crate::provisioning::decode_session_runtime_envelope(&legacy)
+                .expect("R1 legacy envelope")
+                .2
+                .is_none(),
+            "R1"
+        );
+        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+        let _managed = crate::ManagedHost::new(host.clone());
+        host.register_thread_agent_projection("mcp-dispatch", "agent-a");
+        host.register_thread_backend_projection("mcp-dispatch", "acp:gemini");
+        host.install_environment_projection("mcp-dispatch", &deferred_environment())
+            .expect("install frozen Environment");
+
+        let request = |session: &str, attachment: &str, expiry: u64| {
+            awaken_session_contract::StageMcpAttachment {
+                workspace_id: "workspace-a".into(),
+                generation: awaken_session_contract::McpGenerationRef {
+                    session_id: session.into(),
+                    attachment_id: awaken_session_contract::McpAttachmentId(attachment.into()),
+                    generation: awaken_session_contract::McpGeneration(1),
+                    runtime_incarnation: "control-runtime".into(),
+                    lease_epoch: 1,
+                    lease_expires_at_unix_ms: expiry,
+                },
+                realization_id: format!("realize-{attachment}"),
+                stage_idempotency_key: format!("stage-{attachment}"),
+                name: attachment.into(),
+                target: awaken_session_contract::McpTarget::parse_http(format!(
+                    "https://{attachment}.example.test/mcp"
+                ))
+                .expect("HTTP target"),
+                prompts_as_skills: false,
+                credential: None,
+                selected_plaintext_holder: None,
+            }
+        };
+        let exact = request("mcp-dispatch", "docs", u64::MAX);
+
+        HostWorkerResolver::reconcile_dispatched_mcp(
+            host.as_ref(),
+            "mcp-dispatch",
+            vec![exact.clone()],
+        )
+        .await
+        .expect("R2");
+        assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R2");
+        HostWorkerResolver::reconcile_dispatched_mcp(
+            host.as_ref(),
+            "mcp-dispatch",
+            vec![exact.clone()],
+        )
+        .await
+        .expect("R3");
+        assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R3");
+
+        HostWorkerResolver::reconcile_dispatched_mcp(host.as_ref(), "mcp-dispatch", Vec::new())
+            .await
+            .expect("R4");
+        assert!(host.active_mcp_projections("mcp-dispatch").is_empty(), "R4");
+
+        let retained = request("mcp-dispatch", "retained", u64::MAX);
+        HostWorkerResolver::reconcile_dispatched_mcp(host.as_ref(), "mcp-dispatch", vec![retained])
+            .await
+            .expect("R5 setup");
+        let foreign = request("foreign-session", "replacement", u64::MAX);
+        assert!(
+            HostWorkerResolver::reconcile_dispatched_mcp(
+                host.as_ref(),
+                "mcp-dispatch",
+                vec![foreign],
+            )
+            .await
+            .is_err(),
+            "R5 foreign"
+        );
+        assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R5");
+        let expired = request("mcp-dispatch", "replacement", 0);
+        assert!(
+            HostWorkerResolver::reconcile_dispatched_mcp(
+                host.as_ref(),
+                "mcp-dispatch",
+                vec![expired],
+            )
+            .await
+            .is_err(),
+            "R5 expired"
+        );
+        assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R5");
     }
 
     /// D1-D5: durable lazy placement is fenced by the current dispatch claim.
@@ -956,6 +852,7 @@ mod tests {
                 workspace_id: "workspace".into(),
                 revision: awaken_session_contract::SessionRevision(2),
                 baseline,
+                resource_revision: 0,
                 resources: Default::default(),
                 mcp,
                 toolsets: Vec::new(),
@@ -1438,13 +1335,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cold_worker_installs_frozen_file_manifest_before_opening_environment() {
+    async fn claimed_worker_installs_then_live_replaces_a_frozen_file_manifest() {
         let storage = tempfile::tempdir().expect("storage");
         let mut raw_host =
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-        // Cause: immutable Managed File input. Effect: the selected provider must
-        // guarantee both `/mnt/session/uploads/...` path fidelity and OS-enforced
-        // read-only semantics; Workdir correctly fails this compatibility rule.
+        // Cause/effect decision table: R1 no resident Environment + generation 1
+        // File => stage before open with path fidelity/read-only enforcement; R2
+        // resident Environment + higher empty generation => remove the physical
+        // projection before publishing the empty logical manifest. Workdir remains
+        // correctly ineligible for R1's immutability requirement.
         raw_host.session_provider =
             crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
                 storage.path().join("sandboxes"),
@@ -1513,6 +1412,37 @@ mod tests {
         assert_eq!(
             host.thread_resource_manifest("thread-cold-resource"),
             Some(manifest)
+        );
+
+        let cleared = awaken_session_contract::SessionResourceManifest::at_revision(
+            "workspace-a",
+            2,
+            awaken_session_contract::ResolvedSessionResources {
+                inputs: Vec::new(),
+                skills: Some(Vec::new()),
+            },
+        );
+        host.install_dispatched_resources("thread-cold-resource", &cleared, None)
+            .await
+            .expect("R2 live replacement");
+        assert!(
+            host.session_environment("thread-cold-resource")
+                .await
+                .expect("resident environment")
+                .list_files("/mnt/session/uploads")
+                .await
+                .expect("list live files")
+                .is_empty(),
+            "R2 removes the stale physical projection"
+        );
+        assert!(
+            host.sandbox_spec("thread-cold-resource").mounts.is_empty(),
+            "R2 publishes the empty staged projection"
+        );
+        assert_eq!(
+            host.thread_resource_manifest("thread-cold-resource"),
+            Some(cleared),
+            "R2 publishes generation 2 only after realization"
         );
     }
 
@@ -1690,9 +1620,14 @@ mod tests {
         let storage = tempfile::tempdir().expect("storage");
         let host = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
         assert!(
-            host.adopt_bound_session_environment("thread-a", Some("not-json"), false)
-                .await
-                .is_err()
+            host.adopt_bound_session_environment(
+                "thread-a",
+                Some("not-json"),
+                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                false,
+            )
+            .await
+            .is_err()
         );
 
         let wrong = serde_json::to_string(&awaken_provisioning_contract::SandboxHandle::new(
@@ -1700,9 +1635,14 @@ mod tests {
         ))
         .unwrap();
         assert!(
-            host.adopt_bound_session_environment("thread-a", Some(&wrong), false)
-                .await
-                .is_err()
+            host.adopt_bound_session_environment(
+                "thread-a",
+                Some(&wrong),
+                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
+                false,
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -1725,6 +1665,7 @@ mod tests {
             Some(&encoded),
             thread,
             &run_id,
+            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
             awaken_run_ingress::WorkerRecoveryMode::RequireSandboxContinuity,
         )
         .await
@@ -1743,6 +1684,7 @@ mod tests {
             Some(&missing),
             missing_thread,
             &run_id,
+            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
             awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await
@@ -1755,12 +1697,77 @@ mod tests {
                 Some(&missing),
                 missing_thread,
                 &run_id,
+                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                 awaken_run_ingress::WorkerRecoveryMode::RequireSandboxContinuity,
             )
             .await
             .is_err(),
             "continuity mode fails closed when the bound sandbox is gone"
         );
+    }
+
+    #[tokio::test]
+    async fn cold_adoption_uses_the_provider_owned_by_frozen_model_provisioning() {
+        // Cause/effect graph: C1=HostExecutor/Provider model; C2=BackendOwned
+        // model; C3=durable handle exists only below the selected provider root.
+        // Effects: E1=adopt from configured Session root; E2=adopt from trusted
+        // host-identity root; E3=missing selected root fails continuity.
+        //
+        // Decision table: A1 C1+C3(configured)=>E1 (covered by
+        // recovery_mode_controls...); A2 C2+C3(trusted)=>E2; A3 either model
+        // with its selected root absent=>E3 (covered by that test's missing row).
+        let storage = tempfile::tempdir().expect("storage");
+        let trusted_root = storage.path().join("trusted-local-sandboxes");
+        let thread = "thread-backend-owned-adoption";
+        let provisioning = awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
+            credential: awaken_runtime_contract::CredentialRef {
+                id: "local".into(),
+                revision: 1,
+            },
+            model_selection: awaken_runtime_contract::resolved::BackendModelSelection::Default,
+            acp: Default::default(),
+        };
+
+        let mut first =
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        first.backend_owned_session_provider =
+            Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
+        let created = first
+            .backend_owned_session_provider
+            .as_ref()
+            .expect("trusted provider")
+            .create(&first.sandbox_spec(thread))
+            .await
+            .expect("A2 create trusted environment");
+        let handle = created.handle();
+        let encoded = serde_json::to_string(&handle).unwrap();
+        drop(created);
+        drop(first);
+        assert!(
+            trusted_root.join(thread).exists(),
+            "A2 trusted root owns the durable environment"
+        );
+        assert!(
+            !storage.path().join("sandboxes").join(thread).exists(),
+            "A2 ordinary provider root cannot satisfy this handle"
+        );
+
+        let mut replacement =
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
+        replacement.backend_owned_session_provider =
+            Some(crate::session_environment::SessionEnvironmentProvider::workdir(&trusted_root));
+        let (adopted, rebuild) = adopt_bound_sandbox(
+            &replacement,
+            Some(&encoded),
+            thread,
+            &RunId("run-backend-owned-adoption".into()),
+            &provisioning,
+            awaken_run_ingress::WorkerRecoveryMode::RequireSandboxContinuity,
+        )
+        .await
+        .expect("A2 adopt from the provisioning-selected provider");
+        assert!(!rebuild, "A2");
+        assert_eq!(adopted.expect("A2 adopted").handle(), handle, "A2");
     }
 
     #[tokio::test]
@@ -1777,6 +1784,7 @@ mod tests {
             Some(&encoded),
             thread,
             &RunId("resident-run".into()),
+            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
             awaken_run_ingress::WorkerRecoveryMode::RequireSandboxContinuity,
         )
         .await
@@ -1805,6 +1813,7 @@ mod tests {
                 Some(&encoded),
                 thread,
                 &run,
+                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                 awaken_run_ingress::WorkerRecoveryMode::RequireSandboxContinuity,
             )
             .await
@@ -1822,6 +1831,7 @@ mod tests {
             Some(&encoded),
             thread,
             &run,
+            &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
             awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await
@@ -1854,6 +1864,7 @@ mod tests {
                 Some(&encoded),
                 thread,
                 &RunId("stale-binding-run".into()),
+                &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
                 awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
             )
             .await

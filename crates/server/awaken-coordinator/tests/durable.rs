@@ -56,6 +56,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
         let pending = host
             .pending_tool(thread)
             .await
+            .expect("the durable pending-tool read succeeds")
             .expect("an awaiting run exposes its pending tool");
         assert_eq!(pending.name, "submit_answer");
         assert!(pending.client_executed);

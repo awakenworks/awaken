@@ -14,8 +14,6 @@
 //! cross-thread borrow puzzles. Admin writes are low-frequency authoring
 //! operations, so the per-call thread hop is negligible.
 
-use std::future::Future;
-
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
@@ -27,6 +25,7 @@ use awaken_config_resolver::{
     WebhookAuthoringState, WebhookDeliveryOutcome, WebhookDeliveryState, WebhookEndpointDef,
     WebhookMutationIntent, WebhookStore, validate_agent_input_revision,
 };
+use awaken_store_runtime::block_on_owned_runtime as block;
 
 use crate::schema::admin_bundle;
 
@@ -44,24 +43,6 @@ pub enum StoreError {
     Migrate(String),
     #[error("schema: {0}")]
     Schema(String),
-}
-
-/// Drive a future to completion on `handle`'s runtime, from a fresh OS thread so
-/// this is safe to call from within another Tokio runtime (nesting `block_on`
-/// panics). `make` builds the future *on the target thread*, so the future itself
-/// never crosses a thread boundary and need not be `Send` (only the builder
-/// closure and the output must be) — this sidesteps sqlx's
-/// `Send`-not-general-enough puzzles.
-pub(crate) fn block<T, F, Fut>(handle: &Handle, make: F) -> T
-where
-    F: FnOnce() -> Fut + Send + 'static,
-    Fut: Future<Output = T>,
-    T: Send + 'static,
-{
-    let handle = handle.clone();
-    std::thread::spawn(move || handle.block_on(make()))
-        .join()
-        .expect("admin store runtime thread panicked")
 }
 
 /// A Postgres-backed store for the admin-plane aggregates, implementing all four

@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  cleanupFixtureTree,
   realServerEnv,
   spawnServer,
   startUpstream,
@@ -127,7 +128,7 @@ async function createMemory(storeId, pathName, content) {
 }
 
 async function main() {
-  fs.rmSync(STORE_DIR, { recursive: true, force: true });
+  cleanupFixtureTree(STORE_DIR);
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const database = path.join(STORE_DIR, 'sessions.db');
   const servers = [];
@@ -236,6 +237,16 @@ async function main() {
     };
     persistIntent(database, conflict, true);
 
+    // Extractor recovery decision table:
+    // | durable stage | dependency condition | terminal effect              |
+    // | Extracted     | heads unchanged      | store once, Completed         |
+    // | Extracted     | head changed         | five attempts, TerminalFailed |
+    // | Pending       | provider unreachable | five attempts, TerminalFailed |
+    // | Stored        | receipt present      | finalize, Completed           |
+    //
+    // Mutate the authoritative current `extractor.agent` snapshot. Adding the
+    // retained legacy `extractor.model` fields to a current snapshot is ignored
+    // by its one-way decoder and would not exercise the intended failure.
     const unavailableExtractor = {
       ...unclaimed,
       intent_id: `${source.intent_id}:unavailable-extractor`,
@@ -247,19 +258,26 @@ async function main() {
       receipt: null,
       extractor: {
         ...source.extractor,
-        model: {
-          ...source.extractor.model,
-          model_ref: 'unavailable-extractor-model',
-          provisioning: {
-            type: 'provider',
-            provider_ref: 'unavailable-provider',
-            route_ref: 'unavailable-route',
-            scope_id: source.workspace_id,
-            credential: null,
-            endpoint: {
-              adapter_kind: 'open_ai_chat',
-              base_url: 'https://unavailable-extractor.invalid/v1',
-              upstream_model: 'unavailable-extractor-model',
+        agent: {
+          ...source.extractor.agent,
+          resolved_spec: {
+            ...source.extractor.agent.resolved_spec,
+            model_binding: {
+              ...source.extractor.agent.resolved_spec.model_binding,
+              model_ref: 'unavailable-extractor-model',
+              provisioning: {
+                type: 'provider',
+                provider_ref: 'unavailable-provider',
+                route_ref: 'unavailable-route',
+                scope_id: source.workspace_id,
+                credential: null,
+                endpoint: {
+                  adapter_kind: 'open_ai_chat',
+                  api_dialect: 'open_ai_chat',
+                  base_url: 'http://127.0.0.1:1/v1',
+                  upstream_model: 'unavailable-extractor-model',
+                },
+              },
             },
           },
         },
@@ -314,12 +332,27 @@ async function main() {
       { ...cleanPending, session_id: ' ' },
       { ...cleanPending, terminal_commit_id: ' ' },
       { ...cleanPending, memory_store_id: ' ' },
-      { ...cleanPending, extractor: { ...cleanPending.extractor, agent_id: ' ' } },
       {
         ...cleanPending,
         extractor: {
           ...cleanPending.extractor,
-          model: { ...cleanPending.extractor.model, model_ref: ' ' },
+          agent: { ...cleanPending.extractor.agent, root_agent_id: ' ' },
+        },
+      },
+      {
+        ...cleanPending,
+        extractor: {
+          ...cleanPending.extractor,
+          agent: {
+            ...cleanPending.extractor.agent,
+            resolved_spec: {
+              ...cleanPending.extractor.agent.resolved_spec,
+              model_binding: {
+                ...cleanPending.extractor.agent.resolved_spec.model_binding,
+                model_ref: ' ',
+              },
+            },
+          },
         },
       },
       { ...cleanPending, memory_config_version: 0 },
@@ -378,7 +411,7 @@ async function main() {
   } finally {
     for (const server of servers) await stopServer(server);
     upstream.close();
-    fs.rmSync(STORE_DIR, { recursive: true, force: true });
+    cleanupFixtureTree(STORE_DIR);
   }
 }
 

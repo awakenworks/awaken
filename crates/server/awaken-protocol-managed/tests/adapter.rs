@@ -843,16 +843,16 @@ impl SessionRuntime for AwaitingFake {
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
-    async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
+    async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         if !*self.awaiting.lock().unwrap() {
-            return None;
+            return Ok(None);
         }
-        Some(Pending {
+        Ok(Some(Pending {
             tool_use_id: "call-1".into(),
             name: "write".into(),
             input: serde_json::json!({"path": "x.txt"}),
             client_executed: false,
-        })
+        }))
     }
     async fn define_outcome(
         &self,
@@ -1284,13 +1284,13 @@ impl SessionRuntime for CustomToolFake {
     async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
         Ok(())
     }
-    async fn pending_tool(&self, _thread: &str) -> Option<Pending> {
-        (*self.awaiting.lock().unwrap()).then(|| Pending {
+    async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
+        Ok((*self.awaiting.lock().unwrap()).then(|| Pending {
             tool_use_id: "cc1".into(),
             name: "submit_answer".into(),
             input: serde_json::json!({"question": "6x7"}),
             client_executed: true,
-        })
+        }))
     }
     async fn define_outcome(
         &self,

@@ -6,7 +6,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use awaken_acp_contract::{
-    AcpCapabilityHandshake, AcpCapabilityProbeConfig, NegotiatedAcpCapabilities,
+    AcpCapabilityHandshake, AcpCapabilityNegotiator, AcpCapabilityObservation,
+    AcpCapabilityObservationSource, AcpCapabilityObservationState, AcpCapabilityProbeConfig,
+    NegotiatedAcpCapabilities,
 };
 use awaken_agent_channel::{AgentChannel, SplitChannel};
 
@@ -51,16 +53,6 @@ impl EffectiveAcpCapabilityProfile {
             negotiated,
         }
     }
-}
-
-#[async_trait]
-pub trait AcpCapabilityNegotiator: Send + Sync {
-    async fn negotiate(
-        &self,
-        argv: &[String],
-        cwd: &Path,
-        auth_method_id: Option<&str>,
-    ) -> Result<NegotiatedAcpCapabilities, String>;
 }
 
 /// Production trusted-host capability probe. It inherits only PATH/HOME, sends
@@ -166,6 +158,115 @@ impl AcpCapabilityNegotiator for HostAcpCapabilityNegotiator {
     }
 }
 
+/// One configured ACP executable whose installation boundary is an image/Pod
+/// rather than the Worker's host filesystem. The adapter version is the exact
+/// configured image identity; the live handshake supplies the capability facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredAcpCapabilityTarget {
+    pub cli_id: String,
+    pub adapter_version: String,
+    pub argv: Vec<String>,
+    pub auth_method_id: Option<String>,
+}
+
+impl ConfiguredAcpCapabilityTarget {
+    pub fn new(
+        cli_id: impl Into<String>,
+        adapter_version: impl Into<String>,
+        argv: Vec<String>,
+        auth_method_id: Option<String>,
+    ) -> Result<Self, String> {
+        let target = Self {
+            cli_id: cli_id.into(),
+            adapter_version: adapter_version.into(),
+            argv,
+            auth_method_id,
+        };
+        if target.cli_id.trim().is_empty()
+            || target.adapter_version.trim().is_empty()
+            || target
+                .argv
+                .first()
+                .is_none_or(|program| program.trim().is_empty())
+        {
+            return Err(
+                "configured ACP capability target requires cli, image identity, and argv".into(),
+            );
+        }
+        Ok(target)
+    }
+}
+
+/// Capability observation owner for configured image/Pod ACP adapters. It uses
+/// the same neutral negotiator as host discovery and publishes only live,
+/// coherent evidence; a failed probe replaces no fact with a static declaration.
+pub struct ConfiguredAcpCapabilityObservationSource {
+    targets: Vec<ConfiguredAcpCapabilityTarget>,
+    negotiator: std::sync::Arc<dyn AcpCapabilityNegotiator>,
+    cwd: PathBuf,
+}
+
+impl ConfiguredAcpCapabilityObservationSource {
+    #[must_use]
+    pub fn new(
+        mut targets: Vec<ConfiguredAcpCapabilityTarget>,
+        negotiator: std::sync::Arc<dyn AcpCapabilityNegotiator>,
+        cwd: PathBuf,
+    ) -> Self {
+        targets.sort_by(|left, right| left.cli_id.cmp(&right.cli_id));
+        Self {
+            targets,
+            negotiator,
+            cwd,
+        }
+    }
+}
+
+#[async_trait]
+impl AcpCapabilityObservationSource for ConfiguredAcpCapabilityObservationSource {
+    async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String> {
+        let mut observations = Vec::with_capacity(self.targets.len());
+        for target in &self.targets {
+            let observed_at_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            match self
+                .negotiator
+                .negotiate(&target.argv, &self.cwd, target.auth_method_id.as_deref())
+                .await
+            {
+                Ok(negotiated) => {
+                    let profile = EffectiveAcpCapabilityProfile::verified(
+                        &target.cli_id,
+                        &target.adapter_version,
+                        negotiated,
+                    );
+                    observations.push(AcpCapabilityObservation {
+                        backend_ref: format!("acp:{}", target.cli_id),
+                        adapter_version: profile.cli_version,
+                        state: AcpCapabilityObservationState::Verified,
+                        observed_at_ms,
+                        fingerprint: Some(profile.fingerprint),
+                        negotiated: Some(profile.negotiated),
+                        reason_code: None,
+                    });
+                }
+                Err(_) => observations.push(AcpCapabilityObservation {
+                    backend_ref: format!("acp:{}", target.cli_id),
+                    adapter_version: target.adapter_version.clone(),
+                    state: AcpCapabilityObservationState::ProbeFailed,
+                    observed_at_ms,
+                    fingerprint: None,
+                    negotiated: None,
+                    reason_code: Some("acp_capability_probe_failed".into()),
+                }),
+            }
+        }
+        Ok(observations)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use awaken_acp_contract::{
@@ -223,6 +324,96 @@ mod tests {
                 ],
             }],
         }
+    }
+
+    struct ConfiguredProbeFake;
+
+    #[async_trait]
+    impl AcpCapabilityNegotiator for ConfiguredProbeFake {
+        async fn negotiate(
+            &self,
+            argv: &[String],
+            _cwd: &Path,
+            _auth_method_id: Option<&str>,
+        ) -> Result<NegotiatedAcpCapabilities, String> {
+            if argv.first().is_some_and(|program| program == "verified") {
+                Ok(capabilities())
+            } else {
+                Err("injected probe failure".into())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_capability_observation_decision_table() {
+        // Cause/effect graph: C1 target identity/argv complete; C2 live
+        // negotiation succeeds. Effects: E1 incomplete configuration is
+        // rejected before observation; E2 success publishes one coherent
+        // Verified fact and fingerprint; E3 failure publishes ProbeFailed with
+        // no negotiated/fingerprint residue. Target ordering is deterministic.
+        //
+        // | Rule | target | handshake | effect |
+        // | T1 | invalid | n/a | constructor rejects |
+        // | T2 | valid | success | Verified + coherent evidence |
+        // | T3 | valid | failure | ProbeFailed + no evidence |
+        assert!(
+            ConfiguredAcpCapabilityTarget::new("", "image:v1", vec!["ok".into()], None).is_err(),
+            "T1"
+        );
+        let failed = ConfiguredAcpCapabilityTarget::new(
+            "z-failed",
+            "image:sha-failed",
+            vec!["failed".into()],
+            None,
+        )
+        .expect("T3 target");
+        let verified = ConfiguredAcpCapabilityTarget::new(
+            "a-verified",
+            "image:sha-verified",
+            vec!["verified".into()],
+            Some("login".into()),
+        )
+        .expect("T2 target");
+        let source = ConfiguredAcpCapabilityObservationSource::new(
+            vec![failed, verified],
+            std::sync::Arc::new(ConfiguredProbeFake),
+            PathBuf::from("/workspace"),
+        );
+
+        let observations = source.capability_observations().await.expect("observe");
+        assert_eq!(observations.len(), 2);
+        let verified = &observations[0];
+        assert_eq!(verified.backend_ref, "acp:a-verified", "T2 sorted");
+        assert_eq!(
+            verified.state,
+            AcpCapabilityObservationState::Verified,
+            "T2"
+        );
+        assert_eq!(verified.adapter_version, "image:sha-verified", "T2");
+        assert_eq!(verified.negotiated.as_ref(), Some(&capabilities()), "T2");
+        let expected_fingerprint =
+            capability_fingerprint("a-verified", "image:sha-verified", &capabilities());
+        assert_eq!(
+            verified.fingerprint.as_deref(),
+            Some(expected_fingerprint.as_str()),
+            "T2 coherent fingerprint"
+        );
+        assert!(verified.reason_code.is_none(), "T2");
+
+        let failed = &observations[1];
+        assert_eq!(failed.backend_ref, "acp:z-failed", "T3 sorted");
+        assert_eq!(
+            failed.state,
+            AcpCapabilityObservationState::ProbeFailed,
+            "T3"
+        );
+        assert!(failed.fingerprint.is_none(), "T3");
+        assert!(failed.negotiated.is_none(), "T3");
+        assert_eq!(
+            failed.reason_code.as_deref(),
+            Some("acp_capability_probe_failed"),
+            "T3"
+        );
     }
 
     #[test]

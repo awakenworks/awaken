@@ -188,7 +188,9 @@ async function main() {
       '/notes/a.md',
       'matching content cannot make a stale path mutation idempotent',
     );
-    const updated = await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}`, {
+    // Projection rule: update defaults to basic (content=null); this rule needs
+    // to observe the replacement bytes, so it explicitly selects the full view.
+    const updated = await json('POST', WORKSPACE, `memory_stores/${store}/memories/${first.body.id}?view=full`, {
       content: 'beta',
       path: '/notes/b.md',
       precondition: { content_sha256: first.body.content_sha256 },

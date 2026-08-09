@@ -142,9 +142,9 @@ fenced against that authority.
   the generated/persisted platform Workspace, but those fallbacks must become a
   required scope input or fail closed before the individual routers are claimed
   safe for arbitrary multi-tenant embedding.
-- Legacy `resource-api.db::skill_records` and V1 current-`SKILL.md` rows are
-  imported idempotently into the single Skill aggregate repository. New writes
-  no longer maintain an API-local registry.
+- The pre-1.0 API-local `resource-api.db` registry and its startup importer are
+  retired. The 1.0 schema baseline has one owner per Resource aggregate; product
+  processes neither dual-read nor infer canonical state from that obsolete sidecar.
 - The awaken-iam whole-profile lifecycle described above must land before
   action/scope rules can be replaced and rolled back as one centrally managed
   unit.

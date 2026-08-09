@@ -10,7 +10,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
-import { sqliteRows, sqliteScalar } from './sqlite.mjs';
+import { sqliteExec, sqliteRows, sqliteScalar } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38435);
@@ -59,32 +59,60 @@ async function upload(workspace, content, filename = 'input.txt') {
 }
 
 function receipts(directory) {
-  const database = path.join(directory, 'resource-lifecycle.db');
+  const database = path.join(directory, 'resources.db');
   if (!fs.existsSync(database)) return [];
   return sqliteRows(database, 'SELECT data FROM resource_lifecycle_purge_intents')
     .map((row) => JSON.parse(row.data));
 }
 
-async function waitReceipt(directory, kind, resourceId, timeoutMs = 20_000) {
+async function waitReceipt(
+  directory,
+  kind,
+  resourceId,
+  { workspace, timeoutMs = 45_000 } = {},
+) {
+  // Receipt identity decision table: R1 File logical id => match the canonical
+  // delete idempotency key because the physical target is its content-addressed
+  // blob; R2 every other resource id => match the target directly. Conflating
+  // the two File identities would make deduplicated/shared blobs untraceable.
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const receipt = receipts(directory).find(
       (intent) => intent.target.kind === kind
-        && intent.target.resource_id === resourceId
+        && (kind === 'file'
+          ? intent.idempotency_key === `file-delete:${workspace}:${resourceId}`
+          : intent.target.resource_id === resourceId)
         && intent.status === 'completed',
     );
     if (receipt) return receipt;
     await sleep(200);
   }
-  throw new Error(`no completed ${kind}/${resourceId} purge receipt`);
+  throw new Error(
+    `no completed ${kind}/${resourceId} purge receipt: ${JSON.stringify(receipts(directory))}`,
+  );
 }
 
 function scalar(database, sql) {
   return Number(sqliteScalar(database, sql));
 }
 
+function sqlQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function blobForFile(directory, workspace, fileId) {
+  // File id is the workspace-scoped logical handle; blob id is the canonical
+  // physical row. Keep that mapping in one helper so assertions never query the
+  // blob table with a logical id and pass accidentally on a missing row.
+  return String(sqliteScalar(
+    path.join(directory, 'files.db'),
+    `SELECT blob_id FROM file_store_file
+       WHERE id=${sqlQuote(fileId)} AND workspace_id=${sqlQuote(workspace)}`,
+  ));
+}
+
 async function waitForLifecycleSchema(directory, timeoutMs = 20_000) {
-  const database = path.join(directory, 'resource-lifecycle.db');
+  const database = path.join(directory, 'resources.db');
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -134,16 +162,49 @@ async function main() {
 
     // Crash after the API committed durable intent + logical revoke. Startup
     // recovery must finish the same intent without another delete request.
+    // Authentication decision table: R1 generic production fixture + no-login
+    // identity => the scoped resource API is directly available; R2 an
+    // explicitly self-managed fixture => bearer/session authentication is
+    // required (covered by the management-auth E2Es). R1 must be configured in
+    // the fixture's own config.toml, not inherited from another HOME.
+    // The temporary intrinsic hold closes the scheduler race deterministically:
+    // C1 durable delete + hold => intent remains pending before SIGKILL; C2 hold
+    // removed while the process is dead => no second API command exists; C3
+    // replacement generation becomes authoritative => startup recovery alone
+    // completes the original intent.
     const crashedFile = await upload(WS_A, 'crash-recovery');
+    const crashedBlob = blobForFile(directory, WS_A, crashedFile);
+    sqliteExec(
+      path.join(directory, 'resources.db'),
+      `INSERT INTO resource_lifecycle_references(
+         workspace_id, resource_kind, resource_id, reference_kind, reference_id
+       ) VALUES (
+         ${sqlQuote(WS_A)}, 'file', ${sqlQuote(crashedBlob)},
+         'retention_hold', 'crash-recovery-hold'
+       )`,
+    );
     assert.equal((await json('DELETE', scoped(WS_A, `files/${crashedFile}`))).status, 200);
     await stop(server, 'SIGKILL');
+    sqliteExec(
+      path.join(directory, 'resources.db'),
+      `DELETE FROM resource_lifecycle_references
+         WHERE workspace_id=${sqlQuote(WS_A)}
+           AND resource_kind='file'
+           AND resource_id=${sqlQuote(crashedBlob)}
+           AND reference_kind='retention_hold'
+           AND reference_id='crash-recovery-hold'`,
+    );
     server = start(directory);
     await ready();
-    const crashReceipt = await waitReceipt(directory, 'file', crashedFile);
+    // Crash-recovery decision table: R1 graceful stop -> old generation is Dead
+    // and replacement registers immediately; R2 SIGKILL + unexpired lease ->
+    // replacement waits without stealing authority; R3 lease expiry -> the same
+    // registration path advances the generation and resumes durable reclamation.
+    const crashReceipt = await waitReceipt(directory, 'file', crashedFile, { workspace: WS_A });
     assert.equal(crashReceipt.receipt.evidence.blob_deleted, true);
     assert.equal(
       scalar(path.join(directory, 'files.db'),
-        `SELECT count(*) FROM file_store_blob WHERE id='${crashedFile}'`),
+        `SELECT count(*) FROM file_store_blob WHERE id=${sqlQuote(crashedBlob)}`),
       0,
     );
 
@@ -152,6 +213,7 @@ async function main() {
     // reclamation. The reclaimer consumes only that reference edge; after Session
     // archive removes it, the same durable intent converges without an IAM query.
     const boundFile = await upload(WS_A, 'session-bound-content');
+    const boundBlob = blobForFile(directory, WS_A, boundFile);
     const repository = seedRepository(directory);
     const boundSession = await json('POST', scoped(WS_A, 'sessions'), {
       agent: 'assistant', environment_id: 'env_local',
@@ -179,7 +241,7 @@ async function main() {
     assert.equal(
       scalar(
         path.join(directory, 'files.db'),
-        `SELECT count(*) FROM file_store_blob WHERE id='${boundFile}'`,
+        `SELECT count(*) FROM file_store_blob WHERE id=${sqlQuote(boundBlob)}`,
       ),
       1,
       'logical denial does not remove bytes while an intrinsic reference remains',
@@ -188,7 +250,7 @@ async function main() {
       (await json('POST', scoped(WS_A, `sessions/${boundSession.body.id}/archive`))).status,
       200,
     );
-    const boundReceipt = await waitReceipt(directory, 'file', boundFile);
+    const boundReceipt = await waitReceipt(directory, 'file', boundFile, { workspace: WS_A });
     assert.equal(boundReceipt.receipt.evidence.blob_deleted, true);
     const repositoryId = `managed:${boundSession.body.id}:repository:0`;
     const repositoryReceipt = await waitReceipt(directory, 'repository', repositoryId);
@@ -198,12 +260,26 @@ async function main() {
     // to B; revoking B subsequently permits physical GC.
     const sharedA = await upload(WS_A, 'shared-content');
     const sharedB = await upload(WS_B, 'shared-content');
-    assert.equal(sharedA, sharedB);
+    const sharedBlob = blobForFile(directory, WS_A, sharedA);
+    assert.notEqual(sharedA, sharedB, 'workspace ownership uses distinct logical File ids');
+    assert.equal(
+      sharedBlob,
+      blobForFile(directory, WS_B, sharedB),
+      'equal bytes reuse the one content-addressed physical blob',
+    );
     assert.equal((await json('DELETE', scoped(WS_A, `files/${sharedA}`))).status, 200);
     await sleep(5_500);
-    assert.equal((await fetch(scoped(WS_B, `files/${sharedB}/content`))).status, 200);
+    assert.equal((await json('GET', scoped(WS_B, `files/${sharedB}`))).status, 200);
+    assert.equal(
+      scalar(
+        path.join(directory, 'files.db'),
+        `SELECT count(*) FROM file_store_blob WHERE id=${sqlQuote(sharedBlob)}`,
+      ),
+      1,
+      'the remaining logical owner retains the shared physical blob',
+    );
     assert.equal((await json('DELETE', scoped(WS_B, `files/${sharedB}`))).status, 200);
-    await waitReceipt(directory, 'file', sharedB);
+    await waitReceipt(directory, 'file', sharedB, { workspace: WS_B });
 
     // Memory purge removes live heads and the version log from the same canonical
     // repository only after the store tombstone is visible.

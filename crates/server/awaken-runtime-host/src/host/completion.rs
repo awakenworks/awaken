@@ -264,14 +264,22 @@ impl SharedHost {
         let runtime_projection = self
             .session_slots
             .read(&thread, |slot| {
-                slot.environment_snapshot
-                    .clone()
-                    .map(|environment| (environment, slot.toolsets.clone()))
+                slot.environment_snapshot.clone().map(|environment| {
+                    let mcp_stages = slot
+                        .mcp
+                        .iter()
+                        .filter(|projection| {
+                            projection.state == crate::session_slot::McpProjectionState::Active
+                        })
+                        .map(|projection| projection.request.clone())
+                        .collect();
+                    (environment, slot.toolsets.clone(), mcp_stages)
+                })
             })
             .flatten();
         let environment_snapshot = runtime_projection
             .as_ref()
-            .map(|(environment, _)| environment);
+            .map(|(environment, _, _)| environment);
         let inference_holder = self.inference_plaintext_holder(&activation)?;
         // A mixed deployment may have both the local pool and remote workers.
         // Any carried manifest still needs capability admission: an explicit empty
@@ -302,14 +310,15 @@ impl SharedHost {
                 ))
                 .with_session_resources(envelope);
         }
-        if let Some((environment, toolsets)) = runtime_projection {
-            let envelope =
-                crate::provisioning::encode_session_runtime_envelope(environment, toolsets)
-                    .map_err(|error| {
-                        HostError::internal(format!(
-                            "serialize Session runtime projection: {error}"
-                        ))
-                    })?;
+        if let Some((environment, toolsets, mcp_stages)) = runtime_projection {
+            let envelope = crate::provisioning::encode_session_runtime_envelope(
+                environment,
+                toolsets,
+                mcp_stages,
+            )
+            .map_err(|error| {
+                HostError::internal(format!("serialize Session runtime projection: {error}"))
+            })?;
             request = request.with_session_runtime(envelope);
         }
         if let Some(placement) = placement {
@@ -389,53 +398,63 @@ impl SharedHost {
                 .await
                 .map_err(|e| HostError::internal(e.to_string()))?;
         }
-        self.await_settled_event(ctx, &run_id, settled).await
+        self.await_settled_event(ctx, &run_id, None, settled).await
+    }
+
+    /// Deliver one foreground answer through the durable inbox and wait until the
+    /// dispatch worker settles the exact resumed ticket. The queue remains the sole
+    /// durable execution/settlement authority; this method only authors input and
+    /// observes the resulting committed Run fact.
+    pub(crate) async fn resume_durable_foreground(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        command: ResumeCommand,
+    ) -> Result<RunState, HostError> {
+        let run_id = command.run_id.clone();
+        let correlation_id = command.correlation_id.clone();
+        // Register before append so a local pool cannot settle between input
+        // publication and waiter installation.
+        let (settled, _waiter_guard) = self.completion.register(&run_id);
+        let input = durable_resume_input(command);
+        let ingress = ctx
+            .durable_ingress
+            .as_ref()
+            .ok_or_else(|| HostError::internal("durable resume requires durable ingress"))?;
+        if let Some(pool) = self.dispatch_pool.get() {
+            pool.deliver(input)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        } else {
+            // Coordinator-only cells publish to the same shared store. Remote
+            // Workers claim it on their ordinary wake/poll path and committed-truth
+            // reconciliation below observes their settlement.
+            ingress
+                .worker()
+                .store()
+                .append(input)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        }
+        self.await_settled_event(ctx, &run_id, Some(&correlation_id), settled)
+            .await
     }
 
     /// Wait for the pool's settle signal for `run_id` (sub-millisecond wakeup), with
-    /// a bounded timeout after which a single committed-truth read is the safety net
-    /// (in case the pool died mid-drive). The event path replaces the old poll loop,
-    /// removing the poll-interval floor from every durable foreground turn.
+    /// committed-truth reconciliation for peer Coordinators. A foreground transport
+    /// lifetime is not a Run deadline: long-running work remains `Running` until the
+    /// runtime commits `Awaiting` or `Ended`, and client cancellation drops this
+    /// future and its waiter guard.
     async fn await_settled_event(
         &self,
         ctx: &Arc<SessionCtx>,
         run_id: &RunId,
+        answered_correlation: Option<&str>,
         settled: tokio::sync::oneshot::Receiver<RunState>,
     ) -> Result<RunState, HostError> {
-        // The local event is the fast path. A peer Coordinator can commit the same
-        // shared PostgreSQL Run without owning this process's oneshot sender, so a
-        // bounded committed-truth reconciliation is also required. One foreground
-        // waiter performs one narrow read per interval; it never claims, settles,
-        // or creates a second completion authority.
-        let mut settled = std::pin::pin!(settled);
-        let deadline = tokio::time::sleep(std::time::Duration::from_secs(60));
-        tokio::pin!(deadline);
-        loop {
-            tokio::select! {
-                result = &mut settled => {
-                    if let Ok(state) = result {
-                        return Ok(state);
-                    }
-                    return self.read_settled_phase(ctx, run_id).await?.ok_or_else(|| {
-                        HostError::internal(
-                            "durable run did not settle: the dispatch pool never drove it to completion",
-                        )
-                    });
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
-                    if let Some(state) = self.read_settled_phase(ctx, run_id).await? {
-                        return Ok(state);
-                    }
-                }
-                _ = &mut deadline => {
-                    return self.read_settled_phase(ctx, run_id).await?.ok_or_else(|| {
-                        HostError::internal(
-                            "durable run did not settle: the dispatch pool never drove it to completion",
-                        )
-                    });
-                }
-            }
-        }
+        await_completion_state(settled, std::time::Duration::from_millis(250), || {
+            self.read_settled_phase(ctx, run_id, answered_correlation)
+        })
+        .await
     }
 
     /// One committed-truth read: the run's state if it has settled (`Ended` or
@@ -444,17 +463,119 @@ impl SharedHost {
         &self,
         ctx: &Arc<SessionCtx>,
         run_id: &RunId,
+        answered_correlation: Option<&str>,
     ) -> Result<Option<RunState>, HostError> {
-        match ctx
+        let record = ctx
             .commit
             .authoritative_run(run_id)
             .await
-            .map_err(HostError::internal)?
-        {
-            Some(record) if matches!(record.state, RunState::Ended(_) | RunState::Awaiting) => {
-                Ok(Some(record.state))
+            .map_err(HostError::internal)?;
+        match record {
+            Some(
+                record @ awaken_agent_contract::agent::run::Record {
+                    state: RunState::Ended(_),
+                    ..
+                },
+            ) => Ok(Some(record.state)),
+            Some(
+                record @ awaken_agent_contract::agent::run::Record {
+                    state: RunState::Awaiting,
+                    ..
+                },
+            ) => {
+                let Some(answered_correlation) = answered_correlation else {
+                    return Ok(Some(record.state));
+                };
+                // Before a remote Worker consumes the answer, committed truth is
+                // still Awaiting on the answered ticket. That is not a settlement
+                // of this resume. Only a newly committed ticket (or Ended above)
+                // releases the foreground caller.
+                let current = ctx
+                    .commit
+                    .open_wait_for_thread(&ctx.thread_id)
+                    .await
+                    .map_err(HostError::internal)?;
+                Ok(awaiting_ticket_advanced(
+                    run_id,
+                    answered_correlation,
+                    current
+                        .as_ref()
+                        .map(|(current_run, ticket)| (current_run, ticket.correlation_id.as_str())),
+                )
+                .then_some(record.state))
             }
             _ => Ok(None),
+        }
+    }
+}
+
+fn awaiting_ticket_advanced(
+    observed_run: &RunId,
+    answered_correlation: &str,
+    current_wait: Option<(&RunId, &str)>,
+) -> bool {
+    current_wait.is_some_and(|(current_run, current_correlation)| {
+        current_run == observed_run && current_correlation != answered_correlation
+    })
+}
+
+/// A resume ticket is a one-answer idempotency boundary. Encoding the exact
+/// `(run, correlation)` pair with a run-length prefix is collision-free for
+/// arbitrary string contents; replaying another payload for that same ticket is
+/// rejected by the Inbox's existing idempotency-conflict rule.
+fn durable_resume_input(command: ResumeCommand) -> PendingInput {
+    let message_id = format!(
+        "foreground-resume:{}:{}{}",
+        command.run_id.0.len(),
+        command.run_id.0,
+        command.correlation_id
+    );
+    PendingInput {
+        message_id,
+        run_id: command.run_id,
+        thread_id: command.thread_id,
+        correlation_id: command.correlation_id,
+        available_at_ms: None,
+        result: command.result,
+    }
+}
+
+/// Await the existing completion signal while reconciling the one committed Run
+/// authority. `None` means the Run is still live and must never be projected as a
+/// timeout/error by this transport helper. Dispatch lease recovery and dead-letter
+/// policy own genuinely abandoned execution; cancellation owns caller departure.
+async fn await_completion_state<Read, ReadFuture>(
+    settled: tokio::sync::oneshot::Receiver<RunState>,
+    reconciliation_interval: std::time::Duration,
+    mut read_settled: Read,
+) -> Result<RunState, HostError>
+where
+    Read: FnMut() -> ReadFuture,
+    ReadFuture: std::future::Future<Output = Result<Option<RunState>, HostError>>,
+{
+    let mut settled = std::pin::pin!(settled);
+    // The local event is the fast path. A peer Coordinator can commit the same
+    // shared PostgreSQL Run without owning this process's oneshot sender, so
+    // committed-truth reconciliation is also required. One foreground waiter
+    // performs one narrow read per interval; it never claims, settles, times out,
+    // or creates a second completion authority.
+    loop {
+        tokio::select! {
+            result = &mut settled => {
+                if let Ok(state) = result {
+                    return Ok(state);
+                }
+                return read_settled().await?.ok_or_else(|| {
+                    HostError::internal(
+                        "durable completion signal closed before committed Run settlement",
+                    )
+                });
+            }
+            _ = tokio::time::sleep(reconciliation_interval) => {
+                if let Some(state) = read_settled().await? {
+                    return Ok(state);
+                }
+            }
         }
     }
 }
@@ -528,11 +649,17 @@ impl CompletionSink for CompletionRegistry {
 mod completion_tests {
     use super::{
         CompletionRegistry, HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId,
+        await_completion_state, awaiting_ticket_advanced, durable_resume_input,
         remote_worker_placement,
     };
     use awaken_agent_contract::agent::run::RunState;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_run_ingress::CompletionSink;
-    use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
+    use awaken_runtime_contract::resolved::{
+        CatalogFingerprint, ModelBinding, ResolvedModelCandidate,
+    };
+    use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
+    use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
     use std::sync::Arc;
 
     use crate::{NoModelConfiguredExecutor, SharedHost, UNCONFIGURED_MODEL_REF};
@@ -566,6 +693,75 @@ mod completion_tests {
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         }
+    }
+
+    fn resume_command(run_id: &str, correlation_id: &str, answer: &str) -> ResumeCommand {
+        ResumeCommand {
+            correlation_id: correlation_id.into(),
+            run_id: RunId(run_id.into()),
+            thread_id: ThreadId("thread-1".into()),
+            snapshot_id: ExecutableAgentSnapshotId("snapshot-1".into()),
+            catalog_fingerprint: CatalogFingerprint("catalog-1".into()),
+            result: ResumeResult::Input(answer.into()),
+            now_ms: 10,
+        }
+    }
+
+    #[test]
+    fn durable_resume_identity_is_exactly_the_answered_ticket() {
+        // Cause/effect graph: C1 exact retry of one (Run, correlation, payload);
+        // C2 same ticket with a conflicting payload; C3 delimiter-ambiguous raw
+        // strings belonging to different tickets. Effects: E1 exact retry yields
+        // one identical PendingInput; E2 conflict keeps the same message id but a
+        // different payload so the canonical Inbox rejects it; E3 distinct ticket
+        // pairs never alias. Constraint: caller time is not delivery identity.
+        //
+        // | Rule | ticket pair | payload | Effect |
+        // | R1 | same | same | E1 identical input |
+        // | R2 | same | different | E2 same id, conflicting input |
+        // | R3 | different but delimiter-ambiguous | any | E3 different id |
+        let exact = durable_resume_input(resume_command("run-a", "corr-a", "yes"));
+        let retry = durable_resume_input(resume_command("run-a", "corr-a", "yes"));
+        assert_eq!(exact, retry, "R1");
+
+        let conflict = durable_resume_input(resume_command("run-a", "corr-a", "no"));
+        assert_eq!(exact.message_id, conflict.message_id, "R2 identity");
+        assert_ne!(exact, conflict, "R2 payload conflict");
+
+        let left = durable_resume_input(resume_command("a", "bc", "yes"));
+        let right = durable_resume_input(resume_command("ab", "c", "yes"));
+        assert_ne!(left.message_id, right.message_id, "R3");
+    }
+
+    #[test]
+    fn peer_completion_waits_for_exact_ticket_advancement() {
+        // Cause/effect graph: C1 initial durable submit vs resumed wait; C2 the
+        // committed Run is still Awaiting; C3 open ticket is the answered ticket,
+        // a new ticket, absent, or belongs to another Run. Effects: E1 old truth
+        // cannot prematurely release a resume waiter; E2 a new ticket releases it;
+        // E3 missing/inconsistent truth remains fail-closed. Ended and initial
+        // Awaiting are handled by the enclosing read-settled state match.
+        //
+        // | Rule | observed Run | current ticket | Effect |
+        // | R1 | run-1 | same correlation | E1 false |
+        // | R2 | run-1 | new correlation | E2 true |
+        // | R3 | run-1 | absent | E3 false |
+        // | R4 | run-1 | ticket for run-2 | E3 false |
+        let run_1 = RunId("run-1".into());
+        let run_2 = RunId("run-2".into());
+        assert!(
+            !awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_1, "ticket-1"))),
+            "R1"
+        );
+        assert!(
+            awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_1, "ticket-2"))),
+            "R2"
+        );
+        assert!(!awaiting_ticket_advanced(&run_1, "ticket-1", None), "R3");
+        assert!(
+            !awaiting_ticket_advanced(&run_1, "ticket-1", Some((&run_2, "ticket-2"))),
+            "R4"
+        );
     }
 
     #[test]
@@ -705,6 +901,48 @@ mod completion_tests {
         registry.settled(&RunId("r".into()), &RunState::Awaiting);
         assert!(matches!(rx.await, Ok(RunState::Awaiting)));
         assert!(registry.waiters.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_live_run_outlives_foreground_reconciliation_without_a_transport_timeout() {
+        // Durable foreground completion cause/effect table:
+        // C1=the local completion sender remains open; C2=committed Run truth is
+        // still Running (`read_settled -> None`); C3=multiple reconciliation
+        // intervals pass; C4=the runtime later commits/sends Awaiting. Effects:
+        // E1=the foreground waiter remains pending through C3; E2=no transport
+        // timeout invents Error/Ended; E3=C4 alone releases the waiter with the
+        // exact authoritative state. Rule F1=C1+C2+C3=>E1+E2;
+        // F2=F1+C4=>E3. Caller cancellation is covered by the existing guard-drop
+        // test and is intentionally independent of Run terminal authority.
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_reads = reads.clone();
+        let future =
+            await_completion_state(receiver, std::time::Duration::from_millis(2), move || {
+                observed_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::future::ready(Ok(None))
+            });
+        tokio::pin!(future);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(15), &mut future)
+                .await
+                .is_err(),
+            "F1/F2: live committed truth must keep the foreground wait open"
+        );
+        assert!(
+            reads.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "F1: reconciliation observed live truth repeatedly"
+        );
+
+        sender
+            .send(RunState::Awaiting)
+            .expect("waiter remains live");
+        let state = tokio::time::timeout(std::time::Duration::from_millis(100), &mut future)
+            .await
+            .expect("authoritative settlement wakes promptly")
+            .expect("settlement succeeds");
+        assert!(matches!(state, RunState::Awaiting), "F2");
     }
 
     #[test]

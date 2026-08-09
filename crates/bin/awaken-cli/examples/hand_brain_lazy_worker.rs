@@ -112,6 +112,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ))
     .with_inference_materializer(Arc::new(HostMaterializer))
     .with_deployment_config(deployment)
+    // Reuse the production CLI's one container Hand relay boundary. Container
+    // providers fail closed without it; local providers accept the same factory
+    // without creating a second execution path.
+    .with_hand_executor_factory(awaken_coordinator::relay_hand_executor_factory())
     .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
     .with_standard_manifest(Default::default())
     .without_admin_surface()
