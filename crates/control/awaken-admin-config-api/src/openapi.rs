@@ -83,6 +83,7 @@ pub fn contract_schemas() -> Map<String, Value> {
 
     // Route request bodies (secret-in is write-only by construction).
     add!("EnterCredentialRequest", crate::EnterCredentialRequest);
+    add!("RotateCredentialRequest", crate::RotateCredentialRequest);
     add!(
         "ValidateCredentialRequest",
         crate::ValidateCredentialRequest
@@ -288,6 +289,10 @@ fn paths() -> Value {
         "/v1/config/credentials/{id}/archive": {
             "post": op("archive_credential", "credentials", "Soft-disable a credential (fails closed at materialization)",
                 &id("Credential source id"), None, 200, schema_ref("CredentialSource"))
+        },
+        "/v1/config/credentials/{id}/rotate": {
+            "post": op("rotate_credential", "credentials", "Rotate one exact active Vault credential revision with write-only material",
+                &id("Credential source id"), Some(schema_ref("RotateCredentialRequest")), 200, schema_ref("CredentialSource"))
         },
         "/v1/config/credentials/{id}/validate": {
             "post": op("validate_credential", "credentials", "Live-probe a credential against its provider endpoint (secret-free result)",

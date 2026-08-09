@@ -63,6 +63,8 @@ fn resource_catalog() -> std::sync::Arc<awaken_resource_store::SqliteResourceSto
         "mem_7",
         "mem_8",
         "mem_9",
+        "mem_same_1",
+        "mem_same_2",
         "agent-memory",
         "session-memory",
     ] {
@@ -71,7 +73,11 @@ fn resource_catalog() -> std::sync::Arc<awaken_resource_store::SqliteResourceSto
                 MemoryStoreDefinition {
                     id: id.into(),
                     workspace_id: "default".into(),
-                    name: id.into(),
+                    name: if id.starts_with("mem_same_") {
+                        "Project Memory".into()
+                    } else {
+                        id.into()
+                    },
                     description: String::new(),
                     metadata: Default::default(),
                     state: ResourceState::Active,
@@ -968,6 +974,7 @@ async fn create_time_resources_are_backfilled_and_addressable() {
     assert_eq!(res[1]["type"], "memory_store");
     assert_eq!(res[1]["memory_store_id"], "mem_1");
     assert_eq!(res[1]["instructions"], "notes");
+    assert_eq!(res[1]["mount_path"], "/mnt/memory/mem-1");
     assert!(
         res[1].get("id").is_none() && res[1].get("created_at").is_none(),
         "the official immutable Memory projection has no synthetic address"
@@ -988,6 +995,71 @@ async fn create_time_resources_are_backfilled_and_addressable() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(got["type"], "file");
+}
+
+#[tokio::test]
+async fn implicit_memory_mounts_use_catalog_names_and_disambiguate_collisions() {
+    // Cause/effect graph: C1 omitted mount_path -> derive from the governed
+    // display name; C2 two names sanitize equally -> qualify the later path with
+    // its stable store id; C3 explicit mount_path -> preserve it exactly.
+    // Effects: E1 every returned path is frozen and unique; E2 Runtime receives
+    // the same paths; E3 no array-order winner or shared `/mnt/memory/store`.
+    // Decision table: P1 C1&&!C2=>name slug; P2 C1+C2=>id-qualified slug;
+    // P3 C3=>explicit path. All three rules execute in one Session.
+    let runtime = AcceptingFake::default();
+    let prepared = runtime.prepared.clone();
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(runtime).with_resource_catalog(resource_catalog()),
+    ));
+    let (status, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [
+                {"type": "memory_store", "memory_store_id": "mem_4"},
+                {"type": "memory_store", "memory_store_id": "mem_same_1"},
+                {"type": "memory_store", "memory_store_id": "mem_same_2"},
+                {
+                    "type": "memory_store",
+                    "memory_store_id": "mem_3",
+                    "mount_path": "/mnt/memory/project-memory"
+                }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{session}");
+    let paths = session["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|resource| resource["mount_path"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec![
+            "/mnt/memory/mem-4",
+            "/mnt/memory/project-memory-mem-same-1",
+            "/mnt/memory/project-memory-mem-same-2",
+            "/mnt/memory/project-memory",
+        ]
+    );
+    let runtime_paths = prepared.lock().unwrap()[0]
+        .resources
+        .inputs
+        .iter()
+        .map(|input| input.mount_path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        runtime_paths,
+        paths
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect::<Vec<_>>(),
+        "Coordinator freezes the sole path truth"
+    );
 }
 
 #[tokio::test]
@@ -1201,6 +1273,11 @@ async fn session_resolves_scoped_defaults_and_attachments_once_before_runtime() 
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].workspace_id, "default");
     assert_eq!(calls[0].resources.inputs.len(), 2);
+    assert_eq!(
+        calls[0].resources.inputs[0].binding_id.as_str(),
+        "agent-memory",
+        "a replacement retains the published logical binding identity"
+    );
     assert_eq!(
         calls[0].resources.inputs[0].access,
         ResourceAccess::ReadOnly

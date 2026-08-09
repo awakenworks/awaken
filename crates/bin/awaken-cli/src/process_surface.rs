@@ -123,16 +123,24 @@ mod tests {
         // O1 flat Managed create and O2 workspace-addressed Managed create both
         // enter the same post-rewrite flat router; Organization is fixed by the
         // composition, while Workspace is only a resource scope. Therefore the
-        // first 300 mixed creates are admitted and O3 create 301 is one 429 — no
-        // per-Workspace bucket and no double charge during the rewrite.
+        // first two mixed creates consume an explicit two-token test bucket and
+        // O3 create three is one 429 — no per-Workspace bucket and no double
+        // charge during the rewrite. The deliberately slow refill also makes
+        // this an execution-speed-independent regression test.
         let app = finish(
             Router::new().route("/v1/sessions", post(|| async { StatusCode::OK })),
             Router::new(),
             Some(Arc::new(RecordingReconciler::default())),
             "platform".into(),
-            Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization("org_shared")),
+            Arc::new(awaken_protocol_managed::ManagedRateLimiter::with_limits(
+                "org_shared",
+                awaken_protocol_managed::ManagedRateLimits {
+                    create_per_minute: 2,
+                    read_per_minute: 2,
+                },
+            )),
         );
-        for ordinal in 0..300 {
+        for ordinal in 0..2 {
             let path = if ordinal % 2 == 0 {
                 "/v1/sessions"
             } else {

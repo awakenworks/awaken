@@ -1362,13 +1362,32 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
     std::fs::remove_dir_all(dir).ok();
 }
 
-/// Managed Memory is selected only by the frozen Session input; that same handle
-/// serves extraction + recall and an unbound Session sees no store.
+/// An explicitly configured Awaken Memory extension selects only its frozen
+/// Session binding; that same handle serves extraction + recall, while an
+/// ordinary unbound Managed Session sees no store.
 #[tokio::test]
 async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memory() {
     use awaken_session_contract::{SessionInit, SessionRuntime};
 
-    let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub"));
+    let snapshot = crate::config::server_config(
+        "agent",
+        "stub",
+        &HashSet::new(),
+        &HashSet::new(),
+        &[awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()],
+        &std::collections::BTreeMap::from([(
+            awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
+            serde_json::json!({"binding_id": "test-input-0"}),
+        )]),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
+        .expect("valid publication");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(MemLoopModel), "stub")
+            .with_agent_publications(Arc::new(publications)),
+    );
     let unbound_store = test_memory_store_id();
     host.memory_stores
         .fs()
@@ -1379,10 +1398,10 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     let store_a = test_memory_store_id();
     let store_b = test_memory_store_id();
     let managed = managed_with_resource_source(host.clone());
-    let init = |store: Option<&str>| {
+    let init = |agent: &str, store: Option<&str>| {
         SessionInit {
             workspace_id: host.local_workspace().into(),
-            agent_id: "agent".into(),
+            agent_id: agent.into(),
             delegate_ids: Vec::new(),
             toolsets: None,
             resources: effective_resources(
@@ -1412,7 +1431,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     };
 
     managed
-        .prepare_session("managed-write-a", init(Some(&store_a)))
+        .prepare_session("managed-write-a", init("agent", Some(&store_a)))
         .await
         .unwrap();
     managed
@@ -1453,7 +1472,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             .unwrap_or_default()
     };
     managed
-        .prepare_session("managed-read-a", init(Some(&store_a)))
+        .prepare_session("managed-read-a", init("agent", Some(&store_a)))
         .await
         .unwrap();
     let same = managed
@@ -1467,7 +1486,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     assert_eq!(reply(&same), "tea", "recall reads the same bound store");
 
     managed
-        .prepare_session("managed-read-b", init(Some(&store_b)))
+        .prepare_session("managed-read-b", init("agent", Some(&store_b)))
         .await
         .unwrap();
     let other = managed
@@ -1481,12 +1500,12 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     assert_eq!(reply(&other), "ok", "store B cannot recall store A");
 
     managed
-        .prepare_session("managed-unbound", init(None))
+        .prepare_session("managed-unbound", init("unmanaged-agent", None))
         .await
         .unwrap();
     let unbound = managed
         .run(
-            "agent",
+            "unmanaged-agent",
             "managed-unbound",
             vec![ContentBlock::text("What do I prefer?")],
         )
@@ -1588,6 +1607,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
     host.session_slots.update("memory-replay", |slot| {
         slot.manifest = None;
         slot.resources = Default::default();
+        slot.memory_bindings.clear();
         slot.memory = None;
     });
     managed
@@ -1635,6 +1655,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         &std::collections::BTreeMap::from([(
             awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
             serde_json::json!({
+                "binding_id": "test-input-0",
                 "recall_enabled": false,
                 "extraction_enabled": false
             }),
@@ -4520,6 +4541,301 @@ async fn told_equals_mounted_the_prompt_path_and_access_match_the_realized_mount
     let mount = &host.sandbox_spec("t-g1").mounts[0];
     assert_eq!(mount.mount_path, realized);
     assert_eq!(mount.access, MountAccess::ReadOnly);
+}
+
+#[tokio::test]
+async fn managed_multi_memory_mounts_are_backend_neutral_pairwise() {
+    // Cause graph:
+    // C1 backend={default/native, acp:claude, acp:codex};
+    // C2 store count={1,2,8}; C3 access={all RO, all RW, alternating};
+    // C4 instructions={absent,present}. Effects: E1 every store becomes one
+    // mount/prompt/binding; E2 access and instructions survive projection;
+    // E3 no automatic-memory binding is selected by ordinary Managed resources.
+    // Constraint: backend selection owns execution only and cannot change
+    // resource realization. The nine rows below are a strength-2 covering array:
+    // every value pair across C1..C4 occurs at least once. This test verifies
+    // that property before executing the rows, rather than trusting the table.
+    #[derive(Clone, Copy)]
+    struct PairwiseCase {
+        rule: &'static str,
+        backend: &'static str,
+        count: &'static str,
+        access: &'static str,
+        instructions: &'static str,
+    }
+
+    impl PairwiseCase {
+        fn values(self) -> [&'static str; 4] {
+            [self.backend, self.count, self.access, self.instructions]
+        }
+    }
+
+    let cases = [
+        PairwiseCase {
+            rule: "P1",
+            backend: "default",
+            count: "1",
+            access: "ro",
+            instructions: "absent",
+        },
+        PairwiseCase {
+            rule: "P2",
+            backend: "acp:claude",
+            count: "1",
+            access: "rw",
+            instructions: "absent",
+        },
+        PairwiseCase {
+            rule: "P3",
+            backend: "acp:codex",
+            count: "1",
+            access: "mixed",
+            instructions: "present",
+        },
+        PairwiseCase {
+            rule: "P4",
+            backend: "default",
+            count: "2",
+            access: "rw",
+            instructions: "present",
+        },
+        PairwiseCase {
+            rule: "P5",
+            backend: "acp:claude",
+            count: "2",
+            access: "mixed",
+            instructions: "absent",
+        },
+        PairwiseCase {
+            rule: "P6",
+            backend: "acp:codex",
+            count: "2",
+            access: "ro",
+            instructions: "absent",
+        },
+        PairwiseCase {
+            rule: "P7",
+            backend: "default",
+            count: "8",
+            access: "mixed",
+            instructions: "absent",
+        },
+        PairwiseCase {
+            rule: "P8",
+            backend: "acp:claude",
+            count: "8",
+            access: "ro",
+            instructions: "present",
+        },
+        PairwiseCase {
+            rule: "P9",
+            backend: "acp:codex",
+            count: "8",
+            access: "rw",
+            instructions: "absent",
+        },
+    ];
+
+    for left in 0..4 {
+        for right in (left + 1)..4 {
+            let left_levels = cases
+                .iter()
+                .map(|case| case.values()[left])
+                .collect::<std::collections::BTreeSet<_>>();
+            let right_levels = cases
+                .iter()
+                .map(|case| case.values()[right])
+                .collect::<std::collections::BTreeSet<_>>();
+            let observed = cases
+                .iter()
+                .map(|case| (case.values()[left], case.values()[right]))
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                observed.len(),
+                left_levels.len() * right_levels.len(),
+                "pairwise axes {left}/{right} are incomplete"
+            );
+        }
+    }
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed = managed_with_resource_source(host.clone());
+    for case in cases {
+        let count = case.count.parse::<usize>().unwrap();
+        let inputs = (0..count)
+            .map(|index| TestInput {
+                kind: "memory_store".into(),
+                id: format!("{}-store-{index}", case.rule),
+                mount_path: format!("/mnt/memory/{}-{index}", case.rule.to_lowercase()),
+                access: match case.access {
+                    "rw" => ResourceAccess::ReadWrite,
+                    "mixed" if index % 2 == 1 => ResourceAccess::ReadWrite,
+                    "ro" | "mixed" => ResourceAccess::ReadOnly,
+                    other => panic!("unknown access pattern {other}"),
+                },
+                instructions: (case.instructions == "present")
+                    .then(|| format!("{} memory {index}", case.rule)),
+                initial_branch: None,
+                initial_commit: None,
+            })
+            .collect::<Vec<_>>();
+        let expected_access = inputs.iter().map(|input| input.access).collect::<Vec<_>>();
+        let thread = format!("pairwise-{}", case.rule.to_lowercase());
+        let mut init = bare_session("agent", host.local_workspace());
+        init.runtime = Some(case.backend.into());
+        init.resources = effective_resources(inputs);
+        managed
+            .prepare_session(&thread, init)
+            .await
+            .unwrap_or_else(|error| panic!("{}: {error}", case.rule));
+
+        let spec = host.sandbox_spec(&thread);
+        assert_eq!(spec.mounts.len(), count, "{} E1", case.rule);
+        for (index, mount) in spec.mounts.iter().enumerate() {
+            let expected = match expected_access[index] {
+                ResourceAccess::ReadOnly => awaken_provisioning_contract::MountAccess::ReadOnly,
+                ResourceAccess::ReadWrite => awaken_provisioning_contract::MountAccess::ReadWrite,
+            };
+            assert_eq!(mount.access, expected, "{} E2/{index}", case.rule);
+        }
+        let prompts = host.thread_session_prompts(&thread);
+        assert_eq!(prompts.len(), count, "{} E1 prompts", case.rule);
+        assert_eq!(
+            prompts.iter().all(|prompt| prompt.contains(case.rule)),
+            case.instructions == "present",
+            "{} E2 instructions",
+            case.rule
+        );
+        let (binding_count, automatic_absent) = host
+            .session_slots
+            .read(&thread, |slot| {
+                (slot.memory_bindings.len(), slot.memory.is_none())
+            })
+            .unwrap();
+        assert_eq!(binding_count, count, "{} E1 bindings", case.rule);
+        assert!(automatic_absent, "{} E3", case.rule);
+    }
+}
+
+#[tokio::test]
+async fn automatic_memory_requires_one_explicit_existing_binding() {
+    // Automatic-memory cause/effect graph:
+    // C1 published Agent selects the Awaken memory plugin; C2 config supplies
+    // binding_id; C3 that id exists in the Session's standard mount bindings.
+    // E1 leave automatic memory inactive; E2 reject ambiguous/missing config;
+    // E3 select exactly the authored binding and never the first array entry.
+    // Decision table: A1 !C1=>E1; A2 C1&&!C2=>E2;
+    // A3 C1+C2&&!C3=>E2/E1; A4 C1+C2+C3=>E3.
+    use awaken_session_contract::SessionRuntime;
+
+    let cases = [
+        ("A1", false, Some("test-input-0"), None, None),
+        (
+            "A2",
+            true,
+            None,
+            None,
+            Some("requires an explicit `memory.binding_id`"),
+        ),
+        (
+            "A3",
+            true,
+            Some("missing-binding"),
+            None,
+            Some("is not mounted for this Session"),
+        ),
+        ("A4", true, Some("test-input-1"), Some(1_usize), None),
+    ];
+
+    for (rule, plugin_selected, binding_id, expected_index, expected_error) in cases {
+        let plugin_ids = plugin_selected
+            .then(|| vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()])
+            .unwrap_or_default();
+        let plugin_config = if plugin_selected {
+            std::collections::BTreeMap::from([(
+                awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
+                binding_id.map_or_else(
+                    || serde_json::json!({}),
+                    |binding_id| serde_json::json!({"binding_id": binding_id}),
+                ),
+            )])
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        let snapshot = crate::config::server_config(
+            "agent",
+            "stub",
+            &HashSet::new(),
+            &HashSet::new(),
+            &plugin_ids,
+            &plugin_config,
+            &[],
+            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        );
+        let publications =
+            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
+                .expect("valid publication");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(OkModel), "stub")
+                .with_agent_publications(Arc::new(publications)),
+        );
+        install_test_memory_mounter(&host);
+        let stores = [test_memory_store_id(), test_memory_store_id()];
+        for store in &stores {
+            host.memory_stores
+                .fs()
+                .create(store, "/seed.md", rule)
+                .await
+                .unwrap();
+        }
+        let mut init = bare_session("agent", host.local_workspace());
+        init.resources = effective_resources(
+            stores
+                .iter()
+                .enumerate()
+                .map(|(index, store)| TestInput {
+                    kind: "memory_store".into(),
+                    id: store.clone(),
+                    mount_path: format!("/mnt/memory/{rule}-{index}"),
+                    access: ResourceAccess::ReadWrite,
+                    instructions: None,
+                    initial_branch: None,
+                    initial_commit: None,
+                })
+                .collect(),
+        );
+        let managed = managed_with_resource_source(host.clone());
+        let thread = format!("automatic-{rule}");
+        managed.prepare_session(&thread, init).await.unwrap();
+        assert!(
+            host.memory_for_thread(&thread).is_none(),
+            "{rule} precondition"
+        );
+
+        let result = host.ctx_for(&thread, Some("agent")).await;
+        match expected_error {
+            Some(fragment) => {
+                let error = match result {
+                    Ok(_) => panic!("{rule}: invalid automatic binding must fail"),
+                    Err(error) => error,
+                };
+                assert!(error.to_string().contains(fragment), "{rule}: {error}");
+                assert!(host.memory_for_thread(&thread).is_none(), "{rule} E1");
+            }
+            None => {
+                result.unwrap_or_else(|error| panic!("{rule}: {error}"));
+                let selected = host.memory_for_thread(&thread);
+                match expected_index {
+                    Some(index) => assert_eq!(
+                        selected.as_ref().map(|memory| memory.memory_store_id()),
+                        Some(stores[index].as_str()),
+                        "{rule} E3"
+                    ),
+                    None => assert!(selected.is_none(), "{rule} E1"),
+                }
+            }
+        }
+    }
 }
 
 /// Runtime stages exactly the effective resource list it receives and adds no hidden

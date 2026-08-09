@@ -566,7 +566,7 @@ impl AgentSandbox for SessionEnvironment {
 mod tests {
     use super::*;
     use awaken_provisioning_contract::{
-        IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxSpec,
+        IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxProvider, SandboxSpec,
     };
     use awaken_runtime_contract::llm::ToolCall;
     use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
@@ -923,10 +923,20 @@ mod tests {
         let mut namespace_spec = spec();
         namespace_spec.scope = "session-namespace".into();
         namespace_spec.isolation = IsolationClass::Namespace;
-        let namespace = NamespaceProvider::new(base.path())
-            .create_sandbox(&namespace_spec)
+        let provider = NamespaceProvider::new(base.path());
+        if let Err(probe_error) = provider.probe_ready().await {
+            let rejection = crate::sandbox_source::resolve_sandbox_tier(
+                crate::deployment_config::SandboxTier::Namespace,
+                false,
+                base.path(),
+            )
             .await
-            .unwrap();
+            .expect_err("an unavailable namespace must not silently degrade");
+            assert!(rejection.contains("OS-native sandbox unavailable"));
+            assert!(rejection.contains(&probe_error.to_string()));
+            return;
+        }
+        let namespace = provider.create_sandbox(&namespace_spec).await.unwrap();
         let environment = SessionEnvironment::namespace(namespace);
         #[cfg(target_os = "macos")]
         assert_eq!(environment.handle().provider_kind, "seatbelt");

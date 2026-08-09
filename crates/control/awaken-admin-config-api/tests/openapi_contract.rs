@@ -167,6 +167,7 @@ fn every_mounted_route_is_documented() {
         ("get", "/v1/config/credentials"),
         ("get", "/v1/config/credentials/{id}"),
         ("post", "/v1/config/credentials/{id}/archive"),
+        ("post", "/v1/config/credentials/{id}/rotate"),
         ("post", "/v1/config/credentials/{id}/validate"),
         ("post", "/v1/config/credentials/{id}/cooldown"),
         ("get", "/v1/config/credentials/{id}/availability"),

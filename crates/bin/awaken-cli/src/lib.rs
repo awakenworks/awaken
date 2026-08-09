@@ -7,7 +7,6 @@
 //! it does not maintain a second implementation.
 //!
 //! The `awaken` binary ([`main`](../main.rs)) is a thin shell over this library.
-
 mod acp_local_credentials;
 mod assistant_selection;
 pub mod config;
@@ -594,7 +593,7 @@ pub async fn build_ephemeral_all_in_one_router() -> Router {
         None,
         None,
         PublicationModelComposition::PublishedProviders,
-        ProcessAssemblyOptions::default(),
+        exact_host_model::local_test_process_options(),
         None,
     )
     .await
@@ -729,7 +728,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
             executor: model,
             binding,
         },
-        ProcessAssemblyOptions::default(),
+        exact_host_model::local_test_process_options(),
         Some(Box::new(customize_host)),
     )
     .await
@@ -760,7 +759,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
             executor: model,
             binding,
         },
-        ProcessAssemblyOptions::default(),
+        exact_host_model::local_test_process_options(),
         Some(Box::new(customize_host)),
     )
     .await
@@ -786,7 +785,7 @@ pub async fn build_all_in_one_router_with_model(
                 "default", model_ref, "genai",
             ),
         },
-        ProcessAssemblyOptions::default(),
+        exact_host_model::local_test_process_options(),
         None,
     )
     .await
@@ -807,7 +806,7 @@ pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 3
         None,
         None,
         PublicationModelComposition::PublishedProviders,
-        ProcessAssemblyOptions::default(),
+        exact_host_model::local_test_process_options(),
         None,
     )
     .await
@@ -831,7 +830,7 @@ pub async fn build_secured_all_in_one_router(
         None,
         None,
         PublicationModelComposition::PublishedProviders,
-        ProcessAssemblyOptions::default(),
+        exact_host_model::local_test_process_options(),
         None,
     )
     .await

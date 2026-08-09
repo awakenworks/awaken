@@ -197,6 +197,18 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// without this, a provider that stalls mid-stream would hang the run forever.
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+fn normalize_provider_base_url(adapter: AdapterKind, base_url: Option<String>) -> Option<String> {
+    base_url.map(|base_url| {
+        if adapter == AdapterKind::Anthropic {
+            // genai concatenates `messages` for this adapter instead of URL-joining
+            // it, so a custom path prefix must retain its trailing separator.
+            format!("{}/", base_url.trim_end_matches('/'))
+        } else {
+            base_url
+        }
+    })
+}
+
 /// A `genai::Client` behind the neutral `LlmExecutor` port.
 pub struct GenaiExecutor {
     client: Client,
@@ -285,6 +297,7 @@ impl GenaiExecutor {
         use genai::{ModelIden, ServiceTarget};
 
         let key = key.into();
+        let base_url = normalize_provider_base_url(adapter, base_url);
         let resolver = ServiceTargetResolver::from_resolver_fn(
             move |mut target: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
                 target.auth = AuthData::from_single(key.clone());
@@ -591,6 +604,9 @@ pub fn classify_error(message: &str) -> Error {
         "usage limit",
         "quota",
         "insufficient_quota",
+        "insufficient balance",
+        "insufficient_balance",
+        "payment required",
         "billing",
         "credit balance",
         "out of credit",
@@ -891,6 +907,7 @@ mod classify_tests {
         for msg in [
             "You have exceeded your current quota",
             "429 insufficient_quota",
+            r#"402 Payment Required: {"error":{"message":"Insufficient Balance","type":"unknown_error","code":"invalid_request_error"}}"#,
             "Your credit balance is too low",
             "weekly limit reached",
             "monthly spending limit exceeded",
@@ -993,8 +1010,28 @@ mod hermetic_tests {
 
     use super::{
         AdapterKind, CredentialProbe, GenaiExecutor, GenaiReasoningEffort, discover_model_ids,
-        probe_credential, to_genai_options,
+        normalize_provider_base_url, probe_credential, to_genai_options,
     };
+
+    #[test]
+    fn anthropic_gateway_base_preserves_its_path_separator() {
+        assert_eq!(
+            normalize_provider_base_url(
+                AdapterKind::Anthropic,
+                Some("https://api.deepseek.com/anthropic".into()),
+            )
+            .as_deref(),
+            Some("https://api.deepseek.com/anthropic/")
+        );
+        assert_eq!(
+            normalize_provider_base_url(
+                AdapterKind::OpenAI,
+                Some("https://api.deepseek.com".into()),
+            )
+            .as_deref(),
+            Some("https://api.deepseek.com")
+        );
+    }
 
     fn controlled_request(inference: InferenceOptions) -> ChatRequest {
         ChatRequest {

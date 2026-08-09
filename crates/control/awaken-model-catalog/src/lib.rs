@@ -216,6 +216,10 @@ pub struct ProviderConfigurationField {
 pub struct DefaultProtocolEndpoint {
     pub dialect: ApiDialect,
     pub base_url: String,
+    /// Optional provider-owned model-directory base when discovery is exposed
+    /// separately from the inference protocol surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_discovery_base_url: Option<String>,
 }
 
 /// One supported provider driver's authoring capabilities. The list returned by
@@ -265,6 +269,7 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             default_endpoints: vec![DefaultProtocolEndpoint {
                 dialect: ApiDialect::AnthropicMessages,
                 base_url: "https://api.anthropic.com/v1".into(),
+                model_discovery_base_url: None,
             }],
             supports_model_discovery: true,
             documentation_url: Some("https://docs.anthropic.com/en/api/getting-started".into()),
@@ -279,10 +284,12 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
                 DefaultProtocolEndpoint {
                     dialect: ApiDialect::OpenAiResponses,
                     base_url: "https://api.openai.com/v1".into(),
+                    model_discovery_base_url: None,
                 },
                 DefaultProtocolEndpoint {
                     dialect: ApiDialect::OpenAiChat,
                     base_url: "https://api.openai.com/v1".into(),
+                    model_discovery_base_url: None,
                 },
             ],
             supports_model_discovery: true,
@@ -291,13 +298,21 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
         ProviderDriverDescriptor {
             provider_kind: "deepseek".into(),
             display_name: "DeepSeek".into(),
-            supported_dialects: vec![ApiDialect::OpenAiChat],
+            supported_dialects: vec![ApiDialect::OpenAiChat, ApiDialect::AnthropicMessages],
             auth_methods: vec![ProviderAuthMethod::ApiKey],
             configuration_fields: vec![api_key(), custom_url()],
-            default_endpoints: vec![DefaultProtocolEndpoint {
-                dialect: ApiDialect::OpenAiChat,
-                base_url: "https://api.deepseek.com".into(),
-            }],
+            default_endpoints: vec![
+                DefaultProtocolEndpoint {
+                    dialect: ApiDialect::OpenAiChat,
+                    base_url: "https://api.deepseek.com".into(),
+                    model_discovery_base_url: None,
+                },
+                DefaultProtocolEndpoint {
+                    dialect: ApiDialect::AnthropicMessages,
+                    base_url: "https://api.deepseek.com/anthropic".into(),
+                    model_discovery_base_url: Some("https://api.deepseek.com".into()),
+                },
+            ],
             supports_model_discovery: true,
             documentation_url: Some("https://api-docs.deepseek.com/".into()),
         },
@@ -310,6 +325,7 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             default_endpoints: vec![DefaultProtocolEndpoint {
                 dialect: ApiDialect::AnthropicMessages,
                 base_url: "https://api.kimi.com/coding/v1".into(),
+                model_discovery_base_url: None,
             }],
             supports_model_discovery: true,
             documentation_url: Some("https://platform.moonshot.ai/docs/guide/agent-support".into()),
@@ -323,6 +339,7 @@ pub fn provider_driver_descriptors() -> Vec<ProviderDriverDescriptor> {
             default_endpoints: vec![DefaultProtocolEndpoint {
                 dialect: ApiDialect::Gemini,
                 base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
+                model_discovery_base_url: None,
             }],
             supports_model_discovery: true,
             documentation_url: Some("https://ai.google.dev/gemini-api/docs".into()),
@@ -1320,17 +1337,30 @@ mod tests {
     #[test]
     fn deepseek_descriptor_uses_its_native_openai_compatible_identity() {
         // Cause graph / decision table: DeepSeek selected -> DeepSeek card,
-        // /models discovery, and Chat Completions endpoint; it must not masquerade
-        // as OpenAI or advertise the unsupported Responses dialect.
+        // shared /models discovery, and two distinct compatible inference
+        // surfaces; it must not masquerade as OpenAI or advertise Responses.
         let deepseek = provider_driver_descriptors()
             .into_iter()
             .find(|descriptor| descriptor.provider_kind == "deepseek")
             .unwrap();
         assert_eq!(deepseek.display_name, "DeepSeek");
-        assert_eq!(deepseek.supported_dialects, vec![ApiDialect::OpenAiChat]);
+        assert_eq!(
+            deepseek.supported_dialects,
+            vec![ApiDialect::OpenAiChat, ApiDialect::AnthropicMessages]
+        );
         assert_eq!(
             deepseek.default_endpoints[0].base_url,
             "https://api.deepseek.com"
+        );
+        assert_eq!(
+            deepseek.default_endpoints[1].base_url,
+            "https://api.deepseek.com/anthropic"
+        );
+        assert_eq!(
+            deepseek.default_endpoints[1]
+                .model_discovery_base_url
+                .as_deref(),
+            Some("https://api.deepseek.com")
         );
         assert!(deepseek.supports_model_discovery);
     }
