@@ -23,6 +23,42 @@ pub struct PreparedLocalAcp {
     stores: awaken_control::InferenceMaterializationStores,
 }
 
+/// The AllInOne process's canonical registered Worker. ACP observations are an
+/// optional capability of this Worker, never the condition that creates it.
+pub struct PreparedLocalWorker {
+    resolver: Option<Arc<AcpLocalCredentialResolver>>,
+    stores: awaken_control::InferenceMaterializationStores,
+}
+
+/// Prepare the one embedded Worker for every AllInOne deployment. Host ACP
+/// discovery enriches its manifest when applicable; Native and A2A execution use
+/// the same WorkerNode when no local ACP CLI exists.
+pub async fn prepare_local_worker(
+    deployment: &mut crate::config::ResolvedDeployment,
+    seal_key: &[u8; 32],
+) -> Result<PreparedLocalWorker, String> {
+    let prepared = prepare_local_acp(deployment, seal_key).await?;
+    let worker = match prepared {
+        Some(prepared) => PreparedLocalWorker {
+            resolver: Some(prepared.resolver),
+            stores: prepared.stores,
+        },
+        None => PreparedLocalWorker {
+            resolver: None,
+            stores: awaken_control::open_inference_materialization_stores(
+                &deployment.control,
+                seal_key,
+            )
+            .await,
+        },
+    };
+    // One registered Worker claims Native, ACP, and outbound A2A attempts. The
+    // Coordinator's anonymous local pool would be a second execution owner.
+    deployment.runtime.disable_local_pool = true;
+    deployment.run_local_pool = false;
+    Ok(worker)
+}
+
 fn uses_trusted_local_identity(deployment: &crate::config::ResolvedDeployment) -> bool {
     deployment.mode == crate::config::OperatingMode::Local
 }
@@ -218,6 +254,32 @@ impl PreparedLocalAcp {
         .without_admin_surface()
         .build()
         .map_err(|error| error.to_string())
+    }
+}
+
+impl PreparedLocalWorker {
+    pub fn build_worker(
+        self,
+        upstream: impl Into<String>,
+        deployment: &crate::config::ResolvedDeployment,
+    ) -> Result<awaken_worker::WorkerNode, String> {
+        let credentials = awaken_credential_materializer::PinnedCredentialMaterializer::new(
+            self.stores.credentials,
+            self.stores.secrets,
+        );
+        let mut builder = configured_worker_builder(
+            awaken_worker_transport_security::WorkerUpstream::new(upstream)
+                .with_worker_id(&deployment.worker.worker_id),
+            deployment,
+            credentials,
+        )
+        .without_admin_surface();
+        if let Some(resolver) = self.resolver {
+            builder = builder
+                .with_worker_local_credential_resolver(resolver.clone())
+                .with_acp_capability_observation_source(resolver);
+        }
+        builder.build().map_err(|error| error.to_string())
     }
 }
 
@@ -672,6 +734,48 @@ mod tests {
                 .material_sources
                 .contains(&CredentialMaterialSource::WorkerReference),
             "B2"
+        );
+    }
+
+    #[test]
+    fn all_in_one_worker_exists_without_an_acp_capability() {
+        // Cause/effect graph: C1=AllInOne; C2=local ACP resolver absent.
+        // Effects: E1=the canonical WorkerNode still exists; E2=Native and generic
+        // outbound A2A capabilities are advertised; E3=no invented ACP capability.
+        // Decision table: W1 C1&&!C2 -> E1+E2+E3. The C1+C2 row is owned by the
+        // startup-discovery test below and adds exact ACP observations to this base.
+        let directory = tempfile::tempdir().unwrap();
+        let mut deployment = crate::config::local_test_deployment(directory.path().into());
+        deployment.runtime.disable_local_pool = true;
+        deployment.run_local_pool = false;
+        let prepared = PreparedLocalWorker {
+            resolver: None,
+            stores: awaken_control::InferenceMaterializationStores {
+                credentials: Arc::new(InMemoryCredentialRepo::new()),
+                secrets: Arc::new(awaken_credential_vault::InMemorySecretStore::new()),
+            },
+        };
+        let worker = prepared
+            .build_worker("http://127.0.0.1:1", &deployment)
+            .expect("W1 WorkerNode");
+        assert!(
+            worker.manifest().capabilities.contains("native-runtime"),
+            "W1"
+        );
+        assert!(
+            worker
+                .manifest()
+                .capabilities
+                .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY),
+            "W1"
+        );
+        assert!(
+            worker
+                .manifest()
+                .capabilities
+                .iter()
+                .all(|capability| !capability.starts_with("acp:")),
+            "W1"
         );
     }
 

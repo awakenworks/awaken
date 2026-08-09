@@ -16,9 +16,9 @@ use awaken_config_store::{
     MultiagentConfig, MultiagentTarget,
 };
 use awaken_protocol_managed::types::agent::{
-    Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentStatus, AgentTool,
+    Agent, AgentCreateParams, AgentListParams, AgentMcpServer, AgentSkill, AgentStatus, AgentTool,
     AgentUpdateParams, AwakenAgentExtensions, CustomToolInputSchema,
-    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer,
+    MultiagentConfig as WireMultiagent, MultiagentRosterEntry,
 };
 use awaken_protocol_managed::types::{AwakenModelExtensions, ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
@@ -241,16 +241,39 @@ fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
         .collect()
 }
 
-fn typed_mcp_servers(values: Vec<UrlMcpServer>) -> Vec<AgentMcpServerBinding> {
+fn typed_mcp_servers(values: Vec<AgentMcpServer>) -> Vec<AgentMcpServerBinding> {
     values
         .into_iter()
-        .map(|server| AgentMcpServerBinding {
-            name: server.name,
-            transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
-                server.url,
-            ),
-            prompts_as_skills: server.prompts_as_skills,
-            credential: None,
+        .map(|server| {
+            let (name, transport, prompts_as_skills) = match server {
+                AgentMcpServer::Url {
+                    name,
+                    url,
+                    prompts_as_skills,
+                } => (
+                    name,
+                    awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(url),
+                    prompts_as_skills,
+                ),
+                AgentMcpServer::SandboxStdio {
+                    name,
+                    command,
+                    args,
+                    prompts_as_skills,
+                } => (
+                    name,
+                    awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(
+                        command, args,
+                    ),
+                    prompts_as_skills,
+                ),
+            };
+            AgentMcpServerBinding {
+                name,
+                transport,
+                prompts_as_skills,
+                credential: None,
+            }
         })
         .collect()
 }
@@ -320,7 +343,6 @@ fn config_from_create(
         mcp_servers: typed_mcp_servers(params.mcp_servers),
         skills: typed_skills(params.skills),
         multiagent,
-        hand: None,
         disabled_at: None,
         archived_at: None,
         tool_overrides: Vec::new(),
@@ -574,14 +596,14 @@ fn project(revision: AgentConfigRevision) -> Agent {
             .map(|server| match server.transport {
                 awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::Http(
                     transport,
-                ) => awaken_protocol_managed::types::agent::McpServerView::Url {
+                ) => awaken_protocol_managed::types::agent::AgentMcpServer::Url {
                     name: server.name,
                     url: transport.url,
                     prompts_as_skills: server.prompts_as_skills,
                 },
                 awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::SandboxStdio(
                     transport,
-                ) => awaken_protocol_managed::types::agent::McpServerView::SandboxStdio {
+                ) => awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio {
                     name: server.name,
                     command: transport.command,
                     args: transport.args,
@@ -1193,6 +1215,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_agent_stdio_mcp_create_update_decision_table() {
+        // Cause/effect graph: the tagged Managed MCP union is normalized into
+        // the one AgentMcpTransportBinding before persistence/publication. A
+        // valid stdio replacement produces an exact executable MCP target;
+        // an invalid command fails before a new Agent revision is committed.
+        //
+        // | rule | current transport | update transport       | effect |
+        // | S1   | URL               | sandbox_stdio valid    | revision + exact stdio target |
+        // | S2   | sandbox_stdio     | sandbox_stdio invalid  | Invalid; current revision retained |
+        // | S3   | sandbox_stdio     | read projection        | same tagged command/args returned |
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
+        let created = repository
+            .create("workspace-a", create_params("browser"))
+            .await
+            .unwrap();
+
+        let mut update = update_params(created.version);
+        update.mcp_servers = Some(Some(vec![
+            serde_json::from_value(json!({
+                "type": "sandbox_stdio",
+                "name": "docs",
+                "command": "playwright-mcp",
+                "args": ["--headless"]
+            }))
+            .unwrap(),
+        ]));
+        let updated = repository
+            .update("workspace-a", &created.id, update)
+            .await
+            .unwrap();
+        assert_eq!(updated.version, created.version + 1, "S1");
+        assert!(
+            matches!(
+                &updated.mcp_servers[0],
+                AgentMcpServer::SandboxStdio { command, args, .. }
+                    if command == "playwright-mcp" && args == &["--headless"]
+            ),
+            "S3"
+        );
+        let registration = catalog
+            .current("workspace-a", &created.id)
+            .expect("S1 registered");
+        assert!(
+            matches!(
+                &registration.session_profile.mcp_servers[0].target,
+                awaken_agent_contract::McpTarget::SandboxStdio(target)
+                    if target.command == "playwright-mcp" && target.args == ["--headless"]
+            ),
+            "S1"
+        );
+
+        let mut invalid = update_params(updated.version);
+        invalid.mcp_servers = Some(Some(vec![
+            serde_json::from_value(json!({
+                "type": "sandbox_stdio",
+                "name": "docs",
+                "command": ""
+            }))
+            .unwrap(),
+        ]));
+        assert!(
+            matches!(
+                repository.update("workspace-a", &created.id, invalid).await,
+                Err(ManagedAgentError::Invalid(_))
+            ),
+            "S2"
+        );
+        assert_eq!(
+            repository
+                .retrieve("workspace-a", &created.id, None)
+                .await
+                .unwrap()
+                .version,
+            updated.version,
+            "S2"
+        );
+    }
+
+    #[tokio::test]
     async fn managed_agent_lifecycle_follows_disable_archive_retention_rules() {
         // Cause/effect graph:
         // C1 Published + disable -> E1 current execution is unavailable while
@@ -1221,7 +1325,7 @@ mod tests {
         assert_eq!(created.version, 1);
         assert!(matches!(
             &created.mcp_servers[0],
-            awaken_protocol_managed::types::agent::McpServerView::Url { name, .. }
+            awaken_protocol_managed::types::agent::AgentMcpServer::Url { name, .. }
                 if name == "docs"
         ));
         assert!(matches!(

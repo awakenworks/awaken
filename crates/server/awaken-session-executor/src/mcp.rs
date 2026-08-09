@@ -50,7 +50,7 @@ pub(crate) enum McpTransportMaterialKind {
     Http {
         url: String,
         bearer: Option<awaken_agent_contract::RedactedString>,
-        refresh: Option<McpRefreshMaterial>,
+        refresh: Option<Box<McpRefreshMaterial>>,
     },
     SandboxStdio {
         command: String,
@@ -58,14 +58,14 @@ pub(crate) enum McpTransportMaterialKind {
     },
 }
 
+type HttpTransportMaterialRef<'a> = (
+    &'a str,
+    &'a Option<awaken_agent_contract::RedactedString>,
+    &'a Option<Box<McpRefreshMaterial>>,
+);
+
 impl McpTransportMaterial {
-    fn http(
-        &self,
-    ) -> Option<(
-        &str,
-        &Option<awaken_agent_contract::RedactedString>,
-        &Option<McpRefreshMaterial>,
-    )> {
+    fn http(&self) -> Option<HttpTransportMaterialRef<'_>> {
         match &self.transport {
             McpTransportMaterialKind::Http {
                 url,
@@ -673,8 +673,9 @@ pub(crate) async fn connect_materialized(
         };
         let mut builder = HttpTransportBuilder::new(url.to_string()).credential(credential);
         if let Some(refresh) = refresh {
-            builder = builder.refresher(Arc::new(VaultRefresher::from_material(refresh.clone()))
-                as Arc<dyn CredentialRefresher>);
+            builder = builder.refresher(Arc::new(VaultRefresher::from_material(
+                refresh.as_ref().clone(),
+            )) as Arc<dyn CredentialRefresher>);
         }
         let transport = builder.connect_streaming().await.map_err(|e| {
             HostError::internal(format!("mcp server `{}` at {}: {e}", server.name, url))

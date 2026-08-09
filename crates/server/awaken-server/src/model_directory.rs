@@ -188,7 +188,6 @@ mod executable_registration_tests {
                 )
                 .build(),
             session_profile: ExecutableAgentSessionProfile::default(),
-            declared_hand: None,
         }
     }
 

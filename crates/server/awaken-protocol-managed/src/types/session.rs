@@ -15,7 +15,7 @@ use awaken_agent_contract::{AcpSessionConfiguration, agent::content::ContentBloc
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::agent::{AgentSkill, AgentTool, McpServerView, UrlMcpServer};
+use super::agent::{AgentMcpServer, AgentSkill, AgentTool};
 use super::resource::{ResourceInput, SessionResource};
 
 /// The Anthropic error envelope: `{ "type": "error", "error": { "type", "message" } }`.
@@ -96,7 +96,7 @@ pub struct AgentRefObject {
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub tools: Option<Option<Vec<AgentTool>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub mcp_servers: Option<Option<Vec<UrlMcpServer>>>,
+    pub mcp_servers: Option<Option<Vec<AgentMcpServer>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub skills: Option<Option<Vec<AgentSkill>>>,
     /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
@@ -200,7 +200,7 @@ pub struct SessionAgentUpdate {
     #[serde(default)]
     pub tools: Option<Vec<AgentTool>>,
     #[serde(default)]
-    pub mcp_servers: Option<Vec<UrlMcpServer>>,
+    pub mcp_servers: Option<Vec<AgentMcpServer>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -386,7 +386,7 @@ pub struct SessionAgent {
     pub description: Option<String>,
     pub system: Option<String>,
     pub tools: Vec<AgentTool>,
-    pub mcp_servers: Vec<McpServerView>,
+    pub mcp_servers: Vec<AgentMcpServer>,
     pub skills: Vec<AgentSkill>,
     /// The multiagent coordinator roster, omitted when the agent delegates to no one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -407,7 +407,7 @@ pub struct SessionThreadAgent {
     pub description: Option<String>,
     pub system: Option<String>,
     pub tools: Vec<AgentTool>,
-    pub mcp_servers: Vec<McpServerView>,
+    pub mcp_servers: Vec<AgentMcpServer>,
     pub skills: Vec<AgentSkill>,
 }
 

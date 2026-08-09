@@ -28,7 +28,7 @@ use awaken_protocol_transport::{
 };
 use awaken_tenancy::{ResolvedAgentId, ResolvedResourceId};
 
-use crate::encoder::{AgUiEncoder, encode_close, encode_history, encode_step};
+use crate::encoder::{AgUiEncoder, encode_history, encode_step};
 use crate::request::{ToolResultInput, process};
 use crate::types::{AgUiEvent, RunAgentInput};
 
@@ -210,19 +210,11 @@ fn stream_turn(
                 }
             }
         }
-        let started = transcoder.has_streamed();
-        let mut close = transcoder.finalize();
-        close.extend(match turn.await {
-            Ok(Ok(outcome)) if started => encode_close(&outcome, &close_thread, &run_id),
-            Ok(Ok(outcome)) => encode_step(&outcome, &close_thread, &run_id),
-            Ok(Err(err)) => error_events(&close_thread, &run_id, err, started),
-            Err(_) => error_events(
-                &close_thread,
-                &run_id,
-                DriverError::Internal("turn task cancelled".into()),
-                started,
-            ),
-        });
+        let close = match turn.await {
+            Ok(Ok(outcome)) => transcoder.complete(&outcome),
+            Ok(Err(err)) => transcoder.fail(driver_error_message(err)),
+            Err(_) => transcoder.fail("turn task cancelled"),
+        };
         for event in close {
             if out_tx.send(sse_line(&event)).is_err() {
                 return;
@@ -309,9 +301,7 @@ fn sse_response(events: Vec<AgUiEvent>) -> Response {
 /// The AG-UI error tail. When the run has not yet been bracketed live, it opens
 /// with `RUN_STARTED` first; when it already streamed, only `RUN_ERROR` is added.
 fn error_events(thread: &str, run_id: &str, err: DriverError, started: bool) -> Vec<AgUiEvent> {
-    let message = match err {
-        DriverError::BadRequest(m) | DriverError::Internal(m) => m,
-    };
+    let message = driver_error_message(err);
     let mut out = Vec::new();
     if !started {
         out.push(AgUiEvent::RunStarted {
@@ -321,6 +311,12 @@ fn error_events(thread: &str, run_id: &str, err: DriverError, started: bool) -> 
     }
     out.push(AgUiEvent::error(message));
     out
+}
+
+fn driver_error_message(err: DriverError) -> String {
+    match err {
+        DriverError::BadRequest(message) | DriverError::Internal(message) => message,
+    }
 }
 
 /// A run bracketed by `RUN_STARTED` / `RUN_ERROR` for a non-streaming failure.

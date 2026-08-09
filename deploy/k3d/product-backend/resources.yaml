@@ -21,8 +21,49 @@ data:
     run_local_pool = true
     no_browser = true
     identity_mode = "self-managed"
-    sandbox_tier = "namespace"
+    sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
+    k8s_namespace = "awaken-system"
+    container_image = "k3d-awaken-registry.localhost:5111/awaken-sandbox:latest"
+    package_image_registry = "k3d-awaken-registry.localhost:5111/environments"
+    package_image_builder = "k8s"
+    package_registry_insecure = true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: awaken-product
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: awaken-product-runtime
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "configmaps"]
+    verbs: ["create", "get", "list", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "list", "delete", "deletecollection"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: awaken-product-runtime
+subjects:
+  - kind: ServiceAccount
+    name: awaken-product
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: awaken-product-runtime
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -72,6 +113,7 @@ spec:
         app.kubernetes.io/name: awaken
         app.kubernetes.io/component: internal-backend
     spec:
+      serviceAccountName: awaken-product
       terminationGracePeriodSeconds: 30
       securityContext:
         fsGroup: 10001
@@ -83,12 +125,12 @@ spec:
           command: ["/usr/local/bin/awaken-server"]
           args: ["all-in-one", "--config", "/etc/awaken/config.toml", "--no-browser"]
           securityContext:
-            allowPrivilegeEscalation: true
+            allowPrivilegeEscalation: false
             runAsNonRoot: true
             runAsUser: 10001
             runAsGroup: 10001
             seccompProfile:
-              type: Unconfined
+              type: RuntimeDefault
           ports:
             - name: http
               containerPort: 8080
@@ -152,4 +194,3 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
-

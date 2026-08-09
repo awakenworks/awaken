@@ -60,6 +60,8 @@ pub struct EnvironmentAuthoringState {
 pub struct EnvironmentExecutionState {
     work: Arc<dyn WorkQueue>,
     execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
+    image_readiness:
+        Option<Arc<dyn awaken_environment_realization_contract::EnvironmentImageReadiness>>,
 }
 
 /// AllInOne/test composition facade. It contains no business behavior of its
@@ -95,8 +97,11 @@ impl ExecutableEnvironmentRegistrar for CoordinatorEnvironmentRegistrar {
     ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
     {
         let environment_id = registration.definition.id.clone();
+        let self_hosted = registration.definition.is_self_hosted();
         let outcome = self.delegate.register(registration).await?;
-        self.work.ensure_healthcheck(&environment_id).await;
+        if self_hosted {
+            self.work.ensure_healthcheck(&environment_id).await;
+        }
         Ok(outcome)
     }
 
@@ -156,7 +161,17 @@ impl EnvironmentExecutionState {
         Self {
             work,
             execution_source,
+            image_readiness: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_image_readiness(
+        mut self,
+        readiness: Arc<dyn awaken_environment_realization_contract::EnvironmentImageReadiness>,
+    ) -> Self {
+        self.image_readiness = Some(readiness);
+        self
     }
 
     /// Read Coordinator's current executable definition projection. Archived or
@@ -177,7 +192,10 @@ impl EnvironmentExecutionState {
         env_id: &str,
         runtime: Option<&str>,
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
-        self.snapshot_for_session(env_id, runtime, &[]).await
+        self.snapshot_for_session(env_id, runtime, &[])
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Compile a Session-specific snapshot from the exact MCP desired set that
@@ -187,13 +205,29 @@ impl EnvironmentExecutionState {
         env_id: &str,
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+    ) -> Result<
+        Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
         let registration = self
             .execution_source
             .current_registration(env_id)
             .await
-            .ok()??;
-        snapshot_from_registration(registration, runtime, mcp_targets)
+            .map_err(|error| {
+                awaken_environment_realization_contract::EnvironmentImageBuildError::Unavailable(
+                    error.to_string(),
+                )
+            })?;
+        let Some(registration) = registration else {
+            return Ok(None);
+        };
+        snapshot_from_registration(
+            registration,
+            runtime,
+            mcp_targets,
+            self.image_readiness.as_ref(),
+        )
+        .await
     }
 
     pub async fn snapshot_exact(
@@ -204,6 +238,8 @@ impl EnvironmentExecutionState {
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
         self.snapshot_exact_for_session(env_id, revision, runtime, &[])
             .await
+            .ok()
+            .flatten()
     }
 
     pub async fn snapshot_exact_for_session(
@@ -212,14 +248,25 @@ impl EnvironmentExecutionState {
         revision: u64,
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+    ) -> Result<
+        Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
         // Current availability is a live deny overlay. If Control withdrew the
         // Environment, an old Agent binding cannot start a new Session even though
         // the immutable historical registration remains queryable for audit.
-        self.execution_source
+        let current = self
+            .execution_source
             .current_registration(env_id)
             .await
-            .ok()??;
+            .map_err(|error| {
+                awaken_environment_realization_contract::EnvironmentImageBuildError::Unavailable(
+                    error.to_string(),
+                )
+            })?;
+        if current.is_none() {
+            return Ok(None);
+        }
         let registration = self
             .execution_source
             .registration_at_revision(
@@ -227,8 +274,21 @@ impl EnvironmentExecutionState {
                 awaken_environment_contract::EnvironmentRevision(revision),
             )
             .await
-            .ok()??;
-        snapshot_from_registration(registration, runtime, mcp_targets)
+            .map_err(|error| {
+                awaken_environment_realization_contract::EnvironmentImageBuildError::Unavailable(
+                    error.to_string(),
+                )
+            })?;
+        let Some(registration) = registration else {
+            return Ok(None);
+        };
+        snapshot_from_registration(
+            registration,
+            runtime,
+            mcp_targets,
+            self.image_readiness.as_ref(),
+        )
+        .await
     }
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
@@ -346,7 +406,10 @@ impl EnvironmentState {
         env_id: &str,
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+    ) -> Result<
+        Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
         self.execution
             .snapshot_for_session(env_id, runtime, mcp_targets)
             .await
@@ -369,7 +432,10 @@ impl EnvironmentState {
         revision: u64,
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+    ) -> Result<
+        Option<awaken_session_contract::EnvironmentSnapshot>,
+        awaken_environment_realization_contract::EnvironmentImageBuildError,
+    > {
         self.execution
             .snapshot_exact_for_session(env_id, revision, runtime, mcp_targets)
             .await
@@ -422,14 +488,20 @@ impl EnvironmentState {
     }
 }
 
-fn snapshot_from_registration(
+async fn snapshot_from_registration(
     registration: ExecutableEnvironmentRegistration,
     runtime: Option<&str>,
     mcp_targets: &[awaken_session_contract::McpTarget],
-) -> Option<awaken_session_contract::EnvironmentSnapshot> {
-    let item = registration.definition;
+    image_readiness: Option<
+        &Arc<dyn awaken_environment_realization_contract::EnvironmentImageReadiness>,
+    >,
+) -> Result<
+    Option<awaken_session_contract::EnvironmentSnapshot>,
+    awaken_environment_realization_contract::EnvironmentImageBuildError,
+> {
+    let item = &registration.definition;
     if item.archived_at.is_some() {
-        return None;
+        return Ok(None);
     }
     let packages = item.config.packages();
     let network = session_network_policy(&item.config, mcp_targets);
@@ -458,16 +530,33 @@ fn snapshot_from_registration(
     };
     // Anthropic Environment config owns cloud networking/packages and
     // self-hosted routing only. Awaken sandbox policy has a separate owner.
-    let (sandbox, sandbox_provisioning) = match registration.sandbox_policy {
-        Some(policy) if policy.disabled => return None,
-        Some(policy) => (
-            serde_json::to_value(policy.config).ok()?,
-            policy.provisioning,
-        ),
+    let (sandbox, sandbox_provisioning, base_image) = match &registration.sandbox_policy {
+        Some(policy) if policy.disabled => return Ok(None),
+        Some(policy) => {
+            let base_image = match &policy.config.environment {
+                Some(awaken_provisioning_contract::EnvironmentKind::Image { reference }) => {
+                    Some(reference.clone())
+                }
+                _ => None,
+            };
+            let Ok(config) = serde_json::to_value(&policy.config) else {
+                return Ok(None);
+            };
+            (config, policy.provisioning, base_image)
+        }
         None => (
             serde_json::json!({}),
             awaken_session_contract::SandboxProvisioning::Eager,
+            None,
         ),
+    };
+    let prepared_image = match image_readiness {
+        Some(readiness) => {
+            readiness
+                .ready_image(&registration, base_image.as_deref())
+                .await?
+        }
+        None => None,
     };
     let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
         awaken_session_contract::stable_fingerprint(&(
@@ -476,18 +565,20 @@ fn snapshot_from_registration(
             &packages,
             &network,
             &credential_realization,
+            &prepared_image,
         )),
     );
-    Some(awaken_session_contract::EnvironmentSnapshot {
-        environment_id: item.id,
+    Ok(Some(awaken_session_contract::EnvironmentSnapshot {
+        environment_id: item.id.clone(),
         revision: item.revision,
         config_fingerprint,
         sandbox,
         sandbox_provisioning,
         packages,
+        prepared_image,
         network,
         credential_realization,
-    })
+    }))
 }
 
 /// Compile static Environment networking plus the exact Session MCP set into
@@ -1488,7 +1579,10 @@ mod tests {
         let local = state.snapshot("env_local", None).await.expect("S5");
         assert_eq!(
             local,
-            snapshot_from_registration(default_environment_registration(), None, &[]).unwrap(),
+            snapshot_from_registration(default_environment_registration(), None, &[], None)
+                .await
+                .unwrap()
+                .unwrap(),
             "S5 native"
         );
         let local_acp = state
@@ -1501,7 +1595,10 @@ mod tests {
                 default_environment_registration(),
                 Some("acp:claude"),
                 &[],
+                None,
             )
+            .await
+            .unwrap()
             .unwrap(),
             "S5 ACP"
         );

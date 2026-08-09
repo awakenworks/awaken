@@ -316,7 +316,6 @@ impl SharedHost {
             dispatch_pool: std::sync::OnceLock::new(),
             dispatch_store_override: None,
             completion: Arc::new(CompletionRegistry::default()),
-            hand_placement: crate::hand_placement::HandPlacement::new(),
             environment_binding_sink: std::sync::RwLock::new(None),
             capture_sink: std::sync::RwLock::new(None),
             capture_decision,
@@ -977,25 +976,6 @@ impl SharedHost {
     }
 
     /// Route every run's tool calls through `hand` — a remote `ToolExecutor`
-    /// (ADR-0044) — instead of the in-process registry. The brain still commits
-    /// the hand's returned output. `None` (the default) keeps in-process execution.
-    pub fn with_remote_hand(mut self, hand: Arc<dyn ToolExecutor>) -> Self {
-        self.hand_placement.set_remote_hand(hand);
-        self
-    }
-
-    /// Install a hand-placement provider (ADR-0046): per run it selects the
-    /// `ToolExecutor` (the in-process default or a placed hand). Takes precedence
-    /// over [`with_remote_hand`] for any run it places; runs it declines (`None`)
-    /// fall back to `remote_hand`/in-process. This is the seam a config-driven
-    /// self-hosted brain–hand split — or a host's own richer policy — plugs into.
-    /// Provider failure aborts run setup; only an explicit `Ok(None)` permits the
-    /// configured remote-hand/in-process fallback.
-    pub fn with_tool_executor_provider(mut self, provider: Arc<dyn ToolExecutorProvider>) -> Self {
-        self.hand_placement.set_provider(provider);
-        self
-    }
-
     /// Build the per-session delegation executor. `sandbox` is the calling thread's
     /// live environment: a native delegate shares it, so the parent
     /// and its native child collaborate in one Session-owned workspace.

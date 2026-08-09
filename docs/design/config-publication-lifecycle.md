@@ -75,8 +75,10 @@ agent_id
 source_revision
 ExecutableAgentSnapshot, including its fingerprint
 AgentConfigView frozen from the same revision
-optional declared Hand placement
 ```
+
+Execution placement is deliberately absent: ADR-0073 derives it from the frozen
+Environment and durable Worker capabilities.
 
 The identity and outcomes are:
 

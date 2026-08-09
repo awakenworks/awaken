@@ -35,6 +35,33 @@ pub(crate) fn system_now_ms() -> u64 {
     SystemClock.now_ms()
 }
 
+/// Largest epoch-millisecond value representable by the SQL backends. The
+/// public contract is `u64`; all stores normalize through this one boundary so
+/// SQLite/Postgres never turn a far-future value into a negative integer and the
+/// memory backend observes the same due/lease semantics.
+pub(crate) const MAX_STORE_MILLIS: u64 = i64::MAX as u64;
+
+#[must_use]
+pub(crate) fn normalize_millis(value: u64) -> u64 {
+    value.min(MAX_STORE_MILLIS)
+}
+
+#[must_use]
+pub(crate) fn db_millis(value: u64) -> i64 {
+    normalize_millis(value) as i64
+}
+
+/// Decode a persisted millisecond value without allowing a legacy negative
+/// integer to wrap into a far-future `u64` deadline.
+pub(crate) fn millis_from_db(value: i64) -> Result<u64, &'static str> {
+    u64::try_from(value).map_err(|_| "persisted millisecond value is negative")
+}
+
+#[must_use]
+pub(crate) fn deadline_millis(now_ms: u64, lease_ms: u64) -> u64 {
+    normalize_millis(now_ms.saturating_add(lease_ms))
+}
+
 /// A hand-driven clock for deterministic tests.
 #[derive(Debug, Default)]
 pub struct ManualClock {
@@ -50,12 +77,16 @@ impl ManualClock {
 
     /// Set the current time.
     pub fn set(&self, now_ms: u64) {
-        self.now.store(now_ms, Ordering::SeqCst);
+        self.now.store(normalize_millis(now_ms), Ordering::SeqCst);
     }
 
     /// Advance the current time by `delta_ms`.
     pub fn advance(&self, delta_ms: u64) {
-        self.now.fetch_add(delta_ms, Ordering::SeqCst);
+        let _ = self
+            .now
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
+                Some(deadline_millis(now, delta_ms))
+            });
     }
 }
 

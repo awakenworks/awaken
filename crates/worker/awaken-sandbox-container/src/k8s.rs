@@ -34,9 +34,11 @@ use crate::{
     BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
 };
 
+pub use crate::k8s_package_image::K8sPackageImageProvisioner;
+
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-fn backend(e: impl std::fmt::Display) -> RuntimeError {
+pub(crate) fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
 }
 
@@ -1094,6 +1096,84 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn package_builder_job_is_rootless_bounded_and_registry_backed() {
+        // Cause/effect decision table: R1 exact base/packages + shared Registry
+        // produce one deterministic ConfigMap/Job destination; R2 insecure local
+        // Registry emits an explicit BuildKit host policy; R3 the Job is rootless,
+        // tokenless, no-retry, and ends before Coordinator's lease; R4 output is
+        // recorded through the termination digest contract; R5 an unsafe Registry
+        // prefix is rejected before it can enter generated BuildKit configuration.
+        let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
+        let client = Client::try_from(config).unwrap();
+        let builder = K8sPackageImageProvisioner::new(
+            client.clone(),
+            "awaken-system",
+            "registry.local:5000/environments",
+            vec!["registry-auth".into()],
+            true,
+        )
+        .unwrap();
+        let packages = pc::PackageRequirements {
+            managers: [("npm".into(), vec!["@playwright/mcp@latest".into()])]
+                .into_iter()
+                .collect(),
+            resolution_id: Some("env-browser:3".into()),
+        };
+        let (config, job, destination) = builder
+            .build_objects("registry.local/base@sha256:exact", &packages)
+            .unwrap();
+        assert!(
+            destination.starts_with("registry.local:5000/environments/awaken-packages:"),
+            "R1"
+        );
+        let data = config.data.unwrap();
+        assert!(data["Dockerfile"].contains("@playwright/mcp@latest"), "R1");
+        assert!(data["buildkitd.toml"].contains("http = true"), "R2");
+        let spec = job.spec.unwrap();
+        assert_eq!(spec.backoff_limit, Some(0), "R3");
+        assert!(spec.active_deadline_seconds.unwrap() < 15 * 60, "R3");
+        let pod = spec.template.spec.unwrap();
+        assert_eq!(pod.automount_service_account_token, Some(false), "R3");
+        assert_eq!(
+            pod.image_pull_secrets.as_ref().unwrap()[0].name,
+            "registry-auth",
+            "R3"
+        );
+        assert!(
+            pod.volumes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|volume| volume.name == "registry-auth"),
+            "R3 private Registry auth"
+        );
+        let buildkit = &pod.containers[0];
+        assert_eq!(
+            buildkit
+                .security_context
+                .as_ref()
+                .and_then(|value| value.run_as_user),
+            Some(1000),
+            "R3"
+        );
+        assert!(
+            buildkit.args.as_ref().unwrap()[0].contains("/dev/termination-log"),
+            "R4"
+        );
+        assert!(
+            K8sPackageImageProvisioner::new(
+                client,
+                "awaken-system",
+                "registry.local/environments\n[registry.\"attacker\"]",
+                Vec::new(),
+                true,
+            )
+            .is_err(),
+            "R5"
+        );
+    }
 
     struct FixedBroker;
 

@@ -66,9 +66,10 @@ owns exact sandbox-policy versions and stores the selected policy reference in
 the Environment revision. `awaken-environment-application` owns the sole
 `EnvironmentApplication`, which publishes the resolved exact revision through
 `ExecutableEnvironmentRegistrar`. Coordinator persists only a
-rebuildable executable command log and owns `EnvironmentExecutionState` plus the
-WorkQueue. Session admission freezes an `EnvironmentSnapshot`; Worker consumes
-that snapshot and never reopens either authority.
+rebuildable executable command log and owns `EnvironmentExecutionState`, image
+build/realization state, and the WorkQueue. Session admission freezes an
+`EnvironmentSnapshot`; Worker consumes that snapshot and never reopens either
+authority.
 
 Data Subject follows the same explicit-crossing rule. Coordinator reads consent
 through `DataSubjectConsentSource`, while Control requests subject-content
@@ -86,7 +87,9 @@ subsystem. Control persists one immutable `StoredPublication`, then invokes
 `ExecutableAgentRegistrar::register`. Coordinator stores a rebuildable
 `ExecutableAgentCatalog` projection for future Session resolution. The complete
 decision and transition plan is
-[ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md).
+[ADR-0071](../adr/0071-distributed-service-boundaries-and-executable-agent-registration.md)
+and the Environment-specific amendment in
+[ADR-0072](../adr/0072-environment-definition-and-execution-boundary.md).
 
 The reverse direction is equally explicit. Before Coordinator management
 effects it records the stable audit identity through `ManagementAuditRepository`;

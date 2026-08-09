@@ -76,28 +76,110 @@ pub(crate) fn apply_context_policy(
     policy: &ContextPolicy,
     messages: Vec<ChatMessage>,
 ) -> Vec<ChatMessage> {
-    let keep_last = match policy {
-        ContextPolicy::KeepAll => return messages,
-        ContextPolicy::KeepLast { keep_last } => *keep_last,
+    let bounded = match policy {
+        ContextPolicy::KeepAll => messages,
+        ContextPolicy::KeepLast { keep_last } => {
+            let conversational = messages.iter().filter(|m| m.role != Role::System).count();
+            if conversational <= *keep_last {
+                messages
+            } else {
+                let mut to_drop = conversational - *keep_last;
+                messages
+                    .into_iter()
+                    .filter(|message| {
+                        if message.role == Role::System {
+                            return true;
+                        }
+                        if to_drop > 0 {
+                            to_drop -= 1;
+                            return false;
+                        }
+                        true
+                    })
+                    .collect()
+            }
+        }
     };
-    let conversational = messages.iter().filter(|m| m.role != Role::System).count();
-    if conversational <= keep_last {
-        return messages;
+    retain_complete_tool_rounds(bounded)
+}
+
+/// Keep the model request structurally valid after truncation. Pairing is local
+/// to one assistant occurrence and its immediately-following Tool messages, so a
+/// reused provider call id in a later round cannot borrow an earlier result.
+/// Incomplete calls/results are removed from the request view only; committed
+/// transcript truth remains untouched (G13).
+fn retain_complete_tool_rounds(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    use std::collections::BTreeSet;
+
+    let mut output = Vec::with_capacity(messages.len());
+    let mut index = 0;
+    while index < messages.len() {
+        let message = &messages[index];
+        if message.role == Role::Tool {
+            // An orphan result (including one exposed by KeepLast) is never sent
+            // to a provider.
+            index += 1;
+            continue;
+        }
+        if message.role != Role::Assistant {
+            output.push(message.clone());
+            index += 1;
+            continue;
+        }
+
+        let call_ids = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if call_ids.is_empty() {
+            output.push(message.clone());
+            index += 1;
+            continue;
+        }
+
+        let mut end = index + 1;
+        let mut result_ids = BTreeSet::new();
+        while end < messages.len() && messages[end].role == Role::Tool {
+            for block in &messages[end].content {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = block
+                    && call_ids.contains(tool_use_id)
+                {
+                    result_ids.insert(tool_use_id.clone());
+                }
+            }
+            end += 1;
+        }
+
+        let mut assistant = message.clone();
+        assistant.content.retain(
+            |block| !matches!(block, ContentBlock::ToolUse { id, .. } if !result_ids.contains(id)),
+        );
+        if !assistant.content.is_empty() {
+            output.push(assistant);
+        }
+
+        let mut emitted = BTreeSet::new();
+        for result_message in &messages[index + 1..end] {
+            let mut result_message = result_message.clone();
+            result_message.content.retain(|block| match block {
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    call_ids.contains(tool_use_id)
+                        && result_ids.contains(tool_use_id)
+                        && emitted.insert(tool_use_id.clone())
+                }
+                _ => false,
+            });
+            if !result_message.content.is_empty() {
+                output.push(result_message);
+            }
+        }
+        index = end;
     }
-    let mut to_drop = conversational - keep_last;
-    messages
-        .into_iter()
-        .filter(|m| {
-            if m.role == Role::System {
-                return true;
-            }
-            if to_drop > 0 {
-                to_drop -= 1;
-                return false;
-            }
-            true
-        })
-        .collect()
+    output
 }
 
 pub(crate) fn to_chat_message(message: &Message) -> ChatMessage {

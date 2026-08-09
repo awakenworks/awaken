@@ -15,7 +15,7 @@ pub(super) struct RuntimeSettings {
     pub(super) content_capture: ContentCaptureSettings,
 }
 
-pub(super) fn resolve(file: &FileConfig, data_dir: &Path) -> Result<RuntimeSettings, String> {
+pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSettings, String> {
     let sandbox_tier = match file.sandbox_tier.as_deref() {
         Some("local" | "none") => SandboxTier::Local,
         Some("docker") => SandboxTier::Docker,
@@ -66,34 +66,19 @@ pub(super) fn resolve(file: &FileConfig, data_dir: &Path) -> Result<RuntimeSetti
             .filter(|value| !value.is_empty())
             .map(|value| value.trim_end_matches('/').to_owned()),
         package_registry_auth_file: file.package_registry_auth_file.clone(),
+        package_registry_insecure: file.package_registry_insecure.unwrap_or(false),
         package_image_builder: file
             .package_image_builder
             .as_deref()
             .map(|value| match value {
                 "docker" => Ok(PackageImageBuilder::Docker),
                 "podman" => Ok(PackageImageBuilder::Podman),
+                "k8s" => Ok(PackageImageBuilder::Kubernetes),
                 other => Err(format!(
-                    "invalid package_image_builder={other:?}: expected docker or podman"
+                    "invalid package_image_builder={other:?}: expected docker, podman or k8s"
                 )),
             })
             .transpose()?,
-        package_artifact_dir: Some(
-            file.package_artifact_dir
-                .clone()
-                .unwrap_or_else(|| data_dir.join("package-images")),
-        ),
-        package_build_lease_secs: file
-            .package_build_lease_secs
-            .unwrap_or(sandbox_defaults.package_build_lease_secs),
-        package_build_wait_secs: file
-            .package_build_wait_secs
-            .unwrap_or(sandbox_defaults.package_build_wait_secs),
-        package_failure_retry_secs: file
-            .package_failure_retry_secs
-            .unwrap_or(sandbox_defaults.package_failure_retry_secs),
-        package_state_ttl_secs: file
-            .package_state_ttl_secs
-            .unwrap_or(sandbox_defaults.package_state_ttl_secs),
         package_local_cache_ttl_secs: file
             .package_local_cache_ttl_secs
             .unwrap_or(sandbox_defaults.package_local_cache_ttl_secs),
@@ -122,6 +107,9 @@ pub(super) fn resolve(file: &FileConfig, data_dir: &Path) -> Result<RuntimeSetti
             "package_registry_auth_file requires a non-empty package_image_registry".to_owned(),
         );
     }
+    if sandbox.package_registry_insecure && sandbox.package_image_registry.is_none() {
+        return Err("package_registry_insecure requires a non-empty package_image_registry".into());
+    }
     if sandbox_tier == SandboxTier::K8s
         && (sandbox.package_image_builder.is_some() ^ sandbox.package_image_registry.is_some())
     {
@@ -135,16 +123,8 @@ pub(super) fn resolve(file: &FileConfig, data_dir: &Path) -> Result<RuntimeSetti
     {
         return Err("sandbox reaper interval and max age must be non-zero when enabled".to_owned());
     }
-    if sandbox.package_build_lease_secs == 0
-        || sandbox.package_build_wait_secs < sandbox.package_build_lease_secs
-        || sandbox.package_failure_retry_secs == 0
-        || sandbox.package_state_ttl_secs == 0
-        || sandbox.package_local_cache_ttl_secs == 0
-    {
-        return Err(
-            "package build lease/retry/TTL must be non-zero and wait must be at least the lease"
-                .to_owned(),
-        );
+    if sandbox.package_local_cache_ttl_secs == 0 {
+        return Err("package image local cache TTL must be non-zero".to_owned());
     }
     let content_capture = ContentCaptureSettings {
         level: match file.content_capture.as_deref() {
