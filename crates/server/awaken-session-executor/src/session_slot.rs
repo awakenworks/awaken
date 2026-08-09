@@ -69,6 +69,11 @@ pub(crate) struct FrozenEnvironmentRuntimeProjection {
 
 #[derive(Default)]
 pub(crate) struct SessionRuntimeSlot {
+    /// Serializes the canonical realization phase driver for this Session.
+    /// Lease renewal may advance authority while this lock is held, but it must
+    /// not start a second Stage/Publish driver. This is deliberately separate
+    /// from `lifecycle`, which is re-entered by Environment materialization.
+    pub realization: Arc<tokio::sync::Mutex<()>>,
     /// Serializes first materialization/rebuild for this Session without a
     /// process-wide registry lock being held across I/O.
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
@@ -128,6 +133,10 @@ pub(crate) struct SessionRuntimeSlot {
 pub(crate) struct SessionRuntimeSlots(Arc<Mutex<HashMap<String, SessionRuntimeSlot>>>);
 
 impl SessionRuntimeSlots {
+    pub fn realization_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.update(session, |slot| slot.realization.clone())
+    }
+
     pub fn read<R>(&self, session: &str, f: impl FnOnce(&SessionRuntimeSlot) -> R) -> Option<R> {
         self.0
             .lock()
