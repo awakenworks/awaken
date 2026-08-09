@@ -13,7 +13,7 @@ pub async fn run_echo_worker(
     upstream: &str,
     worker_id: &str,
     admin_listen: Option<&str>,
-    request_authorizer: Option<Arc<dyn awaken_run_ingress::WorkerRequestAuthorizer>>,
+    request_authorizer: Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     struct EchoWorkerProvider;
 

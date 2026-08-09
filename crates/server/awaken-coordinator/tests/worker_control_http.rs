@@ -5,7 +5,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
 use awaken_run_ingress::{
-    DispatchQueue, HttpDispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
+    DispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY,
 };
 use awaken_runtime_contract::activation::RunActivation;
@@ -19,6 +19,7 @@ use awaken_worker_registry::{
     MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision,
     WorkerDirectory, WorkerHeartbeat, WorkerManifest, WorkerState,
 };
+use awaken_worker_runtime::HttpDispatchQueue;
 use awaken_worker_runtime::{WorkerControlClient, WorkerRegistrationError};
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock, WorkerUpstream,

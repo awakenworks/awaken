@@ -83,6 +83,7 @@ use awaken_session_contract::{
 };
 
 pub use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
+pub use crate::worker_http::respond as respond_host_http;
 
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
@@ -136,9 +137,7 @@ pub use crate::config::{
     platform_plugin_capabilities_with_web_search,
 };
 // The per-plane resource routers the composition root merges over one host.
-pub use crate::commit_ingest::{
-    ClaimedCommitService, RemoteClaimedRunCommit, claimed_commit_router,
-};
+pub use crate::commit_ingest::{ClaimedCommitService, claimed_commit_router};
 pub use crate::deployment_config::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
     PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind, Wake,

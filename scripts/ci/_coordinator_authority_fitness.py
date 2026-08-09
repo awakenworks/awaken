@@ -12,7 +12,14 @@ from pathlib import Path
 
 
 AUTHORITY_IMPLS: dict[str, tuple[str, ...]] = {
-    "DispatchQueue": ("crates/server/awaken-run-ingress/src/",),
+    # Durable implementations remain in run-ingress. The one Worker-side HTTP
+    # adapter implements the same port without storing or deciding authority;
+    # its server-owned verbs fail closed and all accepted mutations cross the
+    # authenticated Coordinator boundary.
+    "DispatchQueue": (
+        "crates/server/awaken-run-ingress/src/",
+        "crates/server/awaken-worker-runtime/src/dispatch_client.rs",
+    ),
     "OperationCoordinator": (
         "crates/runtime/awaken-store-inmem/src/",
         "crates/stores/awaken-store-fs/src/",
@@ -111,24 +118,28 @@ def _strip_cfg_test_modules(source: str) -> str:
 def selftest() -> None:
     """Cause/effect decision table:
 
-    R1 canonical owner + implementation/write -> accepted; R2 non-owner + same action
-    -> rejected; R3 test-only implementation -> removed; R4 ordinary code -> preserved.
-    These are the smallest rules that distinguish crate isolation from database-owner
-    isolation without treating test doubles as production authorities.
+    R1 canonical durable owner + implementation/write -> accepted; R2 the one
+    non-authoritative Worker HTTP adapter -> accepted; R3 another non-owner + same
+    action -> rejected; R4 test-only implementation -> removed; R5 ordinary code
+    -> preserved. These are the smallest rules that distinguish port adapters from
+    database owners without treating test doubles as production authorities.
     """
     assert implementation_violation(
         "crates/server/awaken-run-ingress/src/sqlite.rs", "DispatchQueue"
     ) == []  # R1
     assert implementation_violation(
+        "crates/server/awaken-worker-runtime/src/dispatch_client.rs", "DispatchQueue"
+    ) == []  # R2
+    assert implementation_violation(
         "crates/server/awaken-runtime-host/src/dispatch.rs", "DispatchQueue"
-    )  # R2
+    )  # R3
     allowed = TABLE_AUTHORITIES[2][2]
     assert table_violation("crates/stores/awaken-session-store/src/lib.rs", "session", allowed) == []
-    assert table_violation("crates/server/example/src/lib.rs", "session", allowed)  # R2
+    assert table_violation("crates/server/example/src/lib.rs", "session", allowed)  # R3
     sample = "pub fn live() {}\n#[cfg(test)] mod tests { impl DispatchQueue for Fake {} }"
     stripped = _strip_cfg_test_modules(sample)
-    assert "Fake" not in stripped  # R3
-    assert "live" in stripped  # R4
+    assert "Fake" not in stripped  # R4
+    assert "live" in stripped  # R5
 
 
 def check_all(repo_root: Path, crates_root: Path) -> list[str]:

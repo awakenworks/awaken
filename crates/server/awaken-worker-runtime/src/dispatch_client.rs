@@ -17,8 +17,12 @@
 use async_trait::async_trait;
 use serde::Serialize;
 
-use crate::dispatch::installed_worker_credential_capabilities;
-use crate::{
+use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
+use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_agent_contract::stream::sink::Error as StreamError;
+use awaken_run_ingress_contract::{
     BindSandboxRequest, CasOutcome, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest,
     ClaimWorkerRequest, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     CredentialRealizationRequest, DeliverAndClaimRequest, DispatchError, DispatchOutcome,
@@ -26,38 +30,21 @@ use crate::{
     RecoveryRequest, RenewRequest, RunClaim, RunDispatch, SettleOutcome, SettleRequest,
     StreamEventRequest, SubmitOptions,
 };
-use crate::{ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot};
-use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
-use awaken_agent_contract::stream::event::Event as StreamEvent;
-use awaken_agent_contract::stream::sink::Error as StreamError;
+use awaken_run_ingress_contract::{
+    ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
+    worker_credential_realization_capabilities,
+};
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_worker_transport_security::WorkerRequestAuthorizer;
 
 const IDEMPOTENT_TRANSPORT_ATTEMPTS: usize = 3;
 const IDEMPOTENT_TRANSPORT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Client-side counterpart of the Coordinator's worker authenticator.
-///
-/// One implementation decorates every lifecycle, dispatch, recovery, and commit
-/// request. The path is the absolute HTTP path (without origin or query) so
-/// production implementations can bind a signed assertion to the exact route.
-pub trait WorkerRequestAuthorizer: Send + Sync {
-    fn authorize(
-        &self,
-        method: &str,
-        path: &str,
-        worker_id: &str,
-        request: reqwest::RequestBuilder,
-    ) -> Result<reqwest::RequestBuilder, String>;
-
-    /// Return an authorizer bound to the durable identity allocated by
-    /// registration. Bootstrap credentials may be worker-id-only; all later
-    /// requests can then bind the incarnation and generation as well.
-    fn bind_worker_identity(
-        &self,
-        identity: &WorkerIdentity,
-    ) -> std::sync::Arc<dyn WorkerRequestAuthorizer>;
+fn installed_worker_credential_capabilities(
+    worker: &WorkerSnapshot,
+) -> Result<awaken_runtime_contract::CredentialRealizationCapabilities, DispatchError> {
+    worker_credential_realization_capabilities(worker)
+        .map_err(|error| DispatchError::Rejected(error.to_string()))
 }
 
 /// A `Dispatch` store whose worker verbs are HTTP calls to a cell server.
@@ -313,7 +300,7 @@ impl DispatchQueue for HttpDispatchQueue {
 
     async fn worker_owns_run(
         &self,
-        _identity: &crate::WorkerIdentity,
+        _identity: &WorkerIdentity,
         _run_id: &RunId,
         _now_ms: u64,
     ) -> Result<bool, DispatchError> {

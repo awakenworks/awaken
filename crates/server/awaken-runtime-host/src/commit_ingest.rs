@@ -13,22 +13,18 @@ use axum::http::StatusCode;
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use awaken_agent_contract::thread::commit::coordinator::{
-    Error as CommitError, OperationCoordinator,
-};
+use awaken_agent_contract::thread::commit::coordinator::OperationCoordinator;
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
-use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_run_ingress::{
-    ClaimedCommitCommand, ClaimedCommitRequest, ClaimedRunCommit, DispatchQueue, RunClaim,
-    WorkerDirectory, WorkerIdentity, WorkerRequestAuthorizer, commit_payload_hash,
+    ClaimedCommitRequest, ClaimedRunCommit, DispatchQueue, WorkerDirectory, commit_payload_hash,
 };
 
 use crate::host::HostError;
 use crate::host::SharedHost;
 use crate::worker_http::respond;
 use awaken_worker_transport_security::{
-    VerifiedWorkerContext, WORKER_ID_HEADER, WorkerRequestAuthenticator,
-    authenticate_worker_request, verify_current_worker_identity,
+    VerifiedWorkerContext, WorkerRequestAuthenticator, authenticate_worker_request,
+    verify_current_worker_identity,
 };
 
 #[async_trait::async_trait]
@@ -243,145 +239,10 @@ fn unauthorized(message: String) -> (StatusCode, Json<Value>) {
     (StatusCode::UNAUTHORIZED, Json(json!({ "error": message })))
 }
 
-/// Atomic claimed-run commit used by a database-less worker. Unlike
-/// an ordinary coordinator, this sends the claim and commit operation together.
-pub struct RemoteClaimedRunCommit {
-    base_url: String,
-    client: reqwest::Client,
-    identity: WorkerIdentity,
-    request_authorizer: Option<Arc<dyn WorkerRequestAuthorizer>>,
-}
-
-const CLAIMED_COMMIT_TRANSPORT_ATTEMPTS: usize = 3;
-const CLAIMED_COMMIT_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
-
-impl RemoteClaimedRunCommit {
-    /// Create the private Worker-to-Coordinator commit client. The default does not
-    /// inherit ambient egress proxies; use [`Self::with_client`] when a proxy or
-    /// mTLS identity is intentionally part of the deployment.
-    pub fn new(base_url: impl Into<String>, identity: WorkerIdentity) -> Self {
-        Self {
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .build()
-                .expect("the default claimed-commit HTTP client should build"),
-            identity,
-            request_authorizer: None,
-        }
-    }
-
-    /// Use a caller-configured client (for example one carrying a worker mTLS
-    /// identity) instead of the default client.
-    #[must_use]
-    pub fn with_client(mut self, client: reqwest::Client) -> Self {
-        self.client = client;
-        self
-    }
-
-    #[must_use]
-    pub fn with_request_authorizer(mut self, authorizer: Arc<dyn WorkerRequestAuthorizer>) -> Self {
-        self.request_authorizer = Some(authorizer.bind_worker_identity(&self.identity));
-        self
-    }
-
-    fn authorize(
-        &self,
-        path: &str,
-        worker_id: &str,
-        request: reqwest::RequestBuilder,
-    ) -> Result<reqwest::RequestBuilder, CommitError> {
-        match &self.request_authorizer {
-            Some(authorizer) => authorizer
-                .authorize("POST", path, worker_id, request)
-                .map_err(CommitError::Rejected),
-            None => Ok(request.header(WORKER_ID_HEADER, worker_id)),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl ClaimedRunCommit for RemoteClaimedRunCommit {
-    async fn commit(
-        &self,
-        _claim: &RunClaim,
-        _commit: ThreadCommit,
-    ) -> Result<CommitRecord, CommitError> {
-        Err(CommitError::Rejected(
-            "remote Worker commits require a versioned CommitOperation".to_string(),
-        ))
-    }
-
-    async fn commit_operation(
-        &self,
-        command: ClaimedCommitCommand,
-    ) -> Result<CommitReceipt, CommitError> {
-        let path = "/v1/worker/commit-claimed";
-        let request_body = ClaimedCommitRequest::new(command, self.identity.clone());
-        let mut last_transport_error = None;
-        for attempt in 1..=CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
-            let request = self.client.post(format!("{}{path}", self.base_url));
-            let response = match self
-                .authorize(path, &self.identity.worker_id, request)?
-                .json(&request_body)
-                .send()
-                .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    last_transport_error = Some(format!("claimed commit transport: {error}"));
-                    if attempt < CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
-                        tokio::time::sleep(CLAIMED_COMMIT_RETRY_DELAY).await;
-                        continue;
-                    }
-                    break;
-                }
-            };
-            if response.status().is_server_error() {
-                last_transport_error = Some(format!(
-                    "claimed commit server returned {}",
-                    response.status()
-                ));
-                if attempt < CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
-                    tokio::time::sleep(CLAIMED_COMMIT_RETRY_DELAY).await;
-                    continue;
-                }
-                break;
-            }
-            if !response.status().is_success() {
-                return Err(CommitError::Rejected(format!(
-                    "claimed commit server returned {}",
-                    response.status()
-                )));
-            }
-            match response.json().await {
-                Ok(receipt) => return Ok(receipt),
-                Err(error) => {
-                    last_transport_error =
-                        Some(format!("commit receipt transport/decode: {error}"));
-                    if attempt < CLAIMED_COMMIT_TRANSPORT_ATTEMPTS {
-                        tokio::time::sleep(CLAIMED_COMMIT_RETRY_DELAY).await;
-                    }
-                }
-            }
-        }
-        Err(CommitError::Rejected(last_transport_error.unwrap_or_else(
-            || "claimed commit transport exhausted without a response".to_string(),
-        )))
-    }
-}
-
 pub(crate) fn remote_claimed_commit(
     upstream: &awaken_worker_transport_security::WorkerUpstream,
 ) -> Result<Arc<dyn ClaimedRunCommit>, HostError> {
-    let identity = upstream.worker_identity().cloned().ok_or_else(|| {
-        HostError::internal("remote Worker commit transport requires a registered identity")
-    })?;
-    Ok(Arc::new(
-        RemoteClaimedRunCommit::new(upstream.base_url(), identity)
-            .with_client(upstream.client().clone())
-            .with_request_authorizer(upstream.request_authorizer()),
-    ))
+    awaken_worker_runtime::remote_claimed_commit(upstream).map_err(HostError::internal)
 }
 
 fn unix_now_ms() -> u64 {

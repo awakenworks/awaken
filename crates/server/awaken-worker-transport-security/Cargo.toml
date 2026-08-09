@@ -10,7 +10,7 @@ layer = "infrastructure"
 authority = "worker-transport-security"
 
 [dependencies]
-awaken-run-ingress.workspace = true
+awaken-run-ingress-contract.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 base64 = "0.22"

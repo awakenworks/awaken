@@ -33,11 +33,9 @@ mod recovery_projection;
 mod send_message;
 mod service;
 mod sqlite;
-mod transport_client;
 mod wake;
 mod worker;
 mod worker_context;
-mod worker_transport;
 
 pub use any::{AnyDispatchStore, DispatchEnqueue};
 pub use capability::RunIngressCapabilities;
@@ -59,6 +57,12 @@ pub use awaken_run_ingress_contract::{
     WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
     WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
     place_assignment, worker_credential_realization_capabilities,
+};
+pub use awaken_run_ingress_contract::{
+    BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
+    ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
+    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest,
+    StreamEventRequest, WorkerIdentityRequest,
 };
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use clock::{Clock, ManualClock, SystemClock};
@@ -84,18 +88,11 @@ pub use recovery_projection::{RecoveryProjection, RecoveryProjectionError};
 pub use send_message::OutboxMessageSender;
 pub use service::{DispatchService, DispatchServiceConfig};
 pub use sqlite::{SqliteDispatchStore, StoreError as SqliteStoreError};
-pub use transport_client::{HttpDispatchQueue, WorkerRequestAuthorizer};
 #[cfg(feature = "nats")]
 pub use wake::NatsWakeSignal;
 pub use wake::{LocalWakeSignal, PgNotifyWake, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::InferenceMaterializerFn;
-pub use worker_transport::{
-    BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
-    ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
-    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest,
-    StreamEventRequest, WorkerIdentityRequest,
-};
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or
 /// a runtime attempt failed. Kept as two arms so a queue-storage failure never

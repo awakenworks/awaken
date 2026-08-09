@@ -26,9 +26,6 @@ sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
-# The database-less worker's HTTP dispatch client (`HttpDispatchQueue`) posts
-# claim/settle over the wire to the Control Node's registered Worker router.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"] }
 rusqlite = { workspace = true }
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
@@ -49,10 +46,6 @@ awaken-store-inmem.workspace = true
 awaken-store-postgres = { workspace = true }
 awaken-store-sqlite = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
-# dev-only: the transport_client e2e stands up a real axum server mirroring a cell
-# Control Node Worker routes on an ephemeral port, so the `HttpDispatchQueue`
-# client's claim/settle cross a real socket (no mock transport).
-axum = { workspace = true }
 
 [[test]]
 name = "any_store"
@@ -96,10 +89,6 @@ required-features = ["test-support"]
 
 [[test]]
 name = "sqlite_dispatch"
-required-features = ["test-support"]
-
-[[test]]
-name = "transport_client"
 required-features = ["test-support"]
 
 [[test]]
