@@ -6,7 +6,8 @@
 //! output — the harness owns no execution logic, so a scored case exercises the
 //! true engine path (delegation/permission/commit and all). Datasets persist as
 //! JSON through [`store`]. `Purpose::EvalRecording` is the consent purpose a
-//! record-from-real-run path attributes captures to (see `awaken-data-subject`).
+//! record-from-real-run path attributes captures to (see
+//! `awaken-data-subject-application`).
 
 pub mod acp_runner;
 pub mod admin_authoring;

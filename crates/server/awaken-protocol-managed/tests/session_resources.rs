@@ -543,8 +543,9 @@ async fn publication_backend_is_the_only_session_backend_authority() {
 
 #[tokio::test]
 async fn agent_default_environment_requires_the_exact_revision() {
-    let environments = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
-    let environment_id = environments
+    let (environment_authoring, environment_execution) =
+        awaken_protocol_managed::test_support::environment_components();
+    let environment_id = environment_authoring
         .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id: "test:agent-default".into(),
@@ -560,7 +561,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
         .await
         .unwrap()
         .id;
-    let revision = environments
+    let revision = environment_execution
         .snapshot(&environment_id, None)
         .await
         .expect("Environment snapshot query succeeds")
@@ -569,7 +570,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
         .0;
     let runtime = AcceptingFake::default();
     let state = ManagedState::new(runtime.clone())
-        .with_environments(environments.execution())
+        .with_environments(environment_execution.clone())
         .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
             environment_id: environment_id.clone(),
             revision,
@@ -584,7 +585,7 @@ async fn agent_default_environment_requires_the_exact_revision() {
     );
 
     let stale = ManagedState::new(AcceptingFake::default())
-        .with_environments(environments.execution())
+        .with_environments(environment_execution)
         .with_config_source(std::sync::Arc::new(AgentWithEnvironment {
             environment_id,
             revision: revision + 1,

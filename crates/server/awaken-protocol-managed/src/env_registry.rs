@@ -3,8 +3,6 @@
 //! the two projections the neutral crate must not name — the `BetaEnvironment` wire
 //! shape and the sandbox `NetworkPolicy` derived from a record's `config`.
 
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use awaken_env_store::InMemoryEnvRegistry;
 use awaken_environment_contract::OBJECT_AT;
 pub(crate) use awaken_environment_contract::{
     EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,

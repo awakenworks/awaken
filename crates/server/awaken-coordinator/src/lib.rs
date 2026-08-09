@@ -43,7 +43,7 @@ pub mod workspace_path;
 pub use awaken_protocol_managed::ModelDirectory;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
-    build_coordinator_component, restore_deployment_state,
+    build_coordinator_component, restore_deployment_application,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use coordinator_persistence::init_scenario_runtime;
@@ -416,7 +416,7 @@ pub fn local_managed_state_with_agent_source(
 pub fn local_managed_state_with_environments(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    environments: Arc<awaken_protocol_managed::EnvironmentExecutionState>,
+    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, Some(environments), None)
 }
@@ -427,7 +427,7 @@ pub fn local_managed_state_with_environments(
 pub fn local_managed_state_with_environments_and_agent_source(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    environments: Arc<awaken_protocol_managed::EnvironmentExecutionState>,
+    environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
     local_managed_state_over(host, catalog, Some(environments), Some(agent_source))
@@ -437,7 +437,9 @@ pub fn local_managed_state_with_environments_and_agent_source(
 fn local_managed_state_over(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    environments: Option<Arc<awaken_protocol_managed::EnvironmentExecutionState>>,
+    environments: Option<
+        Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+    >,
     agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());

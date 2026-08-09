@@ -1,4 +1,4 @@
----------------------------- MODULE ConfigCAS ----------------------------
+--------------------------- MODULE AggregateCAS --------------------------
 EXTENDS Naturals, TLC
 
 CONSTANT Writers, MaxGeneration, NoWriter

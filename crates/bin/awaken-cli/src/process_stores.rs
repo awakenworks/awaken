@@ -27,9 +27,9 @@ pub(super) struct ControlStores {
     /// Rich Agent drafts and immutable publications, scoped per Workspace.
     pub(super) config: Arc<dyn awaken_agent_config::ScopedConfigRegistry>,
     /// Control-owned subject aggregate and consent facts.
-    pub(super) data_subjects: Arc<dyn awaken_data_subject::DataSubjectRepo>,
+    pub(super) data_subjects: Arc<dyn awaken_data_subject_application::DataSubjectRepo>,
     /// Durable Control erasure process checkpoints over the same adapter.
-    pub(super) erasure_jobs: Arc<dyn awaken_data_subject::ErasureJobRepo>,
+    pub(super) erasure_jobs: Arc<dyn awaken_data_subject_application::ErasureJobRepo>,
     pub(super) environments: Arc<dyn awaken_environment_contract::EnvRegistry>,
     pub(super) sandbox_policies: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
 }

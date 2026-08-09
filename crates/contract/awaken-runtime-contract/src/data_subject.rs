@@ -104,10 +104,15 @@ pub enum CaptureError {
 
 /// A content store that can erase all records attributed to a data subject
 /// (GDPR Art. 17, ADR-0050 D7). A resolver fans an erasure out across every
-/// registered eraser; each returns the number of records it removed.
+/// registered eraser; each returns the number of records it removed. Since a
+/// process may fail after the effect but before its saga checkpoint commits,
+/// implementations must be idempotent by subject and replay the same durable
+/// receipt on retry.
 #[async_trait]
 pub trait ContentEraser: Send + Sync {
-    /// Erase content attributed to `subject`; return the number of records removed.
+    /// Erase content attributed to `subject`; return the stable number of records
+    /// removed. Repeating the same subject must replay that receipt rather than
+    /// perform or count a second logical erasure.
     /// Fail-closed: a backend DELETE failure surfaces as an [`ErasureError`] and is
     /// never collapsed into a `0` count (which a clean "nothing matched" also
     /// reports) — the resolver must be able to tell a real erasure from a no-op.

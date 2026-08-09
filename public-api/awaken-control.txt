@@ -153,7 +153,7 @@ pub awaken_control::ControlComponent::registration_supervisor: alloc::sync::Arc<
 pub awaken_control::ControlComponent::router: axum::routing::Router
 pub awaken_control::ControlComponent::vault_state: alloc::sync::Arc<awaken_protocol_managed::routes::vaults::VaultState>
 pub struct awaken_control::ControlDependencies
-pub awaken_control::ControlDependencies::agent_archive_cascade: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::routes::agents_registry::AgentArchiveCascade>>
+pub awaken_control::ControlDependencies::agent_archive_cascade: core::option::Option<alloc::sync::Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>
 pub awaken_control::ControlDependencies::assistant_model_selection: core::option::Option<awaken_agent_config::config::ModelSelection>
 pub awaken_control::ControlDependencies::assistant_plugins: alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub awaken_control::ControlDependencies::brokered_catalog: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>
@@ -163,11 +163,13 @@ pub awaken_control::ControlDependencies::content_capture_ceiling: awaken_runtime
 pub awaken_control::ControlDependencies::coordinator_content_eraser: alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>
 pub awaken_control::ControlDependencies::credential_probe: alloc::sync::Arc<dyn awaken_admin_config_api::router::CredentialProbe>
 pub awaken_control::ControlDependencies::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>
-pub awaken_control::ControlDependencies::data_subjects: alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>
+pub awaken_control::ControlDependencies::data_subject_org: alloc::string::String
+pub awaken_control::ControlDependencies::data_subjects: alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectRepo>
+pub awaken_control::ControlDependencies::enrollment_signing_key: [u8; 32]
 pub awaken_control::ControlDependencies::environment_application: alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>
 pub awaken_control::ControlDependencies::environment_author: alloc::sync::Arc<dyn awaken_admin_assistant::EnvironmentAuthor>
 pub awaken_control::ControlDependencies::environment_router: axum::routing::Router
-pub awaken_control::ControlDependencies::erasure_jobs: alloc::sync::Arc<dyn awaken_data_subject::ErasureJobRepo>
+pub awaken_control::ControlDependencies::erasure_jobs: alloc::sync::Arc<dyn awaken_data_subject_application::ErasureJobRepo>
 pub awaken_control::ControlDependencies::executable_agent_registrar: alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrar>
 pub awaken_control::ControlDependencies::execution_workspace: alloc::string::String
 pub awaken_control::ControlDependencies::global_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
@@ -189,12 +191,14 @@ pub awaken_control::ControlDependencies::runtimes: alloc::sync::Arc<dyn awaken_c
 pub awaken_control::ControlDependencies::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
 pub awaken_control::ControlDependencies::webhook_store: alloc::sync::Arc<dyn awaken_config_resolver::stores::WebhookStore>
 pub struct awaken_control::ControlRouterInput
-pub awaken_control::ControlRouterInput::agent_archive_cascade: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::routes::agents_registry::AgentArchiveCascade>>
+pub awaken_control::ControlRouterInput::agent_archive_cascade: core::option::Option<alloc::sync::Arc<dyn awaken_deployment_contract::AgentArchiveCascade>>
 pub awaken_control::ControlRouterInput::agent_repository: alloc::sync::Arc<dyn awaken_protocol_managed::routes::agents_registry::ManagedAgentRepository>
 pub awaken_control::ControlRouterInput::assistant_model_selection: core::option::Option<awaken_agent_config::config::ModelSelection>
 pub awaken_control::ControlRouterInput::brokered_catalog: core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>
 pub awaken_control::ControlRouterInput::catalog: alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>
 pub awaken_control::ControlRouterInput::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>
+pub awaken_control::ControlRouterInput::data_subject_application: alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>
+pub awaken_control::ControlRouterInput::data_subject_org: alloc::string::String
 pub awaken_control::ControlRouterInput::environment_router: axum::routing::Router
 pub awaken_control::ControlRouterInput::global_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_control::ControlRouterInput::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
@@ -288,12 +292,12 @@ pub const awaken_control::MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE: &str
 pub const awaken_control::MANAGEMENT_POLICY_NAMESPACE: &str
 pub fn awaken_control::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
 pub async fn awaken_control::build_control_component(awaken_control::ControlDependencies) -> awaken_control::ControlComponent
-pub fn awaken_control::consent_router(alloc::sync::Arc<dyn awaken_data_subject::DataSubjectRepo>, awaken_runtime_contract::capture::ContentCapture) -> axum::routing::Router
+pub fn awaken_control::consent_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::string::String, awaken_runtime_contract::capture::ContentCapture) -> axum::routing::Router
 pub fn awaken_control::control_router(awaken_control::ControlRouterInput) -> axum::routing::Router
 pub fn awaken_control::embedded_iam(&std::path::Path) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::embedded_iam_for_workspace(&std::path::Path, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
-pub fn awaken_control::erasure_router(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectResolver>) -> axum::routing::Router
+pub fn awaken_control::erasure_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectResolver>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_control::hosted_runtime_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub fn awaken_control::management_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub fn awaken_control::management_resource_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile

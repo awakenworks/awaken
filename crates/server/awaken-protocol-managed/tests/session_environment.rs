@@ -8,7 +8,7 @@
 //! assert Sandbox realization, which is covered by Runtime Host provisioning tests.
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_protocol_managed::{EnvironmentState, ManagedState, router};
+use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_contract::{
     OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
@@ -89,8 +89,9 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 }
 
 async fn app() -> (Router, String) {
-    let environments = EnvironmentState::new();
-    let environment = environments
+    let (environment_authoring, environment_execution) =
+        awaken_protocol_managed::test_support::environment_components();
+    let environment = environment_authoring
         .application()
         .create(awaken_environment_contract::CreateEnvironmentCommand {
             command_id: "session-environment-test".into(),
@@ -104,7 +105,7 @@ async fn app() -> (Router, String) {
         .expect("publish Environment through the Control application");
     (
         router(std::sync::Arc::new(
-            ManagedState::new(AcceptingFake).with_environments(environments.execution()),
+            ManagedState::new(AcceptingFake).with_environments(environment_execution),
         )),
         environment.id,
     )

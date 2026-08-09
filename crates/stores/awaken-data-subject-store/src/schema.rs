@@ -1,4 +1,4 @@
-//! Versioned schema for Control-owned subject consent and erasure orchestration.
+//! Versioned schema for the Control-owned data-subject store.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
@@ -13,6 +13,14 @@ const CONTROL_FILES: &[(&str, &str)] = &[
     (
         "V0002__control_erasure_job.sql",
         include_str!("migrations/V0002__control_erasure_job.sql"),
+    ),
+    (
+        "V0003__subject_revision.sql",
+        include_str!("migrations/V0003__subject_revision.sql"),
+    ),
+    (
+        "V0004__erasure_job_revision.sql",
+        include_str!("migrations/V0004__erasure_job_revision.sql"),
     ),
 ];
 

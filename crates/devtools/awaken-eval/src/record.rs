@@ -6,7 +6,8 @@
 //! through the real engine. Expectations are left empty for an author to add.
 //!
 //! This is the mechanism for the `Purpose::EvalRecording` consent purpose
-//! (`awaken-data-subject`): capturing real model I/O into a dataset. The caller
+//! (`awaken-data-subject-application`): capturing real model I/O into a dataset.
+//! The caller
 //! applies the consent gate — this module only reconstructs data it is handed.
 
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};

@@ -27,7 +27,7 @@ impl ExecutableEnvironmentWiring {
     pub(crate) fn local(work: Arc<dyn WorkQueue>) -> Result<Self, String> {
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let registrar: Arc<dyn ExecutableEnvironmentRegistrar> = Arc::new(
-            awaken_protocol_managed::CoordinatorEnvironmentRegistrar::new(
+            awaken_environment_execution_application::CoordinatorEnvironmentRegistrar::new(
                 Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
                 work,
             ),
@@ -91,7 +91,10 @@ impl ExecutableEnvironmentWiring {
             None => durable.clone(),
         };
         let registrar: Arc<dyn ExecutableEnvironmentRegistrar> = Arc::new(
-            awaken_protocol_managed::CoordinatorEnvironmentRegistrar::new(build_aware, work),
+            awaken_environment_execution_application::CoordinatorEnvironmentRegistrar::new(
+                build_aware,
+                work,
+            ),
         );
         let private_router =
             executable_environment_registration_router(registrar.clone(), token)

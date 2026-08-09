@@ -1,0 +1,20 @@
+pub mod awaken_data_subject_store
+pub enum awaken_data_subject_store::StoreError
+pub awaken_data_subject_store::StoreError::Migrate(alloc::string::String)
+pub awaken_data_subject_store::StoreError::Open(alloc::string::String)
+pub struct awaken_data_subject_store::SqliteDataSubjectRepo
+impl awaken_data_subject_store::SqliteDataSubjectRepo
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::ensure_schema(&self) -> core::result::Result<(), awaken_data_subject_store::StoreError>
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::open(&str) -> core::result::Result<Self, awaken_data_subject_store::StoreError>
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::over(rusqlite::Connection) -> Self
+impl awaken_data_subject_application::DataSubjectRepo for awaken_data_subject_store::SqliteDataSubjectRepo
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::compare_and_swap<'life0, 'async_trait>(&'life0 self, u64, awaken_data_subject_application::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::create<'life0, 'async_trait>(&'life0 self, awaken_data_subject_application::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_data_subject_application::DataSubject, awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_data_subject_application::DataSubject>, awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_data_subject_application::ErasureJobRepo for awaken_data_subject_store::SqliteDataSubjectRepo
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::compare_and_swap_progress<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, core::option::Option<u64>, &'life2 awaken_data_subject_application::ErasureProgress) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_data_subject_store::SqliteDataSubjectRepo::load<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_data_subject_application::ErasureProgress>, awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub const awaken_data_subject_store::CONTROL_BUNDLE_ID: &str
+pub const awaken_data_subject_store::CONTROL_PREFIX: &str
+pub fn awaken_data_subject_store::control_data_subject_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>

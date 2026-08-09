@@ -2,9 +2,7 @@
 //! the work lifecycle (list / poll / ack / heartbeat / stop / stats) including the
 //! single-active-lease (open-tier single-worker) cap.
 
-use std::sync::Arc;
-
-use awaken_protocol_managed::{EnvironmentState, environments_router};
+use awaken_protocol_managed::{environment_authoring_router, environment_work_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -13,7 +11,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn app() -> Router {
-    environments_router(Arc::new(EnvironmentState::new()))
+    let (authoring, execution) = awaken_protocol_managed::test_support::environment_components();
+    environment_authoring_router(authoring).merge(environment_work_router(execution))
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -468,8 +467,9 @@ async fn work_poll_honors_documented_blocking_partitions_and_boundaries() {
 /// spelling that would demand an unsupported allowlist provider.
 #[tokio::test]
 async fn snapshot_normalizes_the_networking_policy() {
-    let state = Arc::new(EnvironmentState::new());
-    let app = environments_router(state.clone());
+    let (authoring, execution) = awaken_protocol_managed::test_support::environment_components();
+    let app =
+        environment_authoring_router(authoring).merge(environment_work_router(execution.clone()));
     async fn make(app: &Router, cfg: Value) -> String {
         let (s, e) = call(
             app,
@@ -488,7 +488,7 @@ async fn snapshot_normalizes_the_networking_policy() {
     )
     .await;
     assert_eq!(
-        state
+        execution
             .snapshot(&limited, None)
             .await
             .unwrap()
@@ -504,7 +504,7 @@ async fn snapshot_normalizes_the_networking_policy() {
     )
     .await;
     assert_eq!(
-        state
+        execution
             .snapshot(&unrestricted, None)
             .await
             .unwrap()
@@ -516,7 +516,7 @@ async fn snapshot_normalizes_the_networking_policy() {
 
     let self_hosted = make(&app, json!({ "type": "self_hosted" })).await;
     assert_eq!(
-        state
+        execution
             .snapshot(&self_hosted, None)
             .await
             .unwrap()
@@ -527,7 +527,7 @@ async fn snapshot_normalizes_the_networking_policy() {
     );
 
     assert!(
-        state
+        execution
             .snapshot("env_nonexistent", None)
             .await
             .unwrap()
@@ -541,7 +541,7 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
     // + healthcheck; R2 exact replay returns the same Environment and `ensure`
     // leaves one healthcheck; R3 conflicting payload is rejected by the registry
     // before another Environment or work item can appear.
-    let state = Arc::new(EnvironmentState::new());
+    let (authoring, execution) = awaken_protocol_managed::test_support::environment_components();
     let command = awaken_environment_contract::CreateEnvironmentCommand {
         command_id: "control:call-1".into(),
         name: "stable".into(),
@@ -550,10 +550,14 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
         scope: None,
         config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
     };
-    let first = state.application().create(command.clone()).await.unwrap();
-    let replay = state.application().create(command).await.unwrap();
+    let first = authoring
+        .application()
+        .create(command.clone())
+        .await
+        .unwrap();
+    let replay = authoring.application().create(command).await.unwrap();
     assert_eq!(first.id, replay.id, "R1/R2");
-    let app = environments_router(state);
+    let app = environment_authoring_router(authoring).merge(environment_work_router(execution));
     let (_, work) = call(
         &app,
         "GET",

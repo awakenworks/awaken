@@ -1,0 +1,31 @@
+[package]
+name = "awaken-deployment-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "application"
+authority = "deployment"
+
+[features]
+test-support = []
+
+[dependencies]
+awaken-deployment-contract.workspace = true
+awaken-executable-agent-contract.workspace = true
+awaken-session-contract.workspace = true
+async-trait.workspace = true
+chrono-tz = "0.10"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+awaken-session-store = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

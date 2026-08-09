@@ -93,6 +93,8 @@ pub(super) async fn build_runtime_process_assembly(
             deployment: Some(deployment.runtime.clone()),
             content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
+            enrollment_signing_key: key
+                .map(awaken_data_subject_application::derive_enrollment_signing_key),
             mcp_bearer_token: deployment.mcp_bearer_token.clone(),
             role,
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
