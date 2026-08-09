@@ -1429,8 +1429,10 @@ mod tests {
 
     // Cause/effect decision table for the claim-to-launch capability fence:
     // F1 live handshake fingerprint equals publication pin -> continue.
-    // F2 any mode/option/protocol difference changes fingerprint -> fail before
-    // set_mode, set_config_option, or prompt; no backend/default fallback.
+    // F2 a protocol-level capability difference changes the fingerprint -> fail
+    // before set_mode, set_config_option, or prompt. Route-derived mode/option
+    // catalogues are validated against the frozen selections below instead of
+    // perturbing this placement fence; no backend/default fallback exists.
     #[tokio::test]
     async fn capability_fingerprint_matches_or_fails_before_prompt() {
         let live = NegotiatedAcpCapabilities {

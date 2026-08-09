@@ -169,6 +169,7 @@ const CODEX: AcpCli = AcpCli {
         provider_id: "awaken-managed",
         wire_api: "responses",
         requires_openai_auth: true,
+        codec: ManagedProviderConfigCodec::Codex,
     }),
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
@@ -320,7 +321,17 @@ const OPENCODE: AcpCli = AcpCli {
     backend_model_interface: BackendModelInterface::Unsupported,
     managed_model_interface: ManagedModelInterface::Environment,
     managed_credential_delivery: ManagedCredentialDelivery::ProcessSecret,
-    managed_provider_config: None,
+    managed_provider_config: Some(ManagedProviderConfigDelivery {
+        config_env: "OPENCODE_CONFIG_CONTENT",
+        provider_env: "",
+        provider_id: "awaken-managed",
+        wire_api: "chat",
+        requires_openai_auth: true,
+        codec: ManagedProviderConfigCodec::OpenCode {
+            provider_package: "@ai-sdk/openai-compatible",
+            credential_env: "OPENAI_API_KEY",
+        },
+    }),
     auth_method_id: None,
     mcp_interface: McpInterface::AcpSession,
     config_home_env: Some("OPENCODE_CONFIG_DIR"),
@@ -339,7 +350,12 @@ const OPENCODE: AcpCli = AcpCli {
         keyed_by: SessionKey::InternalId,
     },
     context_window_env: None,
-    env: &[],
+    env: &[
+        ("OPENCODE_DISABLE_AUTOUPDATE", "true"),
+        ("OPENCODE_DISABLE_DEFAULT_PLUGINS", "true"),
+        ("OPENCODE_DISABLE_LSP_DOWNLOAD", "true"),
+        ("OPENCODE_DISABLE_MODELS_FETCH", "true"),
+    ],
 };
 
 // Hermes exposes a native ACP stdio entrypoint. Its DeepSeek provider accepts

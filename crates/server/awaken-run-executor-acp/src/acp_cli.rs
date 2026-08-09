@@ -88,6 +88,17 @@ pub struct ModelDelivery {
 /// only public route metadata; credential bytes remain owned by
 /// [`ManagedCredentialDelivery`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedProviderConfigCodec {
+    /// Codex' `CODEX_CONFIG` model-provider document.
+    Codex,
+    /// OpenCode's inline `OPENCODE_CONFIG_CONTENT` provider document.
+    OpenCode {
+        provider_package: &'static str,
+        credential_env: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagedProviderConfigDelivery {
     /// Environment variable containing the adapter's serialized provider config.
     pub config_env: &'static str,
@@ -99,6 +110,8 @@ pub struct ManagedProviderConfigDelivery {
     pub wire_api: &'static str,
     /// Whether the adapter should consume its separately materialized auth state.
     pub requires_openai_auth: bool,
+    /// Adapter-owned serialization shape selected by the catalog row.
+    pub codec: ManagedProviderConfigCodec,
 }
 
 impl ModelDelivery {
@@ -562,7 +575,9 @@ impl AcpCli {
             }
             if let Some(delivery) = self.managed_provider_config {
                 env.remove(delivery.config_env);
-                env.remove(delivery.provider_env);
+                if !delivery.provider_env.is_empty() {
+                    env.remove(delivery.provider_env);
+                }
             }
             for key in self
                 .config_home_env
@@ -691,30 +706,61 @@ impl AcpCli {
             }
         }
         if let Some(config) = self.managed_provider_config {
-            let mut providers = serde_json::Map::new();
-            providers.insert(
-                config.provider_id.to_string(),
-                serde_json::json!({
-                    "name": "Awaken managed provider",
-                    "base_url": base_url,
-                    "wire_api": config.wire_api,
-                    "requires_openai_auth": config.requires_openai_auth,
-                }),
-            );
-            let serialized = serde_json::to_string(&serde_json::json!({
-                "model": model,
-                "model_provider": config.provider_id,
-                "model_providers": providers,
-            }))
-            .map_err(|error| OpenError(format!("managed_provider_config_invalid: {error}")))?;
+            let document = match config.codec {
+                ManagedProviderConfigCodec::Codex => {
+                    let mut providers = serde_json::Map::new();
+                    providers.insert(
+                        config.provider_id.to_string(),
+                        serde_json::json!({
+                            "name": "Awaken managed provider",
+                            "base_url": base_url,
+                            "wire_api": config.wire_api,
+                            "requires_openai_auth": config.requires_openai_auth,
+                        }),
+                    );
+                    serde_json::json!({
+                        "model": model,
+                        "model_provider": config.provider_id,
+                        "model_providers": providers,
+                    })
+                }
+                ManagedProviderConfigCodec::OpenCode {
+                    provider_package,
+                    credential_env,
+                } => {
+                    let mut models = serde_json::Map::new();
+                    models.insert(model.clone(), serde_json::json!({"name": model}));
+                    let mut providers = serde_json::Map::new();
+                    providers.insert(
+                        config.provider_id.to_string(),
+                        serde_json::json!({
+                            "npm": provider_package,
+                            "name": "Awaken managed provider",
+                            "options": {
+                                "baseURL": base_url,
+                                "apiKey": format!("{{env:{credential_env}}}"),
+                            },
+                            "models": models,
+                        }),
+                    );
+                    serde_json::json!({
+                        "model": format!("{}/{}", config.provider_id, model),
+                        "provider": providers,
+                    })
+                }
+            };
+            let serialized = serde_json::to_string(&document)
+                .map_err(|error| OpenError(format!("managed_provider_config_invalid: {error}")))?;
             env.insert(
                 config.config_env.to_string(),
                 inline(config.config_env, serialized),
             );
-            env.insert(
-                config.provider_env.to_string(),
-                inline(config.provider_env, config.provider_id.to_string()),
-            );
+            if !config.provider_env.is_empty() {
+                env.insert(
+                    config.provider_env.to_string(),
+                    inline(config.provider_env, config.provider_id.to_string()),
+                );
+            }
         }
         if let (Some(key), Some(window)) = (self.context_window_env, context_window) {
             env.insert(key.to_string(), inline(key, window.to_string()));
@@ -1036,10 +1082,11 @@ mod tests {
                 stale_managed_env.push((config_home.into(), "/wrong-config".into()));
             }
             if let Some(delivery) = cli.managed_provider_config {
-                stale_managed_env.extend([
-                    (delivery.config_env.into(), "wrong-provider-config".into()),
-                    (delivery.provider_env.into(), "wrong-provider".into()),
-                ]);
+                stale_managed_env
+                    .push((delivery.config_env.into(), "wrong-provider-config".into()));
+                if !delivery.provider_env.is_empty() {
+                    stale_managed_env.push((delivery.provider_env.into(), "wrong-provider".into()));
+                }
             }
             let launch = cli
                 .try_project(
@@ -1074,11 +1121,13 @@ mod tests {
                     "B1 {}",
                     cli.id
                 );
-                assert!(
-                    env_of(&launch, delivery.provider_env).is_none(),
-                    "B1 {}",
-                    cli.id
-                );
+                if !delivery.provider_env.is_empty() {
+                    assert!(
+                        env_of(&launch, delivery.provider_env).is_none(),
+                        "B1 {}",
+                        cli.id
+                    );
+                }
             }
         }
 
@@ -1502,6 +1551,32 @@ mod tests {
         assert_eq!(
             secret_ref_of(&launch, "OPENAI_API_KEY"),
             Some("lease://test-model")
+        );
+        let config = env_of(&launch, "OPENCODE_CONFIG_CONTENT")
+            .expect("OpenCode managed launches require an explicit provider document");
+        let config: serde_json::Value =
+            serde_json::from_str(&config).expect("valid OpenCode provider config");
+        assert_eq!(config["model"], "awaken-managed/MiniMax-M3[1m]");
+        assert_eq!(
+            config["provider"]["awaken-managed"]["npm"],
+            "@ai-sdk/openai-compatible"
+        );
+        assert_eq!(
+            config["provider"]["awaken-managed"]["options"]["baseURL"],
+            "https://api.minimaxi.com/anthropic"
+        );
+        assert_eq!(
+            config["provider"]["awaken-managed"]["options"]["apiKey"],
+            "{env:OPENAI_API_KEY}"
+        );
+        assert_eq!(
+            config["provider"]["awaken-managed"]["models"]["MiniMax-M3[1m]"]["name"],
+            "MiniMax-M3[1m]"
+        );
+        assert!(!config.to_string().contains("lease://test-model"));
+        assert_eq!(
+            env_of(&launch, "OPENCODE_DISABLE_MODELS_FETCH").as_deref(),
+            Some("true")
         );
     }
 

@@ -115,6 +115,16 @@ impl DurableRunOperations for SharedHost {
         self.dead_letters(thread).await.map_err(map_error)
     }
 
+    async fn requeue_dead_letter(
+        &self,
+        thread: &str,
+        run_id: &str,
+    ) -> Result<bool, ApplicationError> {
+        self.requeue_dead_letter(thread, run_id)
+            .await
+            .map_err(map_error)
+    }
+
     async fn purge_dead_letters(&self, thread: &str) -> Result<usize, ApplicationError> {
         self.purge_dead_letters(thread).await.map_err(map_error)
     }
