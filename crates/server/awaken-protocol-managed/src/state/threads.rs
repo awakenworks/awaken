@@ -65,13 +65,14 @@ impl ManagedState {
         Some(event)
     }
 
-    fn thread_status(status: &str) -> SessionThreadStatus {
+    const fn thread_status(status: SessionStatus) -> SessionThreadStatus {
         match status {
-            "idle" => SessionThreadStatus::Idle,
-            "rescheduling" => SessionThreadStatus::Rescheduling,
-            "terminated" | "deleted" | "activation_failed" => SessionThreadStatus::Terminated,
-            "running" | "preparing" | "activating" => SessionThreadStatus::Running,
-            _ => SessionThreadStatus::Running,
+            SessionStatus::Idle => SessionThreadStatus::Idle,
+            SessionStatus::Rescheduling => SessionThreadStatus::Rescheduling,
+            SessionStatus::Failed | SessionStatus::Terminated => SessionThreadStatus::Terminated,
+            SessionStatus::Running | SessionStatus::Preparing | SessionStatus::Activating => {
+                SessionThreadStatus::Running
+            }
         }
     }
 
@@ -264,24 +265,24 @@ mod tests {
 
     #[test]
     fn session_status_projects_to_the_closed_thread_status_table() {
-        // Cause graph: durable Session status -> thread projection. Known terminal,
-        // idle and rescheduling states retain their meaning; all active and future
-        // unknown non-terminal states fail safe to Running rather than inventing a
-        // second thread lifecycle.
+        // Cause graph: typed Session status -> thread projection. Known terminal,
+        // idle and rescheduling states retain their meaning; active states project
+        // to Running without inventing a second thread lifecycle.
         let cases = [
-            ("idle", SessionThreadStatus::Idle),
-            ("rescheduling", SessionThreadStatus::Rescheduling),
-            ("terminated", SessionThreadStatus::Terminated),
-            ("deleted", SessionThreadStatus::Terminated),
-            ("activation_failed", SessionThreadStatus::Terminated),
-            ("running", SessionThreadStatus::Running),
-            ("preparing", SessionThreadStatus::Running),
-            ("activating", SessionThreadStatus::Running),
-            ("future-active-state", SessionThreadStatus::Running),
+            (SessionStatus::Idle, SessionThreadStatus::Idle),
+            (
+                SessionStatus::Rescheduling,
+                SessionThreadStatus::Rescheduling,
+            ),
+            (SessionStatus::Terminated, SessionThreadStatus::Terminated),
+            (SessionStatus::Failed, SessionThreadStatus::Terminated),
+            (SessionStatus::Running, SessionThreadStatus::Running),
+            (SessionStatus::Preparing, SessionThreadStatus::Running),
+            (SessionStatus::Activating, SessionThreadStatus::Running),
         ];
 
         for (source, expected) in cases {
-            assert_eq!(ManagedState::thread_status(source), expected, "{source}");
+            assert_eq!(ManagedState::thread_status(source), expected, "{source:?}");
         }
     }
 }

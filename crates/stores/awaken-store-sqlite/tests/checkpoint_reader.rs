@@ -13,7 +13,7 @@ use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::lifecycle::{
-    LifecycleCursor, RunLifecycleFeed, RunLifecycleKind,
+    RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed,
 };
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_store_sqlite::SqliteCommitCoordinator;
@@ -255,14 +255,17 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
             .expect("lifecycle commit");
     }
 
-    let first = feed.events_after(LifecycleCursor(0), 2).await.unwrap();
+    let first = feed.events_after(RunLifecycleCursor(0), 2).await.unwrap();
     assert_eq!(
         first
             .events
             .iter()
             .map(|event| event.kind)
             .collect::<Vec<_>>(),
-        vec![RunLifecycleKind::Running, RunLifecycleKind::Awaiting]
+        vec![
+            RunLifecycleEventKind::Running,
+            RunLifecycleEventKind::Awaiting
+        ]
     );
     let second = feed.events_after(first.next_cursor, 10).await.unwrap();
     assert_eq!(
@@ -271,7 +274,10 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
             .iter()
             .map(|event| event.kind)
             .collect::<Vec<_>>(),
-        vec![RunLifecycleKind::Resumed, RunLifecycleKind::Completed]
+        vec![
+            RunLifecycleEventKind::Resumed,
+            RunLifecycleEventKind::Completed
+        ]
     );
     assert!(second.next_cursor > first.next_cursor);
     let _ = std::fs::remove_dir_all(&dir);

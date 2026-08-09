@@ -565,10 +565,59 @@ impl AcpBridge {
 pub struct Supervisor;
 
 impl Supervisor {
+    /// Settle a process after the protocol has already produced a terminal fact.
+    ///
+    /// A well-behaved per-turn adapter normally exits immediately after writing its
+    /// terminal frame. Give that natural exit a small bounded window before starting
+    /// the TERM -> KILL ladder. Cancellation and deadline paths continue to call
+    /// [`Self::reap`] directly, so this never delays an explicit stop request.
+    pub async fn reap_after_terminal(
+        process: &dyn pc::ProcessHandle,
+        grace: std::time::Duration,
+    ) -> Result<bool, AcpError> {
+        let budget = grace
+            .saturating_mul(4)
+            .max(std::time::Duration::from_millis(1));
+        tokio::time::timeout(budget, Self::reap_after_terminal_inner(process, grace))
+            .await
+            .map_err(|_| {
+                AcpError::Io("terminal process cleanup exceeded its total deadline".into())
+            })?
+    }
+
+    async fn reap_after_terminal_inner(
+        process: &dyn pc::ProcessHandle,
+        grace: std::time::Duration,
+    ) -> Result<bool, AcpError> {
+        const SETTLE_STEPS: u32 = 5;
+        let settle = grace.min(std::time::Duration::from_millis(10));
+        let step = settle / SETTLE_STEPS;
+        let io = |e: pc::SandboxError| AcpError::Io(e.to_string());
+        for _ in 0..SETTLE_STEPS {
+            if process.poll().await.map_err(io)?.is_some() {
+                return Ok(false);
+            }
+            tokio::time::sleep(step).await;
+        }
+        Self::reap_inner(process, grace).await
+    }
+
     /// Reap the agent: `SIGTERM`, wait up to `grace` for it to exit, else escalate
     /// to `SIGKILL`. Returns `true` if the kill escalation was needed. (Process-group
     /// semantics live in the provider; this is the neutral signal ladder.)
     pub async fn reap(
+        process: &dyn pc::ProcessHandle,
+        grace: std::time::Duration,
+    ) -> Result<bool, AcpError> {
+        let budget = grace
+            .saturating_mul(4)
+            .max(std::time::Duration::from_millis(1));
+        tokio::time::timeout(budget, Self::reap_inner(process, grace))
+            .await
+            .map_err(|_| AcpError::Io("process cleanup exceeded its total deadline".into()))?
+    }
+
+    async fn reap_inner(
         process: &dyn pc::ProcessHandle,
         grace: std::time::Duration,
     ) -> Result<bool, AcpError> {
@@ -1119,6 +1168,61 @@ mod tests {
         assert_eq!(signalled.lock().unwrap().as_slice(), &[pc::Signal::Term]);
     }
 
+    #[tokio::test]
+    async fn terminal_reap_prefers_a_bounded_natural_exit_over_signalling() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct NaturallyExiting {
+            polls: AtomicUsize,
+            signalled: Arc<Mutex<Vec<pc::Signal>>>,
+        }
+
+        #[async_trait]
+        impl pc::ProcessHandle for NaturallyExiting {
+            fn id(&self) -> &str {
+                "natural"
+            }
+
+            async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+                Ok(pc::ExitStatus {
+                    code: Some(0),
+                    signaled: false,
+                })
+            }
+
+            async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+                Ok(
+                    (self.polls.fetch_add(1, Ordering::SeqCst) >= 2).then_some(pc::ExitStatus {
+                        code: Some(0),
+                        signaled: false,
+                    }),
+                )
+            }
+
+            async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+                self.signalled.lock().unwrap().push(signal);
+                Ok(())
+            }
+        }
+
+        let signalled = Arc::new(Mutex::new(Vec::new()));
+        let killed = Supervisor::reap_after_terminal(
+            &NaturallyExiting {
+                polls: AtomicUsize::new(0),
+                signalled: signalled.clone(),
+            },
+            std::time::Duration::from_millis(20),
+        )
+        .await
+        .expect("natural terminal cleanup succeeds");
+
+        assert!(!killed);
+        assert!(
+            signalled.lock().unwrap().is_empty(),
+            "a process that naturally settles after its terminal frame is not signalled"
+        );
+    }
+
     /// Reap liveness cause/effect rule R3: C1=TERM ignored, C2=KILL delivered,
     /// C3=provider wait never resolves; E1=the canonical signal ladder returns a
     /// bounded error after TERM+KILL instead of retaining an execution lock.
@@ -1162,6 +1266,35 @@ mod tests {
             signalled.lock().unwrap().as_slice(),
             &[pc::Signal::Term, pc::Signal::Kill]
         );
+    }
+
+    #[tokio::test]
+    async fn reap_total_deadline_also_bounds_a_stuck_provider_poll() {
+        struct StuckPoll;
+
+        #[async_trait]
+        impl pc::ProcessHandle for StuckPoll {
+            fn id(&self) -> &str {
+                "stuck-poll"
+            }
+
+            async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+                std::future::pending().await
+            }
+
+            async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+                std::future::pending().await
+            }
+
+            async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+                Ok(())
+            }
+        }
+
+        let error = Supervisor::reap(&StuckPoll, std::time::Duration::from_millis(5))
+            .await
+            .expect_err("the total cleanup deadline must cover provider polling");
+        assert!(error.to_string().contains("total deadline"));
     }
 
     #[tokio::test]

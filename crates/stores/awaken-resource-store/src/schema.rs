@@ -2,6 +2,8 @@
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
+// These identifiers are durable, published migration identities. Keep them
+// stable even though the Rust-facing responsibility is named "reclamation".
 pub const BUNDLE_ID: &str = "awaken.resource_lifecycle";
 pub const NS: &str = "resource_lifecycle";
 pub const CATALOG_BUNDLE_ID: &str = "awaken.resource_catalog";
@@ -29,7 +31,7 @@ fn description_of(name: &str, contents: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
-pub fn resource_lifecycle_bundle() -> Result<MigrationBundle, MigrationError> {
+pub fn resource_reclamation_bundle() -> Result<MigrationBundle, MigrationError> {
     let migrations = FILES
         .iter()
         .map(|(name, contents)| {
@@ -61,12 +63,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resource_lifecycle_bundle_lints() {
+    fn resource_reclamation_bundle_lints() {
         // Cause/effect rule: both independently deployable Resources aggregates
         // must have unique version streams and may reference only their own
         // tables; lint success is the static ownership proof.
         let bundles = [
-            resource_lifecycle_bundle().expect("lifecycle bundle builds"),
+            resource_reclamation_bundle().expect("lifecycle bundle builds"),
             resource_catalog_bundle().expect("catalog bundle builds"),
         ];
         awaken_scoped_migration::lint(&bundles).expect("resource bundles lint");

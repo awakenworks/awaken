@@ -107,7 +107,7 @@ impl<B: RecordBackend> EnvironmentImageBuildStore for DurableEnvironmentImageBui
         lease_ms: u64,
     ) -> Result<Option<EnvironmentImageBuildClaim>, EnvironmentImageBuildError> {
         for current in self.backend.candidates().await? {
-            let Some(state) = current.record.state.claim(owner, now_ms, lease_ms) else {
+            let Some(state) = current.record.state.claim(owner, now_ms, lease_ms)? else {
                 continue;
             };
             let EnvironmentImageBuildState::Building { lease_epoch, .. } = state else {

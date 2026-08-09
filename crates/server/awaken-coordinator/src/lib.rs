@@ -221,7 +221,7 @@ pub fn embedded_resource_component(
             file_catalog: files,
             memory_repository: Arc::new(memory),
             skill_store: embedded_skill_store(root),
-            lifecycle: resources,
+            reclamation: resources,
         },
     )
 }
@@ -249,17 +249,17 @@ pub fn ephemeral_resources_application() -> awaken_resource_application::Resourc
                 file_catalog: files,
                 memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
                 skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-                lifecycle: resources,
+                reclamation: resources,
             },
         ),
     )
 }
 
 pub fn resource_purge_scheduler(
-    lifecycle: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
+    reclamation: Arc<dyn awaken_resource_contract::ResourceReclamationRepository>,
 ) -> Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> {
     Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
-        lifecycle,
+        reclamation,
     ))
 }
 
@@ -815,7 +815,7 @@ fn mount_with_managed_over_and_models(
     let dream_memory_stores = Arc::new(awaken_resource_application::MemoryStoreApplication::new(
         resource_catalog.clone(),
         resource_purge_scheduler(
-            host.resource_lifecycle()
+            host.resource_reclamation()
                 .expect("Dream requires resource lifecycle persistence"),
         ),
     ));
@@ -1032,7 +1032,7 @@ fn resource_management_router_from_host(
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
 ) -> Router {
     let purge = resource_purge_scheduler(
-        host.resource_lifecycle()
+        host.resource_reclamation()
             .expect("resource management requires lifecycle persistence"),
     );
     let memory_stores = memory_store_application(catalog, purge.clone());

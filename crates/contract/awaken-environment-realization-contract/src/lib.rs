@@ -99,8 +99,12 @@ impl EnvironmentImageBuildState {
         }
     }
 
-    #[must_use]
-    pub fn claim(&self, owner: &str, now_ms: u64, lease_ms: u64) -> Option<Self> {
+    pub fn claim(
+        &self,
+        owner: &str,
+        now_ms: u64,
+        lease_ms: u64,
+    ) -> Result<Option<Self>, EnvironmentImageBuildError> {
         let attempt = match self {
             Self::Pending { attempt } => *attempt,
             Self::Failed {
@@ -113,14 +117,22 @@ impl EnvironmentImageBuildState {
                 attempt,
                 ..
             } if *lease_expires_at_ms <= now_ms => *attempt,
-            Self::Failed { .. } | Self::Building { .. } | Self::Ready { .. } => return None,
+            Self::Failed { .. } | Self::Building { .. } | Self::Ready { .. } => return Ok(None),
         };
-        Some(Self::Building {
+        let next_attempt = attempt.checked_add(1).ok_or_else(|| {
+            EnvironmentImageBuildError::AuthorityExhausted(
+                "image build attempt and lease epoch".to_string(),
+            )
+        })?;
+        let lease_expires_at_ms = now_ms.checked_add(lease_ms).ok_or_else(|| {
+            EnvironmentImageBuildError::AuthorityExhausted("image build lease deadline".to_string())
+        })?;
+        Ok(Some(Self::Building {
             owner: owner.to_owned(),
-            lease_epoch: attempt.saturating_add(1),
-            lease_expires_at_ms: now_ms.saturating_add(lease_ms),
-            attempt: attempt.saturating_add(1),
-        })
+            lease_epoch: next_attempt,
+            lease_expires_at_ms,
+            attempt: next_attempt,
+        }))
     }
 
     #[must_use]
@@ -209,6 +221,8 @@ pub enum EnvironmentImageBuildError {
     Unavailable(String),
     #[error("Environment image build timed out: {0}")]
     Timeout(String),
+    #[error("Environment image build authority exhausted: {0}")]
+    AuthorityExhausted(String),
 }
 
 #[async_trait]
@@ -306,9 +320,21 @@ mod tests {
         // backoff; R6 backoff blocks early claim and permits claim at its edge;
         // R7 only the active claim and a non-empty image reach Ready.
         let pending = EnvironmentImageBuildState::default();
-        let first = pending.claim("worker-a", 100, 50).expect("R1");
-        assert!(first.claim("worker-b", 149, 50).is_none(), "R2");
-        let reclaimed = first.claim("worker-b", 150, 50).expect("R3");
+        let first = pending
+            .claim("worker-a", 100, 50)
+            .expect("R1 valid authority")
+            .expect("R1");
+        assert!(
+            first
+                .claim("worker-b", 149, 50)
+                .expect("R2 valid authority")
+                .is_none(),
+            "R2"
+        );
+        let reclaimed = first
+            .claim("worker-b", 150, 50)
+            .expect("R3 valid authority")
+            .expect("R3");
         assert!(
             reclaimed
                 .complete("worker-a", 1, "image@sha256:a", 151)
@@ -318,8 +344,17 @@ mod tests {
         let failed = reclaimed
             .fail("worker-b", 2, "offline", 151, 20)
             .expect("R5");
-        assert!(failed.claim("worker-c", 170, 50).is_none(), "R6 early");
-        let retried = failed.claim("worker-c", 171, 50).expect("R6 edge");
+        assert!(
+            failed
+                .claim("worker-c", 170, 50)
+                .expect("R6 valid authority")
+                .is_none(),
+            "R6 early"
+        );
+        let retried = failed
+            .claim("worker-c", 171, 50)
+            .expect("R6 valid authority")
+            .expect("R6 edge");
         assert!(
             retried.complete("worker-c", 3, "", 172).is_none(),
             "R7 empty"
@@ -331,6 +366,20 @@ mod tests {
             ),
             "R7"
         );
+    }
+
+    #[test]
+    fn build_claim_rejects_attempt_and_deadline_exhaustion() {
+        let exhausted_attempt = EnvironmentImageBuildState::Pending { attempt: u64::MAX };
+        assert!(matches!(
+            exhausted_attempt.claim("worker", 1, 1),
+            Err(EnvironmentImageBuildError::AuthorityExhausted(_))
+        ));
+        let pending = EnvironmentImageBuildState::default();
+        assert!(matches!(
+            pending.claim("worker", u64::MAX, 1),
+            Err(EnvironmentImageBuildError::AuthorityExhausted(_))
+        ));
     }
 
     #[test]

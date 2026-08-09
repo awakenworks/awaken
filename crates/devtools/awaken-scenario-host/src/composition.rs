@@ -360,7 +360,7 @@ pub fn build_unscoped_resource_router() -> Router {
     let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
     let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> =
         awaken_coordinator::resource_purge_scheduler(
-            host.resource_lifecycle()
+            host.resource_reclamation()
                 .expect("scenario resource lifecycle"),
         );
     let memory_stores =

@@ -16,6 +16,7 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
+#[cfg(feature = "test-support")]
 use awaken_runtime_contract::CredentialRealizationCapabilities;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::llm::{

@@ -645,9 +645,9 @@ Do not mix agent truth and delivery operations into an ambiguous status stream:
 trait RunLifecycleFeed {
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError>;
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError>;
 }
 
 trait DispatchOperationalFeed {
@@ -696,7 +696,7 @@ adapter implements only `Dispatch`.
 
 `CheckpointRunLifecycleFeed` is the portable single-process Run implementation. It reads
 `EventScope::All` from the existing committed-event projection, accepts an
-exclusive `LifecycleCursor`, and returns `LifecyclePage.next_cursor` equal to
+exclusive `RunLifecycleCursor`, and returns `RunLifecyclePage.next_cursor` equal to
 the last event actually returned. It projects only committed
 `RunStateChanged` facts:
 

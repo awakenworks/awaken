@@ -15,7 +15,7 @@ use awaken_agent_contract::thread::commit::coordinator::{
 use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitReceipt};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::lifecycle::{
-    LifecycleCursor, LifecyclePage, RunLifecycleFeed, RunLifecycleFeedError,
+    RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
@@ -122,9 +122,9 @@ impl HostCommit {
 impl RunLifecycleFeed for HostCommit {
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         match self {
             HostCommit::Local(store) => store.events_after(cursor, limit).await,
             HostCommit::Remote(_) => Err(RunLifecycleFeedError::Rejected(

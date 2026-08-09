@@ -91,7 +91,7 @@ pub enum WorkerShutdown {
 }
 
 #[derive(Clone)]
-pub(crate) struct WorkerLifecycle {
+pub(crate) struct WorkerSupervisor {
     pub(crate) host: Arc<SharedHost>,
     pub(crate) control: WorkerControlClient,
     pub(crate) identity: WorkerIdentity,
@@ -111,7 +111,7 @@ pub(crate) struct WorkerLifecycle {
     >,
 }
 
-impl WorkerLifecycle {
+impl WorkerSupervisor {
     pub(crate) async fn begin_drain(&self, deadline_ms: Option<u64>) -> Result<(), String> {
         // The process-local claim gate is the drain linearization point. Fence it
         // before publishing Draining to the Registry so no still-open claim loop
@@ -247,7 +247,7 @@ pub(crate) fn new_incarnation_id() -> Result<String, getrandom::Error> {
 }
 
 pub(crate) fn spawn_heartbeat(
-    lifecycle: Arc<WorkerLifecycle>,
+    lifecycle: Arc<WorkerSupervisor>,
     mut sequence: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -310,7 +310,7 @@ pub(crate) fn spawn_heartbeat(
 }
 
 pub(crate) fn spawn_environment_warmup_reconciliation(
-    lifecycle: Arc<WorkerLifecycle>,
+    lifecycle: Arc<WorkerSupervisor>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
@@ -326,7 +326,7 @@ pub(crate) fn spawn_environment_warmup_reconciliation(
     })
 }
 
-async fn revoke_worker_session_authority(lifecycle: &WorkerLifecycle) {
+async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
     lifecycle.host.begin_pool_drain().await;
     // Fail closed without racing terminal sandbox disposal against in-flight
     // native tools. Cancellation stops each process group (including descendant

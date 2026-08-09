@@ -75,7 +75,7 @@ pub use dream::{
     DreamProcessRecord, DreamProcessStore, DreamProcessStoreError, DreamStatus, DreamUsage,
 };
 pub use environment::SessionEnvironmentState;
-pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleSink};
+pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleFactSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
     McpAttachmentState, McpDesiredSetFingerprint, McpGeneration, McpGenerationRef,
@@ -113,9 +113,10 @@ pub use session_realization::{
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
-    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionMutationValidationError, SessionRealizationLease, SessionRepositoryError,
-    SessionRevision, SessionTombstone, VisibleMcpServer,
+    SessionIdempotencyReceipt, SessionLifecycleState, SessionLifecycleStateError,
+    SessionLifecycleTransitionError, SessionMutation, SessionMutationPayload,
+    SessionMutationResult, SessionMutationValidationError, SessionRealizationLease,
+    SessionRepositoryError, SessionRevision, SessionTombstone, VisibleMcpServer,
 };
 pub use skill_execution::{SkillBundleSource, SkillBundleSourceError, validate_skill_bundle};
 pub use tool_configuration::SessionToolConfiguration;

@@ -30,7 +30,7 @@ mod relay_hand;
 
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
-    WorkerLifecycle, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
+    WorkerSupervisor, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
     spawn_heartbeat, wait_for_in_flight, wall_clock_ms,
 };
 use manifest::{
@@ -990,7 +990,7 @@ impl WorkerNode {
         }
         drop(managed);
         let observations = Arc::new(WorkerObservationCache::default());
-        let lifecycle = Arc::new(WorkerLifecycle {
+        let lifecycle = Arc::new(WorkerSupervisor {
             host: host.clone(),
             control: control.clone(),
             identity: registration.snapshot.identity,

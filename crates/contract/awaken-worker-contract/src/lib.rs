@@ -650,6 +650,8 @@ pub enum RegistryError {
     ManifestChanged,
     #[error("worker registry persistence failed: {0}")]
     Persistence(String),
+    #[error("worker generation authority is exhausted for slot {worker_id}")]
+    GenerationExhausted { worker_id: String },
 }
 
 /// Secret-free read projection of the current Worker authority.

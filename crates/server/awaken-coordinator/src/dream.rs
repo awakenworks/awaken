@@ -8,7 +8,7 @@ use awaken_dream_application::{
 };
 use awaken_memory_store::{Memory, MemoryRepository};
 use awaken_protocol_managed::ManagedState;
-use awaken_protocol_managed::types::{InboundEvent, SendEventsRequest};
+use awaken_protocol_managed::types::{InboundEvent, SendEventsRequest, SessionStatus};
 use awaken_provisioning_contract::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
 };
@@ -452,7 +452,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                 .managed
                 .get_session(&preparation.session_id)
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-            if session.status == "failed" {
+            if session.status == SessionStatus::Failed {
                 return Err(DreamFailure::new(
                     "internal_error",
                     "the recovered Dream Agent Session failed",

@@ -8,8 +8,8 @@ use awaken_resource_contract::{
 };
 use awaken_session_contract::{
     ActivationState, ManagedLifecycleFact, PersistedSession, ResolvedInputSource, RunError,
-    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRevision,
-    SessionTombstone,
+    SessionLifecycleState, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionRevision, SessionTombstone,
 };
 
 use super::{
@@ -97,7 +97,12 @@ impl ResourcePurgeGuard for SessionResourcePurgeGuard {
         _now_unix_ms: u64,
     ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
         let mut blockers = std::collections::BTreeSet::new();
-        for scoped in self.sessions.reconcilable_sessions().await {
+        let sessions = self
+            .sessions
+            .try_reconcilable_sessions()
+            .await
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+        for scoped in sessions {
             let workspace = scoped.workspace_id;
             let session = scoped.session;
             let candidates = resource_targets(
@@ -630,7 +635,17 @@ impl SessionApplication {
     /// Reconcile every local durable Resource projection requiring convergence.
     pub async fn reconcile_resource_activations(&self) -> SessionReconciliation {
         let mut report = SessionReconciliation::default();
-        for scoped in self.session_repository().reconcilable_sessions().await {
+        let sessions = match self.session_repository().try_reconcilable_sessions().await {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                report.failures.push(SessionReconciliationFailure {
+                    session_id: "<repository>".to_string(),
+                    message: error.to_string(),
+                });
+                return report;
+            }
+        };
+        for scoped in sessions {
             let owner_scope = scoped.workspace_id;
             let session = scoped.session;
             let session_id = session.session_id.clone();
@@ -676,10 +691,10 @@ impl SessionApplication {
             return Ok(session);
         }
         let session_id = session.session_id.clone();
-        if session.status != "idle" && !session.is_terminal() {
+        if session.lifecycle != SessionLifecycleState::Idle && !session.is_terminal() {
             return Ok(session);
         }
-        if session.status == "idle" {
+        if session.lifecycle == SessionLifecycleState::Idle {
             if let Some(desired) = session.resources.pending.clone() {
                 session.resources.start_attempt().map_err(internal)?;
                 session = self
@@ -838,7 +853,7 @@ impl SessionApplication {
             )
             .await
             .map_err(mutation_failure)?;
-        if session.status == "deleted" {
+        if session.lifecycle == SessionLifecycleState::Deleted {
             self.tombstone_session_snapshot(
                 owner_scope,
                 &session,

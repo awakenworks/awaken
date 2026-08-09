@@ -18,6 +18,7 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
+source scripts/ci/_deadline.sh
 IMAGE="awaken-memoryd:e2e"
 MARKER="memoryd-roundtrip-ok-7c31"
 BUILD_TIMEOUT_SECONDS="${AWAKEN_MEMORYD_BUILD_TIMEOUT_SECONDS:-300}"
@@ -58,7 +59,7 @@ cleanup_build_context() { rm -rf "$CTX"; }
 trap cleanup_build_context EXIT
 cp "$BIN" "$CTX/awaken-sandbox"
 cp deploy/images/sandbox/Dockerfile.memoryd "$CTX/Dockerfile"
-if ! timeout --foreground "$BUILD_TIMEOUT_SECONDS" \
+if ! run_with_deadline "$BUILD_TIMEOUT_SECONDS" \
   docker buildx build --load -q --network "$BUILD_NETWORK" \
     --build-arg BIN=awaken-sandbox -t "$IMAGE" "$CTX" >/dev/null; then
   err "memoryd image build failed or exceeded ${BUILD_TIMEOUT_SECONDS}s"

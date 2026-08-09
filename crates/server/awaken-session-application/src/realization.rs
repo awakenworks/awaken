@@ -5,8 +5,9 @@ use std::collections::BTreeSet;
 use awaken_session_contract::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, McpAttachmentState, McpGenerationRef, PersistedSession, RunError,
-    SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
-    SessionRealizationDirective, SessionRealizationLease, SessionRuntime, StageMcpAttachment,
+    SessionLifecycleState, SessionRealizationAction, SessionRealizationControl,
+    SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationLease,
+    SessionRuntime, StageMcpAttachment,
 };
 
 use super::{SessionApplication, SessionMutationError};
@@ -315,13 +316,17 @@ impl SessionApplication {
         const LEASE_MS: u64 = 300_000;
         let renew_before = now_unix_ms.saturating_add(RENEW_BEFORE_MS);
         let requested_expiry = now_unix_ms.saturating_add(LEASE_MS);
-        let sessions = self.session_repository().reconcilable_sessions().await;
+        let sessions = self
+            .session_repository()
+            .try_reconcilable_sessions()
+            .await
+            .map_err(|error| SessionRealizationError::Control(unavailable(error)))?;
         let mut renewed = 0;
         for scoped in sessions {
             let Some(lease) = scoped.session.realization.clone() else {
                 continue;
             };
-            if scoped.session.status == "deleted"
+            if scoped.session.lifecycle == SessionLifecycleState::Deleted
                 || lease.owner != self.local_realization_owner()
                 || lease.runtime_incarnation != self.runtime_incarnation()
                 || lease.expires_at_unix_ms > renew_before
@@ -358,7 +363,17 @@ impl SessionApplication {
     /// Worker-owned Sessions remain untouched by this Coordinator application.
     pub async fn reconcile_mcp_attachments(&self) -> SessionReconciliation {
         let mut report = SessionReconciliation::default();
-        for scoped in self.session_repository().reconcilable_sessions().await {
+        let sessions = match self.session_repository().try_reconcilable_sessions().await {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                report.failures.push(SessionReconciliationFailure {
+                    session_id: "<repository>".to_string(),
+                    message: error.to_string(),
+                });
+                return report;
+            }
+        };
+        for scoped in sessions {
             let session = scoped.session;
             if session.is_terminal()
                 || self.requires_external_realization(&session)
@@ -841,8 +856,10 @@ impl SessionRealizationControl for SessionApplication {
         // A hot mutation belongs to an already-idle Session, so keep that lifecycle
         // status while its new generation is unacknowledged; a failed replacement
         // must not turn the established Session into a failed create.
-        if session.status != "idle" {
-            session.status = "activating".into();
+        if session.lifecycle != SessionLifecycleState::Idle {
+            session
+                .transition_lifecycle(SessionLifecycleState::Activating)
+                .map_err(unavailable)?;
         }
         let session = self
             .commit_resource_snapshot(
@@ -909,7 +926,7 @@ impl SessionRealizationControl for SessionApplication {
             && expected_drain.is_empty()
             && replayed_publish
             && replayed_drain
-            && session.status == "idle"
+            && session.lifecycle == SessionLifecycleState::Idle
         {
             return Self::realization_directive(
                 owner_scope,
@@ -962,7 +979,9 @@ impl SessionRealizationControl for SessionApplication {
                 .finish_drain(&generation.attachment_id, generation.generation)
                 .map_err(unavailable)?;
         }
-        session.status = "idle".into();
+        session
+            .transition_lifecycle(SessionLifecycleState::Idle)
+            .map_err(unavailable)?;
         let session = self
             .commit_session_snapshot(
                 &owner_scope,
@@ -999,7 +1018,7 @@ impl SessionRealizationControl for SessionApplication {
             .session_repository()
             .get(&command.session_id)
             .await
-            .is_some_and(|session| session.status == "activation_failed")
+            .is_some_and(|session| session.lifecycle == SessionLifecycleState::ActivationFailed)
         {
             return Ok(());
         }
@@ -1049,8 +1068,10 @@ impl SessionRealizationControl for SessionApplication {
                 .note_retryable_failure(command.reason.clone())
                 .map_err(unavailable)?;
         }
-        if session.status != "idle" {
-            session.status = "activation_failed".into();
+        if session.lifecycle != SessionLifecycleState::Idle {
+            session
+                .transition_lifecycle(SessionLifecycleState::ActivationFailed)
+                .map_err(unavailable)?;
         }
         self.commit_session_snapshot(
             &owner_scope,

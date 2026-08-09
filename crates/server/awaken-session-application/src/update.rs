@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use awaken_session_contract::{
-    IdempotencyRecord, McpAttachmentState, PersistedSession, RunError, SessionRevision,
-    SessionToolConfiguration, realization_lease_is_live_at, stable_fingerprint,
+    IdempotencyRecord, McpAttachmentState, PersistedSession, RunError, SessionLifecycleState,
+    SessionRevision, SessionToolConfiguration, realization_lease_is_live_at, stable_fingerprint,
 };
 
 use super::{McpAttachmentCandidate, SessionApplication, SessionMutationError};
@@ -215,7 +215,7 @@ impl SessionApplication {
             .get(session_id)
             .await
             .ok_or(SessionUpdateError::NotFound)?;
-        if session.status != "idle" {
+        if session.lifecycle != SessionLifecycleState::Idle {
             return Err(SessionUpdateError::NotIdle);
         }
         if command

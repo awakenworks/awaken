@@ -20,12 +20,12 @@ use crate::thread::read::checkpoint::{CheckpointReader, EventScope};
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
 #[serde(transparent)]
-pub struct LifecycleCursor(pub u64);
+pub struct RunLifecycleCursor(pub u64);
 
 /// Stable consumer-facing classification of a committed Run transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunLifecycleKind {
+pub enum RunLifecycleEventKind {
     Running,
     Awaiting,
     Resumed,
@@ -38,18 +38,18 @@ pub enum RunLifecycleKind {
 /// authority while `kind` provides the common integration classification.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunLifecycleEvent {
-    pub cursor: LifecycleCursor,
+    pub cursor: RunLifecycleCursor,
     pub thread_id: ThreadId,
     pub run_id: RunId,
-    pub kind: RunLifecycleKind,
+    pub kind: RunLifecycleEventKind,
     pub state: RunState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LifecyclePage {
+pub struct RunLifecyclePage {
     pub events: Vec<RunLifecycleEvent>,
     /// The last returned event cursor, or the requested cursor for an empty page.
-    pub next_cursor: LifecycleCursor,
+    pub next_cursor: RunLifecycleCursor,
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -66,9 +66,9 @@ pub enum RunLifecycleFeedError {
 pub trait RunLifecycleFeed: Send + Sync {
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError>;
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError>;
 }
 
 /// Portable feed over the existing committed-event read model.
@@ -94,21 +94,24 @@ impl CheckpointRunLifecycleFeed {
 /// [`CheckpointRunLifecycleFeed`], so an authoritative database reader cannot
 /// drift from the backend-neutral projection vocabulary.
 #[must_use]
-pub fn classify_run_lifecycle(state: &RunState, previous: Option<&RunState>) -> RunLifecycleKind {
+pub fn classify_run_lifecycle_event(
+    state: &RunState,
+    previous: Option<&RunState>,
+) -> RunLifecycleEventKind {
     match state {
         RunState::Running if matches!(previous, Some(RunState::Awaiting)) => {
-            RunLifecycleKind::Resumed
+            RunLifecycleEventKind::Resumed
         }
-        RunState::Running => RunLifecycleKind::Running,
-        RunState::Awaiting => RunLifecycleKind::Awaiting,
-        RunState::Ended(EndCause::NaturalEnd) => RunLifecycleKind::Completed,
-        RunState::Ended(EndCause::Cancelled) => RunLifecycleKind::Cancelled,
+        RunState::Running => RunLifecycleEventKind::Running,
+        RunState::Awaiting => RunLifecycleEventKind::Awaiting,
+        RunState::Ended(EndCause::NaturalEnd) => RunLifecycleEventKind::Completed,
+        RunState::Ended(EndCause::Cancelled) => RunLifecycleEventKind::Cancelled,
         RunState::Ended(
             EndCause::MaxSteps
             | EndCause::Stopped(_)
             | EndCause::Error(_)
             | EndCause::Indeterminate,
-        ) => RunLifecycleKind::Failed,
+        ) => RunLifecycleEventKind::Failed,
     }
 }
 
@@ -116,9 +119,9 @@ pub fn classify_run_lifecycle(state: &RunState, previous: Option<&RunState>) -> 
 impl RunLifecycleFeed for CheckpointRunLifecycleFeed {
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         checkpoint_lifecycle_events_after(self.reader.as_ref(), cursor, limit)
     }
 }
@@ -129,14 +132,14 @@ impl RunLifecycleFeed for CheckpointRunLifecycleFeed {
 /// cursor algorithm without growing another projection path.
 pub fn checkpoint_lifecycle_events_after<R>(
     reader: &R,
-    cursor: LifecycleCursor,
+    cursor: RunLifecycleCursor,
     limit: usize,
-) -> Result<LifecyclePage, RunLifecycleFeedError>
+) -> Result<RunLifecyclePage, RunLifecycleFeedError>
 where
     R: CheckpointReader + ?Sized,
 {
     if limit == 0 {
-        return Ok(LifecyclePage {
+        return Ok(RunLifecyclePage {
             events: Vec::new(),
             next_cursor: cursor,
         });
@@ -154,7 +157,7 @@ where
         .map_err(|_| RunLifecycleFeedError::InvalidState {
             sequence: record.sequence,
         })?;
-        let kind = classify_run_lifecycle(&state, previous.get(&record.run_id));
+        let kind = classify_run_lifecycle_event(&state, previous.get(&record.run_id));
         previous.insert(record.run_id.clone(), state.clone());
         if record.sequence <= cursor.0 {
             continue;
@@ -165,7 +168,7 @@ where
                 sequence: record.sequence,
             })?;
         events.push(RunLifecycleEvent {
-            cursor: LifecycleCursor(record.sequence),
+            cursor: RunLifecycleCursor(record.sequence),
             thread_id: run.thread_id,
             run_id: record.run_id,
             kind,
@@ -176,7 +179,7 @@ where
         }
     }
     let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-    Ok(LifecyclePage {
+    Ok(RunLifecyclePage {
         events,
         next_cursor,
     })
@@ -283,14 +286,17 @@ mod tests {
         };
         let feed = CheckpointRunLifecycleFeed::new(Arc::new(reader));
 
-        let first = feed.events_after(LifecycleCursor(0), 2).await.unwrap();
+        let first = feed.events_after(RunLifecycleCursor(0), 2).await.unwrap();
         assert_eq!(
             first
                 .events
                 .iter()
                 .map(|event| event.kind)
                 .collect::<Vec<_>>(),
-            vec![RunLifecycleKind::Running, RunLifecycleKind::Awaiting]
+            vec![
+                RunLifecycleEventKind::Running,
+                RunLifecycleEventKind::Awaiting
+            ]
         );
         let second = feed.events_after(first.next_cursor, 10).await.unwrap();
         assert_eq!(
@@ -299,9 +305,12 @@ mod tests {
                 .iter()
                 .map(|event| event.kind)
                 .collect::<Vec<_>>(),
-            vec![RunLifecycleKind::Resumed, RunLifecycleKind::Failed]
+            vec![
+                RunLifecycleEventKind::Resumed,
+                RunLifecycleEventKind::Failed
+            ]
         );
-        assert_eq!(second.next_cursor, LifecycleCursor(4));
+        assert_eq!(second.next_cursor, RunLifecycleCursor(4));
     }
 
     #[tokio::test]
@@ -312,10 +321,10 @@ mod tests {
             _sync: Mutex::new(()),
         }));
 
-        let page = feed.events_after(LifecycleCursor(7), 0).await.unwrap();
+        let page = feed.events_after(RunLifecycleCursor(7), 0).await.unwrap();
 
         assert!(page.events.is_empty());
-        assert_eq!(page.next_cursor, LifecycleCursor(7));
+        assert_eq!(page.next_cursor, RunLifecycleCursor(7));
     }
 
     #[tokio::test]
@@ -334,7 +343,7 @@ mod tests {
         }));
         assert_eq!(
             malformed_feed
-                .events_after(LifecycleCursor(0), 1)
+                .events_after(RunLifecycleCursor(0), 1)
                 .await
                 .unwrap_err(),
             RunLifecycleFeedError::InvalidState { sequence: 1 }
@@ -347,7 +356,7 @@ mod tests {
         }));
         assert_eq!(
             unknown_feed
-                .events_after(LifecycleCursor(0), 1)
+                .events_after(RunLifecycleCursor(0), 1)
                 .await
                 .unwrap_err(),
             RunLifecycleFeedError::UnknownRun { sequence: 2 }
@@ -357,16 +366,16 @@ mod tests {
     #[test]
     fn terminal_classification_is_total() {
         assert_eq!(
-            classify_run_lifecycle(&RunState::Ended(EndCause::NaturalEnd), None),
-            RunLifecycleKind::Completed
+            classify_run_lifecycle_event(&RunState::Ended(EndCause::NaturalEnd), None),
+            RunLifecycleEventKind::Completed
         );
         assert_eq!(
-            classify_run_lifecycle(&RunState::Ended(EndCause::Cancelled), None),
-            RunLifecycleKind::Cancelled
+            classify_run_lifecycle_event(&RunState::Ended(EndCause::Cancelled), None),
+            RunLifecycleEventKind::Cancelled
         );
         assert_eq!(
-            classify_run_lifecycle(&RunState::Ended(EndCause::Indeterminate), None),
-            RunLifecycleKind::Failed
+            classify_run_lifecycle_event(&RunState::Ended(EndCause::Indeterminate), None),
+            RunLifecycleEventKind::Failed
         );
     }
 }

@@ -9,9 +9,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
+#[cfg(test)]
+use awaken_session_contract::SessionLifecycleState;
 use awaken_session_contract::{
     ManagedSessionRepository, McpAttachmentRealizer, McpTarget, PersistedSession, RunError,
-    SandboxProvisioning, SessionEnvironmentBindingSink, SessionLifecycleSink, SessionRuntime,
+    SandboxProvisioning, SessionEnvironmentBindingSink, SessionLifecycleFactSink, SessionRuntime,
     SessionRuntimePlacement,
 };
 
@@ -43,7 +45,7 @@ pub use update::{
     SessionUpdateChanges, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
 mod terminal;
-pub use terminal::SessionTerminalTransition;
+pub use terminal::SessionLifecycleTransition;
 
 #[cfg(test)]
 mod tests {
@@ -361,7 +363,7 @@ mod tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            status: status.into(),
+            lifecycle: status.parse().expect("fixture lifecycle state"),
             archived_at: None,
         }
     }
@@ -1046,7 +1048,11 @@ mod tests {
             ),
             "A1/E1"
         );
-        assert_eq!(repo.get("ack-exact").await.unwrap().status, "idle", "A1/E1");
+        assert_eq!(
+            repo.get("ack-exact").await.unwrap().lifecycle.as_str(),
+            "idle",
+            "A1/E1"
+        );
 
         let (renewed, renewed_lease, mut predecessor) = fixture("ack-renewed");
         create(repo.as_ref(), renewed).await;
@@ -1073,7 +1079,7 @@ mod tests {
             "A2/E2"
         );
         let renewed_truth = repo.get("ack-renewed").await.unwrap();
-        assert_eq!(renewed_truth.status, "activating", "A2/E2");
+        assert_eq!(renewed_truth.lifecycle.as_str(), "activating", "A2/E2");
         assert!(
             !renewed_truth.mcp.attachments[0].publication_acknowledged,
             "A2/E2"
@@ -1313,7 +1319,7 @@ mod tests {
         let second = second.expect("L1 second");
         assert_ne!(first.transitioned, second.transitioned, "L1");
         let archived = repo.get("archive-race").await.expect("L1 durable");
-        assert_eq!(archived.status, "terminated", "L1");
+        assert_eq!(archived.lifecycle.as_str(), "terminated", "L1");
         let revision = archived.revision;
         let replay = app
             .begin_archive(
@@ -1331,7 +1337,7 @@ mod tests {
             .await
             .expect("L3");
         assert!(deleted.transitioned, "L3");
-        assert_eq!(deleted.session.status, "deleted", "L3");
+        assert_eq!(deleted.session.lifecycle.as_str(), "deleted", "L3");
         assert!(deleted.session.needs_resource_reconciliation(), "L3");
         assert!(
             matches!(
@@ -1386,27 +1392,27 @@ mod tests {
         epochs.sort_unstable();
         assert_eq!(epochs, [1, 2], "A1");
         let active = repo.get("activity").await.expect("A1 durable Session");
-        assert_eq!(active.status, "running", "A1");
+        assert_eq!(active.lifecycle.as_str(), "running", "A1");
 
         let stale = app
             .settle_activity("activity", epochs[0])
             .await
             .expect("A2 stale settlement");
-        assert_eq!(stale.status, "running", "A2");
+        assert_eq!(stale.lifecycle.as_str(), "running", "A2");
         assert_eq!(stale.activity_epoch, epochs[1], "A2");
 
         let idle = app
             .settle_activity("activity", epochs[1])
             .await
             .expect("A3 current settlement");
-        assert_eq!(idle.status, "idle", "A3");
+        assert_eq!(idle.lifecycle.as_str(), "idle", "A3");
 
         let running = app
             .begin_activity("activity")
             .await
             .expect("A4 activity before terminal transition");
         let mut terminated = running.clone();
-        terminated.status = "terminated".into();
+        terminated.lifecycle = SessionLifecycleState::Terminated;
         let terminated = app
             .commit_session_snapshot(
                 "workspace",
@@ -1462,15 +1468,15 @@ mod tests {
             .await
             .expect("A8 queued activity");
         assert_eq!(preparing.activity_epoch, 1, "A8/E5");
-        assert_eq!(preparing.status, "preparing", "A8/E5");
+        assert_eq!(preparing.lifecycle.as_str(), "preparing", "A8/E5");
         let still_preparing = app
             .settle_activity("activity-preparing", preparing.activity_epoch)
             .await
             .expect("A8 settlement");
-        assert_eq!(still_preparing.status, "preparing", "A8/E5");
+        assert_eq!(still_preparing.lifecycle.as_str(), "preparing", "A8/E5");
 
         let mut failed = still_preparing;
-        failed.status = "activation_failed".into();
+        failed.lifecycle = SessionLifecycleState::ActivationFailed;
         let failed = app
             .commit_session_snapshot(
                 "workspace",

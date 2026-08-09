@@ -20,7 +20,7 @@ pub struct ManagedLifecycleFact {
 /// A sink notified of a session's committed lifecycle transitions (webhooks).
 /// Implemented in the assembly layer over a webhook dispatcher.
 #[async_trait::async_trait]
-pub trait SessionLifecycleSink: Send + Sync {
+pub trait SessionLifecycleFactSink: Send + Sync {
     /// `event_type` is the wire name of the transition (e.g. `session.status_idle`);
     /// `workspace_id` is the session's owning workspace (absent on the bare pre-owner
     /// surface). The **org** is a deployment-level attribution the sink itself carries

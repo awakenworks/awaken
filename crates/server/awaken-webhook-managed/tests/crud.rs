@@ -15,7 +15,7 @@ use awaken_config_resolver::{
 };
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_contract::{
-    ManagedLifecycleFact, ManagedSessionRepository, PersistedSession, SessionLifecycleSink,
+    ManagedLifecycleFact, ManagedSessionRepository, PersistedSession, SessionLifecycleFactSink,
 };
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
@@ -23,7 +23,7 @@ use awaken_webhook::{
     WebhookSender,
 };
 use awaken_webhook_managed::{
-    ConfigPlaneSubscriptionSource, WebhookLifecycleSink, config_plane_lifecycle_delivery,
+    ConfigPlaneSubscriptionSource, WebhookLifecycleFactSink, config_plane_lifecycle_delivery,
     reconcile_webhook_inventory, recover_webhook_mutations, webhook_config_router,
 };
 use axum::body::Body;
@@ -981,7 +981,7 @@ async fn inventory_reconciliation_protects_intents_and_reports_missing_material(
     assert!(secrets.get(&concurrent).await.is_ok(), "R5/E5");
 }
 
-// --- WebhookLifecycleSink: the no-owner early return ---
+// --- WebhookLifecycleFactSink: the no-owner early return ---
 
 struct CountingSource(Arc<Mutex<u32>>);
 #[async_trait]
@@ -1017,7 +1017,7 @@ async fn emit_without_a_workspace_owner_does_not_fan_out() {
         Arc::new(CountingSource(calls.clone())),
         Arc::new(NoopSender),
     ));
-    let sink = WebhookLifecycleSink::new(
+    let sink = WebhookLifecycleFactSink::new(
         dispatcher,
         None,
         Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
@@ -1125,7 +1125,7 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
             status: Ok(200),
         }),
     ));
-    let sink = WebhookLifecycleSink::new(
+    let sink = WebhookLifecycleFactSink::new(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
@@ -1177,7 +1177,7 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
             status: Err("injected outage".into()),
         }),
     ));
-    let sink = WebhookLifecycleSink::new(
+    let sink = WebhookLifecycleFactSink::new(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
@@ -1222,7 +1222,7 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
         }),
     ));
 
-    let _rebuilt = WebhookLifecycleSink::new(
+    let _rebuilt = WebhookLifecycleFactSink::new(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
@@ -1257,7 +1257,7 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
             status: Ok(200),
         }),
     ));
-    let _restarted = WebhookLifecycleSink::new(
+    let _restarted = WebhookLifecycleFactSink::new(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
@@ -1288,7 +1288,7 @@ async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
             failing: failing.clone(),
         }),
     ));
-    let _sink = WebhookLifecycleSink::with_session_outbox_interval(
+    let _sink = WebhookLifecycleFactSink::with_session_outbox_interval(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
@@ -1317,7 +1317,7 @@ async fn emit_with_a_workspace_owner_fans_out_a_stamped_monotonic_event() {
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
         Arc::new(RecordingSender(tx)),
     ));
-    let sink = WebhookLifecycleSink::new(
+    let sink = WebhookLifecycleFactSink::new(
         dispatcher,
         Some("org_root".into()),
         Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
@@ -1485,7 +1485,7 @@ async fn drive(router: Router, method: &str, uri: &str, ws: &str, body: Value) -
 /// with `strict_endpoint_url_policy()`. The guarded-sender + strict-policy pairing
 /// is only covered downstream, so drive the CRUD router `assemble` returns and prove
 /// the STRICT policy is wired — a loopback endpoint is rejected at admission (400).
-/// Also confirm the returned lifecycle sink is a live `SessionLifecycleSink` (its
+/// Also confirm the returned lifecycle sink is a live `SessionLifecycleFactSink` (its
 /// no-owner path is a deterministic no-op, needing no network).
 #[tokio::test]
 async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_sink() {

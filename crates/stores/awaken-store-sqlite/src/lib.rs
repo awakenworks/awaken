@@ -35,8 +35,8 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::lifecycle::{
-    LifecycleCursor, LifecyclePage, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
-    classify_run_lifecycle,
+    RunLifecycleCursor, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
+    RunLifecyclePage, classify_run_lifecycle_event,
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
@@ -317,11 +317,11 @@ impl CheckpointReader for SqliteCommitCoordinator {
 impl RunLifecycleFeed for SqliteCommitCoordinator {
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         if limit == 0 {
-            return Ok(LifecyclePage {
+            return Ok(RunLifecyclePage {
                 events: Vec::new(),
                 next_cursor: cursor,
             });
@@ -388,15 +388,15 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
                 })
                 .transpose()?;
             events.push(RunLifecycleEvent {
-                cursor: LifecycleCursor(sequence),
+                cursor: RunLifecycleCursor(sequence),
                 thread_id: ThreadId(thread_id),
                 run_id: RunId(run_id),
-                kind: classify_run_lifecycle(&state, previous.as_ref()),
+                kind: classify_run_lifecycle_event(&state, previous.as_ref()),
                 state,
             });
         }
         let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        Ok(LifecyclePage {
+        Ok(RunLifecyclePage {
             events,
             next_cursor,
         })

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   assignShard,
   expandSuites,
@@ -15,6 +16,8 @@ import {
   verifyInstalledDependencies,
 } from './deterministic_runner.mjs';
 import { AWAKEN_BIN_ENV, SCENARIO_HOST_BIN_ENV, WORKER_BIN_ENV } from './cargo_binary.mjs';
+
+const E2E_ROOT_FOR_TEST = path.dirname(fileURLToPath(import.meta.url));
 
 // Cause/effect decision table:
 // C1 nested suite, C2 npm pretest hook, C3 cycle; E1 ordered leaf commands,
@@ -53,6 +56,18 @@ test('fails before prebuild when installed E2E SDKs drift from package-lock', ()
     );
     fs.writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ version: '4.0.54' }));
     assert.doesNotThrow(() => verifyInstalledDependencies(packageDocument, lockDocument, directory));
+    const transitive = path.join(installed, 'node_modules', 'transitive-sdk');
+    fs.mkdirSync(transitive, { recursive: true });
+    lockDocument.packages['node_modules/@ai-sdk/react/node_modules/transitive-sdk'] = {
+      version: '1.0.0',
+    };
+    fs.writeFileSync(path.join(transitive, 'package.json'), JSON.stringify({ version: '1.0.0' }));
+    assert.doesNotThrow(() => verifyInstalledDependencies(packageDocument, lockDocument, directory));
+    fs.writeFileSync(path.join(transitive, 'package.json'), JSON.stringify({ version: '2.0.0' }));
+    assert.throws(
+      () => verifyInstalledDependencies(packageDocument, lockDocument, directory),
+      /transitive-sdk: installed=2\.0\.0, locked=1\.0\.0/,
+    );
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -110,9 +125,11 @@ test('reuses only a complete explicit prebuilt artifact set', () => {
     assert.throws(() => preparedEnvironment({}, directory), /incomplete E2E prebuilt directory/);
     fs.writeFileSync(worker, 'worker');
     const fingerprint = prebuildFingerprint({});
+    const dependencyLockDigest = fileDigest(path.join(E2E_ROOT_FOR_TEST, 'package-lock.json'));
     const manifest = {
-      version: 1,
+      version: 2,
       fingerprint,
+      dependencyLockDigest,
       binaries: {
         awaken: fileDigest(awaken),
         scenarioHost: fileDigest(scenarioHost),
@@ -125,7 +142,17 @@ test('reuses only a complete explicit prebuilt artifact set', () => {
     assert.equal(environment[SCENARIO_HOST_BIN_ENV], scenarioHost);
     assert.equal(environment[WORKER_BIN_ENV], worker);
     fs.writeFileSync(awaken, 'corrupt');
-    assert.equal(validPrebuiltManifest(manifest, fingerprint, awaken, scenarioHost, worker), false);
+    assert.equal(
+      validPrebuiltManifest(
+        manifest,
+        fingerprint,
+        dependencyLockDigest,
+        awaken,
+        scenarioHost,
+        worker,
+      ),
+      false,
+    );
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
