@@ -1,7 +1,8 @@
 //! Post-creation session-resource CRUD (`/v1/sessions/{id}/resources`) mirrors the
 //! Managed Agents contract: only `file` attaches to a live Session;
 //! `github_repository` and `memory_store` bind in the create-time snapshot.
-//! Awaken additionally rejects raw Repository tokens at typed admission.
+//! Repository tokens use the official write-only create/update fields and are
+//! sealed into the canonical Vault before a Session snapshot is persisted.
 
 mod support;
 
@@ -1849,7 +1850,15 @@ async fn getting_or_deleting_an_unknown_session_resource_is_404() {
     assert_eq!(del_status, StatusCode::NOT_FOUND);
 }
 #[tokio::test]
-async fn repository_raw_credentials_are_rejected_on_create_and_update() {
+async fn repository_authorization_fails_closed_without_vault_or_existing_binding() {
+    // Cause/effect graph and decision table:
+    // a write-only token requires the canonical Vault ingress; update additionally
+    // requires an authenticated Repository binding. Neither failure may prepare
+    // Runtime resources or silently create a parallel credential path.
+    //
+    // | Rule | Vault ingress | Existing binding | Command | Result | Runtime |
+    // | F1 | absent | n/a | create with token | reject | zero |
+    // | F2 | n/a | absent | update public repo | reject | unchanged |
     let runtime = AcceptingFake::default();
     let applied = runtime.applied.clone();
     let prepared = runtime.prepared.clone();
@@ -1902,36 +1911,21 @@ async fn repository_raw_credentials_are_rejected_on_create_and_update() {
 }
 
 #[tokio::test]
-async fn repository_binding_materializes_one_exact_secret_free_execution_pin() {
+async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     // Cause graph:
-    // pre-existing same-Workspace binding -> create-time Repository config
-    // -> exact Vault access@revision -> frozen Session manifest -> Runtime apply;
-    // raw material and the binding identifier never enter the wire projection.
+    // write-only token -> canonical Vault sealing -> create-time Repository config
+    // -> exact access@revision -> frozen Session manifest -> Runtime apply;
+    // update token -> canonical material rotation -> Session pin CAS. Raw material
+    // and the internal binding identifier never enter the wire projection.
     //
     // Decision table:
     // | Rule | Binding | Workspace/status | Result | Runtime | Durable pin |
     // | B1 | absent | n/a | public Repository | once | none |
-    // | B2 | existing | exact/active | accept | once | exact revision |
-    // | B3 | missing/foreign/disabled | invalid | reject | zero | no Session |
+    // | B2 | supplied | exact/active | seal/create | once | revision 1 |
+    // | B3 | replacement | exact/active | rotate/update | unchanged | revision 2 |
     let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials =
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
-    let source = awaken_credential_vault::repo::enter_credential(
-        awaken_credential_vault::CredentialCreateParams {
-            workspace_id: "default".into(),
-            kind: awaken_credential_vault::CredentialKind::Vault,
-            provider_id: Some("git".into()),
-            env_key: None,
-            secret: Some(awaken_agent_contract::RedactedString::from(
-                "never-project-this-secret".to_string(),
-            )),
-            oauth_command: None,
-        },
-        secrets.as_ref(),
-        credentials.as_ref(),
-    )
-    .await
-    .unwrap();
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
         secrets,
         credentials,
@@ -1941,6 +1935,7 @@ async fn repository_binding_materializes_one_exact_secret_free_execution_pin() {
     );
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
+    let applied = runtime.applied.clone();
     let app = router(std::sync::Arc::new(
         ManagedState::new(runtime)
             .with_vaults(vaults)
@@ -1957,13 +1952,14 @@ async fn repository_binding_materializes_one_exact_secret_free_execution_pin() {
             "resources": [{
                 "type": "github_repository",
                 "url": "https://github.com/awaken/private.git",
-                "credential_binding": source.id.0
+                "authorization_token": "never-project-this-secret" // awaken-allow: secret
             }]
         })),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK, "{session}");
+    let session_id = session["id"].as_str().unwrap();
     assert_eq!(
         prepared.lock().unwrap().len(),
         1,
@@ -1972,7 +1968,7 @@ async fn repository_binding_materializes_one_exact_secret_free_execution_pin() {
     let serialized = session.to_string();
     assert!(!serialized.contains("credential_binding"));
     assert!(!serialized.contains("never-project-this-secret"));
-    let durable = sessions.get(session["id"].as_str().unwrap()).await.unwrap();
+    let durable = sessions.get(session_id).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository {
         config, credential, ..
     } = &durable.resources.active.inputs[0].source
@@ -1981,30 +1977,44 @@ async fn repository_binding_materializes_one_exact_secret_free_execution_pin() {
     };
     assert_eq!(
         config.credential_binding.as_deref(),
-        Some(source.id.0.as_str())
+        Some(format!("managed:{session_id}:repository:0:credential").as_str())
     );
     let credential = credential.as_ref().expect("B2 exact execution pin");
-    assert_eq!(credential.access.credential.id, source.id.0);
+    assert_eq!(
+        credential.access.credential.id,
+        format!("managed:{session_id}:repository:0:credential")
+    );
     assert_eq!(credential.access.credential.revision, 1);
 
-    let (missing_status, _) = call(
+    let resource_id = session["resources"][0]["id"].as_str().unwrap();
+    let applied_before = applied.lock().unwrap().len();
+    let (rotate_status, rotated) = call(
         &app,
         "POST",
-        "/v1/sessions",
-        Some(json!({
-            "agent": "a",
-            "resources": [{
-                "type": "github_repository",
-                "url": "https://github.com/awaken/private.git",
-                "credential_binding": "missing"
-            }]
-        })),
+        &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
+        Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
     )
     .await;
-    assert_eq!(missing_status, StatusCode::BAD_REQUEST, "B3");
+    assert_eq!(rotate_status, StatusCode::OK, "{rotated}");
+    assert!(!rotated.to_string().contains("rotated-secret"));
     assert_eq!(
-        prepared.lock().unwrap().len(),
-        1,
-        "B3 has no Runtime effect"
+        applied.lock().unwrap().len(),
+        applied_before,
+        "B3 changes the execution pin without remounting the working tree"
+    );
+    let durable = sessions.get(session_id).await.unwrap();
+    let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
+        &durable.resources.active.inputs[0].source
+    else {
+        panic!("B3 must retain one Repository input")
+    };
+    assert_eq!(
+        credential
+            .as_ref()
+            .expect("B3 rotated pin")
+            .access
+            .credential
+            .revision,
+        2
     );
 }

@@ -1,9 +1,9 @@
 //! The admin-config schema (ADR-0043). One portable [`MigrationBundle`] under
 //! the `admin` namespace with its own ledger, covering the aggregates the admin
 //! plane itself authors (inference profiles, webhook endpoints, and resource
-//! bindings) — the catalog/credential domains keep their own
-//! bundles. All rows are **secret-free** (a webhook row carries a `secret_ref`,
-//! never material). Its own
+//! bindings) — the catalog/credential domains keep their own bundles. All rows
+//! are **secret-free**. Retired tables remain only as immutable migration history;
+//! no current repository adapter reads or writes them. Its own
 //! bundle prefix is what lets the admin plane be split into its own
 //! database/service (blast-radius isolation).
 //!
@@ -22,10 +22,44 @@ pub const BUNDLE_ID: &str = "awaken.admin";
 /// `(file_name, file_contents)`: the name yields the version, the contents yield
 /// the description (first `-- comment` line) and the SQL body. `include_str!`
 /// resolves relative to this source file, so the `.sql` files ship in the crate.
-const FILES: &[(&str, &str)] = &[(
-    "V0001__control_admin.sql",
-    include_str!("migrations/V0001__control_admin.sql"),
-)];
+const FILES: &[(&str, &str)] = &[
+    (
+        "V0001__inference_profile.sql",
+        include_str!("migrations/V0001__inference_profile.sql"),
+    ),
+    (
+        "V0002__mcp_server.sql",
+        include_str!("migrations/V0002__mcp_server.sql"),
+    ),
+    (
+        "V0003__agent_mcp.sql",
+        include_str!("migrations/V0003__agent_mcp.sql"),
+    ),
+    (
+        "V0004__agent_resource.sql",
+        include_str!("migrations/V0004__agent_resource.sql"),
+    ),
+    (
+        "V0005__webhook.sql",
+        include_str!("migrations/V0005__webhook.sql"),
+    ),
+    (
+        "V0006__memory_store.sql",
+        include_str!("migrations/V0006__memory_store.sql"),
+    ),
+    (
+        "V0007__webhook_outbox.sql",
+        include_str!("migrations/V0007__webhook_outbox.sql"),
+    ),
+    (
+        "V0008__resource_catalog.sql",
+        include_str!("migrations/V0008__resource_catalog.sql"),
+    ),
+    (
+        "V0009__retire_legacy_mcp_config.sql",
+        include_str!("migrations/V0009__retire_legacy_mcp_config.sql"),
+    ),
+];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0005__…` ⇒ 5). A name
 /// that does not carry a positive version yields `0`, which [`Migration::new`]
@@ -82,11 +116,13 @@ mod tests {
 
     #[test]
     fn versions_parse_contiguously_from_file_names() {
-        // Cause/effect: the unreleased Admin history is rebaselined to its one
-        // effective owned schema. Exactly V1 is present; retired MCP, outbox,
-        // Memory, and Resource-catalog tracks cannot reserve phantom versions.
+        // Cause/effect decision table:
+        // R1 empty ledger + V1..V9 => build the current Control schema.
+        // R2 published prefix + the same V1..V9 => apply only its missing suffix.
+        // R3 published prefix + a rewritten V1 => reject unknown/checksum history.
+        // Retired DDL is ledger compatibility, not a second repository owner.
         let bundle = admin_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, vec![1]);
+        assert_eq!(versions, (1..=9).collect::<Vec<_>>());
     }
 }

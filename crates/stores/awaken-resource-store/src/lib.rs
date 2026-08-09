@@ -7,6 +7,10 @@
 
 use parking_lot::Mutex;
 
+use std::collections::BTreeSet;
+#[cfg(feature = "sqlite")]
+use std::time::Duration;
+
 use async_trait::async_trait;
 use awaken_resource_contract::{
     AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind, ResourcePurgeError,
@@ -15,6 +19,9 @@ use awaken_resource_contract::{
 };
 #[cfg(feature = "sqlite")]
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+
+#[cfg(feature = "sqlite")]
+const SQLITE_RESOURCE_WRITE_WAIT: Duration = Duration::from_secs(30);
 
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -48,6 +55,9 @@ impl SqliteResourceStore {
 
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, ResourcePurgeError> {
         let connection = Connection::open(path).map_err(|error| storage(error.to_string()))?;
+        connection
+            .busy_timeout(SQLITE_RESOURCE_WRITE_WAIT)
+            .map_err(|error| storage(error.to_string()))?;
         connection
             .execute_batch("PRAGMA journal_mode = WAL;")
             .map_err(|error| storage(error.to_string()))?;
@@ -180,7 +190,7 @@ impl ResourcePurgeRepository for SqliteResourceStore {
         intent.validate()?;
         let mut connection = self.connection();
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| storage(error.to_string()))?;
         let existing = transaction
             .query_row(
@@ -354,7 +364,7 @@ impl ResourceReferenceIndex for SqliteResourceStore {
         reference_id: &str,
         records: Vec<ResourceReferenceRecord>,
     ) -> Result<(), ResourcePurgeError> {
-        validate_replacement(kind, reference_id, &records)?;
+        let records = prepare_replacement(kind, reference_id, records)?;
         let mut connection = self.connection();
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -543,25 +553,35 @@ pub(crate) fn validate_reference(
     Ok(())
 }
 
-pub(crate) fn validate_replacement(
+pub(crate) fn prepare_replacement(
     kind: ResourceReferenceKind,
     reference_id: &str,
-    records: &[ResourceReferenceRecord],
-) -> Result<(), ResourcePurgeError> {
+    records: Vec<ResourceReferenceRecord>,
+) -> Result<Vec<ResourceReferenceRecord>, ResourcePurgeError> {
     if reference_id.trim().is_empty() {
         return Err(ResourcePurgeError::Invalid(
             "replacement reference_id must not be empty".into(),
         ));
     }
+    let mut identities = BTreeSet::new();
+    let mut unique = Vec::with_capacity(records.len());
     for record in records {
-        validate_reference(record)?;
+        validate_reference(&record)?;
         if record.reference.kind != kind || record.reference.reference_id != reference_id {
             return Err(ResourcePurgeError::Invalid(
                 "replacement rows must belong to the requested holder".into(),
             ));
         }
+        let identity = (
+            record.target.workspace_id.clone(),
+            record.target.kind,
+            record.target.resource_id.clone(),
+        );
+        if identities.insert(identity) {
+            unique.push(record);
+        }
     }
-    Ok(())
+    Ok(unique)
 }
 
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -786,14 +806,22 @@ mod tests {
                 reference_id: "session-1".into(),
             },
         };
+        /* Replacement set decision. C1 one holder repeats an identical target
+         * coordinate (for example, the same content through two mount paths).
+         * E1 persist one safety edge without rejecting the valid replacement.
+         * Rule D1 C1=>E1; adapter-specific SQL must not create another policy. */
         store
             .replace_references(
                 ResourceReferenceKind::SessionBinding,
                 "session-1",
-                vec![replacement.clone()],
+                vec![replacement.clone(), replacement.clone()],
             )
             .await
             .unwrap();
+        assert_eq!(
+            store.references(&replacement.target).await.unwrap().len(),
+            1
+        );
         store
             .replace_references(
                 ResourceReferenceKind::SessionBinding,
@@ -818,6 +846,54 @@ mod tests {
     #[tokio::test]
     async fn sqlite_in_memory_conforms() {
         repository_spec(&SqliteResourceStore::in_memory().unwrap()).await;
+    }
+
+    /*
+     * Concurrent idempotency decision table. C1 two independent SQLite
+     * connections address one lifecycle database; C2 both submit the same valid
+     * purge request concurrently; C3 a distinct request reuses that key.
+     * Effects: E1 exactly one insert and one existing outcome; E2 one durable
+     * intent; E3 conflict remains terminal. Rules: R1 C1+C2=>E1+E2;
+     * R2 C1+C3=>E3. This test owns the cross-connection write-lock invariant;
+     * repository_spec owns the sequential protocol.
+     */
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sqlite_concurrent_duplicate_put_is_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("resources.db");
+        let first = std::sync::Arc::new(SqliteResourceStore::open(&path).unwrap());
+        let second = std::sync::Arc::new(SqliteResourceStore::open(&path).unwrap());
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+
+        let submit = |store: std::sync::Arc<SqliteResourceStore>,
+                      barrier: std::sync::Arc<tokio::sync::Barrier>| {
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store.put(intent("purge-concurrent")).await
+            })
+        };
+        let (left, right) = tokio::join!(
+            submit(first.clone(), barrier.clone()),
+            submit(second.clone(), barrier),
+        );
+        let outcomes = [left.unwrap().unwrap(), right.unwrap().unwrap()];
+
+        assert!(outcomes.contains(&PutResourcePurgeOutcome::Inserted));
+        assert!(outcomes.contains(&PutResourcePurgeOutcome::Existing));
+        assert!(first.get("purge-concurrent").await.unwrap().is_some());
+        let conflicting = ResourcePurgeIntent::new(
+            "another-intent",
+            "delete:purge-concurrent",
+            ResourceTarget::new("workspace-a", ResourceKind::MemoryStore, "memory-2"),
+            Some(3),
+            10,
+            20,
+        )
+        .unwrap();
+        assert!(matches!(
+            second.put(conflicting).await,
+            Err(ResourcePurgeError::IdempotencyConflict(_))
+        ));
     }
 
     #[test]

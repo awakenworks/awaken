@@ -413,6 +413,50 @@ impl SqliteSkillStore {
 mod tests {
     use super::*;
 
+    #[test]
+    fn published_v1_ledger_upgrades_to_v2() {
+        // Cause/effect decision table:
+        // | starting ledger | bundle | effect                    |
+        // | empty           | V1,V2 | both schemas apply         |
+        // | V1              | V1,V2 | only aggregate V2 applies  |
+        // | V1              | new V1 | checksum drift is rejected|
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        let full = skill_store_bundle().expect("bundle builds");
+        let published_v1 = awaken_scoped_migration::MigrationBundle::new(
+            crate::schema::BUNDLE_ID,
+            vec![full.migrations()[0].clone()],
+        )
+        .expect("published V1 bundle");
+        let runner =
+            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        runner
+            .run_bundle(&conn, &published_v1)
+            .expect("apply published V1");
+        conn.execute(
+            "INSERT INTO skill_store_skill(workspace_id,id,content) \
+             VALUES ('ws','kept','legacy')",
+            [],
+        )
+        .expect("seed legacy skill");
+
+        let delta = runner.run_bundle(&conn, &full).expect("upgrade to V2");
+        assert_eq!(
+            delta
+                .iter()
+                .map(|migration| migration.version)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        let kept: String = conn
+            .query_row(
+                "SELECT content FROM skill_store_skill WHERE id='kept'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read legacy skill");
+        assert_eq!(kept, "legacy");
+    }
+
     fn aggregate() -> (SkillDefinition, SkillVersion) {
         let files = vec![crate::SkillBundleFile {
             path: "SKILL.md".into(),

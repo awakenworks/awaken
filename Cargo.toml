@@ -94,8 +94,8 @@ awaken-control = { path = "crates/control/awaken-control" }
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
 awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "97717ab58faaa1ab9957e4c638aa367fb24334ee" }
 awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation", rev = "97717ab58faaa1ab9957e4c638aa367fb24334ee" }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "97717ab58faaa1ab9957e4c638aa367fb24334ee" }
-awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "97717ab58faaa1ab9957e4c638aa367fb24334ee" }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "8a0037c012fe63f496dad1772cdcbc89bbc03c5a" }
+awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "8a0037c012fe63f496dad1772cdcbc89bbc03c5a" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
 # /v1/vaults/* in awaken-server, opt-in via AWAKEN_MGMT_IAM=embedded.

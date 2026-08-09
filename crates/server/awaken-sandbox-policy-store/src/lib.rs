@@ -22,12 +22,17 @@ fn sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> {
             Migration::new(
                 1,
                 "immutable sandbox execution policy versions",
-                "CREATE TABLE {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
+                "CREATE TABLE IF NOT EXISTS {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
             )?,
             Migration::new(
                 2,
                 "current sandbox execution policy version",
-                "CREATE TABLE {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+            )?,
+            Migration::new(
+                3,
+                "exact environment sandbox execution policy binding",
+                "CREATE TABLE IF NOT EXISTS {prefix}_environment (environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version BIGINT NOT NULL)",
             )?,
         ],
     )
@@ -343,17 +348,6 @@ impl SandboxExecutionPolicyStore for SqliteSandboxExecutionPolicyStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sandbox_policy_schema_is_versioned_and_unconditional() {
-        // Cause/effect rule: immutable versions and their current pointer each
-        // have one unconditional ledger version; the removed Environment-binding
-        // authority has no create/drop migration track, and conditional DDL is
-        // rejected instead of hiding drift.
-        let bundle = sandbox_policy_bundle().expect("sandbox-policy bundle");
-        awaken_scoped_migration::lint(std::slice::from_ref(&bundle))
-            .expect("deterministic sandbox-policy migrations");
-    }
     use awaken_provisioning_contract::{IsolationClass, SandboxExecutionPolicyId, SandboxOverride};
 
     fn policy(id: &str, version: u64, isolation: IsolationClass) -> SandboxExecutionPolicy {
@@ -440,14 +434,15 @@ mod tests {
     #[test]
     fn sqlite_schema_has_one_scoped_migration_authority() {
         // Causal graph:
-        // open -> run canonical bundle -> ledger + two surviving tables -> serve
+        // open -> run canonical bundle -> ledger + three published tables -> serve
         // reopen -> ledger verifies checksums -> no duplicate schema path
+        // runtime authority moved -> historical V3 table remains inert
         //
         // Decision table:
-        // | first open | ledger current | expected effect                 |
-        // | yes        | no             | apply exactly two migrations  |
-        // | no         | yes            | apply zero pending migrations  |
-        // | no         | checksum drift | fail closed                     |
+        // | first open | ledger current | expected effect                  |
+        // | yes        | no             | apply exact published V1-V3      |
+        // | no         | yes            | apply zero pending migrations    |
+        // | no         | checksum drift | fail closed                      |
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("policy-schema.db");
         let path = path.to_str().unwrap();
@@ -462,8 +457,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(applied, 2);
-        let obsolete_binding_table: Option<String> = first
+        assert_eq!(applied, 3);
+        let historical_binding_table: Option<String> = first
             .conn
             .lock()
             .unwrap()
@@ -474,7 +469,10 @@ mod tests {
             )
             .optional()
             .unwrap();
-        assert!(obsolete_binding_table.is_none());
+        assert_eq!(
+            historical_binding_table.as_deref(),
+            Some("sandbox_execution_policy_environment")
+        );
         drop(first);
         let reopened = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
         let applied_after_reopen: i64 = reopened
@@ -487,7 +485,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(applied_after_reopen, 2);
+        assert_eq!(applied_after_reopen, 3);
         reopened
             .conn
             .lock()

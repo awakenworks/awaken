@@ -19,8 +19,8 @@ use tokio::runtime::Handle;
 
 use crate::schema::{CATALOG_NS, NS, resource_catalog_bundle, resource_lifecycle_bundle};
 use crate::{
-    decode_intent, encode_intent, kind_name, parse_reference_kind, reference_kind_name,
-    status_name, storage, to_i64, validate_fence_request, validate_reference, validate_replacement,
+    decode_intent, encode_intent, kind_name, parse_reference_kind, prepare_replacement,
+    reference_kind_name, status_name, storage, to_i64, validate_fence_request, validate_reference,
 };
 
 /// Multi-node durable resource lifecycle state.
@@ -476,7 +476,7 @@ impl ResourceReferenceIndex for PostgresResourceStore {
         reference_id: &str,
         records: Vec<ResourceReferenceRecord>,
     ) -> Result<(), ResourcePurgeError> {
-        validate_replacement(kind, reference_id, &records)?;
+        let records = prepare_replacement(kind, reference_id, records)?;
         let mut transaction = self
             .pool
             .begin()
