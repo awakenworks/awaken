@@ -471,6 +471,58 @@ async fn archive_disables_credential_and_bumps_version() {
 }
 
 // ---------------------------------------------------------------------------
+// rotate_credential: exact CAS + write-only replacement
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn rotate_credential_replaces_material_without_leaking_and_rejects_stale_versions() {
+    // | expected revision | material | effect |
+    // | current           | new      | revision advances; validation uses new material |
+    // | stale             | another  | 409; committed material remains unchanged |
+    let probe = RecordingProbe::new(ProbeStatus::Valid);
+    let h = harness_with(Some(probe.clone()));
+    author_model(&h, "anthropic", "anthropic_messages", "claude-opus-4-8").await;
+    let credential = enter_vault_cred(&h.app, Some("anthropic"), "sk-before-rotation").await;
+
+    let replacement = "sk-after-rotation"; // awaken-allow: secret
+    let (status, rotated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{credential}/rotate"),
+        Some(json!({"expected_version": 1, "secret": replacement})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rotated}");
+    assert_eq!(rotated["version"], 2);
+    assert!(
+        !serde_json::to_string(&rotated)
+            .unwrap()
+            .contains(replacement)
+    );
+
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{credential}/validate"),
+        Some(json!({"workspace_id": "ws", "model_id": "claude-opus-4-8"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(probe.call_count(), 1);
+    assert_eq!(probe.calls.lock().unwrap()[0].1, replacement);
+
+    let (status, problem) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{credential}/rotate"),
+        Some(json!({"expected_version": 1, "secret": "sk-stale-replacement"})), // awaken-allow: secret
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{problem}");
+    assert_eq!(problem["code"], "credential_version_conflict");
+}
+
+// ---------------------------------------------------------------------------
 // post_credential: secret-in / secret-free-out
 // ---------------------------------------------------------------------------
 

@@ -194,7 +194,7 @@ impl ProviderConnectionService {
         let provider = Provider {
             id: provider_id,
             slug: command.provider_id.clone(),
-            display_name: command.display_name,
+            display_name: command.display_name.clone(),
             version: 1,
         };
         let endpoint = ProtocolEndpoint {
@@ -206,6 +206,8 @@ impl ProviderConnectionService {
             display_name: endpoint_name.unwrap_or_else(|| command.dialect.as_str().to_owned()),
             version: 1,
         };
+        let discovery_endpoint =
+            provider_discovery_endpoint(&command, descriptor.as_ref(), &endpoint);
 
         enum ConnectionCredential {
             ApiKey(RedactedString),
@@ -268,7 +270,9 @@ impl ProviderConnectionService {
 
         let models = match &authentication {
             ConnectionCredential::ApiKey(secret) => {
-                self.discovery.discover_with_secret(&endpoint, secret).await
+                self.discovery
+                    .discover_with_secret(&discovery_endpoint, secret)
+                    .await
             }
             ConnectionCredential::OAuth(helper) => {
                 let probe = CredentialSource {
@@ -285,11 +289,11 @@ impl ProviderConnectionService {
                     status: CredentialStatus::Active,
                     version: 1,
                 };
-                self.discovery.discover(&endpoint, &probe).await
+                self.discovery.discover(&discovery_endpoint, &probe).await
             }
             ConnectionCredential::Existing(credential) => {
                 self.discovery
-                    .discover(&endpoint, credential.as_ref())
+                    .discover(&discovery_endpoint, credential.as_ref())
                     .await
             }
         }?;
@@ -422,6 +426,34 @@ fn provider_base_url(
     Ok(base_url)
 }
 
+fn provider_discovery_endpoint(
+    command: &ConnectProviderCommand,
+    descriptor: Option<&awaken_model_catalog::ProviderDriverDescriptor>,
+    endpoint: &ProtocolEndpoint,
+) -> ProtocolEndpoint {
+    let discovery_base_url = if command
+        .base_url
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        None
+    } else {
+        descriptor.and_then(|descriptor| {
+            descriptor
+                .default_endpoints
+                .iter()
+                .find(|candidate| candidate.dialect == command.dialect)
+                .and_then(|candidate| candidate.model_discovery_base_url.as_ref())
+        })
+    };
+    let Some(discovery_base_url) = discovery_base_url else {
+        return endpoint.clone();
+    };
+    let mut discovery = endpoint.clone();
+    discovery.base_url = Some(discovery_base_url.clone());
+    discovery
+}
+
 fn installed_dialect_auth_methods(
     dialect: ApiDialect,
 ) -> Vec<awaken_model_catalog::ProviderAuthMethod> {
@@ -537,6 +569,33 @@ mod tests {
             installed_dialect_auth_methods(ApiDialect::VertexGemini),
             vec![awaken_model_catalog::ProviderAuthMethod::OAuth],
             "E4"
+        );
+    }
+
+    #[test]
+    fn provider_owned_discovery_surface_does_not_replace_inference_base() {
+        let deepseek = awaken_model_catalog::provider_driver_descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.provider_kind == "deepseek")
+            .unwrap();
+        let command = command("deepseek", ApiDialect::AnthropicMessages, None);
+        let endpoint = ProtocolEndpoint {
+            id: ProtocolEndpointId::new("deepseek.anthropic_messages"),
+            provider_id: ProviderId::new("deepseek"),
+            dialect: ApiDialect::AnthropicMessages,
+            base_url: provider_base_url(&command, Some(&deepseek)).unwrap(),
+            timeout_secs: 30,
+            display_name: "anthropic_messages".into(),
+            version: 1,
+        };
+        let discovery = provider_discovery_endpoint(&command, Some(&deepseek), &endpoint);
+        assert_eq!(
+            endpoint.base_url.as_deref(),
+            Some("https://api.deepseek.com/anthropic")
+        );
+        assert_eq!(
+            discovery.base_url.as_deref(),
+            Some("https://api.deepseek.com")
         );
     }
 }
