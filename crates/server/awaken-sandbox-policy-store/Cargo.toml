@@ -17,5 +17,9 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = "3"
 
+[features]
+# Process-local policy authority for unit, integration, and scenario fixtures.
+test-support = []
+
 [lints]
 workspace = true

@@ -2,10 +2,10 @@
 //! The cross-node CAS backend (`PostgresMemoryRepository`) keeps the same POSIX-replace and
 //! compare-and-swap semantics as the in-process backends.
 
+#[cfg(feature = "test-support")]
+use awaken_memory_store::VolatileMemoryRepository;
 use awaken_memory_store::repository::MAX_PATH_BYTES;
-use awaken_memory_store::{
-    MAX_MEMORY_BYTES, MemErr, MemoryRepository, VolatileMemoryRepository, sha256_hex,
-};
+use awaken_memory_store::{MAX_MEMORY_BYTES, MemErr, MemoryRepository, sha256_hex};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use std::sync::Arc;
 
@@ -428,13 +428,14 @@ async fn conditional_delete_never_removes_a_changed_or_recreated_head(fs: &dyn M
     ));
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn in_memory_conditional_delete_is_atomic() {
     conditional_delete_never_removes_a_changed_or_recreated_head(&VolatileMemoryRepository::new())
         .await;
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "test-support"))]
 #[tokio::test]
 async fn sqlite_conditional_delete_is_atomic() {
     use awaken_memory_store::SqliteMemoryRepository;
@@ -444,14 +445,14 @@ async fn sqlite_conditional_delete_is_atomic() {
     .await;
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "test-support"))]
 #[tokio::test]
 async fn sqlite_concurrent_create_has_exactly_one_winner() {
     use awaken_memory_store::SqliteMemoryRepository;
     concurrent_create_one_winner(Arc::new(SqliteMemoryRepository::open_in_memory().unwrap())).await;
 }
 
-#[cfg(feature = "sqlite")]
+#[cfg(all(feature = "sqlite", feature = "test-support"))]
 #[tokio::test]
 async fn sqlite_concurrent_cas_has_exactly_one_winner() {
     use awaken_memory_store::SqliteMemoryRepository;

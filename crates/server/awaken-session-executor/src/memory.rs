@@ -523,6 +523,7 @@ impl MemoryRuntime {
         self.background.clone()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn set_extraction_repository(&self, repository: Arc<dyn MemoryExtractionRepository>) {
         *self
             .extractions
@@ -1025,9 +1026,9 @@ impl crate::host::SharedHost {
         self.register_thread_memory(thread, Some(Arc::new(bound)));
     }
 
-    /// Replace the extraction work repository assembled by the default local
-    /// host. Cloud composition roots install the same Postgres repository used by
-    /// their Session application plane; resource stores remain unaware of it.
+    /// Test-support override for fixtures built through the volatile constructor.
+    /// Product composition injects this authority during SharedHost construction.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn install_memory_extraction_repository(
         &self,
         repository: Arc<dyn MemoryExtractionRepository>,

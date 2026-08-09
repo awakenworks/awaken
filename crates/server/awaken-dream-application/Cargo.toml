@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Process-local Dream process authority is an executable test fixture only.
+test-support = []
+
 [dependencies]
 awaken-session-contract.workspace = true
 async-trait.workspace = true

@@ -23,6 +23,8 @@ proptest.workspace = true
 
 [features]
 default = ["sqlite"]
+# Private in-memory SQLite authority used only by tests and scenario fixtures.
+test-support = []
 sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite"]
 postgres = ["dep:sqlx", "dep:tokio", "dep:awaken-scoped-migration"]
 

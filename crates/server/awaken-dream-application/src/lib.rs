@@ -310,14 +310,17 @@ pub enum DreamApiError {
 }
 
 #[derive(Default)]
+#[cfg(any(test, feature = "test-support"))]
 struct InMemoryDreamRecords {
     processes: BTreeMap<String, DreamProcessRecord>,
     policies: BTreeMap<(String, String), DreamPolicyRecord>,
 }
 
 #[derive(Default)]
-struct InMemoryDreamProcessStore(Mutex<InMemoryDreamRecords>);
+#[cfg(any(test, feature = "test-support"))]
+pub struct InMemoryDreamProcessStore(Mutex<InMemoryDreamRecords>);
 
+#[cfg(any(test, feature = "test-support"))]
 impl DreamProcessStore for InMemoryDreamProcessStore {
     fn dream_processes(
         &self,
@@ -388,12 +391,6 @@ pub struct DreamApplication {
 }
 
 impl DreamApplication {
-    #[must_use]
-    pub fn new(executor: Arc<dyn DreamExecutor>) -> Self {
-        Self::with_store(executor, Arc::new(InMemoryDreamProcessStore::default()))
-            .expect("empty in-memory Dream process store is valid")
-    }
-
     pub fn with_store(
         executor: Arc<dyn DreamExecutor>,
         store: Arc<dyn DreamProcessStore>,
@@ -1062,6 +1059,33 @@ impl DreamApplication {
             Ok(())
         })
         .map(|job| self.project_process(&job))
+    }
+}
+
+#[cfg(test)]
+mod product_readiness_tests {
+    #[test]
+    fn volatile_dream_authority_is_opt_in() {
+        // Cause/effect graph: C1 default product build; C2 explicit test-support.
+        // Effects: E1 no process-local Dream authority is exported; E2 fixtures can
+        // exercise the same application state machine. C1 and C2 are exclusive.
+        //
+        // | Rule | product default | test-support | in-memory store |
+        // | T1   | yes             | no           | absent          |
+        // | T2   | no              | yes          | present         |
+        //
+        // Default/all-feature compiler checks complete T1/T2; this fitness test
+        // locks the feature selector and both source gates against silent drift.
+        let manifest = include_str!("../Cargo.toml");
+        let source = include_str!("lib.rs");
+        assert!(manifest.contains("test-support = []"), "T2 selector");
+        assert!(!manifest.contains("default = [\"test-support\"]"), "T1");
+        assert!(
+            source.contains(
+                "#[cfg(any(test, feature = \"test-support\"))]\npub struct InMemoryDreamProcessStore"
+            ),
+            "T1/T2 gates"
+        );
     }
 }
 

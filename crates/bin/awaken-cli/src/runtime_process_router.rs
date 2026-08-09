@@ -346,13 +346,21 @@ pub(super) async fn assemble_runtime_process_router(
             model_wiring.executor,
             model_wiring.model_ref,
             resource_component.clone(),
+            memory_extractions,
             deployment,
         ),
-        None => SharedHost::new_with_resource_component(
-            model_wiring.executor,
-            model_wiring.model_ref,
-            resource_component.clone(),
-        ),
+        #[cfg(any(test, feature = "test-support"))]
+        None => {
+            let host = SharedHost::new_with_resource_component(
+                model_wiring.executor,
+                model_wiring.model_ref,
+                resource_component.clone(),
+            );
+            host.install_memory_extraction_repository(memory_extractions);
+            host
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        None => unreachable!("product runtime assembly requires a resolved deployment"),
     };
     host_builder = host_builder
         .with_file_application(resource_application.files())
@@ -375,7 +383,6 @@ pub(super) async fn assemble_runtime_process_router(
     if let Some(materializer) = model_wiring.materializer {
         host_builder = host_builder.with_inference_materializer(materializer);
     }
-    host_builder.install_memory_extraction_repository(memory_extractions);
     awaken_coordinator::install_platform_memory_data_plane(&host_builder);
     // Production ACP wiring (`acp:*` threads): the environment advertises only the
     // installed CLI/sandbox capability. Provider coordinates and credentials are
