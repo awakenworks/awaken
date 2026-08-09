@@ -50,7 +50,7 @@ async def request(process, request_id, method, params, runtime_id):
     return await read_response(process, request_id, runtime_id)
 
 
-async def verify(runtime, root):
+async def verify(runtime, root, timeout_seconds=30):
     runtime_id = runtime["id"]
     missing = [
         executable
@@ -122,7 +122,7 @@ async def verify(runtime, root):
 
     try:
         try:
-            result = await asyncio.wait_for(negotiate(), timeout=30)
+            result = await asyncio.wait_for(negotiate(), timeout=timeout_seconds)
         except asyncio.TimeoutError as error:
             if process.returncode is None:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -147,7 +147,41 @@ async def verify(runtime, root):
     return result
 
 
+async def self_test():
+    # Probe-cleanup FMECA/cause-effect decision table:
+    # C1=the adapter completes its handshake; C2=the adapter remains alive past
+    # the deadline; C3=the adapter emits diagnostics. Effects: E1=return the
+    # successful probe; E2=terminate the whole process group; E3=surface a
+    # bounded diagnostic failure. V1 C1,!C2=>E1 is owned by production image
+    # acceptance. V2 !C1,C2=>E2+E3 is exercised here with a real subprocess;
+    # the short bound also detects a leaked child/process-wait path.
+    runtime = {
+        "id": "deadline-fixture",
+        "executables": [sys.executable],
+        "probe_argv": [
+            sys.executable,
+            "-c",
+            "import sys,time; print('probe-stalled', file=sys.stderr, flush=True); time.sleep(30)",
+        ],
+        "auth_method_id": None,
+    }
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="awaken-acp-verifier-test-") as directory:
+        try:
+            await verify(runtime, Path(directory), timeout_seconds=0.05)
+        except RuntimeError as error:
+            message = str(error)
+            assert "exceeded the Worker probe deadline" in message, message
+            assert "probe-stalled" in message, message
+        else:
+            raise AssertionError("V2: stalled adapter unexpectedly passed")
+    assert time.monotonic() - started < 3, "V2: timed-out adapter was not reaped"
+
+
 async def async_main():
+    if sys.argv[1:] == ["--self-test"]:
+        await self_test()
+        return
     contract_path = Path("/usr/local/share/awaken/acp-runtimes.json")
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     requested = set(sys.argv[1:])

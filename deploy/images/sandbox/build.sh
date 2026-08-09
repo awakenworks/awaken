@@ -121,17 +121,25 @@ if { [[ $ensure_existing == full ]] && accept_image; } \
 fi
 
 staged="$repo/deploy/images/sandbox/.awaken-sandbox.bin"
-cleanup() { rm -f "$staged"; }
+generated_contract="$repo/deploy/images/sandbox/.acp-runtimes.generated.json"
+cleanup() { rm -f "$staged" "$generated_contract"; }
 trap cleanup EXIT
 
 cd "$repo"
 "$repo/deploy/images/sandbox/stage-binary.sh" "$staged" hand
+# The Rust ACP catalog is the only package/argv/auth authority. Generate its
+# image projection immediately before the build so Docker cannot consume a
+# stale hand-maintained mirror.
+cargo run --quiet -p awaken-run-executor-acp --example image_runtime_contract \
+  >"$generated_contract"
 if [[ -n "${AWAKEN_SANDBOX_BUILD_NETWORK:-}" ]]; then
   build_image --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
     --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
+    --build-arg ACP_RUNTIME_CONTRACT=deploy/images/sandbox/.acp-runtimes.generated.json \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 else
   build_image --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
+    --build-arg ACP_RUNTIME_CONTRACT=deploy/images/sandbox/.acp-runtimes.generated.json \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 fi
 

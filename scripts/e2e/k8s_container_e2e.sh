@@ -84,5 +84,7 @@ k3d_import_images "$CLUSTER" "$FIXTURE_IMAGE" "$SESSION_IMAGE"
 log "running the k8s e2e test"
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_it -- --nocapture
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e -- --nocapture
+AWAKEN_K8S_E2E=1 cargo test -p awaken-runtime-host --features container-k8s --lib \
+  k8s_live_pvc_initialization_is_readable_and_reused -- --nocapture
 
 log "k8s container e2e PASSED"

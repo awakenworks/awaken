@@ -16,7 +16,7 @@ awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-resource-contract.workspace = true
-awaken-resource-worker-http.workspace = true
+awaken-resource-application = { workspace = true, optional = true }
 awaken-runtime = { workspace = true }
 # Volatile commit/checkpoint reference adapters are available only to explicit
 # test/scenario compositions. Product builds do not link this backend.
@@ -97,6 +97,7 @@ uuid = { version = "1", features = ["v4"] }
 # composition selects every authority before constructing SharedHost.
 test-support = [
     "dep:awaken-store-inmem",
+    "dep:awaken-resource-application",
     "awaken-file-store/test-support",
     "awaken-credential-vault/test-support",
     "awaken-memory-store/test-support",
@@ -123,8 +124,8 @@ awaken-run-ingress = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
-awaken-resource-application.workspace = true
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
+awaken-resource-application.workspace = true
 awaken-run-ingress-testkit = { workspace = true }
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
 tempfile = "3"

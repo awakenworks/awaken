@@ -173,6 +173,7 @@ fn jail_args(
     tool_id: &str,
     mut args: Value,
     root: &IsolatedRoot,
+    host_outputs: &Path,
     deny_egress: bool,
     namespace_shell: Option<&namespace::NamespaceToolShell>,
 ) -> Result<Value, ToolError> {
@@ -180,7 +181,19 @@ fn jail_args(
     let rebase = |args: &mut Value, key: &str, root: &IsolatedRoot| -> Result<(), ToolError> {
         if let Some(Value::String(p)) = args.get(key) {
             let jailed = root.resolve(p).map_err(escape)?;
-            args[key] = Value::String(jailed.to_string_lossy().into_owned());
+            let relative = jailed
+                .strip_prefix(root.root())
+                .map_err(|_| ToolError::Execution(format!("path `{p}` escaped its environment")))?;
+            // `outputs/...` is an Agent-facing logical alias for the single
+            // SandboxSpec output directory. Inspect the normalized relative path
+            // so `outputs/../x` stays workspace `x` instead of escaping through a
+            // raw `host_outputs.join("../x")`.
+            let resolved = if let Ok(suffix) = relative.strip_prefix("outputs") {
+                host_outputs.join(suffix)
+            } else {
+                jailed
+            };
+            args[key] = Value::String(resolved.to_string_lossy().into_owned());
         }
         Ok(())
     };
@@ -311,6 +324,8 @@ impl HandOutput {
 pub(crate) struct RootedTool {
     inner: Arc<dyn RawTool>,
     root: IsolatedRoot,
+    /// Concrete backing path for the one SandboxSpec output directory.
+    host_outputs: PathBuf,
     /// Deny network egress for the `bash` tool (from the environment's spec).
     deny_egress: bool,
     /// Namespace tools reuse the provider's authoritative process launcher so
@@ -323,12 +338,14 @@ impl RootedTool {
     pub(crate) fn new(
         inner: Arc<dyn RawTool>,
         root: IsolatedRoot,
+        host_outputs: PathBuf,
         runtime_paths: RuntimePathEnv,
         deny_egress: bool,
     ) -> Self {
         Self {
             inner,
             root,
+            host_outputs,
             deny_egress,
             namespace_shell: None,
             runtime_paths,
@@ -338,12 +355,14 @@ impl RootedTool {
     pub(crate) fn namespace(
         inner: Arc<dyn RawTool>,
         root: IsolatedRoot,
+        host_outputs: PathBuf,
         runtime_paths: RuntimePathEnv,
         namespace_shell: namespace::NamespaceToolShell,
     ) -> Self {
         Self {
             inner,
             root,
+            host_outputs,
             deny_egress: false,
             namespace_shell: Some(namespace_shell),
             runtime_paths,
@@ -367,6 +386,7 @@ impl HandTool for RootedTool {
             self.inner.id(),
             call.arguments,
             &self.root,
+            &self.host_outputs,
             self.deny_egress,
             self.namespace_shell.as_ref(),
         )?;
@@ -411,6 +431,7 @@ fn hand_tool_as_raw(tool: Arc<dyn HandTool>) -> Arc<dyn RawTool> {
 /// own relay `HandTool`s instead.
 pub(crate) fn rooted_hand_tools(
     root: IsolatedRoot,
+    host_outputs: PathBuf,
     runtime_paths: RuntimePathEnv,
     deny_egress: bool,
 ) -> Vec<Arc<dyn HandTool>> {
@@ -420,6 +441,7 @@ pub(crate) fn rooted_hand_tools(
             Arc::new(RootedTool::new(
                 inner,
                 root.clone(),
+                host_outputs.clone(),
                 runtime_paths.clone(),
                 deny_egress,
             )) as Arc<dyn HandTool>
@@ -671,10 +693,11 @@ pub(crate) fn scan_skill_dir_at(root: &IsolatedRoot, subdir: &str) -> Vec<Discov
 /// [`Environment::tools`]; the kernel sees a uniform `RawTool` set with no mount concept.
 pub(crate) fn rooted_raw_tools(
     root: IsolatedRoot,
+    host_outputs: PathBuf,
     runtime_paths: RuntimePathEnv,
     deny_egress: bool,
 ) -> Vec<Arc<dyn RawTool>> {
-    rooted_hand_tools(root, runtime_paths, deny_egress)
+    rooted_hand_tools(root, host_outputs, runtime_paths, deny_egress)
         .into_iter()
         .map(hand_tool_as_raw)
         .collect()
@@ -682,6 +705,7 @@ pub(crate) fn rooted_raw_tools(
 
 pub(crate) fn namespace_raw_tools(
     root: IsolatedRoot,
+    host_outputs: PathBuf,
     runtime_paths: RuntimePathEnv,
     namespace_shell: namespace::NamespaceToolShell,
 ) -> Vec<Arc<dyn RawTool>> {
@@ -691,6 +715,7 @@ pub(crate) fn namespace_raw_tools(
             hand_tool_as_raw(Arc::new(RootedTool::namespace(
                 inner,
                 root.clone(),
+                host_outputs.clone(),
                 runtime_paths.clone(),
                 namespace_shell.clone(),
             )))
@@ -819,6 +844,10 @@ fn git_bytes(cwd: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, SandboxError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_outputs() -> &'static Path {
+        Path::new("/env/mnt/session/outputs")
+    }
 
     #[test]
     fn repository_basic_auth_url_follows_the_transport_decision_table() {
@@ -1032,6 +1061,7 @@ mod tests {
             "glob",
             serde_json::json!({ "pattern": "src/*.rs" }),
             &root,
+            test_outputs(),
             false,
             None,
         )
@@ -1045,6 +1075,7 @@ mod tests {
             "bash",
             serde_json::json!({ "command": "ls" }),
             &root,
+            test_outputs(),
             false,
             None,
         )
@@ -1056,12 +1087,49 @@ mod tests {
     }
 
     #[test]
+    fn logical_output_alias_targets_only_the_canonical_sandbox_directory() {
+        // Output-path FMECA / cause-effect decision table. C1 is an Agent-facing
+        // `outputs/...` path, C2 is an ordinary workspace path, and C3 contains a
+        // normalized parent segment. Effects: E1 maps to the one SandboxSpec
+        // output backing directory; E2 remains under the workspace jail; E3 never
+        // reaches the parent of that backing directory.
+        //
+        // | Rule | logical path | Effect |
+        // | O1 | outputs/result.txt | E1 canonical output |
+        // | O2 | notes/result.txt | E2 workspace file |
+        // | O3 | outputs/../secret | E2 workspace secret, not output-parent escape |
+        let root = IsolatedRoot::new("/env/workspace");
+        let outputs = Path::new("/env/mnt/session/outputs");
+        for (rule, logical, expected) in [
+            (
+                "O1",
+                "outputs/result.txt",
+                "/env/mnt/session/outputs/result.txt",
+            ),
+            ("O2", "notes/result.txt", "/env/workspace/notes/result.txt"),
+            ("O3", "outputs/../secret", "/env/workspace/secret"),
+        ] {
+            let call = jail_args(
+                "write",
+                serde_json::json!({ "path": logical }),
+                &root,
+                outputs,
+                false,
+                None,
+            )
+            .unwrap();
+            assert_eq!(call["path"], expected, "{rule}");
+        }
+    }
+
+    #[test]
     fn jail_passes_unknown_tools_through_and_rejects_escapes() {
         let root = IsolatedRoot::new("/env");
         let u = jail_args(
             "weird",
             serde_json::json!({ "path": "../x" }),
             &root,
+            test_outputs(),
             false,
             None,
         )
@@ -1073,6 +1141,7 @@ mod tests {
                 "read",
                 serde_json::json!({ "path": "../escape" }),
                 &root,
+                test_outputs(),
                 false,
                 None,
             )
@@ -1091,6 +1160,7 @@ mod tests {
             "move",
             serde_json::json!({"source":"old.md", "destination":"topic/new.md"}),
             &root,
+            test_outputs(),
             false,
             None,
         )
@@ -1104,7 +1174,7 @@ mod tests {
             ),
             ("delete", serde_json::json!({"path":"../escape.md"})),
         ] {
-            assert!(jail_args(tool, arguments, &root, false, None).is_err());
+            assert!(jail_args(tool, arguments, &root, test_outputs(), false, None).is_err());
         }
     }
 
@@ -1120,6 +1190,7 @@ mod tests {
             "bash",
             serde_json::json!({ "command": "id" }),
             &root,
+            test_outputs(),
             true,
             None,
         )
@@ -1149,6 +1220,7 @@ mod tests {
             "bash",
             serde_json::json!({ "command": "a'b" }),
             &root,
+            test_outputs(),
             true,
             None,
         )
@@ -1204,6 +1276,7 @@ mod tests {
     fn rooted_hand_tools_wraps_every_builtin_hand_tool() {
         let tools = rooted_hand_tools(
             IsolatedRoot::new("/env"),
+            test_outputs().to_path_buf(),
             RuntimePathEnv::new("/env", "/env/mnt/session/outputs"),
             false,
         );

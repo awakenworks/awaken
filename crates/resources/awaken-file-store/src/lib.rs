@@ -26,6 +26,8 @@ use tokio::sync::Mutex;
 
 // The `FileStore` port + its error live in the port-only contract crate; this crate
 // implements them and re-exports so `awaken_file_store::FileStore` keeps resolving.
+#[cfg(test)]
+use awaken_resource_contract::harvest_idempotency_key;
 pub use awaken_resource_contract::{
     CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
     content_id,
@@ -33,20 +35,6 @@ pub use awaken_resource_contract::{
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
-}
-
-/// Stable, database-portable identity for one Sandbox artifact harvest.
-/// Length framing prevents tuple ambiguity; the digest keeps internal tuple
-/// components and PostgreSQL-forbidden NUL separators out of persistence.
-#[must_use]
-pub fn harvest_idempotency_key(thread: &str, logical_path: &str, content_id: &str) -> String {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"awaken-file-harvest-v1\0");
-    for component in [thread, logical_path, content_id] {
-        hash.update(&(component.len() as u64).to_be_bytes());
-        hash.update(component.as_bytes());
-    }
-    hash.finalize().to_hex().to_string()
 }
 
 /// Whether `id` names exactly one file directly under the base — non-empty and made
@@ -486,21 +474,6 @@ mod tests {
             store.create_file(replacement).await.unwrap(),
             CreateFileRecordOutcome::Inserted(_)
         ));
-    }
-
-    #[test]
-    fn harvest_key_is_framed_portable_and_sensitive_to_every_component() {
-        // Cause/effect decision table: C1=the same ordered tuple; C2=one tuple
-        // component changes; C3=components contain delimiter-like text. R1 C1
-        // -> the same key; R2 C2 -> a different key; R3 C3 -> printable,
-        // NUL-free key. Length framing makes R3 independent of delimiters.
-        let key = harvest_idempotency_key("thread", "a\0b", "content");
-        assert_eq!(key, harvest_idempotency_key("thread", "a\0b", "content"));
-        assert_ne!(key, harvest_idempotency_key("thread-2", "a\0b", "content"));
-        assert_ne!(key, harvest_idempotency_key("thread", "a\0b-2", "content"));
-        assert_ne!(key, harvest_idempotency_key("thread", "a\0b", "content-2"));
-        assert!(!key.contains('\0'));
-        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
 
     #[tokio::test]

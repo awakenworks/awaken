@@ -293,7 +293,7 @@ mod tests {
             sequence,
             ready: true,
             in_flight: 0,
-            warm_environment_shapes: values.iter().map(|value| (*value).to_owned()).collect(),
+            warm_environment_shapes: values.iter().map(|value| (*value).into()).collect(),
             credential_observations: Default::default(),
             acp_capability_observations: Default::default(),
         };
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(result, RegistryMutation::Applied, "H1 replace");
         assert_eq!(
             replaced.unwrap().snapshot.warm_environment_shapes,
-            std::collections::BTreeSet::from(["shape-b".to_owned()]),
+            std::collections::BTreeSet::from(["shape-b".into()]),
             "H1 replace"
         );
     }

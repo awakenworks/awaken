@@ -76,6 +76,13 @@ auth, and DTOs before it appends pending input.
 | inspect queued/recoverable work | Operations surface | dispatch projection/query | no message payload truth or public session status |
 | receive stream or replay | Protocol adapter | committed events/facts plus live stream when connected | replay derives after commit; live stream is best-effort |
 
+An attempt-local `LiveInbox` is not durable run ingress and is never a remote
+mailbox. It is advertised only while the serving process owns the active attempt.
+For a queued, awaiting, ended, or remotely placed run, the live endpoint fails
+closed and the caller submits the message through the ordinary Session event
+path. That path appends to the one durable pending-message lifecycle described
+below; there is no parallel steer queue and no Coordinator-to-Worker callback.
+
 External extensions that need durable delivery should register tools, action
 kinds, backend adapters, or protocol adapters above this boundary. They should
 not add new `RunIngress` methods unless they introduce a new authority that

@@ -80,9 +80,10 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
         mounts: vec![pc::MountRequirement {
             mount_id: "rendezvous".into(),
             source: pc::MountSource::CacheVolume {
-                host_path: rv.to_string_lossy().into_owned(),
+                location: pc::CacheVolumeLocation::HostPath {
+                    path: rv.to_string_lossy().into_owned(),
+                },
                 key: String::new(),
-                persistent_volume_claim: None,
             },
             mount_path: "/rv".into(),
             access: pc::MountAccess::ReadWrite,

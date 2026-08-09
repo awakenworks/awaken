@@ -238,6 +238,7 @@ pub awaken_coordinator::WorkerTransportBuildError::CheckpointOpen::error: alloc:
 pub awaken_coordinator::WorkerTransportBuildError::CheckpointOpen::path: std::path::PathBuf
 pub awaken_coordinator::WorkerTransportBuildError::Dispatch(alloc::string::String)
 pub awaken_coordinator::WorkerTransportBuildError::MissingCheckpointAuthority
+pub awaken_coordinator::WorkerTransportBuildError::MissingFileApplication
 pub struct awaken_coordinator::CoordinatorComponent
 pub awaken_coordinator::CoordinatorComponent::management_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::router: axum::routing::Router

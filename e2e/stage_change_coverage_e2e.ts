@@ -88,6 +88,8 @@ const obligations: Obligation[] = [
   { id: 'D0-06', stage: '0 durable dispatch seam', behavior: 'a replacement Worker reclaims a crashed Awaiting attempt from the committed recovery snapshot', scenario: 'remote_worker_recovery' },
   { id: 'D0-07', stage: '0 durable dispatch seam', behavior: 'the replacement resumes the exact remote context and commits one terminal effect', scenario: 'remote_worker_recovery' },
   { id: 'D0-08', stage: '0 durable dispatch seam', behavior: 'the superseded Worker epoch cannot replay its delayed claimed commit', scenario: 'remote_worker_recovery' },
+  { id: 'D0-09', stage: '0 durable dispatch seam', behavior: 'a live authenticated remote claim publishes one idempotent scoped output File over HTTP', scenario: 'worker_transport' },
+  { id: 'D0-10', stage: '0 durable dispatch seam', behavior: 'settlement fences every late remote artifact publication before Resource mutation', scenario: 'worker_transport' },
 
   { id: 'D1-01', stage: '1 backend conformance', behavior: 'SQLite durable authority serves queue semantics', scenario: 'worker_transport' },
   { id: 'D1-02', stage: '1 backend conformance', behavior: 'HTTP transport preserves the queue contract', scenario: 'worker_transport' },
@@ -203,6 +205,7 @@ const obligations: Obligation[] = [
   { id: 'D7-27', stage: '7 resource persistence', behavior: 'archiving a MemoryStore live denies a later claim even though its immutable configuration remains pinned', scenario: 'worker_resource_manifest' },
   { id: 'D7-28', stage: '7 resource persistence', behavior: 'all control-plane repository ports select Postgres without changing the HTTP publication or Session execution path', scenario: 'control_plane_postgres' },
   { id: 'D7-29', stage: '7 resource persistence', behavior: 'Postgres-backed catalog, credential, Agent publication, admin resources, webhooks, and Sessions survive process replacement', scenario: 'control_plane_postgres' },
+  { id: 'D7-30', stage: '7 resource persistence', behavior: 'configuration through Session invocation and release produces a listed downloadable File with exact sandbox bytes', scenario: 'managed_full_chain' },
   { id: 'D7-A01', stage: '7 remote A2A attempt', behavior: 'managed config preserves and publishes the complete A2A backend binding', scenario: 'remote_attempt' },
   { id: 'D7-A02', stage: '7 remote A2A attempt', behavior: 'root remote attempt commits its opaque task reference before polling', scenario: 'remote_attempt' },
   { id: 'D7-A03', stage: '7 remote A2A attempt', behavior: 'replacement reattaches after hard crash without a second message send', scenario: 'remote_attempt' },

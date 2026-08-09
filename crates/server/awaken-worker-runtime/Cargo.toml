@@ -13,7 +13,6 @@ authority = "worker-runtime-transport"
 awaken-agent-contract.workspace = true
 awaken-run-ingress-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-resource-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true

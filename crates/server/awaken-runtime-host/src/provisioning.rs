@@ -13,11 +13,14 @@ use awaken_resource_contract::{
     FileCatalog, FileCatalogError, FileRecord, ResourceKind, ResourcePurgeError, ResourceReference,
     ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
+use awaken_run_ingress::{Clock as _, DispatchQueue as _};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
-/// The sandbox-absolute outputs dir (must be absolute for `prepare_environment`);
-/// resolved under the root to `<root>/outputs`, which `list_files("outputs")` reads.
-const OUTPUTS_PATH: &str = "/outputs";
+/// Anthropic Managed Agents' canonical sandbox-absolute deliverables directory.
+/// `AWAKEN_OUTPUTS_DIR`, Sandbox creation, durable handles, recovery, and Files
+/// harvesting all derive from this one value. Previously persisted handles retain
+/// their exact path and remain adoptable without a second live-path convention.
+const OUTPUTS_PATH: &str = "/mnt/session/outputs";
 
 /// Canonical projection from the frozen Session Environment into neutral
 /// provisioning vocabulary. Admission and realization both consume this value,
@@ -145,18 +148,29 @@ fn sandbox_spec_from_projection(
         .map_or(base.clone(), |sandbox| sandbox.apply(base))
 }
 
-pub(crate) fn environment_capacity_spec(
+pub(crate) struct EnvironmentCapacityProjection {
+    pub(crate) spec: pc::SandboxSpec,
+    pub(crate) shape_id: pc::SandboxCapacityShapeId,
+}
+
+/// Project one frozen Environment into both the creation request and its
+/// canonical capacity identity. Keeping them in one value prevents placement,
+/// heartbeat receipts, and pool checkout from recomputing parallel identities.
+pub(crate) fn environment_capacity_projection(
     environment: &awaken_session_contract::EnvironmentSnapshot,
     provider_enforces_network_isolation: bool,
-) -> pc::SandboxSpec {
+) -> EnvironmentCapacityProjection {
     let projection = project_environment(environment);
-    sandbox_spec_from_projection(
+    let spec = sandbox_spec_from_projection(
         "environment-warmup",
         Vec::new(),
         Vec::new(),
         Some(&projection),
         provider_enforces_network_isolation,
-    )
+    );
+    let shape_id = pc::SandboxCapacityShapeId::from_spec(&spec)
+        .expect("Environment capacity projection is mount-less");
+    EnvironmentCapacityProjection { spec, shape_id }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -288,6 +302,22 @@ pub(crate) struct RepositoryActivation {
 }
 
 impl SharedHost {
+    pub(crate) fn artifact_harvester(&self) -> ArtifactHarvester {
+        ArtifactHarvester {
+            session_slots: self.session_slots.clone(),
+            local_workspace: self.local_workspace.clone(),
+            publisher: self.artifact_publisher.clone(),
+            // A local File application shares the Coordinator's dispatch
+            // authority and must hold its epoch guard across publication. A
+            // database-less Worker has no File application; its HTTP publisher
+            // is fenced by the Coordinator-side adapter instead.
+            local_claim_fence: self
+                .file_application
+                .as_ref()
+                .map(|_| self.dispatch_store().map_err(|error| error.to_string())),
+        }
+    }
+
     /// The provisioning request for a thread. Skills are not a sandbox mount
     /// (ADR-0036); the environment provisions isolation tools plus the session's
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
@@ -563,7 +593,71 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
-        let env = self.session_environment(thread).await;
+        self.artifact_harvester().harvest(thread).await
+    }
+}
+
+/// The single Runtime-to-Resources application edge for Session outputs.
+///
+/// It is cloneable so the same operation can decorate direct, durable, and
+/// recovered attempts without retaining the whole Host (and creating a
+/// SessionCtx -> executor -> Host reference cycle). Terminal release calls the
+/// same operation as an idempotent final retry before Sandbox disposal.
+#[derive(Clone)]
+pub(crate) struct ArtifactHarvester {
+    session_slots: crate::session_slot::SessionRuntimeSlots,
+    local_workspace: String,
+    publisher: std::sync::Arc<
+        dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
+    >,
+    local_claim_fence: Option<Result<std::sync::Arc<awaken_run_ingress::AnyDispatchStore>, String>>,
+}
+
+impl ArtifactHarvester {
+    pub(crate) fn current_claim(&self, thread: &str) -> Option<awaken_run_ingress::RunClaim> {
+        self.session_slots
+            .read(thread, |slot| slot.dispatch_claim.clone())
+            .flatten()
+    }
+
+    pub(crate) async fn harvest(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        let claim = self.current_claim(thread);
+        self.harvest_with_claim(thread, claim).await
+    }
+
+    pub(crate) async fn harvest_with_claim(
+        &self,
+        thread: &str,
+        claim: Option<awaken_run_ingress::RunClaim>,
+    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+        let _local_guard = match (&claim, &self.local_claim_fence) {
+            (Some(claim), Some(Ok(dispatch))) => {
+                let guard = dispatch
+                    .lock_commit_epoch(claim)
+                    .await
+                    .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?
+                    .filter(|guard| guard.is_live_at(awaken_run_ingress::SystemClock.now_ms()))
+                    .ok_or_else(|| {
+                        ResourcePurgeError::Storage(
+                            "artifact publication lost its local dispatch claim".into(),
+                        )
+                    })?;
+                Some(guard)
+            }
+            (Some(_), Some(Err(error))) => {
+                return Err(ResourcePurgeError::Storage(format!(
+                    "artifact publication cannot resolve its local dispatch authority: {error}"
+                )));
+            }
+            _ => None,
+        };
+        let env = self
+            .session_slots
+            .read(thread, |slot| slot.environment.clone())
+            .flatten();
         let Some(env) = env else {
             return Ok(Vec::new());
         };
@@ -571,7 +665,11 @@ impl SharedHost {
             .artifacts()
             .await
             .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-        let workspace = self.thread_workspace(thread);
+        let workspace = self
+            .session_slots
+            .read(thread, |slot| slot.workspace.clone())
+            .flatten()
+            .unwrap_or_else(|| self.local_workspace.clone());
         let mut out = Vec::new();
         for artifact in artifacts {
             let bytes = env
@@ -593,27 +691,24 @@ impl SharedHost {
                 .to_string();
             let mime_type = mime_type_for_path(&logical_path).to_string();
             let record = self
-                .file_application
-                .as_ref()
-                .ok_or_else(|| {
-                    ResourcePurgeError::Storage(
-                        "File application is unavailable on this execution process".into(),
-                    )
-                })?
-                .create_artifact(
-                    &workspace,
-                    thread,
-                    logical_path.clone(),
+                .publisher
+                .publish(awaken_resource_contract::ArtifactPublication {
+                    workspace_id: workspace.clone(),
+                    session_id: thread.to_string(),
+                    logical_path,
                     mime_type,
-                    &bytes,
-                    awaken_file_store::harvest_idempotency_key(thread, &logical_path, &content_id),
-                )
-                .await?;
+                    bytes,
+                    fence: claim.clone(),
+                })
+                .await
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
             out.push(record);
         }
         Ok(out)
     }
+}
 
+impl SharedHost {
     /// The registered built-in tools advertised on a managed session's agent object:
     /// each hand-tool id and whether its calls require confirmation. Folded into the
     /// public `agent_toolset` by the adapter. Deterministic from host config.
@@ -879,9 +974,10 @@ mod provisioning_registry_tests {
         let storage = tempfile::tempdir().unwrap();
         let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
         host.register_thread_workspace("session-artifacts", "workspace-a");
+        let spec = agent_run_sandbox_spec("session-artifacts");
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             LocalProvider::new(storage.path())
-                .create_sandbox(&agent_run_sandbox_spec("session-artifacts"))
+                .create_sandbox(&spec)
                 .await
                 .unwrap(),
         ));
@@ -891,7 +987,7 @@ mod provisioning_registry_tests {
         let output = storage
             .path()
             .join("session-artifacts")
-            .join("outputs")
+            .join(spec.outputs_path.trim_start_matches('/'))
             .join("report.txt");
         std::fs::create_dir_all(output.parent().unwrap()).unwrap();
         std::fs::write(&output, b"durable report").unwrap();
@@ -990,18 +1086,25 @@ mod provisioning_registry_tests {
         let mut raw_host = SharedHost::new(Arc::new(NoLlm), "test");
         let catalog = Arc::new(FailingFileCatalog);
         raw_host.file_catalog = catalog.clone();
-        raw_host.file_application =
-            Some(Arc::new(awaken_resource_application::FileApplication::new(
-                raw_host.file_store(),
-                catalog,
-                raw_host
-                    .resource_lifecycle()
-                    .expect("test lifecycle repository"),
-            )));
+        let application = Arc::new(awaken_resource_application::FileApplication::new(
+            raw_host.file_store(),
+            catalog,
+            raw_host
+                .resource_lifecycle()
+                .expect("test lifecycle repository"),
+        ));
+        raw_host = raw_host.with_file_application(
+            application.clone(),
+            Arc::new(
+                awaken_resource_application::ApplicationFileContentSource::new(application.clone()),
+            ),
+            Arc::new(awaken_resource_application::ApplicationArtifactPublisher::new(application)),
+        );
         let host = Arc::new(raw_host);
+        let spec = agent_run_sandbox_spec("session-harvest-failure");
         let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
             LocalProvider::new(storage.path())
-                .create_sandbox(&agent_run_sandbox_spec("session-harvest-failure"))
+                .create_sandbox(&spec)
                 .await
                 .unwrap(),
         ));
@@ -1011,7 +1114,9 @@ mod provisioning_registry_tests {
             });
         let output = storage
             .path()
-            .join("session-harvest-failure/outputs/report.txt");
+            .join("session-harvest-failure")
+            .join(spec.outputs_path.trim_start_matches('/'))
+            .join("report.txt");
         std::fs::create_dir_all(output.parent().unwrap()).unwrap();
         std::fs::write(&output, b"retry me").unwrap();
 

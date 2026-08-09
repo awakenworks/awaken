@@ -279,9 +279,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             Self::reconcile_dispatched_mcp(&host, &thread_id.0, stages).await?;
         }
         host.session_slots.update(&thread_id.0, |slot| {
-            if slot.deferred_executor.is_some() {
-                slot.deferred_claim = Some(awaken_run_ingress::RunClaim::from(&claimed.lease));
-            }
+            slot.dispatch_claim = Some(awaken_run_ingress::RunClaim::from(&claimed.lease));
         });
         let worker = self
             .resolve(

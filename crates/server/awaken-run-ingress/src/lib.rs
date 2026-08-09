@@ -38,7 +38,7 @@ mod wake;
 mod worker;
 mod worker_context;
 
-pub use any::{AnyDispatchStore, DispatchEnqueue};
+pub use any::AnyDispatchStore;
 pub use application::{
     ApplicationError, ApplicationErrorKind, ClaimedCommitApplier, ClaimedCommitService,
     DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
@@ -144,7 +144,7 @@ pub(crate) fn policy_selects_requester(
             .map(|shape| {
                 [(
                     PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE.to_string(),
-                    shape.clone(),
+                    shape.to_string(),
                 )]
                 .into_iter()
                 .collect()

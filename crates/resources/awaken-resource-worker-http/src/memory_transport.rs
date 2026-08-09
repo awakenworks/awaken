@@ -8,8 +8,12 @@
 use std::sync::Arc;
 
 use awaken_memory_store::{MemErr, Memory, MemoryRepository};
-use awaken_resource_contract::{ConfigVersion, ResourceAccess, ResourceBindingValidator};
-use awaken_run_ingress_contract::{DispatchQueue, RunClaim, WorkerDirectory, WorkerIdentity};
+use awaken_resource_contract::{
+    ConfigVersion, MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
+    ResourceAccess, ResourceBindingValidator,
+};
+use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
+use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -22,9 +26,10 @@ use awaken_worker_transport_security::{
 };
 
 const MEMORY_PATH: &str = "/v1/worker/resources/memory/operation";
-const REFERENCE_PREFIX: &str = "awaken-memory-v1:";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+const MEMORY_REFERENCE_PREFIX: &str = "awaken-memory-v1:";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct MemoryMaterializationReference {
     workspace_id: String,
@@ -34,16 +39,38 @@ struct MemoryMaterializationReference {
     claim: RunClaim,
 }
 
-/// Create the process-local projection reference carried by a Memory mount.
-/// The reference is not a Resource identity and is never persisted in the
-/// Session manifest; it binds every Worker read/write to the exact claim.
+/// Stateless encoder for the Resource Worker HTTP wire capability.
+#[derive(Debug, Default)]
+pub struct HttpMemoryMaterializationReferenceEncoder;
+
+impl MemoryMaterializationReferenceEncoder<RunClaim> for HttpMemoryMaterializationReferenceEncoder {
+    fn encode(
+        &self,
+        workspace_id: &str,
+        memory_store_id: &str,
+        config_version: ConfigVersion,
+        access: ResourceAccess,
+        claim: &RunClaim,
+    ) -> Result<String, MemoryMaterializationReferenceError> {
+        memory_materialization_reference(
+            workspace_id,
+            memory_store_id,
+            config_version,
+            access,
+            claim,
+        )
+    }
+}
+
+/// Encode the private HTTP transport capability. Application and run-ingress
+/// layers consume only the neutral encoder port, never this representation.
 pub fn memory_materialization_reference(
     workspace_id: &str,
     memory_store_id: &str,
     config_version: ConfigVersion,
     access: ResourceAccess,
     claim: &RunClaim,
-) -> Result<String, MemErr> {
+) -> Result<String, MemoryMaterializationReferenceError> {
     let encoded = serde_json::to_string(&MemoryMaterializationReference {
         workspace_id: workspace_id.to_owned(),
         memory_store_id: memory_store_id.to_owned(),
@@ -51,17 +78,23 @@ pub fn memory_materialization_reference(
         access,
         claim: claim.clone(),
     })
-    .map_err(|error| MemErr::Storage(error.to_string()))?;
-    Ok(format!("{REFERENCE_PREFIX}{encoded}"))
+    .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))?;
+    Ok(format!("{MEMORY_REFERENCE_PREFIX}{encoded}"))
 }
 
-fn parse_reference(reference: &str) -> Result<MemoryMaterializationReference, MemErr> {
-    let encoded = reference.strip_prefix(REFERENCE_PREFIX).ok_or_else(|| {
-        MemErr::Storage("Memory operation requires an exact materialization reference".into())
-    })?;
-    serde_json::from_str(encoded).map_err(|error| MemErr::Storage(error.to_string()))
+fn parse_reference(
+    reference: &str,
+) -> Result<MemoryMaterializationReference, MemoryMaterializationReferenceError> {
+    let encoded = reference
+        .strip_prefix(MEMORY_REFERENCE_PREFIX)
+        .ok_or_else(|| {
+            MemoryMaterializationReferenceError::new(
+                "operation requires an exact claim-bound reference",
+            )
+        })?;
+    serde_json::from_str(encoded)
+        .map_err(|error| MemoryMaterializationReferenceError::new(error.to_string()))
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum MemoryOperation {
@@ -409,7 +442,7 @@ async fn send_operation(
     reference: &str,
     operation: MemoryOperation,
 ) -> Result<MemoryOperationResponse, MemErr> {
-    parse_reference(reference)?;
+    parse_reference(reference).map_err(|error| MemErr::Storage(error.to_string()))?;
     let request = upstream
         .http_client()
         .post(format!("{}{MEMORY_PATH}", upstream.base_url()))
@@ -632,5 +665,41 @@ impl MemoryRepository for HttpMemoryRepository {
         Err(MemErr::Storage(
             "Worker Memory boundary does not expose lifecycle purge".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_reference_is_strict_lossless_and_claim_bound() {
+        // Wire cause/effect decision table: M1 exact resource facts plus claim
+        // => lossless capability; M2 bad prefix => reject; M3 unknown field =>
+        // reject. This transient HTTP capability is not a second Resource or
+        // run-ingress identity. Rules W1 M1=>decode; W2 M2|M3=>fail closed.
+        let claim = RunClaim {
+            run_id: awaken_agent_contract::agent::run::Id("run-memory".into()),
+            owner: "worker-memory".into(),
+            epoch: 3,
+        };
+        let encoded = memory_materialization_reference(
+            "workspace",
+            "memory",
+            ConfigVersion(7),
+            ResourceAccess::ReadWrite,
+            &claim,
+        )
+        .expect("W1 encode");
+        let parsed = parse_reference(&encoded).expect("W1 decode");
+        assert_eq!(parsed.claim, claim, "W1 claim");
+        assert_eq!(parsed.config_version, ConfigVersion(7), "W1 version");
+        assert!(parse_reference("invalid:{}").is_err(), "W2 bad prefix");
+
+        let unknown = format!(
+            "{},\"authority_bypass\":true}}",
+            encoded.strip_suffix('}').expect("reference JSON object")
+        );
+        assert!(parse_reference(&unknown).is_err(), "W2 unknown field");
     }
 }

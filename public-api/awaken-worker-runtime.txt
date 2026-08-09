@@ -2,6 +2,11 @@ pub mod awaken_worker_runtime
 pub enum awaken_worker_runtime::WorkerRegistrationError
 pub awaken_worker_runtime::WorkerRegistrationError::Rejected(alloc::string::String)
 pub awaken_worker_runtime::WorkerRegistrationError::SlotOccupied(alloc::string::String)
+pub struct awaken_worker_runtime::HttpArtifactPublisher
+impl awaken_worker_runtime::HttpArtifactPublisher
+pub fn awaken_worker_runtime::HttpArtifactPublisher::new(awaken_worker_transport_security::WorkerUpstream) -> Self
+impl awaken_run_ingress_contract::artifact_publication::ArtifactPublisher for awaken_worker_runtime::HttpArtifactPublisher
+pub fn awaken_worker_runtime::HttpArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::artifact_publication::ArtifactPublication) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::FileRecord, awaken_run_ingress_contract::artifact_publication::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_worker_runtime::HttpDispatchQueue
 impl awaken_worker_runtime::HttpDispatchQueue
 pub fn awaken_worker_runtime::HttpDispatchQueue::new(impl core::convert::Into<alloc::string::String>, awaken_worker_contract::WorkerIdentity) -> Self

@@ -199,7 +199,8 @@ pub struct SandboxSettings {
     /// Startup and steady-state target of ready, never-used containers per exact
     /// mount-less Session shape. Zero disables warm capacity.
     pub warm_pool_size: usize,
-    /// Global cap across all exact Environment shapes.
+    /// Global cap across the default Session shape and all exact Environment
+    /// shapes. The Worker owns one plan for this shared budget.
     pub warm_pool_total_size: usize,
     /// Opportunistic expiry for unused shapes; desired-state removal is immediate.
     pub warm_pool_idle_ttl_secs: u64,

@@ -752,6 +752,7 @@ impl LocalSandbox {
             .expect("validated Sandbox outputs path");
         rooted_raw_tools(
             self.root.clone(),
+            outputs.clone(),
             crate::RuntimePathEnv::new(
                 self.root.root().to_string_lossy().into_owned(),
                 outputs.to_string_lossy().into_owned(),

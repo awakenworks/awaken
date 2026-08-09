@@ -1979,7 +1979,7 @@ pub mod podman;
 #[cfg(feature = "connection")]
 pub mod pool;
 #[cfg(feature = "connection")]
-pub use pool::{WarmContainerPool, pool_key};
+pub use pool::WarmContainerPool;
 
 /// Default maximum age of a still-running managed container before orphan
 /// reconciliation removes it.

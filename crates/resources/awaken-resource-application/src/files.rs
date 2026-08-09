@@ -9,12 +9,10 @@ use std::sync::Arc;
 
 use awaken_resource_contract::{
     CreateFileRecordOutcome, FileApplicationService, FileCatalog, FileCatalogError, FileRecord,
-    FileStore, ResourceKind, ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent,
-    ResourceReference, ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    FileStore, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES, ResourceKind,
+    ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourceReference,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
-
-pub const MAX_MANAGED_FILE_SIZE_BYTES: u64 = 500 * 1024 * 1024;
-pub const MAX_WORKSPACE_FILE_BYTES: u64 = 500 * 1024 * 1024 * 1024;
 
 /// Complete logical-File creation command. Public uploads, generated outputs,
 /// and Session artifact harvesting differ only in these declared facts.

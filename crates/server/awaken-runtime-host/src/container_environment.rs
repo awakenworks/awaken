@@ -225,6 +225,7 @@ pub(crate) async fn build(
         Arc<dyn ContainerEnvironmentProvider>,
         Option<Arc<dyn ContainerEnvironmentCapacity>>,
         Vec<pc::MountRequirement>,
+        Option<Arc<dyn crate::CacheVolumeInitializer>>,
     ),
     String,
 > {
@@ -273,7 +274,17 @@ pub(crate) async fn build(
             return Err("AWAKEN_SANDBOX_TIER=k8s needs the `container-k8s` feature".into());
         }
     };
-    Ok((built.provider, built.capacity, Vec::new()))
+    let cache_volume_initializer = matches!(tier, SandboxTier::K8s).then(|| {
+        Arc::new(crate::cache_volume::SandboxCacheVolumeInitializer::new(
+            built.provider.clone(),
+        )) as Arc<dyn crate::CacheVolumeInitializer>
+    });
+    Ok((
+        built.provider,
+        built.capacity,
+        Vec::new(),
+        cache_volume_initializer,
+    ))
 }
 
 #[cfg(not(any(
@@ -290,6 +301,7 @@ pub(crate) async fn build(
         Arc<dyn ContainerEnvironmentProvider>,
         Option<Arc<dyn ContainerEnvironmentCapacity>>,
         Vec<pc::MountRequirement>,
+        Option<Arc<dyn crate::CacheVolumeInitializer>>,
     ),
     String,
 > {

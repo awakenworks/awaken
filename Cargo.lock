@@ -1571,10 +1571,12 @@ name = "awaken-resource-application"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-file-store",
  "awaken-memory-store",
  "awaken-resource-contract",
  "awaken-resource-store",
+ "awaken-session-contract",
  "awaken-skill-store",
  "chrono",
  "tokio",
@@ -1590,6 +1592,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
 
@@ -1635,19 +1638,18 @@ dependencies = [
  "awaken-run-ingress",
  "awaken-run-ingress-contract",
  "awaken-run-ingress-testkit",
- "awaken-runtime-contract",
  "awaken-session-contract",
  "awaken-skill-store",
  "awaken-store-inmem",
  "awaken-tenancy",
- "awaken-worker-runtime",
+ "awaken-worker-contract",
  "awaken-worker-transport-security",
  "axum",
+ "base64",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.19",
  "tokio",
 ]
 
@@ -1718,7 +1720,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-resource-contract",
+ "awaken-provisioning-contract",
  "awaken-runtime-contract",
  "awaken-session-contract",
  "awaken-tenancy",
@@ -1869,7 +1871,6 @@ dependencies = [
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
- "awaken-resource-worker-http",
  "awaken-run-executor-acp",
  "awaken-run-ingress",
  "awaken-run-ingress-contract",
@@ -2419,7 +2420,6 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-resource-contract",
  "awaken-run-ingress",
  "awaken-run-ingress-contract",
  "awaken-runtime-contract",
@@ -2440,6 +2440,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-run-ingress-contract",
+ "awaken-worker-contract",
  "axum",
  "base64",
  "hmac 0.12.1",

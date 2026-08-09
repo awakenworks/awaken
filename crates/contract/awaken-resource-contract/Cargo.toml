@@ -12,6 +12,7 @@ authority = "resource"
 [dependencies]
 async-trait = { workspace = true }
 blake3 = "1"
+sha2 = "0.10"
 thiserror = { workspace = true }
 serde = { workspace = true }
 

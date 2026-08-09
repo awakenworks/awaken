@@ -104,11 +104,7 @@ pub use crate::run_application_host::{
     RunApplicationHost, SessionDefaultsPreparationError, SessionDefaultsPreparer,
 };
 use awaken_credential_materializer::PinnedCredentialMaterializer;
-#[cfg(test)]
-use awaken_run_ingress_contract::FileContentSourceError;
-#[cfg(test)]
-use awaken_run_ingress_contract::RepositoryBindingVerifierError;
-use awaken_run_ingress_contract::{FileContentSource, RepositoryBindingVerifier};
+use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
@@ -217,7 +213,8 @@ pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
-    repository_binding_verifier: Option<Arc<dyn RepositoryBindingVerifier>>,
+    repository_binding_verifier:
+        Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -238,7 +235,8 @@ pub(crate) struct DispatchSessionRuntime {
     host: std::sync::Weak<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
-    repository_binding_verifier: Option<Arc<dyn RepositoryBindingVerifier>>,
+    repository_binding_verifier:
+        Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -440,32 +438,15 @@ impl ManagedHost {
         });
     }
 
-    async fn harvest_artifacts(&self, thread: &str) -> Result<(), RunError> {
-        self.host
-            .harvest_thread_artifacts(thread)
-            .await
-            .map(|_| ())
-            .map_err(|error| RunError::internal(error.to_string()))
-    }
-
-    /// One post-step edge for every execution variant. Outputs written before a
-    /// failed model/tool step are harvested too; the original execution error
-    /// remains the caller-visible failure and terminal release can retry harvest.
+    /// Project the committed attempt result into the Managed Session contract.
+    /// Output persistence already happened at the shared attempt executor edge,
+    /// before direct or durable delivery returns here.
     async fn finish_step(
         &self,
-        thread: &str,
+        _thread: &str,
         result: Result<RunResult, HostError>,
     ) -> Result<StepOutcome, RunError> {
-        match result {
-            Ok(result) => {
-                self.harvest_artifacts(thread).await?;
-                to_step_outcome(result)
-            }
-            Err(error) => {
-                let _ = self.harvest_artifacts(thread).await;
-                Err(to_run_error(error))
-            }
-        }
+        result.map_err(to_run_error).and_then(to_step_outcome)
     }
 
     /// Wire the live resource-invariant port used at activation and Memory use.
@@ -477,9 +458,6 @@ impl ManagedHost {
         mut self,
         validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     ) -> Self {
-        self.repository_binding_verifier = Some(Arc::new(
-            awaken_resource_worker_http::CatalogRepositoryBindingVerifier::new(validator.clone()),
-        ));
         self.resource_validator = Some(validator);
         self.refresh_dispatch_session_runtime();
         self
@@ -490,7 +468,7 @@ impl ManagedHost {
     #[must_use]
     pub fn with_repository_binding_verifier(
         mut self,
-        verifier: Arc<dyn RepositoryBindingVerifier>,
+        verifier: Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>,
     ) -> Self {
         self.repository_binding_verifier = Some(verifier);
         self.refresh_dispatch_session_runtime();
@@ -1014,7 +992,10 @@ impl SessionRuntime for ManagedHost {
         self.host.harvest_thread_skills(thread).await;
         // Failure is terminal-release blocking: keep the Sandbox available for
         // the durable cleanup retry instead of disposing unharvested outputs.
-        self.harvest_artifacts(thread).await?;
+        self.host
+            .harvest_thread_artifacts(thread)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?;
         // Memory is owned by its MemoryMount guard: FUSE writes through live and
         // copy realization performs one CAS harvest during teardown.
         self.host.end_session(thread).await.map_err(to_run_error)

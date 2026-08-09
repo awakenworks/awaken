@@ -14,7 +14,7 @@ use awaken_ext_skills::SkillSpec;
 use awaken_session_contract::ResolvedSkillBinding;
 use awaken_skill_store::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
 
-use awaken_resource_worker_http::{SkillBundleSource, StoreSkillBundleSource};
+use awaken_session_contract::SkillBundleSource;
 
 fn anthropic_skill(id: &str) -> Option<SkillVersion> {
     let description = match id {
@@ -60,7 +60,7 @@ pub(crate) struct SkillCatalog {
     /// Exact immutable custom-Skill bytes used during Session realization. A
     /// Coordinator installs the local store adapter; an execution Worker installs
     /// the claim-fenced HTTP adapter and never opens the authoring store.
-    bundle_source: Option<Arc<dyn SkillBundleSource>>,
+    bundle_source: Option<Arc<dyn SkillBundleSource<awaken_run_ingress::RunClaim>>>,
     /// In-memory snapshot of the latest delivered versions, read
     /// *synchronously* by the capability advertisement (`ids`) and the run-loop
     /// `SkillSource` scan — refreshed from the async `store` on a write and at each
@@ -88,12 +88,20 @@ impl SkillCatalog {
 
     /// Builder: wire the durable delivered-skill catalog.
     pub(crate) fn set_store(&mut self, store: Arc<dyn SkillStore>) {
-        self.bundle_source = Some(Arc::new(StoreSkillBundleSource::new(store.clone())));
+        #[cfg(test)]
+        {
+            self.bundle_source = Some(Arc::new(
+                awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
+            ));
+        }
         self.store = Some(store);
     }
 
     /// Builder: wire only exact custom-Skill bundle reads for an execution Worker.
-    pub(crate) fn set_bundle_source(&mut self, source: Arc<dyn SkillBundleSource>) {
+    pub(crate) fn set_bundle_source(
+        &mut self,
+        source: Arc<dyn SkillBundleSource<awaken_run_ingress::RunClaim>>,
+    ) {
         self.bundle_source = Some(source);
     }
 

@@ -466,6 +466,9 @@ fn local_managed_state_over(
     let managed = ManagedState::new_with_mcp(
         ManagedHost::new(host)
             .with_resource_validator(catalog.clone())
+            .with_repository_binding_verifier(Arc::new(
+                awaken_resource_application::CatalogRepositoryBindingVerifier::new(catalog.clone()),
+            ))
             .with_credentials(credentials, secrets),
     );
     let managed = match session_repo {
@@ -620,6 +623,8 @@ pub enum WorkerTransportBuildError {
         "registered Worker transport requires durable stream checkpoints from Postgres or storage_dir"
     )]
     MissingCheckpointAuthority,
+    #[error("registered Worker artifact transport requires the Resources File application")]
+    MissingFileApplication,
 }
 
 fn worker_checkpoint_authority(
@@ -821,7 +826,7 @@ fn mount_with_managed_over_and_models(
     dream_application.resume_incomplete();
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
     let managed = router(managed_state.clone()).merge(dreams).merge(
-        awaken_protocol_awaken::live_inbox_router(managed_state.clone()),
+        awaken_protocol_awaken::live_inbox_router(managed_state.session_application()),
     );
     // One neutral port impl behind the three wire adapters (each `router` takes
     // `Arc<dyn RunApplication>`), so they share the host with no per-protocol twin.
@@ -896,6 +901,18 @@ fn mount_with_managed_over_and_models(
         )
         .with_worker_directory(worker_directory.clone()),
     ));
+    let file_application = host
+        .file_application()
+        .ok_or(WorkerTransportBuildError::MissingFileApplication)?;
+    let artifact_publication =
+        awaken_resource_worker_http::worker_artifact_publication_router(Arc::new(
+            awaken_resource_worker_http::WorkerArtifactPublicationService::new(
+                file_application,
+                dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
+                worker_authenticator.clone(),
+                worker_directory.clone(),
+            ),
+        ));
     let memory = awaken_resource_worker_http::worker_memory_router(Arc::new(
         awaken_resource_worker_http::WorkerMemoryService::new(
             host.memory_repository(),
@@ -913,12 +930,15 @@ fn mount_with_managed_over_and_models(
         )
         .with_worker_directory(worker_directory.clone()),
     ));
-    let mut resource_worker = file_content.merge(memory).merge(repositories);
+    let mut resource_worker = file_content
+        .merge(artifact_publication)
+        .merge(memory)
+        .merge(repositories);
     if let Some(store) = host.skill_store() {
         resource_worker = resource_worker.merge(
             awaken_resource_worker_http::worker_skill_bundle_router(Arc::new(
                 awaken_resource_worker_http::WorkerSkillBundleService::new(
-                    Arc::new(awaken_resource_worker_http::StoreSkillBundleSource::new(
+                    Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
                         store,
                     )),
                     dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,

@@ -221,6 +221,15 @@ pub struct SharedHost {
     /// writes use the attempt's claim-fenced operation coordinator. Set via
     /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
     pub(crate) upstream: Option<awaken_worker_transport_security::WorkerUpstream>,
+    /// Optional Resource-transport encoder installed by a remote Worker. The
+    /// runtime knows only the neutral Resources port, never an HTTP wire type.
+    pub(crate) memory_reference_encoder: Option<
+        Arc<
+            dyn awaken_resource_contract::MemoryMaterializationReferenceEncoder<
+                    awaken_run_ingress::RunClaim,
+                >,
+        >,
+    >,
     /// Sole adapter for opaque credentials owned by this Worker process. Control
     /// and Session code retain only exact non-secret references.
     pub(crate) worker_credential_resolver:
@@ -274,14 +283,18 @@ pub struct SharedHost {
     /// Sole per-kind File materialization port. Embedded composition points it at
     /// the local catalog/store pair; a database-less Worker replaces it with the
     /// claim-fenced HTTP adapter before accepting work.
-    pub(crate) file_content_source: Arc<dyn crate::FileContentSource>,
+    pub(crate) file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
     /// Logical Files-API truth: public identity, metadata, Workspace visibility,
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
     pub(crate) file_catalog: Arc<dyn FileCatalog>,
-    /// Resources-owned command application. It is absent only on database-less
-    /// Workers, which receive immutable content through `file_content_source` and
-    /// cannot expose management or artifact-publication commands.
+    /// Full Resources-owned File application retained for local management and
+    /// Coordinator composition. Database-less Workers do not receive this port.
     pub(crate) file_application: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
+    /// Sole Runtime-to-Resources artifact command edge. Embedded compositions
+    /// install the local application adapter; database-less Workers install the
+    /// claim-fenced HTTP client.
+    pub(crate) artifact_publisher:
+        Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>>,
     /// Durable workspace ownership projection for content-addressed resources.
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.

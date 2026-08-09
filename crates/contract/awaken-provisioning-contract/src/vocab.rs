@@ -43,6 +43,16 @@ pub enum MemoryWriteConsistency {
     WriteThroughRequired,
 }
 
+/// The one physical backend carrying a rebuildable CacheVolume. A value cannot
+/// name both a node path and a Kubernetes claim, so preparation and mounting
+/// always address the same storage.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CacheVolumeLocation {
+    HostPath { path: String },
+    PersistentVolumeClaim { claim_name: String },
+}
+
 /// Where a mount's content comes from. Logical / content-addressed only — a raw
 /// host directory bind is a provider-specific concern expressed via
 /// [`super::EnvironmentKind`], not carried here (G3). `Other` keeps the wire
@@ -69,22 +79,16 @@ pub enum MountSource {
     },
     /// A **Cache Volume** (ADR-0056): a caller-supplied, node-local, ReadWriteOnce
     /// cache — a warm directory (checkout, build cache) whose bytes have **no truth
-    /// authority**. The provider mounts the opaque `host_path` **in place** and NEVER
+    /// authority**. The provider mounts the opaque location **in place** and NEVER
     /// harvests it back: losing it costs a cold rebuild, never data loss, so nothing
     /// whose only copy matters may live here. Warmth and GC are the caller's (product
     /// plane, ADR-0056 §2); awaken only mounts. `key` is the caller's reuse key, opaque
     /// to awaken. Distinct from `MemoryStore` (harvested, authoritative) — this is the
     /// only source that is reused in place and never carried back.
     CacheVolume {
-        /// The caller-owned persistent path to mount in place. Opaque to awaken — it
-        /// neither keeps it warm nor reclaims it.
-        host_path: String,
+        location: CacheVolumeLocation,
         /// The caller's reuse key, opaque to awaken (never interpreted here).
         key: String,
-        /// Existing namespace-local Kubernetes PVC carrying the same disposable
-        /// cache identity. Container engines use `host_path`; Kubernetes requires
-        /// this claim and never falls back to a node hostPath mount.
-        persistent_volume_claim: Option<String>,
     },
     /// A file-materialized credential (ADR-0041 amendment). The provider writes the
     /// broker-resolved secret to `mount_path`, honoring the requirement's
@@ -152,7 +156,8 @@ enum KnownMountSource {
         write_consistency: MemoryWriteConsistency,
     },
     CacheVolume {
-        host_path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host_path: Option<String>,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         key: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,9 +190,9 @@ const KNOWN_MOUNT_KINDS: &[&str] = &[
     "inline_bytes",
 ];
 
-impl From<KnownMountSource> for MountSource {
-    fn from(k: KnownMountSource) -> Self {
-        match k {
+impl KnownMountSource {
+    fn into_mount_source(self) -> Result<MountSource, String> {
+        Ok(match self {
             KnownMountSource::File {
                 file_id,
                 content_hash,
@@ -215,11 +220,24 @@ impl From<KnownMountSource> for MountSource {
                 host_path,
                 key,
                 persistent_volume_claim,
-            } => MountSource::CacheVolume {
-                host_path,
-                key,
-                persistent_volume_claim,
-            },
+            } => {
+                // Retained payloads could carry both fields. Kubernetes always
+                // consumed the PVC, so normalize that legacy spelling to the
+                // single effective backend. Canonical serialization below emits
+                // exactly one field and can never recreate the ambiguity.
+                let location = persistent_volume_claim
+                    .filter(|claim| !claim.trim().is_empty())
+                    .map(|claim_name| CacheVolumeLocation::PersistentVolumeClaim { claim_name })
+                    .or_else(|| {
+                        host_path
+                            .filter(|path| !path.trim().is_empty())
+                            .map(|path| CacheVolumeLocation::HostPath { path })
+                    })
+                    .ok_or_else(|| {
+                        "CacheVolume requires exactly one non-empty location".to_string()
+                    })?;
+                MountSource::CacheVolume { location, key }
+            }
             KnownMountSource::Secret {
                 reference,
                 content_hash,
@@ -235,7 +253,7 @@ impl From<KnownMountSource> for MountSource {
                 contents,
                 content_hash,
             },
-        }
+        })
     }
 }
 
@@ -267,14 +285,19 @@ impl MountSource {
                 materialization_reference: materialization_reference.clone(),
                 write_consistency: *write_consistency,
             },
-            MountSource::CacheVolume {
-                host_path,
-                key,
-                persistent_volume_claim,
-            } => KnownMountSource::CacheVolume {
-                host_path: host_path.clone(),
-                key: key.clone(),
-                persistent_volume_claim: persistent_volume_claim.clone(),
+            MountSource::CacheVolume { location, key } => match location {
+                CacheVolumeLocation::HostPath { path } => KnownMountSource::CacheVolume {
+                    host_path: Some(path.clone()),
+                    key: key.clone(),
+                    persistent_volume_claim: None,
+                },
+                CacheVolumeLocation::PersistentVolumeClaim { claim_name } => {
+                    KnownMountSource::CacheVolume {
+                        host_path: None,
+                        key: key.clone(),
+                        persistent_volume_claim: Some(claim_name.clone()),
+                    }
+                }
             },
             MountSource::Secret {
                 reference,
@@ -321,7 +344,8 @@ impl<'de> Deserialize<'de> for MountSource {
             .is_some_and(|k| KNOWN_MOUNT_KINDS.contains(&k));
         if is_known {
             serde_json::from_value::<KnownMountSource>(value)
-                .map(MountSource::from)
+                .map_err(serde::de::Error::custom)?
+                .into_mount_source()
                 .map_err(serde::de::Error::custom)
         } else {
             // An unknown (or absent) kind is a newer provider's source — capture it whole.
@@ -567,32 +591,59 @@ mod tests {
     }
 
     #[test]
-    fn cache_volume_round_trips_and_omits_an_empty_key() {
-        // FMECA: F1 older payload without PVC stops decoding (S7 O5 D2, RPN70);
-        // F2 PVC identity is dropped in transport (S8 O3 D3, RPN72). Cause graph:
-        // C1=PVC present, C2=legacy omission, C3=empty key. Effects E1=exact
-        // round-trip, E2=None default, E3=key omitted. Decision table:
-        // V1 C1&&!C3 -> E1; V2 C2 -> E2; V3 C2&&C3 -> E2,E3.
+    fn cache_volume_location_is_mutually_exclusive_and_legacy_wire_converges() {
+        // FMECA: F1 host path and PVC coexist, initializer publishes the host
+        // directory while K8s mounts different bytes (S9,O4,D3,RPN108); F2 no
+        // usable location reaches a provider (S7,O4,D2,RPN56); F3 retained
+        // dual-field payload stops decoding during rollout (S7,O5,D2,RPN70).
+        // Cause graph: C1=host only; C2=PVC only; C3=legacy both; C4=neither;
+        // C5=empty key. Effects: E1=one exact location round-trips; E2=legacy
+        // converges to its historically effective PVC; E3=reject; E4=omit key.
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | V1   | 1  | 0  | 0  | 0  | 0  | E1     |
+        // | V2   | 0  | 1  | 0  | 0  | 0  | E1     |
+        // | V3   | 0  | 0  | 1  | 0  | -  | E2     |
+        // | V4   | 0  | 0  | 0  | 1  | -  | E3     |
+        // | V5   | 1  | 0  | 0  | 0  | 1  | E1,E4  |
         let keyed = MountSource::CacheVolume {
-            host_path: "/var/cache/awaken/proj-42".into(),
+            location: CacheVolumeLocation::PersistentVolumeClaim {
+                claim_name: "proj-42-cache".into(),
+            },
             key: "proj-42".into(),
-            persistent_volume_claim: Some("proj-42-cache".into()),
         };
         let wire = serde_json::to_string(&keyed).unwrap();
         assert!(wire.contains("\"kind\":\"cache_volume\""), "{wire}");
-        assert!(wire.contains("/var/cache/awaken/proj-42"));
+        assert!(!wire.contains("host_path"), "V2 canonical XOR: {wire}");
         assert!(wire.contains("proj-42"));
-        assert!(wire.contains("proj-42-cache"), "V1");
+        assert!(wire.contains("proj-42-cache"), "V2");
         assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), keyed);
 
         let unkeyed = MountSource::CacheVolume {
-            host_path: "/tmp/warm".into(),
+            location: CacheVolumeLocation::HostPath {
+                path: "/tmp/warm".into(),
+            },
             key: String::new(),
-            persistent_volume_claim: None,
         };
         let wire = serde_json::to_string(&unkeyed).unwrap();
-        assert!(!wire.contains("\"key\""), "an empty key is omitted: {wire}");
+        assert!(!wire.contains("persistent_volume_claim"), "V1: {wire}");
+        assert!(!wire.contains("\"key\""), "V5 E4: {wire}");
         assert_eq!(serde_json::from_str::<MountSource>(&wire).unwrap(), unkeyed);
+
+        let legacy_both = r#"{"kind":"cache_volume","host_path":"/legacy/local","persistent_volume_claim":"legacy-pvc","key":"v1"}"#;
+        assert_eq!(
+            serde_json::from_str::<MountSource>(legacy_both).unwrap(),
+            MountSource::CacheVolume {
+                location: CacheVolumeLocation::PersistentVolumeClaim {
+                    claim_name: "legacy-pvc".into(),
+                },
+                key: "v1".into(),
+            },
+            "V3 E2"
+        );
+        assert!(
+            serde_json::from_str::<MountSource>(r#"{"kind":"cache_volume","key":"v1"}"#).is_err(),
+            "V4 E3"
+        );
     }
 
     #[test]

@@ -6,14 +6,16 @@ use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_resource_application::StoreSkillBundleSource;
 use awaken_resource_worker_http::{
-    HttpSkillBundleSource, SkillBundleSource as _, StoreSkillBundleSource,
-    WorkerSkillBundleService, worker_skill_bundle_router,
+    HttpSkillBundleSource, WorkerSkillBundleService, worker_skill_bundle_router,
 };
 use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
-use awaken_session_contract::{ResolvedSessionResources, ResolvedSkillBinding};
+use awaken_session_contract::{
+    ResolvedSessionResources, ResolvedSkillBinding, SkillBundleSource as _,
+};
 use awaken_skill_store::{
     InMemorySkillStore, SkillBundleFile, SkillDefinition, SkillStore as _, SkillVersion,
     bundle_sha256,
