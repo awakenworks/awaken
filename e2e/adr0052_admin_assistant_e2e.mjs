@@ -31,15 +31,28 @@ async function main() {
     const json = async (method, path, body) => {
       const res = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: { 'content-type': 'application/json' },
+        // Cause/effect rule: Managed registry routes require the official beta
+        // capability header; config routes tolerate the same header, so one
+        // helper cannot accidentally test a 400 admission failure as projection.
+        headers: {
+          'anthropic-beta': 'managed-agents-2026-04-01',
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
-      return { status: res.status, body: await res.json().catch(() => ({})) };
+      const text = await res.text();
+      let parsed = text;
+      try { parsed = JSON.parse(text); } catch {}
+      return { status: res.status, body: parsed };
     };
 
     // 1. The seeded assistant is projected on /v1/agents as the config truth (D1/D2).
     const projected = await json('GET', `/v1/agents/${ASSISTANT}`);
-    assert.equal(projected.status, 200, 'the management assistant is a published, projectable agent');
+    assert.equal(
+      projected.status,
+      200,
+      `the management assistant is a published, projectable agent: ${JSON.stringify(projected.body)}`,
+    );
     assert.ok(projected.body.model && projected.body.model.id, 'its model auto-resolved (D5)');
     assert.deepEqual(
       projected.body.tools ?? [],
@@ -89,7 +102,11 @@ async function main() {
       'stored in the reserved scope',
     );
     const reservedPub = await json('POST', `/v1/workspaces/${RESERVED}/config/agents/sneaky/publish`, undefined);
-    assert.equal(reservedPub.status, 200, 'admin-tool config publishes from the reserved scope');
+    assert.equal(
+      reservedPub.status,
+      200,
+      `admin-tool config publishes from the reserved scope: ${JSON.stringify(reservedPub.body)}`,
+    );
     const authoredSneaky = await json('GET', `/v1/workspaces/${RESERVED}/config/agents/sneaky`);
     assert.deepEqual(authoredSneaky.body.tools, [ADMIN_TOOL], 'authoring truth retains the server tool');
     const sneakyProjected = await json('GET', `/v1/agents/sneaky`);

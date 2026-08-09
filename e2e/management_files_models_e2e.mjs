@@ -16,7 +16,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { FAKE_KEY, withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -28,7 +28,7 @@ async function drain(pagePromise) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38134, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', 38134, async (baseUrl, upstream) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // -- Files: upload → delete → 404 -------------------------------------
@@ -48,6 +48,26 @@ async function main() {
       pass('beta.files.delete -> DeletedFile; metadata 404s after');
 
       // -- Models: list + retrieve + alias-miss 404 -------------------------
+      // Model-directory cause/effect rules: M1 no authored catalog facts ->
+      // the production live directory is empty (never fixture defaults); M2 an
+      // explicit Provider Connection discovers the fake provider's exact model
+      // -> `/v1/models` projects it. The shared fake provider owns inference and
+      // discovery, avoiding a second model-server implementation.
+      const connected = await fetch(`${baseUrl}/v1/config/provider-connections`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          idempotency_key: `files-models-${process.pid}`,
+          workspace_id: 'default',
+          provider_id: 'anthropic',
+          display_name: 'Files Models E2E',
+          dialect: 'anthropic_messages',
+          base_url: `${upstream.url}/v1/`,
+          timeout_secs: 30,
+          secret: FAKE_KEY,
+        }),
+      });
+      assert.equal(connected.status, 201, await connected.text());
       const models = await drain(client.beta.models.list({ betas: BETAS }));
       assert.ok(models.length >= 1, 'models list is non-empty');
       assert.ok(
@@ -67,7 +87,7 @@ async function main() {
         (err) => err.status === 404,
       );
       pass('beta.models.retrieve(unknown) -> 404');
-    });
+    }, {}, { upstream: { models: ['claude-opus-4-8'] } });
 
     console.log('E2E PASS: files.delete + the Models API round-trip through the official @anthropic-ai/sdk.');
     process.exitCode = 0;

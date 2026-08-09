@@ -8,9 +8,9 @@
   `SharedHost::with_tool_executor_provider` + `SessionCtx::context_for` (per-run
   `provide` overrides the session-wide `remote_hand`, wired into `execute_activation`
   for the ACP and native-direct paths); `ConfigToolExecutorProvider` + `PlacementEntry`
-  default in `awaken-coordinator-local`; the served `remote-hand` mode is now the
-  degenerate one-entry (catch-all) policy through the provider, so
-  `managed_remote_hand_e2e.mjs` exercises the placement seam end to end.
+  default in `awaken-coordinator-local`. This historical placement path and its
+  `remote-hand` scenario were later removed by ADR-0073; current coverage follows
+  the Session Environment-owned Hand path.
 - Amended: 2026-07-09 — `provide` made **async** (G2) so a dynamic scheduling
   driver can await a fleet/lease/dial behind the port; `context_for` awaits it.
   Placement release is by drop (G3), no separate port call.

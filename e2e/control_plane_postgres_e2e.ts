@@ -177,6 +177,7 @@ async function main(): Promise<void> {
     await waitUntilReady();
 
     let response = await request('POST', '/v1/config/provider-connections', {
+      idempotency_key: 'control-postgres-provider-connection',
       workspace_id: WORKSPACE,
       provider_id: PROVIDER,
       display_name: 'Postgres provider',

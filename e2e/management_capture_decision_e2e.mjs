@@ -1,19 +1,39 @@
 // Capture-decision projection (ADR-0050 D2/D8): the effective content-capture
-// level is the `meet` of the (env) ceiling × the requested level × the subject's
+// level is the `meet` of the deployment ceiling × the requested level × the subject's
 // consent, with a reason code. This drives the full invariant over the real
-// binary with the env ceiling raised to `full`, so CONSENT is the binding gate.
+// binary with the typed ceiling raised to `full`, so CONSENT is the binding gate.
+//
+// Cause graph / decision table:
+//   C1 typed deployment ceiling=full; C2 requested level; C3 subject consent.
+//   The effective level is `meet(C1,C2,C3)` and the lowest binding cause owns
+//   the reason. Environment variables are deliberately not a configuration path.
+//
+// | Rule | ceiling | requested | consent | effective | reason |
+// |---|---|---|---|---|---|
+// | D1 | full | full | structured | structured | no_consent |
+// | D2 | full | full | full | full | ok |
+// | D3 | full | structured | full | structured | ok |
 //
 // Run: (from e2e/)  node management_capture_decision_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { withScenarioServer, pass } from './harness.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { deploymentEnv, withScenarioServer, pass } from './harness.mjs';
 
 async function main() {
-  await withScenarioServer(
-    'management',
-    'mcp',
-    38193,
-    async (baseUrl) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-capture-decision-'));
+  const env = deploymentEnv(directory, {
+    identityMode: 'no-login',
+    fields: { content_capture: 'full' },
+  });
+  try {
+    await withScenarioServer(
+      'management',
+      'mcp',
+      38193,
+      async (baseUrl) => {
       const id = 'dsub_cd_e2e';
 
       // Ceiling is `full` (env), but no consent yet → consent caps at structured,
@@ -55,9 +75,12 @@ async function main() {
       assert.equal(body.effective, 'structured');
       assert.equal(body.reason, 'ok');
       pass('requested=structured → effective=structured, reason=ok');
-    },
-    { AWAKEN_CONTENT_CAPTURE: 'full' },
-  );
+      },
+      env,
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 main().catch((err) => {

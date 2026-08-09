@@ -415,6 +415,7 @@ function seedRepository(root: string): string {
 
 async function publishAgent(endpoint: string): Promise<void> {
   const connected = await json('POST', scoped(WORKSPACE, 'config/provider-connections'), {
+    idempotency_key: 'resource-postgres-provider-connection',
     workspace_id: WORKSPACE,
     provider_id: 'anthropic',
     display_name: 'Resource E2E',
@@ -786,7 +787,7 @@ async function main(): Promise<void> {
     );
     const extractedMemories = await json(
       'GET',
-      scoped(WORKSPACE, `memory_stores/${memoryId}/memories`),
+      `${scoped(WORKSPACE, `memory_stores/${memoryId}/memories`)}?view=full`,
     );
     assert.ok(
       extractedMemories.body.data.some(

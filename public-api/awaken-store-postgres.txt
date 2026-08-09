@@ -1,0 +1,42 @@
+pub mod awaken_store_postgres
+pub use awaken_store_postgres::BUNDLE_ID
+pub use awaken_store_postgres::commit_bundle
+pub enum awaken_store_postgres::StoreError
+pub awaken_store_postgres::StoreError::Connect(alloc::string::String)
+pub awaken_store_postgres::StoreError::Hydrate(alloc::string::String)
+pub awaken_store_postgres::StoreError::Migrate(alloc::string::String)
+pub awaken_store_postgres::StoreError::Read(alloc::string::String)
+pub struct awaken_store_postgres::PostgresCommitCoordinator
+impl awaken_store_postgres::PostgresCommitCoordinator
+pub async fn awaken_store_postgres::PostgresCommitCoordinator::authoritative_committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_store_postgres::StoreError>
+pub async fn awaken_store_postgres::PostgresCommitCoordinator::authoritative_run_record(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Record>, awaken_store_postgres::StoreError>
+pub fn awaken_store_postgres::PostgresCommitCoordinator::commit_count(&self) -> u64
+pub fn awaken_store_postgres::PostgresCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_store_postgres::PostgresCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+pub async fn awaken_store_postgres::PostgresCommitCoordinator::connect(&str, u32) -> core::result::Result<Self, awaken_store_postgres::StoreError>
+pub async fn awaken_store_postgres::PostgresCommitCoordinator::connect_existing(&str, u32) -> core::result::Result<Self, awaken_store_postgres::StoreError>
+pub async fn awaken_store_postgres::PostgresCommitCoordinator::migrate(&str, u32) -> core::result::Result<(), awaken_store_postgres::StoreError>
+pub fn awaken_store_postgres::PostgresCommitCoordinator::resume_ticket_for(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub async fn awaken_store_postgres::PostgresCommitCoordinator::with_existing_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, awaken_store_postgres::StoreError>
+pub async fn awaken_store_postgres::PostgresCommitCoordinator::with_pool(sqlx_postgres::PgPool) -> core::result::Result<Self, awaken_store_postgres::StoreError>
+impl awaken_agent_contract::thread::commit::coordinator::Coordinator for awaken_store_postgres::PostgresCommitCoordinator
+pub fn awaken_store_postgres::PostgresCommitCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_agent_contract::thread::commit::coordinator::OperationCoordinator for awaken_store_postgres::PostgresCommitCoordinator
+pub fn awaken_store_postgres::PostgresCommitCoordinator::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_agent_contract::thread::read::checkpoint::CheckpointReader for awaken_store_postgres::PostgresCommitCoordinator
+pub fn awaken_store_postgres::PostgresCommitCoordinator::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub fn awaken_store_postgres::PostgresCommitCoordinator::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
+pub fn awaken_store_postgres::PostgresCommitCoordinator::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+impl awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed for awaken_store_postgres::PostgresCommitCoordinator
+pub fn awaken_store_postgres::PostgresCommitCoordinator::events_after<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::read::lifecycle::LifecycleCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::lifecycle::LifecyclePage, awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeedError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_agent_contract::thread::read::recovery::RunRecoverySource for awaken_store_postgres::PostgresCommitCoordinator
+pub fn awaken_store_postgres::PostgresCommitCoordinator::recovery_snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl awaken_agent_contract::thread::read::run_store::RunStore for awaken_store_postgres::PostgresCommitCoordinator
+pub fn awaken_store_postgres::PostgresCommitCoordinator::get(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+impl awaken_agent_contract::thread::read::thread_reader::ThreadReader for awaken_store_postgres::PostgresCommitCoordinator
+pub fn awaken_store_postgres::PostgresCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_store_postgres::PostgresCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+pub fn awaken_store_postgres::PostgresCommitCoordinator::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_store_postgres::PostgresCommitCoordinator::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
+pub const awaken_store_postgres::COMMIT_PG_BUNDLE_ID: &str
+pub fn awaken_store_postgres::commit_pg_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>

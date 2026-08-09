@@ -38,13 +38,14 @@ async function main() {
     const cfg = async (method, path, body) => {
       const res = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: { 'content-type': 'application/json' },
+        headers: body === undefined ? {} : { 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       return { status: res.status, body: await res.json().catch(() => ({})) };
     };
 
     const connection = await cfg('POST', '/v1/config/provider-connections', {
+      idempotency_key: 'incompatible-credential-provider-connection',
       workspace_id: WS,
       provider_id: 'anthropic',
       display_name: 'Anthropic',
@@ -67,7 +68,14 @@ async function main() {
     assert.equal(foreign.status, 201, 'foreign credential created');
     const foreignId = foreign.body.id;
 
-    // Resolving the anthropic model with the openai key is fail-closed (422).
+    // Cause/effect graph / decision table for credential consumption:
+    // C1 authored model provider=anthropic; C2 credential material exists;
+    // C3 credential provider scope is {openai,anthropic,unscoped}.
+    // R1 C1+C2+C3=openai -> 422 incompatible_credential, no resolved candidate.
+    // R2 C1+C2+C3=anthropic -> 200, credential_present=true.
+    // R3 C1+C2+C3=unscoped -> 200, credential_present=true.
+    // The provider connection itself uses a stable idempotency key so all three
+    // rules reach the resolver validity join rather than failing input admission.
     const bad = await cfg('POST', '/v1/config/inference/resolve', {
       workspace_id: WS,
       target: { model_id: MODEL },

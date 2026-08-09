@@ -131,8 +131,14 @@ async function main() {
       assert.ok(anthropicDescriptor.supported_dialects.includes('anthropic_messages'));
       const deepseekDescriptor = r.json.find((item) => item.provider_kind === 'deepseek');
       assert.ok(deepseekDescriptor);
-      assert.deepEqual(deepseekDescriptor.supported_dialects, ['open_ai_chat']);
+      // Descriptor decision rules: D1 DeepSeek + OpenAI-compatible dialect ->
+      // native base; D2 DeepSeek + Anthropic dialect -> `/anthropic` inference
+      // base while model discovery remains provider-native. Both are owned by
+      // the model-catalog descriptor; the e2e must not retain the older one-arm list.
+      assert.deepEqual(deepseekDescriptor.supported_dialects, ['open_ai_chat', 'anthropic_messages']);
       assert.equal(deepseekDescriptor.default_endpoints[0].base_url, 'https://api.deepseek.com');
+      assert.equal(deepseekDescriptor.default_endpoints[1].base_url, 'https://api.deepseek.com/anthropic');
+      assert.equal(deepseekDescriptor.default_endpoints[1].model_discovery_base_url, 'https://api.deepseek.com');
 
       r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
       assert.equal(r.status, 200, JSON.stringify(r.json));

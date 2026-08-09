@@ -15,7 +15,7 @@
 // | S2 | valid | paused | no fire, but preview remains |
 // | S3 | valid | archived | preview clears |
 // | S4 | invalid expression/timezone | any | 400 before persistence |
-// | S5 | due + archived Environment | active | failed run then exact auto-pause |
+// | S5 | due + withdrawn Environment projection | active | not-found run then exact auto-pause |
 // | S6 | primary Agent archived | any | Deployment archives in same operation; no run |
 // | S7 | Deployment archived | terminal | mutation/manual run reject |
 //
@@ -161,9 +161,10 @@ async function main() {
     assert.deepEqual(archived.schedule?.upcoming_runs_at ?? [], [], 'S3 archived schedule has no future fires');
 
     // S5 drives the production 15-second scheduler rather than calling an
-    // internal clock seam. The exact Environment becomes unavailable before the
-    // next minute boundary; the scheduled run must record the typed failure and
-    // atomically pause future fires with the same discriminator.
+    // internal clock seam. The exact Environment projection becomes unavailable
+    // before the next minute boundary; the local launcher cannot infer an archive
+    // tombstone, so the run records not-found and atomically pauses future fires
+    // with the same discriminator (M19/T133).
     const scheduledEnvironment = await client.beta.environments.create({
       name: 'scheduled-failure', config: { type: 'cloud' }, betas: BETAS,
     });
@@ -179,11 +180,11 @@ async function main() {
       const runs = await drain(client.beta.deploymentRuns.list({
         deployment_id: failingSchedule.id, trigger_type: 'schedule', betas: BETAS,
       }));
-      failedRun = runs.find((run) => run.error?.type === 'environment_archived_error');
+      failedRun = runs.find((run) => run.error?.type === 'environment_not_found_error');
       if (failedRun) break;
       await sleep(1_000);
     }
-    assert.ok(failedRun, 'S5 production scheduler records the archived-Environment failure');
+    assert.ok(failedRun, 'S5 production scheduler records the withdrawn-Environment failure');
     assert.equal(failedRun.session_id, null, 'S5 terminal XOR');
     const autoPaused = await client.beta.deployments.retrieve(failingSchedule.id, { betas: BETAS });
     assert.equal(autoPaused.status, 'paused', 'S5 future scheduled fires stop');

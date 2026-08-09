@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, hasEndTurn } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38211);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -52,14 +52,17 @@ async function approveGated(sid, evs, approved) {
 }
 
 async function memContent(id) {
-  try {
-    const page = await client.get(`/v1/memory_stores/${id}/memories`, {
-      headers: MEMORY_HEADERS,
-    });
-    return (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
-  } catch {
-    return '';
-  }
+  // Observation rule O1: a successful list projects the durable contents;
+  // O2: any HTTP/decode failure must fail the test at its real cause. Returning
+  // an empty string for O2 would falsely classify transport failure as an empty
+  // MemoryStore and hide the failing boundary.
+  // Decision rule O3: content assertion -> request `view=full`; the canonical
+  // default `basic` view intentionally returns `content: null` and therefore
+  // cannot distinguish an existing Memory from an empty store.
+  const page = await client.get(`/v1/memory_stores/${id}/memories?view=full`, {
+    headers: MEMORY_HEADERS,
+  });
+  return (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
 }
 
 async function main() {
@@ -94,10 +97,23 @@ async function main() {
       await sleep(400);
       const events = await listEvents(session.id);
       await approveGated(session.id, events, approved);
-      completed = events.some((event) => event.type === 'agent.message');
+      completed = hasEndTurn(events);
       if (completed) break;
     }
     assert.ok(completed, 'the memory-writing turn completed');
+    const completedEvents = await listEvents(session.id);
+    const toolResults = completedEvents.filter((event) => event.type === 'agent.tool_result');
+    const writeResult = toolResults[0];
+    assert.ok(writeResult, 'the gated write produced a tool result before release');
+    assert.notEqual(
+      writeResult.is_error,
+      true,
+      `the Memory mount write succeeded: ${JSON.stringify(writeResult.content)}`,
+    );
+    assert.ok(
+      JSON.stringify(toolResults.at(-1)?.content).includes(MARKER),
+      `the follow-up read observes the exact mounted bytes: ${JSON.stringify(toolResults)}`,
+    );
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     let harvested = '';
     for (let i = 0; i < 20; i += 1) {

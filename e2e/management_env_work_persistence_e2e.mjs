@@ -14,6 +14,17 @@
 //
 // This is the durable path the in-memory default never exercised.
 //
+// Cause graph / decision table:
+//   C1 environment created                 -> E1 one healthcheck is queued
+//   C2 each Session is created on that env -> E2 exactly one Session work item per Session
+//   C3 same typed data root after restart  -> E3 registry mutation and queued work survive
+//   C4 explicit no-login fixture identity  -> E4 IAM is not a competing cause in this storage test
+//
+//   Rule  C1  C2  C3  C4  Expected
+//   W1    Y   N   N   Y   E1
+//   W2    Y   Y   N   Y   E1 + E2
+//   W3    Y   Y   Y   Y   E1 + E2 + E3 + E4
+//
 // Run: (from e2e/)  node management_env_work_persistence_e2e.mjs
 
 import assert from 'node:assert/strict';
@@ -45,7 +56,7 @@ const kinds = (work) => work.map((w) => w.data.type).sort();
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-envwork-e2e-'));
-  const env = deploymentEnv(dir, { controlSealKey: SEAL_KEY });
+  const env = deploymentEnv(dir, { identityMode: 'no-login', controlSealKey: SEAL_KEY });
   const upstream = await startUpstream('echo');
   let server = null;
   try {

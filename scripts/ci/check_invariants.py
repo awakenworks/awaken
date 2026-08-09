@@ -62,6 +62,64 @@ def registry_rows(path: Path) -> list[tuple[str, list[str]]]:
     return rows
 
 
+def rows_in_section(text: str, heading: str, next_heading: str) -> set[str]:
+    """Return guardrail ids from exactly one status-owning table section."""
+    _, marker, tail = text.partition(heading)
+    if not marker:
+        return set()
+    section, _, _ = tail.partition(next_heading)
+    return {
+        cells[0]
+        for line in section.splitlines()
+        if line.startswith("|")
+        for cells in ([cell.strip() for cell in line.strip().strip("|").split("|")],)
+        if cells and ROW_ID.match(cells[0])
+    }
+
+
+def status_table_errors(text: str) -> list[str]:
+    active_ids = rows_in_section(text, "## Guardrails", "## Target Guardrails")
+    target_ids = rows_in_section(
+        text, "## Target Guardrails", "## DDD Review Checklist"
+    )
+    errors: list[str] = []
+    if not active_ids:
+        errors.append("active Guardrails table is empty")
+    if not target_ids:
+        errors.append("Target Guardrails table is empty")
+    overlap = sorted(active_ids & target_ids)
+    if overlap:
+        errors.append("ids appear as both active and target: " + ", ".join(overlap))
+    if re.search(r"\*\*(?:Active|Target)\*\*\s*\([^\n]*\bG\d+", text):
+        errors.append("status ids must be owned by tables, not a prose inventory")
+    return errors
+
+
+def self_test() -> None:
+    # Cause/effect decision table for status ownership:
+    # C1 active table exists; C2 target table exists; C3 ids are disjoint;
+    # C4 no prose status inventory. E1 accept iff all causes hold; each broken
+    # cause is rejected by R2-R5 so semantic status cannot drift beside the table.
+    #
+    # | Rule | C1 | C2 | C3 | C4 | Effect |
+    # | R1   | T  | T  | T  | T  | accept |
+    # | R2   | F  | *  | *  | *  | reject |
+    # | R3   | T  | F  | *  | *  | reject |
+    # | R4   | T  | T  | F  | *  | reject |
+    # | R5   | T  | T  | T  | F  | reject |
+    valid = """## Guardrails
+| G1 | active | owner | test |
+## Target Guardrails
+| G2 | target | owner | test |
+## DDD Review Checklist
+"""
+    assert not status_table_errors(valid), "R1"
+    assert any("active" in error for error in status_table_errors(valid.replace("| G1 | active | owner | test |\n", ""))), "R2"
+    assert any("Target" in error for error in status_table_errors(valid.replace("| G2 | target | owner | test |\n", ""))), "R3"
+    assert any("both" in error for error in status_table_errors(valid.replace("G2", "G1"))), "R4"
+    assert any("prose" in error for error in status_table_errors(valid + "**Active** (G1)\n")), "R5"
+
+
 def ids_in(path: Path) -> set[str]:
     try:
         return set(ID_TOKEN.findall(path.read_text(encoding="utf-8")))
@@ -70,11 +128,24 @@ def ids_in(path: Path) -> set[str]:
 
 
 def main(argv: list[str]) -> int:
+    if argv == ["--self-test"]:
+        self_test()
+        return 0
+    if argv:
+        print("usage: check_invariants.py [--self-test]", file=sys.stderr)
+        return 2
     if not INVARIANTS.is_file():
         print(f"check-invariants:\n  missing {INVARIANTS}", file=sys.stderr)
         return 1
 
     errors: list[str] = []
+    registry_text = INVARIANTS.read_text(encoding="utf-8")
+
+    # Status has one source of truth: section membership. A prose id inventory
+    # previously drifted for months while the structural check stayed green.
+    errors.extend(
+        f"{INVARIANTS}: {error}" for error in status_table_errors(registry_text)
+    )
 
     # 0: no legacy prefix survives anywhere under docs/.
     for doc in sorted(Path("docs").rglob("*.md")):

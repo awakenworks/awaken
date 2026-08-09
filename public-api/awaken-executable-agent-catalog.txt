@@ -3,7 +3,6 @@ pub struct awaken_executable_agent_catalog::ExecutableAgentCatalog
 impl awaken_executable_agent_catalog::ExecutableAgentCatalog
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::at_revision(&self, &str, &str, u64) -> core::option::Option<awaken_executable_agent_contract::ExecutableAgentRegistration>
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::current(&self, &str, &str) -> core::option::Option<awaken_executable_agent_contract::ExecutableAgentRegistration>
-pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::declared_hand_for_agent(&self, &str) -> core::result::Result<core::option::Option<alloc::string::String>, alloc::string::String>
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::exact(&self, &str, &str) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::is_unavailable(&self, &str, &str) -> bool
 pub fn awaken_executable_agent_catalog::ExecutableAgentCatalog::new() -> Self

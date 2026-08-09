@@ -69,3 +69,13 @@ export function responseEtag(response: Response): string {
   assert.ok(value, 'a successful Session mutation returns ETag');
   return value;
 }
+
+/** Read the one current Session root revision used by If-Match CAS commands. */
+export async function retrieveSessionWithEtag(
+  client: Anthropic,
+  sessionId: string,
+  betas: string[],
+) {
+  const retrieved = await client.beta.sessions.retrieve(sessionId, { betas }).withResponse();
+  return { session: retrieved.data, etag: responseEtag(retrieved.response) };
+}

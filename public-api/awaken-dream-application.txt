@@ -1,0 +1,57 @@
+pub mod awaken_dream_application
+pub use awaken_dream_application::DreamPolicyConfig
+pub enum awaken_dream_application::DreamApiError
+pub awaken_dream_application::DreamApiError::BadRequest(alloc::string::String)
+pub awaken_dream_application::DreamApiError::Conflict(alloc::string::String)
+pub awaken_dream_application::DreamApiError::NotFound
+pub awaken_dream_application::DreamApiError::Unavailable(alloc::string::String)
+pub struct awaken_dream_application::DreamApplication
+impl awaken_dream_application::DreamApplication
+pub fn awaken_dream_application::DreamApplication::archive(&self, &str, &str) -> core::result::Result<awaken_session_contract::dream::Dream, awaken_dream_application::DreamApiError>
+pub fn awaken_dream_application::DreamApplication::bind_session_source(&self, alloc::sync::Arc<dyn awaken_dream_application::DreamSessionSource>)
+pub async fn awaken_dream_application::DreamApplication::cancel(&self, &str, &str) -> core::result::Result<awaken_session_contract::dream::Dream, awaken_dream_application::DreamApiError>
+pub async fn awaken_dream_application::DreamApplication::create(&alloc::sync::Arc<Self>, &str, awaken_session_contract::dream::DreamCreateParams) -> core::result::Result<awaken_session_contract::dream::Dream, awaken_dream_application::DreamApiError>
+pub fn awaken_dream_application::DreamApplication::list(&self, &str, awaken_session_contract::dream::DreamListParams) -> core::result::Result<awaken_session_contract::dream::DreamPage, awaken_dream_application::DreamApiError>
+pub fn awaken_dream_application::DreamApplication::new(alloc::sync::Arc<dyn awaken_dream_application::DreamExecutor>) -> Self
+pub fn awaken_dream_application::DreamApplication::policy(&self, &str, &str) -> core::result::Result<awaken_dream_application::DreamPolicy, awaken_dream_application::DreamApiError>
+pub fn awaken_dream_application::DreamApplication::resume_incomplete(&alloc::sync::Arc<Self>)
+pub fn awaken_dream_application::DreamApplication::retrieve(&self, &str, &str) -> core::result::Result<awaken_session_contract::dream::Dream, awaken_dream_application::DreamApiError>
+pub fn awaken_dream_application::DreamApplication::set_policy(&self, &str, &str, awaken_session_contract::dream::DreamPolicyConfig) -> core::result::Result<(), awaken_dream_application::DreamApiError>
+pub async fn awaken_dream_application::DreamApplication::tick_policies(&alloc::sync::Arc<Self>, u64) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::dream::Dream>, awaken_dream_application::DreamApiError>
+pub fn awaken_dream_application::DreamApplication::with_store(alloc::sync::Arc<dyn awaken_dream_application::DreamExecutor>, alloc::sync::Arc<dyn awaken_session_contract::dream::DreamProcessStore>) -> core::result::Result<Self, awaken_dream_application::DreamApiError>
+pub struct awaken_dream_application::DreamCancellation(_)
+impl awaken_dream_application::DreamCancellation
+pub fn awaken_dream_application::DreamCancellation::is_canceled(&self) -> bool
+pub struct awaken_dream_application::DreamFailure
+pub awaken_dream_application::DreamFailure::kind: alloc::string::String
+pub awaken_dream_application::DreamFailure::message: alloc::string::String
+impl awaken_dream_application::DreamFailure
+pub fn awaken_dream_application::DreamFailure::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_dream_application::DreamPolicy
+pub awaken_dream_application::DreamPolicy::config: awaken_session_contract::dream::DreamPolicyConfig
+pub awaken_dream_application::DreamPolicy::last_completed_cutoff_at: core::option::Option<alloc::string::String>
+pub awaken_dream_application::DreamPolicy::memory_store_id: alloc::string::String
+pub awaken_dream_application::DreamPolicy::next_due_at: core::option::Option<alloc::string::String>
+pub awaken_dream_application::DreamPolicy::object_type: &'static str
+pub struct awaken_dream_application::DreamPreparation
+pub awaken_dream_application::DreamPreparation::result_memory_store_id: alloc::string::String
+pub awaken_dream_application::DreamPreparation::session_id: alloc::string::String
+pub awaken_dream_application::DreamPreparation::transcript_file_ids: alloc::vec::Vec<alloc::string::String>
+pub struct awaken_dream_application::DreamRequest
+pub awaken_dream_application::DreamRequest::agent_id: alloc::string::String
+pub awaken_dream_application::DreamRequest::job_id: alloc::string::String
+pub awaken_dream_application::DreamRequest::model: awaken_session_contract::dream::DreamModelConfig
+pub awaken_dream_application::DreamRequest::request_guidance: core::option::Option<alloc::string::String>
+pub awaken_dream_application::DreamRequest::session_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_dream_application::DreamRequest::source_memory_store_id: alloc::string::String
+pub awaken_dream_application::DreamRequest::workspace_id: alloc::string::String
+pub const awaken_dream_application::BUILT_IN_DREAM_AGENT_ID: &str
+pub trait awaken_dream_application::DreamExecutor: core::marker::Send + core::marker::Sync
+pub fn awaken_dream_application::DreamExecutor::cancel<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_dream_application::DreamRequest, core::option::Option<&'life2 awaken_dream_application::DreamPreparation>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dream_application::DreamFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_dream_application::DreamExecutor::cleanup<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_dream_application::DreamRequest, core::option::Option<&'life2 awaken_dream_application::DreamPreparation>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dream_application::DreamFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_dream_application::DreamExecutor::execute<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_dream_application::DreamRequest, &'life2 awaken_dream_application::DreamPreparation, awaken_dream_application::DreamCancellation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dream_application::DreamFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_dream_application::DreamExecutor::prepare<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dream_application::DreamRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dream_application::DreamPreparation, awaken_dream_application::DreamFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dream_application::DreamExecutor::validate_inputs<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dream_application::DreamRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dream_application::DreamFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_dream_application::DreamSessionSource: core::marker::Send + core::marker::Sync
+pub fn awaken_dream_application::DreamSessionSource::eligible_sessions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_dream_application::DreamSessionSource::session_usage(&self, &str, &str) -> core::option::Option<awaken_session_contract::dream::DreamUsage>

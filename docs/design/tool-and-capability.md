@@ -118,7 +118,7 @@ not.
 
 | Toolset | Tool ids | Runtime rule |
 |---|---|---|
-| `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search` | descriptors and concrete tools live in the extension and execute in-process; runtime core ships no concrete tool id |
+| `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch` | descriptors and concrete tools live in the extension and execute in-process; `web_search` has one separately configured plugin path; runtime core ships no concrete tool id |
 | `builtin-task-tools` | `send_message`, `cancel_task`, `recover_failed_messages` | task tools are ordinary plugin tools over runtime state/effect/commit seams; recovery tools are ops-scoped unless explicitly enabled |
 | `builtin-delegation-tools` | `agent_run` | delegation is one tool id with a target argument, not one generated id per target agent |
 

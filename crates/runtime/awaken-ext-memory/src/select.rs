@@ -106,23 +106,6 @@ mod tests {
 
     use crate::localfs::MemoryDir;
 
-    fn entries(n: usize) -> Vec<Entry> {
-        let root = std::env::temp_dir().join(format!(
-            "awaken-select-{}",
-            SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let store = MemoryDir::new(&root);
-        for i in 0..n {
-            store
-                .write(&format!("m{i}"), &format!("memory number {i}"))
-                .unwrap();
-        }
-        store.entries()
-    }
-
     #[test]
     fn parse_indices_accepts_only_the_documented_wire_format() {
         assert_eq!(parse_indices("[0], [3]", 5, 10), vec![0, 3]);

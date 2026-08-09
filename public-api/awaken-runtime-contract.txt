@@ -9,6 +9,7 @@ pub use awaken_runtime_contract::CommitOperationId
 pub use awaken_runtime_contract::CommitPayloadHash
 pub use awaken_runtime_contract::CommitReceipt
 pub use awaken_runtime_contract::CommitRecord
+pub use awaken_runtime_contract::ContentBlock
 pub use awaken_runtime_contract::CredentialAccess
 pub use awaken_runtime_contract::CredentialAdmissionError
 pub use awaken_runtime_contract::CredentialEnvelope
@@ -35,6 +36,7 @@ pub use awaken_runtime_contract::CredentialRefreshAccess
 pub use awaken_runtime_contract::CredentialUsage
 pub use awaken_runtime_contract::DelegationLimits
 pub use awaken_runtime_contract::EndCause
+pub use awaken_runtime_contract::ImageSource
 pub use awaken_runtime_contract::MergePolicy
 pub use awaken_runtime_contract::Message
 pub use awaken_runtime_contract::MessageId
@@ -66,6 +68,7 @@ pub use awaken_runtime_contract::TranscriptView
 pub use awaken_runtime_contract::TrustDomainRef
 pub use awaken_runtime_contract::WorkerLocalCredentialResolver
 pub use awaken_runtime_contract::WorkerLocalReferenceRevalidator
+pub use awaken_runtime_contract::extract_text
 pub mod awaken_runtime_contract::activation
 pub struct awaken_runtime_contract::activation::RunActivation
 pub awaken_runtime_contract::activation::RunActivation::data_subject_id: core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>
@@ -90,6 +93,15 @@ pub use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement
 pub use awaken_runtime_contract::agent_bindings::ToolPolicyOverride
 pub use awaken_runtime_contract::agent_bindings::ToolsetPolicy
 pub use awaken_runtime_contract::agent_bindings::ToolsetSource
+pub enum awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding
+pub awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::Http(awaken_runtime_contract::agent_bindings::AgentHttpMcpTransport)
+pub awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::SandboxStdio(awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport)
+impl awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding
+pub fn awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::normalize(&self) -> core::result::Result<awaken_agent_contract::mcp_target::McpTarget, alloc::string::String>
+pub fn awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>) -> Self
+pub enum awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransportKind
+pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransportKind::SandboxStdio
 pub enum awaken_runtime_contract::agent_bindings::InferenceSpeed
 pub awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast
 pub awaken_runtime_contract::agent_bindings::InferenceSpeed::Standard
@@ -111,11 +123,17 @@ pub struct awaken_runtime_contract::agent_bindings::AgentDelegateBinding
 pub awaken_runtime_contract::agent_bindings::AgentDelegateBinding::agent_id: awaken_runtime_contract::snapshot::AgentId
 pub awaken_runtime_contract::agent_bindings::AgentDelegateBinding::recursive_self: bool
 pub awaken_runtime_contract::agent_bindings::AgentDelegateBinding::source_revision: core::option::Option<u64>
+pub struct awaken_runtime_contract::agent_bindings::AgentHttpMcpTransport
+pub awaken_runtime_contract::agent_bindings::AgentHttpMcpTransport::url: alloc::string::String
 pub struct awaken_runtime_contract::agent_bindings::AgentMcpServerBinding
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::credential: core::option::Option<awaken_credential_contract::CredentialRef>
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::name: alloc::string::String
 pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::prompts_as_skills: bool
-pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::url: alloc::string::String
+pub awaken_runtime_contract::agent_bindings::AgentMcpServerBinding::transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding
+pub struct awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport
+pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::args: alloc::vec::Vec<alloc::string::String>
+pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::command: alloc::string::String
+pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::kind: awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransportKind
 pub struct awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_runtime_contract::agent_bindings::InferenceOptions::effort: core::option::Option<awaken_runtime_contract::agent_bindings::ReasoningEffort>
 pub awaken_runtime_contract::agent_bindings::InferenceOptions::speed: core::option::Option<awaken_runtime_contract::agent_bindings::InferenceSpeed>
@@ -252,6 +270,9 @@ pub fn awaken_runtime_contract::credential::candidate_fingerprint(&awaken_runtim
 pub fn awaken_runtime_contract::credential::compile_candidate_credential_bindings(&[&awaken_runtime_contract::resolved::ResolvedModelCandidate], core::option::Option<&awaken_credential_contract::PlaintextHolder>, &awaken_credential_contract::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub fn awaken_runtime_contract::credential::verify_credential_realization_receipt(&[awaken_runtime_contract::credential::AttemptCredentialBinding], &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialReceiptError>
 pub mod awaken_runtime_contract::data_subject
+pub enum awaken_runtime_contract::data_subject::CaptureError
+pub awaken_runtime_contract::data_subject::CaptureError::Store(alloc::string::String)
+pub awaken_runtime_contract::data_subject::CaptureError::SubjectErased
 pub enum awaken_runtime_contract::data_subject::Purpose
 pub awaken_runtime_contract::data_subject::Purpose::EvalRecording
 pub awaken_runtime_contract::data_subject::Purpose::TelemetryContent
@@ -262,18 +283,21 @@ pub struct awaken_runtime_contract::data_subject::ErasureError(pub alloc::string
 pub struct awaken_runtime_contract::data_subject::ErasureReceipt
 pub awaken_runtime_contract::data_subject::ErasureReceipt::records_removed: usize
 pub struct awaken_runtime_contract::data_subject::NullResolver
-impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
+impl awaken_runtime_contract::data_subject::DataSubjectConsentSource for awaken_runtime_contract::data_subject::NullResolver
 pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
 pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::data_subject::CaptureSink: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::data_subject::CaptureSink::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::data_subject::CaptureSink::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::data_subject::CaptureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_runtime_contract::data_subject::ContentEraser: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::data_subject::ContentEraser::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub trait awaken_runtime_contract::data_subject::DataSubjectResolver: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::data_subject::DataSubjectResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_runtime_contract::data_subject::DataSubjectConsentSource: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::data_subject::DataSubjectConsentSource::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_contract::data_subject::DataSubjectConsentSource for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_runtime_contract::data_subject::DataSubjectResolver: awaken_runtime_contract::data_subject::DataSubjectConsentSource
 pub fn awaken_runtime_contract::data_subject::DataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
-pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_runtime_contract::delegation
 pub use awaken_runtime_contract::delegation::ChildRunCancellation
@@ -1114,6 +1138,7 @@ pub mod awaken_runtime_contract::tool
 pub enum awaken_runtime_contract::tool::ToolError
 pub awaken_runtime_contract::tool::ToolError::Execution(alloc::string::String)
 pub awaken_runtime_contract::tool::ToolError::InvalidArguments(alloc::string::String)
+pub awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(alloc::string::String)
 pub awaken_runtime_contract::tool::ToolError::Unknown(alloc::string::String)
 pub enum awaken_runtime_contract::tool::ToolExecutionTarget
 pub awaken_runtime_contract::tool::ToolExecutionTarget::Brain
@@ -1142,14 +1167,19 @@ pub awaken_runtime_contract::tool::ToolCall::tool_id: alloc::string::String
 pub struct awaken_runtime_contract::tool::ToolOperationContext
 pub awaken_runtime_contract::tool::ToolOperationContext::operation_id: alloc::string::String
 pub awaken_runtime_contract::tool::ToolOperationContext::run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
+impl awaken_runtime_contract::tool::ToolOperationContext
+pub fn awaken_runtime_contract::tool::ToolOperationContext::for_run(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_runtime_contract::tool::ToolOutput
 pub awaken_runtime_contract::tool::ToolOutput::call_id: alloc::string::String
-pub awaken_runtime_contract::tool::ToolOutput::content: alloc::string::String
+pub awaken_runtime_contract::tool::ToolOutput::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_runtime_contract::tool::ToolOutput::is_error: bool
 pub awaken_runtime_contract::tool::ToolOutput::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 impl awaken_runtime_contract::tool::ToolOutput
 pub fn awaken_runtime_contract::tool::ToolOutput::error(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::tool::ToolOutput::error_blocks(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
 pub fn awaken_runtime_contract::tool::ToolOutput::ok(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::tool::ToolOutput::ok_blocks(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
+pub fn awaken_runtime_contract::tool::ToolOutput::text(&self) -> alloc::string::String
 pub fn awaken_runtime_contract::tool::ToolOutput::with_state(self, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> Self
 pub struct awaken_runtime_contract::tool::ToolRecoveryPolicy
 pub awaken_runtime_contract::tool::ToolRecoveryPolicy::max_attempts: u16
@@ -1281,6 +1311,9 @@ pub enum awaken_runtime_contract::Cancellation
 pub awaken_runtime_contract::Cancellation::CooperativeToken
 pub awaken_runtime_contract::Cancellation::None
 pub awaken_runtime_contract::Cancellation::RemoteAbort
+pub enum awaken_runtime_contract::CaptureError
+pub awaken_runtime_contract::CaptureError::Store(alloc::string::String)
+pub awaken_runtime_contract::CaptureError::SubjectErased
 pub enum awaken_runtime_contract::ContentCapture
 pub awaken_runtime_contract::ContentCapture::Full
 pub awaken_runtime_contract::ContentCapture::Off
@@ -1650,8 +1683,9 @@ pub struct awaken_runtime_contract::NoopRedactor
 impl awaken_runtime_contract::capture::ContentRedactor for awaken_runtime_contract::capture::NoopRedactor
 pub fn awaken_runtime_contract::capture::NoopRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
 pub struct awaken_runtime_contract::NullResolver
-impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
+impl awaken_runtime_contract::data_subject::DataSubjectConsentSource for awaken_runtime_contract::data_subject::NullResolver
 pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
 pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_runtime_contract::PauseSignal(_)
 impl awaken_runtime_contract::pause::PauseSignal
@@ -1829,12 +1863,15 @@ impl awaken_runtime_contract::tool_batch::ToolBatchId
 pub fn awaken_runtime_contract::tool_batch::ToolBatchId::for_step(&awaken_agent_contract::agent::run::Id, usize) -> Self
 pub struct awaken_runtime_contract::ToolOutput
 pub awaken_runtime_contract::ToolOutput::call_id: alloc::string::String
-pub awaken_runtime_contract::ToolOutput::content: alloc::string::String
+pub awaken_runtime_contract::ToolOutput::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_runtime_contract::ToolOutput::is_error: bool
 pub awaken_runtime_contract::ToolOutput::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 impl awaken_runtime_contract::tool::ToolOutput
 pub fn awaken_runtime_contract::tool::ToolOutput::error(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::tool::ToolOutput::error_blocks(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
 pub fn awaken_runtime_contract::tool::ToolOutput::ok(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_runtime_contract::tool::ToolOutput::ok_blocks(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
+pub fn awaken_runtime_contract::tool::ToolOutput::text(&self) -> alloc::string::String
 pub fn awaken_runtime_contract::tool::ToolOutput::with_state(self, alloc::vec::Vec<awaken_agent_contract::agent::state::Command>) -> Self
 pub struct awaken_runtime_contract::ToolRecoveryPolicy
 pub awaken_runtime_contract::ToolRecoveryPolicy::max_attempts: u16
@@ -1854,7 +1891,7 @@ pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awak
 pub trait awaken_runtime_contract::AttemptOwnershipVerifier: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::AttemptOwnershipVerifier::verify_current<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::runtime_context::AttemptOwnershipError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_runtime_contract::CaptureSink: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::CaptureSink::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_runtime_contract::CaptureSink::record<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose, awaken_runtime_contract::capture::ContentKind, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::data_subject::CaptureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_runtime_contract::ContentEraser: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::ContentEraser::erase_subject<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::ContentRedactor: core::marker::Send + core::marker::Sync
@@ -1863,11 +1900,13 @@ impl awaken_runtime_contract::capture::ContentRedactor for awaken_runtime_contra
 pub fn awaken_runtime_contract::capture::NoopRedactor::redact<'a>(&self, awaken_runtime_contract::capture::ContentKind, &'a str) -> alloc::borrow::Cow<'a, str>
 pub trait awaken_runtime_contract::CredentialRealizationRecorder: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_contract::CredentialRealizationRecorder::record<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::credential::CredentialRealizationRecordError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub trait awaken_runtime_contract::DataSubjectResolver: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_contract::DataSubjectResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_runtime_contract::DataSubjectConsentSource: core::marker::Send + core::marker::Sync
+pub fn awaken_runtime_contract::DataSubjectConsentSource::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_contract::data_subject::DataSubjectConsentSource for awaken_runtime_contract::data_subject::NullResolver
+pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_runtime_contract::DataSubjectResolver: awaken_runtime_contract::data_subject::DataSubjectConsentSource
 pub fn awaken_runtime_contract::DataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_runtime_contract::data_subject::NullResolver
-pub fn awaken_runtime_contract::data_subject::NullResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::data_subject::NullResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_contract::LiveRunControl
 pub fn awaken_runtime_contract::LiveRunControl::deliver(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>

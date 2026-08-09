@@ -95,7 +95,17 @@ async function main() {
     await waitForPort(PORT);
     const c = client();
 
-    // 1) Configure resources via the API: a fresh memory store + the github repo.
+    // 1) Configure resources via their authoritative APIs. The immutable Agent
+    // publication selects `greet`; therefore the durable Skill aggregate must
+    // exist before Session pinning (a static side registry is not a second truth).
+    const greet = await c.post('/v1/skills', {
+      body: {
+        id: 'greet',
+        content: '---\ndescription: greet\n---\nGREETING-FROM-SKILL',
+      },
+      headers: SKILL_HEADERS,
+    });
+    assert.equal(greet.id, 'greet');
     const mem = await c.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     assert.ok(mem.id, 'POST /v1/memory_stores returned an id');
     pass(`configured a memory_store via the API: ${mem.id}`);
@@ -143,14 +153,13 @@ async function main() {
     );
     await c.beta.sessions.delete(session.id, { betas: BETAS });
     for (let i = 0; i < 20; i += 1) {
-      try {
-        const page = await c.get(`/v1/memory_stores/${mem.id}/memories`, {
-          headers: MEMORY_HEADERS,
-        });
-        memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
-      } catch {
-        memContent = '';
-      }
+      // Observation decision table: full+success exposes durable bytes; basic
+      // deliberately elides them; transport/decode failure is a test failure,
+      // never evidence that the store is merely empty.
+      const page = await c.get(`/v1/memory_stores/${mem.id}/memories?view=full`, {
+        headers: MEMORY_HEADERS,
+      });
+      memContent = (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');
       if (memContent.includes(MEMO_MARKER)) break;
       await sleep(200);
     }
@@ -207,6 +216,7 @@ async function main() {
       const authored = await c.beta.sessions.create({
         agent: 'assistant',
         environment_id: 'env_local',
+        resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
         betas: BETAS,
       });
       await c.beta.sessions.events.send(authored.id, {
@@ -259,14 +269,22 @@ async function main() {
     const consumingSession = await c.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
+      resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
       betas: BETAS,
     });
+    const selectedSkills = (consumingSession.agent.skills ?? []).map((skill) => skill.skill_id ?? skill);
+    assert.deepEqual(
+      selectedSkills,
+      ['greet'],
+      'persisting an authored Skill does not mutate the immutable Agent publication',
+    );
+    const skillCatalog = await c.get('/v1/skills', { headers: SKILL_HEADERS });
     assert.ok(
-      (consumingSession.agent.skills ?? []).some((skill) => (skill.skill_id ?? skill) === 'authored'),
-      'a later Session advertises the durable authored Skill',
+      (skillCatalog.data ?? []).some((skill) => skill.id === 'authored'),
+      'the authored aggregate remains available for an explicit future publication update',
     );
     await c.beta.sessions.delete(consumingSession.id, { betas: BETAS });
-    pass('agent-authored Skill harvest is idempotent and appends immutable changed versions');
+    pass('agent-authored Skill versions persist without implicitly mutating Agent selection');
 
     console.log('E2E PASS: full chain — config → mounts → skill → memory + repo write-back → artifact → authored Skill versions.');
   } finally {

@@ -1,0 +1,190 @@
+pub mod awaken_protocol_ag_ui
+pub mod awaken_protocol_ag_ui::encoder
+pub struct awaken_protocol_ag_ui::encoder::AgUiEncoder
+impl awaken_protocol_ag_ui::encoder::AgUiEncoder
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::complete(&mut self, &awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fail(&mut self, impl core::convert::Into<alloc::string::String>) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+impl awaken_agent_contract::event::fold::Transcoder for awaken_protocol_ag_ui::encoder::AgUiEncoder
+pub type awaken_protocol_ag_ui::encoder::AgUiEncoder::Output = awaken_protocol_ag_ui::types::AgUiEvent
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::delta(&mut self, &awaken_agent_contract::event::agent::Delta) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fact(&mut self, &awaken_agent_contract::event::agent::Fact) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::encode_history(&[awaken_agent_contract::agent::message::Message]) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn awaken_protocol_ag_ui::encoder::encode_step(&awaken_session_contract::session::StepOutcome, &str, &str) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub mod awaken_protocol_ag_ui::request
+pub enum awaken_protocol_ag_ui::request::ProcessError
+pub awaken_protocol_ag_ui::request::ProcessError::ForwardedPropsUnsupported
+pub awaken_protocol_ag_ui::request::ProcessError::ParentRunUnsupported
+pub awaken_protocol_ag_ui::request::ProcessError::PerRunContextUnsupported
+pub awaken_protocol_ag_ui::request::ProcessError::PerRunToolsUnsupported
+pub awaken_protocol_ag_ui::request::ProcessError::ResumeUnsupported
+pub awaken_protocol_ag_ui::request::ProcessError::StateUnsupported
+pub awaken_protocol_ag_ui::request::ProcessError::UnsupportedContent(&'static str)
+pub struct awaken_protocol_ag_ui::request::Processed
+pub awaken_protocol_ag_ui::request::Processed::agent_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::request::Processed::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_protocol_ag_ui::request::Processed::run_id: alloc::string::String
+pub awaken_protocol_ag_ui::request::Processed::thread_id: alloc::string::String
+pub awaken_protocol_ag_ui::request::Processed::tool_results: alloc::vec::Vec<awaken_protocol_ag_ui::request::ToolResultInput>
+impl awaken_protocol_ag_ui::request::Processed
+pub fn awaken_protocol_ag_ui::request::Processed::is_resume_only(&self) -> bool
+pub struct awaken_protocol_ag_ui::request::ToolResultInput
+pub awaken_protocol_ag_ui::request::ToolResultInput::content: alloc::string::String
+pub awaken_protocol_ag_ui::request::ToolResultInput::error: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::request::ToolResultInput::tool_call_id: alloc::string::String
+pub fn awaken_protocol_ag_ui::request::process(awaken_protocol_ag_ui::types::RunAgentInput, core::option::Option<alloc::string::String>, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<awaken_protocol_ag_ui::request::Processed, awaken_protocol_ag_ui::request::ProcessError>
+pub mod awaken_protocol_ag_ui::router
+pub fn awaken_protocol_ag_ui::router::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
+pub mod awaken_protocol_ag_ui::types
+pub enum awaken_protocol_ag_ui::types::AgUiContent
+pub awaken_protocol_ag_ui::types::AgUiContent::Parts(alloc::vec::Vec<awaken_protocol_ag_ui::types::InputContentPart>)
+pub awaken_protocol_ag_ui::types::AgUiContent::Text(alloc::string::String)
+pub enum awaken_protocol_ag_ui::types::AgUiEvent
+pub awaken_protocol_ag_ui::types::AgUiEvent::RunError
+pub awaken_protocol_ag_ui::types::AgUiEvent::RunError::message: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::RunFinished
+pub awaken_protocol_ag_ui::types::AgUiEvent::RunFinished::run_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::RunFinished::thread_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::RunStarted
+pub awaken_protocol_ag_ui::types::AgUiEvent::RunStarted::run_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::RunStarted::thread_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::TextMessageContent
+pub awaken_protocol_ag_ui::types::AgUiEvent::TextMessageContent::delta: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::TextMessageContent::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::TextMessageEnd
+pub awaken_protocol_ag_ui::types::AgUiEvent::TextMessageEnd::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::TextMessageStart
+pub awaken_protocol_ag_ui::types::AgUiEvent::TextMessageStart::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::TextMessageStart::role: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallArgs
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallArgs::delta: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallArgs::tool_call_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallEnd
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallEnd::tool_call_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallResult
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallResult::content: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallResult::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallResult::tool_call_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallStart
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallStart::tool_call_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiEvent::ToolCallStart::tool_call_name: alloc::string::String
+impl awaken_protocol_ag_ui::types::AgUiEvent
+pub fn awaken_protocol_ag_ui::types::AgUiEvent::error(impl core::convert::Into<alloc::string::String>) -> Self
+pub enum awaken_protocol_ag_ui::types::AgUiResumeStatus
+pub awaken_protocol_ag_ui::types::AgUiResumeStatus::Cancelled
+pub awaken_protocol_ag_ui::types::AgUiResumeStatus::Resolved
+pub enum awaken_protocol_ag_ui::types::AgUiRole
+pub awaken_protocol_ag_ui::types::AgUiRole::Activity
+pub awaken_protocol_ag_ui::types::AgUiRole::Assistant
+pub awaken_protocol_ag_ui::types::AgUiRole::Developer
+pub awaken_protocol_ag_ui::types::AgUiRole::Reasoning
+pub awaken_protocol_ag_ui::types::AgUiRole::System
+pub awaken_protocol_ag_ui::types::AgUiRole::Tool
+pub awaken_protocol_ag_ui::types::AgUiRole::User
+pub enum awaken_protocol_ag_ui::types::InputContentPart
+pub awaken_protocol_ag_ui::types::InputContentPart::Audio
+pub awaken_protocol_ag_ui::types::InputContentPart::Audio::metadata: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_ag_ui::types::InputContentPart::Audio::source: awaken_protocol_ag_ui::types::InputContentSource
+pub awaken_protocol_ag_ui::types::InputContentPart::Binary
+pub awaken_protocol_ag_ui::types::InputContentPart::Binary::data: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::InputContentPart::Binary::filename: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::InputContentPart::Binary::id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::InputContentPart::Binary::mime_type: alloc::string::String
+pub awaken_protocol_ag_ui::types::InputContentPart::Binary::url: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::InputContentPart::Document
+pub awaken_protocol_ag_ui::types::InputContentPart::Document::metadata: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_ag_ui::types::InputContentPart::Document::source: awaken_protocol_ag_ui::types::InputContentSource
+pub awaken_protocol_ag_ui::types::InputContentPart::Image
+pub awaken_protocol_ag_ui::types::InputContentPart::Image::metadata: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_ag_ui::types::InputContentPart::Image::source: awaken_protocol_ag_ui::types::InputContentSource
+pub awaken_protocol_ag_ui::types::InputContentPart::Text
+pub awaken_protocol_ag_ui::types::InputContentPart::Text::text: alloc::string::String
+pub awaken_protocol_ag_ui::types::InputContentPart::Video
+pub awaken_protocol_ag_ui::types::InputContentPart::Video::metadata: core::option::Option<serde_json::value::Value>
+pub awaken_protocol_ag_ui::types::InputContentPart::Video::source: awaken_protocol_ag_ui::types::InputContentSource
+pub enum awaken_protocol_ag_ui::types::InputContentSource
+pub awaken_protocol_ag_ui::types::InputContentSource::Data
+pub awaken_protocol_ag_ui::types::InputContentSource::Data::mime_type: alloc::string::String
+pub awaken_protocol_ag_ui::types::InputContentSource::Data::value: alloc::string::String
+pub awaken_protocol_ag_ui::types::InputContentSource::Url
+pub awaken_protocol_ag_ui::types::InputContentSource::Url::mime_type: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::InputContentSource::Url::value: alloc::string::String
+pub struct awaken_protocol_ag_ui::types::AgUiContext
+pub awaken_protocol_ag_ui::types::AgUiContext::description: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiContext::value: alloc::string::String
+pub struct awaken_protocol_ag_ui::types::AgUiMessage
+pub awaken_protocol_ag_ui::types::AgUiMessage::content: core::option::Option<awaken_protocol_ag_ui::types::AgUiContent>
+pub awaken_protocol_ag_ui::types::AgUiMessage::error: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::AgUiMessage::id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::AgUiMessage::role: awaken_protocol_ag_ui::types::AgUiRole
+pub awaken_protocol_ag_ui::types::AgUiMessage::tool_call_id: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_ag_ui::types::AgUiResumeEntry
+pub awaken_protocol_ag_ui::types::AgUiResumeEntry::interrupt_id: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiResumeEntry::payload: serde_json::value::Value
+pub awaken_protocol_ag_ui::types::AgUiResumeEntry::status: awaken_protocol_ag_ui::types::AgUiResumeStatus
+pub struct awaken_protocol_ag_ui::types::AgUiTool
+pub awaken_protocol_ag_ui::types::AgUiTool::description: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiTool::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
+pub awaken_protocol_ag_ui::types::AgUiTool::name: alloc::string::String
+pub awaken_protocol_ag_ui::types::AgUiTool::parameters: serde_json::value::Value
+pub struct awaken_protocol_ag_ui::types::RunAgentInput
+pub awaken_protocol_ag_ui::types::RunAgentInput::context: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiContext>
+pub awaken_protocol_ag_ui::types::RunAgentInput::forwarded_props: serde_json::value::Value
+pub awaken_protocol_ag_ui::types::RunAgentInput::messages: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiMessage>
+pub awaken_protocol_ag_ui::types::RunAgentInput::parent_run_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::RunAgentInput::resume: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiResumeEntry>
+pub awaken_protocol_ag_ui::types::RunAgentInput::run_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::RunAgentInput::state: serde_json::value::Value
+pub awaken_protocol_ag_ui::types::RunAgentInput::thread_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::types::RunAgentInput::tools: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiTool>
+pub enum awaken_protocol_ag_ui::AgUiEvent
+pub awaken_protocol_ag_ui::AgUiEvent::RunError
+pub awaken_protocol_ag_ui::AgUiEvent::RunError::message: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::RunFinished
+pub awaken_protocol_ag_ui::AgUiEvent::RunFinished::run_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::RunFinished::thread_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::RunStarted
+pub awaken_protocol_ag_ui::AgUiEvent::RunStarted::run_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::RunStarted::thread_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::TextMessageContent
+pub awaken_protocol_ag_ui::AgUiEvent::TextMessageContent::delta: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::TextMessageContent::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::TextMessageEnd
+pub awaken_protocol_ag_ui::AgUiEvent::TextMessageEnd::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::TextMessageStart
+pub awaken_protocol_ag_ui::AgUiEvent::TextMessageStart::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::TextMessageStart::role: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallArgs
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallArgs::delta: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallArgs::tool_call_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallEnd
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallEnd::tool_call_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallResult
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallResult::content: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallResult::message_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallResult::tool_call_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallStart
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallStart::tool_call_id: alloc::string::String
+pub awaken_protocol_ag_ui::AgUiEvent::ToolCallStart::tool_call_name: alloc::string::String
+impl awaken_protocol_ag_ui::types::AgUiEvent
+pub fn awaken_protocol_ag_ui::types::AgUiEvent::error(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_protocol_ag_ui::AgUiEncoder
+impl awaken_protocol_ag_ui::encoder::AgUiEncoder
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::complete(&mut self, &awaken_session_contract::session::StepOutcome) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fail(&mut self, impl core::convert::Into<alloc::string::String>) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+impl awaken_agent_contract::event::fold::Transcoder for awaken_protocol_ag_ui::encoder::AgUiEncoder
+pub type awaken_protocol_ag_ui::encoder::AgUiEncoder::Output = awaken_protocol_ag_ui::types::AgUiEvent
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::delta(&mut self, &awaken_agent_contract::event::agent::Delta) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub fn awaken_protocol_ag_ui::encoder::AgUiEncoder::fact(&mut self, &awaken_agent_contract::event::agent::Fact) -> alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiEvent>
+pub struct awaken_protocol_ag_ui::RunAgentInput
+pub awaken_protocol_ag_ui::RunAgentInput::context: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiContext>
+pub awaken_protocol_ag_ui::RunAgentInput::forwarded_props: serde_json::value::Value
+pub awaken_protocol_ag_ui::RunAgentInput::messages: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiMessage>
+pub awaken_protocol_ag_ui::RunAgentInput::parent_run_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::RunAgentInput::resume: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiResumeEntry>
+pub awaken_protocol_ag_ui::RunAgentInput::run_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::RunAgentInput::state: serde_json::value::Value
+pub awaken_protocol_ag_ui::RunAgentInput::thread_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_ag_ui::RunAgentInput::tools: alloc::vec::Vec<awaken_protocol_ag_ui::types::AgUiTool>
+pub fn awaken_protocol_ag_ui::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router

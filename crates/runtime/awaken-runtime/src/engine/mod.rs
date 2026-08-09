@@ -86,10 +86,6 @@ use resume::drive_resumed;
 use run_loop::*;
 use tool_execution::*;
 
-/// Message-id base for messages produced by a resumed attempt, kept distinct
-/// from the original attempt's ids.
-const RESUME_STEP_BASE: usize = 1_000;
-
 /// Best-effort live emission. A sink failure is swallowed: committed truth is
 /// authoritative, not the live stream (G10/G13).
 async fn emit(context: &RuntimeRunContext, run_id: &RunId, kind: AgentEvent) {

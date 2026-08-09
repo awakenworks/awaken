@@ -124,37 +124,10 @@ tsx_loader_url="$(node -p "require('node:url').pathToFileURL(require.resolve('ts
 export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--import=$tsx_loader_url"
 
 run_coverage_suites() {
-  npm run test
-  npm run test:protocols
-  npm run test:management
-  npm run test:durable
-  npm run test:fs
-  # Extended surfaces (management config APIs + managed engine lifecycle + ACP):
-  # existing e2e that were not previously in a coverage chain, so their served
-  # code (environments/deployments/agents/user-profiles/memory-stores/skills/
-  # vaults/files APIs; managed full-lifecycle/reconnect/terminated/concurrency) was
-  # measured as uncovered though the tests exist and pass.
-  npm run test:extended
-  npm run test:environment-matrix
-  # The production `awaken` composition (not the scenario host) proves
-  # catalog publication -> snapshot-pinned access -> credential materialization.
-  # `test:extended` uses 38411 immediately before this process. Give the CLI
-  # composition a distinct port so a shutting-down scenario server cannot satisfy
-  # its readiness probe and then disappear between requests.
-  E2E_PORT=39411 node awaken_cli_e2e.mjs
-  node runtime_embedded_e2e.mjs
-  # Exercise the production cross-node worker-pool path as part of the same
-  # changed-line evidence instead of leaving scenario-host worker code uncovered.
-  node worker_pool_e2e.mjs
-  npm run test:coordinator-authority
-  # Cross-process worker/credential-reference, sandbox, MCP and PostgreSQL stage
-  # scenarios are part of the changed runtime surface and must contribute real
-  # process coverage (including the exact anonymous-worker 401 contract).
-  npm run test:runtime-stages
-  # Deterministic production-composition and lifecycle scenarios that are not part
-  # of the historical aggregate suites. Keeping the list in package.json makes the
-  # exact changed-line evidence runnable locally without invoking the reporter.
-  npm run test:coverage-gaps
+  # package.json is the sole executable suite authority. Coverage, the release
+  # gate, and the optional combined report all invoke this same graph so adding a
+  # scenario cannot silently update only one runner.
+  npm run test:deterministic
   if [ "${AWAKEN_COVERAGE_REAL:-0}" = "1" ] && [ -n "${coverage_anthropic_key}${coverage_kimi_key}" ]; then
     (
       export ANTHROPIC_API_KEY="$coverage_anthropic_key" # awaken-allow: secret

@@ -1,0 +1,2 @@
+pub mod awaken_environment_package_image_builder
+pub fn awaken_environment_package_image_builder::package_environment_image_builder(alloc::sync::Arc<dyn awaken_sandbox_container::PackageImageProvisioner>) -> alloc::sync::Arc<dyn awaken_environment_realization_contract::EnvironmentImageBuilder>

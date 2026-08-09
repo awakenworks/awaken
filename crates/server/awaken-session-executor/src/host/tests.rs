@@ -587,6 +587,8 @@ async fn interrupt_is_a_noop_when_nothing_runs() {
 #[tokio::test]
 async fn attributed_run_meets_deployment_capture_with_control_consent() {
     struct SubjectConsent;
+    #[derive(Default)]
+    struct CountingCaptureSink(AtomicUsize);
 
     #[async_trait::async_trait]
     impl awaken_runtime_contract::DataSubjectConsentSource for SubjectConsent {
@@ -603,38 +605,56 @@ async fn attributed_run_meets_deployment_capture_with_control_consent() {
         }
     }
 
-    // Cause/effect decision table: deployment Full + granted subject -> Full;
-    // deployment Full + absent/withdrawn subject -> Structured. The consent
-    // source is consulted by `context_for` once per attributed Run, and meet can
-    // only narrow the deployment decision.
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::CaptureSink for CountingCaptureSink {
+        async fn record(
+            &self,
+            _subject: &awaken_runtime_contract::DataSubjectId,
+            _purpose: awaken_runtime_contract::Purpose,
+            _kind: awaken_runtime_contract::ContentKind,
+            _content: &str,
+        ) -> Result<(), awaken_runtime_contract::CaptureError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    // Cause/effect decision table: deployment Full + granted subject -> prompt
+    // and completion are persisted; deployment Full + absent/withdrawn subject
+    // -> no content row. The single attempt-executor decorator owns this meet for
+    // both direct and durable delivery; this unit partition proves the direct
+    // route and management_capture_erasure_loop_e2e proves durable delivery.
     let mut deployment = crate::DeploymentConfig::ephemeral();
     deployment.content_capture.level = awaken_runtime_contract::ContentCapture::Full;
+    let captured = Arc::new(CountingCaptureSink::default());
     let host = SharedHost::new_with_deployment(Arc::new(MemoryHostModel), "stub", deployment)
+        .with_capture_sink(captured.clone())
         .with_data_subject_consent_source(Arc::new(SubjectConsent));
-    let session = host.ctx_for("consent-run", None).await.unwrap();
 
-    for (subject, expected, rule) in [
-        (
-            "granted",
-            awaken_runtime_contract::ContentCapture::Full,
-            "R1",
-        ),
-        (
-            "unknown",
-            awaken_runtime_contract::ContentCapture::Structured,
-            "R2",
-        ),
-    ] {
-        let mut activation = RunActivation::new(
-            RunId(format!("run-{subject}")),
-            session.thread_id.clone(),
-            session.config.clone(),
-            user("hello"),
-        );
-        activation.data_subject_id = Some(awaken_runtime_contract::DataSubjectId(subject.into()));
-        let context = session.context_for(&activation).await;
-        assert_eq!(context.capture.decision.level, expected, "{rule}");
-    }
+    host.run_attributed(
+        None,
+        "consent-granted",
+        user("hello granted"),
+        Some(awaken_runtime_contract::DataSubjectId("granted".into())),
+    )
+    .await
+    .expect("R1 attributed run");
+    let after_granted = captured.0.load(Ordering::SeqCst);
+    assert!(after_granted >= 2, "R1 prompt and completion captured");
+
+    host.run_attributed(
+        None,
+        "consent-unknown",
+        user("hello unknown"),
+        Some(awaken_runtime_contract::DataSubjectId("unknown".into())),
+    )
+    .await
+    .expect("R2 attributed run");
+    assert_eq!(
+        captured.0.load(Ordering::SeqCst),
+        after_granted,
+        "R2 consent clamps capture"
+    );
 }
 
 #[tokio::test]
@@ -2100,6 +2120,122 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
 }
 
+/// Repository detach decision table on the resident Workdir environment:
+/// C1 a create-time Repository is physically realized; C2 the next durable
+/// generation omits it; C3 the Session environment remains resident. E1 removes
+/// the exact working tree before the mutation returns and E2 preserves the same
+/// environment handle. A stale readable checkout is forbidden.
+///
+/// | Rule | C1 | C2 | C3 | Effect |
+/// | RD1  | T  | T  | T  | E1 removed + E2 retained environment |
+#[tokio::test]
+async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
+    use awaken_session_contract::SessionRuntime;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let source = fixture.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    let git = |args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&source)
+            .status()
+            .expect("run git fixture command");
+        assert!(status.success(), "git fixture command failed: {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "runtime-host-test@awaken.invalid"]);
+    git(&["config", "user.name", "Awaken Runtime Host Test"]);
+    std::fs::write(source.join("README.md"), "resident repository").unwrap();
+    git(&["add", "README.md"]);
+    git(&["commit", "-q", "-m", "seed"]);
+
+    let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
+    raw_host.session_provider = crate::session_environment::SessionEnvironmentProvider::workdir(
+        fixture.path().join("sandboxes"),
+    );
+    let host = Arc::new(raw_host);
+    let managed = managed_with_resource_source(host.clone());
+    let desired = effective_resources(vec![TestInput {
+        kind: "github_repository".into(),
+        id: source.to_string_lossy().into_owned(),
+        mount_path: "/workspace/live-repo".into(),
+        access: ResourceAccess::ReadWrite,
+        instructions: None,
+        initial_branch: None,
+        initial_commit: None,
+    }]);
+    managed
+        .prepare_session(
+            "t-repo-detach",
+            awaken_session_contract::SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "agent".into(),
+                delegate_ids: Vec::new(),
+                toolsets: None,
+                resources: desired,
+                model: None,
+                runtime: None,
+                environment: session_environment(
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
+            },
+        )
+        .await
+        .unwrap();
+    host.run(
+        None,
+        "t-repo-detach",
+        vec![Message::text(
+            MessageId("repo-before".into()),
+            Role::User,
+            "observe repository",
+        )],
+    )
+    .await
+    .unwrap();
+    let environment = host
+        .session_environment("t-repo-detach")
+        .await
+        .expect("resident environment");
+    let handle = environment.handle();
+    assert_eq!(
+        environment
+            .list_files("workspace/live-repo")
+            .await
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path == "README.md")
+            .map(|(_, bytes)| bytes.as_slice()),
+        Some(b"resident repository".as_slice()),
+        "RD1 create-time checkout is physically present"
+    );
+
+    managed
+        .apply_session_inputs(
+            "t-repo-detach",
+            host.local_workspace(),
+            1,
+            &awaken_session_contract::ResolvedSessionResources::default(),
+        )
+        .await
+        .expect("detach repository");
+    assert!(
+        environment
+            .list_files("workspace/live-repo")
+            .await
+            .unwrap()
+            .is_empty(),
+        "RD1 detached checkout must not remain readable"
+    );
+    assert_eq!(
+        host.session_environment_handle("t-repo-detach").await,
+        Some(handle),
+        "RD1 mutation retains the one Session environment"
+    );
+}
+
 /// Live replacement commit-failure decision table:
 /// | physical realization | reference/manifest commit | effect |
 /// |---|---|---|
@@ -2759,7 +2895,12 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         .unwrap();
     let ctx = host.ctx_for("deferred-hand", None).await.unwrap();
     assert!(ctx.env.is_none());
-    let hand = ctx.tool_executor.as_ref().expect("deferred hand").clone();
+    let hand = ctx
+        .attempt_context
+        .tool_executor
+        .as_ref()
+        .expect("deferred hand")
+        .clone();
     let left = awaken_runtime_contract::tool::ToolCall {
         call_id: "read-left".into(),
         tool_id: "read".into(),
@@ -2807,7 +2948,12 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         .await
         .unwrap();
     let ctx = host.ctx_for("deferred-failure", None).await.unwrap();
-    let hand = ctx.tool_executor.as_ref().expect("deferred hand").clone();
+    let hand = ctx
+        .attempt_context
+        .tool_executor
+        .as_ref()
+        .expect("deferred hand")
+        .clone();
     let call = awaken_runtime_contract::tool::ToolCall {
         call_id: "read-failure".into(),
         tool_id: "read".into(),
@@ -4748,9 +4894,11 @@ async fn automatic_memory_requires_one_explicit_existing_binding() {
     ];
 
     for (rule, plugin_selected, binding_id, expected_index, expected_error) in cases {
-        let plugin_ids = plugin_selected
-            .then(|| vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()])
-            .unwrap_or_default();
+        let plugin_ids = if plugin_selected {
+            vec![awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()]
+        } else {
+            Vec::new()
+        };
         let plugin_config = if plugin_selected {
             std::collections::BTreeMap::from([(
                 awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
@@ -5217,7 +5365,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         .await
         .expect("R1 A2A context");
     assert!(ctx.env.is_none(), "R1 Environment");
-    assert!(ctx.tool_executor.is_none(), "R1 Hand");
+    assert!(ctx.attempt_context.tool_executor.is_none(), "R1 Hand");
     assert!(
         host.session_environment("a2a-io-only").await.is_none(),
         "R1 owner"
@@ -5275,7 +5423,7 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
         .await
         .expect("R3 mixed candidate context");
     assert!(ctx.env.is_some(), "R3 Environment");
-    assert!(ctx.tool_executor.is_some(), "R3 Hand");
+    assert!(ctx.attempt_context.tool_executor.is_some(), "R3 Hand");
 }
 
 /// Dispatch projection rule: a registered manifest's Workspace, generation, and

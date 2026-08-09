@@ -1,0 +1,37 @@
+pub mod awaken_durable_projection
+pub enum awaken_durable_projection::ProjectionBatch<C>
+pub awaken_durable_projection::ProjectionBatch::Current
+pub awaken_durable_projection::ProjectionBatch::FullReplay
+pub awaken_durable_projection::ProjectionBatch::FullReplay::commands: alloc::vec::Vec<awaken_durable_projection::Sequenced<C>>
+pub awaken_durable_projection::ProjectionBatch::FullReplay::through: u64
+pub awaken_durable_projection::ProjectionBatch::Incremental
+pub awaken_durable_projection::ProjectionBatch::Incremental::commands: alloc::vec::Vec<awaken_durable_projection::Sequenced<C>>
+pub awaken_durable_projection::ProjectionBatch::Incremental::through: u64
+pub enum awaken_durable_projection::ProjectionLoadError<E>
+pub awaken_durable_projection::ProjectionLoadError::Incomplete
+pub awaken_durable_projection::ProjectionLoadError::Incomplete::through: u64
+pub awaken_durable_projection::ProjectionLoadError::Source(E)
+pub enum awaken_durable_projection::RefreshPlan
+pub awaken_durable_projection::RefreshPlan::Current
+pub awaken_durable_projection::RefreshPlan::FullReplay
+pub awaken_durable_projection::RefreshPlan::FullReplay::through: u64
+pub awaken_durable_projection::RefreshPlan::Incremental
+pub awaken_durable_projection::RefreshPlan::Incremental::after: u64
+pub awaken_durable_projection::RefreshPlan::Incremental::through: u64
+pub struct awaken_durable_projection::ProjectionCursor
+impl awaken_durable_projection::ProjectionCursor
+pub fn awaken_durable_projection::ProjectionCursor::advance(&self, u64)
+pub fn awaken_durable_projection::ProjectionCursor::applied(&self) -> u64
+pub fn awaken_durable_projection::ProjectionCursor::at(u64) -> Self
+pub fn awaken_durable_projection::ProjectionCursor::plan(&self, u64) -> awaken_durable_projection::RefreshPlan
+pub fn awaken_durable_projection::ProjectionCursor::validates_full<C>(&[awaken_durable_projection::Sequenced<C>], u64) -> bool
+pub fn awaken_durable_projection::ProjectionCursor::validates_incremental<C>(&self, &[awaken_durable_projection::Sequenced<C>], u64) -> bool
+pub struct awaken_durable_projection::Sequenced<C>
+pub awaken_durable_projection::Sequenced::command: C
+pub awaken_durable_projection::Sequenced::sequence: u64
+pub trait awaken_durable_projection::ProjectionLog<C>: core::marker::Send + core::marker::Sync
+pub type awaken_durable_projection::ProjectionLog::Error: core::marker::Send
+pub fn awaken_durable_projection::ProjectionLog::high_water<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<u64, Self::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_durable_projection::ProjectionLog::load_range<'life0, 'async_trait>(&'life0 self, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_durable_projection::Sequenced<C>>, Self::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub async fn awaken_durable_projection::load_full<C, L>(&L) -> core::result::Result<(u64, alloc::vec::Vec<awaken_durable_projection::Sequenced<C>>), awaken_durable_projection::ProjectionLoadError<<L as awaken_durable_projection::ProjectionLog>::Error>> where C: core::marker::Send, L: awaken_durable_projection::ProjectionLog<C> + ?core::marker::Sized
+pub async fn awaken_durable_projection::load_refresh<C, L>(&awaken_durable_projection::ProjectionCursor, &L) -> core::result::Result<awaken_durable_projection::ProjectionBatch<C>, awaken_durable_projection::ProjectionLoadError<<L as awaken_durable_projection::ProjectionLog>::Error>> where C: core::marker::Send, L: awaken_durable_projection::ProjectionLog<C> + ?core::marker::Sized

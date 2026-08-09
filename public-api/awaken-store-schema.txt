@@ -1,0 +1,5 @@
+pub mod awaken_store_schema
+pub const awaken_store_schema::COMMIT_BUNDLE_ID: &str
+pub fn awaken_store_schema::commit_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>
+pub const fn awaken_store_schema::migration_step(u32, u32) -> u32
+pub fn awaken_store_schema::versions_are_dense_from_one(&[i64]) -> bool

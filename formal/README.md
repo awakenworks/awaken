@@ -320,20 +320,15 @@ fast sequential models cannot collide on TLC's timestamp-based default path. It
 also regenerates all executable traces from the current Rust source before TLC
 checks them; no checked-in hand-authored trace can become stale.
 
-The repository-wide CI entry point runs the strict formal-verification gate by
-default. A deliberately reduced local run may skip it explicitly:
-
-```sh
-AWAKEN_SKIP_FORMAL=1 scripts/ci/check-all.sh
-```
-
-The default is strict: `check-all.sh` passes `--require-tools`, so missing Kani,
+The repository-wide CI entry point runs the strict formal-verification gate.
+`check-all.sh` passes `--require-tools`, so missing Kani,
 TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 
 `formal/coverage.json` is the versioned obligation ledger. The CI gate verifies
 that every evidence path exists and that at least 70% of formalizable safety
 obligations have a machine-checked production link. The current ledger is
-166/166, or 100%. Environmental properties are listed separately and never
+169/169 formalizable obligations proved or machine-linked, plus 10 explicitly
+external obligations, for 100% formalizable coverage. Environmental properties are listed separately and never
 silently omitted or mislabeled as machine-linked merely to raise the percentage.
 
 ## Loom concurrency exploration

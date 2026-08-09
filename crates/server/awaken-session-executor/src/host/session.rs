@@ -1137,6 +1137,21 @@ impl SharedHost {
             .map_or(attempt_executor.clone(), |decorate| {
                 decorate(attempt_executor)
             });
+        // Privacy attribution is an attempt concern, not a delivery-topology
+        // concern. This one decorator therefore wraps the final executor used by
+        // both DirectRunIngress and DurableRunIngress (including recovered runs).
+        let capture_sink = self
+            .capture_sink
+            .read()
+            .expect("capture sink lock poisoned")
+            .clone();
+        let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
+            Arc::new(crate::run_exec::CaptureContextAttemptExecutor::new(
+                attempt_executor,
+                self.capture_decision.clone(),
+                capture_sink,
+                self.data_subject_consent.clone(),
+            ));
         // The foreground delivery seam (slice C/D): a turn's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run
@@ -1173,13 +1188,19 @@ impl SharedHost {
             Some(executor) => run_context.with_tool_executor(executor.clone()),
             None => run_context,
         };
+        let run_context = match env.as_ref() {
+            Some(environment) => run_context.with_tool_output_spiller(Arc::new(
+                crate::tool_output_spill::SandboxToolOutputSpiller::new(environment.clone()),
+            )),
+            None => run_context,
+        };
         let (ingress, durable_ingress) = self
             .build_ingress(
                 runtime.clone(),
                 attempt_executor,
                 commit.clone(),
                 stream_checkpoint.clone(),
-                run_context,
+                run_context.clone(),
             )
             .await?;
         let durable = durable_ingress.is_some();
@@ -1193,18 +1214,10 @@ impl SharedHost {
             durable_ingress,
             config,
             commit,
+            attempt_context: run_context,
             terminal_observers,
             stream_checkpoint,
-            session_plugins: mcp.plugins,
             _web_search_mcp: web_search_mcp,
-            tool_executor,
-            capture_sink: self
-                .capture_sink
-                .read()
-                .expect("capture sink lock poisoned")
-                .clone(),
-            capture_decision: self.capture_decision.clone(),
-            data_subject_consent: self.data_subject_consent.clone(),
             thread_id,
             env,
             skill_registry,

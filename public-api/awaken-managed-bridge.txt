@@ -1,0 +1,24 @@
+pub mod awaken_managed_bridge
+pub struct awaken_managed_bridge::ManagedCredentialView
+pub awaken_managed_bridge::ManagedCredentialView::auth_type: &'static str
+pub awaken_managed_bridge::ManagedCredentialView::id: alloc::string::String
+pub awaken_managed_bridge::ManagedCredentialView::object_type: &'static str
+pub awaken_managed_bridge::ManagedCredentialView::secret_name: core::option::Option<alloc::string::String>
+pub struct awaken_managed_bridge::McpOauthDomainCreate
+pub awaken_managed_bridge::McpOauthDomainCreate::params: awaken_credential_vault::CredentialCreateParams
+pub awaken_managed_bridge::McpOauthDomainCreate::refresh_secret: core::option::Option<awaken_agent_contract::secret::RedactedString>
+pub struct awaken_managed_bridge::WireEnvVarCreate
+pub awaken_managed_bridge::WireEnvVarCreate::secret_name: alloc::string::String
+pub awaken_managed_bridge::WireEnvVarCreate::secret_value: alloc::string::String
+pub struct awaken_managed_bridge::WireMcpOauthCreate
+pub awaken_managed_bridge::WireMcpOauthCreate::access_token: alloc::string::String
+pub awaken_managed_bridge::WireMcpOauthCreate::mcp_server_url: alloc::string::String
+pub awaken_managed_bridge::WireMcpOauthCreate::refresh_token: core::option::Option<alloc::string::String>
+pub struct awaken_managed_bridge::WireStaticBearerCreate
+pub awaken_managed_bridge::WireStaticBearerCreate::mcp_server_url: alloc::string::String
+pub awaken_managed_bridge::WireStaticBearerCreate::token: alloc::string::String
+pub const awaken_managed_bridge::MANAGED_BETA: &str
+pub fn awaken_managed_bridge::env_var_to_create_params(impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::string::String>, awaken_managed_bridge::WireEnvVarCreate) -> awaken_credential_vault::CredentialCreateParams
+pub fn awaken_managed_bridge::mcp_oauth_to_create_params(impl core::convert::Into<alloc::string::String>, awaken_managed_bridge::WireMcpOauthCreate) -> awaken_managed_bridge::McpOauthDomainCreate
+pub fn awaken_managed_bridge::static_bearer_to_create_params(impl core::convert::Into<alloc::string::String>, awaken_managed_bridge::WireStaticBearerCreate) -> awaken_credential_vault::CredentialCreateParams
+pub fn awaken_managed_bridge::to_managed_view(&awaken_credential_vault::CredentialSource) -> awaken_managed_bridge::ManagedCredentialView

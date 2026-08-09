@@ -30,7 +30,9 @@ export function readSpans(file) {
 
 /// Collapse resource ids (e.g. `sesn_0`) to `{id}` so routes are comparable.
 export function templatizeRoute(route) {
-  return route.replace(/\/[a-z]+_[A-Za-z0-9-]+/g, '/{id}');
+  // Matched routes are already templates. The replacement is only a fallback for
+  // old/unmatched spans and includes ':' because current tagged Session ids do.
+  return route.replace(/\/[a-z]+_[A-Za-z0-9:-]+/g, '/{id}');
 }
 
 /// Index spans by id and by (templatized) ingress route.

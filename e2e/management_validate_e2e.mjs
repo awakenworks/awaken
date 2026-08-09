@@ -46,6 +46,7 @@ async function main() {
     await withScenarioServer('management', 'mcp', 38160, async (base) => {
       // A tested connection discovers the live model and stores the key once.
       let r = await req(base, 'POST', '/v1/config/provider-connections', {
+        idempotency_key: 'management-validate-provider-connection',
         workspace_id: 'ws',
         provider_id: 'anthropic',
         display_name: 'Anthropic',

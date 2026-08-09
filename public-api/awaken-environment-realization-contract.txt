@@ -1,0 +1,60 @@
+pub mod awaken_environment_realization_contract
+pub enum awaken_environment_realization_contract::EnvironmentImageBuildError
+pub awaken_environment_realization_contract::EnvironmentImageBuildError::Conflict(alloc::string::String)
+pub awaken_environment_realization_contract::EnvironmentImageBuildError::Storage(alloc::string::String)
+pub awaken_environment_realization_contract::EnvironmentImageBuildError::Timeout(alloc::string::String)
+pub awaken_environment_realization_contract::EnvironmentImageBuildError::Unavailable(alloc::string::String)
+pub enum awaken_environment_realization_contract::EnvironmentImageBuildState
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Building
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Building::attempt: u64
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Building::lease_epoch: u64
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Building::lease_expires_at_ms: u64
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Building::owner: alloc::string::String
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Failed
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Failed::attempt: u64
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Failed::message: alloc::string::String
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Failed::retry_at_ms: u64
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Pending
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Pending::attempt: u64
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Ready
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Ready::attempt: u64
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Ready::image: alloc::string::String
+pub awaken_environment_realization_contract::EnvironmentImageBuildState::Ready::ready_at_ms: u64
+impl awaken_environment_realization_contract::EnvironmentImageBuildState
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildState::claim(&self, &str, u64, u64) -> core::option::Option<Self>
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildState::complete(&self, &str, u64, &str, u64) -> core::option::Option<Self>
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildState::fail(&self, &str, u64, &str, u64, u64) -> core::option::Option<Self>
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildState::invalidate_ready(&self) -> core::option::Option<Self>
+pub const fn awaken_environment_realization_contract::EnvironmentImageBuildState::kind(&self) -> &'static str
+impl core::default::Default for awaken_environment_realization_contract::EnvironmentImageBuildState
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildState::default() -> Self
+pub struct awaken_environment_realization_contract::EnvironmentImageBuildClaim
+pub awaken_environment_realization_contract::EnvironmentImageBuildClaim::demand: awaken_environment_realization_contract::EnvironmentImageBuildDemand
+pub awaken_environment_realization_contract::EnvironmentImageBuildClaim::lease_epoch: u64
+pub awaken_environment_realization_contract::EnvironmentImageBuildClaim::owner: alloc::string::String
+pub struct awaken_environment_realization_contract::EnvironmentImageBuildDemand
+pub awaken_environment_realization_contract::EnvironmentImageBuildDemand::base_image: alloc::string::String
+pub awaken_environment_realization_contract::EnvironmentImageBuildDemand::build_key: alloc::string::String
+pub awaken_environment_realization_contract::EnvironmentImageBuildDemand::config: awaken_environment_contract::EnvironmentConfig
+pub awaken_environment_realization_contract::EnvironmentImageBuildDemand::definition_fingerprint: alloc::string::String
+pub awaken_environment_realization_contract::EnvironmentImageBuildDemand::environment_id: alloc::string::String
+pub awaken_environment_realization_contract::EnvironmentImageBuildDemand::source_revision: awaken_environment_contract::EnvironmentRevision
+impl awaken_environment_realization_contract::EnvironmentImageBuildDemand
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildDemand::from_registration(&awaken_executable_environment_contract::ExecutableEnvironmentRegistration, &str) -> core::option::Option<Self>
+pub struct awaken_environment_realization_contract::EnvironmentImageBuildRecord
+pub awaken_environment_realization_contract::EnvironmentImageBuildRecord::demand: awaken_environment_realization_contract::EnvironmentImageBuildDemand
+pub awaken_environment_realization_contract::EnvironmentImageBuildRecord::state: awaken_environment_realization_contract::EnvironmentImageBuildState
+pub awaken_environment_realization_contract::EnvironmentImageBuildRecord::updated_at_ms: u64
+pub trait awaken_environment_realization_contract::EnvironmentImageBuildStore: core::marker::Send + core::marker::Sync
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildStore::claim_next<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_environment_realization_contract::EnvironmentImageBuildClaim>, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildStore::complete<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_environment_realization_contract::EnvironmentImageBuildClaim, &'life2 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildStore::ensure<'life0, 'async_trait>(&'life0 self, awaken_environment_realization_contract::EnvironmentImageBuildDemand, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildStore::fail<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_environment_realization_contract::EnvironmentImageBuildClaim, &'life2 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_environment_realization_contract::EnvironmentImageBuildRecord>, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_realization_contract::EnvironmentImageBuildStore::invalidate_ready<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_environment_realization_contract::EnvironmentImageBuilder: core::marker::Send + core::marker::Sync
+pub fn awaken_environment_realization_contract::EnvironmentImageBuilder::available<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_realization_contract::EnvironmentImageBuilder::base_image_identity<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_realization_contract::EnvironmentImageBuilder::build<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_environment_realization_contract::EnvironmentImageBuildDemand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_environment_realization_contract::EnvironmentImageReadiness: core::marker::Send + core::marker::Sync
+pub fn awaken_environment_realization_contract::EnvironmentImageReadiness::ready_image<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_executable_environment_contract::ExecutableEnvironmentRegistration, core::option::Option<&'life2 str>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::string::String>, awaken_environment_realization_contract::EnvironmentImageBuildError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait

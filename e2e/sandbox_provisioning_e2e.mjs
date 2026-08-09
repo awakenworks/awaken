@@ -1,19 +1,19 @@
-// Consolidated sandbox-provisioning e2e: every session-resource TYPE realized into
-// ONE sandbox at prepare time, plus artifact projection and the fail-closed paths.
+// Consolidated Workdir sandbox-provisioning e2e: the resource kinds that this tier
+// can faithfully realize (writable memory_store + github_repository) share ONE
+// sandbox, plus artifact projection and every dangling-reference failure arm.
 //
-// The existing e2e cover one resource type each (file, memory_store, github_repository
-// in separate files); this drives all three into a SINGLE session — the real
+// The existing e2e cover one resource type each. This drives Memory + Repository
+// into a SINGLE session — the real
 // StagedResources → sandbox_spec → provider realization path — then exercises:
-//   • the turn runs with all resources mounted (provisioning succeeded),
+//   • the turn runs with both writable resources mounted (provisioning succeeded),
 //   • GET /v1/files?scope_id (read-only artifact projection),
 //   • fail-closed for each resource type (missing file / missing memory_store / bad repo).
 //
-// The sandbox TIER (Workdir / Namespace-bwrap / Container-k8s) is not yet selectable
-// through the managed session API (`environment_id` does not parameterize the local
-// sandbox — see managed_environment_e2e.mjs), and the provisioning path is
-// tier-agnostic; per-tier realization (bwrap bind / k8s memoryd-sidecar+emptyDir) is
-// validated by the Rust tier tests (awaken-sandbox-local / -container). This proves
-// the neutral provisioning contract end-to-end over the real server binary.
+// A File input is deliberately absent from the Workdir success rule: its read-only
+// contract cannot be OS-enforced there and is already covered by the fail-closed
+// managed_resource_mount E2E. Namespace/container read-only success is validated by
+// the real substrate suites, avoiding a duplicate test that falsely grants Workdir
+// capabilities it does not own.
 //
 // Deterministic + CI-safe: local bare git repo (no network), `echo` upstream.
 // Run: (from e2e/)  node sandbox_provisioning_e2e.mjs
@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import Anthropic, { toFile } from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
 import { withRealServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -64,31 +64,28 @@ async function main() {
   await withRealServer('echo', PORT, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
-    // ── supply one resource of every type ──────────────────────────────────────
-    const file = await client.beta.files.upload({
-      file: await toFile(Buffer.from('provisioned file bytes'), 'doc.txt'),
-      betas: BETAS,
-    });
-    assert.ok(file.id, 'file uploaded');
+    // ── supply the two writable Workdir resource families ──────────────────────
     const mem = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     assert.ok(mem.id, 'memory store created');
-    pass('supplied a file + a memory store; local bare repo seeded');
+    pass('supplied a memory store; local bare repo seeded');
 
-    // ── all three realized into ONE session at prepare ─────────────────────────
+    // Cause/effect table: valid Memory+Repository -> both realize and inference
+    // runs; dangling File/Memory -> create rejects; unresolvable Repository ->
+    // realization rejects before an assistant fact. Read-only File success is a
+    // Namespace/Container substrate rule, not a Workdir rule.
     const session = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
       resources: [
-        { type: 'file', file_id: file.id, mount_path: '/workspace/doc.txt' },
         { type: 'memory_store', memory_store_id: mem.id, mount_path: '/workspace/memory' },
         { type: 'github_repository', url: bare, mount_path: '/workspace/repo' },
       ],
       betas: BETAS,
     });
-    assert.ok(session.id.startsWith('sesn_'), `session with 3 resource types: ${session.id}`);
-    pass('one session provisioned file + memory_store + github_repository together');
+    assert.ok(session.id.startsWith('sesn_'), `session with 2 resource types: ${session.id}`);
+    pass('one session provisioned memory_store + github_repository together');
 
-    // ── a turn runs with everything mounted (provisioning succeeded) ───────────
+    // ── a turn runs with both resources mounted (provisioning succeeded) ───────
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'use the resources' }] }],
       betas: BETAS,
@@ -98,7 +95,7 @@ async function main() {
       events.push(ev.type);
     }
     assert.ok(events.includes('agent.message'), `turn ran with all resources mounted: ${events}`);
-    pass('a turn ran over the fully-provisioned sandbox');
+    pass('a turn ran over the combined writable-resource sandbox');
 
     // ── read-only artifact projection ─────────────────────────────────────────
     const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
@@ -149,7 +146,7 @@ async function main() {
   });
 
   fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  console.log('E2E PASS: all sandbox resource types provision into one session + artifact projection + fail-closed.');
+  console.log('E2E PASS: Workdir writable resources co-provision + artifact projection + fail-closed arms.');
   process.exitCode = 0;
 }
 

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { pass, sendAndListNewEvents, spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38237);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -96,16 +96,12 @@ async function createSession(client, skillSelection = undefined) {
 }
 
 async function runAndReadLastReply(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  const events = await sendAndListNewEvents(client, sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    events.push(event);
-  }
   const replies = events.filter((event) => event.type === 'agent.message');
-  assert.ok(replies.length > 0, 'session emitted an agent message');
+  assert.ok(replies.length > 0, `session emitted a new agent message for ${JSON.stringify(text)}`);
   return JSON.stringify(replies.at(-1).content);
 }
 
