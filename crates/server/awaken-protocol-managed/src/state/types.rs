@@ -3,7 +3,7 @@
 //! protocol crate publishes no compatibility path.
 
 pub(crate) use awaken_session_contract::{
-    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxError, LiveInboxSnapshot,
-    OutcomeIteration, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime,
-    SessionUsage, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxSnapshot, OutcomeIteration,
+    OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
+    ToolPermissionDecision,
 };
