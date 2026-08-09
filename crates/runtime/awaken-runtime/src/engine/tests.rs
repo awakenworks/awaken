@@ -54,6 +54,66 @@ fn empty_instructions_contribute_no_system_message() {
     assert!(matches!(request.messages[0].role, Role::User));
 }
 
+#[tokio::test]
+async fn model_visible_text_tool_results_are_never_semantically_empty() {
+    /*
+     * Tool-result materialization decision table. Causes: C1 output contains
+     * only text (including no blocks); C2 extracted text is empty/whitespace;
+     * C3 output is an error; C4 output has meaningful text; C5 output contains
+     * a structured non-text block. Effects: E1 materialize the canonical
+     * success placeholder; E2 materialize the distinct error placeholder; E3
+     * preserve the original payload. Constraints: C4 excludes C2; C5 excludes
+     * C1. Rules: T1 C1+C2+!C3=>E1; T2 C1+C2+C3=>E2;
+     * T3 C1+C4=>E3; T4 C5=>E3. The existing spiller tests own the orthogonal
+     * post-materialization size/storage policy and are not duplicated here.
+     */
+    let context = RuntimeRunContext::new();
+    let run_id = RunId("run-empty-tool-output".into());
+
+    let success = spill_tool_output(
+        &context,
+        &run_id,
+        ToolOutput::ok_blocks("success", Vec::new()),
+    )
+    .await
+    .expect("empty success materializes");
+    assert_eq!(
+        success.content,
+        vec![ContentBlock::text(
+            "Tool completed successfully without output."
+        )]
+    );
+
+    let failure = spill_tool_output(&context, &run_id, ToolOutput::error("failure", "  \n"))
+        .await
+        .expect("empty failure materializes");
+    assert_eq!(
+        failure.content,
+        vec![ContentBlock::text("Tool failed without an error message.")]
+    );
+
+    let meaningful = ToolOutput::ok("meaningful", "zero rows changed");
+    assert_eq!(
+        spill_tool_output(&context, &run_id, meaningful.clone())
+            .await
+            .expect("meaningful output remains valid"),
+        meaningful
+    );
+
+    let structured = ToolOutput::ok_blocks(
+        "structured",
+        vec![ContentBlock::image_url(
+            "https://example.invalid/result.png",
+        )],
+    );
+    assert_eq!(
+        spill_tool_output(&context, &run_id, structured.clone())
+            .await
+            .expect("structured output remains valid"),
+        structured
+    );
+}
+
 #[test]
 fn published_inference_controls_reach_each_model_call_unchanged() {
     // Causal graph: resolved Agent snapshot -> request builder -> provider-facing

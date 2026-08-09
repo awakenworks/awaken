@@ -305,10 +305,13 @@ pub struct SharedHost {
     /// started. The detached task owns only a Weak host reference, so this flag
     /// prevents duplicate loops without extending the Host lifetime.
     pub(crate) terminal_reconciliation_started: std::sync::OnceLock<()>,
-    /// Wakes a foreground durable submitter the instant the pool settles its run
-    /// (event-driven completion), so the durable foreground path never pays a poll
-    /// interval. Injected into the pool as its `CompletionSink`.
+    /// Owns the temporary run-id registration for event-driven durable completion
+    /// and best-effort foreground stream relay. Injected into the pool as its
+    /// `CompletionSink` and into each local Session worker as its `StreamSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
+    /// Database-less Workers replace the process-local relay with the one
+    /// authenticated, claim-fenced Coordinator publisher.
+    pub(crate) worker_stream_publisher: Option<Arc<dyn awaken_run_ingress::ClaimedStreamPublisher>>,
     pub(crate) environment_binding_sink:
         std::sync::RwLock<Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>>,
     /// The one Host-owned subject-tagged captured-content sink (ADR-0050).

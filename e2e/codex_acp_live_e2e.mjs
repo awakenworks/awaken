@@ -35,6 +35,7 @@ import { execSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 
 if (process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
@@ -147,7 +148,7 @@ async function startHostLoginProfile() {
     // Intentionally no sandbox_tier, acp_clis, default backend, or credential
     // setting: host ACP discovery is the zero-configuration product path.
   ].join('\n'));
-  const child = spawn(binary, ['all-in-one', '--config', config], {
+  const child = spawn(binary, automatedAllInOneArgs('--config', config), {
     env: process.env,
     stdio: ['ignore', 'ignore', 'inherit'],
   });

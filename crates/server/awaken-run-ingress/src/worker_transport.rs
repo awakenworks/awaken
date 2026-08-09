@@ -5,6 +5,7 @@
 //! business data; authentication, trusted time, and lease policy remain server-side.
 
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
+use awaken_agent_contract::stream::event::Event as StreamEvent;
 use awaken_agent_contract::thread::commit::operation::CommitOperation;
 use awaken_runtime_contract::CredentialRealizationReceipt;
 use serde::{Deserialize, Serialize};
@@ -136,6 +137,15 @@ pub struct SettleRequest {
     pub consumed: Vec<String>,
     #[serde(default)]
     pub identity: Option<WorkerIdentity>,
+}
+
+/// One best-effort live event bound to the exact dispatch claim that produced it.
+/// It is observation only; committed messages and Run state remain authoritative.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamEventRequest {
+    pub claim: RunClaim,
+    pub identity: WorkerIdentity,
+    pub event: StreamEvent,
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ use awaken_run_ingress::{
     Clock, DispatchQueue, DispatchWorker, DurableRunIngress, ManualClock, MemoryDispatchStore,
     RunDispatch, SystemClock,
 };
-use awaken_runtime::{RunService, Runtime};
+use awaken_runtime::{RunIngress, RunService, Runtime};
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
@@ -112,6 +112,35 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
     assert!(!sink.events().is_empty(), "the run streamed to the sink");
     // The accessor returns the same runtime handle.
     assert!(Arc::ptr_eq(worker.runtime(), worker.runtime()));
+}
+
+#[tokio::test]
+async fn durable_ingress_attaches_one_best_effort_stream_sink_to_its_worker() {
+    // Cause/effect graph: C1 DurableRunIngress is configured before sharing its
+    // worker; C2 a sink is present vs absent; C3 the runtime emits live deltas.
+    // Effects: E1 the existing worker path forwards deltas to the supplied sink;
+    // E2 committed terminal state remains identical and authoritative. Constraint:
+    // this builder must reuse DispatchWorker.with_stream_sink, not create a second
+    // event channel or durable stream record.
+    //
+    // | Rule | sink | runtime delta | Effects |
+    // | R1 | present | yes | E1+E2 |
+    // | R2 | absent | yes | E2 only (existing default path) |
+    // R2 is covered by durable_ingress_foreground_submit_and_cancel below.
+    let runtime = text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let sink = Arc::new(MemoryStreamSink::new());
+    let ingress = DurableRunIngress::new(runtime, store, commit.clone())
+        .with_stream_sink(sink.clone() as Arc<dyn Sink>);
+
+    let state = ingress
+        .submit_background(activation("run-ingress-stream"))
+        .await
+        .expect("durable ingress run");
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd), "R1/E2");
+    assert!(!sink.events().is_empty(), "R1/E1");
 }
 
 #[tokio::test]

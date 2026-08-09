@@ -9,13 +9,18 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_run_ingress::{DispatchQueue, MemoryDispatchStore, RunDispatch};
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
+use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_run_ingress::{
+    DispatchQueue, MemoryDispatchStore, RunClaim, RunDispatch, StreamEventRequest, WorkerIdentity,
+};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_host::{WorkerDispatchService, dispatch_transport_router_with_service};
+use awaken_store_inmem::MemoryStreamSink;
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,
 };
@@ -180,4 +185,118 @@ async fn a_db_less_worker_claims_renews_and_settles_over_http() {
     // nothing left to claim.
     let (_, v) = post(&router, "worker-1", "/v1/worker/dispatch/claim", json!({})).await;
     assert!(v["claimed"].is_null(), "a settled run is gone: {v}");
+}
+
+/// Cause/effect graph and decision table for the cross-process live relay.
+/// Causes: C1 authenticated Worker owns the claim; C2 epoch is current; C3 event
+/// Run equals claim Run; C4 event is classified live. Effects: E1 forward once
+/// to the existing Coordinator StreamSink; E2 return accepted=false without a
+/// forward for a stale epoch; E3 reject malformed/unauthorized observations.
+/// Constraint: no row mutates messages, Run state, or settlement.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | R1 | T | T | T | T | E1 |
+/// | R2 | T | F | T | T | E2 |
+/// | R3 | T | T | F | T | E3 |
+/// | R4 | T | T | T | F | E3 |
+#[tokio::test(flavor = "multi_thread")]
+async fn worker_stream_transport_forwards_only_live_events_from_the_current_claim() {
+    let mem = Arc::new(MemoryDispatchStore::new());
+    let stream = Arc::new(MemoryStreamSink::new());
+    let router = dispatch_transport_router_with_service(Arc::new(
+        WorkerDispatchService::new(
+            mem.clone() as Arc<dyn DispatchQueue>,
+            Arc::new(HeaderWorkerAuthenticator),
+            Arc::new(ManualWorkerClock::new(0)),
+            Arc::new(FixedWorkerLeasePolicy::new(30_000)),
+        )
+        .with_stream_sink(stream.clone()),
+    ));
+    mem.enqueue(RunDispatch::new(activation("run-live", "thread-live")))
+        .await
+        .unwrap();
+    let claimed = mem
+        .claim("worker-live", 30_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("claim");
+    let claim = RunClaim::from(&claimed.lease);
+    let identity = WorkerIdentity::new("worker-live", "boot-live", 1);
+    let event = StreamEvent {
+        run_id: claim.run_id.clone(),
+        kind: AgentEvent::Delta(Delta::TextDelta { delta: "x".into() }),
+    };
+    let request = |claim: RunClaim, event: StreamEvent| {
+        serde_json::to_value(StreamEventRequest {
+            claim,
+            identity: identity.clone(),
+            event,
+        })
+        .unwrap()
+    };
+
+    let (status, value) = post(
+        &router,
+        "worker-live",
+        "/v1/worker/dispatch/stream",
+        request(claim.clone(), event.clone()),
+    )
+    .await;
+    assert_eq!(
+        (status, value["accepted"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "R1"
+    );
+    assert_eq!(stream.events().len(), 1, "R1 forwards once");
+
+    let (status, value) = post(
+        &router,
+        "worker-live",
+        "/v1/worker/dispatch/stream",
+        request(
+            RunClaim {
+                epoch: claim.epoch + 1,
+                ..claim.clone()
+            },
+            event.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (status, value["accepted"].as_bool()),
+        (StatusCode::OK, Some(false)),
+        "R2"
+    );
+
+    let (status, _) = post(
+        &router,
+        "worker-live",
+        "/v1/worker/dispatch/stream",
+        request(
+            claim.clone(),
+            StreamEvent {
+                run_id: RunId("other".into()),
+                ..event.clone()
+            },
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R3");
+
+    let (status, _) = post(
+        &router,
+        "worker-live",
+        "/v1/worker/dispatch/stream",
+        request(
+            claim,
+            StreamEvent {
+                run_id: RunId("run-live".into()),
+                kind: AgentEvent::Fact(Fact::RunFinished { exhausted: false }),
+            },
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R4");
+    assert_eq!(stream.events().len(), 1, "R2-R4 never forward");
 }

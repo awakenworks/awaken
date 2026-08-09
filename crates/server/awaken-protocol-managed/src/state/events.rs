@@ -14,6 +14,54 @@ struct DelegateCall {
 }
 
 impl ManagedState {
+    pub(super) fn next_event_id(&self) -> String {
+        format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
+    }
+
+    /// The session's live SSE broadcast sender, created on first use. Capacity is
+    /// generous so a fast turn's preview burst doesn't lag a slow subscriber into
+    /// `Lagged` (which the stream tolerates by skipping). Never removed.
+    fn live_sender(&self, session_id: &str) -> broadcast::Sender<StreamFrame> {
+        let mut live = self.live.lock().unwrap();
+        live.entry(session_id.to_string())
+            .or_insert_with(|| broadcast::channel(1024).0)
+            .clone()
+    }
+
+    /// Open a live SSE subscription for `session_id`: the current committed-event
+    /// snapshot (backfill) plus a receiver for frames published after this call.
+    /// Subscribing *before* cloning the snapshot means no committed event can slip
+    /// through the gap — an event that lands mid-call is on the receiver, and the
+    /// caller dedupes it against the snapshot by id.
+    pub fn stream_subscribe(
+        &self,
+        session_id: &str,
+    ) -> Result<(Vec<Event>, broadcast::Receiver<StreamFrame>), StateError> {
+        let rx = self.live_sender(session_id).subscribe();
+        let sessions = self.sessions.lock().unwrap();
+        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+        Ok((record.events.clone(), rx))
+    }
+
+    /// Publish each committed `Event` appended to `session_id` since `from` on the
+    /// live broadcast, so an open SSE connection receives it without a reconnect.
+    /// Best-effort: no subscriber (or a lagging one) is not an error.
+    pub(super) fn broadcast_committed_from(
+        &self,
+        session_id: &str,
+        record: &SessionRecord,
+        from: usize,
+    ) {
+        if from >= record.events.len() {
+            return;
+        }
+        if let Some(tx) = self.live.lock().unwrap().get(session_id) {
+            for event in &record.events[from..] {
+                let _ = tx.send(StreamFrame::Committed(event.clone()));
+            }
+        }
+    }
+
     /// Resolve the public optional Thread selector onto the runtime's canonical
     /// thread keys. The primary Thread is projected with a public suffix, while
     /// the runtime has always keyed it by the Session id; child Thread ids are

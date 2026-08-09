@@ -39,6 +39,7 @@ import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38442);
@@ -134,7 +135,7 @@ function start(binary, cli) {
     `acp_clis = [${JSON.stringify(cli)}]`,
     `acp_default_cli = ${JSON.stringify(cli)}`,
   ].join('\n'));
-  return spawn(binary, ['all-in-one', '--config', configPath, '--no-browser'], {
+  return spawn(binary, automatedAllInOneArgs('--config', configPath), {
     env: {
       ...environment,
       PATH: `${BIN_DIR}${path.delimiter}${environment.PATH ?? ''}`,

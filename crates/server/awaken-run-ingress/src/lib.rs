@@ -16,6 +16,7 @@
 
 mod any;
 mod capability;
+mod claimed_stream;
 mod clock;
 mod commit_fence;
 mod commit_operation;
@@ -59,6 +60,7 @@ pub use awaken_run_ingress_contract::{
     WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
     place_assignment, worker_credential_realization_capabilities,
 };
+pub use claimed_stream::ClaimedStreamPublisher;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 pub use commit_operation::{CommitHashError, commit_payload_hash};
@@ -92,7 +94,7 @@ pub use worker_transport::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
     ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
     HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest,
-    WorkerIdentityRequest,
+    StreamEventRequest, WorkerIdentityRequest,
 };
 
 /// A durable-ingress failure: either the dispatch store rejected an operation or

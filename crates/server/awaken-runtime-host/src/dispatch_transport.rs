@@ -16,19 +16,21 @@ use serde_json::{Value, json};
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
+use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
 };
 use awaken_run_ingress::{
     AnyDispatchStore, BindSandboxRequest as BindSandboxReq, CheckpointRequest as CheckpointReq,
     ClaimNewRunRequest as ClaimNewRunReq, ClaimRunRequest as ClaimRunReq,
-    ClaimWorkerRequest as ClaimWorkerReq, CompletionSink,
+    ClaimWorkerRequest as ClaimWorkerReq, ClaimedStreamPublisher, CompletionSink,
     CredentialRealizationRequest as CredentialRealizationReq,
     DeliverAndClaimRequest as DeliverAndClaimReq, Dispatch, DispatchQueue,
     EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, HttpDispatchQueue,
     PlacementPolicy, RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
-    RenewRequest as RenewReq, RunClaim, SettleRequest as SettleReq, WorkerDirectory,
-    WorkerIdentity, WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
+    RenewRequest as RenewReq, RunClaim, SettleRequest as SettleReq,
+    StreamEventRequest as StreamEventReq, WorkerDirectory, WorkerIdentity,
+    WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
 use crate::host::{HostError, SharedHost};
@@ -61,11 +63,27 @@ pub fn worker_dispatch_store_with_upstream(
     upstream: &WorkerUpstream,
     identity: WorkerIdentity,
 ) -> Arc<AnyDispatchStore> {
-    Arc::new(AnyDispatchStore::from_dispatch(Arc::new(
+    worker_transports_with_upstream(upstream, identity).0
+}
+
+/// Build the database-less Worker's one shared authenticated transport instance.
+/// Dispatch and best-effort live progress are two ports over the same client,
+/// identity, authorizer, and Coordinator origin; neither reimplements the wire.
+pub fn worker_transports_with_upstream(
+    upstream: &WorkerUpstream,
+    identity: WorkerIdentity,
+) -> (Arc<AnyDispatchStore>, Arc<dyn ClaimedStreamPublisher>) {
+    let transport = Arc::new(
         HttpDispatchQueue::new(upstream.base_url(), identity)
             .with_client(upstream.client().clone())
             .with_request_authorizer(upstream.request_authorizer()),
-    ) as Arc<dyn Dispatch>))
+    );
+    (
+        Arc::new(AnyDispatchStore::from_dispatch(
+            transport.clone() as Arc<dyn Dispatch>
+        )),
+        transport as Arc<dyn ClaimedStreamPublisher>,
+    )
 }
 
 /// Explicit application service mounted by the worker HTTP adapter.
@@ -80,6 +98,7 @@ pub struct WorkerDispatchService {
     checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
     completion: Option<Arc<dyn CompletionSink>>,
+    stream_sink: Option<Arc<dyn StreamSink>>,
     application_session_control:
         Option<Arc<dyn awaken_session_contract::ApplicationSessionControl>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
@@ -104,6 +123,7 @@ impl WorkerDispatchService {
             checkpoint: None,
             recovery: None,
             completion: None,
+            stream_sink: None,
             application_session_control: None,
             local_credential_capabilities: Default::default(),
         }
@@ -127,6 +147,13 @@ impl WorkerDispatchService {
     #[must_use]
     pub fn with_completion_sink(mut self, completion: Arc<dyn CompletionSink>) -> Self {
         self.completion = Some(completion);
+        self
+    }
+
+    /// Install the Coordinator's one foreground live observation registry.
+    #[must_use]
+    pub fn with_stream_sink(mut self, stream_sink: Arc<dyn StreamSink>) -> Self {
+        self.stream_sink = Some(stream_sink);
         self
     }
 
@@ -253,6 +280,7 @@ fn registered_dispatch_router(
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
 ) -> Router {
     let completion = host.completion.clone() as Arc<dyn CompletionSink>;
+    let stream_sink = host.completion.clone() as Arc<dyn StreamSink>;
     let recovery: Arc<dyn RunRecoverySource> = Arc::new(HostRunRecoverySource(host));
     dispatch_transport_router_with_service(Arc::new(
         WorkerDispatchService::new(
@@ -266,6 +294,7 @@ fn registered_dispatch_router(
         .with_checkpoint_store(checkpoint)
         .with_recovery_source(recovery)
         .with_completion_sink(completion)
+        .with_stream_sink(stream_sink)
         .with_application_session_control(application_session_control),
     ))
 }
@@ -394,6 +423,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
             post(record_credential_realization),
         )
         .route("/v1/worker/dispatch/settle", post(settle))
+        .route("/v1/worker/dispatch/stream", post(stream_event))
         .route("/v1/worker/register", post(register_worker))
         .route("/v1/worker/heartbeat", post(heartbeat_worker))
         .route("/v1/worker/drain", post(drain_worker))
@@ -1283,6 +1313,40 @@ async fn settle(
             completion.settled(&claim.run_id, &record.state);
         }
         Ok(json!({ "settled": outcome.applied() }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn stream_event(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<StreamEventReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
+        if request.claim.owner != authority.owner || request.event.run_id != request.claim.run_id {
+            return Err(HostError::bad_request(
+                "live Worker event does not match its authenticated claim",
+            ));
+        }
+        if !awaken_agent_contract::event::classify(&request.event.kind).live {
+            return Err(HostError::bad_request(
+                "Worker transport accepts only live-classified Agent events",
+            ));
+        }
+        let current = service
+            .dispatch
+            .lock_commit_epoch(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let Some(_guard) = current else {
+            return Ok(json!({ "accepted": false }));
+        };
+        if let Some(sink) = &service.stream_sink {
+            let _ = sink.send(request.event).await;
+        }
+        Ok(json!({ "accepted": true }))
     }
     .await;
     respond(result)

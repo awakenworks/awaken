@@ -8,9 +8,10 @@
 //! [`AgentEvent`]).
 
 use crate::event::AgentEvent;
+use serde::{Deserialize, Serialize};
 
 /// One live progress event: which run it belongs to, and the neutral event itself.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub run_id: crate::agent::run::Id,
     pub kind: AgentEvent,
