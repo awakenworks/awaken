@@ -106,20 +106,9 @@ pub async fn build_coordinator_component(
     deployment_state.bind_rate_limiter(rate_limiter);
     deployment_state.bind_executable_agents(executable_agents);
 
-    let reconciled_resource_activations = managed_state.reconcile_resource_activations().await;
-    if reconciled_resource_activations > 0 {
-        eprintln!(
-            "reconciled {reconciled_resource_activations} durable Session resource activation(s)"
-        );
-    }
-    let reconciled_mcp_attachments = managed_state.reconcile_mcp_attachments().await;
-    if reconciled_mcp_attachments > 0 {
-        eprintln!("reconciled {reconciled_mcp_attachments} durable Session MCP projection(s)");
-    }
-    let reconciled_work_dispatches = managed_state.reconcile_work_dispatches().await;
-    if reconciled_work_dispatches > 0 {
-        eprintln!("reconciled {reconciled_work_dispatches} durable Session WorkQueue dispatch(es)");
-    }
+    // The canonical supervisor owns durable resource, MCP, and WorkQueue
+    // recovery as background work. Component construction must expose readiness
+    // without awaiting an external sandbox timeout for every persisted Session.
     let _ = managed_state.spawn_realization_lease_supervisor();
     deployment_state.bind_launcher(Arc::new(
         awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone()),

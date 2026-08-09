@@ -17,6 +17,7 @@ pub struct PendingTool {
 /// The neutral result of one step (a turn or a resume): the messages committed
 /// during the step, the resulting state, and the pending tool when the run awaits.
 pub struct RunResult {
+    pub run_id: RunId,
     pub new_messages: Vec<Message>,
     pub state: RunState,
     pub pending: Option<PendingTool>,

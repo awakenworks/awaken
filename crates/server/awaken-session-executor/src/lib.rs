@@ -211,6 +211,7 @@ fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
 
 fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
     let delegated_runs = result.delegated_runs;
+    let run_id = result.run_id;
     match result.state {
         RunState::Awaiting => Ok(StepOutcome::awaiting(
             result.new_messages,
@@ -218,14 +219,16 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
             result.compacted,
             result.rescheduled,
         )
-        .with_delegated_runs(delegated_runs)),
+        .with_delegated_runs(delegated_runs)
+        .with_run_id(run_id)),
         RunState::Ended(cause) => Ok(StepOutcome::ended(
             result.new_messages,
             cause,
             result.compacted,
             result.rescheduled,
         )
-        .with_delegated_runs(delegated_runs)),
+        .with_delegated_runs(delegated_runs)
+        .with_run_id(run_id)),
         RunState::Running => Err(RunError::internal(
             "runtime returned an unsettled Running state at the session boundary",
         )),
@@ -1378,6 +1381,22 @@ impl SessionRuntime for ManagedHost {
     /// session lost to a process restart and resume its awaiting run (ADR-0039).
     async fn committed_messages(&self, thread: &str) -> Vec<awaken_agent_contract::Message> {
         self.host.committed_messages(thread).await
+    }
+
+    async fn committed_run_lifecycle(
+        &self,
+        thread: &str,
+        cursor: awaken_agent_contract::LifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_agent_contract::LifecyclePage, RunError> {
+        let feed = self
+            .host
+            .run_lifecycle_feed(thread)
+            .await
+            .map_err(to_run_error)?;
+        awaken_agent_contract::RunLifecycleFeed::events_after(&feed, cursor, limit)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))
     }
 
     async fn session_usage(&self, thread: &str) -> awaken_session_contract::SessionUsage {

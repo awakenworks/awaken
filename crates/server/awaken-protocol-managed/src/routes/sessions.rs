@@ -757,7 +757,10 @@ async fn retrieve_session(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
 ) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
-    state.ensure_session(&id).await.map_err(error_response)?;
+    state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
     let session = state.get_session(&id).map_err(error_response)?;
     versioned_session_response(&state, session, None).await
 }
