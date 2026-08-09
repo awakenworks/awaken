@@ -14,7 +14,7 @@ pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
 };
 use awaken_provisioning_contract::{
-    IsolationClass, ResourceLimits, SandboxCapabilities, SandboxCapacityShapeId,
+    IsolationClass, ResourceLimits, ResourceRequests, SandboxCapabilities, SandboxCapacityShapeId,
     SandboxRequirements,
 };
 use serde::{Deserialize, Serialize};
@@ -216,6 +216,9 @@ impl Default for VersionRange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkerCapacity {
     pub max_concurrent: u32,
+    /// Optional maximum resource request one sandbox assigned to this Worker may
+    /// make. Entirely unset delegates feasibility to the sandbox backend (for
+    /// example Kubernetes); it is never aggregate inventory or billing data.
     #[serde(default)]
     pub resources: ResourceLimits,
 }
@@ -354,6 +357,9 @@ pub struct PlacementRequirements {
     pub location: ExecutionLocation,
     #[serde(default)]
     pub recovery: WorkerRecoveryMode,
+    /// Exact per-sandbox scheduling demand frozen at admission.
+    #[serde(default)]
+    pub resources: ResourceRequests,
 }
 
 impl Default for PlacementRequirements {
@@ -372,6 +378,7 @@ impl Default for PlacementRequirements {
             checkpoint_format: None,
             location: ExecutionLocation::RemotePreferred,
             recovery: WorkerRecoveryMode::RebuildFromCommittedTruth,
+            resources: ResourceRequests::default(),
         }
     }
 }
@@ -402,6 +409,8 @@ pub enum Incompatibility {
     LocalOnly,
     #[error("worker capacity must be greater than zero")]
     ZeroCapacity,
+    #[error("worker per-sandbox resource ceiling is insufficient")]
+    InsufficientResources,
     #[error("missing capability {0}")]
     MissingCapability(String),
     #[error("required zone {required}, worker zone is {actual:?}")]
@@ -434,6 +443,13 @@ pub fn can_claim(
     }
     if manifest.capacity.max_concurrent == 0 {
         return Err(Incompatibility::ZeroCapacity);
+    }
+    if manifest.capacity.resources.is_set()
+        && !requirements
+            .resources
+            .fits_within(&manifest.capacity.resources)
+    {
+        return Err(Incompatibility::InsufficientResources);
     }
     if let Some(missing) = requirements
         .required_capabilities
@@ -1068,6 +1084,45 @@ mod tests {
         // Sandbox cause is present, therefore claim admission has no rejection
         // effect. Negative rows are partitioned by the two tests below.
         assert!(can_claim(&manifest("a", 0).manifest, &requirements()).is_ok());
+    }
+
+    #[test]
+    fn resource_demand_is_a_hard_worker_eligibility_axis() {
+        // Cause/effect decision table: C1 Worker ceiling is entirely delegated;
+        // C2 every demanded axis has an explicit ceiling; C3 every ceiling is
+        // large enough. R1 C1 => backend decides and Worker remains eligible;
+        // R2 !C1+C2+C3 => eligible; R3 !C1+!C2 and R4 !C1+C2+!C3 =>
+        // InsufficientResources. Ranking is not invoked for rejected rows.
+        let mut worker = manifest("resource-worker", 0).manifest;
+        assert!(can_claim(&worker, &requirements()).is_ok(), "R1");
+
+        let mut required = requirements();
+        required.resources = ResourceRequests {
+            cpu_millis: Some(1_000),
+            memory_bytes: Some(1 << 30),
+            disk_bytes: None,
+        };
+        assert!(can_claim(&worker, &required).is_ok(), "R1 delegated");
+
+        worker.capacity.resources = ResourceLimits {
+            cpu_millis: Some(1_000),
+            memory_bytes: Some(1 << 30),
+            pids: None,
+            disk_bytes: None,
+        };
+        assert!(can_claim(&worker, &required).is_ok(), "R2");
+        worker.capacity.resources.memory_bytes = None;
+        assert_eq!(
+            can_claim(&worker, &required),
+            Err(Incompatibility::InsufficientResources),
+            "R3"
+        );
+        worker.capacity.resources.memory_bytes = Some((1 << 30) - 1);
+        assert_eq!(
+            can_claim(&worker, &required),
+            Err(Incompatibility::InsufficientResources),
+            "R4"
+        );
     }
 
     #[test]

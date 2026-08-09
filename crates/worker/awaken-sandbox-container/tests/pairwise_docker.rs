@@ -64,6 +64,7 @@ fn egress_probe_spec(scope: &str, network: pc::NetworkPolicy) -> pc::SandboxSpec
         packages: Default::default(),
         network,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
@@ -144,6 +145,7 @@ fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpe
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": ["sh", "-c", command] })),
@@ -205,6 +207,7 @@ async fn inline_content_is_materialized_and_readable_in_a_real_container() {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
@@ -249,6 +252,7 @@ async fn a_real_container_rotates_and_persists_a_native_credential_file() {
         packages: Default::default(),
         network: pc::NetworkPolicy::None,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
@@ -290,6 +294,7 @@ async fn a_file_mount_resolved_from_the_blob_source_is_readable_in_a_real_contai
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
@@ -338,6 +343,7 @@ async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
@@ -487,6 +493,7 @@ async fn allowlist_rejects_a_forward_proxy_before_docker_creation() {
             hosts: vec!["api.anthropic.com".into()],
         },
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
@@ -511,6 +518,7 @@ fn sleeper_spec(scope: &str) -> pc::SandboxSpec {
         packages: Default::default(),
         network: pc::NetworkPolicy::None,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),

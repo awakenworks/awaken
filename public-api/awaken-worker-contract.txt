@@ -17,6 +17,7 @@ pub awaken_worker_contract::Incompatibility::Architecture::actual: alloc::string
 pub awaken_worker_contract::Incompatibility::Architecture::required: alloc::string::String
 pub awaken_worker_contract::Incompatibility::CheckpointFormat(alloc::string::String)
 pub awaken_worker_contract::Incompatibility::DispatchVersion(u32)
+pub awaken_worker_contract::Incompatibility::InsufficientResources
 pub awaken_worker_contract::Incompatibility::LocalOnly
 pub awaken_worker_contract::Incompatibility::MissingCapability(alloc::string::String)
 pub awaken_worker_contract::Incompatibility::RuntimeVersion(u32)
@@ -80,6 +81,7 @@ pub awaken_worker_contract::PlacementRequirements::required_acp_capabilities: al
 pub awaken_worker_contract::PlacementRequirements::required_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::required_credentials: alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialRef>
 pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
+pub awaken_worker_contract::PlacementRequirements::resources: awaken_provisioning_contract::vocab::ResourceRequests
 pub awaken_worker_contract::PlacementRequirements::runtime_protocol_version: u32
 pub awaken_worker_contract::PlacementRequirements::sandbox: awaken_provisioning_contract::sandbox::SandboxRequirements
 pub awaken_worker_contract::PlacementRequirements::sandbox_backend: core::option::Option<alloc::string::String>

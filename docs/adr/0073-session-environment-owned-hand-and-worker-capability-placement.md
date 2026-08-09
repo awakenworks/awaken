@@ -145,3 +145,27 @@ duplicate public route ownership.
 - New: neutral `SandboxRequirements` and execution/route ownership fitness checks.
 
 No separate Brain Worker or Hand Worker service is introduced.
+
+## 2026-08-10 amendment: resource demand is part of neutral placement
+
+`SandboxRequirements` remains the single capability predicate, but capability
+and capacity answer different questions. A frozen Environment now carries
+provider-neutral `ResourceRequests` separately from enforceable
+`ResourceLimits`. The exact requests participate in
+`SandboxCapacityShapeId`, Kubernetes Pod scheduling, and Worker eligibility.
+
+`WorkerCapacity.resources`, when set, is the immutable per-sandbox allocatable
+ceiling of one Worker incarnation, not aggregate cluster inventory and not a
+billing record. A Worker whose explicit ceiling cannot satisfy a request is
+ineligible. An entirely omitted ceiling delegates resource feasibility to the
+selected sandbox backend; this is the Kubernetes posture because Pod scheduling
+and node inventory are cluster-dynamic. `max_concurrent` continues to bound
+simultaneous claims. Kubernetes remains the authority for node-level bin packing
+from Pod requests, while the Coordinator remains the authority for claim-fenced
+Worker assignment.
+
+This reuses the existing `SandboxSpec`, capacity-shape derivation,
+`PlacementRequirements`, `WorkerCapacity`, and compatibility kernel. It modifies
+those contracts and the Kubernetes adapter; the only new value object is the
+neutral `ResourceRequests`. Product plans, prices, tenant tiers, cloud node
+costs, and autoscaler policy remain outside this repository.

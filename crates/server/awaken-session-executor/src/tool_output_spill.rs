@@ -102,6 +102,7 @@ mod tests {
             packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/outputs".into(),
+            requests: Default::default(),
             limits: ResourceLimits::default(),
             lease_ttl_secs: None,
             extra: None,

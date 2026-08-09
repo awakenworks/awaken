@@ -86,22 +86,30 @@ pub(crate) fn sandbox_requirements(
     opaque_process: bool,
 ) -> pc::SandboxRequirements {
     let projection = project_environment(environment);
-    let base = pc::SandboxSpec {
-        scope: environment.environment_id.clone(),
-        isolation: pc::IsolationClass::Workdir,
-        mounts: Vec::new(),
-        env: Vec::new(),
-        packages: projection.packages,
-        network: projection.network,
-        outputs_path: OUTPUTS_PATH.to_owned(),
-        limits: pc::ResourceLimits::default(),
-        lease_ttl_secs: None,
-        extra: None,
-    };
-    let spec = projection
-        .sandbox
-        .map_or(base.clone(), |sandbox| sandbox.apply(base));
+    let spec = sandbox_spec_from_projection(
+        &environment.environment_id,
+        Vec::new(),
+        Vec::new(),
+        Some(&projection),
+        true,
+    );
     pc::SandboxRequirements::from_spec(&spec, opaque_process)
+}
+
+/// Scheduling demand projected through the same Environment overlay used for
+/// capability admission and eventual sandbox creation.
+pub(crate) fn sandbox_resource_requests(
+    environment: &awaken_session_contract::EnvironmentSnapshot,
+) -> pc::ResourceRequests {
+    let projection = project_environment(environment);
+    sandbox_spec_from_projection(
+        &environment.environment_id,
+        Vec::new(),
+        Vec::new(),
+        Some(&projection),
+        true,
+    )
+    .requests
 }
 
 /// Canonical mount/env-independent Environment projection used by both Session
@@ -138,6 +146,7 @@ fn sandbox_spec_from_projection(
             .unwrap_or_default(),
         network,
         outputs_path: OUTPUTS_PATH.to_owned(),
+        requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
         extra,
@@ -249,6 +258,7 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: OUTPUTS_PATH.to_string(),
+        requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
         extra: None,
