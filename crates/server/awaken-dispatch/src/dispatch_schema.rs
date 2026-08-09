@@ -82,32 +82,40 @@ const FILES: &[(&str, &str)] = &[
         include_str!("migrations/V0014__normalize_awaiting_state.sql"),
     ),
     (
-        "V0015__dispatch_worker_assignment.sql",
-        include_str!("migrations/V0015__dispatch_worker_assignment.sql"),
+        "V0015__delegation_group.sql",
+        include_str!("migrations/V0015__delegation_group.sql"),
     ),
     (
-        "V0016__dispatch_completion.sql",
-        include_str!("migrations/V0016__dispatch_completion.sql"),
+        "V0016__drop_legacy_delegation_group.sql",
+        include_str!("migrations/V0016__drop_legacy_delegation_group.sql"),
     ),
     (
-        "V0017__stream_checkpoint.sql",
-        include_str!("migrations/V0017__stream_checkpoint.sql"),
+        "V0017__dispatch_worker_assignment.sql",
+        include_str!("migrations/V0017__dispatch_worker_assignment.sql"),
     ),
     (
-        "V0018__durable_cancellation_intent.sql",
-        include_str!("migrations/V0018__durable_cancellation_intent.sql"),
+        "V0018__dispatch_completion.sql",
+        include_str!("migrations/V0018__dispatch_completion.sql"),
     ),
     (
-        "V0019__dispatch_operational_feed.sql",
-        include_str!("migrations/V0019__dispatch_operational_feed.sql"),
+        "V0019__stream_checkpoint.sql",
+        include_str!("migrations/V0019__stream_checkpoint.sql"),
     ),
     (
-        "V0020__dispatch_attempt_credentials.sql",
-        include_str!("migrations/V0020__dispatch_attempt_credentials.sql"),
+        "V0020__durable_cancellation_intent.sql",
+        include_str!("migrations/V0020__durable_cancellation_intent.sql"),
     ),
     (
-        "V0021__dispatch_operation_recorded_at.sql",
-        include_str!("migrations/V0021__dispatch_operation_recorded_at.sql"),
+        "V0021__dispatch_operational_feed.sql",
+        include_str!("migrations/V0021__dispatch_operational_feed.sql"),
+    ),
+    (
+        "V0022__dispatch_attempt_credentials.sql",
+        include_str!("migrations/V0022__dispatch_attempt_credentials.sql"),
+    ),
+    (
+        "V0023__dispatch_operation_recorded_at.sql",
+        include_str!("migrations/V0023__dispatch_operation_recorded_at.sql"),
     ),
 ];
 
@@ -169,11 +177,11 @@ mod tests {
     #[test]
     fn versions_parse_from_file_names() {
         let bundle = dispatch_bundle().expect("bundle builds");
-        // Cause/effect: the pre-release baseline contains only effective schema
-        // transitions. The retired create/drop delegation-table track is absent,
-        // while every retained migration remains contiguous and versioned.
+        // Cause/effect decision table: empty ledgers apply the immutable V1..V23
+        // stream; any published prefix applies only the missing suffix; renumbering
+        // effective migrations over retired V15/V16 breaks checksum/version proof.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=21).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=23).collect::<Vec<_>>());
     }
 
     #[test]

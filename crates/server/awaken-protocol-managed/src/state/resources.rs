@@ -429,13 +429,99 @@ impl ManagedState {
 
     pub async fn update_resource(
         &self,
-        _id: &str,
-        _resource_id: &str,
-        _patch: crate::types::resource::ResourceUpdateParams,
+        id: &str,
+        resource_id: &str,
+        patch: crate::types::resource::ResourceUpdateParams,
     ) -> Result<crate::types::resource::SessionResource, StateError> {
-        Err(StateError::Run(RunError::bad_request(
-            "repository_credential_update_requires_preexisting_binding",
-        )))
+        let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
+        let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
+        let ingress = self.repository_credential_ingress.as_ref().ok_or_else(|| {
+            StateError::Run(RunError::bad_request(
+                "repository authorization requires a configured credential Vault",
+            ))
+        })?;
+        let mut persisted = self
+            .sessions_repo
+            .get(id)
+            .await
+            .ok_or(StateError::NotFound)?;
+        let binding = persisted
+            .resources
+            .active
+            .inputs
+            .iter()
+            .find(|input| input.binding_id == binding_id)
+            .and_then(|input| match &input.source {
+                awaken_session_contract::ResolvedInputSource::Repository { config, .. } => {
+                    config.credential_binding.clone()
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                StateError::Run(RunError::bad_request(
+                    "repository credential update requires an authenticated Repository resource",
+                ))
+            })?;
+        ingress
+            .rotate_repository_token(
+                &awaken_credential_vault::CredentialSourceId(binding.clone()),
+                &owner_scope,
+                patch.authorization_token.into_redacted(),
+            )
+            .await
+            .map_err(|error| {
+                StateError::Run(RunError::bad_request(format!(
+                    "repository authorization could not be rotated: {error}"
+                )))
+            })?;
+
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let holder = Self::resource_plaintext_holder(&persisted)?;
+            let input = persisted
+                .resources
+                .active
+                .inputs
+                .iter_mut()
+                .find(|input| input.binding_id == binding_id)
+                .ok_or(StateError::NotFound)?;
+            let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
+                &mut input.source
+            else {
+                return Err(StateError::NotFound);
+            };
+            *credential = None;
+            self.pin_repository_credential(&owner_scope, &holder, input)
+                .await?;
+            match self
+                .commit_session_snapshot(
+                    &owner_scope,
+                    persisted,
+                    "repository-credential-update",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(committed) => {
+                    let input = committed
+                        .resources
+                        .active
+                        .inputs
+                        .iter()
+                        .find(|input| input.binding_id == binding_id)
+                        .ok_or(StateError::NotFound)?;
+                    return Ok(resolved_resource_dto(id, input));
+                }
+                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
+                    persisted = self
+                        .sessions_repo
+                        .get(id)
+                        .await
+                        .ok_or(StateError::NotFound)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(StateError::Conflict)
     }
 
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {

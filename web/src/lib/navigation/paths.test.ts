@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { workspaceLabel } from "../app-state";
-import { NAV, navPath, titleForPath, visibleNavigation } from "./paths";
+import { NAV, WORKSPACE_JOURNEY, navPath, titleForPath, visibleNavigation } from "./paths";
 
 // Hosted navigation cause/effect decision table:
 // T1 C1 BYOK enabled -> E1 expose Models & providers under Connect.
@@ -39,7 +39,6 @@ describe("workspaceLabel", () => {
     );
   });
 });
-
 describe("console information architecture", () => {
   it("keeps one source-of-truth route for every primary surface", () => {
     expect(NAV.map((item) => item.group)).toEqual([
@@ -82,5 +81,25 @@ describe("console information architecture", () => {
       scope: "workspace-a",
       title: "MCP overview",
     });
+  });
+
+  /**
+   * Overview journey decision table.
+   * Causes: C1 an operator enters the Workspace overview; C2 NAV owns the
+   * current route for every destination; C3 labels may be English or Chinese.
+   * Effects: E1 the product intent is Connect→Build→Run→Observe; E2 every step
+   * reuses the exact NAV object and therefore its canonical route; E3 locale
+   * changes copy only, never ownership or order. Rule R1: C1+C2+C3 ->
+   * E1+E2+E3, with no parallel route registry or lifecycle state.
+   */
+  it("expresses the Agent proof journey over canonical navigation references", () => {
+    expect(WORKSPACE_JOURNEY.map((step) => step.label)).toEqual(["Connect", "Build", "Run", "Observe"]);
+    expect(WORKSPACE_JOURNEY.map((step) => step.destination)).toEqual([
+      NAV.find((item) => item.key === "models"),
+      NAV.find((item) => item.key === "agents"),
+      NAV.find((item) => item.key === "sessions"),
+      NAV.find((item) => item.key === "artifacts"),
+    ]);
+    expect(navPath(WORKSPACE_JOURNEY[2].destination, "workspace-a")).toBe("/w/workspace-a/sessions");
   });
 });

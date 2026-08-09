@@ -1,11 +1,11 @@
 import { useLocation, useNavigate } from "react-router";
 import { navPath, visibleNavigation, type NavGroup, type NavItem } from "../../lib/navigation/paths";
-import { useApp, workspaceLabel } from "../../lib/app-state";
+import { useApp } from "../../lib/app-state";
 import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
 
 const GROUP_CAPTIONS: Record<NavGroup, [string, string]> = {
-  workspace: ["Workspace", "工作区"],
-  author: ["Author", "创作"],
+  workspace: ["Control plane", "控制面"],
+  author: ["Build", "构建"],
   run: ["Run", "运行"],
   connect: ["Connect", "连接"],
   govern: ["Govern", "治理"],
@@ -34,10 +34,7 @@ export default function Sidebar() {
   const navigation = visibleNavigation(byokEnabled);
   const groups: NavGroup[] = ["workspace", "author", "run", "connect", "govern"];
   return (
-    <aside className="sidebar">
-      <div className="nav-caption" title={app.workspaceId}>
-        {app.t("Workspace", "工作区")} · {workspaceLabel(app.workspaceId)}
-      </div>
+    <aside className="sidebar" aria-label={app.t("Workspace navigation", "工作区导航")}>
       {groups.filter((group) => navigation.some((item) => item.group === group)).map((group) => (
         <div key={group} className="nav-group">
           <div className="nav-caption">{app.t(...GROUP_CAPTIONS[group])}</div>
