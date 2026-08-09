@@ -63,6 +63,12 @@ fn echo_worker_builder(
     awaken_worker::WorkerNodeBuilder::new(upstream)
         .with_deployment_config(deployment)
         .with_inference_materializer(materializer)
+        // Reuse the production anonymous A2A adapter. The standard Worker
+        // manifest derives `a2a-runtime` from this installed implementation, so
+        // recovery scenarios cannot advertise an endpoint-specific capability
+        // through a parallel environment-variable path without being able to
+        // execute it.
+        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
         // Managed Session placement requires the standard per-kind Resource clients.
         // This is the same registered HTTP Memory adapter factory used by production;
         // File, Skill, and Repository clients are installed by WorkerNode itself.
@@ -76,10 +82,16 @@ mod tests {
 
     #[test]
     fn echo_worker_advertises_only_its_installed_managed_session_boundary() {
-        // Cause/effect decision table: W1 registered Memory factory plus built-in
-        // per-kind clients -> session-resources/v1 is advertised; W2 deterministic
-        // Host materializer -> host-executor/v1 is advertised. No explicit fake
-        // manifest may claim capabilities absent from the canonical Worker builder.
+        // Cause/effect graph: C1=registered Memory factory plus built-in per-kind
+        // clients; C2=deterministic Host materializer; C3=production anonymous
+        // A2A adapter. Effects are E1=session-resources/v1, E2=host-executor/v1,
+        // and E3=a2a-runtime. No explicit fake manifest or environment override
+        // may claim a capability absent from the canonical Worker builder.
+        //
+        // | Rule | C1 | C2 | C3 | E1 | E2 | E3 |
+        // |---|---|---|---|---|---|---|
+        // | W1 canonical scenario Worker | yes | yes | yes | yes | yes | yes |
+        // | W2 A2A adapter absent (covered by awaken-worker) | any | any | no | as installed | as installed | no |
         struct HostMaterializer;
         impl InferenceExecutorMaterializer for HostMaterializer {
             fn supported_access_schemes(&self) -> &'static [&'static str] {
@@ -112,6 +124,13 @@ mod tests {
         assert!(
             worker.manifest().capabilities.contains("host-executor/v1"),
             "W2"
+        );
+        assert!(
+            worker
+                .manifest()
+                .capabilities
+                .contains(awaken_runtime_contract::A2A_RUNTIME_CAPABILITY),
+            "W3"
         );
     }
 }

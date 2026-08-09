@@ -61,15 +61,19 @@ async function main() {
   // Cause graph for command selection:
   // C1 command is absent/all-in-one; C2 a retired overlapping name is used;
   // C3 an unknown option is present; C4 Control uses local mode; C5 Control
-  // uses server mode. E1 selects the one combined process, E2/E3/E4 reject
-  // before binding, and E5 exposes Control without Coordinator routes.
+  // uses server mode; C6 the split Control service token is projected; C7 the
+  // executable-registration Coordinator URL/token pair is projected. E1
+  // selects the one combined process, E2/E3/E4 reject before binding, and E5
+  // exposes Control without Coordinator routes. Missing C6 masks the mode gate
+  // because an unauthenticated split boundary must fail first.
   // Decision table:
-  // | Rule | C1 | C2 | C3 | Expected effect |
-  // | K1   | T  | F  | F  | E1              |
-  // | K2   | F  | T  | F  | E2              |
-  // | K3   | F  | F  | T  | E3              |
-  // | K4   | Control/local | - | - | E4       |
-  // | K5   | Control/server| - | - | E5       |
+  // | Rule | command/mode | retired | bad option | C6 | Expected effect |
+  // | K1 | all-in-one | F | F | n/a | E1 |
+  // | K2 | retired | T | F | n/a | E2 |
+  // | K3 | all-in-one | F | T | n/a | E3 |
+  // | K4a | Control/local | F | F | F | reject missing service token |
+  // | K4b | Control/local | F | F | T; C7 absent | E4 (`mode=server` required) |
+  // | K5 | Control/server | F | F | T; C7 paired | E5 |
 
   const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
@@ -102,12 +106,28 @@ async function main() {
     'identity_mode = "no-login"',
     'acp_clis = ["gemini"]',
   ].join('\n'));
-  const localControl = spawnSync(bin, ['control', '--config', path.join(configDir, 'config.toml')], {
+  const missingTokenControl = spawnSync(bin, ['control', '--config', path.join(configDir, 'config.toml')], {
     encoding: 'utf8',
     env: { ...process.env, HOME: home },
   });
-  assert.notEqual(localControl.status, 0, 'K4');
-  assert.match(localControl.stderr, /requires mode = "server"/, 'K4');
+  assert.notEqual(missingTokenControl.status, 0, 'K4a');
+  assert.match(missingTokenControl.stderr, /requires control_service_token_file/, 'K4a');
+
+  const serviceToken = path.join(temp, 'control-service-token');
+  fs.writeFileSync(serviceToken, 'service-role-e2e-token\n', { mode: 0o600 });
+  const localControlConfig = path.join(configDir, 'local-control.toml');
+  fs.writeFileSync(localControlConfig, [
+    `data_dir = ${JSON.stringify(path.join(temp, 'control-data'))}`,
+    `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+    'identity_mode = "no-login"',
+    `control_service_token_file = ${JSON.stringify(serviceToken)}`,
+  ].join('\n'));
+  const localControl = spawnSync(bin, ['control', '--config', localControlConfig], {
+    encoding: 'utf8',
+    env: { ...process.env, HOME: home },
+  });
+  assert.notEqual(localControl.status, 0, 'K4b');
+  assert.match(localControl.stderr, /requires mode = "server"/, 'K4b');
 
   let server = spawn(bin, ['all-in-one', '--no-browser'], {
     cwd: temp,
@@ -167,6 +187,9 @@ async function main() {
       'mode = "server"',
       'identity_mode = "no-login"',
       'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
+      `control_service_token_file = ${JSON.stringify(serviceToken)}`,
+      'coordinator_internal_url = "http://127.0.0.1:1"',
+      `executable_agent_registration_token_file = ${JSON.stringify(serviceToken)}`,
     ].join('\n'));
     server = spawn(bin, ['control', '--config', path.join(configDir, 'config.toml')], {
       cwd: temp,

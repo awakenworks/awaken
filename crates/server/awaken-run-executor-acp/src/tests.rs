@@ -509,8 +509,27 @@ fn an_existing_pending_tool_use_is_not_duplicated() {
             serde_json::json!({"cmd": "pwd"}),
         )],
     }];
-    ensure_pending_tool_use(&mut messages, &ask);
+    ensure_pending_tool_use(&RunId("run-1".into()), &mut messages, &ask);
     assert_eq!(messages.len(), 1);
+}
+
+#[test]
+fn acp_message_ids_are_replay_stable_and_cross_run_unique() {
+    // Cause/effect graph:
+    // C1 same durable Run + same fact suffix -> E1 same id (retry/replay dedupe).
+    // C2 different Run + same suffix -> E2 different id (later turns survive the
+    // Managed projection's message-id dedupe).
+    // C3 same Run + different suffix -> E3 different id (facts within a turn do
+    // not collide).
+    // Decision table: R1=C1 => E1; R2=C2 => E2; R3=C3 => E3. Run identity and
+    // suffix are the complete id inputs; Thread identity is intentionally absent
+    // because Run ids are already the durable execution identity.
+    let run_one = RunId("run-1".into());
+    let run_two = RunId("run-2".into());
+
+    assert_eq!(acp_message_id(&run_one, 1), acp_message_id(&run_one, 1));
+    assert_ne!(acp_message_id(&run_one, 1), acp_message_id(&run_two, 1));
+    assert_ne!(acp_message_id(&run_one, 1), acp_message_id(&run_one, 2));
 }
 
 /// Records every lifecycle event the executor emits during bring-up.

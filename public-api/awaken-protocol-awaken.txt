@@ -1,0 +1,3 @@
+pub mod awaken_protocol_awaken
+pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
+pub fn awaken_protocol_awaken::live_inbox_router(alloc::sync::Arc<dyn awaken_session_contract::session::LiveInboxApplication>) -> axum::routing::Router

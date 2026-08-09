@@ -77,6 +77,7 @@ async function req(base, method, uri, body) {
 // model. Both catalog and credential state survive the restart.
 async function authorModel(base, upstream) {
   let r = await req(base, 'POST', '/v1/config/provider-connections', {
+    idempotency_key: 'awaken-durability-provider-connection',
     workspace_id: WORKSPACE,
     provider_id: 'anthropic',
     display_name: 'Anthropic',

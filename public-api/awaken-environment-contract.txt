@@ -1,0 +1,105 @@
+pub mod awaken_environment_contract
+pub enum awaken_environment_contract::CreateEnvironmentError
+pub awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict
+pub awaken_environment_contract::CreateEnvironmentError::Store(alloc::string::String)
+pub enum awaken_environment_contract::CreateEnvironmentOutcome
+pub awaken_environment_contract::CreateEnvironmentOutcome::Created(awaken_environment_contract::EnvItem)
+pub awaken_environment_contract::CreateEnvironmentOutcome::Replayed(awaken_environment_contract::EnvItem)
+impl awaken_environment_contract::CreateEnvironmentOutcome
+pub fn awaken_environment_contract::CreateEnvironmentOutcome::item(&self) -> &awaken_environment_contract::EnvItem
+pub enum awaken_environment_contract::EnvironmentConfig
+pub awaken_environment_contract::EnvironmentConfig::Cloud
+pub awaken_environment_contract::EnvironmentConfig::Cloud::networking: awaken_environment_contract::EnvironmentNetworking
+pub awaken_environment_contract::EnvironmentConfig::Cloud::packages: awaken_environment_contract::EnvironmentPackages
+pub awaken_environment_contract::EnvironmentConfig::SelfHosted
+impl awaken_environment_contract::EnvironmentConfig
+pub fn awaken_environment_contract::EnvironmentConfig::is_self_hosted(&self) -> bool
+pub fn awaken_environment_contract::EnvironmentConfig::packages(&self) -> awaken_environment_contract::EnvironmentPackages
+pub enum awaken_environment_contract::EnvironmentConfigMutation
+pub awaken_environment_contract::EnvironmentConfigMutation::PatchCloud
+pub awaken_environment_contract::EnvironmentConfigMutation::PatchCloud::networking: core::option::Option<awaken_environment_contract::EnvironmentNetworkingMutation>
+pub awaken_environment_contract::EnvironmentConfigMutation::PatchCloud::packages: core::option::Option<awaken_environment_contract::EnvironmentPackagesMutation>
+pub awaken_environment_contract::EnvironmentConfigMutation::Replace(awaken_environment_contract::EnvironmentConfig)
+pub enum awaken_environment_contract::EnvironmentNetworking
+pub awaken_environment_contract::EnvironmentNetworking::Limited
+pub awaken_environment_contract::EnvironmentNetworking::Limited::allow_mcp_servers: bool
+pub awaken_environment_contract::EnvironmentNetworking::Limited::allow_package_managers: bool
+pub awaken_environment_contract::EnvironmentNetworking::Limited::allowed_hosts: alloc::vec::Vec<alloc::string::String>
+pub awaken_environment_contract::EnvironmentNetworking::Unrestricted
+pub enum awaken_environment_contract::EnvironmentNetworkingMutation
+pub awaken_environment_contract::EnvironmentNetworkingMutation::Limited
+pub awaken_environment_contract::EnvironmentNetworkingMutation::Limited::allow_mcp_servers: core::option::Option<core::option::Option<bool>>
+pub awaken_environment_contract::EnvironmentNetworkingMutation::Limited::allow_package_managers: core::option::Option<core::option::Option<bool>>
+pub awaken_environment_contract::EnvironmentNetworkingMutation::Limited::allowed_hosts: core::option::Option<core::option::Option<alloc::vec::Vec<alloc::string::String>>>
+pub awaken_environment_contract::EnvironmentNetworkingMutation::Reset
+pub awaken_environment_contract::EnvironmentNetworkingMutation::Unrestricted
+pub enum awaken_environment_contract::EnvironmentPackagesKind
+pub awaken_environment_contract::EnvironmentPackagesKind::Packages
+pub struct awaken_environment_contract::CreateEnvironmentCommand
+pub awaken_environment_contract::CreateEnvironmentCommand::command_id: alloc::string::String
+pub awaken_environment_contract::CreateEnvironmentCommand::config: awaken_environment_contract::EnvironmentConfig
+pub awaken_environment_contract::CreateEnvironmentCommand::description: alloc::string::String
+pub awaken_environment_contract::CreateEnvironmentCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_environment_contract::CreateEnvironmentCommand::name: alloc::string::String
+pub awaken_environment_contract::CreateEnvironmentCommand::scope: core::option::Option<alloc::string::String>
+impl awaken_environment_contract::CreateEnvironmentCommand
+pub fn awaken_environment_contract::CreateEnvironmentCommand::fingerprint(&self) -> alloc::string::String
+pub struct awaken_environment_contract::EnvItem
+pub awaken_environment_contract::EnvItem::archived_at: core::option::Option<alloc::string::String>
+pub awaken_environment_contract::EnvItem::config: awaken_environment_contract::EnvironmentConfig
+pub awaken_environment_contract::EnvItem::description: alloc::string::String
+pub awaken_environment_contract::EnvItem::id: alloc::string::String
+pub awaken_environment_contract::EnvItem::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_environment_contract::EnvItem::name: alloc::string::String
+pub awaken_environment_contract::EnvItem::revision: awaken_environment_contract::EnvironmentRevision
+pub awaken_environment_contract::EnvItem::sandbox_policy: core::option::Option<awaken_environment_contract::EnvironmentSandboxPolicyRef>
+pub awaken_environment_contract::EnvItem::scope: core::option::Option<alloc::string::String>
+impl awaken_environment_contract::EnvItem
+pub fn awaken_environment_contract::EnvItem::apply(&mut self, awaken_environment_contract::EnvUpdate)
+pub fn awaken_environment_contract::EnvItem::is_self_hosted(&self) -> bool
+pub struct awaken_environment_contract::EnvUpdate
+pub awaken_environment_contract::EnvUpdate::config: core::option::Option<awaken_environment_contract::EnvironmentConfigMutation>
+pub awaken_environment_contract::EnvUpdate::description: core::option::Option<alloc::string::String>
+pub awaken_environment_contract::EnvUpdate::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>
+pub awaken_environment_contract::EnvUpdate::name: core::option::Option<alloc::string::String>
+pub awaken_environment_contract::EnvUpdate::sandbox_policy: core::option::Option<core::option::Option<awaken_environment_contract::EnvironmentSandboxPolicyRef>>
+pub awaken_environment_contract::EnvUpdate::scope: core::option::Option<core::option::Option<alloc::string::String>>
+pub struct awaken_environment_contract::EnvironmentPackages
+pub awaken_environment_contract::EnvironmentPackages::apt: alloc::vec::Vec<alloc::string::String>
+pub awaken_environment_contract::EnvironmentPackages::cargo: alloc::vec::Vec<alloc::string::String>
+pub awaken_environment_contract::EnvironmentPackages::gem: alloc::vec::Vec<alloc::string::String>
+pub awaken_environment_contract::EnvironmentPackages::go: alloc::vec::Vec<alloc::string::String>
+pub awaken_environment_contract::EnvironmentPackages::kind: awaken_environment_contract::EnvironmentPackagesKind
+pub awaken_environment_contract::EnvironmentPackages::npm: alloc::vec::Vec<alloc::string::String>
+pub awaken_environment_contract::EnvironmentPackages::pip: alloc::vec::Vec<alloc::string::String>
+impl awaken_environment_contract::EnvironmentPackages
+pub fn awaken_environment_contract::EnvironmentPackages::is_empty(&self) -> bool
+pub fn awaken_environment_contract::EnvironmentPackages::manager_packages(&self) -> [(&'static str, &[alloc::string::String]); 6]
+impl core::default::Default for awaken_environment_contract::EnvironmentPackages
+pub fn awaken_environment_contract::EnvironmentPackages::default() -> Self
+pub struct awaken_environment_contract::EnvironmentPackagesMutation
+pub awaken_environment_contract::EnvironmentPackagesMutation::apt: core::option::Option<core::option::Option<alloc::vec::Vec<alloc::string::String>>>
+pub awaken_environment_contract::EnvironmentPackagesMutation::cargo: core::option::Option<core::option::Option<alloc::vec::Vec<alloc::string::String>>>
+pub awaken_environment_contract::EnvironmentPackagesMutation::gem: core::option::Option<core::option::Option<alloc::vec::Vec<alloc::string::String>>>
+pub awaken_environment_contract::EnvironmentPackagesMutation::go: core::option::Option<core::option::Option<alloc::vec::Vec<alloc::string::String>>>
+pub awaken_environment_contract::EnvironmentPackagesMutation::npm: core::option::Option<core::option::Option<alloc::vec::Vec<alloc::string::String>>>
+pub awaken_environment_contract::EnvironmentPackagesMutation::pip: core::option::Option<core::option::Option<alloc::vec::Vec<alloc::string::String>>>
+pub awaken_environment_contract::EnvironmentPackagesMutation::reset: bool
+pub struct awaken_environment_contract::EnvironmentRevision(pub u64)
+pub struct awaken_environment_contract::EnvironmentSandboxPolicyRef
+pub awaken_environment_contract::EnvironmentSandboxPolicyRef::policy_id: alloc::string::String
+pub awaken_environment_contract::EnvironmentSandboxPolicyRef::version: u64
+pub const awaken_environment_contract::OBJECT_AT: &str
+pub const awaken_environment_contract::PUBLIC_PACKAGE_REGISTRY_HOSTS: &[&str]
+pub trait awaken_environment_contract::EnvRegistry: core::marker::Send + core::marker::Sync
+pub fn awaken_environment_contract::EnvRegistry::archive<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_environment_contract::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::create<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, awaken_environment_contract::EnvironmentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_environment_contract::EnvItem> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::create_once<'life0, 'async_trait>(&'life0 self, awaken_environment_contract::CreateEnvironmentCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_environment_contract::CreateEnvironmentOutcome, awaken_environment_contract::CreateEnvironmentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::create_scoped<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, core::option::Option<alloc::string::String>, awaken_environment_contract::EnvironmentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_environment_contract::EnvItem> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::exists<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_environment_contract::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::get_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_environment_contract::EnvironmentRevision) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_environment_contract::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::list_active<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_environment_contract::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::list_all<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_environment_contract::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_environment_contract::EnvRegistry::update<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_environment_contract::EnvUpdate) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_environment_contract::EnvItem>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_environment_contract::environment_facts_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String

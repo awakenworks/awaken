@@ -28,9 +28,10 @@ The kernel seam file `awaken-runtime/src/engine/mod.rs` is **84.94 %**.
   `ToolExecutor` port, the framed wire, the `ConnectionPlan` value object,
   credential resolution, the channel factory. `cargo-llvm-cov` over the crates'
   own `tests/`.
-- **Served e2e** (`e2e/managed_remote_hand_e2e.mjs`): a real `awaken-coordinator-local`
-  run executes `bash` on an in-process hand over the framed channel — end to end
-  through the product binary.
+- **Served e2e** (`e2e/hand_brain_lazy_e2e.ts`,
+  `e2e/hand_brain_remote_worker_e2e.ts`): the current ADR-0073 Session
+  Environment-owned Hand path is exercised lazily and through registered Workers
+  over Workdir, Namespace, and Container tiers.
 - **Cluster e2e** (`e2e/k3d/topology_e2e.sh`): the Direct and Reverse topologies
   on a real k3d/k3s cluster — the brain pod runs a tool on a hand pod over the
   cluster network. This is where the networked transport (`connect_tcp_blocking`,

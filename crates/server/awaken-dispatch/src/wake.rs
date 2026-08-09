@@ -100,7 +100,7 @@ impl WakeSignal for NatsWakeSignal {
 /// store *is* Postgres, this fans the hint across every node connected to the same
 /// database with **no extra infrastructure** — `publish` fires `pg_notify` (emit it
 /// inside the enqueue transaction for same-commit delivery) and `wait` blocks on a
-/// [`PgListener`]. Like every [`WakeSignal`] it is a hint; the poll fallback stays
+/// `PgListener`. Like every [`WakeSignal`] it is a hint; the poll fallback stays
 /// authoritative, so a dropped notification only defers a drain.
 pub struct PgNotifyWake {
     pool: sqlx::postgres::PgPool,

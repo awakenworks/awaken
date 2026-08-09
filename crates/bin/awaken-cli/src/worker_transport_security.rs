@@ -163,19 +163,41 @@ mod tests {
         assert!(request_authorizer(&deployment).unwrap().is_some(), "R4");
     }
 
-    #[test]
-    fn coordinator_trust_file_requires_at_least_one_valid_credential() {
-        // Causes: Server mode with no enrollment, an empty enrollment array, and
-        // two valid enrolled Workers. Effects: the first two fail startup; the
-        // final rule constructs the one shared signed authenticator.
+    #[tokio::test]
+    async fn coordinator_transport_posture_follows_the_deployment_decision_table() {
+        // Causes: C1 operating mode Local/Server; C2 trust file absent/present;
+        // C3 enrollment empty/valid. Effects: E1 Local may use the compatibility
+        // header; E2 Server fails startup without trust; E3 empty trust fails;
+        // E4 valid trust installs signed authentication and rejects a bare header.
+        //
+        // | Rule | C1     | C2      | C3    | Effect |
+        // | R1   | Local  | absent  | -     | E1     |
+        // | R2   | Server | absent  | -     | E2     |
+        // | R3   | Server | present | empty | E3     |
+        // | R4   | Server | present | valid | E4     |
         let dir = tempfile::tempdir().unwrap();
         let mut deployment = config::local_test_deployment(dir.path().to_path_buf());
+
+        let local = authenticator(&deployment).expect("R1 local compatibility posture");
+        let local_parts = axum::http::Request::builder()
+            .uri("/v1/worker/register")
+            .header(
+                awaken_worker_transport_security::WORKER_ID_HEADER,
+                "worker-local",
+            )
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        assert!(local.authenticate(&local_parts).await.is_ok(), "R1");
+
         deployment.mode = OperatingMode::Server;
         assert!(
             authenticator(&deployment)
                 .err()
-                .expect("missing trust error")
-                .contains("requires")
+                .expect("R2 missing trust error")
+                .contains("requires"),
+            "R2"
         );
 
         let trust = dir.path().join("trust.json");
@@ -184,8 +206,9 @@ mod tests {
         assert!(
             authenticator(&deployment)
                 .err()
-                .expect("empty trust error")
-                .contains("at least one")
+                .expect("R3 empty trust error")
+                .contains("at least one"),
+            "R3"
         );
 
         std::fs::write(
@@ -196,6 +219,7 @@ mod tests {
             ]"#,
         )
         .unwrap();
-        assert!(authenticator(&deployment).is_ok());
+        let signed = authenticator(&deployment).expect("R4 signed posture");
+        assert!(signed.authenticate(&local_parts).await.is_err(), "R4");
     }
 }

@@ -11,6 +11,8 @@ pub awaken_acp_contract::AcpCapabilityObservation::negotiated: core::option::Opt
 pub awaken_acp_contract::AcpCapabilityObservation::observed_at_ms: u64
 pub awaken_acp_contract::AcpCapabilityObservation::reason_code: core::option::Option<alloc::string::String>
 pub awaken_acp_contract::AcpCapabilityObservation::state: awaken_acp_contract::AcpCapabilityObservationState
+impl awaken_acp_contract::AcpCapabilityObservation
+pub fn awaken_acp_contract::AcpCapabilityObservation::is_coherent(&self) -> bool
 pub struct awaken_acp_contract::AcpCapabilityProbeConfig
 pub awaken_acp_contract::AcpCapabilityProbeConfig::auth_method_id: core::option::Option<alloc::string::String>
 pub awaken_acp_contract::AcpCapabilityProbeConfig::session_cwd: core::option::Option<alloc::string::String>

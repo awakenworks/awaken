@@ -50,7 +50,7 @@ async function main() {
     const cfg = async (method, path, body) => {
       const res = await fetch(`${baseUrl}${path}`, {
         method,
-        headers: { 'content-type': 'application/json' },
+        headers: body === undefined ? {} : { 'content-type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
       return { status: res.status, body: await res.json().catch(() => ({})) };
@@ -59,6 +59,7 @@ async function main() {
 
     // ── One tested connection discovers two models and stores credential 1 ───
     const c1 = await cfg('POST', '/v1/config/provider-connections', {
+      idempotency_key: 'resilience-config-provider-connection',
       workspace_id: WS,
       provider_id: 'anthropic',
       display_name: 'Anthropic',

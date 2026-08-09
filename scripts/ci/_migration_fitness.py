@@ -40,7 +40,6 @@ PUBLISHED_CONDITIONAL_MIGRATION_SHA256: dict[str, str] = {
     ),
 }
 
-
 def _production_rust(source: str) -> str:
     source = re.split(
         r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]",

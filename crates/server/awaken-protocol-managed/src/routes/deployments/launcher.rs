@@ -27,30 +27,13 @@ impl DeploymentSessionLauncher for LocalDeploymentSessionLauncher {
         }
         if request.environment_id != "env_local"
             && let Some(environment) = self.0.deployment_environment(&request.environment_id).await
+            && environment.is_none()
         {
-            match environment {
-                None => {
-                    return DeploymentLaunchOutcome::Failed {
-                        error: RunError::EnvironmentNotFoundError {
-                            message: format!(
-                                "environment `{}` no longer exists",
-                                request.environment_id
-                            ),
-                        },
-                    };
-                }
-                Some(environment) if environment.archived_at.is_some() => {
-                    return DeploymentLaunchOutcome::Failed {
-                        error: RunError::EnvironmentArchivedError {
-                            message: format!(
-                                "environment `{}` is archived",
-                                request.environment_id
-                            ),
-                        },
-                    };
-                }
-                Some(_) => {}
-            }
+            return DeploymentLaunchOutcome::Failed {
+                error: RunError::EnvironmentNotFoundError {
+                    message: format!("environment `{}` no longer exists", request.environment_id),
+                },
+            };
         }
         if self
             .0

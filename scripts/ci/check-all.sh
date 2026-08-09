@@ -23,6 +23,9 @@ run() {
 
 run "repository-hygiene self-test" python3 scripts/ci/check_repository_hygiene.py --self-test
 run "repository-hygiene" python3 scripts/ci/check_repository_hygiene.py
+run "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
+run "test-orchestration" python3 scripts/ci/check_test_orchestration.py
+run "postgres harness self-test" scripts/ci/pg_tests.sh --self-test
 run "k3d-product-image-contract" python3 deploy/k3d/test_image_contract.py
 run "secrets self-test" python3 scripts/ci/check_secrets.py --self-test
 run "secrets" python3 scripts/ci/check_secrets.py
@@ -30,20 +33,19 @@ run "file-limits self-test" python3 scripts/ci/check_file_limits.py --self-test
 run "file-limits" python3 scripts/ci/check_file_limits.py
 run "commit-message self-test" python3 scripts/ci/check_commit_message.py --self-test
 run "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
+run "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
 run "documentation" scripts/ci/check-docs.sh
 run "rust" scripts/ci/check-rust.sh --full
-if [ "${AWAKEN_SKIP_FORMAL:-0}" = "1" ]; then
-  echo "-> formal (explicitly skipped with AWAKEN_SKIP_FORMAL=1)"
-else
-  run "formal" scripts/ci/check_formal.sh --require-tools
-fi
-# Postgres-backed suites against a throwaway database. Docker-gated: SKIPS (passes)
-# where docker is unavailable — so `cargo test --workspace` above still covers the
-# no-DB path, and a docker-equipped CI additionally runs the ~half of
-# distributed-correctness tests that only exercise real behaviour on Postgres (and
-# otherwise self-skip into a false green). See scripts/ci/pg_tests.sh.
-run "postgres" scripts/ci/pg_tests.sh
+run "dependency-policy" cargo deny --log-level error check bans
+run "public-api" scripts/ci/check_public_api.sh --require-tools
+run "formal" scripts/ci/check_formal.sh --require-tools
+# Release completeness is strict: unavailable infrastructure is a failed gate,
+# never a successful skip. Developer-specific partial suites remain runnable by
+# invoking their scripts without the required flags.
+run "postgres" scripts/ci/pg_tests.sh --require-docker
 run "frontend" scripts/ci/check-frontend.sh --full
+run "deterministic-e2e" npm --prefix e2e run test:deterministic
+run "sandbox-capabilities" scripts/e2e/sandbox_capability_suite.sh --require-substrates
 
 if [ "${#failed[@]}" -ne 0 ]; then
   {

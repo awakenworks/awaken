@@ -5,9 +5,10 @@
 - Date: 2026-07-08
 - Implemented: 2026-07-08 — `awaken-tool-relay` (`RemoteToolExecutor`, `serve_hand`,
   `HandSession`, wire types); kernel seam in `awaken-runtime` (`LocalToolExecutor`,
-  `RuntimeRunContext::tool_executor`); host seam `SharedHost::with_remote_hand`;
-  served `AWAKEN_MODEL_MODE=remote-hand` mode + `managed_remote_hand_e2e.mjs`
-  (a served run runs `bash` on a hand and the output round-trips); guardrail G33.
+  `RuntimeRunContext::tool_executor`). The former Host-global
+  `AWAKEN_MODEL_MODE=remote-hand` scenario was removed by ADR-0073; current served
+  coverage is `hand_brain_lazy_e2e.ts` plus `hand_brain_remote_worker_e2e.ts`
+  across Workdir/Namespace/Container. Guardrail G33 remains.
   Deferred (ADR-0046): the `ToolExecutorProvider` placement seam that selects
   which hand a run uses (the served slice runs the hand as an in-process framed
   task; networked hands themselves shipped in ADR-0045).

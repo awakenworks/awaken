@@ -78,6 +78,7 @@ pub(super) fn mount_with_environments_and_agent_source(
 
 pub(super) struct FixedAgentPublication {
     snapshots: StaticPublishedAgentSnapshots,
+    resources: Vec<awaken_resource_contract::InputBinding>,
 }
 
 impl FixedAgentPublication {
@@ -122,6 +123,7 @@ impl FixedAgentPublication {
         Self {
             snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid fixed scenario Agent publication"),
+            resources: Vec::new(),
         }
     }
 
@@ -157,8 +159,49 @@ impl FixedAgentPublication {
         Self {
             snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid fixed scenario Agent publication"),
+            resources: Vec::new(),
         }
     }
+}
+
+/// Install the deterministic Memory probe through the same immutable Agent
+/// publication seam used by production. The published `/memory` slot is a
+/// replaceable identity: the Managed Session attachment supplies the actual
+/// Store while retaining this binding id for the plugin configuration.
+pub(super) fn mount_with_memory_publication(
+    host: SharedHost,
+    model_ref: &str,
+    skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+) -> Router {
+    let snapshot = ExecutableAgentSnapshot::builder("assistant")
+        .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
+            "scenario", model_ref, "default",
+        )))
+        .plugins([awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()])
+        .plugin_config(std::collections::BTreeMap::from([(
+            awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
+            serde_json::json!({ "binding_id": "memory" }),
+        )]))
+        .agent_bindings(AgentBindings {
+            skills,
+            ..Default::default()
+        })
+        .build();
+    let publication = Arc::new(FixedAgentPublication {
+        snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
+            .expect("valid fixed Memory scenario Agent publication"),
+        resources: vec![awaken_resource_contract::InputBinding {
+            binding_id: awaken_resource_contract::BindingId::from("memory"),
+            target: awaken_resource_contract::InputResourceId::MemoryStore(
+                awaken_resource_contract::MemoryStoreId::from("scenario-memory-placeholder"),
+            ),
+            mount_path: "/memory".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadWrite,
+            instructions: None,
+        }],
+    });
+    let host = host.with_agent_publications(publication.clone());
+    mount_with_agent_source(Arc::new(host), publication)
 }
 
 pub(super) fn fixed_host_backend_publication_with_mcp(
@@ -264,7 +307,7 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
                 mcp_servers,
                 skills: bindings.skills.clone(),
                 delegate_ids: Vec::new(),
-                resources: Vec::new(),
+                resources: self.resources.clone(),
                 environment: None,
             },
         )

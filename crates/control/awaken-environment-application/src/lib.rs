@@ -16,7 +16,8 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationError, ExecutableEnvironmentWithdrawal,
 };
 use awaken_provisioning_contract::{
-    SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
+    SandboxExecutionPolicyError, SandboxExecutionPolicyRef, SandboxExecutionPolicyStore,
+    SandboxExecutionPolicyVersion,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -29,8 +30,10 @@ pub enum EnvironmentApplicationError {
     NotFound,
     #[error("Built-in Environment definitions are immutable")]
     BuiltinImmutable,
-    #[error("Sandbox execution policy failed: {0}")]
-    Policy(String),
+    #[error(transparent)]
+    Policy(#[from] SandboxExecutionPolicyError),
+    #[error("Sandbox execution policy store is unavailable")]
+    PolicyStoreUnavailable,
 }
 
 pub struct EnvironmentApplication {
@@ -78,13 +81,10 @@ impl EnvironmentApplication {
                         ),
                         version: SandboxExecutionPolicyVersion(reference.version),
                     })
-                    .await
-                    .map_err(|error| EnvironmentApplicationError::Policy(error.to_string()))?,
+                    .await?,
             ),
             (None, Some(_)) => {
-                return Err(EnvironmentApplicationError::Policy(
-                    "policy store is unavailable".into(),
-                ));
+                return Err(EnvironmentApplicationError::PolicyStoreUnavailable);
             }
             (_, None) => None,
         };
@@ -202,16 +202,14 @@ impl EnvironmentApplication {
         reference: SandboxExecutionPolicyRef,
     ) -> Result<EnvItem, EnvironmentApplicationError> {
         self.ensure_mutable(environment_id)?;
-        let store = self.sandbox_policies.as_ref().ok_or_else(|| {
-            EnvironmentApplicationError::Policy("policy store is unavailable".into())
-        })?;
-        let policy = store
-            .get_exact(&reference)
-            .await
-            .map_err(|error| EnvironmentApplicationError::Policy(error.to_string()))?;
+        let store = self
+            .sandbox_policies
+            .as_ref()
+            .ok_or(EnvironmentApplicationError::PolicyStoreUnavailable)?;
+        let policy = store.get_exact(&reference).await?;
         if policy.disabled {
             return Err(EnvironmentApplicationError::Policy(
-                "sandbox execution policy is disabled".into(),
+                SandboxExecutionPolicyError::Disabled,
             ));
         }
         if !self.envs.exists(environment_id).await {
@@ -336,6 +334,7 @@ fn canonical_admin_config(draft: EnvironmentDraft) -> EnvironmentConfig {
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use async_trait::async_trait;
     use awaken_environment_contract::{CreateEnvironmentCommand, EnvironmentConfig};
@@ -347,6 +346,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingRegistrar {
+        fail_registration: AtomicBool,
         registrations: Mutex<Vec<ExecutableEnvironmentRegistration>>,
         withdrawals: Mutex<Vec<ExecutableEnvironmentWithdrawal>>,
     }
@@ -358,6 +358,11 @@ mod tests {
             registration: ExecutableEnvironmentRegistration,
         ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
         {
+            if self.fail_registration.load(Ordering::SeqCst) {
+                return Err(ExecutableEnvironmentRegistrationError::Unavailable(
+                    "injected projection outage".into(),
+                ));
+            }
             self.registrations.lock().unwrap().push(registration);
             Ok(ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent)
         }
@@ -415,5 +420,54 @@ mod tests {
         assert_eq!(registrar.registrations.lock().unwrap().len(), 2, "R1/R2");
         assert_eq!(registrar.withdrawals.lock().unwrap().len(), 1, "R3");
         assert!(application.delete("env_local").await.is_err(), "R4");
+    }
+
+    #[tokio::test]
+    async fn authority_commit_survives_projection_failure_and_reconciliation_repairs_it() {
+        // Causes: C1 Control store commit succeeds; C2 registration boundary is
+        // unavailable; C3 the same boundary later recovers. Effects: E1 create
+        // reports failure but retains the immutable Control revision; E2 no fake
+        // projection is recorded; E3 reconciliation publishes built-in + exact
+        // retained revision without a second authoring path.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | R1   | T  | T  | F  | E1 + E2 |
+        // | R2   | T  | F  | T  | E3 |
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let registrar = Arc::new(RecordingRegistrar::default());
+        registrar.fail_registration.store(true, Ordering::SeqCst);
+        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+
+        let result = application
+            .create(CreateEnvironmentCommand {
+                command_id: "projection-outage".into(),
+                name: "Retained".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: EnvironmentConfig::SelfHosted,
+            })
+            .await;
+        assert!(
+            matches!(result, Err(EnvironmentApplicationError::Registration(_))),
+            "R1"
+        );
+        assert_eq!(envs.list_all().await.len(), 1, "R1 authority retained");
+        assert!(registrar.registrations.lock().unwrap().is_empty(), "R1/E2");
+
+        registrar.fail_registration.store(false, Ordering::SeqCst);
+        assert_eq!(
+            application.reconcile_registrations().await.unwrap(),
+            2,
+            "R2"
+        );
+        let registrations = registrar.registrations.lock().unwrap();
+        assert_eq!(registrations.len(), 2, "R2");
+        assert!(
+            registrations
+                .iter()
+                .any(|registration| registration.definition.name == "Retained"),
+            "R2 exact retained revision"
+        );
     }
 }

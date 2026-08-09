@@ -1,0 +1,2 @@
+pub mod awaken_service_auth_contract
+pub fn awaken_service_auth_contract::service_bearer_token_matches(core::option::Option<&[u8]>, &str) -> bool

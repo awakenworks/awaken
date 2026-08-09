@@ -83,8 +83,9 @@ async function main() {
     console.log('ok: awaken booted with typed per-component database configuration');
 
     // The single connection command atomically authors the catalog and vault.
-    let r = await req(base, 'POST', '/v1/config/provider-connections', {
-      workspace_id: WORKSPACE,
+  let r = await req(base, 'POST', '/v1/config/provider-connections', {
+    idempotency_key: 'per-component-db-provider-connection',
+    workspace_id: WORKSPACE,
       provider_id: 'anthropic',
       display_name: 'Anthropic',
       dialect: 'anthropic_messages',

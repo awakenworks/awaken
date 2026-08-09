@@ -1150,3 +1150,109 @@ fn validate_create(params: &DreamCreateParams) -> Result<(String, Vec<String>), 
     }
     Ok((memory.expect("validated memory input"), sessions))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_params() -> DreamCreateParams {
+        DreamCreateParams {
+            inputs: vec![
+                DreamInput::MemoryStore {
+                    memory_store_id: "memory-a".into(),
+                },
+                DreamInput::Sessions {
+                    session_ids: vec!["session-a".into(), "session-b".into()],
+                },
+            ],
+            model: DreamModelInput::Id("claude-sonnet-5".into()),
+            instructions: None,
+        }
+    }
+
+    #[test]
+    fn create_validation_covers_the_input_cause_effect_graph() {
+        // Causes: C1 exactly one non-empty MemoryStore; C2 one bounded unique
+        // Session set; C3 supported model/speed; C4 instructions within bound.
+        // Effects: E1 accept exact identities; otherwise E2 reject before an
+        // executor, process record, output store, or auxiliary Session is made.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // | R1   | T  | T  | T  | T  | E1 |
+        // | R2   | F  | *  | *  | *  | E2 |
+        // | R3   | T  | F  | *  | *  | E2 |
+        // | R4   | T  | T  | F  | *  | E2 |
+        // | R5   | T  | T  | T  | F  | E2 |
+        let valid = valid_params();
+        assert_eq!(
+            validate_create(&valid).unwrap(),
+            (
+                "memory-a".into(),
+                vec!["session-a".into(), "session-b".into()]
+            ),
+            "R1"
+        );
+
+        let mut missing_memory = valid_params();
+        missing_memory.inputs.remove(0);
+        assert!(validate_create(&missing_memory).is_err(), "R2");
+
+        let mut duplicate_session = valid_params();
+        duplicate_session.inputs[1] = DreamInput::Sessions {
+            session_ids: vec!["session-a".into(), "session-a".into()],
+        };
+        assert!(validate_create(&duplicate_session).is_err(), "R3");
+
+        let mut unsupported = valid_params();
+        unsupported.model = DreamModelInput::Config(DreamModelConfig {
+            id: "claude-sonnet-5".into(),
+            speed: Some(DreamModelSpeed::Fast),
+        });
+        assert!(validate_create(&unsupported).is_err(), "R4");
+
+        let mut long_instructions = valid_params();
+        long_instructions.instructions = Some("x".repeat(MAX_INSTRUCTIONS_CHARS + 1));
+        assert!(validate_create(&long_instructions).is_err(), "R5");
+    }
+
+    #[test]
+    fn terminal_projection_is_hidden_until_cleanup_commits() {
+        // Cause/effect rules: T1 terminal + cleanup pending -> public Running,
+        // with no ended/error disclosure; T2 cleanup committed -> exact terminal
+        // status, end time, and error become visible. This prevents consumers from
+        // treating resources as released before the durable cleanup boundary.
+        let mut process = DreamProcess {
+            id: "dream-1".into(),
+            workspace_id: "workspace".into(),
+            status: DreamStatus::Failed,
+            source_memory_store_id: "memory".into(),
+            session_ids: vec!["session".into()],
+            model: DreamModelConfig {
+                id: "claude-sonnet-5".into(),
+                speed: None,
+            },
+            request_guidance: None,
+            agent_id: BUILT_IN_DREAM_AGENT_ID.into(),
+            result_memory_store_id: Some("result".into()),
+            session_id: Some("auxiliary".into()),
+            transcript_file_ids: vec!["transcript".into()],
+            cleanup_pending: true,
+            created_at: 1,
+            ended_at: Some(2),
+            archived_at: None,
+            error: Some(DreamFailure::new("execution", "failed")),
+            policy_key: None,
+        };
+        let pending = process.project(DreamUsage::default());
+        assert_eq!(pending.status, DreamStatus::Running, "T1");
+        assert!(pending.ended_at.is_none() && pending.error.is_none(), "T1");
+
+        process.cleanup_pending = false;
+        let released = process.project(DreamUsage::default());
+        assert_eq!(released.status, DreamStatus::Failed, "T2");
+        assert!(
+            released.ended_at.is_some() && released.error.is_some(),
+            "T2"
+        );
+    }
+}

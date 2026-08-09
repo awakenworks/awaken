@@ -39,6 +39,7 @@ use composition::{
     fixed_host_backend_publication, fixed_host_backend_publication_with_acp_mcp,
     fixed_host_backend_publication_with_mcp, mount, mount_with_environments,
     mount_with_environments_and_agent_source, mount_with_host_backend_publication,
+    mount_with_memory_publication,
 };
 use deployment::{resource_host, resource_host_with_deployment, scenario_storage_dir};
 use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
@@ -148,7 +149,7 @@ pub fn build_outcome_matrix_router() -> Router {
 pub fn build_memory_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
     let host = resource_host(model, model_ref);
-    mount(Arc::new(host))
+    mount_with_memory_publication(host, "memory", Vec::new())
 }
 
 /// A router for the memory_store RESOURCE durability e2e (ADR-0038 MemoryStore
@@ -183,12 +184,13 @@ pub fn build_git_repo_router() -> Router {
 /// `EchoModel` is only the non-http fallback, never run by the e2e).
 /// `AWAKEN_MODEL_MODE=full-chain` with `AWAKEN_MODEL_SOURCE=http`.
 pub fn build_full_chain_router() -> Router {
-    let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING-FROM-SKILL");
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
-    let host = resource_host(model, model_ref)
-        .with_skills(vec![greet])
-        .with_skill_store(scenario_skill_store_dir());
-    mount(Arc::new(host))
+    let host = resource_host(model, model_ref).with_skill_store(scenario_skill_store_dir());
+    mount_with_memory_publication(
+        host,
+        "full-chain",
+        vec![awaken_agent_contract::AgentSkillBinding::custom("greet")],
+    )
 }
 
 /// Resolve the durable SkillStore once at the scenario composition edge. Both the

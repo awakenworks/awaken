@@ -42,7 +42,7 @@ pub mod workspace_path;
 pub use awaken_protocol_managed_resources::ModelDirectory;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
-    build_coordinator_component,
+    build_coordinator_component, restore_deployment_state,
 };
 pub use coordinator_persistence::{
     init_existing_postgres as init_existing_postgres_coordinator,

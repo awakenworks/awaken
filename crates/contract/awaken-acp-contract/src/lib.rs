@@ -84,6 +84,34 @@ pub struct AcpCapabilityObservation {
     pub reason_code: Option<String>,
 }
 
+impl AcpCapabilityObservation {
+    /// Whether the state and its mutually exclusive evidence fields agree.
+    ///
+    /// Callers must reject incoherent observations rather than inferring a
+    /// verified capability from whichever optional fields happen to be set.
+    #[must_use]
+    pub fn is_coherent(&self) -> bool {
+        match self.state {
+            AcpCapabilityObservationState::Verified => {
+                self.fingerprint
+                    .as_deref()
+                    .is_some_and(|fingerprint| !fingerprint.trim().is_empty())
+                    && self.negotiated.is_some()
+                    && self.reason_code.is_none()
+            }
+            AcpCapabilityObservationState::Unavailable
+            | AcpCapabilityObservationState::ProbeFailed => {
+                self.fingerprint.is_none()
+                    && self.negotiated.is_none()
+                    && self
+                        .reason_code
+                        .as_deref()
+                        .is_some_and(|reason| !reason.trim().is_empty())
+            }
+        }
+    }
+}
+
 #[async_trait]
 pub trait AcpCapabilityObservationSource: Send + Sync {
     async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String>;
@@ -150,5 +178,154 @@ fn hash_optional(hash: &mut Sha256, value: Option<&str>) {
     hash.update([u8::from(value.is_some())]);
     if let Some(value) = value {
         hash_value(hash, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn capabilities() -> NegotiatedAcpCapabilities {
+        NegotiatedAcpCapabilities {
+            protocol_version: "1".into(),
+            load_session: true,
+            prompt_image: true,
+            prompt_audio: false,
+            prompt_embedded_context: true,
+            mcp_http: true,
+            mcp_sse: false,
+            session_list: true,
+            modes: vec![
+                AcpSessionModeDescriptor {
+                    native_id: "review".into(),
+                    name: "Review".into(),
+                    description: None,
+                    current: false,
+                },
+                AcpSessionModeDescriptor {
+                    native_id: "code".into(),
+                    name: "Code".into(),
+                    description: Some("write code".into()),
+                    current: true,
+                },
+            ],
+            config_options: vec![AcpSessionConfigOptionDescriptor {
+                native_id: "model".into(),
+                name: "Model".into(),
+                description: None,
+                category: Some("runtime".into()),
+                current_value: "large".into(),
+                choices: vec![
+                    AcpSessionConfigChoice {
+                        native_value: "small".into(),
+                        name: "Small".into(),
+                        description: None,
+                        group_id: Some("size".into()),
+                        group_name: Some("Size".into()),
+                    },
+                    AcpSessionConfigChoice {
+                        native_value: "large".into(),
+                        name: "Large".into(),
+                        description: None,
+                        group_id: Some("size".into()),
+                        group_name: Some("Size".into()),
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn capability_fingerprint_decision_table_is_canonical_and_complete() {
+        // Causes: C1 response order differs; C2 adapter identity differs; C3 a
+        // negotiated flag differs; C4 a nested choice differs. Effects: E1 order
+        // is normalized; E2-E4 semantic changes produce a new fingerprint.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // | R1   | T  | F  | F  | F  | E1 same fingerprint |
+        // | R2   | F  | T  | F  | F  | E2 different |
+        // | R3   | F  | F  | T  | F  | E3 different |
+        // | R4   | F  | F  | F  | T  | E4 different |
+        let original = capabilities();
+        let expected = capability_fingerprint("codex", "1.0", &original);
+
+        let mut reordered = original.clone();
+        reordered.modes.reverse();
+        reordered.config_options[0].choices.reverse();
+        assert_eq!(
+            capability_fingerprint("codex", "1.0", &reordered),
+            expected,
+            "R1"
+        );
+        assert_ne!(
+            capability_fingerprint("claude", "1.0", &original),
+            expected,
+            "R2"
+        );
+        let mut changed_flag = original.clone();
+        changed_flag.mcp_sse = true;
+        assert_ne!(
+            capability_fingerprint("codex", "1.0", &changed_flag),
+            expected,
+            "R3"
+        );
+        let mut changed_choice = original;
+        changed_choice.config_options[0].choices[0].native_value = "tiny".into();
+        assert_ne!(
+            capability_fingerprint("codex", "1.0", &changed_choice),
+            expected,
+            "R4"
+        );
+    }
+
+    #[test]
+    fn capability_observation_coherence_decision_table_fails_closed() {
+        // Causes: C1 state=Verified; C2 complete positive evidence; C3 failure
+        // state; C4 reason present; C5 stale positive evidence is also present.
+        // Effect E1: the observation is coherent and may be considered by a
+        // selector. Every incomplete or mixed row produces E2 reject.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | W1   | T  | T  | F  | F  | F  | E1 accept |
+        // | W2   | T  | F  | F  | F  | F  | E2 reject |
+        // | W3   | F  | F  | T  | T  | F  | E1 accept failure evidence |
+        // | W4   | F  | F  | T  | F  | F  | E2 reject |
+        // | W5   | F  | F  | T  | T  | T  | E2 reject mixed evidence |
+        let failure = AcpCapabilityObservation {
+            backend_ref: "acp:codex".into(),
+            adapter_version: "1.0".into(),
+            state: AcpCapabilityObservationState::ProbeFailed,
+            observed_at_ms: 42,
+            fingerprint: None,
+            negotiated: None,
+            reason_code: Some("handshake_timeout".into()),
+        };
+        let verified = AcpCapabilityObservation {
+            state: AcpCapabilityObservationState::Verified,
+            fingerprint: Some("sha256:verified".into()),
+            negotiated: Some(capabilities()),
+            reason_code: None,
+            ..failure.clone()
+        };
+        assert!(verified.is_coherent(), "W1");
+
+        let missing_fingerprint = AcpCapabilityObservation {
+            fingerprint: None,
+            ..verified.clone()
+        };
+        assert!(!missing_fingerprint.is_coherent(), "W2");
+        assert!(failure.is_coherent(), "W3");
+
+        let missing_reason = AcpCapabilityObservation {
+            reason_code: None,
+            ..failure.clone()
+        };
+        assert!(!missing_reason.is_coherent(), "W4");
+        let mixed_failure = AcpCapabilityObservation {
+            fingerprint: verified.fingerprint,
+            negotiated: verified.negotiated,
+            ..failure
+        };
+        assert!(!mixed_failure.is_coherent(), "W5");
     }
 }

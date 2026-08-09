@@ -331,14 +331,22 @@ async function main() {
 
       // The client_secret never appears in ANY HTTP response body from the
       // server: raw fetches of credential retrieve + validate, no SDK shaping.
-      const rawRetrieve = await fetch(`${baseUrl}/v1/vaults/${vault3.id}/credentials/${confCred.id}`);
+      // Admission rule V1: managed beta present -> reach the credential route;
+      // V2: beta absent -> 400 before retrieval. These secret-nonleak assertions
+      // exercise V1 explicitly so an admission failure cannot masquerade as an
+      // empty, therefore apparently secret-free, success body.
+      const rawHeaders = { 'anthropic-beta': BETAS.join(',') };
+      const rawRetrieve = await fetch(
+        `${baseUrl}/v1/vaults/${vault3.id}/credentials/${confCred.id}`,
+        { headers: rawHeaders },
+      );
       assert.equal(rawRetrieve.status, 200);
       const rawRetrieveBody = await rawRetrieve.text();
       assert.ok(!rawRetrieveBody.includes(CONF_CLIENT_SECRET), rawRetrieveBody);
       assert.ok(!rawRetrieveBody.includes(CONF_REFRESH_TOKEN), rawRetrieveBody);
       const rawValidate = await fetch(
         `${baseUrl}/v1/vaults/${vault3.id}/credentials/${confCred.id}/mcp_oauth_validate`,
-        { method: 'POST' },
+        { method: 'POST', headers: rawHeaders },
       );
       assert.equal(rawValidate.status, 200);
       const rawValidateBody = await rawValidate.text();

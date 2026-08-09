@@ -208,8 +208,8 @@ async function api(method: string, route: string, body?: unknown): Promise<{ sta
   const response = await fetch(`${BASE}${route}`, {
     method,
     headers: {
-      'content-type': 'application/json',
       'anthropic-beta': 'managed-agents-2026-04-01',
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });

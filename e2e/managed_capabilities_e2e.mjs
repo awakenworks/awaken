@@ -64,7 +64,9 @@ async function main() {
         enabled: false,
         permission_policy: { type: 'always_allow' },
       });
-      assert.equal(cfg.web_search.enabled, false);
+      // The closed official toolset has seven members and excludes web_search;
+      // search is exposed only by the separately configured WebSearchPlugin.
+      assert.ok(!('web_search' in cfg));
       // read/glob/grep are auto-allowed → not present in configs (toolset default).
       assert.ok(!('read' in cfg) && !('glob' in cfg) && !('grep' in cfg));
       assert.deepEqual(s.agent.mcp_servers, []);

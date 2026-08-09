@@ -21,7 +21,7 @@ pub awaken_executable_agent_contract::ExecutableAgentMcpServer::credential_revis
 pub awaken_executable_agent_contract::ExecutableAgentMcpServer::credential_source_id: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentMcpServer::name: alloc::string::String
 pub awaken_executable_agent_contract::ExecutableAgentMcpServer::prompts_as_skills: bool
-pub awaken_executable_agent_contract::ExecutableAgentMcpServer::url: alloc::string::String
+pub awaken_executable_agent_contract::ExecutableAgentMcpServer::target: awaken_agent_contract::mcp_target::McpTarget
 pub struct awaken_executable_agent_contract::ExecutableAgentRegistration
 pub awaken_executable_agent_contract::ExecutableAgentRegistration::agent_id: alloc::string::String
 pub awaken_executable_agent_contract::ExecutableAgentRegistration::session_profile: awaken_executable_agent_contract::ExecutableAgentSessionProfile

@@ -23,6 +23,17 @@ pub(super) async fn drive_resumed(
     context: &RuntimeRunContext,
 ) -> Result<RunState> {
     let mut transcript = reader.committed_messages(thread_id);
+    // Cause/effect decision table for resumed assistant ids:
+    // R1 no prior assistant for this Run -> start at step 0;
+    // R2 prior full steps 0..N -> resume at N+1;
+    // R3 truncated partials/other Runs -> ignore them when deriving N.
+    // This keeps retry/replay ids stable while preventing two distinct scheduled
+    // resumes from both minting the former fixed `resume-step-1000` id.
+    let resume_step_base = transcript
+        .iter()
+        .filter_map(|message| message.id.assistant_step_of(run_id))
+        .max()
+        .map_or(0, |step| step + 1);
     let mut store = store_from_commands(reader.committed_state(thread_id), run_id);
     let approved = matches!(&result, ResumeResult::Decision { allow: true, .. });
     let permission_decision = match &result {
@@ -275,7 +286,7 @@ pub(super) async fn drive_resumed(
         transcript,
         resumed_new_messages,
         Default::default(),
-        RESUME_STEP_BASE,
+        resume_step_base,
         store,
         seed_state,
         seed_audit,

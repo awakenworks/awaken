@@ -14,9 +14,9 @@ lands on awaken's existing seams (`RunExecutor`, `RunIngress`/`DispatchQueue`,
   server remains the sole store writer. Worker identity, capability placement,
   replacement, lease recovery, and stale-epoch rejection are wired through the
   same durable dispatch path. Full cross-Worker committed-context recovery is
-  not implemented: the remote commit host still has an empty read projection.
-  That closure is specified by
-  [the recoverable remote Worker protocol](remote-worker-protocol.md).
+  implemented by the claim-authorized `RecoveryProjection`; replacement Workers
+  reconstruct from committed snapshots and reuse stable operation receipts as
+  specified by [the recoverable remote Worker protocol](remote-worker-protocol.md).
   Multi-cell sharding is still gated on measured need.
 - Builds on: [run-ingress-message-delivery](run-ingress-message-delivery.md)
   (the Dispatch/Server boundary; `thread_id` is the shard and consistency key;

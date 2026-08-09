@@ -15,6 +15,9 @@
 // | L3   | present   | irrelevant   | -             | yes                | aggregate wins |
 // | L4   | absent    | terminal     | no            | -                  | not found/no effect |
 //
+// Constraint: every row rule runs with explicit `identity_mode=no-login`; IAM is
+// orthogonal to retained-row decoding and therefore must not mask a codec result.
+//
 // This is deliberately a process/API test rather than a direct row-codec test:
 // SQLite is only the retained compatibility input; retrieval and mutation use
 // the official Managed Agents TypeScript SDK surface.
@@ -154,7 +157,7 @@ async function main() {
   const management = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-session-upgrade-mgmt-'));
   const upstream = await startUpstream('mcp');
   const environment = {
-    ...deploymentEnv(management, { controlSealKey: SEAL_KEY }),
+    ...deploymentEnv(management, { identityMode: 'no-login', controlSealKey: SEAL_KEY }),
     ...realServerEnv('mcp', upstream, { mode: 'management' }),
   };
   // One typed data root owns both the Session aggregate and Runtime committed
