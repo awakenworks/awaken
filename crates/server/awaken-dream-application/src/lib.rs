@@ -857,7 +857,7 @@ impl DreamApplication {
             .execute(&request, &preparation, cancellation.clone())
             .await
         {
-            Ok(()) => self.executor.validate_inputs(&request).await.map(|()| ()),
+            Ok(()) => self.executor.validate_inputs(&request).await,
             Err(error) => Err(error),
         };
         let terminal_job = match self.commit_job_update(&id, |job| {

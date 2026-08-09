@@ -107,16 +107,13 @@ impl ScopedConfigRegistry for SqliteConfigStore {
         let data = serde_json::to_string(config).map_err(reject)?;
         let scope = scope.0.clone();
         self.with_conn(move |conn, p| {
-            // The `ON CONFLICT … WHERE` guard makes a cross-scope write a no-op:
-            // if the existing row belongs to another scope, the update is skipped
-            // (a workspace cannot clobber another's agent by id), and a same-scope
-            // write updates the data.
+            // Agent identity is `(scope_id, id)`: another scope may reuse the
+            // same portable Agent id without reading or clobbering this row.
             conn.execute(
                 &format!(
                     "INSERT INTO {p}_agent (id, data, scope_id, generation) VALUES (?1, ?2, ?3, 1) \
-                     ON CONFLICT(id) DO UPDATE SET data = excluded.data, \
-                     generation = {p}_agent.generation + 1 \
-                     WHERE {p}_agent.scope_id = excluded.scope_id"
+                     ON CONFLICT(scope_id, id) DO UPDATE SET data = excluded.data, \
+                     generation = {p}_agent.generation + 1"
                 ),
                 params![id, data, scope],
             )
@@ -171,9 +168,8 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .execute(
                 &format!(
                     "INSERT INTO {p}_agent (id, data, scope_id, generation) VALUES (?1, ?2, ?3, 1) \
-                     ON CONFLICT(id) DO UPDATE SET data = excluded.data, \
-                     generation = {p}_agent.generation + 1 \
-                     WHERE {p}_agent.scope_id = excluded.scope_id"
+                     ON CONFLICT(scope_id, id) DO UPDATE SET data = excluded.data, \
+                     generation = {p}_agent.generation + 1"
                 ),
                 params![id, data, scope],
             )
@@ -280,9 +276,8 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .execute(
                     &format!(
                         "INSERT INTO {p}_agent (id, data, scope_id, generation) \
-                         VALUES (?1, ?2, ?3, 1) ON CONFLICT(id) DO UPDATE SET \
-                         data = excluded.data, generation = {p}_agent.generation + 1 \
-                         WHERE {p}_agent.scope_id = excluded.scope_id"
+                         VALUES (?1, ?2, ?3, 1) ON CONFLICT(scope_id, id) DO UPDATE SET \
+                         data = excluded.data, generation = {p}_agent.generation + 1"
                     ),
                     params![id, data, scope],
                 )
@@ -476,10 +471,9 @@ impl ScopedConfigRegistry for SqliteConfigStore {
                 .execute(
                     &format!(
                         "INSERT INTO {p}_agent (id, data, scope_id, generation) \
-                         VALUES (?1, ?2, ?3, 1) ON CONFLICT(id) DO UPDATE SET \
+                         VALUES (?1, ?2, ?3, 1) ON CONFLICT(scope_id, id) DO UPDATE SET \
                          data = excluded.data, generation = {p}_agent.generation + 1 \
-                         WHERE {p}_agent.scope_id = excluded.scope_id \
-                         AND {p}_agent.generation = ?4"
+                         WHERE {p}_agent.generation = ?4"
                     ),
                     params![id, data, scope, expected_generation],
                 )
@@ -623,7 +617,8 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             conn.execute(
                 &format!(
                     "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
-                     VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(fingerprint) DO NOTHING"
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(scope_id, fingerprint) DO NOTHING"
                 ),
                 params![fingerprint, agent_id, state, record, scope],
             )
@@ -660,7 +655,8 @@ impl ScopedConfigRegistry for SqliteConfigStore {
             tx.execute(
                 &format!(
                     "INSERT INTO {p}_publication (fingerprint, agent_id, state, record, scope_id) \
-                     VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(fingerprint) DO NOTHING"
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(scope_id, fingerprint) DO NOTHING"
                 ),
                 params![fingerprint, agent_id, state, record, scope],
             )
@@ -881,7 +877,7 @@ mod scope_tests {
     }
 
     #[tokio::test]
-    async fn a_scope_fence_rolls_back_the_audit_commit_too() {
+    async fn audited_same_agent_id_is_committed_independently_in_each_scope() {
         let store = SqliteConfigStore::open_in_memory().unwrap();
         let owner = ScopeId::from("ws_owner");
         let attacker = ScopeId::from("ws_attacker");
@@ -901,18 +897,21 @@ mod scope_tests {
 
         let mut attempted = agent("shared");
         attempted.instructions = "cross-scope overwrite".into();
-        assert!(
+        assert_eq!(
             store
                 .put_config_with_audit_scoped(&attacker, &attempted, &audit)
                 .await
-                .is_err()
+                .unwrap(),
+            AuditedConfigWrite::Applied
         );
-        assert!(
+        assert_eq!(
             store
                 .get_config_scoped(&attacker, "shared")
                 .await
                 .unwrap()
-                .is_none()
+                .unwrap()
+                .instructions,
+            "cross-scope overwrite"
         );
         assert_eq!(
             store
@@ -958,7 +957,7 @@ mod scope_tests {
     }
 
     #[tokio::test]
-    async fn a_write_cannot_clobber_another_scopes_agent() {
+    async fn the_same_agent_id_is_stored_independently_in_each_scope() {
         let store = SqliteConfigStore::open_in_memory().expect("open");
         let a = ScopeId::from("ws_a");
         let b = ScopeId::from("ws_b");
@@ -966,25 +965,26 @@ mod scope_tests {
             .put_config_scoped(&a, &agent("x"))
             .await
             .expect("put a");
-        // ws_b attempts to overwrite id "x" — the conflict guard makes it a no-op.
-        store
-            .put_config_scoped(&b, &agent("x"))
-            .await
-            .expect("put b");
-        // ws_a still owns "x"; ws_b still cannot see it.
-        assert!(
+        let mut b_agent = agent("x");
+        b_agent.instructions = "B-data".into();
+        store.put_config_scoped(&b, &b_agent).await.expect("put b");
+        assert_eq!(
             store
                 .get_config_scoped(&a, "x")
                 .await
                 .expect("get a")
-                .is_some()
+                .unwrap()
+                .instructions,
+            "be helpful"
         );
-        assert!(
+        assert_eq!(
             store
                 .get_config_scoped(&b, "x")
                 .await
                 .expect("get b")
-                .is_none()
+                .unwrap()
+                .instructions,
+            "B-data"
         );
     }
 

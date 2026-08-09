@@ -339,7 +339,7 @@ impl DreamExecutor for Worker {
         &self,
         _request: &DreamRequest,
         _preparation: &DreamPreparation,
-        cancellation: DreamCancellation,
+        _cancellation: DreamCancellation,
     ) -> Result<(), DreamFailure> {
         self.started.notify_waiters();
         match self.outcome {
@@ -347,11 +347,7 @@ impl DreamExecutor for Worker {
             Outcome::Fail => Err(DreamFailure::new("internal_error", "planned failure")),
             Outcome::Block => {
                 self.release.notified().await;
-                if cancellation.is_canceled() {
-                    Ok(())
-                } else {
-                    Ok(())
-                }
+                Ok(())
             }
         }
     }
