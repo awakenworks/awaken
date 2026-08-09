@@ -1,0 +1,163 @@
+pub mod awaken_data_subject_application
+pub use awaken_data_subject_application::ContentCapture
+pub use awaken_data_subject_application::DataSubjectId
+pub use awaken_data_subject_application::ErasureReceipt
+pub use awaken_data_subject_application::Purpose
+pub enum awaken_data_subject_application::ConsentStatus
+pub awaken_data_subject_application::ConsentStatus::Granted
+pub awaken_data_subject_application::ConsentStatus::Pending
+pub awaken_data_subject_application::ConsentStatus::Withdrawn
+pub enum awaken_data_subject_application::DataSubjectApplicationError
+pub awaken_data_subject_application::DataSubjectApplicationError::Conflict
+pub awaken_data_subject_application::DataSubjectApplicationError::Erasure(alloc::string::String)
+pub awaken_data_subject_application::DataSubjectApplicationError::InvalidEnrollment
+pub awaken_data_subject_application::DataSubjectApplicationError::NotFound
+pub awaken_data_subject_application::DataSubjectApplicationError::Repository(awaken_data_subject_application::DataSubjectError)
+pub awaken_data_subject_application::DataSubjectApplicationError::WeakEnrollmentKey
+pub enum awaken_data_subject_application::DataSubjectError
+pub awaken_data_subject_application::DataSubjectError::AlreadyExists(alloc::string::String)
+pub awaken_data_subject_application::DataSubjectError::Conflict(alloc::string::String)
+pub awaken_data_subject_application::DataSubjectError::NotFound(alloc::string::String)
+pub awaken_data_subject_application::DataSubjectError::RevisionExhausted(alloc::string::String)
+pub awaken_data_subject_application::DataSubjectError::Storage(alloc::string::String)
+pub enum awaken_data_subject_application::ErasureTarget
+pub awaken_data_subject_application::ErasureTarget::Coordinator
+pub awaken_data_subject_application::ErasureTarget::Resources
+pub enum awaken_data_subject_application::LawfulBasis
+pub awaken_data_subject_application::LawfulBasis::Consent
+pub awaken_data_subject_application::LawfulBasis::Contract
+pub awaken_data_subject_application::LawfulBasis::LegitimateInterest
+pub enum awaken_data_subject_application::UserProfileRelationship
+pub awaken_data_subject_application::UserProfileRelationship::External
+pub awaken_data_subject_application::UserProfileRelationship::Internal
+pub awaken_data_subject_application::UserProfileRelationship::Resold
+pub enum awaken_data_subject_application::UserProfileTrustGrantStatus
+pub awaken_data_subject_application::UserProfileTrustGrantStatus::Active
+pub awaken_data_subject_application::UserProfileTrustGrantStatus::Pending
+pub awaken_data_subject_application::UserProfileTrustGrantStatus::Rejected
+pub struct awaken_data_subject_application::CaptureDecisionRecord
+pub awaken_data_subject_application::CaptureDecisionRecord::ceiling: awaken_runtime_contract::capture::ContentCapture
+pub awaken_data_subject_application::CaptureDecisionRecord::consent: awaken_runtime_contract::capture::ContentCapture
+pub awaken_data_subject_application::CaptureDecisionRecord::effective: awaken_runtime_contract::capture::ContentCapture
+pub awaken_data_subject_application::CaptureDecisionRecord::reason: &'static str
+pub awaken_data_subject_application::CaptureDecisionRecord::requested: awaken_runtime_contract::capture::ContentCapture
+pub struct awaken_data_subject_application::ConsentDecision
+impl awaken_data_subject_application::ConsentDecision
+pub const fn awaken_data_subject_application::ConsentDecision::ceiling(self) -> awaken_runtime_contract::capture::ContentCapture
+pub const fn awaken_data_subject_application::ConsentDecision::observe(self, awaken_data_subject_application::ConsentStatus) -> Self
+pub struct awaken_data_subject_application::ConsentGrant
+pub awaken_data_subject_application::ConsentGrant::basis: awaken_data_subject_application::LawfulBasis
+pub awaken_data_subject_application::ConsentGrant::granted_at: i64
+pub awaken_data_subject_application::ConsentGrant::purpose: awaken_runtime_contract::data_subject::Purpose
+pub awaken_data_subject_application::ConsentGrant::status: awaken_data_subject_application::ConsentStatus
+pub awaken_data_subject_application::ConsentGrant::version: alloc::string::String
+pub struct awaken_data_subject_application::ConsentRecord
+pub awaken_data_subject_application::ConsentRecord::grants: alloc::vec::Vec<awaken_data_subject_application::ConsentGrant>
+pub awaken_data_subject_application::ConsentRecord::id: alloc::string::String
+pub awaken_data_subject_application::ConsentRecord::telemetry_content_ceiling: awaken_runtime_contract::capture::ContentCapture
+impl core::convert::From<&awaken_data_subject_application::DataSubject> for awaken_data_subject_application::ConsentRecord
+pub fn awaken_data_subject_application::ConsentRecord::from(&awaken_data_subject_application::DataSubject) -> Self
+pub struct awaken_data_subject_application::CreateUserProfileCommand
+pub awaken_data_subject_application::CreateUserProfileCommand::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::CreateUserProfileCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_data_subject_application::CreateUserProfileCommand::name: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::CreateUserProfileCommand::org: alloc::string::String
+pub awaken_data_subject_application::CreateUserProfileCommand::relationship: awaken_data_subject_application::UserProfileRelationship
+pub struct awaken_data_subject_application::DataSubject
+pub awaken_data_subject_application::DataSubject::consents: alloc::vec::Vec<awaken_data_subject_application::ConsentGrant>
+pub awaken_data_subject_application::DataSubject::created_at: i64
+pub awaken_data_subject_application::DataSubject::erased_at: core::option::Option<i64>
+pub awaken_data_subject_application::DataSubject::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::DataSubject::id: awaken_runtime_contract::data_subject::DataSubjectId
+pub awaken_data_subject_application::DataSubject::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_data_subject_application::DataSubject::name: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::DataSubject::org: alloc::string::String
+pub awaken_data_subject_application::DataSubject::relationship: awaken_data_subject_application::UserProfileRelationship
+pub awaken_data_subject_application::DataSubject::revision: u64
+pub awaken_data_subject_application::DataSubject::trust_grants: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_data_subject_application::UserProfileTrustGrant>
+pub awaken_data_subject_application::DataSubject::updated_at: i64
+impl awaken_data_subject_application::DataSubject
+pub fn awaken_data_subject_application::DataSubject::consent_ceiling(&self, awaken_runtime_contract::data_subject::Purpose) -> awaken_runtime_contract::capture::ContentCapture
+pub fn awaken_data_subject_application::DataSubject::mark_erased(&mut self, i64)
+pub fn awaken_data_subject_application::DataSubject::new(awaken_runtime_contract::data_subject::DataSubjectId, impl core::convert::Into<alloc::string::String>, i64) -> Self
+pub fn awaken_data_subject_application::DataSubject::upsert_consent(&mut self, awaken_data_subject_application::ConsentGrant)
+impl core::convert::From<&awaken_data_subject_application::DataSubject> for awaken_data_subject_application::ConsentRecord
+pub fn awaken_data_subject_application::ConsentRecord::from(&awaken_data_subject_application::DataSubject) -> Self
+impl core::convert::From<&awaken_data_subject_application::DataSubject> for awaken_data_subject_application::UserProfileRecord
+pub fn awaken_data_subject_application::UserProfileRecord::from(&awaken_data_subject_application::DataSubject) -> Self
+pub struct awaken_data_subject_application::DataSubjectApplication
+impl awaken_data_subject_application::DataSubjectApplication
+pub async fn awaken_data_subject_application::DataSubjectApplication::accept_enrollment(&self, &str) -> core::result::Result<awaken_data_subject_application::ConsentRecord, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::capture_decision(&self, &str, &str, awaken_runtime_contract::capture::ContentCapture, awaken_runtime_contract::capture::ContentCapture) -> core::result::Result<awaken_data_subject_application::CaptureDecisionRecord, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::create_user_profile(&self, awaken_data_subject_application::CreateUserProfileCommand) -> core::result::Result<awaken_data_subject_application::UserProfileRecord, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::erase_user_profile(&self, &str, &str, &dyn awaken_runtime_contract::data_subject::DataSubjectResolver) -> core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::get_user_profile(&self, &str, &str) -> core::result::Result<awaken_data_subject_application::UserProfileRecord, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::grant_consent(&self, &str, &str, awaken_data_subject_application::ConsentGrant) -> core::result::Result<awaken_data_subject_application::ConsentRecord, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::grant_consent_for_purpose(&self, &str, &str, awaken_runtime_contract::data_subject::Purpose, alloc::string::String) -> core::result::Result<awaken_data_subject_application::ConsentRecord, awaken_data_subject_application::DataSubjectApplicationError>
+pub fn awaken_data_subject_application::DataSubjectApplication::inspect_enrollment(&self, &str) -> core::result::Result<awaken_data_subject_application::EnrollmentRequest, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::list_user_profiles(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_data_subject_application::UserProfileRecord>, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::mint_enrollment(&self, &str, &str) -> core::result::Result<awaken_data_subject_application::EnrollmentTicket, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::mint_enrollment_for_purposes(&self, &str, &str, alloc::vec::Vec<awaken_runtime_contract::data_subject::Purpose>) -> core::result::Result<awaken_data_subject_application::EnrollmentTicket, awaken_data_subject_application::DataSubjectApplicationError>
+pub fn awaken_data_subject_application::DataSubjectApplication::new(alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectRepo>, alloc::vec::Vec<u8>) -> core::result::Result<Self, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::read_consent(&self, &str, &str) -> core::result::Result<awaken_data_subject_application::ConsentRecord, awaken_data_subject_application::DataSubjectApplicationError>
+pub async fn awaken_data_subject_application::DataSubjectApplication::update_user_profile(&self, &str, &str, awaken_data_subject_application::UpdateUserProfileCommand) -> core::result::Result<awaken_data_subject_application::UserProfileRecord, awaken_data_subject_application::DataSubjectApplicationError>
+pub fn awaken_data_subject_application::DataSubjectApplication::with_clock(alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectRepo>, alloc::vec::Vec<u8>, alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectClock>) -> core::result::Result<Self, awaken_data_subject_application::DataSubjectApplicationError>
+pub struct awaken_data_subject_application::EnrollmentRequest
+pub awaken_data_subject_application::EnrollmentRequest::expires_at: i64
+pub awaken_data_subject_application::EnrollmentRequest::purposes: alloc::vec::Vec<awaken_runtime_contract::data_subject::Purpose>
+pub awaken_data_subject_application::EnrollmentRequest::subject_id: alloc::string::String
+pub struct awaken_data_subject_application::EnrollmentTicket
+pub awaken_data_subject_application::EnrollmentTicket::expires_at: i64
+pub awaken_data_subject_application::EnrollmentTicket::url: alloc::string::String
+pub struct awaken_data_subject_application::ErasureProgress
+pub awaken_data_subject_application::ErasureProgress::accountability_stamped: bool
+pub awaken_data_subject_application::ErasureProgress::complete: bool
+pub awaken_data_subject_application::ErasureProgress::completed_targets: alloc::vec::Vec<awaken_data_subject_application::ErasureTarget>
+pub awaken_data_subject_application::ErasureProgress::records_removed: usize
+pub awaken_data_subject_application::ErasureProgress::revision: u64
+impl awaken_data_subject_application::ErasureProgress
+pub fn awaken_data_subject_application::ErasureProgress::follows(&self, core::option::Option<u64>) -> bool
+pub struct awaken_data_subject_application::RepoDataSubjectResolver
+impl awaken_data_subject_application::RepoDataSubjectResolver
+pub fn awaken_data_subject_application::RepoDataSubjectResolver::new(alloc::sync::Arc<dyn awaken_data_subject_application::DataSubjectRepo>, alloc::sync::Arc<dyn awaken_data_subject_application::ErasureJobRepo>) -> Self
+pub fn awaken_data_subject_application::RepoDataSubjectResolver::with_target(self, awaken_data_subject_application::ErasureTarget, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>) -> Self
+impl awaken_runtime_contract::data_subject::DataSubjectConsentSource for awaken_data_subject_application::RepoDataSubjectResolver
+pub fn awaken_data_subject_application::RepoDataSubjectResolver::consent_ceiling<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, awaken_runtime_contract::data_subject::Purpose) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::capture::ContentCapture> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_runtime_contract::data_subject::DataSubjectResolver for awaken_data_subject_application::RepoDataSubjectResolver
+pub fn awaken_data_subject_application::RepoDataSubjectResolver::erase<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::data_subject::ErasureReceipt, awaken_runtime_contract::data_subject::ErasureError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_data_subject_application::SystemDataSubjectClock
+impl awaken_data_subject_application::DataSubjectClock for awaken_data_subject_application::SystemDataSubjectClock
+pub fn awaken_data_subject_application::SystemDataSubjectClock::now_millis(&self) -> i64
+pub struct awaken_data_subject_application::UpdateUserProfileCommand
+pub awaken_data_subject_application::UpdateUserProfileCommand::external_id: core::option::Option<core::option::Option<alloc::string::String>>
+pub awaken_data_subject_application::UpdateUserProfileCommand::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>
+pub awaken_data_subject_application::UpdateUserProfileCommand::name: core::option::Option<core::option::Option<alloc::string::String>>
+pub awaken_data_subject_application::UpdateUserProfileCommand::relationship: core::option::Option<awaken_data_subject_application::UserProfileRelationship>
+pub awaken_data_subject_application::UpdateUserProfileCommand::trust_grants: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_data_subject_application::UserProfileTrustGrant>>
+pub struct awaken_data_subject_application::UserProfileRecord
+pub awaken_data_subject_application::UserProfileRecord::created_at: i64
+pub awaken_data_subject_application::UserProfileRecord::external_id: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::UserProfileRecord::id: alloc::string::String
+pub awaken_data_subject_application::UserProfileRecord::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_data_subject_application::UserProfileRecord::name: core::option::Option<alloc::string::String>
+pub awaken_data_subject_application::UserProfileRecord::relationship: awaken_data_subject_application::UserProfileRelationship
+pub awaken_data_subject_application::UserProfileRecord::revision: u64
+pub awaken_data_subject_application::UserProfileRecord::trust_grants: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_data_subject_application::UserProfileTrustGrant>
+pub awaken_data_subject_application::UserProfileRecord::updated_at: i64
+impl core::convert::From<&awaken_data_subject_application::DataSubject> for awaken_data_subject_application::UserProfileRecord
+pub fn awaken_data_subject_application::UserProfileRecord::from(&awaken_data_subject_application::DataSubject) -> Self
+pub struct awaken_data_subject_application::UserProfileTrustGrant
+pub awaken_data_subject_application::UserProfileTrustGrant::status: awaken_data_subject_application::UserProfileTrustGrantStatus
+pub trait awaken_data_subject_application::DataSubjectClock: core::marker::Send + core::marker::Sync
+pub fn awaken_data_subject_application::DataSubjectClock::now_millis(&self) -> i64
+impl awaken_data_subject_application::DataSubjectClock for awaken_data_subject_application::SystemDataSubjectClock
+pub fn awaken_data_subject_application::SystemDataSubjectClock::now_millis(&self) -> i64
+pub trait awaken_data_subject_application::DataSubjectRepo: core::marker::Send + core::marker::Sync
+pub fn awaken_data_subject_application::DataSubjectRepo::compare_and_swap<'life0, 'async_trait>(&'life0 self, u64, awaken_data_subject_application::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_data_subject_application::DataSubjectRepo::create<'life0, 'async_trait>(&'life0 self, awaken_data_subject_application::DataSubject) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_data_subject_application::DataSubjectRepo::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_data_subject_application::DataSubject, awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject_application::DataSubjectRepo::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_data_subject_application::DataSubject>, awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_data_subject_application::ErasureJobRepo: core::marker::Send + core::marker::Sync
+pub fn awaken_data_subject_application::ErasureJobRepo::compare_and_swap_progress<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId, core::option::Option<u64>, &'life2 awaken_data_subject_application::ErasureProgress) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_data_subject_application::ErasureJobRepo::load<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::data_subject::DataSubjectId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_data_subject_application::ErasureProgress>, awaken_data_subject_application::DataSubjectError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_data_subject_application::derive_enrollment_signing_key(&[u8; 32]) -> [u8; 32]

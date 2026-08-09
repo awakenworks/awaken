@@ -13,7 +13,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
         awaken_admin_config_api::SqliteAdminStore::open_in_memory()
             .expect("open ephemeral admin store"),
     );
-    let data_subjects = Arc::new(awaken_data_subject::InMemoryDataSubjectRepo::new());
+    let data_subjects = Arc::new(awaken_data_subject_store::InMemoryDataSubjectRepo::new());
     let captured_content =
         Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new());
     ProcessStores {
@@ -76,10 +76,12 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServicePor
         control.secrets,
         None,
     );
-    let consent = Arc::new(awaken_data_subject::RepoDataSubjectResolver::new(
-        control.data_subjects,
-        control.erasure_jobs,
-    ));
+    let consent = Arc::new(
+        awaken_data_subject_application::RepoDataSubjectResolver::new(
+            control.data_subjects,
+            control.erasure_jobs,
+        ),
+    );
     (
         stores,
         ControlServicePorts {

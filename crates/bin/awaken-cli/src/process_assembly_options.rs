@@ -12,6 +12,9 @@ pub(super) struct ProcessAssemblyOptions {
     pub(super) deployment: Option<awaken_runtime_host::DeploymentConfig>,
     pub(super) content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     pub(super) org_id: Option<String>,
+    /// Domain-separated from the durable Control seal key by the Data Subject
+    /// application. Required by every production role that owns Control.
+    pub(super) enrollment_signing_key: Option<[u8; 32]>,
     pub(super) mcp_bearer_token: Option<String>,
     pub(super) role: config::Role,
     pub(super) cloud_api_base_url: Option<String>,

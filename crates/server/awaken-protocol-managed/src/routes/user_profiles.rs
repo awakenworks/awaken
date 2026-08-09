@@ -1,74 +1,32 @@
-//! The Managed **user-profiles** front door (`/v1/user_profiles`), the official
-//! `@anthropic-ai/sdk` `beta.userProfiles.*` client's surface: create / retrieve /
-//! update / list plus the `enrollment_url` action. A user profile represents the
-//! entity behind an agent run (an end user, a resold company, or the platform
-//! itself) and carries free-form metadata + trust grants.
-//!
-//! State is a neutral in-memory store (one process), mirroring [`crate::vaults`]:
-//! a stable `uprof_…` id, per-parent nothing (profiles are flat), deterministic
-//! ascending-id list order.
+//! Managed User Profiles HTTP adapter over the Control-owned Data Subject application.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
+use awaken_data_subject_application::{
+    CreateUserProfileCommand, DataSubjectApplication, DataSubjectApplicationError,
+    EnrollmentTicket, UpdateUserProfileCommand, UserProfileRecord, UserProfileRelationship,
+    UserProfileTrustGrant, UserProfileTrustGrantStatus,
+};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use std::sync::Arc;
 
 use crate::routes::ManagedJson;
 use crate::types::user_profile::{
-    EnrollmentUrl, Relationship, UserProfile, UserProfileCreateParams, UserProfileUpdateParams,
+    EnrollmentUrl, Relationship, TrustGrant, TrustGrantStatus, UserProfile,
+    UserProfileCreateParams, UserProfileUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
-/// Deterministic timestamps, matching the vault surface's convention.
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-/// The enrollment URL's fixed validity horizon (deterministic for tests).
-const ENROLL_EXPIRES_AT: &str = "2026-12-31T23:59:59Z";
-
-#[derive(Clone)]
-struct Record {
-    metadata: BTreeMap<String, String>,
-    relationship: Relationship,
-    external_id: Option<String>,
-    name: Option<String>,
+struct UserProfileHttpState {
+    application: Arc<DataSubjectApplication>,
+    org: String,
 }
 
-impl Record {
-    fn project(&self, id: &str) -> UserProfile {
-        UserProfile {
-            id: id.to_string(),
-            created_at: OBJECT_AT.to_string(),
-            updated_at: OBJECT_AT.to_string(),
-            metadata: self.metadata.clone(),
-            relationship: self.relationship,
-            trust_grants: BTreeMap::new(),
-            object_type: "user_profile",
-            external_id: self.external_id.clone(),
-            name: self.name.clone(),
-        }
-    }
-}
-
-/// The user-profile surface's state.
-#[derive(Default)]
-pub struct UserProfileState {
-    inner: Mutex<BTreeMap<String, Record>>,
-    seq: AtomicU64,
-}
-
-impl UserProfileState {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// Mount the user-profile routes.
-pub fn user_profiles_router(state: Arc<UserProfileState>) -> Router {
+/// Mount the User Profiles wire adapter over the one Data Subject application.
+pub fn user_profiles_router(application: Arc<DataSubjectApplication>, org: String) -> Router {
     Router::new()
         .route("/v1/user_profiles", post(create_profile).get(list_profiles))
         .route(
@@ -79,19 +37,35 @@ pub fn user_profiles_router(state: Arc<UserProfileState>) -> Router {
             "/v1/user_profiles/{id}/enrollment_url",
             post(enrollment_url),
         )
-        .with_state(state)
+        .with_state(Arc::new(UserProfileHttpState { application, org }))
 }
 
 type WireError = (StatusCode, Json<ErrorResponse>);
 
-fn not_found() -> WireError {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ErrorResponse::new(
+fn error_response(error: DataSubjectApplicationError) -> WireError {
+    let (status, kind, message) = match error {
+        DataSubjectApplicationError::NotFound => (
+            StatusCode::NOT_FOUND,
             "not_found_error",
-            "user_profile not found",
-        )),
-    )
+            "user_profile not found".to_string(),
+        ),
+        DataSubjectApplicationError::InvalidEnrollment => (
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            error.to_string(),
+        ),
+        DataSubjectApplicationError::Conflict => {
+            (StatusCode::CONFLICT, "conflict_error", error.to_string())
+        }
+        DataSubjectApplicationError::WeakEnrollmentKey
+        | DataSubjectApplicationError::Erasure(_)
+        | DataSubjectApplicationError::Repository(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "api_error",
+            error.to_string(),
+        ),
+    };
+    (status, Json(ErrorResponse::new(kind, message)))
 }
 
 fn bad_request(message: impl Into<String>) -> WireError {
@@ -102,8 +76,8 @@ fn bad_request(message: impl Into<String>) -> WireError {
 }
 
 fn check_len(field: &str, value: Option<&str>) -> Result<(), WireError> {
-    if let Some(v) = value
-        && v.len() > 255
+    if let Some(value) = value
+        && value.len() > 255
     {
         return Err(bad_request(format!(
             "{field} must be at most 255 characters"
@@ -112,48 +86,115 @@ fn check_len(field: &str, value: Option<&str>) -> Result<(), WireError> {
     Ok(())
 }
 
+fn relationship_to_application(value: Relationship) -> UserProfileRelationship {
+    match value {
+        Relationship::External => UserProfileRelationship::External,
+        Relationship::Resold => UserProfileRelationship::Resold,
+        Relationship::Internal => UserProfileRelationship::Internal,
+    }
+}
+
+fn relationship_to_wire(value: UserProfileRelationship) -> Relationship {
+    match value {
+        UserProfileRelationship::External => Relationship::External,
+        UserProfileRelationship::Resold => Relationship::Resold,
+        UserProfileRelationship::Internal => Relationship::Internal,
+    }
+}
+
+fn grant_to_application(value: TrustGrant) -> UserProfileTrustGrant {
+    UserProfileTrustGrant {
+        status: match value.status {
+            TrustGrantStatus::Active => UserProfileTrustGrantStatus::Active,
+            TrustGrantStatus::Pending => UserProfileTrustGrantStatus::Pending,
+            TrustGrantStatus::Rejected => UserProfileTrustGrantStatus::Rejected,
+        },
+    }
+}
+
+fn grant_to_wire(value: UserProfileTrustGrant) -> TrustGrant {
+    TrustGrant {
+        status: match value.status {
+            UserProfileTrustGrantStatus::Active => TrustGrantStatus::Active,
+            UserProfileTrustGrantStatus::Pending => TrustGrantStatus::Pending,
+            UserProfileTrustGrantStatus::Rejected => TrustGrantStatus::Rejected,
+        },
+    }
+}
+
+fn project(record: UserProfileRecord) -> UserProfile {
+    UserProfile {
+        id: record.id,
+        created_at: awaken_session_contract::epoch_millis_to_rfc3339(
+            record.created_at.max(0) as u64
+        ),
+        updated_at: awaken_session_contract::epoch_millis_to_rfc3339(
+            record.updated_at.max(0) as u64
+        ),
+        metadata: record.metadata,
+        relationship: relationship_to_wire(record.relationship),
+        trust_grants: record
+            .trust_grants
+            .into_iter()
+            .map(|(name, grant)| (name, grant_to_wire(grant)))
+            .collect(),
+        object_type: "user_profile",
+        external_id: record.external_id,
+        name: record.name,
+    }
+}
+
 async fn create_profile(
-    State(state): State<Arc<UserProfileState>>,
+    State(state): State<Arc<UserProfileHttpState>>,
     ManagedJson(params): ManagedJson<UserProfileCreateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
     check_len("external_id", params.external_id.as_deref())?;
     check_len("name", params.name.as_deref())?;
-    let n = state.seq.fetch_add(1, Ordering::SeqCst);
-    let id = format!("uprof_{n:016}");
-    let record = Record {
-        metadata: params.metadata,
-        relationship: params.relationship,
-        external_id: params.external_id,
-        name: params.name,
-    };
-    let profile = record.project(&id);
-    state.inner.lock().unwrap().insert(id, record);
-    Ok(Json(profile))
+    state
+        .application
+        .create_user_profile(CreateUserProfileCommand {
+            org: state.org.clone(),
+            metadata: params.metadata,
+            relationship: relationship_to_application(params.relationship),
+            external_id: params.external_id,
+            name: params.name,
+        })
+        .await
+        .map(project)
+        .map(Json)
+        .map_err(error_response)
 }
 
 async fn retrieve_profile(
-    State(state): State<Arc<UserProfileState>>,
+    State(state): State<Arc<UserProfileHttpState>>,
     Path(id): Path<String>,
 ) -> Result<Json<UserProfile>, WireError> {
-    let store = state.inner.lock().unwrap();
-    let record = store.get(&id).ok_or_else(not_found)?;
-    Ok(Json(record.project(&id)))
+    state
+        .application
+        .get_user_profile(&state.org, &id)
+        .await
+        .map(project)
+        .map(Json)
+        .map_err(error_response)
 }
 
-/// `GET /v1/user_profiles` — one full page, ascending id order.
 async fn list_profiles(
-    State(state): State<Arc<UserProfileState>>,
+    State(state): State<Arc<UserProfileHttpState>>,
     Query(page): Query<PageQuery>,
-) -> Json<Page<UserProfile>> {
-    let store = state.inner.lock().unwrap();
-    // BTreeMap iterates in ascending-key order — deterministic + creation order
-    // (`uprof_` is zero-padded).
-    let data: Vec<UserProfile> = store.iter().map(|(id, r)| r.project(id)).collect();
-    Json(paginate(data, &page, |p| p.id.as_str()))
+) -> Result<Json<Page<UserProfile>>, WireError> {
+    let data = state
+        .application
+        .list_user_profiles(&state.org)
+        .await
+        .map_err(error_response)?
+        .into_iter()
+        .map(project)
+        .collect();
+    Ok(Json(paginate(data, &page, |profile| profile.id.as_str())))
 }
 
 async fn update_profile(
-    State(state): State<Arc<UserProfileState>>,
+    State(state): State<Arc<UserProfileHttpState>>,
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<UserProfileUpdateParams>,
 ) -> Result<Json<UserProfile>, WireError> {
@@ -168,44 +209,49 @@ async fn update_profile(
         "name",
         params.name.as_ref().and_then(|value| value.as_deref()),
     )?;
-    let mut store = state.inner.lock().unwrap();
-    let record = store.get_mut(&id).ok_or_else(not_found)?;
-    if let Some(external_id) = params.external_id {
-        record.external_id = external_id;
-    }
-    if let Some(name) = params.name {
-        record.name = name;
-    }
-    if let Some(relationship) = params.relationship {
-        record.relationship = relationship.unwrap_or_default();
-    }
-    if let Some(patch) = params.metadata {
-        // SDK convention: an empty-string value removes the key; else upsert.
-        for (key, value) in patch {
-            if value.is_empty() {
-                record.metadata.remove(&key);
-            } else {
-                record.metadata.insert(key, value);
-            }
-        }
-    }
-    Ok(Json(record.project(&id)))
+    let trust_grants = params.trust_grants.map(|grants| {
+        grants
+            .into_iter()
+            .map(|(name, grant)| (name, grant_to_application(grant)))
+            .collect::<BTreeMap<_, _>>()
+    });
+    state
+        .application
+        .update_user_profile(
+            &state.org,
+            &id,
+            UpdateUserProfileCommand {
+                metadata: params.metadata,
+                relationship: params
+                    .relationship
+                    .map(|value| relationship_to_application(value.unwrap_or_default())),
+                trust_grants,
+                external_id: params.external_id,
+                name: params.name,
+            },
+        )
+        .await
+        .map(project)
+        .map(Json)
+        .map_err(error_response)
 }
 
-/// `POST /v1/user_profiles/:id/enrollment_url` — mint an enrollment URL for the
-/// end user (`BetaUserProfileEnrollmentURL`). Deterministic on this surface: a
-/// stable per-profile URL with a fixed validity horizon.
 async fn enrollment_url(
-    State(state): State<Arc<UserProfileState>>,
+    State(state): State<Arc<UserProfileHttpState>>,
     Path(id): Path<String>,
 ) -> Result<Json<EnrollmentUrl>, WireError> {
-    let store = state.inner.lock().unwrap();
-    if !store.contains_key(&id) {
-        return Err(not_found());
-    }
-    Ok(Json(EnrollmentUrl {
-        object_type: "enrollment_url",
-        url: format!("https://enroll.awaken.local/{id}"),
-        expires_at: ENROLL_EXPIRES_AT,
-    }))
+    state
+        .application
+        .mint_enrollment(&state.org, &id)
+        .await
+        .map(|EnrollmentTicket { url, expires_at }| {
+            Json(EnrollmentUrl {
+                object_type: "enrollment_url",
+                url,
+                expires_at: awaken_session_contract::epoch_millis_to_rfc3339(
+                    expires_at.max(0) as u64
+                ),
+            })
+        })
+        .map_err(error_response)
 }

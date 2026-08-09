@@ -1,0 +1,31 @@
+[package]
+name = "awaken-environment-execution-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "coordinator"
+layer = "application"
+authority = "environment-execution"
+
+[dependencies]
+awaken-credential-contract.workspace = true
+awaken-environment-contract.workspace = true
+awaken-environment-realization-contract.workspace = true
+awaken-executable-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-session-application.workspace = true
+awaken-session-contract.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+awaken-environment-application.workspace = true
+awaken-executable-environment-catalog.workspace = true
+awaken-work-store = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

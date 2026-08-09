@@ -15,6 +15,44 @@ use axum::Router;
 
 use super::{EchoModel, SharedHost, resource_host, scenario_resource_catalog};
 
+pub(super) fn test_environment_components() -> (
+    Arc<awaken_protocol_managed::EnvironmentAuthoringState>,
+    Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
+) {
+    use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
+
+    let work: Arc<dyn awaken_session_contract::work_queue::WorkQueue> =
+        Arc::new(awaken_work_store::InMemoryWorkQueue::new());
+    let executable =
+        Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
+    executable
+        .install_seed(awaken_environment_application::default_environment_registration())
+        .expect("install built-in Environment");
+    let registrar: Arc<dyn ExecutableEnvironmentRegistrar> = Arc::new(
+        awaken_environment_execution_application::CoordinatorEnvironmentRegistrar::new(
+            Arc::new(
+                awaken_executable_environment_catalog::LocalExecutableEnvironmentRegistrar::new(
+                    executable.clone(),
+                ),
+            ),
+            work.clone(),
+        ),
+    );
+    let authoring = awaken_protocol_managed::EnvironmentAuthoringState::new(
+        Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default()),
+        registrar,
+    );
+    (
+        Arc::new(authoring),
+        Arc::new(
+            awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+                work, executable,
+            ),
+        ),
+    )
+}
+
 /// Scenario equivalent of the production composition root: one secret-free
 /// Resource Catalog is shared by the Memory API, Managed ACL, and runtime
 /// activation. Authorization remains outside this helper.
@@ -48,31 +86,30 @@ pub(super) fn mount_with_environments_and_agent_source(
     agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
 ) -> Router {
     let catalog = scenario_resource_catalog();
-    let environments = Arc::new(
-        awaken_protocol_managed::EnvironmentState::new().with_sandbox_policies(Arc::new(
-            awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
-        )),
-    );
+    let (environment_authoring, environment_execution) = test_environment_components();
     let managed = match agent_source {
         Some(source) => awaken_coordinator::local_managed_state_with_environments_and_agent_source(
             host.clone(),
             catalog.clone(),
-            environments.execution(),
+            environment_execution.clone(),
             source,
         ),
         None => awaken_coordinator::local_managed_state_with_environments(
             host.clone(),
             catalog.clone(),
-            environments.execution(),
+            environment_execution.clone(),
         ),
     };
     awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
-        .merge(awaken_protocol_managed::environments_router(
-            environments.clone(),
+        .merge(awaken_protocol_managed::environment_authoring_router(
+            environment_authoring.clone(),
+        ))
+        .merge(awaken_protocol_managed::environment_work_router(
+            environment_execution,
         ))
         .merge(awaken_protocol_awaken::environment_extensions_router(
-            environments.authoring().application(),
-            environments.authoring().sandbox_policy_store(),
+            environment_authoring.application(),
+            environment_authoring.sandbox_policy_store(),
         ))
 }
 

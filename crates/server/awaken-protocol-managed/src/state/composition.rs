@@ -30,7 +30,7 @@ impl ManagedState {
             Arc::new(runtime),
             Arc::new(UnsupportedMcpAttachmentRealizer),
             ephemeral_session_repository(),
-            Arc::new(crate::routes::environments::EnvironmentExecutionState::default()),
+            crate::test_support::environment_components().1,
         )
     }
 
@@ -47,7 +47,7 @@ impl ManagedState {
             runtime.clone(),
             runtime,
             ephemeral_session_repository(),
-            Arc::new(crate::routes::environments::EnvironmentExecutionState::default()),
+            crate::test_support::environment_components().1,
         )
     }
 
@@ -81,7 +81,9 @@ impl ManagedState {
         runtime: Arc<dyn SessionRuntime>,
         mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
         sessions_repo: Arc<dyn ManagedSessionRepository>,
-        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
+        environments: Arc<
+            awaken_environment_execution_application::EnvironmentExecutionApplication,
+        >,
     ) -> Self {
         Self::from_application(SessionApplication::new(
             runtime,
@@ -106,7 +108,9 @@ impl ManagedState {
     #[must_use]
     pub fn with_environments(
         mut self,
-        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
+        environments: Arc<
+            awaken_environment_execution_application::EnvironmentExecutionApplication,
+        >,
     ) -> Self {
         self.application_mut()
             .replace_environment_source(environments);

@@ -46,6 +46,7 @@ awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
 awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
 awaken-session-application = { path = "crates/server/awaken-session-application" }
 awaken-deployment-contract = { path = "crates/contract/awaken-deployment-contract" }
+awaken-deployment-application = { path = "crates/server/awaken-deployment-application" }
 awaken-environment-contract = { path = "crates/contract/awaken-environment-contract" }
 awaken-environment-realization-contract = { path = "crates/contract/awaken-environment-realization-contract" }
 awaken-executable-agent-contract = { path = "crates/server/awaken-executable-agent-contract" }
@@ -89,8 +90,10 @@ awaken-model-catalog = { path = "crates/control/awaken-model-catalog" }
 awaken-model-catalog-store = { path = "crates/stores/awaken-model-catalog-store" }
 awaken-credential-vault = { path = "crates/control/awaken-credential-vault" }
 awaken-credential-store = { path = "crates/stores/awaken-credential-store" }
-awaken-data-subject = { path = "crates/control/awaken-data-subject" }
+awaken-data-subject-application = { path = "crates/control/awaken-data-subject-application" }
+awaken-data-subject-store = { path = "crates/stores/awaken-data-subject-store" }
 awaken-environment-application = { path = "crates/control/awaken-environment-application" }
+awaken-environment-execution-application = { path = "crates/server/awaken-environment-execution-application" }
 awaken-captured-content-store = { path = "crates/stores/awaken-captured-content-store" }
 awaken-config-resolver = { path = "crates/control/awaken-config-resolver" }
 awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }

@@ -12,9 +12,13 @@ authority = "deployment"
 [dependencies]
 async-trait.workspace = true
 thiserror.workspace = true
-awaken-session-contract.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 chrono = { version = "0.4", default-features = false }
 chrono-tz = "0.10"
+
+[dev-dependencies]
+awaken-session-contract.workspace = true
 
 [lints]
 workspace = true

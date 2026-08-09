@@ -653,6 +653,19 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
+    if is_family("/v1/user_profiles") && !has_beta(&req, crate::USER_PROFILES_BETA) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!(
+                    "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
+                    beta = crate::USER_PROFILES_BETA,
+                ),
+            )),
+        )
+            .into_response();
+    }
     let is_managed = [
         "/v1/sessions",
         "/v1/agents",

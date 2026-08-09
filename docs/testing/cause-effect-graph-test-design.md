@@ -419,7 +419,7 @@ C51 → E43     C52 → E44     (~C51 ∧ ~C52 ∧ 栅栏通过 ∧ C54=Allow) �
 
 ## 模块 M7 · 数据主体 / GDPR(Data-Subject)
 
-`crates/control/awaken-data-subject`
+`crates/control/awaken-data-subject-application`
 
 ### 因(C55–C61)
 
@@ -1087,7 +1087,7 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-config-store` | scoped SQL 漏条件/版本覆盖 → 跨域或丢更新 | scope guard、CAS、迁移测试；直接，M13 | 5/1/1/5 |
 | `awaken-control` | 组件组装拿错 authority store → 跨角色写 | crate-boundary fitness、显式端口；直接，F1/F2 E2E | 5/1/2/10 |
 | `awaken-credential-vault` | 明文持久化/错误 revision → secret 泄漏 | sealed blob、zeroize、exact revision；直接，M5 | 5/1/1/5 |
-| `awaken-data-subject` | erase 部分成功或 receipt 丢失 → GDPR 复活 | 内容先删、会计 receipt、erasure fence；直接，M7 | 5/1/1/5 |
+| `awaken-data-subject-application` | erase 部分成功或 receipt 丢失 → GDPR 复活 | 内容先删、会计 receipt、erasure fence；直接，M7 | 5/1/1/5 |
 | `awaken-environment-application` | authority 已提交但投影失败 → 假发布/永久落后 | commit 保真、失败不伪造 projection、reconcile exact revision；直接判定表，EF1 | 4/1/1/4 |
 | `awaken-model-catalog` | offering/dialect/endpoint 漂移 → 无法执行或错路由 | scoped repo、disabled endpoint、fingerprint；直接，M13 | 4/1/1/4 |
 

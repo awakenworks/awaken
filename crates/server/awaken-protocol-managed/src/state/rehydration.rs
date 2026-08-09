@@ -263,7 +263,7 @@ mod tests {
             runtime.clone(),
             runtime,
             repo,
-            Arc::new(crate::routes::environments::EnvironmentExecutionState::default()),
+            crate::test_support::environment_components().1,
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement:
                     awaken_session_application::SessionExecutionPlacement::RegisteredWorker,

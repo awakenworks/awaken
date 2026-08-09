@@ -55,6 +55,17 @@ pub(super) async fn assemble_runtime_process_router(
     let cloud_models_enabled = model_supply.cloud_models_enabled;
     let injected_brokered_catalog = assembly.brokered_catalog.clone();
     let org_id = assembly.org_id.unwrap_or_else(local_org_id);
+    let enrollment_signing_key = match (role, assembly.enrollment_signing_key) {
+        (config::Role::AllInOne, Some(key)) => key,
+        #[cfg(any(test, feature = "test-support"))]
+        (config::Role::AllInOne, None) => [0xA5; 32],
+        #[cfg(not(any(test, feature = "test-support")))]
+        (config::Role::AllInOne, None) => {
+            panic!("AllInOne requires a derived enrollment signing key")
+        }
+        (config::Role::Coordinator, _) => [0; 32],
+        _ => unreachable!(),
+    };
     let managed_rate_limiter =
         Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
     let mcp_bearer_token = assembly.mcp_bearer_token;
@@ -68,12 +79,12 @@ pub(super) async fn assemble_runtime_process_router(
     // Restore the Coordinator-owned Deployment aggregate exactly once before
     // sibling components are assembled. AllInOne Agent lifecycle commands and
     // the Coordinator router/scheduler receive this same instance.
-    let deployment_state =
-        awaken_coordinator::restore_deployment_state(coordinator_stores.deployments.clone())
+    let deployment_application =
+        awaken_coordinator::restore_deployment_application(coordinator_stores.deployments.clone())
             .await
             .map_err(|error| format!("restore Deployment state: {error}"))?;
     let agent_archive_cascade =
-        deployment_state.clone() as Arc<dyn awaken_protocol_managed::AgentArchiveCascade>;
+        deployment_application.clone() as Arc<dyn awaken_deployment_contract::AgentArchiveCascade>;
     let executable_environment_wiring = executable_environment_registration::require_process_wiring(
         assembly.executable_environment_wiring,
     );
@@ -189,6 +200,8 @@ pub(super) async fn assemble_runtime_process_router(
             control_component_for_process(
                 &stores,
                 &platform_workspace,
+                &org_id,
+                enrollment_signing_key,
                 executable_agent_registrar,
                 Some(agent_archive_cascade),
                 model_assembly
@@ -266,10 +279,11 @@ pub(super) async fn assemble_runtime_process_router(
         captured_content_eraser: _,
         environment_work,
     } = coordinator.expect("Managed Execution role requires Coordinator stores");
-    let environment_execution = awaken_protocol_managed::EnvironmentExecutionState::new(
-        environment_work,
-        executable_environment_catalog,
-    );
+    let environment_execution =
+        awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+            environment_work,
+            executable_environment_catalog,
+        );
     let environment_execution = match executable_environment_image_builds {
         Some(builds) => environment_execution.with_image_readiness(builds),
         None => environment_execution,
@@ -532,7 +546,7 @@ pub(super) async fn assemble_runtime_process_router(
             dream_process_store,
             worker_authenticator,
             worker_directory: worker_directory.clone(),
-            deployment_state,
+            deployment_application,
             executable_agents: executable_agent_catalog,
             rate_limiter: managed_rate_limiter.clone(),
             environments: environment_execution,

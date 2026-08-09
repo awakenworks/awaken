@@ -7,7 +7,9 @@
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_protocol_managed::{EnvironmentState, ManagedState, environments_router, router};
+use awaken_protocol_managed::{
+    ManagedState, environment_authoring_router, environment_work_router, router,
+};
 use awaken_session_contract::{
     OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
@@ -119,15 +121,18 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test]
 async fn session_carries_the_exact_frozen_environment_network() {
-    let env_state = Arc::new(EnvironmentState::new());
+    let (environment_authoring, environment_execution) =
+        awaken_protocol_managed::test_support::environment_components();
     let egress = Arc::new(Mutex::new(Vec::new()));
     let managed = Arc::new(
         ManagedState::new_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
-        .with_environments(env_state.execution()),
+        .with_environments(environment_execution.clone()),
     );
-    let app = router(managed).merge(environments_router(env_state));
+    let app = router(managed)
+        .merge(environment_authoring_router(environment_authoring))
+        .merge(environment_work_router(environment_execution));
 
     // A limited-networking environment.
     let (_, limited) = call(
@@ -196,15 +201,18 @@ async fn session_carries_the_exact_frozen_environment_network() {
 /// | N4 | F | F | T | canonical public registry hosts added |
 #[tokio::test]
 async fn limited_network_exceptions_change_the_prepared_runtime_policy() {
-    let env_state = Arc::new(EnvironmentState::new());
+    let (environment_authoring, environment_execution) =
+        awaken_protocol_managed::test_support::environment_components();
     let egress = Arc::new(Mutex::new(Vec::new()));
     let managed = Arc::new(
         ManagedState::new_with_mcp(CapturingFake {
             egress: egress.clone(),
         })
-        .with_environments(env_state.execution()),
+        .with_environments(environment_execution.clone()),
     );
-    let app = router(managed).merge(environments_router(env_state));
+    let app = router(managed)
+        .merge(environment_authoring_router(environment_authoring))
+        .merge(environment_work_router(environment_execution));
 
     async fn environment(app: &Router, networking: Value) -> String {
         let (status, value) = call(

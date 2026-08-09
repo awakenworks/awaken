@@ -85,16 +85,22 @@ owns exact sandbox-policy versions and stores the selected policy reference in
 the Environment revision. `awaken-environment-application` owns the sole
 `EnvironmentApplication`, which publishes the resolved exact revision through
 `ExecutableEnvironmentRegistrar`. Coordinator persists only a
-rebuildable executable command log and owns `EnvironmentExecutionState`, image
+rebuildable executable command log and owns `EnvironmentExecutionApplication`, image
 build/realization state, and the WorkQueue. Session admission freezes an
 `EnvironmentSnapshot`; Worker consumes that snapshot and never reopens either
 authority.
 
-Data Subject follows the same explicit-crossing rule. Coordinator reads consent
-through `DataSubjectConsentSource`, while Control requests subject-content
-erasure through an authenticated Coordinator port. The single Coordinator
-application fans that command out to its captured-content store and optional
-portable ACP session store; AllInOne calls the same ports locally.
+Data Subject follows the same explicit-crossing rule.
+`awaken-data-subject-application` is the sole aggregate and use-case owner for
+User Profile, consent, enrollment, and accountability-preserving erasure;
+`awaken-data-subject-store` contains only the durable SQLite/PostgreSQL adapters.
+The Managed protocol projects that application and owns no profile state.
+Coordinator reads consent through `DataSubjectConsentSource`, while Control
+requests subject-content erasure through an authenticated Coordinator port. The
+single Coordinator application fans that command out to its captured-content
+store and optional portable ACP session store; AllInOne calls the same ports
+locally. Aggregate writes use revision-fenced compare-and-swap, so concurrent
+profile and consent changes cannot overwrite one another.
 
 The Runtime Core is the domain center. It runs tools in-process but must not know
 public protocols, registry publication workflow, vault schemas, remote execution
@@ -151,7 +157,7 @@ crate name.
 | Config publication contract | Control-owned records and immutable publication values | `ConfigStore`, `StoredPublication`, `ExecutableAgentSnapshot`, `ExecutableAgentRegistrar` |
 | Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvRegistry`, `EnvironmentSandboxPolicyRef` |
 | Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalog`, current/exact-revision/fingerprint reads, local/HTTP/PostgreSQL registrar adapters, authenticated private router, and durable command replay |
-| Coordinator Environment projection | rebuildable executable-Environment availability and dynamic work coordination | `ExecutableEnvironmentCatalog`, `EnvironmentExecutionState`, `WorkQueue`; no authoring repository |
+| Coordinator Environment application | rebuildable executable-Environment availability, frozen Session snapshot compilation, registration convergence, and dynamic work coordination | `EnvironmentExecutionApplication` over `ExecutableEnvironmentCatalog` and `WorkQueue`; no authoring repository, HTTP, or Managed DTO |
 | Resources application contract | resource commands and per-kind materialization/lifecycle ports | `ResourcesApplication`, `FileApplicationService`, `MemoryStoreApplicationService`, `ResourceCatalog`, `ResourceLifecycleRepository`, Memory/Skill/File ports |
 | Runtime-facing contract | immutable values and ports used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |

@@ -139,14 +139,19 @@ Session realization state. AllInOne replaces the registration transport with a
 local adapter while retaining the same two authorities.
 
 The two privacy rows are active, independently versioned authorities. Control
-opens `data_subject_db`, owns consent/accountability plus durable erasure
-checkpoints, and exposes only an authenticated consent read port to Coordinator.
+opens `data_subject_db`; one `DataSubjectApplication` owns User Profile,
+consent/enrollment, revision-fenced aggregate updates, accountability, and
+revision-fenced durable erasure checkpoints. Managed User Profile and Control consent routes
+both call that same application. Control exposes only an authenticated consent
+read port to Coordinator.
 Coordinator opens `captured_content_db`, installs that exact adapter as the
 Runtime `CaptureSink`, and exposes an authenticated erasure command back to
 Control. The Coordinator erasure application also includes the configured
 portable ACP session-blob adapter. Both adapters persist a subject fence and a
 stable deletion receipt: a late write cannot resurrect erased content, and an
-ambiguous HTTP retry returns the original count. The SQL capture fence and
+ambiguous HTTP retry returns the original count. Competing Control replicas may
+replay an idempotent target effect, but checkpoint CAS gives one logical winner,
+so completed targets and counts cannot regress or double. The SQL capture fence and
 content delete commit atomically. AllInOne injects the same ports locally; it has
 no in-memory compatibility plane.
 

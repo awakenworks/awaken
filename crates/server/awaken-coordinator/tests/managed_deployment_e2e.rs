@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::{
-    DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher, DeploymentState,
-    LocalDeploymentSessionLauncher, ManagedState, deployments_router,
+use awaken_deployment_application::{
+    DeploymentApplication, DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher,
 };
+use awaken_protocol_managed::{LocalDeploymentSessionLauncher, ManagedState, deployments_router};
 use awaken_runtime_host::ManagedHost;
 use awaken_scenario_host::{EchoModel, build_router_and_host};
 use awaken_tenancy::WorkspaceScope;
@@ -124,7 +124,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
     let workspace_id = host.local_workspace().to_string();
     let managed = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
-    let deployments = Arc::new(DeploymentState::new());
+    let deployments = Arc::new(DeploymentApplication::new());
     deployments.bind_launcher(Arc::new(LocalDeploymentSessionLauncher::new(
         managed.clone(),
     )));
@@ -198,9 +198,9 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     assert!(!scheduled.is_empty(), "D4");
     assert!(
         scheduled.iter().all(|run| {
-            run.error.is_none()
-                && run.session_id.is_some()
-                && serde_json::to_value(&run.trigger_context).unwrap()["type"] == "schedule"
+            run.record.error.is_none()
+                && run.record.session_id.is_some()
+                && serde_json::to_value(&run.record.trigger).unwrap()["type"] == "schedule"
         }),
         "D4: {scheduled:?}"
     );

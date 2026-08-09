@@ -194,6 +194,11 @@ fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                 "remove duplicate Workspace Dream Agent override authority",
                 "DROP TABLE {prefix}_dream_agent_override",
             )?,
+            Migration::new(
+                21,
+                "Deployment aggregate compare-and-swap revision",
+                "ALTER TABLE {prefix}_deployment ADD COLUMN revision BIGINT NOT NULL DEFAULT 0",
+            )?,
         ],
     )
 }

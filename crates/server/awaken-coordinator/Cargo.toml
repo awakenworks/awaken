@@ -26,6 +26,8 @@ awaken-worker-transport-security.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-service-auth-contract.workspace = true
 awaken-deployment-contract.workspace = true
+awaken-deployment-application.workspace = true
+awaken-environment-execution-application.workspace = true
 awaken-worker-registry = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-admin-assistant = { workspace = true }
@@ -125,6 +127,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
+    "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
     "awaken-coordinator-runtime/test-support",
     "awaken-config-resolver/test-support",
@@ -157,6 +160,7 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-deployment-application = { workspace = true, features = ["test-support"] }
 awaken-webhook = { workspace = true, features = ["test-support"] }
 awaken-webhook-managed = { workspace = true, features = ["test-support"] }
 awaken-worker-registry = { workspace = true, features = ["test-support"] }

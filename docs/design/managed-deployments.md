@@ -9,7 +9,7 @@ successful admission, one ordinary Managed Session. Deployment never owns
 Session execution or history.
 
 ```text
-Deployment API -> DeploymentState -> DeploymentRepository
+Deployment API -> DeploymentApplication -> DeploymentRepository
                          |                    |
                          |                    `- aggregate/run rows
                          |                    `- exact occurrence claim
@@ -32,8 +32,8 @@ modified, or genuinely new before describing the dependency graph.
 
 | Authority | Owner | Role |
 |---|---|---|
-| POSIX cron and IANA timezone calculation | `awaken-protocol-managed::cron` | exact wall-clock occurrences, including DST behavior |
-| Agent authoring/version truth | `ManagedAgentRepository` | validates and freezes the requested latest or pinned Agent version |
+| POSIX cron and IANA timezone calculation | `awaken-deployment-contract::Cron` | exact wall-clock occurrences, including DST behavior |
+| executable Agent version truth | `ExecutableAgentRegistrationSource` | validates and freezes the requested latest or pinned Agent version |
 | Session creation and initial Event admission | `ManagedState::create_deployment_session_with_initial_events` over the canonical Session create/event commands | the only Deployment-to-execution path, idempotent by DeploymentRun |
 | organization create admission | `ManagedRateLimiter` | shares the ordinary Session-create bucket |
 | webhook delivery and retry | `WebhookLifecycleSink` | drains the sole Managed lifecycle outbox |
@@ -42,8 +42,8 @@ modified, or genuinely new before describing the dependency graph.
 
 | Owner | Change | Result |
 |---|---|---|
-| `DeploymentState` | repository restore, Workspace checks, persistent cursor, exact occurrence claim, Agent version resolution | restart-safe and replica-safe aggregate projection |
-| Managed Session store | Deployment, DeploymentRun, occurrence-claim migrations and SQLite/Postgres adapters | business row and lifecycle fact commit atomically |
+| `DeploymentApplication` | repository restore, Workspace checks, revision CAS, persistent cursor, exact occurrence claim, Agent version resolution | restart-safe and replica-safe aggregate owner |
+| Managed Session store | Deployment, DeploymentRun, occurrence-claim migrations and SQLite/Postgres transactional adapters | CAS/capacity/claim and lifecycle fact commit atomically |
 | Coordinator composition | owns the public router, scheduler, repository projection, and ordinary Session launcher | one Deployment aggregate instance and no remote launch hop |
 | `DeploymentSessionLauncher` request | carries the existing stable `deployment_run_id` | restart recovery resolves to at most one Session |
 | Agent archive operation | cascades terminal archive to live primary-Agent Deployments | no later scheduled run |
@@ -53,7 +53,7 @@ modified, or genuinely new before describing the dependency graph.
 
 | Component | Owner | Responsibility |
 |---|---|---|
-| `DeploymentRepository` | `awaken-deployment-contract` | opaque durable records plus atomic scheduled-occurrence claim |
+| `DeploymentRepository` | `awaken-deployment-contract` | opaque durable records plus revision CAS, transactional capacity admission, and atomic scheduled-occurrence claim |
 | `DeploymentRecord` / `DeploymentRunRecord` store adapters | `awaken-session-store` | SQLite/Postgres persistence without protocol DTO dependency |
 | none | — | the former HTTP launcher/router/token were deleted with the duplicate Control-owned Deployment instance |
 
@@ -65,9 +65,9 @@ model. The local and remote launch adapters implement the same port.
 
 ```text
 HTTP adapter (official DTOs)
-  `- DeploymentState (application aggregate)
-       |- ManagedAgentRepository (latest/pinned version resolution)
-       |- DeploymentRepository (durability + occurrence claim + lifecycle fact)
+  `- DeploymentApplication (application aggregate)
+       |- ExecutableAgentRegistrationSource (latest/pinned version resolution)
+       |- DeploymentRepository (revision CAS + capacity + occurrence claim + lifecycle fact)
        |- ManagedRateLimiter (create admission)
        `- LocalDeploymentSessionLauncher
             `- ManagedState (ordinary Session/Event authority)
@@ -76,12 +76,16 @@ ManagedLifecycleFact outbox
   `- WebhookLifecycleSink -> official deployment.* / deployment_run.* events
 ```
 
-`DeploymentState` keeps a locked working projection for fast list/retrieve and
+`DeploymentApplication` keeps a locked working projection for fast list/retrieve and
 schedule evaluation. The repository remains the restart and multi-replica
-authority. Stored payloads are opaque JSON at the port, so storage adapters do
-not depend on Managed wire DTOs. `claim_id` is the stable pair
-`(deployment_id, scheduled_at)`; a unique row makes exactly one replica the
-winner.
+authority. Every mutation carries an expected durable revision and advances it
+only below the SQL `BIGINT` ceiling; exhaustion fails closed instead of wrapping,
+saturating, or failing later during store conversion.
+Stored payloads are opaque JSON at the port, so storage adapters do not depend on
+Managed wire DTOs. `claim_id` is the stable pair `(deployment_id, scheduled_at)`;
+the transaction checks the expected Deployment revision, inserts the unique
+claim and run, advances the cursor/revision, and emits the lifecycle fact as one
+commit.
 
 The launcher input includes `deployment_run_id`; this is an existing durable
 business identity, not a new aggregate. The Coordinator handler records or reads
@@ -101,8 +105,8 @@ override objects, unknown Agents, and disabled/archived Agents before mutation.
 request + Workspace scope
   -> decode official union and validate cron/timezone/bounds
   -> resolve current or pinned published Agent version
-  -> enforce 1,000 scheduled-Deployment organization limit
-  -> atomically persist Deployment + deployment.created|updated fact
+  -> transactionally enforce 1,000 scheduled-Deployment organization limit
+  -> CAS persist Deployment + deployment.created|updated fact
   -> publish the committed projection
 ```
 
@@ -140,8 +144,9 @@ timer tick
   -> find active, non-archived due cron occurrences
   -> retain exact scheduled_at; apply stable execution jitter (0s..10s)
   -> if primary Agent is missing/archived: archive Deployment, no run
-  -> transactionally insert unique claim + started run + advanced cursor + fact
+  -> transactionally fence expected revision and insert unique claim + started run + advanced cursor + fact
        lost claim -> discard process-local candidate, no Session
+       stale revision -> refresh durable projection, no claim/run/Session
        won claim  -> ordinary Session create -> terminal run persistence
 ```
 
@@ -153,10 +158,13 @@ or deleted primary detected at a tick archives without a DeploymentRun.
 
 ### Recovery and webhooks
 
-At startup all Deployment and DeploymentRun rows are decoded, identity/owner
-checked, and sequence counters recovered. The persisted cron cursor prevents a
-restart from reseeding the schedule. Concurrent replicas may both calculate an
-occurrence, but only the unique claim transaction can expose a durable run.
+At startup all Deployment and DeploymentRun rows are decoded and identity/owner
+checked. UUID business identities need no process-local sequence recovery. The
+persisted cron cursor prevents a restart from reseeding the schedule. Concurrent
+replicas may both calculate an occurrence, but revision fencing plus the unique
+claim transaction can expose only one durable run. SQLite uses an immediate
+write transaction; Postgres uses row locks for claims and a cooperative
+transaction advisory lock for the organization-wide capacity predicate.
 
 Deployment and DeploymentRun mutations write `ManagedLifecycleFact` in the same
 transaction as the business row. The one webhook sink retries the stable fact id
@@ -184,6 +192,9 @@ Control/Awaken protocol.
 - A Workspace cannot retrieve, mutate, run, or list another Workspace's rows.
 - A persisted Deployment always contains one concrete Agent version.
 - A scheduled occurrence has at most one durable claim and one DeploymentRun.
+- A stale mutation or scheduler cannot overwrite a newer revision.
+- Scheduled capacity is never exceeded by concurrent replicas.
+- Revision exhaustion rejects mutation without changing durable or projected state.
 - Deployment initial Events commit through Session create, never a follow-up path.
 - DeploymentRun records only Session creation outcome, not Session lifecycle.
 - Business mutation and lifecycle fact share one repository transaction.
@@ -196,6 +207,8 @@ Cause/effect and decision rules live in comments beside their tests.
 | Rule family | Owning test |
 |---|---|
 | durable restore, Workspace isolation, two-replica claim, lifecycle facts | `durable_repository_restores_scope_and_claims_each_occurrence_once` |
+| SQLite/Postgres CAS, transactional capacity, atomic claim/run, stale scheduler | `deployment_cas_decision_table` in the shared repository conformance suite |
+| bounded state-space proof of CAS, capacity, absorbing archive, claim/run atomicity | `formal/tla/DeploymentCAS.tla` via `scripts/ci/check_formal.sh` |
 | Agent latest/pinned resolution and invalid lifecycle | `deployment_resolves_and_freezes_the_authoritative_agent_version` |
 | missing/archived primary Agent | `missing_or_archived_primary_agent_archives_without_a_run` |
 | schedule syntax/timezone and bounded stable jitter | `validate_schedule_rejects_a_malformed_cron`, `execution_jitter_is_stable_and_obeys_all_interval_bounds` |
