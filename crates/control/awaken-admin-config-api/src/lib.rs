@@ -13,17 +13,11 @@
 pub mod openapi;
 #[cfg(feature = "postgres")]
 pub mod postgres;
-#[cfg(feature = "postgres")]
-mod postgres_resource_catalog;
 mod provider_connection;
-#[cfg(any(test, feature = "sqlite", feature = "postgres"))]
-mod resource_catalog_codec;
 mod router;
 pub mod schema;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
-#[cfg(feature = "sqlite")]
-mod sqlite_resource_catalog;
 
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresAdminStore;

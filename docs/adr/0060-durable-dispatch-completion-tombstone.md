@@ -57,7 +57,7 @@ would reintroduce run resurrection.
   repository row.
 - **Port:** `DispatchQueue::completion_events_after`.
 - **Guardrail:** G35.
-- **Enforcer:** memory state plus the portable V0018 SQLite/Postgres migration;
+- **Enforcer:** memory state plus the portable V0016 SQLite/Postgres migration;
   the fenced `settle` transaction and admission queries.
 - **First vertical slice:** enqueue → claim → applied `Done` → cursor query →
   replayed enqueue/exact-claim stays absent, executed by the shared backend

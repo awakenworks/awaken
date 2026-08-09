@@ -1,4 +1,5 @@
 pub mod awaken_executable_agent_contract
+pub use awaken_executable_agent_contract::ExecutableAgentSnapshot
 pub enum awaken_executable_agent_contract::ExecutableAgentRegistrationError
 pub awaken_executable_agent_contract::ExecutableAgentRegistrationError::Conflict(alloc::string::String)
 pub awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(alloc::string::String)
@@ -49,6 +50,8 @@ pub awaken_executable_agent_contract::ExecutableAgentWithdrawal::lifecycle_revis
 pub awaken_executable_agent_contract::ExecutableAgentWithdrawal::workspace_id: alloc::string::String
 impl awaken_executable_agent_contract::ExecutableAgentWithdrawal
 pub fn awaken_executable_agent_contract::ExecutableAgentWithdrawal::validate(&self) -> core::result::Result<(), awaken_executable_agent_contract::ExecutableAgentRegistrationError>
+pub trait awaken_executable_agent_contract::ExecutableAgentInventorySource: core::marker::Send + core::marker::Sync
+pub fn awaken_executable_agent_contract::ExecutableAgentInventorySource::current_registrations<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_executable_agent_contract::ExecutableAgentProfileSource: core::marker::Send + core::marker::Sync
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::agent_unavailable_in(&self, &str, &str) -> bool
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_in(&self, &str, &str) -> core::option::Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile>
@@ -56,3 +59,6 @@ pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::unavailab
 pub trait awaken_executable_agent_contract::ExecutableAgentRegistrar: core::marker::Send + core::marker::Sync
 pub fn awaken_executable_agent_contract::ExecutableAgentRegistrar::register<'life0, 'async_trait>(&'life0 self, awaken_executable_agent_contract::ExecutableAgentRegistration) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_agent_contract::ExecutableAgentRegistrationOutcome, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_executable_agent_contract::ExecutableAgentRegistrar::withdraw<'life0, 'async_trait>(&'life0 self, awaken_executable_agent_contract::ExecutableAgentWithdrawal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_executable_agent_contract::ExecutableAgentRegistrationSource: core::marker::Send + core::marker::Sync
+pub fn awaken_executable_agent_contract::ExecutableAgentRegistrationSource::current_registration<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_executable_agent_contract::ExecutableAgentRegistration>, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_executable_agent_contract::ExecutableAgentRegistrationSource::registration_at_revision<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_executable_agent_contract::ExecutableAgentRegistration>, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait

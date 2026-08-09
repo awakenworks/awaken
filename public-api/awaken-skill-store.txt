@@ -11,7 +11,6 @@ pub awaken_skill_store::CanonicalSkillBundle::files: alloc::vec::Vec<awaken_reso
 pub awaken_skill_store::CanonicalSkillBundle::source_directory: core::option::Option<alloc::string::String>
 pub struct awaken_skill_store::FsSkillStore
 impl awaken_skill_store::FsSkillStore
-pub fn awaken_skill_store::FsSkillStore::migrate_legacy_files(&self) -> core::io::error::Result<()>
 pub fn awaken_skill_store::FsSkillStore::open(impl core::convert::Into<std::path::PathBuf>) -> core::io::error::Result<Self>
 pub fn awaken_skill_store::FsSkillStore::root(&self) -> &std::path::Path
 impl awaken_resource_contract::SkillStore for awaken_skill_store::FsSkillStore

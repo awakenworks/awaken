@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 mod catalog;
+mod component;
 mod input;
 mod lifecycle;
 
@@ -30,6 +31,7 @@ pub use catalog::{
     ResourceCatalog, ResourceCatalogError, ResourceCatalogRules, ResourceConfigSource,
     ResourceState, ResourceTimestamps, RetentionPolicy,
 };
+pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
     SkillId, SkillVersionId,

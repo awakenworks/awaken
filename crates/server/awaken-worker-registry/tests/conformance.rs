@@ -196,11 +196,22 @@ async fn sqlite_registry_conforms_and_reopens() {
 
 #[tokio::test]
 async fn postgres_registry_conforms_when_configured() {
+    // Cause/effect decision table for schema access:
+    // R1 migration connect succeeds -> the registry bundle is recorded.
+    // R2 R1 ledger + connect_existing -> startup verification succeeds and the
+    // canonical transition kernel remains usable.
+    // R3 missing/drifted ledger -> connect_existing fails closed (covered by the
+    // shared scoped-migration verify suite used by this adapter).
     let Ok(url) = std::env::var("AWAKEN_TEST_POSTGRES_URL") else {
         eprintln!("AWAKEN_TEST_POSTGRES_URL not set; skipping Postgres registry conformance");
         return;
     };
-    let store = Arc::new(PostgresWorkerDirectory::connect(&url).await.unwrap());
+    PostgresWorkerDirectory::connect(&url).await.unwrap();
+    let store = Arc::new(
+        PostgresWorkerDirectory::connect_existing(&url)
+            .await
+            .unwrap(),
+    );
     sqlx::query("DELETE FROM worker_registry_worker WHERE worker_id = 'dwr-postgres'")
         .execute(&store.pool())
         .await

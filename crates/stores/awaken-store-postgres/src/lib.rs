@@ -132,22 +132,15 @@ pub struct PostgresCommitCoordinator {
 }
 
 impl PostgresCommitCoordinator {
-    /// Connect, apply the commit-schema migrations, and hydrate the projection.
-    ///
-    /// Pool sizing is an explicit composition input, not store-owned process
-    /// configuration.
-    pub async fn connect(url: &str, max_connections: u32) -> Result<Self, StoreError> {
-        let pool = sqlx::postgres::PgPoolOptions::new()
+    async fn pool(url: &str, max_connections: u32) -> Result<PgPool, StoreError> {
+        sqlx::postgres::PgPoolOptions::new()
             .max_connections(max_connections)
             .connect(url)
             .await
-            .map_err(|err| StoreError::Connect(err.to_string()))?;
-        Self::with_pool(pool).await
+            .map_err(|err| StoreError::Connect(err.to_string()))
     }
 
-    /// Build from an existing pool: apply migrations and hydrate the projection
-    /// under the runtime namespace.
-    pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
+    async fn migrate_pool(pool: &PgPool) -> Result<(), StoreError> {
         let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
         let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             pool.clone(),
@@ -158,19 +151,77 @@ impl PostgresCommitCoordinator {
             .run_bundle(&bundle)
             .await
             .map_err(|err| StoreError::Migrate(err.to_string()))?;
-        // The Postgres-only commit-sequence object, applied after the portable
-        // schema so `{prefix}_commit` exists when the sequence is seeded past any
-        // pre-existing rows. Its own scoped bundle keeps it off the SQLite path.
+        // Apply the Postgres-only sequence after the portable tables it reads.
+        // Its independent bundle id keeps this object off the SQLite path.
         let pg_bundle = commit_pg_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
         runner
             .run_bundle(&pg_bundle)
             .await
-            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+            .map(|_| ())
+            .map_err(|err| StoreError::Migrate(err.to_string()))
+    }
 
+    async fn verify_pool(pool: &PgPool) -> Result<(), StoreError> {
+        let bundle = commit_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        runner
+            .verify_bundle(&bundle)
+            .await
+            .map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let pg_bundle = commit_pg_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        runner
+            .verify_bundle(&pg_bundle)
+            .await
+            .map_err(|err| StoreError::Migrate(err.to_string()))
+    }
+
+    /// Apply the portable and Postgres-only commit bundles without hydrating a
+    /// runtime projection. Operational migration commands use this schema-only
+    /// path.
+    pub async fn migrate(url: &str, max_connections: u32) -> Result<(), StoreError> {
+        let pool = Self::pool(url, max_connections).await?;
+        Self::migrate_pool(&pool).await
+    }
+
+    /// Connect, apply the commit-schema migrations, and hydrate the projection.
+    ///
+    /// Pool sizing is an explicit composition input, not store-owned process
+    /// configuration.
+    pub async fn connect(url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        let pool = Self::pool(url, max_connections).await?;
+        Self::with_pool(pool).await
+    }
+
+    /// Connect to commit schemas applied by the deployment migration phase.
+    /// The ledger is verified before the durable projection is hydrated; no DDL
+    /// is executed on this path.
+    pub async fn connect_existing(url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        let pool = Self::pool(url, max_connections).await?;
+        Self::with_existing_pool(pool).await
+    }
+
+    /// Build from an existing pool: apply migrations and hydrate the projection
+    /// under the runtime namespace.
+    pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
+        Self::migrate_pool(&pool).await?;
+        Self::hydrate_pool(pool).await
+    }
+
+    /// Build from an existing pool after verifying both the portable commit
+    /// bundle and the Postgres-only sequence bundle.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
+        Self::verify_pool(&pool).await?;
+        Self::hydrate_pool(pool).await
+    }
+
+    async fn hydrate_pool(pool: PgPool) -> Result<Self, StoreError> {
         let projection = hydrate(&pool)
             .await
             .map_err(|err| StoreError::Hydrate(err.to_string()))?;
-
         Ok(Self {
             pool,
             projection: Mutex::new(projection),

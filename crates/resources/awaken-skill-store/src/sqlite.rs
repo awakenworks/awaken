@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::schema::skill_store_bundle;
 use crate::{
     SkillAggregate, SkillDefinition, SkillStore, SkillStoreError, SkillVersion, append_to,
-    decode_aggregate, legacy_aggregate, remove_version_from, validate_create,
+    decode_aggregate, remove_version_from, validate_create,
 };
 
 const NS: &str = "skill_store";
@@ -86,38 +86,7 @@ impl SqliteSkillStore {
 
     /// Apply the `skill_store` scoped migration bundle (idempotent). Optional.
     pub fn ensure_schema(&self) -> Result<(), StoreError> {
-        migrate_guarded(&self.conn)?;
-        let connection = self
-            .conn
-            .lock()
-            .map_err(|_| StoreError::Migrate("skill_store connection poisoned".into()))?;
-        let mut statement = connection
-            .prepare(&format!("SELECT workspace_id, id, content FROM {NS}_skill"))
-            .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|error| StoreError::Migrate(error.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        drop(statement);
-        for (workspace, id, content) in rows {
-            let data =
-                serde_json::to_string(&legacy_aggregate(&workspace, &id, content.as_bytes()))
-                    .map_err(|error| StoreError::Migrate(error.to_string()))?;
-            connection
-                .execute(
-                    &format!("INSERT OR IGNORE INTO {NS}_aggregate(workspace_id, id, data) VALUES (?1, ?2, ?3)"),
-                    params![workspace, id, data],
-                )
-                .map_err(|error| StoreError::Migrate(error.to_string()))?;
-        }
-        Ok(())
+        migrate_guarded(&self.conn)
     }
 
     async fn workspace_snapshot(
@@ -487,25 +456,5 @@ mod tests {
         assert!(store.definition("ws", "greet").await.unwrap().is_some());
 
         store.ensure_schema().unwrap(); // idempotent
-    }
-
-    #[tokio::test]
-    async fn ensure_schema_imports_v1_current_content_idempotently() {
-        let store = SqliteSkillStore::open_in_memory().unwrap();
-        {
-            let connection = store.conn.lock().unwrap();
-            connection
-                .execute(
-                    "INSERT INTO skill_store_skill(workspace_id, id, content) VALUES (?1, ?2, ?3)",
-                    params!["ws-old", "legacy", "# legacy"],
-                )
-                .unwrap();
-        }
-        store.ensure_schema().unwrap();
-        store.ensure_schema().unwrap();
-        assert_eq!(
-            store.list_versions("ws-old", "legacy").await.unwrap().len(),
-            1
-        );
     }
 }

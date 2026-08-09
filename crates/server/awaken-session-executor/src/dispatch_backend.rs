@@ -55,6 +55,40 @@ pub async fn init_shared_postgres_dispatch_with_config(
     url: &str,
     deployment: &crate::DeploymentConfig,
 ) -> Result<(), String> {
+    init_shared_postgres_dispatch(url, deployment, PostgresSchemaAccess::Migrate).await
+}
+
+/// Initialize the process-shared Postgres dispatch after verifying that an
+/// operational migration phase already applied its bundle.
+pub async fn init_shared_postgres_dispatch_existing_with_config(
+    url: &str,
+    deployment: &crate::DeploymentConfig,
+) -> Result<(), String> {
+    init_shared_postgres_dispatch(url, deployment, PostgresSchemaAccess::Verify).await
+}
+
+/// Apply only the Coordinator-owned dispatch schema. Wake adapters and process
+/// globals are deliberately outside the migration command.
+pub async fn migrate_postgres_dispatch_schema(
+    url: &str,
+    max_connections: u32,
+) -> Result<(), String> {
+    AnyDispatchStore::connect_postgres(url, max_connections)
+        .await
+        .map(drop)
+}
+
+#[derive(Clone, Copy)]
+enum PostgresSchemaAccess {
+    Migrate,
+    Verify,
+}
+
+async fn init_shared_postgres_dispatch(
+    url: &str,
+    deployment: &crate::DeploymentConfig,
+    schema: PostgresSchemaAccess,
+) -> Result<(), String> {
     if SHARED_POSTGRES_DISPATCH.get().is_some() {
         return Ok(());
     }
@@ -67,20 +101,41 @@ pub async fn init_shared_postgres_dispatch_with_config(
     // in-process `LocalWakeSignal` + poll, so SQLite/single-node Postgres are unaffected.
     let store = match dispatch_wake_kind(deployment) {
         DispatchWake::PgNotify => {
-            let (store, wake) = AnyDispatchStore::connect_postgres_with_wake(
-                url,
-                &deployment.wake_channel,
-                deployment.postgres_max_connections.get(),
-            )
-            .await?;
+            let (store, wake) = match schema {
+                PostgresSchemaAccess::Migrate => {
+                    AnyDispatchStore::connect_postgres_with_wake(
+                        url,
+                        &deployment.wake_channel,
+                        deployment.postgres_max_connections.get(),
+                    )
+                    .await?
+                }
+                PostgresSchemaAccess::Verify => {
+                    AnyDispatchStore::connect_postgres_existing_with_wake(
+                        url,
+                        &deployment.wake_channel,
+                        deployment.postgres_max_connections.get(),
+                    )
+                    .await?
+                }
+            };
             let _ = SHARED_PG_WAKE.set(wake);
             Arc::new(store)
         }
-        DispatchWake::Nats => connect_postgres_with_nats_wake(url, deployment).await?,
-        DispatchWake::None => Arc::new(
-            AnyDispatchStore::connect_postgres(url, deployment.postgres_max_connections.get())
-                .await?,
-        ),
+        DispatchWake::Nats => connect_postgres_with_nats_wake(url, deployment, schema).await?,
+        DispatchWake::None => Arc::new(match schema {
+            PostgresSchemaAccess::Migrate => {
+                AnyDispatchStore::connect_postgres(url, deployment.postgres_max_connections.get())
+                    .await?
+            }
+            PostgresSchemaAccess::Verify => {
+                AnyDispatchStore::connect_postgres_existing(
+                    url,
+                    deployment.postgres_max_connections.get(),
+                )
+                .await?
+            }
+        }),
     };
     let _ = SHARED_POSTGRES_DISPATCH.set(store);
     Ok(())
@@ -93,18 +148,32 @@ pub async fn init_shared_postgres_dispatch_with_config(
 async fn connect_postgres_with_nats_wake(
     url: &str,
     deployment: &crate::DeploymentConfig,
+    schema: PostgresSchemaAccess,
 ) -> Result<Arc<AnyDispatchStore>, String> {
     let nats_url = deployment
         .nats_url
         .as_deref()
         .ok_or_else(|| "AWAKEN_DISPATCH_WAKE=nats requires AWAKEN_NATS_URL".to_string())?;
-    let (store, wake) = AnyDispatchStore::connect_postgres_with_nats_wake(
-        url,
-        nats_url,
-        &deployment.wake_channel,
-        deployment.postgres_max_connections.get(),
-    )
-    .await?;
+    let (store, wake) = match schema {
+        PostgresSchemaAccess::Migrate => {
+            AnyDispatchStore::connect_postgres_with_nats_wake(
+                url,
+                nats_url,
+                &deployment.wake_channel,
+                deployment.postgres_max_connections.get(),
+            )
+            .await?
+        }
+        PostgresSchemaAccess::Verify => {
+            AnyDispatchStore::connect_postgres_existing_with_nats_wake(
+                url,
+                nats_url,
+                &deployment.wake_channel,
+                deployment.postgres_max_connections.get(),
+            )
+            .await?
+        }
+    };
     let _ = SHARED_NATS_WAKE.set(wake);
     Ok(Arc::new(store))
 }
@@ -116,6 +185,7 @@ async fn connect_postgres_with_nats_wake(
 async fn connect_postgres_with_nats_wake(
     _url: &str,
     _deployment: &crate::DeploymentConfig,
+    _schema: PostgresSchemaAccess,
 ) -> Result<Arc<AnyDispatchStore>, String> {
     Err(
         "AWAKEN_DISPATCH_WAKE=nats requested but binary built without --features nats \
@@ -218,7 +288,12 @@ mod nats_feature_gate_tests {
         // is never dialed — a bad DSN here is fine. (`AnyDispatchStore` is not `Debug`, so
         // match rather than `expect_err`.)
         let deployment = crate::DeploymentConfig::ephemeral();
-        let err = match connect_postgres_with_nats_wake("postgres://ignored/db", &deployment).await
+        let err = match connect_postgres_with_nats_wake(
+            "postgres://ignored/db",
+            &deployment,
+            PostgresSchemaAccess::Verify,
+        )
+        .await
         {
             Ok(_) => panic!("nats wake without --features nats must fail closed, got Ok"),
             Err(e) => e,

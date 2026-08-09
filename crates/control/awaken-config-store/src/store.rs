@@ -37,7 +37,7 @@ pub struct ManagementAuditRecord {
     pub summary: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagementAuditEntry {
     pub record: ManagementAuditRecord,
     pub business_committed: bool,
@@ -53,7 +53,7 @@ pub struct ManagementEffect {
     pub payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuditedConfigWrite {
     Applied,
     Replayed,

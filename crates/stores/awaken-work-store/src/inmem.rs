@@ -221,6 +221,23 @@ impl WorkQueue for InMemoryWorkQueue {
         id
     }
 
+    async fn ensure_healthcheck(&self, env_id: &str) -> String {
+        if let Some(existing) = self
+            .works
+            .lock()
+            .unwrap()
+            .values()
+            .find(|work| {
+                work.environment_id == env_id
+                    && matches!(work.data, WorkPayload::HealthCheck { .. })
+            })
+            .map(|work| work.id.clone())
+        {
+            return existing;
+        }
+        self.enqueue_healthcheck(env_id).await
+    }
+
     async fn list(&self, env_id: &str) -> Vec<WorkItem> {
         self.works
             .lock()

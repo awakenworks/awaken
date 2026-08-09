@@ -5,7 +5,7 @@
 //! catalog implementation, persistence API, or RPC framework.
 
 use async_trait::async_trait;
-use awaken_runtime_contract::ExecutableAgentSnapshot;
+pub use awaken_runtime_contract::ExecutableAgentSnapshot;
 use serde::{Deserialize, Serialize};
 
 mod session_profile;
@@ -14,6 +14,16 @@ pub use session_profile::{
     ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentProfileSource,
     ExecutableAgentSessionProfile,
 };
+
+/// Match the private Coordinator credential used by this boundary. Environment
+/// commands deliberately reuse the same projected Control-to-Coordinator
+/// service identity, so all handlers share this exact fail-closed rule.
+#[must_use]
+pub fn service_bearer_token_matches(authorization: Option<&[u8]>, expected: &str) -> bool {
+    authorization
+        .and_then(|value| value.strip_prefix(b"Bearer "))
+        .is_some_and(|actual| actual == expected.as_bytes())
+}
 
 /// One immutable Control publication made available for future Coordinator
 /// Session resolution.
@@ -151,6 +161,38 @@ pub trait ExecutableAgentRegistrar: Send + Sync {
         &self,
         withdrawal: ExecutableAgentWithdrawal,
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError>;
+}
+
+/// Coordinator-owned read projection of Control's immutable registrations.
+///
+/// Deployment resolution needs only current or exact publication availability;
+/// it must not receive Control's mutable Agent authoring repository merely to
+/// freeze one executable revision.
+#[async_trait]
+pub trait ExecutableAgentRegistrationSource: Send + Sync {
+    async fn current_registration(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError>;
+
+    async fn registration_at_revision(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError>;
+}
+
+/// Coordinator-owned inventory view used by projections such as `/v1/models`.
+/// It enumerates the same current registrations as exact Session resolution and
+/// exposes no Control catalog or credential repository.
+#[async_trait]
+pub trait ExecutableAgentInventorySource: Send + Sync {
+    async fn current_registrations(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ExecutableAgentRegistration>, ExecutableAgentRegistrationError>;
 }
 
 #[cfg(test)]

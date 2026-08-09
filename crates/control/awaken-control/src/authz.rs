@@ -68,10 +68,7 @@
 //! writes BOTH the live engine and the store rows under one lock, so a restart
 //! over the same directory authenticates previously minted tokens. Hydration
 //! walks the store's bindings to their principals and reloads each principal's
-//! tokens (the `ApiTokenRepo` port deliberately has no list-all). Installs from
-//! the pre-SqlStore layout (hand-rolled singular `iam_api_token` /
-//! `iam_role_binding` tables, kept while iam-server's rusqlite pin was
-//! links-incompatible) are imported once at boot and the legacy tables renamed.
+//! tokens (the `ApiTokenRepo` port deliberately has no list-all).
 //!
 //! **What P1 defers**: custom roles, group rosters, entitlements, and approval
 //! discharge.
@@ -163,11 +160,6 @@ pub const DEFAULT_ORG_ID: &str = "org_default";
 
 /// Service principal id of the bootstrap admin token.
 pub const BOOTSTRAP_PRINCIPAL: &str = "mgmt-bootstrap";
-
-/// Sentinel the LEGACY (pre-SqlStore) `iam_role_binding.workspace` column used
-/// for a [`ScopeRef::Global`] binding. Only the one-time legacy import still
-/// reads it; the SqlStore persists real `ScopeRef`s.
-const LEGACY_GLOBAL_BINDING_WORKSPACE: &str = "*";
 
 /// Largest management request body the guard will buffer to fence its
 /// `workspace_id`. Matches axum's own default body limit, so the guard never
@@ -545,7 +537,6 @@ pub fn embedded_iam_for_tenant(
 ) -> Arc<ManagementAuthz> {
     std::fs::create_dir_all(dir).expect("create typed data_dir for embedded IAM");
     let db_path = dir.join("iam.sqlite");
-    import_legacy_layout(&db_path);
     let backend = SqliteBackend::open_path(&db_path).expect("open iam.sqlite under typed data_dir");
     let store = sqlite_migrated_store(backend, "iam").expect("migrate iam.sqlite");
 
@@ -735,98 +726,6 @@ pub fn embedded_iam_for_tenant(
         bootstrap_admin_token(&authz, dir, workspace_id);
     }
     authz
-}
-
-/// One-time import of the pre-SqlStore layout: the hand-rolled singular
-/// `iam_api_token` / `iam_role_binding` tables (token serde in `data`, binding
-/// workspace with the `*` Global sentinel). Rows are copied into staging so the
-/// SqlStore boot path below re-persists them through its own ports, then the
-/// legacy tables are renamed (`*_imported`) so the import never runs twice.
-/// iam-server's own tables are plural (`iam_api_tokens`), so the two layouts
-/// never collide in one file.
-fn import_legacy_layout(db_path: &Path) {
-    if !db_path.exists() {
-        return;
-    }
-    let conn = rusqlite::Connection::open(db_path).expect("open iam.sqlite for legacy check");
-    let has_legacy = conn
-        .prepare("SELECT data FROM iam_api_token LIMIT 0")
-        .is_ok();
-    if !has_legacy {
-        return;
-    }
-    // Read the legacy rows now; write them through the SqlStore after it has
-    // migrated (same file, second connection is fine for SQLite).
-    let tokens: Vec<ApiToken> = {
-        let mut stmt = conn
-            .prepare("SELECT data FROM iam_api_token ORDER BY id")
-            .expect("prepare legacy token scan");
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("query legacy token rows");
-        rows.map(|data| {
-            serde_json::from_str(&data.expect("read legacy token row"))
-                .expect("decode legacy ApiToken row")
-        })
-        .collect()
-    };
-    let bindings: Vec<RoleBinding> = {
-        let mut stmt = conn
-            .prepare("SELECT principal, role, workspace FROM iam_role_binding")
-            .expect("prepare legacy binding scan");
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .expect("query legacy binding rows");
-        rows.map(|row| {
-            let (principal, role, workspace) = row.expect("read legacy binding row");
-            let scope = if workspace == LEGACY_GLOBAL_BINDING_WORKSPACE {
-                ScopeRef::Global
-            } else {
-                ScopeRef::Workspace {
-                    workspace_id: WorkspaceId(workspace),
-                }
-            };
-            RoleBinding {
-                principal: serde_json::from_str(&principal).expect("decode legacy principal ref"),
-                role: RoleId(role),
-                scope,
-            }
-        })
-        .collect()
-    };
-    conn.execute_batch(
-        "ALTER TABLE iam_api_token RENAME TO iam_api_token_imported;\n\
-         ALTER TABLE iam_role_binding RENAME TO iam_role_binding_imported;",
-    )
-    .expect("retire legacy iam tables");
-    drop(conn);
-
-    // Re-open through the store and write the rows through its ports.
-    let backend = SqliteBackend::open_path(db_path).expect("reopen iam.sqlite for legacy import");
-    let store =
-        sqlite_migrated_store(backend, "iam").expect("migrate iam.sqlite for legacy import");
-    let mut imported = 0usize;
-    for token in tokens {
-        if ApiTokenRepo::get(&store, &token.id)
-            .expect("probe imported token")
-            .is_none()
-        {
-            ApiTokenRepo::create(&store, token).expect("import legacy token row");
-            imported += 1;
-        }
-    }
-    for binding in bindings {
-        RoleBindingRepo::add(&store, binding).expect("import legacy binding row");
-    }
-    eprintln!(
-        "awaken-server: embedded IAM imported {imported} legacy token row(s) into the iam-server store"
-    );
 }
 
 // ---- Middleware --------------------------------------------------------------

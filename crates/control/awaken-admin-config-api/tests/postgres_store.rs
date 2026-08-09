@@ -12,11 +12,6 @@ use awaken_config_resolver::{
     ProfileCandidate, ResourceAccess,
 };
 use awaken_credential_vault::CredentialBinding;
-use awaken_resource_contract::{
-    ClonePolicy, ConfigVersion, ExtractionPolicy, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    RecallPolicy, RepositoryConfigVersion, RepositoryDefinition, ResourceBindingValidator,
-    ResourceCatalog, ResourceCatalogError, ResourceConfigSource, ResourceState, RetentionPolicy,
-};
 use sqlx::Executor;
 use sqlx::postgres::PgPool;
 
@@ -63,52 +58,6 @@ fn profile(model: &str) -> InferenceProfile {
         fallbacks: Vec::new(),
         disabled_endpoint_ids: vec![],
     }
-}
-
-fn memory() -> (MemoryStoreDefinition, MemoryStoreConfigVersion) {
-    (
-        MemoryStoreDefinition {
-            id: "memory-1".into(),
-            workspace_id: "ws".into(),
-            name: "Memory".into(),
-            description: String::new(),
-            metadata: Default::default(),
-            state: ResourceState::Active,
-            current_config_version: ConfigVersion::INITIAL,
-            timestamps: Default::default(),
-        },
-        MemoryStoreConfigVersion {
-            memory_store_id: "memory-1".into(),
-            version: ConfigVersion::INITIAL,
-            recall_policy: RecallPolicy::default(),
-            extraction_policy: ExtractionPolicy::default(),
-            retention_policy: RetentionPolicy::default(),
-        },
-    )
-}
-
-fn repository() -> (RepositoryDefinition, RepositoryConfigVersion) {
-    (
-        RepositoryDefinition {
-            id: "repo-1".into(),
-            workspace_id: "ws".into(),
-            name: "Repository".into(),
-            description: String::new(),
-            metadata: Default::default(),
-            state: ResourceState::Active,
-            current_config_version: ConfigVersion::INITIAL,
-            timestamps: Default::default(),
-        },
-        RepositoryConfigVersion {
-            repository_id: "repo-1".into(),
-            version: ConfigVersion::INITIAL,
-            remote_url: "https://example.test/repo.git".into(),
-            credential_binding: Some("credential-1".into()),
-            initial_branch: None,
-            initial_commit: None,
-            clone_policy: ClonePolicy::default(),
-        },
-    )
 }
 
 #[tokio::test]
@@ -175,61 +124,6 @@ async fn postgres_admin_store_serves_every_port() {
             .unwrap()
             .is_none()
     );
-
-    // ResourceCatalog: resource/config separation, monotonic CAS and Workspace
-    // hiding. This port contains no authorization subject or policy input.
-    let (definition, initial) = memory();
-    store.create_memory_store(definition, initial).unwrap();
-    let mut second = store
-        .memory_config("ws", "memory-1", ConfigVersion(1))
-        .unwrap()
-        .unwrap();
-    second.version = ConfigVersion(2);
-    second.recall_policy.max_results = 20;
-    assert!(matches!(
-        store.publish_memory_config("other", ConfigVersion(1), second.clone()),
-        Err(ResourceCatalogError::NotFound(_))
-    ));
-    store
-        .publish_memory_config("ws", ConfigVersion(1), second)
-        .unwrap();
-    assert_eq!(
-        store
-            .resolve_memory_store("ws", "memory-1")
-            .unwrap()
-            .version,
-        ConfigVersion(2)
-    );
-    store
-        .validate_memory_binding("ws", "memory-1", ConfigVersion(1))
-        .unwrap();
-    store
-        .validate_memory_binding("ws", "memory-1", ConfigVersion(2))
-        .unwrap();
-    assert!(matches!(
-        store.validate_memory_binding("ws", "memory-1", ConfigVersion(3)),
-        Err(ResourceCatalogError::ConfigNotFound { .. })
-    ));
-    assert!(store.memory_store("other", "memory-1").unwrap().is_none());
-    let mut updated = store.memory_store("ws", "memory-1").unwrap().unwrap();
-    updated.name = "Renamed".into();
-    store.update_memory_store(updated).unwrap();
-    assert_eq!(store.list_memory_stores("ws").unwrap()[0].name, "Renamed");
-    assert!(store.list_memory_stores("other").unwrap().is_empty());
-
-    let (definition, initial) = repository();
-    store.create_repository(definition, initial).unwrap();
-    store
-        .set_repository_state("ws", "repo-1", ResourceState::Suspended)
-        .unwrap();
-    assert!(matches!(
-        store.resolve_repository("ws", "repo-1"),
-        Err(ResourceCatalogError::NotActive { .. })
-    ));
-    assert!(matches!(
-        store.validate_repository_binding("ws", "repo-1", ConfigVersion::INITIAL),
-        Err(ResourceCatalogError::NotActive { .. })
-    ));
 }
 
 /// Rows survive a fresh store handle on the same schema (durable + idempotent
@@ -245,8 +139,6 @@ async fn postgres_admin_rows_survive_a_reconnect() {
             .await
             .unwrap();
         InferenceProfileStore::put(&store, "p1".into(), profile("m1")).unwrap();
-        let (definition, initial) = memory();
-        store.create_memory_store(definition, initial).unwrap();
     }
     let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&url).unwrap())
         .await
@@ -259,78 +151,5 @@ async fn postgres_admin_rows_survive_a_reconnect() {
             .target
             .model_id,
         "m1"
-    );
-    assert_eq!(
-        store
-            .resolve_memory_store("ws", "memory-1")
-            .unwrap()
-            .version,
-        ConfigVersion::INITIAL
-    );
-}
-
-#[tokio::test]
-async fn postgres_owned_legacy_memory_rows_migrate_but_unowned_rows_are_quarantined() {
-    let Some(url) = schema_url("t_admin_legacy_memory").await else {
-        return;
-    };
-    {
-        let u = url.clone();
-        tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&u).unwrap())
-            .await
-            .unwrap();
-    }
-    let pool = PgPool::connect(&url).await.unwrap();
-    for (id, data) in [
-        (
-            "legacy-owned",
-            serde_json::json!({
-                "id": "legacy-owned",
-                "workspace_id": "ws",
-                "name": "Legacy",
-                "description": "old row",
-                "metadata": {"source": "v6"},
-                "archived": false
-            }),
-        ),
-        (
-            "legacy-unowned",
-            serde_json::json!({
-                "id": "legacy-unowned",
-                "name": "Quarantined",
-                "archived": false
-            }),
-        ),
-    ] {
-        sqlx::query("INSERT INTO admin_memory_store (id, data) VALUES ($1, $2)")
-            .bind(id)
-            .bind(sqlx::types::Json(data))
-            .execute(&pool)
-            .await
-            .unwrap();
-    }
-    pool.close().await;
-
-    let store = tokio::task::spawn_blocking(move || PostgresAdminStore::connect(&url).unwrap())
-        .await
-        .unwrap();
-    // Cause/effect decision table: C1=legacy row has Workspace ownership;
-    // C2=the explicit production importer runs. R1 C1+C2 -> catalog row;
-    // R2 !C1+C2 -> quarantine by omission. Repository connect only prepares
-    // schema and deliberately does not import application data.
-    store.migrate_legacy_memory_stores().unwrap();
-    assert_eq!(
-        store
-            .memory_store("ws", "legacy-owned")
-            .unwrap()
-            .unwrap()
-            .name,
-        "Legacy"
-    );
-    assert!(
-        store
-            .memory_store("ws", "legacy-unowned")
-            .unwrap()
-            .is_none()
     );
 }

@@ -104,6 +104,15 @@ configuration, Worker environment inspection, and socket inspection enforce
 the same ownership boundaries required when owners use separate database
 servers.
 
+In that fixture, Control receives only `control` and `credentials` plus the
+transitional Environment binding in `runtime`; Coordinator receives `runtime`
+and the co-located Resources component's `resources`; Workers receive no
+database URL or seal key. The two role-specific migration Jobs use the same
+configuration and therefore migrate only schemas their target role can acquire.
+Coordinator calls Control's audit, secret-free credential-selection, and
+webhook-delivery ports through the dedicated bearer-authenticated boundary;
+this token grants no database connection.
+
 `worker_failover_e2e.sh` is retained as a lower-level durable-ingress diagnostic,
 not a second P2-B acceptance path: it assigns one run per thread through the
 scenario host and isolates lease reclaim/commit fencing. The distributed-control

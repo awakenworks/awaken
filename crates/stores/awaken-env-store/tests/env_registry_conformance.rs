@@ -11,7 +11,8 @@
 
 use awaken_env_store::{InMemoryEnvRegistry, SqliteEnvRegistry};
 use awaken_session_contract::env_registry::{
-    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentNetworking,
+    CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvRegistry,
+    EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentNetworking,
     EnvironmentNetworkingMutation, EnvironmentPackages, EnvironmentPackagesMutation,
     EnvironmentRevision,
 };
@@ -223,6 +224,34 @@ async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
     assert_eq!(packages.pip, vec!["httpx"], "P2");
 }
 
+async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
+    // Cause/effect graph: a new command creates one row; the same id and exact
+    // payload replays that row; the same id with another payload conflicts and
+    // creates no row. This runs unchanged against memory and SQLite.
+    let command = CreateEnvironmentCommand {
+        command_id: "command-1".into(),
+        name: "stable".into(),
+        description: String::new(),
+        metadata: Default::default(),
+        scope: None,
+        config: EnvironmentConfig::SelfHosted,
+    };
+    let CreateEnvironmentOutcome::Created(created) = r.create_once(command.clone()).await.unwrap()
+    else {
+        panic!("R1 must create")
+    };
+    let replayed = r.create_once(command.clone()).await.unwrap();
+    assert_eq!(replayed.item().id, created.id, "R2 exact replay");
+    let mut conflicting = command;
+    conflicting.name = "different".into();
+    assert_eq!(
+        r.create_once(conflicting).await.unwrap_err(),
+        CreateEnvironmentError::IdempotencyConflict,
+        "R3 conflicting reuse"
+    );
+    assert_eq!(r.list_active().await.len(), 1, "R1-R3 one effect");
+}
+
 async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     unique_ids(&fresh()).await;
     archive_soft_delete_hard(&fresh()).await;
@@ -231,6 +260,7 @@ async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     revision_decision_table(&fresh()).await;
     scope_round_trips_and_updates(&fresh()).await;
     nested_config_patch_is_atomic_and_durable(&fresh()).await;
+    idempotent_create_decision_table(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────

@@ -1,5 +1,5 @@
 //! SQLite adapter for the data-subject domain, over the crate's own
-//! `data_subject` migration scope ([`data_subject_bundle`]). The subject
+//! `control_data_subject` migration scope ([`control_data_subject_bundle`]). The subject
 //! aggregate serializes into the `data {json}` column; `id`/`org` are keyed
 //! columns for lookups.
 
@@ -7,11 +7,13 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::schema::data_subject_bundle;
-use crate::{DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureProgress};
+use crate::schema::{CONTROL_PREFIX, control_data_subject_bundle};
+use crate::{
+    DataSubject, DataSubjectError, DataSubjectId, DataSubjectRepo, ErasureJobRepo, ErasureProgress,
+};
 
 /// The component's table namespace (its bundle prefix).
-const NS: &str = "data_subject";
+const NS: &str = CONTROL_PREFIX;
 
 /// Errors from opening or migrating the store.
 #[derive(Debug, thiserror::Error)]
@@ -82,7 +84,8 @@ impl SqliteDataSubjectRepo {
             .conn
             .lock()
             .map_err(|_| StoreError::Migrate("data_subject connection poisoned".to_string()))?;
-        let bundle = data_subject_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+        let bundle =
+            control_data_subject_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|err| StoreError::Migrate(err.to_string()))?
             .run_bundle(&conn, &bundle)
@@ -157,11 +160,11 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         })
         .await
     }
+}
 
-    async fn load_erasure_progress(
-        &self,
-        id: &DataSubjectId,
-    ) -> Result<Option<ErasureProgress>, DataSubjectError> {
+#[async_trait::async_trait]
+impl ErasureJobRepo for SqliteDataSubjectRepo {
+    async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError> {
         let id = id.0.clone();
         with_conn(&self.conn, move |conn, p| {
             let data: Option<String> = conn
@@ -178,7 +181,7 @@ impl DataSubjectRepo for SqliteDataSubjectRepo {
         .await
     }
 
-    async fn save_erasure_progress(
+    async fn save(
         &self,
         id: &DataSubjectId,
         progress: &ErasureProgress,

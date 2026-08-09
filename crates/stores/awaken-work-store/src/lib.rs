@@ -127,6 +127,39 @@ impl WorkQueue for SqliteWorkQueue {
         self.insert(env_id, "healthcheck", None)
     }
 
+    async fn ensure_healthcheck(&self, env_id: &str) -> String {
+        let mut guard = self.conn.lock().expect("work queue mutex poisoned");
+        let tx = guard
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .expect("begin immediate");
+        if let Some(id) = tx
+            .query_row(
+                "SELECT work_id FROM work_queue_item WHERE environment_id = ?1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
+                params![env_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("read existing healthcheck")
+        {
+            return id;
+        }
+        let next: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item",
+                [],
+                |row| row.get(0),
+            )
+            .expect("next seq");
+        let work_id = format!("work_{next:016}");
+        tx.execute(
+            "INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES (?1, ?2, ?3, 'healthcheck', ?1, '{}', 'queued')",
+            params![work_id, next, env_id],
+        )
+        .expect("insert healthcheck");
+        tx.commit().expect("commit healthcheck");
+        work_id
+    }
+
     async fn list(&self, env_id: &str) -> Vec<WorkItem> {
         let conn = self.conn.lock().expect("work queue mutex poisoned");
         let mut stmt = conn
@@ -493,6 +526,35 @@ impl WorkQueue for PostgresWorkQueue {
 
     async fn enqueue_healthcheck(&self, env_id: &str) -> String {
         self.insert(env_id, "healthcheck", None).await
+    }
+
+    async fn ensure_healthcheck(&self, env_id: &str) -> String {
+        let mut tx = self.pool.begin().await.expect("begin");
+        sqlx::query("LOCK TABLE work_queue_item IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .expect("lock healthcheck convergence");
+        if let Some(id) = sqlx::query_scalar::<_, String>(
+            "SELECT work_id FROM work_queue_item WHERE environment_id = $1 AND data_type = 'healthcheck' ORDER BY seq ASC LIMIT 1",
+        )
+        .bind(env_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .expect("read existing healthcheck")
+        {
+            return id;
+        }
+        let next: i64 =
+            sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM work_queue_item")
+                .fetch_one(&mut *tx)
+                .await
+                .expect("next seq");
+        let work_id = format!("work_{next:016}");
+        sqlx::query("INSERT INTO work_queue_item (work_id, seq, environment_id, data_type, data_id, metadata_json, state) VALUES ($1, $2, $3, 'healthcheck', $1, '{}', 'queued')")
+            .bind(&work_id).bind(next).bind(env_id)
+            .execute(&mut *tx).await.expect("insert healthcheck");
+        tx.commit().await.expect("commit healthcheck");
+        work_id
     }
 
     async fn list(&self, env_id: &str) -> Vec<WorkItem> {

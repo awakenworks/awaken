@@ -43,8 +43,9 @@ impl CaptureSink for SpyCaptureSink {
         _purpose: Purpose,
         kind: ContentKind,
         content: &str,
-    ) {
+    ) -> Result<(), awaken_runtime_contract::CaptureError> {
         self.items.lock().unwrap().push((kind, content.to_string()));
+        Ok(())
     }
 }
 

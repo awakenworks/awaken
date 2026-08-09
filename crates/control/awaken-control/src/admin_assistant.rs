@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_admin_assistant::{
-    ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, EnvironmentAuthor,
-    InputSpec, PlatformCapabilities, PluginInfo, ResourceInventory, admin_assistant_config,
+    ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, InputSpec,
+    PlatformCapabilities, PluginInfo, ResourceInventory, admin_assistant_config,
 };
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, BindingId, FileId, InputBinding,
@@ -151,33 +151,6 @@ impl CapabilityReader for CatalogCapabilityReader {
             mcp_servers,
             memory_stores,
         }
-    }
-}
-
-/// The [`EnvironmentAuthor`] port backed by the managed-plane [`EnvironmentState`], so
-/// the assistant's `admin_draft_environment` persists through the SAME registry the
-/// console's New-environment modal drives (`POST /v1/environments`).
-pub struct EnvironmentStateAuthor {
-    env_state: Arc<awaken_protocol_managed::EnvironmentState>,
-}
-
-impl EnvironmentStateAuthor {
-    #[must_use]
-    pub fn new(env_state: Arc<awaken_protocol_managed::EnvironmentState>) -> Self {
-        Self { env_state }
-    }
-}
-
-#[async_trait]
-impl EnvironmentAuthor for EnvironmentStateAuthor {
-    async fn create(
-        &self,
-        name: &str,
-        config: awaken_admin_assistant::EnvironmentDraft,
-    ) -> Result<String, String> {
-        let wire = serde_json::to_value(config)
-            .map_err(|error| format!("Environment draft serialization failed: {error}"))?;
-        self.env_state.author(name, wire).await
     }
 }
 
@@ -796,7 +769,6 @@ mod tests {
     /// two data-plane sources the `CatalogCapabilityReader` folds in when wired.
     #[tokio::test]
     async fn host_inventory_reports_put_memory_stores_and_skills() {
-        use awaken_admin_config_api::SqliteAdminStore;
         use awaken_protocol_managed::resource_plane::{
             ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
             ResourceState,
@@ -806,8 +778,10 @@ mod tests {
             bundle_sha256,
         };
 
-        let registry =
-            Arc::new(SqliteAdminStore::open_in_memory().expect("open ephemeral Resource Catalog"));
+        let registry = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .expect("open ephemeral Resource Catalog"),
+        );
         for (id, state) in [
             ("mem-1", ResourceState::Active),
             ("mem-gone", ResourceState::Archived),

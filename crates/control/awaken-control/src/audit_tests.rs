@@ -39,7 +39,7 @@ impl ModelPublicationResolver for TestModelResolver {
     }
 }
 
-fn audit_plane() -> ConfigPlane {
+fn audit_plane() -> ManagementAuditPlane {
     ConfigPlane::new(
         Arc::new(ConfigService::new(
             Arc::new(TestModelResolver),
@@ -50,6 +50,7 @@ fn audit_plane() -> ConfigPlane {
         Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
         Arc::new(StaticToolCatalog(vec![])),
     )
+    .management_audit_plane()
 }
 
 fn mutation(call_id: &str, body: impl Into<Body>) -> Request<Body> {
@@ -83,7 +84,7 @@ async fn authenticated_workspace_selects_the_durable_audit_partition() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let entry = plane
-        .get_management_audit(
+        .get(
             &ScopeId::from("ws_authenticated"),
             "http:POST:/v1/mutate",
             "scope-1",
@@ -94,7 +95,7 @@ async fn authenticated_workspace_selects_the_durable_audit_partition() {
     assert!(entry.business_committed);
     assert!(
         plane
-            .get_management_audit(
+            .get(
                 &ScopeId::from(DEFAULT_SCOPE),
                 "http:POST:/v1/mutate",
                 "scope-1",
@@ -124,7 +125,7 @@ async fn rejected_outer_authentication_cannot_create_an_audit_intent() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert!(
         plane
-            .get_management_audit(
+            .get(
                 &ScopeId::from(DEFAULT_SCOPE),
                 "http:POST:/v1/mutate",
                 "rejected-1",
@@ -210,7 +211,7 @@ async fn oversized_audit_body_is_rejected_before_business_or_audit() {
     assert_eq!(business_calls.load(Ordering::SeqCst), 0);
     assert!(
         plane
-            .get_management_audit(
+            .get(
                 &ScopeId::from(DEFAULT_SCOPE),
                 "http:POST:/v1/mutate",
                 "large-1",

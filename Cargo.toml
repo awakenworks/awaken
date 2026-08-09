@@ -79,6 +79,7 @@ awaken-run-executor-a2a = { path = "crates/server/awaken-run-executor-a2a" }
 awaken-model-catalog = { path = "crates/control/awaken-model-catalog" }
 awaken-credential-vault = { path = "crates/control/awaken-credential-vault" }
 awaken-data-subject = { path = "crates/control/awaken-data-subject" }
+awaken-captured-content-store = { path = "crates/stores/awaken-captured-content-store" }
 awaken-config-resolver = { path = "crates/control/awaken-config-resolver" }
 awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }
 # Authoring / authz plane (Stage B2): the management CRUD surfaces + embedded IAM

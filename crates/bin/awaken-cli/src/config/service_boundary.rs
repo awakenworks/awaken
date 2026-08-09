@@ -46,6 +46,27 @@ pub(super) fn enforce_control_execution_database_isolation(
     }
 }
 
+pub(super) fn enforce_coordinator_control_database_isolation(
+    role: Role,
+    configured_databases: &[(&str, bool)],
+) -> Result<(), String> {
+    if role != Role::Coordinator {
+        return Ok(());
+    }
+    let forbidden = configured_databases
+        .iter()
+        .filter_map(|(name, configured)| configured.then_some(*name))
+        .collect::<Vec<_>>();
+    if forbidden.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Coordinator must not receive Control database or seal-key configuration: {}",
+            forbidden.join(", ")
+        ))
+    }
+}
+
 /// Role-aware inputs for the executable Agent registration adapters. The token
 /// is projected as a file and loaded only by the process that owns the adapter;
 /// it is never retained in the redacted deployment report.
@@ -53,6 +74,72 @@ pub(super) fn enforce_control_execution_database_isolation(
 pub struct ExecutableAgentRegistrationConfig {
     coordinator_url: Option<String>,
     token_file: Option<PathBuf>,
+}
+
+/// Role-owned credentials for Coordinator calls back into the Control
+/// application ports. AllInOne uses local adapters and therefore owns neither
+/// URL nor token.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ControlServiceConfig {
+    control_url: Option<String>,
+    token_file: Option<PathBuf>,
+}
+
+impl ControlServiceConfig {
+    pub(crate) fn resolve(
+        role: Role,
+        control_url: Option<String>,
+        token_file: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        let control_url = control_url
+            .map(|value| value.trim_end_matches('/').to_owned())
+            .filter(|value| !value.trim().is_empty());
+        if control_url
+            .as_ref()
+            .is_some_and(|value| !value.starts_with("http://") && !value.starts_with("https://"))
+        {
+            return Err("control_internal_url must use http:// or https://".into());
+        }
+        if token_file
+            .as_deref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err("control_service_token_file must not be empty".into());
+        }
+        match role {
+            Role::Control if control_url.is_some() || token_file.is_none() => Err(
+                "Control requires control_service_token_file and must not configure control_internal_url"
+                    .into(),
+            ),
+            Role::Coordinator if control_url.is_none() || token_file.is_none() => Err(
+                "Coordinator requires control_internal_url and control_service_token_file".into(),
+            ),
+            Role::AllInOne | Role::Worker if control_url.is_some() || token_file.is_some() => Err(
+                "control_internal_url and control_service_token_file belong only to split Control/Coordinator"
+                    .into(),
+            ),
+            _ => Ok(Self {
+                control_url,
+                token_file,
+            }),
+        }
+    }
+
+    pub fn control_token(&self) -> Result<String, String> {
+        load_token(
+            self.token_file.as_deref(),
+            "control_service_token_file",
+            "Control service",
+        )
+    }
+
+    pub fn coordinator_credentials(&self) -> Result<(&str, String), String> {
+        let url = self
+            .control_url
+            .as_deref()
+            .ok_or_else(|| "Coordinator requires control_internal_url".to_owned())?;
+        Ok((url, self.control_token()?))
+    }
 }
 
 impl ExecutableAgentRegistrationConfig {

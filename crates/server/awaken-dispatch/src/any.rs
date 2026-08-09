@@ -81,6 +81,18 @@ impl AnyDispatchStore {
             .map_err(|e| e.to_string())
     }
 
+    /// Connect to a Postgres queue whose migration ledger was applied by the
+    /// deployment migration phase. No DDL is executed.
+    pub async fn connect_postgres_existing(
+        url: &str,
+        max_connections: u32,
+    ) -> Result<Self, String> {
+        PostgresDispatchStore::connect_existing(url, max_connections)
+            .await
+            .map(Self::from_store)
+            .map_err(|e| e.to_string())
+    }
+
     /// Connect the Postgres backend and, sharing its pool, a [`PgNotifyWake`] over
     /// `channel`: the served pool's wake fires `pg_notify` on the same database it
     /// enqueues into, so a peer node's `LISTEN` is nudged with no extra
@@ -93,6 +105,21 @@ impl AnyDispatchStore {
         max_connections: u32,
     ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
         let store = PostgresDispatchStore::connect(url, max_connections)
+            .await
+            .map_err(|e| e.to_string())?;
+        let wake: Arc<dyn crate::wake::WakeSignal> =
+            Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
+        Ok((Self::from_store(store), wake))
+    }
+
+    /// Verify and connect an already-migrated Postgres queue with a shared
+    /// `LISTEN`/`NOTIFY` wake adapter.
+    pub async fn connect_postgres_existing_with_wake(
+        url: &str,
+        channel: &str,
+        max_connections: u32,
+    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
+        let store = PostgresDispatchStore::connect_existing(url, max_connections)
             .await
             .map_err(|e| e.to_string())?;
         let wake: Arc<dyn crate::wake::WakeSignal> =
@@ -115,6 +142,26 @@ impl AnyDispatchStore {
         max_connections: u32,
     ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
         let store = PostgresDispatchStore::connect(db_url, max_connections)
+            .await
+            .map_err(|e| e.to_string())?;
+        let wake: Arc<dyn crate::wake::WakeSignal> = Arc::new(
+            crate::wake::NatsWakeSignal::connect(nats_url, subject.to_string())
+                .await
+                .map_err(|e| e.to_string())?,
+        );
+        Ok((Self::from_store(store), wake))
+    }
+
+    /// Verify and connect an already-migrated Postgres queue with a NATS wake
+    /// adapter. The NATS hint remains non-authoritative.
+    #[cfg(feature = "nats")]
+    pub async fn connect_postgres_existing_with_nats_wake(
+        db_url: &str,
+        nats_url: &str,
+        subject: &str,
+        max_connections: u32,
+    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
+        let store = PostgresDispatchStore::connect_existing(db_url, max_connections)
             .await
             .map_err(|e| e.to_string())?;
         let wake: Arc<dyn crate::wake::WakeSignal> = Arc::new(
