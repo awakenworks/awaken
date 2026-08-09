@@ -38,6 +38,7 @@ awaken-config-service.workspace = true
 awaken-credential-materializer.workspace = true
 awaken-env-store.workspace = true
 awaken-environment-application.workspace = true
+awaken-environment-execution-application.workspace = true
 awaken-environment-image-build.workspace = true
 awaken-environment-package-image-builder.workspace = true
 awaken-ext-builtin-tools.workspace = true
@@ -87,7 +88,8 @@ awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] 
 awaken-agent-config.workspace = true
 awaken-config-store = { workspace = true }
 awaken-config-resolver = { workspace = true }
-awaken-data-subject = { workspace = true, features = ["postgres"] }
+awaken-data-subject-application.workspace = true
+awaken-data-subject-store = { workspace = true, features = ["postgres"] }
 awaken-captured-content-store = { workspace = true, features = ["postgres"] }
 # The durable skill catalog: one store shared by the host (delivered skills) and the
 # capability inventory (skill enumeration for the admin assistant).
@@ -123,7 +125,7 @@ test-support = [
     "awaken-config-resolver/test-support",
     "awaken-config-store/test-support",
     "awaken-credential-vault/test-support",
-    "awaken-data-subject/test-support",
+    "awaken-data-subject-store/test-support",
     "awaken-env-store/test-support",
     "awaken-model-catalog/test-support",
     "awaken-sandbox-policy-store/test-support",
@@ -146,7 +148,7 @@ awaken-captured-content-store = { workspace = true, features = ["test-support"] 
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
-awaken-data-subject = { workspace = true, features = ["test-support"] }
+awaken-data-subject-store = { workspace = true, features = ["test-support"] }
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
 awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }

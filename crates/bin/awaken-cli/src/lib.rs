@@ -478,12 +478,12 @@ async fn open_process_stores(
 
     let data_subject = if opens_control {
         ensure_parent(&cfg.data_subject)?;
-        let repo: Arc<dyn awaken_data_subject::DataSubjectRepo>;
-        let jobs: Arc<dyn awaken_data_subject::ErasureJobRepo>;
+        let repo: Arc<dyn awaken_data_subject_application::DataSubjectRepo>;
+        let jobs: Arc<dyn awaken_data_subject_application::ErasureJobRepo>;
         match &cfg.data_subject {
             StoreBackend::Sqlite(p) => {
                 let store = Arc::new(
-                    awaken_data_subject::SqliteDataSubjectRepo::open(&path(p)).map_err(
+                    awaken_data_subject_store::SqliteDataSubjectRepo::open(&path(p)).map_err(
                         |error| format!("open data-subject SQLite {}: {error}", p.display()),
                     )?,
                 );
@@ -494,10 +494,11 @@ async fn open_process_stores(
                 let store = Arc::new(
                     match postgres_schema {
                         PostgresSchemaMode::Migrate => {
-                            awaken_data_subject::PgDataSubjectRepo::connect(url).await
+                            awaken_data_subject_store::PgDataSubjectRepo::connect(url).await
                         }
                         PostgresSchemaMode::Verify => {
-                            awaken_data_subject::PgDataSubjectRepo::connect_existing(url).await
+                            awaken_data_subject_store::PgDataSubjectRepo::connect_existing(url)
+                                .await
                         }
                     }
                     .map_err(|error| format!("connect data-subject Postgres: {error}"))?,

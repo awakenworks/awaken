@@ -81,14 +81,14 @@ backoff. Its wake signal contains no work data and cannot become another outbox.
 
 ### D3: Coordinator owns Deployment and reuses the existing Session authority
 
-`DeploymentState`, its public API, scheduler, repository, and lifecycle outbox are
+`DeploymentApplication`, its public API, scheduler, repository, and lifecycle outbox are
 owned by Coordinator beside Session. `DeploymentSessionLauncher` remains the one
 in-process application port and carries the existing stable `deployment_run_id`.
 Coordinator Session creation is idempotent by DeploymentRun identity, so recovery
 after an interrupted call cannot create a second Session.
 
 The earlier split placed the public Deployment API in Control while Coordinator
-constructed a second `DeploymentState` over the same repository to run schedules.
+constructed a second Deployment aggregate over the same repository to run schedules.
 That parallel aggregate and its private HTTP launch client/router/token are retired.
 The public gateway routes Deployment APIs to Coordinator; AllInOne merges the same
 local component.

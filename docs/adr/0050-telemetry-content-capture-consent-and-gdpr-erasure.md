@@ -135,18 +135,20 @@ facts constrain *how*, verified 2026-07-10:
   end-user's OAuth-style authorization grants, established via the enrollment URL,
   not GDPR telemetry consent. A consent record does not fit `{status}`; overloading
   it is a *type* violation, not just a semantic risk.
-- **Our impl is a stub.** `trust_grants` hardcoded empty (`routes/user_profiles.rs`
-  `project()`), no `trust_grants` in `UserProfileUpdateParams`, `enrollment_url` a
-  fixed-horizon receipt. And `user_profiles` is declared under the wrong beta header
-  (`managed-agents-2026-04-01`) inside `awaken-protocol-managed`. So the enrollment→
-  grant backend is **net-new**, and the crate placement/header need a fix.
+- **The former implementation was a stub.** It hardcoded `trust_grants`, omitted
+  update support, minted an unsigned fixed-horizon enrollment receipt, and used
+  the Managed Agents beta header. The implemented path now projects the sole
+  `DataSubject` aggregate, accepts trust-grant updates, uses a separately derived
+  HMAC key for expiring enrollment tokens, and enforces
+  `user-profiles-2026-03-24`.
 
 Therefore consent is an **Awaken-neutral grant on the subject**, kept **off** the
 Anthropic `trust_grants` projection (a distinct consent sub-resource — `{status}`
 leaves no room to piggyback). The `enrollment_url` *flow* is the right,
 Anthropic-compatible collection mechanism, but must be built end-to-end (no stub).
-Consent is then a grant keyed by purpose — no new store crate, but a real (currently
-missing) write+store path:
+Consent is then a grant keyed by purpose. The application and its store adapter
+are separate crates, but there remains one aggregate, one repository port, and
+one durable write path:
 
 - **Purposes are exactly two**: `telemetry_content`, `eval_recording`. Each is
   independently granted, independently retained, independently withdrawn (purpose
@@ -262,7 +264,7 @@ when their dimension is absent (this is the test of the design's simplicity):
 | Content/Structure split + `CaptureDecision` | ✅ (from env default) | ✅ |
 | Subject-keyed erasure + TTL (`DataSubjectErasure`) | ✅ | ✅ |
 | Org→Workspace ceiling chain | ✗ (no config plane) | ✅ |
-| Consent grants + enrollment (`awaken-data-subject`) | ✗ (no subject store) | ✅ |
+| Consent grants + enrollment (`awaken-data-subject-application`) | ✗ (not assembled) | ✅ |
 | `RegexPiiRedactor`/`DlpRedactor` | Noop default | ✅ |
 
 In `standalone`, `CaptureDecision.level` = env default (`AWAKEN_TRACE_FILE` ⇒
@@ -301,8 +303,9 @@ pub trait DataSubjectResolver: Send + Sync {
 - **The subject value is NOT a trait; the pluggability is the resolver.** What varies
   is *where subject facts come from*, not what a subject *is*. One opaque value + **two**
   shipped resolvers — `NullResolver` (standalone: no tracking; erase = delete tagged
-  records by id) and `RepoDataSubjectResolver` (managed: reads the `awaken-data-subject`
-  aggregate, which `UserProfile` also projects). An `ExternalResolver` (delegating
+  records by id) and `RepoDataSubjectResolver` (managed: reads the
+  `awaken-data-subject-application` aggregate, which `UserProfile` also projects).
+  An `ExternalResolver` (delegating
   consent to the developer's own system) is a **documented future**, not built now — no
   speculative impls (D11).
 - **`consent` is resolved once at run start** (config/host boundary, D5), not per
@@ -345,8 +348,11 @@ struct ConsentGrant { purpose: Purpose, status: ConsentStatus,
 // mapping: Granted for the purpose ⇒ Full allowed; else ⇒ capped at Structured
 ```
 
-**`DataSubject` aggregate + home.** Crate `control/awaken-data-subject` (peer of
-`awaken-credential-vault`; control/compliance plane, Org-scoped).
+**`DataSubject` aggregate + home.** Crate
+`control/awaken-data-subject-application` owns the Org-scoped aggregate,
+commands, queries, and repository port. Crate
+`stores/awaken-data-subject-store` owns only SQLite/PostgreSQL adapters; its
+in-memory adapter is test-support only.
 
 ```rust
 struct DataSubject { id: DataSubjectId /* dsub_ */, org: OrgId,
@@ -354,11 +360,20 @@ struct DataSubject { id: DataSubjectId /* dsub_ */, org: OrgId,
                      created_at: Timestamp, updated_at: Timestamp }
 // invariants: belongs to exactly one Org (controller); ≤1 active grant per purpose
 // (a new grant supersedes, history retained); consents are part of THIS aggregate.
-trait DataSubjectRepo { /* CRUD + by_org + upsert_consent */ }  // sqlite/pg/inmem
+trait DataSubjectRepo { /* create/get/list + revision-fenced CAS */ }  // app port
 ```
 
-The managed `UserProfile` routes (`awaken-protocol-user-profiles`) read/write this
-aggregate and project it to the Anthropic wire shape. One store, one aggregate.
+The Managed `UserProfile` routes in `awaken-protocol-managed` read/write this
+aggregate and project it to the Anthropic wire shape. The unified protocol crate
+owns only wire DTOs, beta enforcement, routing, and projection—not business
+state. One store, one aggregate.
+
+**Erasure checkpoint concurrency.** The process-manager row has its own strict
+revision and is updated only through compare-and-swap. A content eraser is
+idempotent by subject and replays its durable receipt. Therefore two Control
+replicas may repeat the physical call across an effect/checkpoint crash window,
+but only one checkpoint counts it; the loser reloads the winning target set and
+receipt before continuing. Blind checkpoint upsert is forbidden.
 
 **Enrollment flow (no stub).** standalone: routes not mounted, no consent. managed:
 (1) `POST /v1/user_profiles/:id/enrollment_url` mints a **signed, expiring** URL
@@ -427,11 +442,13 @@ Build slices (**core** = both builds; **managed** = server-local only):
    thread the opaque id through inference attribution. *(core)*
 4. `DataSubjectErasure` + per-record `data_subject_id`/`purpose`/`retention`;
    TTL sweep; downgrade `AWAKEN_TRACE_FILE` to `Structured`-only. *(core)*
-5. `control/awaken-data-subject` crate: `DataSubject` aggregate + `ConsentGrant` (G1) +
-   `DataSubjectRepo` (inmem/sqlite/pg) + `RepoDataSubjectResolver`. *(managed)*
-6. **Fix ①:** split `user_profiles` out of `awaken-protocol-managed` into
-   `awaken-protocol-user-profiles` with header `user-profiles-2026-03-24`; its routes
-   project the `awaken-data-subject` aggregate (replacing today's in-memory shell). *(managed)*
+5. `control/awaken-data-subject-application`: `DataSubject` aggregate,
+   `ConsentGrant`, User Profile application commands, `DataSubjectRepo` port, and
+   `RepoDataSubjectResolver`; `stores/awaken-data-subject-store` supplies durable
+   SQLite/PostgreSQL adapters and a test-only in-memory adapter. *(managed)*
+6. **Fix ①:** keep one `awaken-protocol-managed` public API adapter, enforce the
+   separate `user-profiles-2026-03-24` beta, and project the application aggregate;
+   delete the former protocol-owned in-memory profile state. *(managed)*
 7. `telemetry` ceiling block on Org/Workspace/Agent config + resolver `meet`. *(managed)*
 8. `content_capture` request field + decision projection on sessions. *(managed)*
 9. Enrollment flow (G3): signed-token URL → server-rendered consent page →

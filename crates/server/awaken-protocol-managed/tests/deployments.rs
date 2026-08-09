@@ -3,10 +3,10 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::{
-    DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher, DeploymentState,
-    deployments_router,
+use awaken_deployment_application::{
+    DeploymentApplication, DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher,
 };
+use awaken_protocol_managed::deployments_router;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -24,7 +24,7 @@ fn app() -> Router {
             }
         }
     }
-    let state = Arc::new(DeploymentState::new());
+    let state = Arc::new(DeploymentApplication::new());
     state.bind_launcher(Arc::new(Launcher));
     deployments_router(state)
 }
@@ -256,4 +256,43 @@ async fn missing_required_fields_and_unknown_ids() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, _) = call(&app, "GET", "/v1/deployment_runs/deprun_missing", None).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn deployment_repository_credentials_fail_closed_before_persistence() {
+    // Durable Resource cause/effect graph: C1=secret-free File/Memory/Repository
+    // input, C2=Repository input carries write-only authorization_token.
+    // Effects: E1=application command may persist and later replay exactly;
+    // E2=request is rejected before identity/state because serde intentionally
+    // redacts the token and accepting it would silently change behavior after a
+    // restart. Decision rules: R1 C1->E1 (covered by lifecycle tests),
+    // R2 C2 on create/update->E2 until a durable credential-reference provider
+    // exists; vault_ids remains the supported durable credential path.
+    let app = app();
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/v1/deployments",
+        Some(json!({
+            "agent":"agent_x",
+            "environment_id":"env_1",
+            "name":"secret-bearing",
+            "initial_events":[{"type":"user.message","content":[{"type":"text","text":"go"}]}],
+            "resources":[{
+                "type":"github_repository",
+                "url":"https://github.com/acme/repo.git",
+                "authorization_token":"must-not-disappear" // awaken-allow: secret
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "R2");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("cannot be stored durably")),
+        "R2 explicit remediation"
+    );
+    let (_, page) = call(&app, "GET", "/v1/deployments", None).await;
+    assert!(page["data"].as_array().unwrap().is_empty(), "R2 no state");
 }

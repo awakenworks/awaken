@@ -54,10 +54,11 @@ The named harnesses in the strict gate invoke production pure functions directly
   - sandbox admission preserves the isolation floor and every requested
     capability;
   - fail-closed sandbox policy never authorizes a downgrade.
-- `awaken-data-subject`
+- `awaken-data-subject-application`
   - any withdrawal vetoes full-content capture;
   - purpose upsert retains exactly one incoming-purpose row;
   - erasure withdrawal is absorbing and idempotent.
+  - revision advance is strict or explicitly exhausted; it never saturates.
 - `awaken-credential-vault`
   - disabled, cooling, and exhausted pool members remain ineligible;
   - a pool with no eligible member fails closed.
@@ -113,9 +114,10 @@ production logic.
   production `ThreadCommit`s: Run state/ticket, `ActiveToolBatch`, and
   `RunDelegations`. Its binary `NextState(s, t)` relation is also the checker for
   executable Rust traces.
-- `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, and
-  `ConfigCAS.tla` cover durable operation identity, atomic ownership,
-  generation-fenced permits, and optimistic config concurrency.
+- `RemoteTool.tla`, `SessionOwnership.tla`, `CircuitBreaker.tla`, `AggregateCAS.tla`,
+  and `DeploymentCAS.tla` cover durable operation identity, atomic ownership,
+  generation-fenced permits, optimistic concurrency, transactionally bounded
+  scheduled capacity, and revision-fenced scheduled-occurrence claims.
 - `RemoteAttempt.tla` covers the A2A root-attempt boundary: stable replay message
   identity across the external-send/local-commit crash window, durable task and
   endpoint pinning, reattachment without resend after the reference commit,
@@ -126,7 +128,8 @@ production logic.
   request classification, editable process-local input, and crash-safe streaming
   watermark/checkpoint behavior.
 - `WebhookOutbox.tla`, `ErasureSaga.tla`, and `CredentialCreation.tla` cover
-  atomic lifecycle/outbox commit, checkpointed erasure, and durable
+  atomic lifecycle/outbox commit, revision-CAS checkpointed erasure under two
+  competing replicas with idempotent target replay, and durable
   credential-intent recovery.
 - `MemoryCAS.tla`, `SkillVersionPin.tla`, `ToolResultProtocol.tla`,
   `WorkerDrain.tla`, and `WorkerCredentialLiveness.tla` cover memory
@@ -233,11 +236,11 @@ graphs with zero invariant violations and zero states left on the queue:
 | AuthzKernel | 180 | 18 | 1 |
 | SessionOwnership | 768 | 169 | 7 |
 | CircuitBreaker | 1,573 | 478 | 10 |
-| ConfigCAS | 1,669 | 417 | 11 |
+| AggregateCAS | 1,669 | 417 | 11 |
 | LiveInbox | 213 | 64 | 7 |
 | CheckpointRecovery | 462 | 141 | 8 |
 | WebhookOutbox | 10 | 6 | 4 |
-| ErasureSaga | 19 | 12 | 6 |
+| ErasureSaga | 2,469 | 588 | 11 |
 | CredentialCreation | 14 | 8 | 5 |
 | MemoryCAS | 3,511 | 563 | 11 |
 | ToolResultProtocol | 213 | 56 | 9 |

@@ -1,18 +1,16 @@
-//! The Managed **deployments** family (`/v1/deployments`) + **deployment runs**
-//! (`/v1/deployment_runs`), the official `@anthropic-ai/sdk` `beta.deployments.*`
-//! and `beta.deploymentRuns.*` surfaces. A deployment binds an agent to an
-//! environment with initial events + a schedule; `run` triggers a
-//! `deployment_run`; `pause`/`unpause` toggle the schedule; `archive` soft-deletes.
+//! Managed Deployment HTTP adapter.
 //!
-//! The aggregate is restored through the neutral Deployment repository; its
-//! process-local projection is only the synchronized working set. Exact scheduled
-//! occurrences are atomically claimed by the repository before Session launch.
+//! This module owns only wire admission, filtering/pagination, DTO projection,
+//! and HTTP error mapping. Aggregate transitions, persistence, scheduling, and
+//! Session launch outcomes belong to `awaken-deployment-application`.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_deployment_application::{
+    AgentSelector, CreateDeploymentCommand, DeploymentApplication, DeploymentApplicationError,
+    DeploymentRunView, DeploymentSchedule, DeploymentStatus, DeploymentTrigger, DeploymentView,
+    UpdateDeploymentCommand,
+};
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -20,161 +18,22 @@ use axum::{Json, Router};
 use chrono::{DateTime, FixedOffset};
 use chrono_tz::Tz;
 use serde::Deserialize;
-use serde::Serialize;
 
-use awaken_deployment_contract::{
-    DeploymentRecord as StoredDeployment, DeploymentRepository, DeploymentRepositoryError,
-    DeploymentRunRecord as StoredDeploymentRun,
-};
-use awaken_executable_agent_contract::{
-    ExecutableAgentRegistrationError, ExecutableAgentRegistrationSource,
-};
-use awaken_session_contract::ManagedLifecycleFact;
-
-use crate::ManagedRateLimiter;
 use crate::routes::{ManagedJson, WorkspaceScope};
-use crate::types::agent::AgentReference;
 use crate::types::deployment::{
     Deployment, DeploymentCreateParams, DeploymentInitialEvent, DeploymentRun,
-    DeploymentUpdateParams, PausedReason, RunError, Schedule, TriggerContext,
+    DeploymentUpdateParams, RunError, Schedule, TriggerContext,
 };
 use crate::types::resource::ResourceInput;
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
-#[cfg(test)]
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
-fn parsed_schedule(schedule: &Schedule) -> Option<(awaken_deployment_contract::Cron, Tz)> {
-    Some((
-        awaken_deployment_contract::Cron::parse(schedule.expression()).ok()?,
-        schedule.timezone().parse().ok()?,
-    ))
-}
-
-fn upcoming_occurrences(schedule: &Schedule, after_ms: u64) -> Vec<String> {
-    let Some((cron, timezone)) = parsed_schedule(schedule) else {
-        return Vec::new();
-    };
-    let mut cursor = after_ms;
-    (0..5)
-        .filter_map(|_| {
-            cursor = cron.next_after_in(cursor, timezone)?;
-            Some(awaken_session_contract::epoch_millis_to_rfc3339(cursor))
-        })
-        .collect()
-}
-
-fn next_occurrence(schedule: &Schedule, after_ms: u64) -> Option<u64> {
-    let (cron, timezone) = parsed_schedule(schedule)?;
-    cron.next_after_in(after_ms, timezone)
-}
-
-const MAX_SCHEDULED_DEPLOYMENTS: usize = 1_000;
-const MAX_JITTER_MS: u64 = 10_000;
-
-/// Stable execution delay for one exact cron occurrence, bounded to the current
-/// documented maximum of ten seconds. Stability avoids changing a pending fire's
-/// due instant when a process restarts.
-fn execution_jitter_ms(deployment_id: &str, scheduled_ms: u64, _interval_ms: u64) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in deployment_id.bytes().chain(scheduled_ms.to_le_bytes()) {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash % (MAX_JITTER_MS + 1)
-}
-
-#[path = "deployments/records.rs"]
-mod records;
-use records::{DeploymentRecord, RunRecord};
-
-/// The deployments + deployment-runs state.
-pub struct DeploymentState {
-    deployments: Mutex<BTreeMap<String, DeploymentRecord>>,
-    runs: Mutex<BTreeMap<String, RunRecord>>,
-    dep_seq: AtomicU64,
-    run_seq: AtomicU64,
-    launcher: Mutex<Option<Arc<dyn DeploymentSessionLauncher>>>,
-    rate_limiter: Mutex<Option<Arc<ManagedRateLimiter>>>,
-    repository: Option<Arc<dyn DeploymentRepository>>,
-    executable_agents: Mutex<Option<Arc<dyn ExecutableAgentRegistrationSource>>>,
-    scheduled_limit: usize,
-}
-
-impl Default for DeploymentState {
-    fn default() -> Self {
-        Self {
-            deployments: Mutex::new(BTreeMap::new()),
-            runs: Mutex::new(BTreeMap::new()),
-            dep_seq: AtomicU64::new(0),
-            run_seq: AtomicU64::new(0),
-            launcher: Mutex::new(None),
-            rate_limiter: Mutex::new(None),
-            repository: None,
-            executable_agents: Mutex::new(None),
-            scheduled_limit: MAX_SCHEDULED_DEPLOYMENTS,
-        }
-    }
-}
-
-/// Input passed from the deployment application service to the Session boundary.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeploymentLaunch {
-    pub deployment_id: String,
-    /// Stable idempotency identity allocated and persisted by Deployment before
-    /// the Session boundary is called.
-    pub deployment_run_id: String,
-    pub workspace_id: String,
-    pub agent: AgentReference,
-    pub environment_id: String,
-    pub metadata: BTreeMap<String, String>,
-    pub initial_events: Vec<DeploymentInitialEvent>,
-    pub resources: Vec<ResourceInput>,
-    pub vault_ids: Vec<String>,
-}
-
-/// Exact terminal outcome of Session creation. The enum makes the SDK invariant
-/// structural: exactly one of `session_id` and `error` is non-null. Failures after
-/// a Session was created are Session lifecycle, not deployment-run truth.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DeploymentLaunchOutcome {
-    Created {
-        session_id: String,
-    },
-    Failed {
-        error: RunError,
-    },
-    /// The boundary could not determine a terminal business outcome. Callers
-    /// retain the pending DeploymentRun and may retry this exact command.
-    Unavailable {
-        message: String,
-    },
-}
-
-#[async_trait::async_trait]
-pub trait DeploymentSessionLauncher: Send + Sync {
-    async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome;
-}
-
-pub use crate::types::deployment::RunError as DeploymentRunError;
-
 #[path = "deployments/launcher.rs"]
 mod launcher;
 pub use launcher::LocalDeploymentSessionLauncher;
-#[path = "deployments/scheduling.rs"]
-mod scheduling;
-#[cfg(test)]
-use scheduling::stored_deployment;
 
-/// Mount the deployments + deployment-runs routes.
-pub fn deployments_router(state: Arc<DeploymentState>) -> Router {
+type WireError = (StatusCode, Json<ErrorResponse>);
+
+pub fn deployments_router(application: Arc<DeploymentApplication>) -> Router {
     Router::new()
         .route(
             "/v1/deployments",
@@ -190,10 +49,8 @@ pub fn deployments_router(state: Arc<DeploymentState>) -> Router {
         .route("/v1/deployments/{id}/run", post(run_deployment))
         .route("/v1/deployment_runs", get(list_runs))
         .route("/v1/deployment_runs/{id}", get(retrieve_run))
-        .with_state(state)
+        .with_state(application)
 }
-
-type WireError = (StatusCode, Json<ErrorResponse>);
 
 fn request_scope(scope: &Option<Extension<WorkspaceScope>>) -> String {
     scope.as_ref().map_or_else(
@@ -202,32 +59,267 @@ fn request_scope(scope: &Option<Extension<WorkspaceScope>>) -> String {
     )
 }
 
-/// Exact `DeploymentRunListParams`. Keeping query admission typed prevents
-/// unsupported fields and malformed filter values from being silently ignored.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeploymentRunListParams {
-    #[serde(flatten)]
-    page: PageQuery,
-    /// The generated SDK currently serializes its beta selector as `beta` on
-    /// list requests. The route-wide beta middleware remains authoritative; this
-    /// field is admitted only so the typed query matches the official client.
-    #[serde(default, rename = "beta")]
-    _beta: Option<String>,
-    #[serde(default, rename = "created_at[gt]")]
-    created_at_gt: Option<DateTime<FixedOffset>>,
-    #[serde(default, rename = "created_at[gte]")]
-    created_at_gte: Option<DateTime<FixedOffset>>,
-    #[serde(default, rename = "created_at[lt]")]
-    created_at_lt: Option<DateTime<FixedOffset>>,
-    #[serde(default, rename = "created_at[lte]")]
-    created_at_lte: Option<DateTime<FixedOffset>>,
-    #[serde(default)]
-    deployment_id: Option<String>,
-    #[serde(default)]
-    has_error: Option<bool>,
-    #[serde(default)]
-    trigger_type: Option<TriggerType>,
+fn invalid(message: impl Into<String>) -> WireError {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse::new("invalid_request_error", message)),
+    )
+}
+
+fn wire_error(error: DeploymentApplicationError) -> WireError {
+    match error {
+        DeploymentApplicationError::NotFound(what) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new(
+                "not_found_error",
+                format!("{what} not found"),
+            )),
+        ),
+        DeploymentApplicationError::Terminal | DeploymentApplicationError::Conflict(_) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                error.to_string(),
+            )),
+        ),
+        DeploymentApplicationError::Invalid(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                error.to_string(),
+            )),
+        ),
+        DeploymentApplicationError::Unavailable(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new("api_error", error.to_string())),
+        ),
+    }
+}
+
+fn selector(input: &crate::types::AgentRef) -> Result<AgentSelector, WireError> {
+    if let crate::types::AgentRef::Object(reference) = input
+        && (!matches!(
+            reference.kind.as_ref(),
+            Some(crate::types::AgentRefKind::Agent)
+        ) || reference.system.is_some()
+            || reference.tools.is_some()
+            || reference.mcp_servers.is_some()
+            || reference.skills.is_some()
+            || reference.model.is_some())
+    {
+        return Err(invalid(
+            "deployment Agent object must be an unmodified `agent` reference",
+        ));
+    }
+    Ok(AgentSelector {
+        id: input.id().to_string(),
+        version: input.version().map(u64::from),
+    })
+}
+
+fn application_schedule(schedule: Schedule) -> Result<DeploymentSchedule, WireError> {
+    serde_json::from_value(
+        serde_json::to_value(schedule).map_err(|error| invalid(error.to_string()))?,
+    )
+    .map_err(|error| invalid(error.to_string()))
+}
+
+fn wire_schedule(schedule: DeploymentSchedule) -> Result<Schedule, WireError> {
+    serde_json::from_value(
+        serde_json::to_value(schedule).map_err(|error| wire_projection(error.to_string()))?,
+    )
+    .map_err(|error| wire_projection(error.to_string()))
+}
+
+fn wire_projection(message: impl Into<String>) -> WireError {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrorResponse::new("api_error", message)),
+    )
+}
+
+fn values<T: serde::Serialize>(items: Vec<T>) -> Result<Vec<serde_json::Value>, WireError> {
+    items
+        .into_iter()
+        .map(|item| serde_json::to_value(item).map_err(|error| invalid(error.to_string())))
+        .collect()
+}
+
+fn typed_values<T: serde::de::DeserializeOwned>(
+    items: Vec<serde_json::Value>,
+) -> Result<Vec<T>, WireError> {
+    items
+        .into_iter()
+        .map(|item| {
+            serde_json::from_value(item).map_err(|error| wire_projection(error.to_string()))
+        })
+        .collect()
+}
+
+fn upcoming_occurrences(schedule: &DeploymentSchedule, after_ms: u64) -> Vec<String> {
+    let Ok(cron) = awaken_deployment_contract::Cron::parse(schedule.expression()) else {
+        return Vec::new();
+    };
+    let Ok(timezone) = schedule.timezone().parse::<Tz>() else {
+        return Vec::new();
+    };
+    let mut cursor = after_ms;
+    (0..5)
+        .filter_map(|_| {
+            cursor = cron.next_after_in(cursor, timezone)?;
+            Some(awaken_session_contract::epoch_millis_to_rfc3339(cursor))
+        })
+        .collect()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn project_deployment(view: DeploymentView) -> Result<Deployment, WireError> {
+    let record = view.record;
+    let schedule = record
+        .schedule
+        .map(|schedule| {
+            let upcoming = if record.archived_at.is_some() {
+                Vec::new()
+            } else {
+                upcoming_occurrences(&schedule, now_ms())
+            };
+            wire_schedule(schedule.with_runtime(record.last_run_at.clone(), upcoming))
+        })
+        .transpose()?;
+    let paused_reason = record
+        .paused_reason
+        .map(|reason| {
+            serde_json::from_value(
+                serde_json::to_value(reason).map_err(|error| wire_projection(error.to_string()))?,
+            )
+            .map_err(|error| wire_projection(error.to_string()))
+        })
+        .transpose()?;
+    Ok(Deployment {
+        id: view.id,
+        object_type: "deployment",
+        agent: crate::types::agent::AgentReference::new(record.agent.id, record.agent.version),
+        archived_at: record.archived_at,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+        description: record.description,
+        environment_id: record.environment_id,
+        initial_events: typed_values(record.initial_events)?,
+        metadata: record.metadata,
+        name: record.name,
+        paused_reason,
+        resources: typed_values(record.resources)?,
+        schedule,
+        status: match record.status {
+            DeploymentStatus::Active => "active",
+            DeploymentStatus::Paused => "paused",
+        },
+        vault_ids: record.vault_ids,
+    })
+}
+
+fn project_run(view: DeploymentRunView) -> Result<DeploymentRun, WireError> {
+    let record = view.record;
+    let error: Option<RunError> = record
+        .error
+        .map(|error| {
+            serde_json::from_value(
+                serde_json::to_value(error).map_err(|error| wire_projection(error.to_string()))?,
+            )
+            .map_err(|error| wire_projection(error.to_string()))
+        })
+        .transpose()?;
+    let trigger_context: TriggerContext = serde_json::from_value(
+        serde_json::to_value(record.trigger).map_err(|error| wire_projection(error.to_string()))?,
+    )
+    .map_err(|error| wire_projection(error.to_string()))?;
+    Ok(DeploymentRun {
+        id: view.id,
+        object_type: "deployment_run",
+        agent: crate::types::agent::AgentReference::new(record.agent.id, record.agent.version),
+        created_at: record.created_at,
+        deployment_id: record.deployment_id,
+        error,
+        session_id: record.session_id,
+        trigger_context,
+    })
+}
+
+fn validate_initial_events(events: &[DeploymentInitialEvent]) -> Result<(), WireError> {
+    crate::types::initial_event::validate_initial_events(
+        events,
+        &crate::types::initial_event::InitialEventPolicy {
+            min_count: 1,
+            max_count: 50,
+            allow_system_message: true,
+            max_outcomes: None,
+            outcome_iterations: Some(1..=20),
+        },
+    )
+    .map_err(invalid)
+}
+
+fn validate_durable_resources(resources: &[ResourceInput]) -> Result<(), WireError> {
+    if resources.iter().any(|resource| {
+        matches!(
+            resource,
+            ResourceInput::GithubRepository {
+                authorization_token: Some(_),
+                ..
+            }
+        )
+    }) {
+        return Err(invalid(
+            "Deployment repository authorization_token cannot be stored durably; bind a vault credential instead",
+        ));
+    }
+    Ok(())
+}
+
+async fn create_deployment(
+    State(application): State<Arc<DeploymentApplication>>,
+    scope: Option<Extension<WorkspaceScope>>,
+    ManagedJson(params): ManagedJson<DeploymentCreateParams>,
+) -> Result<Json<Deployment>, WireError> {
+    validate_initial_events(&params.initial_events)?;
+    validate_durable_resources(&params.resources)?;
+    let command = CreateDeploymentCommand {
+        workspace_id: request_scope(&scope),
+        agent: selector(&params.agent)?,
+        environment_id: params.environment_id,
+        name: params.name,
+        description: params.description,
+        metadata: params.metadata,
+        initial_events: values(params.initial_events)?,
+        resources: values(params.resources)?,
+        schedule: params.schedule.map(application_schedule).transpose()?,
+        vault_ids: params.vault_ids,
+    };
+    application
+        .create(command)
+        .await
+        .map_err(wire_error)
+        .and_then(project_deployment)
+        .map(Json)
+}
+
+async fn retrieve_deployment(
+    State(application): State<Arc<DeploymentApplication>>,
+    Path(id): Path<String>,
+    scope: Option<Extension<WorkspaceScope>>,
+) -> Result<Json<Deployment>, WireError> {
+    application
+        .get(&request_scope(&scope), &id)
+        .await
+        .map_err(wire_error)
+        .and_then(project_deployment)
+        .map(Json)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -246,134 +338,17 @@ struct DeploymentListParams {
     #[serde(default)]
     include_archived: bool,
     #[serde(default)]
-    status: Option<DeploymentStatus>,
+    status: Option<DeploymentStatusFilter>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum DeploymentStatus {
+enum DeploymentStatusFilter {
     Active,
     Paused,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TriggerType {
-    Schedule,
-    Manual,
-}
-
-fn not_found(what: &str) -> WireError {
-    (
-        StatusCode::NOT_FOUND,
-        Json(ErrorResponse::new(
-            "not_found_error",
-            format!("{what} not found"),
-        )),
-    )
-}
-
-/// Validate a schedule payload: when present, its `expression` must be a
-/// well-formed 5-field cron (the SDK's `BetaManagedAgentsSchedule`). A malformed
-/// schedule is rejected at write time rather than silently stored.
-fn validate_schedule(schedule: Option<&Schedule>) -> Result<(), WireError> {
-    let Some(schedule) = schedule else {
-        return Ok(());
-    };
-    let expr = schedule.expression();
-    awaken_deployment_contract::Cron::parse(expr).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                "invalid_request_error",
-                format!("invalid cron schedule: {e}"),
-            )),
-        )
-    })?;
-    schedule.timezone().parse::<Tz>().map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                "invalid_request_error",
-                format!("invalid IANA timezone: {error}"),
-            )),
-        )
-    })?;
-    Ok(())
-}
-
-fn invalid(message: impl Into<String>) -> WireError {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse::new("invalid_request_error", message)),
-    )
-}
-
-fn repository_unavailable(error: impl std::fmt::Display) -> WireError {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(ErrorResponse::new("api_error", error.to_string())),
-    )
-}
-
-/// Refresh the one durable Deployment projection and apply the public error
-/// mapping. Repository hydration remains owned by `DeploymentState`.
-async fn refresh_projection(state: &DeploymentState) -> Result<(), WireError> {
-    state
-        .refresh_repository_projection()
-        .await
-        .map_err(repository_unavailable)
-}
-
-fn agent_resolution_error(error: ExecutableAgentRegistrationError) -> WireError {
-    match error {
-        ExecutableAgentRegistrationError::Invalid(message)
-        | ExecutableAgentRegistrationError::Conflict(message) => invalid(message),
-        ExecutableAgentRegistrationError::Unavailable(message)
-        | ExecutableAgentRegistrationError::Storage(message) => repository_unavailable(message),
-    }
-}
-
-fn terminal() -> WireError {
-    (
-        StatusCode::CONFLICT,
-        Json(ErrorResponse::new(
-            "invalid_request_error",
-            "archived deployment is terminal and cannot be modified",
-        )),
-    )
-}
-
-fn scheduled_count(store: &BTreeMap<String, DeploymentRecord>) -> usize {
-    store
-        .values()
-        .filter(|record| record.archived_at.is_none() && record.schedule.is_some())
-        .count()
-}
-
-fn ensure_scheduled_capacity(
-    store: &BTreeMap<String, DeploymentRecord>,
-    limit: usize,
-) -> Result<(), WireError> {
-    if scheduled_count(store) >= limit {
-        return Err(invalid(format!(
-            "an organization supports at most {limit} scheduled deployments"
-        )));
-    }
-    Ok(())
-}
-
-fn resume_schedule(record: &mut DeploymentRecord, now_ms: u64) {
-    record.status = "active".into();
-    record.paused_reason = None;
-    record.next_fire_ms = record
-        .schedule
-        .as_ref()
-        .and_then(|schedule| next_occurrence(schedule, now_ms));
-    record.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms);
-}
-
-fn deployment_page(query: &PageQuery) -> Result<PageQuery, WireError> {
+fn page_query(query: &PageQuery) -> Result<PageQuery, WireError> {
     let limit = query.limit.unwrap_or(20);
     if !(1..=100).contains(&limit) {
         return Err(invalid("limit must be between 1 and 100"));
@@ -384,1561 +359,211 @@ fn deployment_page(query: &PageQuery) -> Result<PageQuery, WireError> {
     })
 }
 
-/// SDK write-boundary invariants shared by create and the fully materialized
-/// update candidate. Validation happens before replacing the aggregate so a
-/// rejected patch has no partial effect.
-fn validate_deployment(record: &DeploymentRecord) -> Result<(), WireError> {
-    if record.name.trim().is_empty() {
-        return Err(invalid("deployment name must be non-empty"));
-    }
-    crate::types::initial_event::validate_initial_events(
-        &record.initial_events,
-        &crate::types::initial_event::InitialEventPolicy {
-            min_count: 1,
-            max_count: 50,
-            allow_system_message: true,
-            max_outcomes: None,
-            outcome_iterations: Some(1..=20),
-        },
-    )
-    .map_err(invalid)?;
-    if record.metadata.len() > 16
-        || record
-            .metadata
-            .iter()
-            .any(|(key, value)| key.chars().count() > 64 || value.chars().count() > 512)
-    {
-        return Err(invalid(
-            "metadata allows at most 16 pairs, 64-character keys, and 512-character values",
-        ));
-    }
-    if record.resources.len() > 500 {
-        return Err(invalid("resources allows at most 500 entries"));
-    }
-    if record.vault_ids.len() > 50 {
-        return Err(invalid("vault_ids allows at most 50 entries"));
-    }
-    Ok(())
-}
-
-async fn create_deployment(
-    State(state): State<Arc<DeploymentState>>,
-    scope: Option<Extension<WorkspaceScope>>,
-    ManagedJson(params): ManagedJson<DeploymentCreateParams>,
-) -> Result<Json<Deployment>, WireError> {
-    refresh_projection(&state).await?;
-    validate_schedule(params.schedule.as_ref())?;
-    let next_fire_ms = params
-        .schedule
-        .as_ref()
-        .and_then(|schedule| next_occurrence(schedule, now_ms()));
-    let workspace_id = scope
-        .map(|Extension(scope)| scope.0)
-        .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
-    let agent = state.resolve_agent(&workspace_id, &params.agent).await?;
-    let record = DeploymentRecord {
-        created_at: awaken_session_contract::epoch_millis_to_rfc3339(now_ms()),
-        updated_at: awaken_session_contract::epoch_millis_to_rfc3339(now_ms()),
-        workspace_id,
-        agent,
-        environment_id: params.environment_id,
-        name: params.name,
-        description: params.description,
-        metadata: params.metadata,
-        initial_events: params.initial_events,
-        resources: params.resources,
-        schedule: params.schedule,
-        vault_ids: params.vault_ids,
-        status: "active".into(),
-        paused_reason: None,
-        archived_at: None,
-        last_run_at: None,
-        next_fire_ms,
-    };
-    validate_deployment(&record)?;
-    let n = state.dep_seq.fetch_add(1, Ordering::SeqCst);
-    let id = format!("depl_{n:016}");
-    let projected = record.project(&id);
-    {
-        let mut store = state.deployments.lock().unwrap();
-        if record.schedule.is_some() {
-            ensure_scheduled_capacity(&store, state.scheduled_limit)?;
-        }
-        store.insert(id.clone(), record.clone());
-    }
-    if let Err(error) = state
-        .persist_deployment_event(&id, &record, "deployment.created")
-        .await
-    {
-        state.deployments.lock().unwrap().remove(&id);
-        return Err(repository_unavailable(error));
-    }
-    Ok(Json(projected))
-}
-
-async fn retrieve_deployment(
-    State(state): State<Arc<DeploymentState>>,
-    Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
-) -> Result<Json<Deployment>, WireError> {
-    refresh_projection(&state).await?;
-    let scope = request_scope(&scope);
-    let store = state.deployments.lock().unwrap();
-    let record = store
-        .get(&id)
-        .filter(|record| record.workspace_id == scope)
-        .ok_or_else(|| not_found("deployment"))?;
-    Ok(Json(record.project(&id)))
-}
-
 async fn list_deployments(
-    State(state): State<Arc<DeploymentState>>,
+    State(application): State<Arc<DeploymentApplication>>,
     Query(query): Query<DeploymentListParams>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Page<Deployment>>, WireError> {
-    refresh_projection(&state).await?;
-    let scope = request_scope(&scope);
     if query.include_archived && query.status.is_some() {
         return Err(invalid(
             "include_archived and status filters cannot be combined",
         ));
     }
-    let page = deployment_page(&query.page)?;
-    let store = state.deployments.lock().unwrap();
-    let data: Vec<Deployment> = store
-        .iter()
-        .filter(|(_, record)| record.workspace_id == scope)
-        .filter(|(_, record)| query.include_archived || record.archived_at.is_none())
-        .filter(|(_, record)| {
+    let page = page_query(&query.page)?;
+    let data = application
+        .list(&request_scope(&scope))
+        .await
+        .map_err(wire_error)?
+        .into_iter()
+        .filter(|view| query.include_archived || view.record.archived_at.is_none())
+        .filter(|view| {
             query
                 .agent_id
                 .as_ref()
-                .is_none_or(|agent| &record.agent.id == agent)
+                .is_none_or(|agent| &view.record.agent.id == agent)
         })
-        .filter(|(_, record)| {
+        .filter(|view| {
             query.status.is_none_or(|status| {
                 matches!(
-                    (record.status.as_str(), status),
-                    ("active", DeploymentStatus::Active) | ("paused", DeploymentStatus::Paused)
+                    (view.record.status, status),
+                    (DeploymentStatus::Active, DeploymentStatusFilter::Active)
+                        | (DeploymentStatus::Paused, DeploymentStatusFilter::Paused)
                 )
             })
         })
-        .map(|(id, record)| record.project(id))
+        .map(project_deployment)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|deployment| {
-            let created = DateTime::parse_from_rfc3339(&deployment.created_at)
-                .expect("stored deployment timestamp is valid RFC 3339");
+            let Ok(created) = DateTime::parse_from_rfc3339(&deployment.created_at) else {
+                return false;
+            };
             query.created_at_gte.is_none_or(|bound| created >= bound)
                 && query.created_at_lte.is_none_or(|bound| created <= bound)
         })
         .collect();
-    Ok(Json(paginate(data, &page, |d| d.id.as_str())))
+    Ok(Json(paginate(data, &page, |deployment| {
+        deployment.id.as_str()
+    })))
 }
 
 async fn update_deployment(
-    State(state): State<Arc<DeploymentState>>,
+    State(application): State<Arc<DeploymentApplication>>,
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
     ManagedJson(params): ManagedJson<DeploymentUpdateParams>,
 ) -> Result<Json<Deployment>, WireError> {
-    refresh_projection(&state).await?;
-    if let Some(Some(schedule)) = &params.schedule {
-        validate_schedule(Some(schedule))?;
+    if let Some(events) = &params.initial_events {
+        validate_initial_events(events)?;
     }
-    let scope = request_scope(&scope);
-    let current = state
-        .deployments
-        .lock()
-        .unwrap()
-        .get(&id)
-        .filter(|record| record.workspace_id == scope)
-        .ok_or_else(|| not_found("deployment"))?
-        .clone();
-    if current.archived_at.is_some() {
-        return Err(terminal());
+    if let Some(Some(resources)) = &params.resources {
+        validate_durable_resources(resources)?;
     }
-    let mut candidate = current.clone();
-    if let Some(agent) = &params.agent {
-        candidate.agent = state.resolve_agent(&scope, agent).await?;
-    }
-    if let Some(env) = params.environment_id {
-        candidate.environment_id = env;
-    }
-    if let Some(name) = params.name {
-        candidate.name = name;
-    }
-    if let Some(description) = params.description {
-        candidate.description = description;
-    }
-    if let Some(metadata) = params.metadata {
-        match metadata {
-            None => candidate.metadata.clear(),
-            Some(patch) => {
-                for (key, value) in patch {
-                    match value {
-                        Some(value) => {
-                            candidate.metadata.insert(key, value);
-                        }
-                        None => {
-                            candidate.metadata.remove(&key);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if let Some(initial_events) = params.initial_events {
-        candidate.initial_events = initial_events;
-    }
-    if let Some(resources) = params.resources {
-        candidate.resources = resources.unwrap_or_default();
-    }
-    if let Some(schedule) = params.schedule {
-        candidate.schedule = schedule;
-        candidate.next_fire_ms = candidate
+    let command = UpdateDeploymentCommand {
+        agent: params.agent.as_ref().map(selector).transpose()?,
+        environment_id: params.environment_id,
+        name: params.name,
+        description: params.description,
+        metadata: params.metadata,
+        initial_events: params.initial_events.map(values).transpose()?,
+        resources: params
+            .resources
+            .map(|resources| resources.map(values).transpose())
+            .transpose()?,
+        schedule: params
             .schedule
-            .as_ref()
-            .and_then(|schedule| next_occurrence(schedule, now_ms()));
-    }
-    if let Some(vault_ids) = params.vault_ids {
-        candidate.vault_ids = vault_ids.unwrap_or_default();
-    }
-    validate_deployment(&candidate)?;
-    if current.schedule.is_none() && candidate.schedule.is_some() {
-        ensure_scheduled_capacity(&state.deployments.lock().unwrap(), state.scheduled_limit)?;
-    }
-    candidate.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
-    let projected = candidate.project(&id);
-    state
-        .persist_deployment_event(&id, &candidate, "deployment.updated")
+            .map(|schedule| schedule.map(application_schedule).transpose())
+            .transpose()?,
+        vault_ids: params.vault_ids,
+    };
+    application
+        .update(&request_scope(&scope), &id, command)
         .await
-        .map_err(repository_unavailable)?;
-    state.deployments.lock().unwrap().insert(id, candidate);
-    Ok(Json(projected))
+        .map_err(wire_error)
+        .and_then(project_deployment)
+        .map(Json)
 }
 
-async fn archive_deployment(
-    State(state): State<Arc<DeploymentState>>,
-    Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
-) -> Result<Json<Deployment>, WireError> {
-    refresh_projection(&state).await?;
-    let scope = request_scope(&scope);
-    let mut candidate = state
-        .deployments
-        .lock()
-        .unwrap()
-        .get(&id)
-        .filter(|record| record.workspace_id == scope)
-        .ok_or_else(|| not_found("deployment"))?
-        .clone();
-    if candidate.archived_at.is_some() {
-        return Ok(Json(candidate.project(&id)));
-    }
-    candidate.archived_at = Some(awaken_session_contract::epoch_millis_to_rfc3339(now_ms()));
-    candidate.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
-    state
-        .persist_deployment_event(&id, &candidate, "deployment.archived")
-        .await
-        .map_err(repository_unavailable)?;
-    state
-        .deployments
-        .lock()
-        .unwrap()
-        .insert(id.clone(), candidate.clone());
-    Ok(Json(candidate.project(&id)))
+macro_rules! deployment_action {
+    ($name:ident, $method:ident) => {
+        async fn $name(
+            State(application): State<Arc<DeploymentApplication>>,
+            Path(id): Path<String>,
+            scope: Option<Extension<WorkspaceScope>>,
+        ) -> Result<Json<Deployment>, WireError> {
+            application
+                .$method(&request_scope(&scope), &id)
+                .await
+                .map_err(wire_error)
+                .and_then(project_deployment)
+                .map(Json)
+        }
+    };
 }
 
-async fn pause_deployment(
-    State(state): State<Arc<DeploymentState>>,
-    Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
-) -> Result<Json<Deployment>, WireError> {
-    refresh_projection(&state).await?;
-    let scope = request_scope(&scope);
-    let mut candidate = state
-        .deployments
-        .lock()
-        .unwrap()
-        .get(&id)
-        .filter(|record| record.workspace_id == scope)
-        .ok_or_else(|| not_found("deployment"))?
-        .clone();
-    if candidate.archived_at.is_some() {
-        return Err(terminal());
-    }
-    candidate.status = "paused".into();
-    candidate.paused_reason = Some(PausedReason::Manual);
-    candidate.updated_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
-    state
-        .persist_deployment_event(&id, &candidate, "deployment.paused")
-        .await
-        .map_err(repository_unavailable)?;
-    state
-        .deployments
-        .lock()
-        .unwrap()
-        .insert(id.clone(), candidate.clone());
-    Ok(Json(candidate.project(&id)))
-}
+deployment_action!(archive_deployment, archive);
+deployment_action!(pause_deployment, pause);
+deployment_action!(unpause_deployment, unpause);
 
-async fn unpause_deployment(
-    State(state): State<Arc<DeploymentState>>,
-    Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
-) -> Result<Json<Deployment>, WireError> {
-    refresh_projection(&state).await?;
-    let scope = request_scope(&scope);
-    let mut candidate = state
-        .deployments
-        .lock()
-        .unwrap()
-        .get(&id)
-        .filter(|record| record.workspace_id == scope)
-        .ok_or_else(|| not_found("deployment"))?
-        .clone();
-    if candidate.archived_at.is_some() {
-        return Err(terminal());
-    }
-    let now = now_ms();
-    resume_schedule(&mut candidate, now);
-    state
-        .persist_deployment_event(&id, &candidate, "deployment.unpaused")
-        .await
-        .map_err(repository_unavailable)?;
-    state
-        .deployments
-        .lock()
-        .unwrap()
-        .insert(id.clone(), candidate.clone());
-    Ok(Json(candidate.project(&id)))
-}
-
-/// `POST /v1/deployments/:id/run` — trigger a manual run, minting a
-/// `deployment_run` bound to the deployment's agent.
 async fn run_deployment(
-    State(state): State<Arc<DeploymentState>>,
+    State(application): State<Arc<DeploymentApplication>>,
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<DeploymentRun>, WireError> {
-    refresh_projection(&state).await?;
-    let scope = request_scope(&scope);
-    let deployment = {
-        let store = state.deployments.lock().unwrap();
-        let record = store
-            .get(&id)
-            .filter(|record| record.workspace_id == scope)
-            .ok_or_else(|| not_found("deployment"))?;
-        if record.archived_at.is_some() {
-            return Err(terminal());
-        }
-        record.clone()
-    };
-    let n = state.run_seq.fetch_add(1, Ordering::SeqCst);
-    let run_id = format!("drun_{n:016}");
-    let launch = deployment.launch(&id, &run_id);
-    let record = RunRecord {
-        created_at: awaken_session_contract::epoch_millis_to_rfc3339(now_ms()),
-        deployment_id: id,
-        workspace_id: launch.workspace_id.clone(),
-        agent: launch.agent.clone(),
-        trigger: TriggerContext::Manual,
-        session_id: None,
-        error: None,
-    };
-    state
-        .runs
-        .lock()
-        .unwrap()
-        .insert(run_id.clone(), record.clone());
-    if let Err(error) = state.persist_manual_run(&run_id, &record).await {
-        state.runs.lock().unwrap().remove(&run_id);
-        return Err(repository_unavailable(error));
-    }
-    Ok(Json(
-        state
-            .launch_run(&run_id, launch)
-            .await
-            .map_err(repository_unavailable)?,
-    ))
+    application
+        .run(&request_scope(&scope), &id)
+        .await
+        .map_err(wire_error)
+        .and_then(project_run)
+        .map(Json)
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentRunListParams {
+    #[serde(flatten)]
+    page: PageQuery,
+    #[serde(default, rename = "beta")]
+    _beta: Option<String>,
+    #[serde(default, rename = "created_at[gt]")]
+    created_at_gt: Option<DateTime<FixedOffset>>,
+    #[serde(default, rename = "created_at[gte]")]
+    created_at_gte: Option<DateTime<FixedOffset>>,
+    #[serde(default, rename = "created_at[lt]")]
+    created_at_lt: Option<DateTime<FixedOffset>>,
+    #[serde(default, rename = "created_at[lte]")]
+    created_at_lte: Option<DateTime<FixedOffset>>,
+    #[serde(default)]
+    deployment_id: Option<String>,
+    #[serde(default)]
+    has_error: Option<bool>,
+    #[serde(default)]
+    trigger_type: Option<TriggerType>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TriggerType {
+    Schedule,
+    Manual,
 }
 
 async fn retrieve_run(
-    State(state): State<Arc<DeploymentState>>,
+    State(application): State<Arc<DeploymentApplication>>,
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<DeploymentRun>, WireError> {
-    refresh_projection(&state).await?;
-    let scope = request_scope(&scope);
-    let store = state.runs.lock().unwrap();
-    let record = store
-        .get(&id)
-        .filter(|record| record.workspace_id == scope)
-        .ok_or_else(|| not_found("deployment_run"))?;
-    Ok(Json(record.project(&id)))
+    application
+        .get_run(&request_scope(&scope), &id)
+        .await
+        .map_err(wire_error)
+        .and_then(project_run)
+        .map(Json)
 }
 
-/// `GET /v1/deployment_runs?deployment_id=…` — the runs, optionally filtered by
-/// deployment, ascending id order.
 async fn list_runs(
-    State(state): State<Arc<DeploymentState>>,
+    State(application): State<Arc<DeploymentApplication>>,
     Query(query): Query<DeploymentRunListParams>,
     scope: Option<Extension<WorkspaceScope>>,
 ) -> Result<Json<Page<DeploymentRun>>, WireError> {
-    state
-        .refresh_repository_projection()
+    let page = page_query(&query.page)?;
+    let data = application
+        .list_runs(&request_scope(&scope))
         .await
-        .map_err(repository_unavailable)?;
-    let scope = request_scope(&scope);
-    let page = deployment_page(&query.page)?;
-    let store = state.runs.lock().unwrap();
-    let data: Vec<DeploymentRun> = store
-        .iter()
-        .filter(|(_, record)| record.workspace_id == scope)
-        .filter(|(_, r)| {
+        .map_err(wire_error)?
+        .into_iter()
+        .filter(|view| {
             query
                 .deployment_id
                 .as_ref()
-                .is_none_or(|deployment| &r.deployment_id == deployment)
+                .is_none_or(|id| &view.record.deployment_id == id)
         })
-        .filter(|(_, r)| {
+        .filter(|view| {
             query
                 .has_error
-                .is_none_or(|expected| r.error.is_some() == expected)
+                .is_none_or(|expected| view.record.error.is_some() == expected)
         })
-        .filter(|(_, r)| {
+        .filter(|view| {
             query.trigger_type.is_none_or(|expected| {
                 matches!(
-                    (&r.trigger, expected),
-                    (TriggerContext::Manual, TriggerType::Manual)
-                        | (TriggerContext::Schedule { .. }, TriggerType::Schedule)
+                    (&view.record.trigger, expected),
+                    (DeploymentTrigger::Manual, TriggerType::Manual)
+                        | (DeploymentTrigger::Schedule { .. }, TriggerType::Schedule)
                 )
             })
         })
-        .map(|(id, r)| r.project(id))
+        .map(project_run)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .filter(|run| {
-            let created = DateTime::parse_from_rfc3339(&run.created_at)
-                .expect("stored deployment-run timestamp is valid RFC 3339");
+            let Ok(created) = DateTime::parse_from_rfc3339(&run.created_at) else {
+                return false;
+            };
             query.created_at_gt.is_none_or(|bound| created > bound)
                 && query.created_at_gte.is_none_or(|bound| created >= bound)
                 && query.created_at_lt.is_none_or(|bound| created < bound)
                 && query.created_at_lte.is_none_or(|bound| created <= bound)
         })
         .collect();
-    Ok(Json(paginate(data, &page, |r| r.id.as_str())))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use awaken_executable_agent_contract::{
-        ExecutableAgentRegistration, ExecutableAgentSessionProfile, ExecutableAgentSnapshot,
-    };
-
-    // 2026-01-05 09:00:00 UTC (a Monday).
-    const MON_0900: u64 = 1_767_603_600_000;
-
-    fn cron_schedule(expr: &str) -> Schedule {
-        Schedule::Cron {
-            expression: expr.into(),
-            timezone: "UTC".into(),
-            last_run_at: None,
-            upcoming_runs_at: Vec::new(),
-        }
-    }
-
-    fn deployment(schedule: Option<Schedule>) -> DeploymentRecord {
-        DeploymentRecord {
-            created_at: OBJECT_AT.into(),
-            updated_at: OBJECT_AT.into(),
-            workspace_id: "default".into(),
-            agent: AgentReference::new("coder", 1),
-            environment_id: "env_a".into(),
-            name: "nightly".into(),
-            description: None,
-            metadata: BTreeMap::new(),
-            initial_events: Vec::new(),
-            resources: Vec::new(),
-            schedule,
-            vault_ids: Vec::new(),
-            status: "active".into(),
-            paused_reason: None,
-            archived_at: None,
-            last_run_at: None,
-            next_fire_ms: None,
-        }
-    }
-
-    fn jitter_due(deployment_id: &str, scheduled_ms: u64, interval_ms: u64) -> u64 {
-        scheduled_ms + execution_jitter_ms(deployment_id, scheduled_ms, interval_ms)
-    }
-
-    fn create_params(schedule: bool) -> DeploymentCreateParams {
-        let mut value = serde_json::json!({
-            "agent": "coder",
-            "environment_id": "env_a",
-            "name": "scheduled",
-            "initial_events": [{
-                "type": "user.message",
-                "content": [{"type": "text", "text": "go"}]
-            }]
-        });
-        if schedule {
-            value["schedule"] = serde_json::json!({
-                "type": "cron", "expression": "*/15 * * * *", "timezone": "UTC"
-            });
-        }
-        serde_json::from_value(value).unwrap()
-    }
-
-    struct RegistrationSource {
-        selected: Result<Option<u64>, ExecutableAgentRegistrationError>,
-        requested_versions: Mutex<Vec<Option<u64>>>,
-    }
-
-    impl RegistrationSource {
-        fn published(version: u64) -> Self {
-            Self {
-                selected: Ok(Some(version)),
-                requested_versions: Mutex::new(Vec::new()),
-            }
-        }
-
-        fn registration(
-            workspace_id: &str,
-            agent_id: &str,
-            version: u64,
-        ) -> ExecutableAgentRegistration {
-            ExecutableAgentRegistration {
-                workspace_id: workspace_id.into(),
-                agent_id: agent_id.into(),
-                source_revision: version,
-                snapshot: ExecutableAgentSnapshot::builder(agent_id).build(),
-                session_profile: ExecutableAgentSessionProfile::default(),
-            }
-        }
-
-        fn select(
-            &self,
-            workspace_id: &str,
-            agent_id: &str,
-        ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
-            self.selected.as_ref().map_or_else(
-                |error| Err(error.clone()),
-                |version| {
-                    Ok(version.map(|version| Self::registration(workspace_id, agent_id, version)))
-                },
-            )
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ExecutableAgentRegistrationSource for RegistrationSource {
-        async fn current_registration(
-            &self,
-            workspace_id: &str,
-            agent_id: &str,
-        ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
-            self.requested_versions.lock().unwrap().push(None);
-            self.select(workspace_id, agent_id)
-        }
-
-        async fn registration_at_revision(
-            &self,
-            workspace_id: &str,
-            agent_id: &str,
-            source_revision: u64,
-        ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
-            self.requested_versions
-                .lock()
-                .unwrap()
-                .push(Some(source_revision));
-            self.select(workspace_id, agent_id)
-        }
-    }
-
-    #[tokio::test]
-    async fn deployment_resolves_and_freezes_the_authoritative_agent_version() {
-        // Cause/effect decision table derived from the official Agent input union:
-        // G1 bare id -> query current registration and freeze its concrete revision;
-        // G2 object with version -> query and freeze that exact registration;
-        // G3 missing/withdrawn registration -> workspace-scoped 404;
-        // G4 registration projection failure -> service unavailable. No rule reads
-        // Control's mutable ManagedAgentRepository or its authoring database.
-        let latest = Arc::new(RegistrationSource::published(7));
-        let latest_state = DeploymentState::new();
-        latest_state.bind_executable_agents(latest.clone());
-        let bare: crate::types::AgentRef =
-            serde_json::from_value(serde_json::json!("agent_a")).unwrap();
-        assert_eq!(
-            latest_state
-                .resolve_agent("workspace_a", &bare)
-                .await
-                .unwrap()
-                .version,
-            7,
-            "G1"
-        );
-        assert_eq!(*latest.requested_versions.lock().unwrap(), vec![None], "G1");
-
-        let pinned = Arc::new(RegistrationSource::published(3));
-        let pinned_state = DeploymentState::new();
-        pinned_state.bind_executable_agents(pinned.clone());
-        let reference: crate::types::AgentRef = serde_json::from_value(serde_json::json!({
-            "type": "agent", "id": "agent_a", "version": 3
-        }))
-        .unwrap();
-        assert_eq!(
-            pinned_state
-                .resolve_agent("workspace_a", &reference)
-                .await
-                .unwrap()
-                .version,
-            3,
-            "G2"
-        );
-        assert_eq!(
-            *pinned.requested_versions.lock().unwrap(),
-            vec![Some(3)],
-            "G2"
-        );
-
-        let missing = Arc::new(RegistrationSource {
-            selected: Ok(None),
-            requested_versions: Mutex::new(Vec::new()),
-        });
-        let state = DeploymentState::new();
-        state.bind_executable_agents(missing);
-        assert_eq!(
-            state
-                .resolve_agent("workspace_a", &bare)
-                .await
-                .unwrap_err()
-                .0,
-            StatusCode::NOT_FOUND,
-            "G3"
-        );
-
-        let unavailable = Arc::new(RegistrationSource {
-            selected: Err(ExecutableAgentRegistrationError::Unavailable(
-                "projection offline".into(),
-            )),
-            requested_versions: Mutex::new(Vec::new()),
-        });
-        let state = DeploymentState::new();
-        state.bind_executable_agents(unavailable);
-        assert_eq!(
-            state
-                .resolve_agent("workspace_a", &bare)
-                .await
-                .unwrap_err()
-                .0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "G4"
-        );
-    }
-
-    #[tokio::test]
-    async fn unavailable_primary_registration_archives_without_a_run() {
-        // Official scheduled-primary decision table:
-        // P1 current registration present -> ordinary occurrence claim/run;
-        // P2 current registration absent after withdrawal or unknown id -> archive
-        // every live Deployment and create no DeploymentRun or Session.
-        let state = Arc::new(DeploymentState::new());
-        state.bind_executable_agents(Arc::new(RegistrationSource {
-            selected: Ok(None),
-            requested_versions: Mutex::new(Vec::new()),
-        }));
-        let id = "depl_primary".to_string();
-        let mut record = deployment(Some(cron_schedule("*/15 * * * *")));
-        record.next_fire_ms = Some(MON_0900);
-        state.deployments.lock().unwrap().insert(id.clone(), record);
-        let due = jitter_due(&id, MON_0900, 15 * 60_000);
-
-        assert!(state.tick_and_launch(due).await.unwrap().is_empty(), "P2");
-        assert!(state.runs.lock().unwrap().is_empty(), "P2");
-        assert!(
-            state.deployments.lock().unwrap()[&id].archived_at.is_some(),
-            "P2"
-        );
-    }
-
-    #[tokio::test]
-    async fn durable_repository_restores_scope_and_claims_each_occurrence_once() {
-        // Cause/effect decision table:
-        // R1 committed Deployment + restart -> the same owner-scoped projection;
-        // R2 another Workspace -> 404 (no ownership disclosure);
-        // R3 two replicas observe one due instant -> one durable claim, one launch;
-        // R4 losing replica -> no duplicate DeploymentRun and no launch side effect.
-        struct CountingLauncher(Arc<std::sync::atomic::AtomicUsize>);
-        #[async_trait::async_trait]
-        impl DeploymentSessionLauncher for CountingLauncher {
-            async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                DeploymentLaunchOutcome::Created {
-                    session_id: format!("sesn_{}", request.deployment_id),
-                }
-            }
-        }
-
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "awaken-deployment-state-{}-{unique}.db",
-            std::process::id()
-        ));
-        let repository = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
-                .unwrap(),
-        );
-        let first = Arc::new(
-            DeploymentState::with_repository(repository.clone())
-                .await
-                .unwrap(),
-        );
-        let created = create_deployment(
-            State(first.clone()),
-            Some(Extension(WorkspaceScope("workspace_a".into()))),
-            ManagedJson(create_params(true)),
-        )
-        .await
-        .unwrap()
-        .0;
-        drop(first);
-
-        let left = Arc::new(
-            DeploymentState::with_repository(Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
-                    .unwrap(),
-            ))
-            .await
-            .unwrap(),
-        );
-        assert_eq!(
-            retrieve_deployment(
-                State(left.clone()),
-                Path(created.id.clone()),
-                Some(Extension(WorkspaceScope("workspace_a".into()))),
-            )
-            .await
-            .unwrap()
-            .0
-            .id,
-            created.id,
-            "R1"
-        );
-        assert_eq!(
-            retrieve_deployment(
-                State(left.clone()),
-                Path(created.id.clone()),
-                Some(Extension(WorkspaceScope("workspace_b".into()))),
-            )
-            .await
-            .unwrap_err()
-            .0,
-            StatusCode::NOT_FOUND,
-            "R2"
-        );
-
-        let scheduled_at = MON_0900;
-        let persisted = {
-            let mut deployments = left.deployments.lock().unwrap();
-            let record = deployments.get_mut(&created.id).unwrap();
-            record.next_fire_ms = Some(scheduled_at);
-            record.clone()
-        };
-        repository
-            .upsert_deployment(stored_deployment(&created.id, &persisted).unwrap(), None)
-            .await
-            .unwrap();
-        let right = Arc::new(
-            DeploymentState::with_repository(Arc::new(
-                awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
-                    .unwrap(),
-            ))
-            .await
-            .unwrap(),
-        );
-        let launches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        left.bind_launcher(Arc::new(CountingLauncher(launches.clone())));
-        right.bind_launcher(Arc::new(CountingLauncher(launches.clone())));
-        let due = jitter_due(&created.id, scheduled_at, 15 * 60_000);
-        let (left_runs, right_runs) =
-            tokio::join!(left.tick_and_launch(due), right.tick_and_launch(due));
-        assert_eq!(
-            left_runs.unwrap().len() + right_runs.unwrap().len(),
-            1,
-            "R3/R4"
-        );
-        assert_eq!(launches.load(Ordering::SeqCst), 1, "R3/R4");
-        let restored = DeploymentState::with_repository(Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
-                .unwrap(),
-        ))
-        .await
-        .unwrap();
-        assert_eq!(restored.runs.lock().unwrap().len(), 1, "R3/R4");
-        let event_types = awaken_session_contract::ManagedSessionRepository::pending_lifecycle(
-            repository.as_ref(),
-        )
-        .await
-        .into_iter()
-        .map(|fact| fact.event_type)
-        .collect::<std::collections::BTreeSet<_>>();
-        assert!(event_types.contains("deployment.created"), "R1 event");
-        assert!(event_types.contains("deployment_run.started"), "R3 event");
-        assert!(
-            event_types.contains("deployment_run.succeeded"),
-            "R3 terminal event"
-        );
-        drop(restored);
-        drop(repository);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn active_active_replica_reads_committed_deployment_before_run() {
-        // Cause/effect decision table: A1 two replicas start with the same empty
-        // repository and replica L creates -> replica R refreshes the authoritative
-        // projection and retrieves it; A2 R immediately runs that Deployment -> one
-        // durable DeploymentRun and Session launch; A3 wrong Workspace -> 404 after
-        // the same refresh, so cross-replica visibility never weakens ownership.
-        struct SuccessfulLauncher;
-        #[async_trait::async_trait]
-        impl DeploymentSessionLauncher for SuccessfulLauncher {
-            async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-                DeploymentLaunchOutcome::Created {
-                    session_id: format!("sesn_{}", request.deployment_id),
-                }
-            }
-        }
-
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "awaken-active-active-deployment-{}-{unique}.db",
-            std::process::id()
-        ));
-        let repository = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
-                .unwrap(),
-        );
-        let left = Arc::new(
-            DeploymentState::with_repository(repository.clone())
-                .await
-                .unwrap(),
-        );
-        let right = Arc::new(
-            DeploymentState::with_repository(repository.clone())
-                .await
-                .unwrap(),
-        );
-        right.bind_launcher(Arc::new(SuccessfulLauncher));
-        let scope = Some(Extension(WorkspaceScope("workspace_a".into())));
-        let created = create_deployment(
-            State(left),
-            scope.clone(),
-            ManagedJson(create_params(false)),
-        )
-        .await
-        .unwrap()
-        .0;
-        assert_eq!(
-            retrieve_deployment(
-                State(right.clone()),
-                Path(created.id.clone()),
-                scope.clone(),
-            )
-            .await
-            .unwrap()
-            .0
-            .id,
-            created.id,
-            "A1"
-        );
-        let run = run_deployment(State(right.clone()), Path(created.id.clone()), scope)
-            .await
-            .unwrap()
-            .0;
-        assert_eq!(run.deployment_id, created.id, "A2");
-        assert!(run.session_id.is_some(), "A2");
-        assert_eq!(
-            retrieve_deployment(
-                State(right),
-                Path(created.id),
-                Some(Extension(WorkspaceScope("workspace_b".into()))),
-            )
-            .await
-            .unwrap_err()
-            .0,
-            StatusCode::NOT_FOUND,
-            "A3"
-        );
-        drop(repository);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn manual_runs_are_durable_without_scheduled_run_webhook_facts() {
-        // Causes: the same Deployment is triggered manually or by its cron schedule.
-        // Constraints: DeploymentRun rows exist for both, but official run webhooks
-        // are emitted only for scheduled runs.
-        // Effects: manual success survives restart with no deployment_run.* outbox fact.
-        // Decision rule: webhooks/deployment-run W1 manual vs W2 scheduled.
-        struct SuccessfulLauncher;
-        #[async_trait::async_trait]
-        impl DeploymentSessionLauncher for SuccessfulLauncher {
-            async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-                DeploymentLaunchOutcome::Created {
-                    session_id: format!("sesn_{}", request.deployment_id),
-                }
-            }
-        }
-
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "awaken-manual-deployment-run-{}-{unique}.db",
-            std::process::id()
-        ));
-        let repository = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open(&path.to_string_lossy())
-                .unwrap(),
-        );
-        let state = Arc::new(
-            DeploymentState::with_repository(repository.clone())
-                .await
-                .unwrap(),
-        );
-        state.bind_launcher(Arc::new(SuccessfulLauncher));
-        let deployment = create_deployment(
-            State(state.clone()),
-            None,
-            ManagedJson(create_params(false)),
-        )
-        .await
-        .unwrap()
-        .0;
-        for fact in awaken_session_contract::ManagedSessionRepository::pending_lifecycle(
-            repository.as_ref(),
-        )
-        .await
-        {
-            awaken_session_contract::ManagedSessionRepository::complete_lifecycle(
-                repository.as_ref(),
-                &fact.id,
-            )
-            .await;
-        }
-
-        let run = run_deployment(State(state), Path(deployment.id), None)
-            .await
-            .unwrap()
-            .0;
-        assert!(run.session_id.is_some(), "W1 durable success");
-        assert!(
-            awaken_session_contract::ManagedSessionRepository::pending_lifecycle(
-                repository.as_ref(),
-            )
-            .await
-            .iter()
-            .all(|fact| !fact.event_type.starts_with("deployment_run.")),
-            "W1 manual run emits no scheduled-only webhook facts"
-        );
-        let restored = DeploymentState::with_repository(repository.clone())
-            .await
-            .unwrap();
-        assert!(restored.runs.lock().unwrap().contains_key(&run.id), "W1");
-        drop(restored);
-        drop(repository);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn validate_schedule_rejects_a_malformed_cron() {
-        // schedule JSON -> typed union -> cron semantic validation -> store/no store
-        //
-        // | tag  | required fields | expression | result |
-        // |------|-----------------|------------|--------|
-        // | none | -               | -          | accept |
-        // | cron | all             | valid      | accept |
-        // | cron | all             | invalid    | reject |
-        // | cron | missing         | -          | decode reject |
-        assert!(validate_schedule(None).is_ok(), "no schedule is fine");
-        let valid = cron_schedule("0 9 * * 1-5");
-        let invalid = cron_schedule("not a cron");
-        assert!(validate_schedule(Some(&valid)).is_ok());
-        assert!(validate_schedule(Some(&invalid)).is_err());
-        assert!(
-            serde_json::from_value::<Schedule>(
-                serde_json::json!({ "type":"cron", "timezone": "UTC" })
-            )
-            .is_err(),
-            "a schedule without an expression is rejected at admission"
-        );
-    }
-
-    #[test]
-    fn execution_jitter_is_stable_and_obeys_all_interval_bounds() {
-        // Causes: short/minute/daily cron intervals and the same/different exact
-        // occurrence identity. Constraint: official execution jitter is independent
-        // of interval length and never exceeds ten seconds.
-        // Effects: every delay is in 0..=10s; the same identity is stable across a
-        // restart, while interval length cannot widen the bound.
-        // Decision rules: J1 short, J2 minute, J3 daily -> bounded; J4 replay -> stable.
-        let short = execution_jitter_ms("dep", MON_0900, 1_000);
-        assert!(short <= MAX_JITTER_MS, "J1");
-        let minute = execution_jitter_ms("dep", MON_0900, 60_000);
-        assert!(minute <= MAX_JITTER_MS, "J2");
-        let daily = execution_jitter_ms("dep", MON_0900, 24 * 60 * 60_000);
-        assert!(daily <= MAX_JITTER_MS, "J3");
-        assert_eq!(
-            daily,
-            execution_jitter_ms("dep", MON_0900, 24 * 60 * 60_000),
-            "J4"
-        );
-    }
-
-    #[tokio::test]
-    async fn scheduled_capacity_is_atomic_across_create_update_and_archive() {
-        // Scheduled-capacity graph (test cap=1; production cap=1,000):
-        // C1 unscheduled never consumes; C2 first scheduled create consumes;
-        // C3 scheduled create or unscheduled->scheduled update at cap rejects
-        // atomically; C4 archive frees one slot; C5 scheduled->scheduled update
-        // does not consume a second slot.
-        let state = Arc::new(DeploymentState::with_scheduled_limit(1));
-        let first = create_deployment(State(state.clone()), None, ManagedJson(create_params(true)))
-            .await
-            .expect("C2")
-            .0;
-        let unscheduled = create_deployment(
-            State(state.clone()),
-            None,
-            ManagedJson(create_params(false)),
-        )
-        .await
-        .expect("C1")
-        .0;
-        let rejected =
-            create_deployment(State(state.clone()), None, ManagedJson(create_params(true)))
-                .await
-                .expect_err("C3");
-        assert_eq!(rejected.0, StatusCode::BAD_REQUEST, "C3");
-        assert_eq!(state.deployments.lock().unwrap().len(), 2, "C3 atomic");
-
-        let add_schedule: DeploymentUpdateParams = serde_json::from_value(serde_json::json!({
-            "schedule": {"type":"cron", "expression":"*/15 * * * *", "timezone":"UTC"}
-        }))
-        .unwrap();
-        assert_eq!(
-            update_deployment(
-                State(state.clone()),
-                Path(unscheduled.id.clone()),
-                None,
-                ManagedJson(add_schedule.clone()),
-            )
-            .await
-            .expect_err("C3")
-            .0,
-            StatusCode::BAD_REQUEST
-        );
-        assert!(
-            state.deployments.lock().unwrap()[&unscheduled.id]
-                .schedule
-                .is_none(),
-            "C3 update atomic"
-        );
-        let _ = archive_deployment(State(state.clone()), Path(first.id), None)
-            .await
-            .expect("C4");
-        let scheduled = update_deployment(
-            State(state.clone()),
-            Path(unscheduled.id.clone()),
-            None,
-            ManagedJson(add_schedule.clone()),
-        )
-        .await
-        .expect("C4")
-        .0;
-        assert!(scheduled.schedule.is_some(), "C4");
-        assert!(
-            update_deployment(
-                State(state),
-                Path(unscheduled.id),
-                None,
-                ManagedJson(add_schedule),
-            )
-            .await
-            .is_ok(),
-            "C5"
-        );
-    }
-
-    #[test]
-    fn unpause_skips_missed_occurrences_and_resumes_from_the_next_one() {
-        // U1 paused with an old cursor -> no execution; U2 unpause at 09:31 ->
-        // cursor becomes exact 09:45, so 09:15/09:30 are never backfilled.
-        let mut record = deployment(Some(cron_schedule("*/15 * * * *")));
-        record.status = "paused".into();
-        record.paused_reason = Some(PausedReason::Manual);
-        record.next_fire_ms = Some(MON_0900 + 15 * 60_000);
-        resume_schedule(&mut record, MON_0900 + 31 * 60_000);
-        assert_eq!(record.status, "active", "U2");
-        assert_eq!(record.next_fire_ms, Some(MON_0900 + 45 * 60_000), "U2");
-    }
-
-    #[tokio::test]
-    async fn archived_deployment_is_an_idempotent_terminal_state() {
-        // Terminal table: A1 first archive succeeds; A2 repeated archive is
-        // idempotent; A3 update/pause/unpause/manual-run after archive reject and
-        // create no run or launcher side effect.
-        let state = Arc::new(DeploymentState::new());
-        let created =
-            create_deployment(State(state.clone()), None, ManagedJson(create_params(true)))
-                .await
-                .unwrap()
-                .0;
-        let _ = archive_deployment(State(state.clone()), Path(created.id.clone()), None)
-            .await
-            .expect("A1");
-        let _ = archive_deployment(State(state.clone()), Path(created.id.clone()), None)
-            .await
-            .expect("A2");
-        let update: DeploymentUpdateParams =
-            serde_json::from_value(serde_json::json!({"name":"no"})).unwrap();
-        assert_eq!(
-            update_deployment(
-                State(state.clone()),
-                Path(created.id.clone()),
-                None,
-                ManagedJson(update),
-            )
-            .await
-            .expect_err("A3")
-            .0,
-            StatusCode::CONFLICT
-        );
-        assert!(
-            pause_deployment(State(state.clone()), Path(created.id.clone()), None)
-                .await
-                .is_err()
-        );
-        assert!(
-            unpause_deployment(State(state.clone()), Path(created.id.clone()), None)
-                .await
-                .is_err()
-        );
-        assert!(
-            run_deployment(State(state.clone()), Path(created.id), None)
-                .await
-                .is_err()
-        );
-        assert!(state.runs.lock().unwrap().is_empty(), "A3");
-    }
-
-    #[tokio::test]
-    async fn primary_agent_archive_cascades_only_to_its_owned_deployments() {
-        // Agent/deployment cascade table: P1 same Workspace + primary Agent ->
-        // archive immediately and create no run; P2 another Agent or P3 another
-        // Workspace -> unchanged; P4 repeated notification -> zero new archives.
-        let state = DeploymentState::new();
-        let mut same = deployment(Some(cron_schedule("*/15 * * * *")));
-        same.workspace_id = "workspace_a".into();
-        same.agent = AgentReference::new("agent_primary", 1);
-        let mut other_agent = same.clone();
-        other_agent.agent = AgentReference::new("agent_other", 1);
-        let mut other_workspace = same.clone();
-        other_workspace.workspace_id = "workspace_b".into();
-        {
-            let mut store = state.deployments.lock().unwrap();
-            store.insert("same".into(), same);
-            store.insert("other_agent".into(), other_agent);
-            store.insert("other_workspace".into(), other_workspace);
-        }
-
-        assert_eq!(
-            state
-                .archive_for_agent("workspace_a", "agent_primary")
-                .await
-                .unwrap(),
-            1,
-            "P1"
-        );
-        {
-            let store = state.deployments.lock().unwrap();
-            assert!(store["same"].archived_at.is_some(), "P1");
-            assert!(store["other_agent"].archived_at.is_none(), "P2");
-            assert!(store["other_workspace"].archived_at.is_none(), "P3");
-        }
-        assert_eq!(
-            state
-                .archive_for_agent("workspace_a", "agent_primary")
-                .await
-                .unwrap(),
-            0,
-            "P4"
-        );
-        assert!(state.runs.lock().unwrap().is_empty(), "P1");
-    }
-
-    #[test]
-    fn tick_fires_due_occurrences_with_a_schedule_trigger() {
-        let state = DeploymentState::new();
-        state.deployments.lock().unwrap().insert(
-            "deploy_x".into(),
-            deployment(Some(cron_schedule("*/15 * * * *"))),
-        );
-
-        // First tick seeds the cursor to the next occurrence AFTER now — no
-        // retroactive fire.
-        assert!(state.tick(MON_0900).is_empty(), "no retroactive fire");
-        // Jitter rule J1: the exact 09:15 occurrence stays pending until its stable
-        // bounded delay, then creates exactly one run whose scheduled_at remains
-        // the unjittered cron instant. J2 applies independently to 09:30.
-        let first_due = jitter_due("deploy_x", MON_0900 + 15 * 60_000, 15 * 60_000);
-        assert!(state.tick(first_due - 1).is_empty(), "J1 not early");
-        let fired = state.tick(first_due);
-        assert_eq!(fired.len(), 1, "J1 fires once at its jittered due time");
-
-        let runs = state.runs.lock().unwrap();
-        let run = runs.get(&fired[0]).expect("run recorded");
-        match &run.trigger {
-            TriggerContext::Schedule { scheduled_at } => {
-                assert_eq!(scheduled_at, "2026-01-05T09:15:00Z");
-            }
-            TriggerContext::Manual => panic!("a scheduled fire must carry a Schedule trigger"),
-        }
-        assert_eq!(run.deployment_id, "deploy_x");
-        drop(runs);
-        let second_due = jitter_due("deploy_x", MON_0900 + 30 * 60_000, 15 * 60_000);
-        assert_eq!(state.tick(second_due).len(), 1, "J2");
-        // A paused deployment stops firing.
-        state
-            .deployments
-            .lock()
-            .unwrap()
-            .get_mut("deploy_x")
-            .unwrap()
-            .status = "paused".into();
-        assert!(
-            state.tick(MON_0900 + 120 * 60_000).is_empty(),
-            "a paused deployment does not fire"
-        );
-    }
-
-    #[tokio::test]
-    async fn scheduled_occurrence_launches_a_real_session_through_the_port() {
-        struct Launcher;
-        #[async_trait::async_trait]
-        impl DeploymentSessionLauncher for Launcher {
-            async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-                DeploymentLaunchOutcome::Created {
-                    session_id: format!("sesn_{}", request.deployment_id),
-                }
-            }
-        }
-
-        let state = DeploymentState::new();
-        state.bind_launcher(Arc::new(Launcher));
-        state.deployments.lock().unwrap().insert(
-            "deploy_schedule".into(),
-            deployment(Some(cron_schedule("*/15 * * * *"))),
-        );
-        assert!(state.tick_and_launch(MON_0900).await.unwrap().is_empty());
-        let due = jitter_due("deploy_schedule", MON_0900 + 15 * 60_000, 15 * 60_000);
-        let completed = state.tick_and_launch(due).await.unwrap();
-        assert_eq!(completed.len(), 1);
-        assert_eq!(
-            completed[0].session_id.as_deref(),
-            Some("sesn_deploy_schedule")
-        );
-        assert!(completed[0].error.is_none());
-    }
-
-    #[tokio::test]
-    async fn indeterminate_launch_keeps_the_durable_run_pending() {
-        // Cause/effect rule U1: a persisted started DeploymentRun followed by an
-        // unavailable launch boundary -> return retryable storage availability,
-        // retain `session_id=None,error=None`, and do not pause its Deployment.
-        // A transport fault is not rewritten as terminal business truth.
-        struct UnavailableLauncher;
-        #[async_trait::async_trait]
-        impl DeploymentSessionLauncher for UnavailableLauncher {
-            async fn launch(&self, _request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-                DeploymentLaunchOutcome::Unavailable {
-                    message: "network response lost".into(),
-                }
-            }
-        }
-
-        let state = DeploymentState::new();
-        state.bind_launcher(Arc::new(UnavailableLauncher));
-        state
-            .deployments
-            .lock()
-            .unwrap()
-            .insert("deploy_pending".into(), deployment(None));
-        state.runs.lock().unwrap().insert(
-            "deprun_pending".into(),
-            RunRecord {
-                created_at: OBJECT_AT.into(),
-                deployment_id: "deploy_pending".into(),
-                workspace_id: "default".into(),
-                agent: AgentReference::new("coder", 1),
-                trigger: TriggerContext::Manual,
-                session_id: None,
-                error: None,
-            },
-        );
-        let launch = state
-            .deployments
-            .lock()
-            .unwrap()
-            .get("deploy_pending")
-            .unwrap()
-            .launch("deploy_pending", "deprun_pending");
-        assert!(state.launch_run("deprun_pending", launch).await.is_err());
-        let run = state.runs.lock().unwrap()["deprun_pending"].clone();
-        assert!(run.session_id.is_none() && run.error.is_none(), "U1");
-        assert_eq!(
-            state.deployments.lock().unwrap()["deploy_pending"].status,
-            "active",
-            "U1"
-        );
-    }
-
-    /// Deployment-run failure cause graph:
-    /// trigger + typed launch outcome -> append-only run -> optional schedule
-    /// suspension. Manual failures remain operator-visible but never change the
-    /// schedule; transient scheduled failures keep future fires active; persistent
-    /// scheduled failures pause with the exact run-error discriminator.
-    ///
-    /// | Rule | trigger | launch error | run terminal state | deployment effect |
-    /// |---|---|---|---|---|
-    /// | F1 | schedule | environment archived | error only | auto-pause, exact reason |
-    /// | F2 | schedule | rate limited | error only | remain active |
-    /// | F3 | manual | environment archived | error only | remain active |
-    #[tokio::test]
-    async fn launch_failure_decision_table_controls_auto_pause_behavior() {
-        struct Launcher {
-            error: RunError,
-        }
-        #[async_trait::async_trait]
-        impl DeploymentSessionLauncher for Launcher {
-            async fn launch(&self, _request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-                DeploymentLaunchOutcome::Failed {
-                    error: self.error.clone(),
-                }
-            }
-        }
-
-        async fn exercise(trigger: TriggerContext, error: RunError) -> (DeploymentRun, Deployment) {
-            let state = DeploymentState::new();
-            state.bind_launcher(Arc::new(Launcher { error }));
-            state
-                .deployments
-                .lock()
-                .unwrap()
-                .insert("deploy_failure".into(), deployment(None));
-            state.runs.lock().unwrap().insert(
-                "deprun_failure".into(),
-                RunRecord {
-                    created_at: OBJECT_AT.into(),
-                    deployment_id: "deploy_failure".into(),
-                    workspace_id: "default".into(),
-                    agent: AgentReference::new("coder", 1),
-                    trigger,
-                    session_id: None,
-                    error: None,
-                },
-            );
-            let launch = state
-                .deployments
-                .lock()
-                .unwrap()
-                .get("deploy_failure")
-                .unwrap()
-                .launch("deploy_failure", "deprun_failure");
-            let run = state.launch_run("deprun_failure", launch).await.unwrap();
-            let deployment = state
-                .deployments
-                .lock()
-                .unwrap()
-                .get("deploy_failure")
-                .unwrap()
-                .project("deploy_failure");
-            (run, deployment)
-        }
-
-        let archived = RunError::EnvironmentArchivedError {
-            message: "archived".into(),
-        };
-        let (run, deployment) = exercise(
-            TriggerContext::Schedule {
-                scheduled_at: OBJECT_AT.into(),
-            },
-            archived.clone(),
-        )
-        .await;
-        assert_eq!(run.error, Some(archived.clone()), "F1 exact run error");
-        assert!(run.session_id.is_none(), "F1 exactly one terminal branch");
-        assert_eq!(deployment.status, "paused", "F1");
-        assert_eq!(
-            deployment.paused_reason,
-            Some(PausedReason::Error {
-                error: crate::types::deployment::PausedReasonError::EnvironmentArchivedError,
-            }),
-            "F1 exact paused reason"
-        );
-
-        let (run, deployment) = exercise(
-            TriggerContext::Schedule {
-                scheduled_at: OBJECT_AT.into(),
-            },
-            RunError::SessionRateLimitedError {
-                message: "retry later".into(),
-            },
-        )
-        .await;
-        assert!(run.error.is_some(), "F2 failed run retained");
-        assert_eq!(deployment.status, "active", "F2 keeps schedule alive");
-        assert!(deployment.paused_reason.is_none(), "F2");
-
-        let (run, deployment) = exercise(TriggerContext::Manual, archived).await;
-        assert!(run.error.is_some(), "F3 failed run retained");
-        assert_eq!(
-            deployment.status, "active",
-            "F3 manual run cannot auto-pause"
-        );
-    }
-
-    #[tokio::test]
-    async fn rate_limited_deployment_run_is_recorded_without_launch_or_retry() {
-        use std::sync::atomic::AtomicUsize;
-
-        struct CountingLauncher(Arc<AtomicUsize>);
-        #[async_trait::async_trait]
-        impl DeploymentSessionLauncher for CountingLauncher {
-            async fn launch(&self, _request: DeploymentLaunch) -> DeploymentLaunchOutcome {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                DeploymentLaunchOutcome::Created {
-                    session_id: "unexpected".into(),
-                }
-            }
-        }
-
-        // Rate-limit table: R1 the shared Create bucket is exhausted -> one
-        // session_rate_limited_error run, zero launcher calls/retries, active
-        // schedule; R2 is runtime-axis independent because Native/ACP selection
-        // occurs only inside the launcher that admission never invokes.
-        let limiter = Arc::new(ManagedRateLimiter::with_limits(
-            "org_rate",
-            crate::ManagedRateLimits {
-                create_per_minute: 1,
-                read_per_minute: 1,
-            },
-        ));
-        assert!(limiter.admit_internal_session_create(), "exhaust bucket");
-        let launches = Arc::new(AtomicUsize::new(0));
-        let state = DeploymentState::new();
-        state.bind_rate_limiter(limiter);
-        state.bind_launcher(Arc::new(CountingLauncher(launches.clone())));
-        let record = deployment(Some(cron_schedule("*/15 * * * *")));
-        let launch = record.launch("deploy_rate", "run_rate");
-        state
-            .deployments
-            .lock()
-            .unwrap()
-            .insert("deploy_rate".into(), record);
-        state.runs.lock().unwrap().insert(
-            "run_rate".into(),
-            RunRecord {
-                created_at: OBJECT_AT.into(),
-                deployment_id: "deploy_rate".into(),
-                workspace_id: "default".into(),
-                agent: AgentReference::new("coder", 1),
-                trigger: TriggerContext::Schedule {
-                    scheduled_at: OBJECT_AT.into(),
-                },
-                session_id: None,
-                error: None,
-            },
-        );
-        let run = state.launch_run("run_rate", launch).await.unwrap();
-        assert!(
-            matches!(run.error, Some(RunError::SessionRateLimitedError { .. })),
-            "R1"
-        );
-        assert!(run.session_id.is_none(), "R1 terminal XOR");
-        assert_eq!(launches.load(Ordering::SeqCst), 0, "R1/R2 no retry");
-        let deployment = state.deployments.lock().unwrap()["deploy_rate"].clone();
-        assert_eq!(
-            deployment.status, "active",
-            "R1 next occurrence remains eligible"
-        );
-        assert!(deployment.paused_reason.is_none(), "R1");
-    }
-
-    #[test]
-    fn last_run_at_is_echoed_into_the_projected_schedule() {
-        let state = DeploymentState::new();
-        state.deployments.lock().unwrap().insert(
-            "deploy_y".into(),
-            deployment(Some(cron_schedule("*/15 * * * *"))),
-        );
-        state.tick(MON_0900);
-        let due = jitter_due("deploy_y", MON_0900 + 15 * 60_000, 15 * 60_000);
-        state.tick(due);
-        let store = state.deployments.lock().unwrap();
-        let projected = store.get("deploy_y").unwrap().project("deploy_y");
-        let Schedule::Cron { last_run_at, .. } = projected.schedule.expect("schedule present");
-        assert_eq!(last_run_at.as_deref(), Some("2026-01-05T09:15:00Z"));
-    }
-
-    /// Schedule projection cause graph:
-    /// parsed cron + IANA timezone + lifecycle state -> computed future UTC
-    /// occurrences. Pausing suppresses execution but preserves the preview;
-    /// archiving clears it because no future fire is possible.
-    ///
-    /// | lifecycle | upcoming behavior |
-    /// |---|---|
-    /// | active | next five timezone-aware occurrences |
-    /// | paused | same next five hypothetical occurrences |
-    /// | archived | empty |
-    #[test]
-    fn projected_schedule_decision_table_tracks_lifecycle_behavior() {
-        let mut record = deployment(Some(cron_schedule("*/15 * * * *")));
-        let Schedule::Cron {
-            upcoming_runs_at, ..
-        } = record.project("deploy_projection").schedule.unwrap();
-        assert_eq!(upcoming_runs_at.len(), 5, "active preview");
-        assert!(
-            upcoming_runs_at.windows(2).all(|pair| pair[0] < pair[1]),
-            "preview is strictly ordered"
-        );
-
-        record.status = "paused".into();
-        record.paused_reason = Some(PausedReason::Manual);
-        let Schedule::Cron {
-            upcoming_runs_at, ..
-        } = record.project("deploy_projection").schedule.unwrap();
-        assert_eq!(upcoming_runs_at.len(), 5, "paused preview remains visible");
-
-        record.archived_at = Some(OBJECT_AT.into());
-        let Schedule::Cron {
-            upcoming_runs_at, ..
-        } = record.project("deploy_projection").schedule.unwrap();
-        assert!(upcoming_runs_at.is_empty(), "archived preview is empty");
-        let wire = serde_json::to_value(record.project("deploy_projection")).unwrap();
-        assert_eq!(wire["schedule"]["upcoming_runs_at"], serde_json::json!([]));
-        assert!(
-            wire["schedule"]["last_run_at"].is_null(),
-            "official response retains nullable runtime fields"
-        );
-    }
+    Ok(Json(paginate(data, &page, |run| run.id.as_str())))
 }

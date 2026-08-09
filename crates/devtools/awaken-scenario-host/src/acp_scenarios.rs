@@ -589,6 +589,6 @@ pub async fn build_acp_container_router() -> Router {
         .with_acp_launch_source(awaken_coordinator::relay_hand_executor_factory(), launch)
         .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
-    // scenario, with the exact EnvironmentState mounted by the environment API.
+    // scenario, with the exact Environment Execution application mounted by the API.
     mount_with_environments_and_agent_source(Arc::new(host), Some(publication))
 }

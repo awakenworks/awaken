@@ -79,7 +79,7 @@ pub struct EnrollmentUrl {
     #[serde(rename = "type")]
     pub object_type: &'static str,
     pub url: String,
-    pub expires_at: &'static str,
+    pub expires_at: String,
 }
 
 /// `UserProfileUpdateParams` — a partial update. `external_id` / `name` /
@@ -97,4 +97,7 @@ pub struct UserProfileUpdateParams {
     pub name: Option<Option<String>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub relationship: Option<Option<Relationship>>,
+    /// Authorization-style trust grants. These are not GDPR consent grants.
+    #[serde(default)]
+    pub trust_grants: Option<BTreeMap<String, TrustGrant>>,
 }

@@ -1,6 +1,6 @@
 //! Coordinator-owned captured runtime content persistence.
 //!
-//! Consent and erasure-job state remain in Control's `awaken-data-subject`;
+//! Consent and erasure-job state remain in Control's data-subject application/store;
 //! this crate owns only capture records, restriction state, TTL, and subject
 //! erasure at the Coordinator boundary.
 

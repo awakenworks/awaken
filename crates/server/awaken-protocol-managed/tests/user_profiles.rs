@@ -4,7 +4,11 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed::{UserProfileState, user_profiles_router};
+use awaken_data_subject_application::DataSubjectApplication;
+use awaken_data_subject_store::InMemoryDataSubjectRepo;
+use awaken_protocol_managed::{
+    MANAGED_BETA, USER_PROFILES_BETA, enforce_managed_beta, user_profiles_router,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -13,7 +17,12 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 fn app() -> Router {
-    user_profiles_router(Arc::new(UserProfileState::new()))
+    let repo = Arc::new(InMemoryDataSubjectRepo::new());
+    let application = Arc::new(
+        DataSubjectApplication::new(repo, b"test-user-profile-enrollment-key!!".to_vec())
+            .expect("valid test enrollment key"),
+    );
+    user_profiles_router(application, "org_test".into())
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -38,6 +47,13 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test]
 async fn user_profile_crud_and_metadata_merge() {
+    // Cause/effect graph: C1 operation={create,retrieve,update,list,enroll}; C2
+    // profile={present,missing}; C3 patch={metadata delete/upsert, relationship,
+    // name,trust grant}; C4 enrollment token={opaque signed}. Effects: E1 one
+    // application-backed aggregate is projected consistently; E2 mixed patch
+    // preserves untouched facts; E3 missing reads/actions are 404; E4 enrollment
+    // returns an opaque signed URL. Decision rules R1 present+C1+C3 -> E1+E2;
+    // R2 missing+C1 -> E3; R3 present+enroll+C4 -> E4.
     let app = app();
 
     // Create — relationship defaults to `external`, trust_grants is present+empty.
@@ -70,13 +86,15 @@ async fn user_profile_crud_and_metadata_merge() {
         Some(json!({
             "name": "Acme",
             "relationship": "resold",
-            "metadata": { "a": "", "b": "2" }
+            "metadata": { "a": "", "b": "2" },
+            "trust_grants": { "calendar": { "status": "pending" } }
         })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(up["name"], "Acme");
     assert_eq!(up["relationship"], "resold");
+    assert_eq!(up["trust_grants"]["calendar"]["status"], "pending");
     assert_eq!(up["metadata"]["b"], "2");
     assert_eq!(up["metadata"]["keep"], "x");
     assert!(
@@ -107,7 +125,11 @@ async fn user_profile_crud_and_metadata_merge() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(enr["type"], "enrollment_url");
-    assert!(enr["url"].as_str().unwrap().contains(&id));
+    assert!(enr["url"].as_str().unwrap().starts_with("/enroll/"));
+    assert!(
+        !enr["url"].as_str().unwrap().contains(&id),
+        "signed enrollment state is opaque on the URL"
+    );
     assert!(enr["expires_at"].is_string());
 
     // Unknown ids 404 on retrieve/update/enrollment.
@@ -125,6 +147,8 @@ async fn user_profile_crud_and_metadata_merge() {
 
 #[tokio::test]
 async fn over_long_fields_are_rejected() {
+    // Decision rule L1: name/external_id length >255 -> 400 before application
+    // mutation. The adjacent CRUD rule owns the <=255 success combinations.
     let app = app();
     let (s, _) = call(
         &app,
@@ -138,8 +162,9 @@ async fn over_long_fields_are_rejected() {
 
 #[tokio::test]
 async fn user_profiles_paginate_by_anthropic_page_cursor() {
-    // The list is an Anthropic Managed Agents `PageCursor`: `?limit=&page=`, and the
-    // response carries `next_page` (the cursor) — `null` on the last page.
+    // Cause/effect table: C1 rows=3; C2 limit=2; C3 cursor={absent,page1-last};
+    // E1 first page has two rows+cursor; E2 resume has one non-overlapping row;
+    // E3 terminal next_page=null. R1 C3=absent -> E1; R2 C3=cursor -> E2+E3.
     let app = app();
     for i in 0..3 {
         let (s, _) = call(
@@ -186,4 +211,29 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
         "the last page has no continuation cursor"
     );
     assert_eq!(p2["has_more"], false);
+}
+
+#[tokio::test]
+async fn user_profiles_require_their_own_beta_family() {
+    // Causes: C1 User Profiles path; C2 header={absent,managed,user-profiles}.
+    // Effects: E1 absent/wrong family -> 400; E2 exact User Profiles beta reaches
+    // the handler. Constraint: Managed Agents beta must not authorize its sibling
+    // API. Rules B1 C2=absent -> E1; B2 C2=managed -> E1; B3 C2=profile -> E2.
+    let app = app().layer(axum::middleware::from_fn(enforce_managed_beta));
+    for (header, expected) in [
+        (None, StatusCode::BAD_REQUEST),
+        (Some(MANAGED_BETA), StatusCode::BAD_REQUEST),
+        (Some(USER_PROFILES_BETA), StatusCode::OK),
+    ] {
+        let mut request = Request::get("/v1/user_profiles");
+        if let Some(header) = header {
+            request = request.header("anthropic-beta", header);
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "header={header:?}");
+    }
 }

@@ -2,3 +2,5 @@
 
 /// The Managed Agents beta wire header accepted by every Managed endpoint.
 pub const MANAGED_BETA: &str = "managed-agents-2026-04-01";
+/// Official beta gate for the sibling User Profiles API family.
+pub const USER_PROFILES_BETA: &str = "user-profiles-2026-03-24";

@@ -1,4 +1,4 @@
--- Control-owned data subjects and consent grants, keyed by organization
+-- Control-owned data-subject aggregate rows, keyed by organization
 CREATE TABLE {prefix}_subject (
     id TEXT PRIMARY KEY,
     org TEXT NOT NULL,

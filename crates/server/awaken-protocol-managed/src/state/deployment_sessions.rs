@@ -114,6 +114,9 @@ mod tests {
     use super::*;
     use crate::state::test_support::RehydrateFake;
     use async_trait::async_trait;
+    use awaken_deployment_application::{
+        DeploymentAgent, DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher,
+    };
     use std::collections::BTreeMap;
 
     struct UnavailableEnvironmentSource;
@@ -160,11 +163,11 @@ mod tests {
         // and R3 C3→E3; R1 is covered by Environment execution conformance.
         // This distinction lets Deployment make absence terminal while retaining
         // a pending run for an indeterminate catalog outage.
-        let request = |environment_id: &str| crate::DeploymentLaunch {
+        let request = |environment_id: &str| DeploymentLaunch {
             deployment_id: "depl_a".into(),
             deployment_run_id: "deprun_a".into(),
             workspace_id: "workspace_a".into(),
-            agent: crate::types::agent::AgentReference::new("agent_a", 1),
+            agent: DeploymentAgent::new("agent_a", 1),
             environment_id: environment_id.into(),
             metadata: BTreeMap::new(),
             initial_events: Vec::new(),
@@ -175,10 +178,10 @@ mod tests {
         let missing_launcher = crate::LocalDeploymentSessionLauncher::new(missing);
         assert!(
             matches!(
-                crate::DeploymentSessionLauncher::launch(&missing_launcher, request("env_missing"))
+                DeploymentSessionLauncher::launch(&missing_launcher, request("env_missing"))
                     .await,
-                crate::DeploymentLaunchOutcome::Failed {
-                    error: crate::types::deployment::RunError::EnvironmentNotFoundError { .. }
+                DeploymentLaunchOutcome::Failed {
+                    error: awaken_deployment_application::DeploymentRunFailure::EnvironmentNotFoundError { .. }
                 }
             ),
             "R2"
@@ -186,7 +189,7 @@ mod tests {
 
         let unavailable = Arc::new(
             ManagedState::new(RehydrateFake::default()).with_environments(Arc::new(
-                crate::routes::environments::EnvironmentExecutionState::new(
+                awaken_environment_execution_application::EnvironmentExecutionApplication::new(
                     Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
                     Arc::new(UnavailableEnvironmentSource),
                 ),
@@ -195,9 +198,9 @@ mod tests {
         let unavailable_launcher = crate::LocalDeploymentSessionLauncher::new(unavailable);
         assert!(
             matches!(
-                crate::DeploymentSessionLauncher::launch(&unavailable_launcher, request("env_a"))
+                DeploymentSessionLauncher::launch(&unavailable_launcher, request("env_a"))
                     .await,
-                crate::DeploymentLaunchOutcome::Unavailable { message }
+                DeploymentLaunchOutcome::Unavailable { message }
                     if message.contains("catalog offline")
             ),
             "R3"
