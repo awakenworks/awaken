@@ -192,6 +192,7 @@ pub(crate) async fn wire_skills(
     placement: SkillForkPlacement,
     skills_subdir: &str,
     execution: Arc<crate::store::HostCommit>,
+    materialize_delivered_files: bool,
 ) -> Result<Option<SkillWiring>, String> {
     // Store availability is not a capability grant. Offer the tools only when
     // this exact Session has a static, external, or delivered Skill. A later Run
@@ -268,20 +269,21 @@ pub(crate) async fn wire_skills(
                 )
             });
             if let Some(directory) = &directory {
-                let env = env.as_ref().ok_or_else(|| {
-                    format!(
+                if let Some(env) = env.as_ref() {
+                    let materialized = version
+                        .files
+                        .iter()
+                        .map(|file| (file.path.clone(), file.content.clone(), file.executable))
+                        .collect::<Vec<_>>();
+                    env.materialize_read_only_tree(directory, &materialized)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                } else if materialize_delivered_files {
+                    return Err(format!(
                         "filesystem Skill `{}` requires a materialized Session environment",
                         version.skill_id
-                    )
-                })?;
-                let materialized = version
-                    .files
-                    .iter()
-                    .map(|file| (file.path.clone(), file.content.clone(), file.executable))
-                    .collect::<Vec<_>>();
-                env.materialize_read_only_tree(directory, &materialized)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                    ));
+                }
             }
             files.push(SkillFile {
                 id: version.skill_id.to_string(),

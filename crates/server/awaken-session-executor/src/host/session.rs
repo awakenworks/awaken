@@ -95,7 +95,11 @@ impl SharedHost {
         Ok((workspace, selected_agent.to_string(), installed))
     }
 
-    fn session_has_local_environment_inputs(&self, thread: &str) -> bool {
+    fn session_has_local_environment_inputs(
+        &self,
+        thread: &str,
+        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> bool {
         let slot_requires = self
             .session_slots
             .read(thread, |slot| {
@@ -113,11 +117,21 @@ impl SharedHost {
                     })
             })
             .unwrap_or(false);
+        let selected_skills = published_snapshot.map(|snapshot| {
+            snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .skills
+                .iter()
+                .map(|skill| skill.skill_id.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+        let workspace = self.thread_workspace(thread);
         slot_requires
-            || self.skills.specs().iter().any(|skill| {
-                skill.environment != awaken_ext_skills::SkillEnvironment::InstructionOnly
-                    || skill.context != awaken_ext_skills::SkillContext::Inline
-            })
+            || self
+                .skills
+                .requires_environment_in(&workspace, selected_skills.as_ref())
     }
 
     pub(crate) fn session_environment_provider(
@@ -192,7 +206,7 @@ impl SharedHost {
                 awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
             });
         slot_allows
-            && !self.session_has_local_environment_inputs(thread)
+            && !self.session_has_local_environment_inputs(thread, published_snapshot)
             && !published_backend_is_acp
             && !selected_backend_is_acp
     }
@@ -634,6 +648,21 @@ impl SharedHost {
         // executor or a process-wide sandbox default.
         let (workspace, selected_agent, installed) =
             self.resolve_session_publication(thread, agent, published_snapshot)?;
+        // Legacy Session manifests carry no frozen Skill list. Refresh their
+        // canonical delivered catalog before deciding whether `on_tool_use` may
+        // defer the Environment; doing this later in Skill wiring can classify
+        // a cold cache as instruction-only and then discover support files after
+        // the sandbox-free decision has already been made.
+        let frozen_skill_versions = self
+            .session_slots
+            .read(thread, |slot| slot.skills.clone())
+            .flatten();
+        if frozen_skill_versions.is_none() {
+            self.skills
+                .reload_cache_in(&workspace)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        }
         let published_backend_ref = installed
             .as_ref()
             .map(|snapshot| snapshot.resolved_spec.model_binding.backend_ref.clone());
@@ -648,7 +677,7 @@ impl SharedHost {
         let a2a_only = installed.as_ref().is_some_and(|snapshot| {
             !crate::host::completion::requires_local_environment(&snapshot.resolved_spec)
         });
-        if a2a_only && self.session_has_local_environment_inputs(thread) {
+        if a2a_only && self.session_has_local_environment_inputs(thread, installed.as_ref()) {
             return Err(HostError::bad_request(
                 "remote A2A execution cannot consume local Session Environment inputs",
             ));
@@ -864,17 +893,9 @@ impl SharedHost {
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
         // A managed Session consumes its exact frozen Skill versions. An embedded
         // direct Session without a manifest reads its configured Skill catalog.
-        let frozen = self
-            .session_slots
-            .read(thread, |slot| slot.skills.clone())
-            .flatten();
-        let delivered = if frozen.is_some() {
-            frozen
+        let delivered = if frozen_skill_versions.is_some() {
+            frozen_skill_versions
         } else {
-            self.skills
-                .reload_cache_in(&workspace)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
             self.skills
                 .has_store()
                 .then(|| self.skills.cache_snapshot_in(&workspace))
@@ -926,6 +947,10 @@ impl SharedHost {
             self.skill_fork_placement,
             &skills_subdir,
             commit.clone(),
+            // A coordinator-only host owns the Skill registry used to describe
+            // the durable Run, but the exact claimed Worker owns filesystem
+            // realization. Every execution-capable host must materialize here.
+            !self.deployment.disable_local_pool,
         )
         .await
         .map_err(HostError::internal)?
