@@ -171,6 +171,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
     let environment = EnvironmentSnapshot {
         environment_id: row.environment_id,
         revision: awaken_session_contract::EnvironmentRevision(0),
+        self_hosted: false,
         config_fingerprint: EnvironmentFingerprint(awaken_session_contract::stable_fingerprint(&(
             &sandbox,
             &packages,

@@ -97,11 +97,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkQueue for FailingConvergenceWorkQueue {
-        async fn enqueue_session(&self, env_id: &str, session_id: &str) -> String {
+        async fn enqueue_session(
+            &self,
+            env_id: &str,
+            session_id: &str,
+        ) -> Result<String, WorkQueueError> {
             self.inner.enqueue_session(env_id, session_id).await
         }
 
-        async fn enqueue_healthcheck(&self, env_id: &str) -> String {
+        async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
             self.inner.enqueue_healthcheck(env_id).await
         }
 
@@ -115,19 +119,24 @@ mod tests {
             }
         }
 
-        async fn list(&self, env_id: &str) -> Vec<WorkItem> {
+        async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
             self.inner.list(env_id).await
         }
 
-        async fn get(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
+        async fn get(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.get(env_id, wid).await
         }
 
-        async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem> {
+        async fn claim(
+            &self,
+            env_id: &str,
+            worker_id: &str,
+            now_ms: u64,
+        ) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.claim(env_id, worker_id, now_ms).await
         }
 
-        async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
+        async fn ack(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.ack(env_id, wid).await
         }
 
@@ -138,13 +147,13 @@ mod tests {
             worker_id: &str,
             now_ms: u64,
             heartbeat: LeaseHeartbeat,
-        ) -> HeartbeatResult {
+        ) -> Result<HeartbeatResult, WorkQueueError> {
             self.inner
                 .heartbeat(env_id, wid, worker_id, now_ms, heartbeat)
                 .await
         }
 
-        async fn stop(&self, env_id: &str, wid: &str) -> Option<WorkItem> {
+        async fn stop(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.stop(env_id, wid).await
         }
 
@@ -153,11 +162,11 @@ mod tests {
             env_id: &str,
             wid: &str,
             patch: std::collections::BTreeMap<String, String>,
-        ) -> Option<WorkItem> {
+        ) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.update_metadata(env_id, wid, patch).await
         }
 
-        async fn stats(&self, env_id: &str, now_ms: u64) -> QueueStats {
+        async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError> {
             self.inner.stats(env_id, now_ms).await
         }
 
@@ -212,7 +221,7 @@ mod tests {
             "Q1"
         );
         assert!(catalog.current("env-convergence").is_some(), "Q1/E2");
-        assert!(work.list("env-convergence").await.is_empty(), "Q1");
+        assert!(work.list("env-convergence").await.unwrap().is_empty(), "Q1");
 
         work.fail_ensure.store(false, Ordering::SeqCst);
         assert_eq!(
@@ -220,8 +229,14 @@ mod tests {
             ExecutableEnvironmentRegistrationOutcome::AlreadyRegistered,
             "Q2"
         );
-        assert_eq!(work.list("env-convergence").await.len(), 1, "Q2/E3");
-        work.enqueue_session("env-convergence", "session-a").await;
+        assert_eq!(
+            work.list("env-convergence").await.unwrap().len(),
+            1,
+            "Q2/E3"
+        );
+        work.enqueue_session("env-convergence", "session-a")
+            .await
+            .unwrap();
 
         let withdrawal = ExecutableEnvironmentWithdrawal {
             environment_id: "env-convergence".into(),
@@ -236,7 +251,7 @@ mod tests {
             "Q3"
         );
         assert!(catalog.current("env-convergence").is_none(), "Q3/E2");
-        assert_eq!(work.list("env-convergence").await.len(), 2, "Q3");
+        assert_eq!(work.list("env-convergence").await.unwrap().len(), 2, "Q3");
 
         work.fail_remove.store(false, Ordering::SeqCst);
         assert_eq!(
@@ -244,6 +259,9 @@ mod tests {
             ExecutableEnvironmentWithdrawalOutcome::AlreadyWithdrawn,
             "Q4"
         );
-        assert!(work.list("env-convergence").await.is_empty(), "Q4/E4");
+        assert!(
+            work.list("env-convergence").await.unwrap().is_empty(),
+            "Q4/E4"
+        );
     }
 }

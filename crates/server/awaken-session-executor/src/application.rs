@@ -852,6 +852,7 @@ mod network_policy_tests {
         let environment = awaken_session_contract::EnvironmentSnapshot {
             environment_id: "env_packages".into(),
             revision: awaken_session_contract::EnvironmentRevision(3),
+            self_hosted: false,
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp".into()),
             sandbox: serde_json::json!({}),
             sandbox_provisioning: Default::default(),

@@ -30,12 +30,14 @@ fn block<F: std::future::Future>(f: F) -> F::Output {
 /// out exactly ONE lease, and exactly one item is Active.
 async fn single_active_cap<Q: WorkQueue>(q: &Q) {
     for i in 0..5 {
-        q.enqueue_session("env", &format!("s{i}")).await;
+        q.enqueue_session("env", &format!("s{i}"))
+            .await
+            .expect("enqueue");
     }
     let handed = {
         let mut n = 0;
         for _ in 0..4 {
-            if q.claim("env", "w", 0).await.is_some() {
+            if q.claim("env", "w", 0).await.expect("claim").is_some() {
                 n += 1;
             }
         }
@@ -45,6 +47,7 @@ async fn single_active_cap<Q: WorkQueue>(q: &Q) {
     let active = q
         .list("env")
         .await
+        .expect("list")
         .into_iter()
         .filter(|w| w.state == WorkState::Active)
         .count();
@@ -54,14 +57,23 @@ async fn single_active_cap<Q: WorkQueue>(q: &Q) {
 /// Reclaim is exact at the TTL boundary: a live lease caps the env until `now == expiry`,
 /// then the lapsed item is reclaimable.
 async fn reclaim_at_ttl<Q: WorkQueue>(q: &Q) {
-    q.enqueue_session("env", "s0").await;
-    assert!(q.claim("env", "a", 0).await.is_some(), "first claim leases");
+    q.enqueue_session("env", "s0").await.expect("enqueue");
     assert!(
-        q.claim("env", "b", LEASE_TTL_MS - 1).await.is_none(),
+        q.claim("env", "a", 0).await.expect("claim").is_some(),
+        "first claim leases"
+    );
+    assert!(
+        q.claim("env", "b", LEASE_TTL_MS - 1)
+            .await
+            .expect("claim")
+            .is_none(),
         "held until the last ms before expiry"
     );
     assert!(
-        q.claim("env", "b", LEASE_TTL_MS).await.is_some(),
+        q.claim("env", "b", LEASE_TTL_MS)
+            .await
+            .expect("claim")
+            .is_some(),
         "reclaimable at exactly the TTL boundary"
     );
 }
@@ -69,8 +81,11 @@ async fn reclaim_at_ttl<Q: WorkQueue>(q: &Q) {
 /// Requested reclaim age is measured from the last lease refresh, independently
 /// of the TTL selected by that heartbeat.
 async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
-    let id = q.enqueue_session("env", "s0").await;
-    q.claim("env", "worker-a", 0).await.expect("initial claim");
+    let id = q.enqueue_session("env", "s0").await.expect("enqueue");
+    q.claim("env", "worker-a", 0)
+        .await
+        .expect("claim query")
+        .expect("initial claim");
     assert!(matches!(
         q.heartbeat(
             "env",
@@ -82,18 +97,21 @@ async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
                 desired_ttl_seconds: Some(120),
             },
         )
-        .await,
+        .await
+        .expect("heartbeat"),
         HeartbeatResult::Accepted(_)
     ));
     assert!(
         q.claim_with_reclaim("env", "worker-b", 1_001, Some(2))
             .await
+            .expect("claim")
             .is_none(),
         "a one-millisecond-old refresh is younger than the requested age"
     );
     assert!(
         q.claim_with_reclaim("env", "worker-b", 1_002, Some(2))
             .await
+            .expect("claim")
             .is_some(),
         "reclaim age is exact even when the live lease has a 120-second ttl"
     );
@@ -101,19 +119,30 @@ async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
 
 /// Environments lease independently: a claim in one never touches another's cap.
 async fn env_isolation<Q: WorkQueue>(q: &Q) {
-    q.enqueue_session("env_a", "a0").await;
-    q.enqueue_session("env_b", "b0").await;
-    let la = q.claim("env_a", "w", 0).await.expect("env_a leases");
+    q.enqueue_session("env_a", "a0").await.expect("enqueue a");
+    q.enqueue_session("env_b", "b0").await.expect("enqueue b");
+    let la = q
+        .claim("env_a", "w", 0)
+        .await
+        .expect("claim query")
+        .expect("env_a leases");
     let lb = q
         .claim("env_b", "w", 0)
         .await
+        .expect("claim query")
         .expect("env_b leases independently");
     assert_eq!(
-        q.get("env_a", &la.id).await.map(|w| w.environment_id),
+        q.get("env_a", &la.id)
+            .await
+            .expect("get")
+            .map(|w| w.environment_id),
         Some("env_a".into())
     );
     assert_eq!(
-        q.get("env_b", &lb.id).await.map(|w| w.environment_id),
+        q.get("env_b", &lb.id)
+            .await
+            .expect("get")
+            .map(|w| w.environment_id),
         Some("env_b".into())
     );
 }
@@ -121,43 +150,84 @@ async fn env_isolation<Q: WorkQueue>(q: &Q) {
 /// Stopping the active item frees the next, and no item is lost or duplicated.
 async fn stop_frees_next<Q: WorkQueue>(q: &Q) {
     for i in 0..3 {
-        q.enqueue_session("env", &format!("s{i}")).await;
+        q.enqueue_session("env", &format!("s{i}"))
+            .await
+            .expect("enqueue");
     }
-    let first = q.claim("env", "w", 0).await.expect("first");
+    let first = q
+        .claim("env", "w", 0)
+        .await
+        .expect("claim query")
+        .expect("first");
     assert!(
-        q.claim("env", "w", 0).await.is_none(),
+        q.claim("env", "w", 0).await.expect("claim").is_none(),
         "capped while active"
     );
-    q.stop("env", &first.id).await;
+    q.stop("env", &first.id).await.expect("stop");
     assert!(
-        q.claim("env", "w", 0).await.is_some(),
+        q.claim("env", "w", 0).await.expect("claim").is_some(),
         "next claimable after stop"
     );
-    assert_eq!(q.list("env").await.len(), 3, "item count conserved");
+    assert_eq!(
+        q.list("env").await.expect("list").len(),
+        3,
+        "item count conserved"
+    );
 }
 
 /// remove_env purges everything: no items, nothing to claim.
 async fn remove_env_purges<Q: WorkQueue>(q: &Q) {
     for i in 0..3 {
-        q.enqueue_session("env", &format!("s{i}")).await;
+        q.enqueue_session("env", &format!("s{i}"))
+            .await
+            .expect("enqueue");
     }
     q.remove_env("env").await.unwrap();
     assert!(
-        q.list("env").await.is_empty(),
+        q.list("env").await.expect("list").is_empty(),
         "list empty after remove_env"
     );
     assert!(
-        q.claim("env", "w", 0).await.is_none(),
+        q.claim("env", "w", 0).await.expect("claim").is_none(),
         "nothing to claim after remove_env"
     );
+}
+
+/// Session dispatch is a durable projection: exact replay converges to one row,
+/// while either identity coordinate changing creates independent work.
+async fn session_enqueue_is_idempotent<Q: WorkQueue>(q: &Q) {
+    // Cause/effect graph: C1 same Environment; C2 same Session; C3 concurrent or
+    // sequential replay. Effects: E1 C1+C2 always returns one canonical work id;
+    // E2 changing either coordinate produces a distinct item. Constraints: a
+    // WorkQueue key is exactly (environment_id, session_id).
+    //
+    // | Rule | environment | session | replay | identity / row count |
+    // | D1 | same | same | yes | same id / one row |
+    // | D2 | same | different | no | distinct id / two rows |
+    // | D3 | different | same | no | distinct id in other queue |
+    let first = q.enqueue_session("env", "session-a").await.expect("D1");
+    let replay = q.enqueue_session("env", "session-a").await.expect("D1");
+    assert_eq!(replay, first, "D1 canonical identity");
+    assert_eq!(q.list("env").await.expect("D1 list").len(), 1, "D1");
+
+    let other_session = q.enqueue_session("env", "session-b").await.expect("D2");
+    assert_ne!(other_session, first, "D2");
+    assert_eq!(q.list("env").await.expect("D2 list").len(), 2, "D2");
+
+    let other_env = q.enqueue_session("env-b", "session-a").await.expect("D3");
+    assert_ne!(other_env, first, "D3");
+    assert_eq!(q.list("env-b").await.expect("D3 list").len(), 1, "D3");
 }
 
 /// The official heartbeat compare token is an atomic CAS: first succeeds once,
 /// the returned token advances monotonically, and a stale token cannot extend
 /// the lease after a newer heartbeat has committed.
 async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
-    let id = q.enqueue_session("env", "s0").await;
-    q.claim("env", "worker", 0).await.expect("claim");
+    let id = q.enqueue_session("env", "s0").await.expect("enqueue");
+    q.claim("env", "worker", 0)
+        .await
+        .expect("claim query")
+        .expect("claim");
 
     assert!(matches!(
         q.heartbeat(
@@ -170,7 +240,8 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
                 desired_ttl_seconds: None,
             },
         )
-        .await,
+        .await
+        .expect("heartbeat"),
         HeartbeatResult::PreconditionFailed
     ));
 
@@ -186,6 +257,7 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
             },
         )
         .await
+        .expect("heartbeat")
     {
         HeartbeatResult::Accepted(receipt) => receipt,
         other => panic!("first heartbeat rejected: {other:?}"),
@@ -204,7 +276,8 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
                 desired_ttl_seconds: None,
             },
         )
-        .await,
+        .await
+        .expect("heartbeat"),
         HeartbeatResult::PreconditionFailed
     ));
 
@@ -220,6 +293,7 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
             },
         )
         .await
+        .expect("heartbeat")
         .into_receipt()
         .expect("matching heartbeat");
     assert_ne!(second.last_heartbeat, first.last_heartbeat);
@@ -235,7 +309,8 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
                 desired_ttl_seconds: None,
             },
         )
-        .await,
+        .await
+        .expect("heartbeat"),
         HeartbeatResult::PreconditionFailed
     ));
 }
@@ -248,6 +323,7 @@ async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     env_isolation(&fresh()).await;
     stop_frees_next(&fresh()).await;
     remove_env_purges(&fresh()).await;
+    session_enqueue_is_idempotent(&fresh()).await;
     heartbeat_compare_and_extend(&fresh()).await;
 }
 

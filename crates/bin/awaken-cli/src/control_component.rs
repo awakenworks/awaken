@@ -262,6 +262,9 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
             executable_environment_wiring: Some(
                 executable_environment_registration::local_test_wiring(),
             ),
+            executable_agent_wiring: Some(
+                executable_agent_registration::ExecutableAgentWiring::local(),
+            ),
             ..Default::default()
         },
     )
@@ -322,6 +325,9 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
                 executable_environment_wiring: Some(
                     executable_environment_registration::local_test_wiring(),
                 ),
+                executable_agent_wiring: Some(
+                    executable_agent_registration::ExecutableAgentWiring::local(),
+                ),
                 ..Default::default()
             },
         )
@@ -350,8 +356,8 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
 #[tokio::test]
 #[should_panic(expected = "Control process requires executable Environment registrar wiring")]
 async fn standalone_control_rejects_missing_environment_registration_wiring() {
-    // Cause/effect graph: C1 role=Control; C2 executable Agent wiring may use its
-    // test fallback; C3 executable Environment wiring is absent. Effect E1 is a
+    // Cause/effect graph: C1 role=Control; C2 executable Agent wiring is explicit;
+    // C3 executable Environment wiring is absent. Effect E1 is a
     // composition failure before any authoring router can return a fake success.
     // Decision rule W1 = C1+C3 -> E1. The positive configured rules are owned by
     // the adjacent standalone Control tests.
@@ -363,6 +369,9 @@ async fn standalone_control_rejects_missing_environment_registration_wiring() {
         PublicationModelComposition::PublishedProviders,
         ProcessAssemblyOptions {
             role: config::Role::Control,
+            executable_agent_wiring: Some(
+                executable_agent_registration::ExecutableAgentWiring::local(),
+            ),
             ..Default::default()
         },
     )

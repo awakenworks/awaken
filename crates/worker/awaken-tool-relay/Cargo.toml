@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 awaken-runtime-contract.workspace = true
 # The one channel-bound marker (ADR-0045 D6): the hand's framed I/O runs over any

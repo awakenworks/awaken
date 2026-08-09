@@ -785,6 +785,7 @@ mod provisioning_registry_tests {
             &awaken_session_contract::EnvironmentSnapshot {
                 environment_id: "environment".into(),
                 revision: awaken_session_contract::EnvironmentRevision(1),
+                self_hosted: false,
                 config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                     "environment-1".into(),
                 ),

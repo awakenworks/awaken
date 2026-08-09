@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_session_contract::{ManagedSessionRepository, SessionLifecycleSink};
+#[cfg(any(test, feature = "test-support"))]
 use awaken_session_store::SqliteManagedSessionRepository;
 
 use super::mcp_attachment::UnsupportedMcpAttachmentRealizer;
@@ -17,36 +18,75 @@ use crate::routes::vaults::{RepositoryCredentialIngress, SessionCredentialSource
 static MANAGED_STATE_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl ManagedState {
+    /// Volatile fixture constructor. Product composition must inject the durable
+    /// Session repository and the canonical Environment execution projection via
+    /// [`ManagedState::from_required_ports`].
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
         Self::from_ports(
             Arc::new(runtime),
             Arc::new(UnsupportedMcpAttachmentRealizer),
+            ephemeral_session_repository(),
+            Arc::new(crate::routes::environments::EnvironmentExecutionState::default()),
         )
     }
 
     /// Compose one object that implements both independent application ports.
     /// The shared `Arc` preserves one adapter instance without merging the
     /// Session turn lifecycle with MCP attachment realization.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_mcp<R>(runtime: R) -> Self
     where
         R: SessionRuntime + awaken_session_contract::McpAttachmentRealizer + 'static,
     {
         let runtime = Arc::new(runtime);
-        Self::from_ports(runtime.clone(), runtime)
+        Self::from_ports(
+            runtime.clone(),
+            runtime,
+            ephemeral_session_repository(),
+            Arc::new(crate::routes::environments::EnvironmentExecutionState::default()),
+        )
+    }
+
+    /// Production constructor over all persistence/placement authority required
+    /// before the Managed aggregate can accept a Session.
+    pub fn from_required_ports(
+        runtime: impl SessionRuntime + 'static,
+        sessions_repo: Arc<dyn ManagedSessionRepository>,
+        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
+    ) -> Self {
+        Self::from_ports(
+            Arc::new(runtime),
+            Arc::new(UnsupportedMcpAttachmentRealizer),
+            sessions_repo,
+            environments,
+        )
+    }
+
+    /// Production constructor when one runtime implements both Session execution
+    /// and MCP attachment realization.
+    pub fn from_required_ports_with_mcp<R>(
+        runtime: R,
+        sessions_repo: Arc<dyn ManagedSessionRepository>,
+        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
+    ) -> Self
+    where
+        R: SessionRuntime + awaken_session_contract::McpAttachmentRealizer + 'static,
+    {
+        let runtime = Arc::new(runtime);
+        Self::from_ports(runtime.clone(), runtime, sessions_repo, environments)
     }
 
     fn from_ports(
         runtime: Arc<dyn SessionRuntime>,
         mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
+        sessions_repo: Arc<dyn ManagedSessionRepository>,
+        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
     ) -> Self {
         let started_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
-        let sessions_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
-            SqliteManagedSessionRepository::open_in_memory()
-                .expect("open ephemeral managed Session repository"),
-        );
         runtime.install_environment_binding_sink(Arc::new(
             super::environment::RepositoryEnvironmentBindingSink::new(sessions_repo.clone()),
         ));
@@ -55,9 +95,7 @@ impl ManagedState {
             mcp_realizer,
             credential_source: None,
             repository_credential_ingress: None,
-            environments: Arc::new(
-                crate::routes::environments::EnvironmentExecutionState::default(),
-            ),
+            environments,
             config_source: None,
             resource_catalog: None,
             resource_purge_scheduler: None,
@@ -87,6 +125,7 @@ impl ManagedState {
     /// Wire the environments surface, so `POST /v1/sessions` resolves the session's
     /// `environment_id` to its networking policy (egress on/off). Share the same
     /// Coordinator's one executable Environment projection and WorkQueue.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_environments(
         mut self,
@@ -96,9 +135,9 @@ impl ManagedState {
         self
     }
 
-    /// Wire a durable session repository (e.g. SQLite alongside the transcript
-    /// store) so a session's config survives a restart and is reported faithfully
-    /// by another process. The default is in-memory (single-process behavior).
+    /// Replace the already-explicit Session repository. This is primarily useful
+    /// for decorators assembled after the base state; there is no implicit default.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_session_repo(mut self, repo: Arc<dyn ManagedSessionRepository>) -> Self {
         self.runtime.install_environment_binding_sink(Arc::new(
@@ -172,4 +211,12 @@ impl ManagedState {
         self.resource_catalog = Some(catalog);
         self
     }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn ephemeral_session_repository() -> Arc<dyn ManagedSessionRepository> {
+    Arc::new(
+        SqliteManagedSessionRepository::open_in_memory()
+            .expect("open ephemeral managed Session repository"),
+    )
 }
