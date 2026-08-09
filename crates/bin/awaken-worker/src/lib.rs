@@ -861,11 +861,10 @@ impl WorkerNode {
                 (Some(decorator), provisioner)
             });
         // Route the dispatch pool's claim/settle over HTTP to the cell server.
-        let (dispatch_store, stream_publisher) =
-            awaken_session_executor::worker_transports_with_upstream(
-                &upstream,
-                registration.snapshot.identity.clone(),
-            );
+        let (dispatch, stream_publisher) = awaken_coordinator_client::worker_transports_with_upstream(
+            &upstream,
+            registration.snapshot.identity.clone(),
+        );
 
         let managed_credential_materializer = self.credential_materializer.clone();
         let remote_memory = Arc::new(awaken_session_executor::HttpMemoryRepository::new(
@@ -889,7 +888,7 @@ impl WorkerNode {
         )
         .with_worker_upstream(upstream)
         .with_worker_stream_publisher(stream_publisher)
-        .with_dispatch_store(dispatch_store)
+        .with_dispatch_port(dispatch)
         .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(self.web_search_providers);
         if let Some(remote_attempt) = self.remote_attempt {

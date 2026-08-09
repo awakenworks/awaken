@@ -5735,13 +5735,12 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
     let dispatch = host
         .resolved_dispatch(activation)
         .expect("decorate durable dispatch");
-    let carried = crate::provisioning::decode_session_resource_envelope(
-        dispatch
-            .session_resources
-            .as_ref()
-            .expect("resource envelope"),
-    )
-    .expect("decode resource envelope");
+    let carried = dispatch
+        .session_resources
+        .as_ref()
+        .expect("resource envelope")
+        .decode_manifest()
+        .expect("decode resource envelope");
     assert_eq!(carried, manifest);
     assert_eq!(
         dispatch.execution_scope,

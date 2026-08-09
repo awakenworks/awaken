@@ -53,6 +53,30 @@ impl SessionResourceEnvelope {
             resolved_resources_json: resolved_resources_json.into(),
         }
     }
+
+    /// Encode the Session-owned manifest into its one durable dispatch shape.
+    pub fn from_manifest(
+        manifest: &awaken_session_contract::SessionResourceManifest,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self::at_revision(
+            manifest.workspace_id.clone(),
+            manifest.revision,
+            serde_json::to_string(&manifest.resources)?,
+        ))
+    }
+
+    /// Restore the Session-owned manifest before validation or realization.
+    pub fn decode_manifest(
+        &self,
+    ) -> Result<awaken_session_contract::SessionResourceManifest, serde_json::Error> {
+        Ok(
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                self.workspace_id.clone(),
+                self.resource_revision,
+                serde_json::from_str(&self.resolved_resources_json)?,
+            ),
+        )
+    }
 }
 
 /// Dispatch-neutral envelope for the immutable Session runtime projection.
@@ -464,5 +488,26 @@ mod tests {
         assert_eq!(wire["placement"]["location"], "remote_required");
         let restored: RunDispatch = serde_json::from_value(wire).expect("deserializes");
         assert_eq!(restored, request);
+    }
+
+    /// Resource-envelope ACL cause/effect decision table. Causes: C1 a valid
+    /// Session manifest; C2 an envelope with valid resource JSON; C3 malformed
+    /// resource JSON. Effects: E1 workspace/revision and resources are encoded
+    /// losslessly; E2 the exact manifest is restored; E3 decoding fails closed.
+    /// Rules A1 C1=>E1, A2 C1+C2=>E2, A3 C3=>E3 cover every JSON validity class.
+    #[test]
+    fn session_resource_envelope_is_the_single_lossless_fail_closed_acl() {
+        let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
+            "workspace-a",
+            7,
+            Default::default(),
+        );
+        let envelope = SessionResourceEnvelope::from_manifest(&manifest).expect("A1 encode");
+        assert_eq!(envelope.workspace_id, "workspace-a", "A1");
+        assert_eq!(envelope.resource_revision, 7, "A1");
+        assert_eq!(envelope.decode_manifest().expect("A2 decode"), manifest);
+
+        let malformed = SessionResourceEnvelope::at_revision("workspace-a", 7, "{");
+        assert!(malformed.decode_manifest().is_err(), "A3");
     }
 }

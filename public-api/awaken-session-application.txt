@@ -1,4 +1,9 @@
 pub mod awaken_session_application
+pub enum awaken_session_application::SessionMutationError
+pub awaken_session_application::SessionMutationError::Conflict
+pub awaken_session_application::SessionMutationError::IdempotencyMismatch
+pub awaken_session_application::SessionMutationError::NotFound
+pub awaken_session_application::SessionMutationError::Unavailable(alloc::string::String)
 pub struct awaken_session_application::RepositoryEnvironmentBindingSink
 impl awaken_session_application::RepositoryEnvironmentBindingSink
 pub fn awaken_session_application::RepositoryEnvironmentBindingSink::new(alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>) -> Self
@@ -8,6 +13,12 @@ pub fn awaken_session_application::RepositoryEnvironmentBindingSink::persist<'li
 pub struct awaken_session_application::ResolvedSessionEnvironment
 pub awaken_session_application::ResolvedSessionEnvironment::snapshot: awaken_session_contract::baseline::EnvironmentSnapshot
 pub struct awaken_session_application::SessionApplication
+impl awaken_session_application::SessionApplication
+pub const awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS: usize
+pub async fn awaken_session_application::SessionApplication::commit_mutation(&self, &str, awaken_session_contract::session_repo::SessionMutation) -> core::result::Result<awaken_session_contract::session_repo::SessionMutationResult, awaken_session_application::SessionMutationError>
+pub async fn awaken_session_application::SessionApplication::commit_session_snapshot(&self, &str, awaken_session_contract::session_repo::PersistedSession, &str, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionMutationError>
+pub async fn awaken_session_application::SessionApplication::commit_session_snapshot_with_record(&self, &str, awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::session_repo::IdempotencyRecord, alloc::vec::Vec<awaken_session_contract::lifecycle::ManagedLifecycleFact>) -> core::result::Result<(awaken_session_contract::session_repo::PersistedSession, bool), awaken_session_application::SessionMutationError>
+pub async fn awaken_session_application::SessionApplication::owner(&self, &str) -> core::option::Option<alloc::string::String>
 impl awaken_session_application::SessionApplication
 pub fn awaken_session_application::SessionApplication::claim_lifecycle_supervisor(&self) -> bool
 pub fn awaken_session_application::SessionApplication::config_source(&self) -> core::option::Option<&dyn awaken_executable_agent_contract::session_profile::ExecutableAgentProfileSource>

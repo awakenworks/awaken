@@ -1,12 +1,22 @@
 pub mod awaken_dispatch
 pub use awaken_dispatch::AssignmentRejection
 pub use awaken_dispatch::AttemptCredentialBinding
+pub use awaken_dispatch::BindSandboxRequest
 pub use awaken_dispatch::CandidateFingerprint
 pub use awaken_dispatch::CasOutcome
+pub use awaken_dispatch::CheckpointRequest
+pub use awaken_dispatch::ClaimNewRunRequest
+pub use awaken_dispatch::ClaimRunRequest
+pub use awaken_dispatch::ClaimWorkerRequest
 pub use awaken_dispatch::Claimed
 pub use awaken_dispatch::ClaimedCommitCommand
+pub use awaken_dispatch::ClaimedCommitRequest
+pub use awaken_dispatch::ClaimedRunCommit
+pub use awaken_dispatch::ClaimedStreamPublisher
 pub use awaken_dispatch::CommitEpochGuard
 pub use awaken_dispatch::CredentialRealizationReceipt
+pub use awaken_dispatch::CredentialRealizationRequest
+pub use awaken_dispatch::DeliverAndClaimRequest
 pub use awaken_dispatch::Dispatch
 pub use awaken_dispatch::DispatchCompletion
 pub use awaken_dispatch::DispatchCursor
@@ -19,9 +29,11 @@ pub use awaken_dispatch::DispatchPage
 pub use awaken_dispatch::DispatchQueue
 pub use awaken_dispatch::DispatchState
 pub use awaken_dispatch::DispatchSummary
+pub use awaken_dispatch::EnqueueRequest
 pub use awaken_dispatch::ExecutionLocation
 pub use awaken_dispatch::ExecutionScopeRef
 pub use awaken_dispatch::HOST_EXECUTOR_CAPABILITY
+pub use awaken_dispatch::HeartbeatWorkerRequest
 pub use awaken_dispatch::Inbox
 pub use awaken_dispatch::Lease
 pub use awaken_dispatch::LeaseLossReason
@@ -36,15 +48,20 @@ pub use awaken_dispatch::PlacementPolicy
 pub use awaken_dispatch::PlacementRequirements
 pub use awaken_dispatch::REPOSITORY_CREDENTIALS_CAPABILITY
 pub use awaken_dispatch::RankedWorker
+pub use awaken_dispatch::RecoveryRequest
+pub use awaken_dispatch::RegisterWorkerRequest
 pub use awaken_dispatch::RegisteredWorker
 pub use awaken_dispatch::RegistryError
 pub use awaken_dispatch::RegistryMutation
+pub use awaken_dispatch::RenewRequest
 pub use awaken_dispatch::RunClaim
 pub use awaken_dispatch::RunDispatch
 pub use awaken_dispatch::SESSION_RESOURCES_CAPABILITY
 pub use awaken_dispatch::SessionResourceEnvelope
 pub use awaken_dispatch::SessionRuntimeEnvelope
 pub use awaken_dispatch::SettleOutcome
+pub use awaken_dispatch::SettleRequest
+pub use awaken_dispatch::StreamEventRequest
 pub use awaken_dispatch::SubmitOptions
 pub use awaken_dispatch::WORKER_LOCAL_CREDENTIALS_CAPABILITY
 pub use awaken_dispatch::WorkerAcpCapabilityObservation
@@ -56,6 +73,7 @@ pub use awaken_dispatch::WorkerCredentialState
 pub use awaken_dispatch::WorkerDirectory
 pub use awaken_dispatch::WorkerHeartbeat
 pub use awaken_dispatch::WorkerIdentity
+pub use awaken_dispatch::WorkerIdentityRequest
 pub use awaken_dispatch::WorkerManifest
 pub use awaken_dispatch::WorkerObservationSource
 pub use awaken_dispatch::WorkerRecoveryMode
@@ -124,6 +142,7 @@ pub fn awaken_dispatch::AnyDispatchStore::purge_dead_letters<'life0, 'async_trai
 pub fn awaken_dispatch::AnyDispatchStore::purge_dead_letters_before<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch::AnyDispatchStore::put_stream_checkpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::stream::checkpoint::StreamCheckpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch::AnyDispatchStore::reap<'life0, 'async_trait>(&'life0 self, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_dispatch::AnyDispatchStore::reap_and_claim<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, u64, u64, &'life2 awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_dispatch::AnyDispatchStore::record_credential_realization<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch::AnyDispatchStore::renew_lease<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_dispatch::AnyDispatchStore::renew_owned_leases<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -142,41 +161,12 @@ pub fn awaken_dispatch::AnyDispatchStore::relay<'life0, 'async_trait>(&'life0 se
 pub fn awaken_dispatch::AnyDispatchStore::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_dispatch_contract::operational::DispatchOperationalFeed for awaken_dispatch::AnyDispatchStore
 pub fn awaken_dispatch::AnyDispatchStore::events_after<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::operational::DispatchCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::operational::DispatchPage, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_dispatch::BindSandboxRequest
-pub awaken_dispatch::BindSandboxRequest::claim: awaken_dispatch_contract::dispatch::RunClaim
-pub awaken_dispatch::BindSandboxRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_dispatch::BindSandboxRequest::sandbox_ref: alloc::string::String
-pub struct awaken_dispatch::CheckpointRequest
-pub awaken_dispatch::CheckpointRequest::checkpoint: core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>
-pub awaken_dispatch::CheckpointRequest::claim: awaken_dispatch_contract::dispatch::RunClaim
-pub awaken_dispatch::CheckpointRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub struct awaken_dispatch::ClaimNewRunRequest
-pub awaken_dispatch::ClaimNewRunRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_dispatch::ClaimNewRunRequest::request: awaken_dispatch_contract::run_dispatch::RunDispatch
-pub struct awaken_dispatch::ClaimRunRequest
-pub awaken_dispatch::ClaimRunRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_dispatch::ClaimRunRequest::run_id: alloc::string::String
-pub struct awaken_dispatch::ClaimWorkerRequest
-pub awaken_dispatch::ClaimWorkerRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
 pub struct awaken_dispatch::ClaimedCommitCoordinator
 impl awaken_dispatch::ClaimedCommitCoordinator
-pub fn awaken_dispatch::ClaimedCommitCoordinator::new(alloc::sync::Arc<dyn awaken_dispatch::ClaimedRunCommit>, awaken_dispatch_contract::dispatch::RunClaim) -> Self
+pub fn awaken_dispatch::ClaimedCommitCoordinator::new(alloc::sync::Arc<dyn awaken_dispatch_contract::claimed_commit::ClaimedRunCommit>, awaken_dispatch_contract::dispatch::RunClaim) -> Self
 pub fn awaken_dispatch::ClaimedCommitCoordinator::with_recovery_projection(self, alloc::sync::Arc<awaken_dispatch::RecoveryProjection>) -> Self
 impl awaken_agent_contract::thread::commit::coordinator::Coordinator for awaken_dispatch::ClaimedCommitCoordinator
 pub fn awaken_dispatch::ClaimedCommitCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_dispatch::ClaimedCommitRequest
-pub awaken_dispatch::ClaimedCommitRequest::claim: awaken_dispatch_contract::dispatch::RunClaim
-pub awaken_dispatch::ClaimedCommitRequest::identity: awaken_worker_contract::WorkerIdentity
-pub awaken_dispatch::ClaimedCommitRequest::operation: awaken_agent_contract::thread::commit::operation::CommitOperation
-impl awaken_dispatch::ClaimedCommitRequest
-pub fn awaken_dispatch::ClaimedCommitRequest::new(awaken_dispatch_contract::dispatch::ClaimedCommitCommand, awaken_worker_contract::WorkerIdentity) -> Self
-pub struct awaken_dispatch::CredentialRealizationRequest
-pub awaken_dispatch::CredentialRealizationRequest::claim: awaken_dispatch_contract::dispatch::RunClaim
-pub awaken_dispatch::CredentialRealizationRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_dispatch::CredentialRealizationRequest::receipt: awaken_runtime_contract::credential::CredentialRealizationReceipt
-pub struct awaken_dispatch::DeliverAndClaimRequest
-pub awaken_dispatch::DeliverAndClaimRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_dispatch::DeliverAndClaimRequest::input: awaken_dispatch_contract::dispatch::PendingInput
 pub struct awaken_dispatch::DispatchPool<S>
 impl<S: awaken_dispatch_contract::dispatch::Dispatch + 'static> awaken_dispatch::DispatchPool<S>
 pub async fn awaken_dispatch::DispatchPool<S>::begin_drain(&self)
@@ -228,8 +218,8 @@ pub async fn awaken_dispatch::DispatchWorker<S>::start_run(&self, awaken_dispatc
 pub fn awaken_dispatch::DispatchWorker<S>::store(&self) -> &alloc::sync::Arc<S>
 pub async fn awaken_dispatch::DispatchWorker<S>::tick(&self, u64) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
 pub async fn awaken_dispatch::DispatchWorker<S>::tick_run(&self, &awaken_agent_contract::agent::run::Id, u64) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>
-pub fn awaken_dispatch::DispatchWorker<S>::with_claimed_commit(self, alloc::sync::Arc<dyn awaken_dispatch::ClaimedRunCommit>) -> Self
-pub fn awaken_dispatch::DispatchWorker<S>::with_claimed_stream_publisher(self, alloc::sync::Arc<dyn awaken_dispatch::ClaimedStreamPublisher>) -> Self
+pub fn awaken_dispatch::DispatchWorker<S>::with_claimed_commit(self, alloc::sync::Arc<dyn awaken_dispatch_contract::claimed_commit::ClaimedRunCommit>) -> Self
+pub fn awaken_dispatch::DispatchWorker<S>::with_claimed_stream_publisher(self, alloc::sync::Arc<dyn awaken_dispatch_contract::claimed_stream::ClaimedStreamPublisher>) -> Self
 pub fn awaken_dispatch::DispatchWorker<S>::with_context(self, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> Self
 pub fn awaken_dispatch::DispatchWorker<S>::with_inference_materializer(self, awaken_dispatch::InferenceMaterializerFn) -> Self
 pub fn awaken_dispatch::DispatchWorker<S>::with_lease_ms(self, u64) -> Self
@@ -262,8 +252,8 @@ pub fn awaken_dispatch::DurableRunIngress<S>::spawn_service(&self, alloc::sync::
 pub async fn awaken_dispatch::DurableRunIngress<S>::stage_cross_thread(&self, awaken_dispatch_contract::dispatch::PendingInput) -> core::result::Result<bool, awaken_dispatch::Error>
 pub async fn awaken_dispatch::DurableRunIngress<S>::submit_superseding(&self, awaken_runtime_contract::activation::RunActivation) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_dispatch::Error>
 pub async fn awaken_dispatch::DurableRunIngress<S>::superseded(&self) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_dispatch::Error>
-pub fn awaken_dispatch::DurableRunIngress<S>::with_claimed_commit(self, alloc::sync::Arc<dyn awaken_dispatch::ClaimedRunCommit>) -> Self
-pub fn awaken_dispatch::DurableRunIngress<S>::with_claimed_stream_publisher(self, alloc::sync::Arc<dyn awaken_dispatch::ClaimedStreamPublisher>) -> Self
+pub fn awaken_dispatch::DurableRunIngress<S>::with_claimed_commit(self, alloc::sync::Arc<dyn awaken_dispatch_contract::claimed_commit::ClaimedRunCommit>) -> Self
+pub fn awaken_dispatch::DurableRunIngress<S>::with_claimed_stream_publisher(self, alloc::sync::Arc<dyn awaken_dispatch_contract::claimed_stream::ClaimedStreamPublisher>) -> Self
 pub fn awaken_dispatch::DurableRunIngress<S>::with_context(self, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> Self
 pub fn awaken_dispatch::DurableRunIngress<S>::with_local_credential_capabilities(self, awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> Self
 pub fn awaken_dispatch::DurableRunIngress<S>::with_owner<C>(alloc::sync::Arc<awaken_runtime::runtime::Runtime>, alloc::sync::Arc<S>, alloc::sync::Arc<C>, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>) -> Self where C: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::thread_reader::ThreadReader + awaken_agent_contract::thread::read::run_store::RunStore + core::marker::Send + core::marker::Sync + 'static
@@ -279,9 +269,6 @@ impl<S: awaken_dispatch_contract::dispatch::Dispatch + 'static> awaken_runtime::
 pub fn awaken_dispatch::DurableRunIngress<S>::cancel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::control::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch::DurableRunIngress<S>::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch::DurableRunIngress<S>::start<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_dispatch::EnqueueRequest
-pub awaken_dispatch::EnqueueRequest::options: core::option::Option<awaken_dispatch_contract::dispatch::SubmitOptions>
-pub awaken_dispatch::EnqueueRequest::request: awaken_dispatch_contract::run_dispatch::RunDispatch
 pub struct awaken_dispatch::FencedStreamCheckpointStore
 impl awaken_dispatch::FencedStreamCheckpointStore
 pub fn awaken_dispatch::FencedStreamCheckpointStore::new(core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>, alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>, awaken_dispatch_contract::dispatch::RunClaim) -> Self
@@ -292,58 +279,8 @@ pub fn awaken_dispatch::FencedStreamCheckpointStore::put<'life0, 'async_trait>(&
 pub struct awaken_dispatch::GuardedRunCommit
 impl awaken_dispatch::GuardedRunCommit
 pub fn awaken_dispatch::GuardedRunCommit::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>, alloc::sync::Arc<dyn awaken_dispatch_contract::dispatch::DispatchQueue>) -> Self
-impl awaken_dispatch::ClaimedRunCommit for awaken_dispatch::GuardedRunCommit
+impl awaken_dispatch_contract::claimed_commit::ClaimedRunCommit for awaken_dispatch::GuardedRunCommit
 pub fn awaken_dispatch::GuardedRunCommit::commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::GuardedRunCommit::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::ClaimedCommitCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_dispatch::HeartbeatWorkerRequest
-pub awaken_dispatch::HeartbeatWorkerRequest::heartbeat: awaken_worker_contract::WorkerHeartbeat
-pub awaken_dispatch::HeartbeatWorkerRequest::identity: awaken_worker_contract::WorkerIdentity
-pub struct awaken_dispatch::HttpDispatchQueue
-impl awaken_dispatch::HttpDispatchQueue
-pub fn awaken_dispatch::HttpDispatchQueue::new(impl core::convert::Into<alloc::string::String>, awaken_worker_contract::WorkerIdentity) -> Self
-pub fn awaken_dispatch::HttpDispatchQueue::with_client(self, reqwest::async_impl::client::Client) -> Self
-pub fn awaken_dispatch::HttpDispatchQueue::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_dispatch::WorkerRequestAuthorizer>) -> Self
-impl awaken_dispatch::ClaimedStreamPublisher for awaken_dispatch::HttpDispatchQueue
-pub fn awaken_dispatch::HttpDispatchQueue::publish<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl awaken_dispatch_contract::dispatch::DispatchQueue for awaken_dispatch::HttpDispatchQueue
-pub fn awaken_dispatch::HttpDispatchQueue::awaiting_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::bind_sandbox<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::cancel<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::thread::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::claim<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, u64, u64, &'life2 awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::claim_compatible<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerSnapshot, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::claim_is_current<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::claim_new_run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, &'life1 str, u64, u64, &'life2 awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::claim_new_run_compatible<'life0, 'life1, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, &'life1 awaken_worker_contract::WorkerSnapshot, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::claim_run<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, u64, u64, &'life3 awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::claim_run_compatible<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 awaken_worker_contract::WorkerSnapshot, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::delete_stream_checkpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::deliver_and_claim<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput, &'life1 str, u64, u64, &'life2 awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::deliver_and_claim_compatible<'life0, 'life1, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput, &'life1 awaken_worker_contract::WorkerSnapshot, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::Claimed>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::enqueue_with<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::run_dispatch::RunDispatch, awaken_dispatch_contract::dispatch::SubmitOptions) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::list_dispatches<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_dispatch_contract::dispatch::DispatchSummary>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::load_recovery_snapshot<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::load_stream_checkpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::stream::checkpoint::StreamCheckpoint>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::lock_commit_epoch<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_dispatch_contract::dispatch::CommitEpochGuard>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::purge_dead_letters<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::purge_dead_letters_before<'life0, 'async_trait>(&'life0 self, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::put_stream_checkpoint<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::stream::checkpoint::StreamCheckpoint) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::reap<'life0, 'async_trait>(&'life0 self, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::record_credential_realization<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::renew_lease<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, &'life2 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::renew_owned_leases<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::requeue<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::settle<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id, u64, awaken_dispatch_contract::dispatch::DispatchOutcome, &'life2 [alloc::string::String]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::SettleOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::superseded<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::worker_owns_run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_worker_contract::WorkerIdentity, &'life2 awaken_agent_contract::agent::run::Id, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl awaken_dispatch_contract::dispatch::Inbox for awaken_dispatch::HttpDispatchQueue
-pub fn awaken_dispatch::HttpDispatchQueue::append<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::edit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, awaken_runtime_contract::resume::ResumeResult) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::CasOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_dispatch_contract::dispatch::PendingRecord>, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::retract<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::dispatch::CasOutcome, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl awaken_dispatch_contract::dispatch::Outbox for awaken_dispatch::HttpDispatchQueue
-pub fn awaken_dispatch::HttpDispatchQueue::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch::HttpDispatchQueue::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_dispatch::LiveRunControlService<S>
 impl<S: awaken_dispatch_contract::dispatch::Dispatch + 'static> awaken_dispatch::LiveRunControlService<S>
 pub async fn awaken_dispatch::LiveRunControlService<S>::cancel(&self, &str) -> core::result::Result<(), awaken_dispatch::LiveRunControlError>
@@ -446,14 +383,6 @@ pub fn awaken_dispatch::RecoveryProjection::committed_messages(&self, &awaken_ag
 pub fn awaken_dispatch::RecoveryProjection::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
 pub fn awaken_dispatch::RecoveryProjection::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
 pub fn awaken_dispatch::RecoveryProjection::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
-pub struct awaken_dispatch::RecoveryRequest
-pub awaken_dispatch::RecoveryRequest::claim: awaken_dispatch_contract::dispatch::RunClaim
-pub awaken_dispatch::RecoveryRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub struct awaken_dispatch::RegisterWorkerRequest
-pub awaken_dispatch::RegisterWorkerRequest::registration: awaken_worker_contract::WorkerRegistration
-pub struct awaken_dispatch::RenewRequest
-pub awaken_dispatch::RenewRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_dispatch::RenewRequest::run_id: alloc::string::String
 pub struct awaken_dispatch::RunIngressCapabilities
 pub awaken_dispatch::RunIngressCapabilities::durable: bool
 pub awaken_dispatch::RunIngressCapabilities::recoverable: bool
@@ -462,12 +391,6 @@ pub awaken_dispatch::RunIngressCapabilities::scheduled_wake: bool
 impl awaken_dispatch::RunIngressCapabilities
 pub const awaken_dispatch::RunIngressCapabilities::DIRECT: Self
 pub const awaken_dispatch::RunIngressCapabilities::DURABLE: Self
-pub struct awaken_dispatch::SettleRequest
-pub awaken_dispatch::SettleRequest::consumed: alloc::vec::Vec<alloc::string::String>
-pub awaken_dispatch::SettleRequest::epoch: u64
-pub awaken_dispatch::SettleRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
-pub awaken_dispatch::SettleRequest::outcome: awaken_dispatch_contract::dispatch::DispatchOutcome
-pub awaken_dispatch::SettleRequest::run_id: alloc::string::String
 pub struct awaken_dispatch::SqliteDispatchStore
 impl awaken_dispatch::SqliteDispatchStore
 pub fn awaken_dispatch::SqliteDispatchStore::open(&str) -> core::result::Result<Self, awaken_dispatch::SqliteStoreError>
@@ -511,27 +434,10 @@ pub fn awaken_dispatch::SqliteDispatchStore::relay<'life0, 'async_trait>(&'life0
 pub fn awaken_dispatch::SqliteDispatchStore::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_dispatch_contract::operational::DispatchOperationalFeed for awaken_dispatch::SqliteDispatchStore
 pub fn awaken_dispatch::SqliteDispatchStore::events_after<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::operational::DispatchCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_dispatch_contract::operational::DispatchPage, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_dispatch::StreamEventRequest
-pub awaken_dispatch::StreamEventRequest::claim: awaken_dispatch_contract::dispatch::RunClaim
-pub awaken_dispatch::StreamEventRequest::event: awaken_agent_contract::stream::event::Event
-pub awaken_dispatch::StreamEventRequest::identity: awaken_worker_contract::WorkerIdentity
 pub struct awaken_dispatch::SystemClock
 impl awaken_dispatch::Clock for awaken_dispatch::SystemClock
 pub fn awaken_dispatch::SystemClock::now_ms(&self) -> u64
-pub struct awaken_dispatch::WorkerIdentityRequest
-pub awaken_dispatch::WorkerIdentityRequest::deadline_ms: core::option::Option<u64>
-pub awaken_dispatch::WorkerIdentityRequest::identity: awaken_worker_contract::WorkerIdentity
 pub const awaken_dispatch::DEFAULT_LEASE_MS: u64
-pub trait awaken_dispatch::ClaimedRunCommit: core::marker::Send + core::marker::Sync
-pub fn awaken_dispatch::ClaimedRunCommit::commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::ClaimedRunCommit::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::ClaimedCommitCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl awaken_dispatch::ClaimedRunCommit for awaken_dispatch::GuardedRunCommit
-pub fn awaken_dispatch::GuardedRunCommit::commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_dispatch::GuardedRunCommit::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::ClaimedCommitCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub trait awaken_dispatch::ClaimedStreamPublisher: core::marker::Send + core::marker::Sync
-pub fn awaken_dispatch::ClaimedStreamPublisher::publish<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl awaken_dispatch::ClaimedStreamPublisher for awaken_dispatch::HttpDispatchQueue
-pub fn awaken_dispatch::HttpDispatchQueue::publish<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_dispatch_contract::dispatch::RunClaim, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_dispatch::Clock: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::Clock::now_ms(&self) -> u64
 impl awaken_dispatch::Clock for awaken_dispatch::ManualClock
@@ -551,9 +457,6 @@ pub fn awaken_dispatch::LocalWakeSignal::wait<'life0, 'async_trait>(&'life0 self
 impl awaken_dispatch::WakeSignal for awaken_dispatch::PgNotifyWake
 pub fn awaken_dispatch::PgNotifyWake::publish<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch::PgNotifyWake::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub trait awaken_dispatch::WorkerRequestAuthorizer: core::marker::Send + core::marker::Sync
-pub fn awaken_dispatch::WorkerRequestAuthorizer::authorize(&self, &str, &str, &str, reqwest::async_impl::request::RequestBuilder) -> core::result::Result<reqwest::async_impl::request::RequestBuilder, alloc::string::String>
-pub fn awaken_dispatch::WorkerRequestAuthorizer::bind_worker_identity(&self, &awaken_worker_contract::WorkerIdentity) -> alloc::sync::Arc<dyn awaken_dispatch::WorkerRequestAuthorizer>
 pub trait awaken_dispatch::WorkerResolver<S>: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::WorkerResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
 pub fn awaken_dispatch::WorkerResolver::reconcile_committed_terminals<'life0, 'async_trait>(&'life0 self, u64, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_dispatch::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
