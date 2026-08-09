@@ -252,8 +252,6 @@ fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, writable: b
     let config = awaken_resource_contract::MemoryStoreConfigVersion {
         memory_store_id: store_id.to_string().into(),
         version: awaken_resource_contract::ConfigVersion::INITIAL,
-        recall_policy: Default::default(),
-        extraction_policy: Default::default(),
         retention_policy: Default::default(),
     };
     let handle = host.platform_memory_handle(store_id.to_string(), writable);
@@ -336,8 +334,6 @@ fn effective_resources(
                         config: awaken_resource_contract::MemoryStoreConfigVersion {
                             memory_store_id: resource.id.clone().into(),
                             version: awaken_resource_contract::ConfigVersion::INITIAL,
-                            recall_policy: Default::default(),
-                            extraction_policy: Default::default(),
                             retention_policy: Default::default(),
                         },
                     },
@@ -438,7 +434,7 @@ fn memory_mount_store_id(mount: &awaken_provisioning_contract::MountRequirement)
 }
 
 /// Test composition adapter for runtime-host's dependency-inverted MemoryMounter
-/// port. Production installs `awaken-sandbox-memoryd` from awaken-server.
+/// port. Production installs `awaken-sandbox-memoryd` from awaken-coordinator.
 struct TestMemoryMounter {
     fs: Arc<dyn awaken_memory_store::MemoryRepository>,
 }
@@ -1370,7 +1366,7 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
 /// serves extraction + recall and an unbound Session sees no store.
 #[tokio::test]
 async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memory() {
-    use awaken_session_contract::{ResolvedInputSource, SessionInit, SessionRuntime};
+    use awaken_session_contract::{SessionInit, SessionRuntime};
 
     let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub"));
     let unbound_store = test_memory_store_id();
@@ -1383,8 +1379,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     let store_a = test_memory_store_id();
     let store_b = test_memory_store_id();
     let managed = managed_with_resource_source(host.clone());
-    let init = |store: Option<&str>, extraction_enabled: bool| {
-        let mut init = SessionInit {
+    let init = |store: Option<&str>| {
+        SessionInit {
             workspace_id: host.local_workspace().into(),
             agent_id: "agent".into(),
             delegate_ids: Vec::new(),
@@ -1396,8 +1392,8 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
                         id: id.into(),
                         mount_path: "/memory".into(),
                         // Workdir cannot OS-enforce read-only mounts, so this integration
-                        // path uses a writable mount with extraction disabled. The
-                        // handle-level read-only invariant is covered separately.
+                        // path uses a writable mount. The handle-level read-only
+                        // invariant is covered separately.
                         access: ResourceAccess::ReadWrite,
                         instructions: None,
                         initial_branch: None,
@@ -1412,17 +1408,11 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
                 awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                 serde_json::json!({}),
             ),
-        };
-        if let Some(input) = init.resources.inputs.first_mut()
-            && let ResolvedInputSource::MemoryStore { config, .. } = &mut input.source
-        {
-            config.extraction_policy.enabled = extraction_enabled;
         }
-        init
     };
 
     managed
-        .prepare_session("managed-write-a", init(Some(&store_a), true))
+        .prepare_session("managed-write-a", init(Some(&store_a)))
         .await
         .unwrap();
     managed
@@ -1455,7 +1445,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
 
     let reply = |outcome: &awaken_session_contract::StepOutcome| {
         outcome
-            .messages
+            .new_messages
             .iter()
             .rev()
             .find(|message| message.role == Role::Assistant)
@@ -1463,7 +1453,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
             .unwrap_or_default()
     };
     managed
-        .prepare_session("managed-read-a", init(Some(&store_a), false))
+        .prepare_session("managed-read-a", init(Some(&store_a)))
         .await
         .unwrap();
     let same = managed
@@ -1477,7 +1467,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     assert_eq!(reply(&same), "tea", "recall reads the same bound store");
 
     managed
-        .prepare_session("managed-read-b", init(Some(&store_b), false))
+        .prepare_session("managed-read-b", init(Some(&store_b)))
         .await
         .unwrap();
     let other = managed
@@ -1491,7 +1481,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
     assert_eq!(reply(&other), "ok", "store B cannot recall store A");
 
     managed
-        .prepare_session("managed-unbound", init(None, false))
+        .prepare_session("managed-unbound", init(None))
         .await
         .unwrap();
     let unbound = managed
@@ -1628,10 +1618,35 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
 }
 
 #[tokio::test]
-async fn pinned_memory_policy_can_disable_recall_and_extraction() {
-    use awaken_session_contract::{ResolvedInputSource, SessionRuntime};
+async fn published_agent_memory_config_can_disable_recall_and_extraction() {
+    // Cause/effect rule: C1 a bound MemoryStore makes content available; C2 the
+    // published parent Agent selects the `memory` plugin with both behavior flags
+    // false. C1+C2 -> neither recall context nor terminal extraction (one Agent
+    // publication is the authority; the resource carries no parallel policy).
+    use awaken_session_contract::SessionRuntime;
 
-    let host = Arc::new(SharedHost::new(Arc::new(MemLoopModel), "stub"));
+    let snapshot = crate::config::server_config(
+        "agent",
+        "stub",
+        &HashSet::new(),
+        &HashSet::new(),
+        &[awaken_ext_memory::MEMORY_PLUGIN_ID.to_string()],
+        &std::collections::BTreeMap::from([(
+            awaken_ext_memory::MEMORY_PLUGIN_ID.to_string(),
+            serde_json::json!({
+                "recall_enabled": false,
+                "extraction_enabled": false
+            }),
+        )]),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
+        .expect("valid publication");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(MemLoopModel), "stub")
+            .with_agent_publications(Arc::new(publications)),
+    );
     install_test_memory_mounter(&host);
     let store = test_memory_store_id();
     host.memory_stores
@@ -1650,13 +1665,6 @@ async fn pinned_memory_policy_can_disable_recall_and_extraction() {
         initial_branch: None,
         initial_commit: None,
     }]);
-    let ResolvedInputSource::MemoryStore { config, .. } = &mut init.resources.inputs[0].source
-    else {
-        unreachable!()
-    };
-    config.recall_policy.enabled = false;
-    config.extraction_policy.enabled = false;
-
     managed
         .prepare_session("managed-policy", init)
         .await
@@ -1670,7 +1678,7 @@ async fn pinned_memory_policy_can_disable_recall_and_extraction() {
         .await
         .unwrap();
     let reply = outcome
-        .messages
+        .new_messages
         .iter()
         .rev()
         .find(|message| message.role == Role::Assistant)
@@ -1767,7 +1775,7 @@ async fn resume_ended_turn_triggers_memory_extraction() {
     );
     let pending = r1.pending.expect("a pending tool");
 
-    // Resume approves the write; the turn now ends and extraction fires.
+    // RunResume approves the write; the turn now ends and extraction fires.
     let r2 = host
         .resume(
             "t-res",
@@ -2893,8 +2901,6 @@ async fn activation_applies_current_resource_state_as_a_deny_only_overlay() {
             MemoryStoreConfigVersion {
                 memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
                 retention_policy: Default::default(),
             },
         )
@@ -2950,8 +2956,6 @@ async fn memory_activation_enforces_catalog_workspace_without_iam_policy_logic()
             MemoryStoreConfigVersion {
                 memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
                 retention_policy: Default::default(),
             },
         )
@@ -4619,8 +4623,6 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
             MemoryStoreConfigVersion {
                 memory_store_id: store_id.clone().into(),
                 version: ConfigVersion::INITIAL,
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
                 retention_policy: Default::default(),
             },
         )
@@ -4632,8 +4634,6 @@ async fn activation_validates_the_frozen_config_without_selecting_current_again(
             MemoryStoreConfigVersion {
                 memory_store_id: store_id.clone().into(),
                 version: ConfigVersion(2),
-                recall_policy: Default::default(),
-                extraction_policy: Default::default(),
                 retention_policy: Default::default(),
             },
         )

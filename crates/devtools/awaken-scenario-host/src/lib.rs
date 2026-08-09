@@ -1,8 +1,8 @@
 //! Test-only scenario host: the deterministic mock models and the `build_*_router`
 //! scenario assemblies the e2e harness + integration tests drive. Extracted from
-//! `awaken-server` so the product crate carries zero mocks. It reuses the
+//! `awaken-coordinator` so the product crate carries zero mocks. It reuses the
 //! product crate's now-`pub` data-plane assembly helpers (`mount` /
-//! `mount_with_managed`) and production executors via `awaken_server::`.
+//! `mount_with_managed`) and production executors via `awaken_coordinator::`.
 
 mod acp_gateway;
 mod acp_scenarios;
@@ -62,16 +62,16 @@ use axum::Router;
 // This scenario composition depends on each authoritative owner directly.
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
-pub use awaken_managed_routers::{
-    default_models, files_router, memory_stores_router_with_catalog, models_router, skills_router,
+pub use awaken_protocol_managed_resources::{
+    default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
-    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, ProtocolHost, SharedHost,
-    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
+    ExtMcpProbe, HostResume, InferenceExecutorMaterializer, ManagedHost, RunApplicationHost,
+    SharedHost, ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 
-use awaken_server::mount_with_managed;
+use awaken_coordinator::mount_with_managed;
 
 /// A minimal ACP agent (shell): read the prompt line, emit a message + turn_end —
 /// stands in for `claude --acp` so the ACP-runtime path runs without a real CLI.
@@ -205,7 +205,7 @@ fn scenario_skill_store_dir() -> std::path::PathBuf {
 /// Give scenario compositions the same durable resource catalog the production
 /// management composition injects. It owns definition/configuration/lifecycle only;
 /// authentication and policy remain outside this resource-plane adapter.
-fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatalog> {
+fn scenario_resource_catalog() -> Arc<dyn awaken_resource_contract::ResourceCatalog> {
     let root = scenario_storage_dir();
     let Some(root) = root else {
         return Arc::new(
@@ -509,7 +509,7 @@ pub async fn build_resolved_real_router() -> Router {
     )
     .await
     .expect("enter credential");
-    let resolver = awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
+    let resolver = awaken_coordinator::model_resolver::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
         cred_repo.clone(),
     );
@@ -521,9 +521,10 @@ pub async fn build_resolved_real_router() -> Router {
     )
     .await
     .expect("publish model candidate");
-    let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
-        cred_repo, secrets,
-    );
+    let materializer =
+        awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::new(
+            cred_repo, secrets,
+        );
     let context = attempt_credential::context(&published.primary);
     let executor = materializer
         .materialize_candidate(&published.primary, &context)
@@ -627,7 +628,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         .put(source)
         .await
         .expect("persist OAuth credential");
-    let resolver = awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
+    let resolver = awaken_coordinator::model_resolver::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
         cred_repo.clone(),
     );
@@ -639,9 +640,10 @@ pub async fn build_oauth_resolved_router() -> Router {
     )
     .await
     .expect("publish OAuth model candidate");
-    let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::new(
-        cred_repo, secrets,
-    );
+    let materializer =
+        awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::new(
+            cred_repo, secrets,
+        );
     let context = attempt_credential::context(&published.primary);
     let executor = materializer
         .materialize_candidate(&published.primary, &context)
@@ -683,7 +685,7 @@ pub fn build_echo_router() -> Router {
 /// it decorates the canonical scenario Host instead of defining another store.
 pub fn build_ephemeral_resource_router() -> Router {
     let flat = mount(Arc::new(resource_host(Arc::new(EchoModel), "echo-model")));
-    awaken_server::workspace_path::with_workspace_path_addressing(flat)
+    awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
 }
 
 /// A router whose model reports the media it received (the multimodal e2e): every
@@ -933,7 +935,7 @@ pub fn build_remote_delegation_router() -> Router {
         .expect("valid remote delegation publication");
     let host = resource_host(model, model_ref)
         .with_agent_publications(Arc::new(publications))
-        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(None));
+        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None));
     mount(Arc::new(host))
 }
 
@@ -1123,7 +1125,7 @@ pub async fn build_config_router() -> Router {
         .with_agent_publications(executable_agent_catalog.clone())
         .with_agent_resource_references(executable_agent_catalog.clone())
         .with_admin_tools(admin_execs)
-        .with_remote_attempt_executor(awaken_server::a2a_attempt_executor(None));
+        .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None));
     // The reserved value owns only configuration/tool visibility. Install the
     // executable in the Host's real platform Workspace so Sessions, resources,
     // credentials, and runtime lookup share one coordinate.
@@ -1156,8 +1158,9 @@ pub async fn build_config_router() -> Router {
     let flat = mount_with_managed(host, managed_state)
         .merge(config_router(plane))
         .merge(agents);
-    let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
-    awaken_server::workspace_path::with_workspace_path_addressing(flat)
+    let flat =
+        awaken_coordinator::workspace_path::with_platform_workspace(flat, platform_workspace);
+    awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
 }
 
 struct AllowAllGate;

@@ -25,14 +25,15 @@ ROUTE_OWNER_FILES = (
     "crates/control/awaken-control/src/authz.rs",
     "crates/control/awaken-control/src/data_subject.rs",
     "crates/control/awaken-control/src/lib.rs",
-    "crates/server/awaken-managed-routers/src/files.rs",
-    "crates/server/awaken-managed-routers/src/memory_stores.rs",
-    "crates/server/awaken-managed-routers/src/models.rs",
-    "crates/server/awaken-managed-routers/src/skills.rs",
+    "crates/server/awaken-protocol-managed-resources/src/files.rs",
+    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
+    "crates/server/awaken-protocol-managed-resources/src/models.rs",
+    "crates/server/awaken-protocol-managed-resources/src/skills.rs",
     "crates/server/awaken-protocol-a2a/src/router.rs",
     "crates/server/awaken-protocol-ag-ui/src/router.rs",
     "crates/server/awaken-protocol-ai-sdk/src/router.rs",
-    "crates/server/awaken-protocol-managed/src/ext/live_inbox.rs",
+    "crates/server/awaken-protocol-awaken/src/live_inbox.rs",
+    "crates/server/awaken-protocol-awaken/src/sandbox_policies.rs",
     "crates/server/awaken-protocol-managed/src/rate_limit.rs",
     "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
     "crates/server/awaken-protocol-managed/src/routes/deployments.rs",
@@ -42,6 +43,21 @@ ROUTE_OWNER_FILES = (
     "crates/server/awaken-protocol-managed/src/routes/user_profiles.rs",
     "crates/server/awaken-protocol-managed/src/routes/vaults.rs",
     "crates/server/awaken-protocol-mcp/src/http.rs",
+    "crates/server/awaken-coordinator/src/application_access.rs",
+)
+
+# Public ingress code is discovered as well as explicitly registered. This
+# prevents a new router source from silently escaping the ownership inventory.
+PUBLIC_ROUTE_ROOTS = (
+    "crates/control",
+    "crates/server/awaken-protocol-managed-resources/src",
+    "crates/server/awaken-protocol-a2a/src",
+    "crates/server/awaken-protocol-ag-ui/src",
+    "crates/server/awaken-protocol-ai-sdk/src",
+    "crates/server/awaken-protocol-awaken/src",
+    "crates/server/awaken-protocol-managed/src",
+    "crates/server/awaken-protocol-mcp/src",
+    "crates/server/awaken-coordinator/src",
 )
 
 ROUTE_START = re.compile(r'\.route\(\s*"(?P<path>[^"]+)"\s*,', re.MULTILINE)
@@ -50,27 +66,78 @@ PARAMETER = re.compile(r"\{[^}]+\}")
 
 
 def _production(text: str) -> str:
-    """Inline unit tests are not route owners."""
-    return text.split("#[cfg(test)]", 1)[0]
+    """A terminal inline unit-test module is not a route owner.
+
+    Test-only imports/constants may appear before production routers, so cutting
+    at the first `#[cfg(test)]` silently omitted real owners. Rust source in this
+    repository keeps the inline `mod tests` last; cut only at that module marker.
+    """
+    return re.split(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", text, maxsplit=1)[0]
 
 
 def _normalized_path(path: str) -> str:
     return PARAMETER.sub(lambda match: "{*}" if match.group(0).startswith("{*") else "{}", path)
 
 
+def _call_end(text: str, opening: int) -> int:
+    """Return the byte after the balanced call beginning at `opening` (`(`).
+
+    Route handler bodies live later in the file and contain method-like words;
+    limiting ownership parsing to the balanced `.route(...)` call prevents those
+    handlers from being attributed to the final route declaration.
+    """
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for index in range(opening, len(text)):
+        char = text[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return len(text)
+
+
 def _owned_routes(path: Path) -> list[tuple[str, str]]:
     text = _production(path.read_text(encoding="utf-8"))
-    starts = list(ROUTE_START.finditer(text))
     owned: list[tuple[str, str]] = []
-    for index, match in enumerate(starts):
-        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
-        # One route expression may chain multiple MethodRouter verbs. Limit the
-        # window to its next route declaration; handler bodies are defined elsewhere.
-        expression = text[match.end() : end]
+    for match in ROUTE_START.finditer(text):
+        opening = text.find("(", match.start(), match.end())
+        expression = text[match.end() : _call_end(text, opening)]
         methods = set(METHOD.findall(expression))
         for method in methods:
             owned.append((method.upper(), _normalized_path(match.group("path"))))
     return owned
+
+
+def duplicate_route_owner_violations(
+    entries: list[tuple[str, str, str]],
+) -> list[str]:
+    """A method + normalized path may be declared repeatedly only by its same owner."""
+    owners: dict[tuple[str, str], str] = {}
+    errors: list[str] = []
+    for method, path, owner in entries:
+        key = (method, path)
+        previous = owners.get(key)
+        if previous is not None and previous != owner:
+            errors.append(
+                f"duplicate public route owner {method} {path}: {previous} and {owner}"
+            )
+        else:
+            owners[key] = owner
+    return errors
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -83,30 +150,50 @@ def check_all(repo_root: Path) -> list[str]:
                     f"{path.relative_to(repo_root)}: retired execution path {symbol!r}; {owner}"
                 )
 
-    owners: dict[tuple[str, str], Path] = {}
-    for relative in ROUTE_OWNER_FILES:
+    registered = set(ROUTE_OWNER_FILES)
+    discovered: set[str] = set()
+    for relative_root in PUBLIC_ROUTE_ROOTS:
+        root = repo_root / relative_root
+        if not root.exists():
+            errors.append(f"missing public-route source root {relative_root}")
+            continue
+        paths = root.glob("**/*.rs") if root.is_dir() else (root,)
+        for path in paths:
+            if "tests" in path.parts or path.name.endswith("_tests.rs"):
+                continue
+            if _owned_routes(path):
+                discovered.add(str(path.relative_to(repo_root)))
+    for relative in sorted(discovered - registered):
+        errors.append(
+            f"unregistered public route owner source {relative}; add it to ROUTE_OWNER_FILES"
+        )
+
+    entries: list[tuple[str, str, str]] = []
+    for relative in sorted(registered | discovered):
         path = repo_root / relative
         if not path.is_file():
             errors.append(f"missing route-owner source {relative}")
             continue
-        for key in _owned_routes(path):
-            previous = owners.get(key)
-            if previous is not None and previous != path:
-                errors.append(
-                    f"duplicate public route owner {key[0]} {key[1]}: "
-                    f"{previous.relative_to(repo_root)} and {path.relative_to(repo_root)}"
-                )
-            else:
-                owners[key] = path
+        entries.extend((method, route_path, relative) for method, route_path in _owned_routes(path))
+    errors.extend(duplicate_route_owner_violations(entries))
     return errors
 
 
 def selftest() -> None:
     # Cause/effect graph: C1=path parameter spelling differs; C2=method differs;
-    # C3=inline cfg(test) route. Effects: E1 C1 normalizes to one owner key;
-    # E2 C2 remains distinct; E3 C3 is not production ownership. Decision rows
+    # C3=inline cfg(test) route; C4=same key from a different owner. Effects:
+    # E1 C1 normalizes to one owner key; E2 C2 remains distinct; E3 C3 is not
+    # production ownership; E4 C4 fails while repeated declaration by the same
+    # owner remains one authority. Decision rows
     # are asserted here so the fitness parser cannot silently weaken itself.
     assert _normalized_path("/v1/agents/{agent_id}") == "/v1/agents/{}", "E1"
     assert _normalized_path("/v1/agents/{id}") == "/v1/agents/{}", "E1"
     assert ("GET", "/x") != ("POST", "/x"), "E2"
-    assert _production("prod\n#[cfg(test)]\ntest") == "prod\n", "E3"
+    assert _production("prod\n#[cfg(test)]\nuse x;\nroute").endswith("route"), "E3 import"
+    assert _production("prod\n#[cfg(test)]\nmod tests { route }") == "prod\n", "E3 module"
+    assert duplicate_route_owner_violations(
+        [("GET", "/x", "a.rs"), ("GET", "/x", "a.rs")]
+    ) == [], "E4 same owner"
+    assert duplicate_route_owner_violations(
+        [("GET", "/x", "a.rs"), ("GET", "/x", "b.rs")]
+    ), "E4 distinct owners"

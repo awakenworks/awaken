@@ -1,0 +1,16 @@
+[package]
+name = "awaken-protocol-awaken"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-agent-contract.workspace = true
+awaken-environment-application.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-session-contract.workspace = true
+axum.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

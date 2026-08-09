@@ -74,8 +74,8 @@ pub(crate) fn resource_host_with_deployment(
     deployment: awaken_runtime_host::DeploymentConfig,
 ) -> SharedHost {
     let resources = deployment.storage_dir.clone().map_or_else(
-        awaken_server::ephemeral_resources_application,
-        |storage_dir| awaken_server::embedded_resources_application(&storage_dir),
+        awaken_coordinator::ephemeral_resources_application,
+        |storage_dir| awaken_coordinator::embedded_resources_application(&storage_dir),
     );
     let host = if deployment.storage_dir.is_some() {
         let host = SharedHost::new_with_resource_component_and_deployment(
@@ -85,7 +85,7 @@ pub(crate) fn resource_host_with_deployment(
             deployment,
         )
         .with_file_application(resources.files());
-        awaken_server::install_platform_memory_data_plane(&host);
+        awaken_coordinator::install_platform_memory_data_plane(&host);
         host
     } else {
         SharedHost::new_with_resource_component(llm, model_ref, resources.ports())

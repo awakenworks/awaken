@@ -21,13 +21,12 @@ use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_agent_contract::thread::read::transcript::TranscriptSnapshot;
 use awaken_ext_builtin_tools::{AuxiliaryAgentInput, erase, invoke_auxiliary_agent};
 use awaken_ext_memory::{
-    DEFAULT_SELECTOR_INSTRUCTIONS, EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController,
-    MemoryExtractionDriver, MemoryExtractionError, MemoryExtractionIntent,
-    MemoryExtractionMutation, MemoryExtractionRepository, MemoryExtractorSnapshot,
-    MemoryMutationReceipt, MemoryStoreHandle, MemoryTerminalExtraction,
-    MemoryTerminalExtractionRequest, MemoryTerminalObserver, RecallBounds, RecallSelector,
-    SELECTOR_AGENT_ID, WriteMemoryTool, accepts_memory_content, default_selector_agent,
-    parse_indices, sanitize_stem, select_input,
+    EXTRACT_PROMPT, MEMORY_AGENT_ID, MemoryExtractionController, MemoryExtractionDriver,
+    MemoryExtractionError, MemoryExtractionIntent, MemoryExtractionMutation,
+    MemoryExtractionRepository, MemoryExtractorSnapshot, MemoryMutationReceipt, MemoryStoreHandle,
+    MemoryTerminalExtraction, MemoryTerminalExtractionRequest, MemoryTerminalObserver,
+    RecallSelector, WriteMemoryTool, accepts_memory_content, parse_indices, sanitize_stem,
+    select_input,
 };
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -53,16 +52,18 @@ static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 /// user session's accounting projection (housekeeping, not delegated work).
 pub(crate) struct AgentSelector {
     agent_tool: Arc<dyn RawTool>,
+    agent_id: String,
 }
 
 impl AgentSelector {
-    pub(crate) fn new(llm: Arc<dyn LlmExecutor>, model_ref: &str) -> Self {
-        let catalog = Arc::new(AgentCatalog::new().with_agent(default_selector_agent(
-            model_ref,
-            DEFAULT_SELECTOR_INSTRUCTIONS,
-        )));
+    pub(crate) fn new(
+        llm: Arc<dyn LlmExecutor>,
+        snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
+    ) -> Self {
+        let agent_id = snapshot.root_agent_id.0.clone();
+        let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
         let base = std::env::temp_dir()
-            .join("awaken-server")
+            .join("awaken-coordinator")
             .join(format!("{}-mem-select", std::process::id()));
         Self {
             agent_tool: Arc::new(AuxAgentTool {
@@ -72,6 +73,7 @@ impl AgentSelector {
                 seq: AtomicU64::new(0),
                 execution: None,
             }),
+            agent_id,
         }
     }
 }
@@ -87,7 +89,7 @@ impl RecallSelector for AgentSelector {
             self.agent_tool.as_ref(),
             "memory-selector-agent-run",
             AuxiliaryAgentInput {
-                agent_id: SELECTOR_AGENT_ID.to_string(),
+                agent_id: self.agent_id.clone(),
                 seed: vec![Message {
                     id: MessageId("mem-select".into()),
                     role: Role::User,
@@ -315,7 +317,6 @@ pub struct MemoryRuntime {
     inference_materializer:
         RwLock<Option<Arc<dyn crate::inference_routing::InferenceExecutorMaterializer>>>,
     provider: Arc<LocalProvider>,
-    catalog: Arc<AgentCatalog>,
     background: Arc<BackgroundRuns>,
     claim_owner: String,
     extractions: RwLock<Arc<dyn MemoryExtractionRepository>>,
@@ -332,7 +333,6 @@ pub struct BoundMemory {
     workspace_id: String,
     memory_store_id: String,
     memory_config_version: u64,
-    bounds: RecallBounds,
     recall_enabled: bool,
     extraction_enabled: bool,
     execution: Arc<RwLock<Option<Arc<HostCommit>>>>,
@@ -470,7 +470,6 @@ impl MemoryRuntime {
     pub fn new(
         llm: Arc<dyn LlmExecutor>,
         provider: Arc<LocalProvider>,
-        catalog: Arc<AgentCatalog>,
         background: Arc<BackgroundRuns>,
         extractions: Arc<dyn MemoryExtractionRepository>,
     ) -> Self {
@@ -478,7 +477,6 @@ impl MemoryRuntime {
             llm,
             inference_materializer: RwLock::new(None),
             provider,
-            catalog,
             background,
             claim_owner: format!(
                 "memory-extractor:{}:{}",
@@ -498,12 +496,6 @@ impl MemoryRuntime {
         config: &awaken_resource_contract::MemoryStoreConfigVersion,
         writable: bool,
     ) -> BoundMemory {
-        let bounds = RecallBounds {
-            max_entries: usize::try_from(config.recall_policy.max_results)
-                .unwrap_or(usize::MAX)
-                .max(1),
-            ..RecallBounds::default()
-        };
         BoundMemory {
             runtime: self.clone(),
             session_id: session_id.into(),
@@ -513,9 +505,11 @@ impl MemoryRuntime {
             workspace_id: workspace_id.into(),
             memory_store_id: config.memory_store_id.to_string(),
             memory_config_version: config.version.0,
-            bounds,
-            recall_enabled: config.recall_policy.enabled,
-            extraction_enabled: writable && config.extraction_policy.enabled,
+            // The binding grants data-plane availability only. Whether the main
+            // Agent activates recall/extraction and with which bounds is owned by
+            // its `memory` plugin configuration, never by a Store policy copy.
+            recall_enabled: true,
+            extraction_enabled: writable,
             execution: Arc::new(RwLock::new(None)),
         }
     }
@@ -560,8 +554,9 @@ impl MemoryRuntime {
             let holder =
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
                     .inference_holder;
+            let model = &snapshot.agent.resolved_spec.model_binding;
             let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
-                &[&snapshot.model],
+                &[model],
                 Some(&holder),
                 &materializer.credential_realization_capabilities(),
                 intent.claim_generation,
@@ -585,17 +580,17 @@ impl MemoryRuntime {
                     awaken_runtime_contract::AttemptCredentialRealization::new(bindings, authority),
                 );
             return materializer
-                .materialize_pinned(&snapshot.model, &context)
+                .materialize_pinned(model, &context)
                 .map(|executor| (executor, context))
                 .ok_or_else(|| {
                     format!(
                         "published model candidate `{}` is unavailable",
-                        snapshot.model.binding.model_ref
+                        model.binding.model_ref
                     )
                 });
         }
         matches!(
-            snapshot.model.provisioning,
+            snapshot.agent.resolved_spec.model_binding.provisioning,
             awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
         )
         .then(|| (self.llm.clone(), RuntimeRunContext::new()))
@@ -663,9 +658,6 @@ impl BoundMemory {
         committed: TranscriptSnapshot,
         extractor: MemoryExtractorSnapshot,
     ) -> Result<(), MemoryExtractionError> {
-        if self.runtime.catalog.resolve(MEMORY_AGENT_ID).is_none() {
-            return Ok(());
-        }
         self.runtime
             .extraction_controller()
             .enqueue_terminal(MemoryTerminalExtractionRequest {
@@ -682,7 +674,7 @@ impl BoundMemory {
         Ok(())
     }
 
-    /// Resume every non-terminal intent for this exact frozen binding. Invoked
+    /// RunResume every non-terminal intent for this exact frozen binding. Invoked
     /// after enqueue and after Session rehydration, so a process crash cannot lose
     /// the remaining extraction/store/receipt work.
     pub async fn reconcile(&self, thread: &str) -> bool {
@@ -743,16 +735,7 @@ impl BoundMemory {
                     .unwrap_or(EXTRACT_PROMPT),
             )],
         });
-        let instructions = intent
-            .extractor
-            .instructions
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(DEFAULT_MEMORY_INSTRUCTIONS);
-        let catalog = AgentCatalog::new().with_agent(default_memory_agent(
-            intent.extractor.model.clone(),
-            instructions,
-        ));
+        let catalog = AgentCatalog::new().with_agent(intent.extractor.agent.clone());
         let (executor, context) = self.runtime.materialize_extractor(intent)?;
         let tool = erase(WriteMemoryTool::from_handle(capture.clone()));
         let commit = self
@@ -771,7 +754,7 @@ impl BoundMemory {
             &catalog,
             crate::agent_runner::AgentRunSandbox::Fresh(&self.runtime.provider),
             executor,
-            &intent.extractor.agent_id,
+            &intent.extractor.agent.root_agent_id.0,
             &auxiliary_thread_id,
             RunId(intent.auxiliary_run_id()),
             seed,
@@ -794,11 +777,6 @@ impl BoundMemory {
     /// a later suspend/archive transition.
     pub fn store(&self) -> Arc<dyn MemoryStoreHandle> {
         Arc::new(self.clone())
-    }
-
-    /// The recall bounds (shared with the recall plugin).
-    pub fn bounds(&self) -> RecallBounds {
-        self.bounds.clone()
     }
 }
 
@@ -910,11 +888,6 @@ impl crate::host::SharedHost {
         snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
         commit: Arc<HostCommit>,
     ) -> Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>> {
-        let memory = self
-            .memory_for_thread(thread)
-            .filter(|memory| memory.extraction_enabled())?;
-        memory.bind_execution(commit.clone());
-        memory.reconcile(thread).await;
         if !snapshot
             .resolved_spec
             .plugin_ids
@@ -930,6 +903,14 @@ impl crate::host::SharedHost {
                 .get(awaken_ext_memory::MEMORY_PLUGIN_ID),
         )
         .unwrap_or_default();
+        if !config.extraction_enabled {
+            return None;
+        }
+        let memory = self
+            .memory_for_thread(thread)
+            .filter(|memory| memory.extraction_enabled())?;
+        memory.bind_execution(commit.clone());
+        memory.reconcile(thread).await;
         let model_ref = self
             .inference_routing
             .model_ref(thread, &snapshot.resolved_spec.model_binding.model_ref);
@@ -946,12 +927,18 @@ impl crate::host::SharedHost {
             );
             return None;
         };
+        let agent_id = config.agent_id.as_deref().unwrap_or(MEMORY_AGENT_ID);
+        let agent = crate::agent_catalog::resolve_auxiliary_snapshot(
+            self.agent_publications.as_deref(),
+            &memory.workspace_id,
+            agent_id,
+            default_memory_agent(model, DEFAULT_MEMORY_INSTRUCTIONS),
+            config.instructions.as_deref(),
+        );
         let extraction = Arc::new(BoundMemoryTerminalExtraction {
             memory,
             extractor: MemoryExtractorSnapshot {
-                agent_id: MEMORY_AGENT_ID.to_string(),
-                model,
-                instructions: config.instructions,
+                agent,
                 extraction_prompt: config.extraction_prompt,
             },
         });
@@ -1104,14 +1091,14 @@ mod tests {
         instructions: Option<&str>,
         extraction_prompt: Option<&str>,
     ) -> MemoryExtractorSnapshot {
-        MemoryExtractorSnapshot {
-            agent_id: MEMORY_AGENT_ID.into(),
-            model: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                awaken_runtime_contract::resolved::ModelBinding::new("host", "stub", "host"),
-            ),
-            instructions: instructions.map(str::to_string),
-            extraction_prompt: extraction_prompt.map(str::to_string),
+        let mut extractor =
+            MemoryExtractorSnapshot::host_executor(MEMORY_AGENT_ID, "host", "stub", "host");
+        if let Some(instructions) = instructions {
+            extractor.agent.resolved_spec.instructions = instructions.to_string();
+            extractor.agent.recompute_fingerprint().unwrap();
         }
+        extractor.extraction_prompt = extraction_prompt.map(str::to_string);
+        extractor
     }
 
     fn bound_test_memory(
@@ -1125,12 +1112,6 @@ mod tests {
         Arc<awaken_memory_store::VolatileMemoryRepository>,
         Arc<awaken_session_store::SqliteManagedSessionRepository>,
     ) {
-        let catalog = Arc::new(AgentCatalog::new().with_agent(default_memory_agent(
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                awaken_runtime_contract::resolved::ModelBinding::new("default", "stub", "default"),
-            ),
-            DEFAULT_MEMORY_INSTRUCTIONS,
-        )));
         let extractions = Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
                 .expect("open ephemeral Memory extraction repository"),
@@ -1138,15 +1119,12 @@ mod tests {
         let runtime = Arc::new(MemoryRuntime::new(
             llm,
             Arc::new(LocalProvider::new(sandbox_base)),
-            catalog,
             Arc::new(BackgroundRuns::new()),
             extractions.clone(),
         ));
         let config = awaken_resource_contract::MemoryStoreConfigVersion {
             memory_store_id: "test-store".into(),
             version: awaken_resource_contract::ConfigVersion::INITIAL,
-            recall_policy: Default::default(),
-            extraction_policy: Default::default(),
             retention_policy: Default::default(),
         };
         let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
@@ -1308,7 +1286,13 @@ mod tests {
 
     #[tokio::test]
     async fn agent_selector_runs_the_subagent_and_parses_its_reply() {
-        let selector = AgentSelector::new(Arc::new(IndexModel), "stub");
+        let selector = AgentSelector::new(
+            Arc::new(IndexModel),
+            awaken_ext_memory::default_selector_agent(
+                "stub",
+                awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS,
+            ),
+        );
         let manifest = vec![
             (0usize, "alpha".to_string()),
             (1, "beta".to_string()),
@@ -1361,8 +1345,11 @@ mod tests {
         );
         // The read side surfaces it through bounded recall.
         let entries = extraction.store().entries().await.unwrap();
-        let block = awaken_ext_memory::recall::render(&entries, &extraction.bounds())
-            .expect("recall block");
+        let block = awaken_ext_memory::recall::render(
+            &entries,
+            &awaken_ext_memory::RecallBounds::default(),
+        )
+        .expect("recall block");
         assert!(block.contains("user likes rust"), "got: {block}");
     }
 
@@ -1616,14 +1603,7 @@ mod tests {
             0,
             1,
             vec![user("remember the maintenance window")],
-            MemoryExtractorSnapshot {
-                agent_id: MEMORY_AGENT_ID.into(),
-                model: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    awaken_runtime_contract::resolved::ModelBinding::new("host", "stub", "host"),
-                ),
-                instructions: None,
-                extraction_prompt: None,
-            },
+            MemoryExtractorSnapshot::host_executor(MEMORY_AGENT_ID, "host", "stub", "host"),
         )
         .unwrap();
         let generation = intent.claim("crashed-worker", 0, 1).unwrap();

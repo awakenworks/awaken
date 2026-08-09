@@ -48,10 +48,30 @@ Resources component builders; an optional local Worker uses the same
 | Deployment unit or context | Canonical components | Durable authority acquired | Cross-context ports |
 |---|---|---|---|
 | Control | `awaken_control::build_control_component` | Agent/config publication, Environment definitions/revisions and sandbox-policy versions, Catalog, Credential/secret, Admin, IAM, Data Subject consent/accountability | registers exact executable Agent and Environment facts; exposes authenticated audit, credential, webhook, and consent-read ports |
-| Coordinator | `awaken_server::build_coordinator_component`; currently co-deploys the canonical Resources component | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections; calls narrow Control ports; dispatches to and settles Workers; mounts Resources ports without owning their stores |
+| Coordinator | `awaken_coordinator::build_coordinator_component`; currently co-deploys the canonical Resources component | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections; calls narrow Control ports; dispatches to and settles Workers; mounts Resources ports without owning their stores |
 | Resources (currently co-deployed with Coordinator) | `awaken_resource_application::ResourcesApplication` over `build_resource_component` | Resource Catalog/lifecycle, File logical metadata and immutable blobs, Memory content/history, Skill versions | exposes public application ports and claim-fenced per-kind Worker ports; never opens Control or Coordinator stores |
 | Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
 | AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
+
+Package names make the application and adapter roles explicit even though several
+live under the technical `crates/server/` workspace bucket:
+
+| Package | DDD role | Rule |
+|---|---|---|
+| `awaken-control` | Control application component | owns authored facts and publication; never schedules Runs |
+| `awaken-coordinator` | Coordinator application component | owns dynamic scheduling, dispatch, settlement, and replay; it is not a generic “server” |
+| `awaken-worker` | Worker process composition | advertises capabilities and executes claim-fenced work; native, ACP, and outbound A2A are execution adapters, not public ingress owners |
+| `awaken-resource-application` | Resources application component | sole composition of File, MemoryStore, Skill, and lifecycle ports |
+| `awaken-protocol-managed` | Anthropic-compatible Agent/Session/Environment anti-corruption layer | translates wire DTOs only; domain behavior stays behind application ports |
+| `awaken-protocol-managed-resources` | Anthropic-compatible File/MemoryStore/Skill/Model anti-corruption layer | one public resource route family, with no Runtime Host dependency |
+| `awaken-protocol-awaken` | Awaken extension protocol | owns only explicitly namespaced `/v1/awaken/*` routes |
+| `awaken-protocol-a2a`, `-ai-sdk`, `-ag-ui`, `-mcp` | other ingress anti-corruption layers | each method + normalized path has exactly one source owner |
+
+Protocol packages are always-on ingress adapters when mounted by a process. They
+do not become services or execution authorities themselves. A protocol handler
+validates and translates, calls the owning application port, and projects the
+result. Worker-side ACP/A2A adapters are different: they execute an already
+admitted claim and never own the public route that admitted it.
 
 `ProcessStores` contains optional `ControlStores` and `CoordinatorStores`
 groups; it is not a shared bag of database handles. A split Coordinator receives
@@ -133,12 +153,12 @@ crate name.
 | Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvRegistry`, `EnvironmentSandboxPolicyRef` |
 | Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalog`, current/exact-revision/fingerprint reads, local/HTTP/PostgreSQL registrar adapters, authenticated private router, and durable command replay |
 | Coordinator Environment projection | rebuildable executable-Environment availability and dynamic work coordination | `ExecutableEnvironmentCatalog`, `EnvironmentExecutionState`, `WorkQueue`; no authoring repository |
-| Resources application contract | resource commands and per-kind materialization/lifecycle ports | `ResourcesApplication`, `FileApplicationService`, `ResourceCatalog`, `ResourceLifecycleRepository`, Memory/Skill/File ports |
+| Resources application contract | resource commands and per-kind materialization/lifecycle ports | `ResourcesApplication`, `FileApplicationService`, `MemoryStoreApplicationService`, `ResourceCatalog`, `ResourceLifecycleRepository`, Memory/Skill/File ports |
 | Runtime-facing contract | immutable values and ports used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
 | Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DurableRunIngress`, input buffer, dispatch coordinator, recovery replay |
-| Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | replay rows, protocol status names, DTOs when a protocol slice is added |
+| Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | `awaken-protocol-managed` and `awaken-protocol-managed-resources` jointly own only the exact Anthropic-compatible surface; `/v1/awaken/*` lives in the separate `awaken-protocol-awaken` crate |
 | Concrete stores | backend implementations of multiple ports | SQL/in-memory adapters that implement both agent-truth and ingress stores |
 
 If a type describes durable agent truth, it belongs to the agent-domain contract.
@@ -160,9 +180,10 @@ runtime contract.
 | Sandbox policy | Control: create v1 → append versions; Environment stores one exact reference | Control resolves the body into the executable Environment registration; Worker receives only the frozen Session projection |
 | Deployment | Coordinator: create/update → active/paused → terminal archived | scheduler/manual trigger creates a stable DeploymentRun; it never executes an Agent itself |
 | DeploymentRun | Coordinator: started → succeeded with `session_id` or failed with exact error | `LocalDeploymentSessionLauncher` reaches the sole Session creation command, idempotent by `deployment_run_id` |
+| DreamProcess | Coordinator: requested → preparing → auxiliary Session linked → cleaning → terminal; usage remains an ordinary Session fact | `DreamApplication` schedules/reconciles while `DreamExecutor` composes Resource and Session authorities |
 | Session / Run | Coordinator: admit frozen Agent/Environment/Resource facts → enqueue → claimed/running/awaiting → committed terminal settlement | Worker executes under a lease epoch; Coordinator owns commit, replay, and public projection |
 | File | Resources: logical create → active/readable → logical delete → purge intent → safe physical reclaim | `FileApplication` is the sole HTTP/artifact command path; Worker reads immutable bytes through `FileContentSource` |
-| MemoryStore | Resources: create/configure → bind/freeze config version → active CAS use → tombstone → fenced reclaim | `MemoryRepository`, snapshot/write-back ports, extraction intents, and `ResourceReclaimer` |
+| MemoryStore | Resources: create/retention → bind/freeze config version → active CAS use → tombstone → fenced reclaim | `MemoryStoreApplicationService` owns identity/lifecycle; `MemoryRepository` owns content; Agent `memory` plugin config owns recall/extraction behavior |
 | Skill | Resources: canonical ingest → immutable version publication → Session exact pin → tombstone → reclaim after pins drain | `SkillStore` and `SkillBundleSource`; built-in Skills remain Runtime extensions |
 | Repository definition | Resources: create/config versions → Session exact config/credential pin → ephemeral clone/use → tombstone/local cleanup | `ResourceCatalog`, credential materializer, and `RepositoryRealizer`; remote Git is never deleted |
 

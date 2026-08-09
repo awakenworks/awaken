@@ -10,8 +10,8 @@ resolver = "2"
 #                         domain-specific work-queue/session/env registries); a replaceable
 #                         port impl under its conformance suite (ADR-0059 criterion 3).
 #   crates/resources/*  → mountable agent-resource backends (memory/skill/file).
-#   crates/server/*     → resident daemon: Managed + protocol front doors, ingress/dispatch, host, local sandbox, notify.
-#   crates/worker/*     → on-demand isolated execution: container/k8s sandbox + channel/relay (links no stores).
+#   crates/server/*     → Coordinator application/host plus protocol and ingress adapters; package names declare owners.
+#   crates/worker/*     → stateless execution components: container/k8s sandbox + channel/relay (links no stores).
 #   crates/control/*    → self-hosted config/vault/iam authoring plane (ADR-0043).
 #   crates/bin/*        → composed deployables: awaken-cli + the db-less worker daemon + the in-container sandbox bridge.
 #   crates/devtools/*   → dev tooling / harnesses / examples (publish=false), composed like bin/.
@@ -68,15 +68,16 @@ awaken-ext-state-machine = { path = "crates/runtime/awaken-ext-state-machine" }
 awaken-ext-compact = { path = "crates/runtime/awaken-ext-compact" }
 awaken-ext-memory = { path = "crates/runtime/awaken-ext-memory" }
 awaken-ext-builtin-tools = { path = "crates/runtime/awaken-ext-builtin-tools" }
-awaken-protocol-transport = { path = "crates/server/awaken-protocol-transport" }
 awaken-protocol-a2a = { path = "crates/server/awaken-protocol-a2a" }
 awaken-protocol-mcp = { path = "crates/server/awaken-protocol-mcp" }
 awaken-protocol-ag-ui = { path = "crates/server/awaken-protocol-ag-ui" }
 awaken-protocol-ai-sdk = { path = "crates/server/awaken-protocol-ai-sdk" }
 awaken-protocol-managed = { path = "crates/server/awaken-protocol-managed" }
+awaken-protocol-awaken = { path = "crates/server/awaken-protocol-awaken" }
 awaken-resource-reclaimer = { path = "crates/server/awaken-resource-reclaimer" }
 awaken-protocol-acp = { path = "crates/server/awaken-protocol-acp" }
 awaken-acp-application = { path = "crates/server/awaken-acp-application" }
+awaken-dream-application = { path = "crates/server/awaken-dream-application" }
 awaken-run-executor-acp = { path = "crates/server/awaken-run-executor-acp" }
 awaken-run-executor-a2a = { path = "crates/server/awaken-run-executor-a2a" }
 # Management plane (ADR-0043 decomposition) — agents bucket, orthogonal to execution.
@@ -88,7 +89,7 @@ awaken-captured-content-store = { path = "crates/stores/awaken-captured-content-
 awaken-config-resolver = { path = "crates/control/awaken-config-resolver" }
 awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }
 # Authoring / authz plane (Stage B2): the management CRUD surfaces + embedded IAM
-# guard, split out of awaken-server. Sibling of the data plane; the two never depend
+# guard, split out of awaken-coordinator. Sibling of the data plane; the two never depend
 # on each other — awaken-cli is the composition root that weaves them together.
 awaken-control = { path = "crates/control/awaken-control" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
@@ -99,7 +100,7 @@ awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundat
 awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "8a0037c012fe63f496dad1772cdcbc89bbc03c5a" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
-# /v1/vaults/* in awaken-server, opt-in via AWAKEN_MGMT_IAM=embedded.
+# /v1/vaults/* in awaken-coordinator, opt-in via AWAKEN_MGMT_IAM=embedded.
 # All IAM crates pin ONE rev so the contract types line up. awaken-iam-server
 # became consumable once iam adopted foundation ADR-0005 (rusqlite as a
 # links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
@@ -154,9 +155,9 @@ awaken-run-ingress = { path = "crates/server/awaken-run-ingress" }
 awaken-run-ingress-testkit = { path = "crates/server/awaken-run-ingress-testkit" }
 awaken-worker-transport-security = { path = "crates/server/awaken-worker-transport-security" }
 awaken-runtime-host = { path = "crates/server/awaken-runtime-host" }
-awaken-managed-routers = { path = "crates/server/awaken-managed-routers" }
+awaken-protocol-managed-resources = { path = "crates/server/awaken-protocol-managed-resources" }
 awaken-admin-assistant = { path = "crates/control/awaken-admin-assistant" }
-awaken-server = { path = "crates/server/awaken-server" }
+awaken-coordinator = { path = "crates/server/awaken-coordinator" }
 awaken-scenario-host = { path = "crates/devtools/awaken-scenario-host" }
 awaken-cli = { path = "crates/bin/awaken-cli" }
 awaken-worker = { path = "crates/bin/awaken-worker" }

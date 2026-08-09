@@ -741,9 +741,9 @@ C94 → E82     C96 ∧ C97 → E85(resume)     C96 ∧ ~C97 → 整步重跑   
 | E87 | HARD-limit 保留为 RateLimited → `Failure::Inference{code:"acp_failure"}` | acp `failure_cause` |
 | E88 | StopReason→中性终结→EndCause(Refusal→`Stopped("agent refused")`) | acp `end_cause` |
 | E89 | A2A 诚实终态:Completed→NaturalEnd;Failed→Error;Canceled→Cancelled;其余→**Indeterminate**(绝不判成功) | a2a-executor |
-| E90 | 跨协议共享:一 wire 起的 turn 可在同线程另一 wire 恢复/观察(单 `ProtocolRuntime`) | port.rs |
+| E90 | 跨协议共享:一 wire 起的 turn 可在同线程另一 wire 恢复/观察(单 `RunApplication`) | run_application.rs |
 | E91 | Managed 会话铸造 id `sesn_`(跳过已拥线程);create 先 provision 后 insert,fail closed;`VaultNotFound`→404 | managed sessions.rs |
-| E92 | 单一终结权威 `terminal_event`:Failed→`RunFailed{code,message}`(防丢错静默空收尾) | port.rs |
+| E92 | 单一终结权威 `RunState`:Failed→投影 `RunFailed{code,message}`(防丢错静默空收尾) | run_application.rs |
 | E93 | webhook 签名重试投递(Standard-Webhooks 头,稳定 `webhook-id`);2xx→delivered,非2xx→failed 重试;≥阈值→自动禁用 | webhook dispatch |
 | E94 | webhook 投递期 SSRF 守卫:解析并钉全局可路由,拒 loopback/非https | `ReqwestSender::guarded` |
 | E95 | `session.error`(`SessionError::classify`)于 `outcome.failure`;生命周期扇出 IDLED/TERMINATED/DELETED | managed events.rs |
@@ -757,7 +757,7 @@ C105=Block/Suspend → is_error(遮蔽执行)     C106 → E91     C107=2xx → 
 C108 → E96
 ```
 
-- **O/E**:协议前门按路径互斥,但**全收敛于单一 `ProtocolRuntime`**(跨协议共享宿主);后端路由 `Native ⊕ Acp ⊕ Remote`;`Codec::Newline ⊕ Codec::Acp`(Acp 需 `real-acp` feature)。`Terminal` 枚举使"waiting ∧ failed"/"pending ∧ finished"不可表示。
+- **O/E**:协议前门按路径互斥,但**全收敛于单一 `RunApplication`**(跨协议共享宿主);后端路由 `Native ⊕ Acp ⊕ Remote`;`Codec::Newline ⊕ Codec::Acp`(Acp 需 `real-acp` feature)。`StepOutcome` 只保存权威 `RunState`,协议终态由其投影,使"waiting ∧ failed"/"pending ∧ finished"不可表示。
 - **已知缺口(M 遮蔽/功能空洞)**:
   - **A2A 无带内拒绝**——`to_resume` 把任何入站文本读作 `Confirm{allow:true}`,拒绝仅经 `tasks/cancel` 可达。
   - **A2A 无流式/推送**——card `streaming=false,push_notifications=false`;`Working/InputRequired/AuthRequired` 遮为 `Indeterminate`(无法轮询/await)。

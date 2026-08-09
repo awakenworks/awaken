@@ -5,7 +5,7 @@ use std::sync::Arc;
 use super::{PostgresSchemaMode, config};
 
 pub(super) fn ephemeral_resource_component() -> awaken_resource_contract::ResourceComponent {
-    awaken_server::ephemeral_resources_application().ports()
+    awaken_coordinator::ephemeral_resources_application().ports()
 }
 
 pub(super) async fn open_resource_component(
@@ -14,7 +14,7 @@ pub(super) async fn open_resource_component(
 ) -> Result<awaken_resource_contract::ResourceComponent, String> {
     match backend {
         config::ResourceStoreBackend::Embedded(root) => {
-            Ok(awaken_server::embedded_resource_component(&root))
+            Ok(awaken_coordinator::embedded_resource_component(&root))
         }
         config::ResourceStoreBackend::Postgres(url) => {
             let resources = Arc::new(

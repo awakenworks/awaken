@@ -1,4 +1,4 @@
-//! The axum router: A2A `message:send` + agent-card routes over a `ProtocolRuntime`.
+//! The axum router: A2A `message:send` + agent-card routes over a `RunApplication`.
 //!
 //! Handlers decode the request, drive one turn (or resume an awaiting run on the same
 //! context) through the port, and project the committed step into an A2A `Task`.
@@ -10,6 +10,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::run::{EndCause, Failure};
 use awaken_agent_contract::event::{AgentEvent, Delta};
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use axum::Router;
@@ -24,8 +25,8 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use awaken_protocol_transport::{
-    ChannelStreamSink, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 
 use crate::card::agent_card;
@@ -43,41 +44,13 @@ use crate::v1::{
     agent_card_value as v1_agent_card_value, parse_push_config as parse_v1_push_config,
     push_value as v1_push_value, stream_value as v1_stream_value, task_value as v1_task_value,
 };
+use crate::version::{ProtocolVersion, negotiate_version};
 
 type Runtime = A2aState;
 
-pub(crate) const A2A_VERSION_HEADER: &str = "A2A-Version";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProtocolVersion {
-    V03,
-    V1,
-}
-
-impl ProtocolVersion {
-    fn push_version(self) -> PushProtocolVersion {
-        match self {
-            Self::V03 => PushProtocolVersion::V03,
-            Self::V1 => PushProtocolVersion::V1,
-        }
-    }
-}
-
-pub(crate) fn negotiate_version(headers: &HeaderMap) -> Result<ProtocolVersion, String> {
-    match headers
-        .get(A2A_VERSION_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-    {
-        None | Some("") | Some("0.3") | Some("0.3.0") => Ok(ProtocolVersion::V03),
-        Some("1.0") | Some("1.0.0") => Ok(ProtocolVersion::V1),
-        Some(version) => Err(format!("unsupported A2A protocol version: {version}")),
-    }
-}
-
 /// Build the A2A router. Mount it alongside other protocol routers; the paths are
 /// the `/v1/a2a...` surface an A2A `HTTP+JSON` client posts to.
-pub fn router(runtime: Arc<dyn ProtocolRuntime>) -> Router {
+pub fn router(runtime: Arc<dyn RunApplication>) -> Router {
     router_with_storage_root(runtime, None)
 }
 
@@ -87,7 +60,7 @@ pub fn router(runtime: Arc<dyn ProtocolRuntime>) -> Router {
 /// Runtime/composition owns whether storage exists; this protocol adapter owns
 /// only its filename and serialization format.
 pub fn router_with_storage_root(
-    runtime: Arc<dyn ProtocolRuntime>,
+    runtime: Arc<dyn RunApplication>,
     storage_root: Option<&std::path::Path>,
 ) -> Router {
     let state = A2aState::new(
@@ -293,7 +266,7 @@ async fn stream_send(
             .await
     {
         return stream_binding_error(
-            DriverError::BadRequest(error),
+            RunApplicationError::bad_request(error),
             rpc_id.as_ref(),
             rest_errors,
             version,
@@ -306,7 +279,11 @@ async fn stream_send(
 
     tokio::spawn(async move {
         let (live_tx, mut live_rx) = mpsc::unbounded_channel::<AgentEvent>();
-        let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
+        let sink: Arc<dyn StreamSink> = Arc::new(EventForwardingSink::new(move |event| {
+            live_tx
+                .send(event)
+                .map_err(|_| awaken_agent_contract::stream::sink::Error::Closed)
+        }));
         let runtime = Arc::clone(&rt.runtime);
         let turn_thread = thread.clone();
         let turn_agent = agent_id.clone();
@@ -349,20 +326,24 @@ async fn stream_send(
 
         let outcome = match turn.await {
             Ok(Ok(outcome)) => outcome,
-            Ok(Err(error)) => StepOutcome {
-                terminal: Terminal::Failed(awaken_protocol_transport::StepFailure {
+            Ok(Err(error)) => StepOutcome::ended(
+                Vec::new(),
+                EndCause::Error(Failure::Inference {
                     code: "a2a_run_failed".into(),
                     message: error.to_string(),
                 }),
-                ..Default::default()
-            },
-            Err(error) => StepOutcome {
-                terminal: Terminal::Failed(awaken_protocol_transport::StepFailure {
+                false,
+                false,
+            ),
+            Err(error) => StepOutcome::ended(
+                Vec::new(),
+                EndCause::Error(Failure::Inference {
                     code: "a2a_run_cancelled".into(),
                     message: error.to_string(),
                 }),
-                ..Default::default()
-            },
+                false,
+                false,
+            ),
         };
         let history = rt.runtime.history(&thread).await;
         let mut task = encode_task(&thread, &history, &outcome);
@@ -790,7 +771,7 @@ async fn run_send(
     mut req: SendMessageRequest,
     path_agent: Option<String>,
     version: ProtocolVersion,
-) -> Result<Task, DriverError> {
+) -> Result<Task, RunApplicationError> {
     validate_send_configuration(&req)?;
     let history_length = req
         .configuration
@@ -824,7 +805,7 @@ async fn run_send(
             version.push_version(),
         )
         .await
-        .map_err(DriverError::BadRequest)?;
+        .map_err(RunApplicationError::bad_request)?;
         rt.publish(
             &task_id,
             processed.agent_id.as_deref(),
@@ -839,12 +820,16 @@ async fn run_send(
         tokio::spawn(async move {
             let step = drive_processed(&rt, processed)
                 .await
-                .unwrap_or_else(|error| StepOutcome {
-                    terminal: Terminal::Failed(awaken_protocol_transport::StepFailure {
-                        code: "a2a_run_failed".into(),
-                        message: error.to_string(),
-                    }),
-                    ..Default::default()
+                .unwrap_or_else(|error| {
+                    StepOutcome::ended(
+                        Vec::new(),
+                        EndCause::Error(Failure::Inference {
+                            code: "a2a_run_failed".into(),
+                            message: error.to_string(),
+                        }),
+                        false,
+                        false,
+                    )
                 });
             let history = rt.runtime.history(&thread).await;
             let mut task = encode_task(&thread, &history, &step);
@@ -868,7 +853,7 @@ async fn run_send(
 async fn drive_processed(
     rt: &Runtime,
     processed: crate::request::Processed,
-) -> Result<StepOutcome, DriverError> {
+) -> Result<StepOutcome, RunApplicationError> {
     let thread = &processed.thread_id;
     match rt.runtime.pending(thread).await {
         // A awaiting run on this context → the message is the awaited input.
@@ -887,7 +872,7 @@ async fn drive_processed(
     }
 }
 
-fn validate_send_configuration(req: &SendMessageRequest) -> Result<(), DriverError> {
+fn validate_send_configuration(req: &SendMessageRequest) -> Result<(), RunApplicationError> {
     let Some(configuration) = &req.configuration else {
         return Ok(());
     };
@@ -899,7 +884,7 @@ fn validate_send_configuration(req: &SendMessageRequest) -> Result<(), DriverErr
             )
         })
     {
-        return Err(DriverError::BadRequest(format!(
+        return Err(RunApplicationError::bad_request(format!(
             "unsupported output modes: {}",
             configuration.accepted_output_modes.join(", ")
         )));
@@ -927,24 +912,24 @@ async fn resolve_task_context(
     rt: &Runtime,
     req: &mut SendMessageRequest,
     path_agent: Option<&str>,
-) -> Result<(), DriverError> {
+) -> Result<(), RunApplicationError> {
     let Some(task_id) = req.message.task_id.as_deref() else {
         return Ok(());
     };
     let owner = path_agent.or(req.agent_id.as_deref());
     let Some(task) = rt.task(task_id, owner).await else {
-        return Err(DriverError::BadRequest(format!(
+        return Err(RunApplicationError::bad_request(format!(
             "task not found: {task_id}"
         )));
     };
     if task.status.state.is_terminal() {
-        return Err(DriverError::BadRequest(format!(
+        return Err(RunApplicationError::bad_request(format!(
             "task is terminal and cannot accept another message: {task_id}"
         )));
     }
     match req.message.context_id.as_deref() {
-        Some(context_id) if context_id != task.context_id => Err(DriverError::BadRequest(
-            "message contextId does not match the referenced task".into(),
+        Some(context_id) if context_id != task.context_id => Err(RunApplicationError::bad_request(
+            "message contextId does not match the referenced task",
         )),
         Some(_) => Ok(()),
         None => {
@@ -965,14 +950,14 @@ async fn send(rt: Runtime, req: SendMessageRequest, path_agent: Option<String>) 
 fn decode_send_params(
     params: Value,
     version: ProtocolVersion,
-) -> Result<SendMessageRequest, DriverError> {
+) -> Result<SendMessageRequest, RunApplicationError> {
     let params = if version == ProtocolVersion::V1 {
-        crate::v1::normalize_send_params(params).map_err(DriverError::BadRequest)?
+        crate::v1::normalize_send_params(params).map_err(RunApplicationError::bad_request)?
     } else {
         params
     };
     serde_json::from_value(params)
-        .map_err(|error| DriverError::BadRequest(format!("invalid params: {error}")))
+        .map_err(|error| RunApplicationError::bad_request(format!("invalid params: {error}")))
 }
 
 async fn message_send_rest(
@@ -1137,7 +1122,7 @@ async fn cancel_task(
             .resume(
                 &task.context_id,
                 &pending.tool_use_id,
-                Resume::Confirm {
+                RunResume::Confirm {
                     allow: false,
                     note: Some("task canceled by the client".into()),
                 },
@@ -1768,25 +1753,28 @@ fn rpc_error(id: Value, code: i32, message: impl Into<String>) -> Response {
 }
 
 /// Map a driver error to a JSON-RPC (code, message).
-fn rpc_fault(err: DriverError) -> (i32, String) {
-    match err {
-        DriverError::BadRequest(m) if m.starts_with("unsupported output modes") => (-32005, m),
-        DriverError::BadRequest(m) => (-32602, m),
-        DriverError::Internal(m) => (-32603, m),
+fn rpc_fault(err: RunApplicationError) -> (i32, String) {
+    use awaken_session_contract::RunErrorKind;
+    match (err.kind, err.message) {
+        (RunErrorKind::BadRequest, message) if message.starts_with("unsupported output modes") => {
+            (-32005, message)
+        }
+        (RunErrorKind::BadRequest, message) => (-32602, message),
+        (RunErrorKind::Internal | RunErrorKind::Unavailable, message) => (-32603, message),
     }
 }
 
 /// Map the inbound text to a neutral resume, matching the pending tool's binding:
 /// a client-executed tool receives the text as its result; a built-in tool awaiting
 /// approval reads any answer as an allow.
-fn to_resume(text: &str, pending: &Pending) -> Resume {
+fn to_resume(text: &str, pending: &Pending) -> RunResume {
     if pending.client_executed {
-        Resume::ClientResult {
+        RunResume::ClientResult {
             content: vec![ContentBlock::text(text)],
             is_error: false,
         }
     } else {
-        Resume::Confirm {
+        RunResume::Confirm {
             allow: true,
             note: None,
         }
@@ -1794,30 +1782,34 @@ fn to_resume(text: &str, pending: &Pending) -> Resume {
 }
 
 /// Map a driver error to `(status, A2A error envelope)`.
-fn error_response(err: DriverError) -> Response {
-    let (status, code, message) = match err {
-        DriverError::BadRequest(m) => (StatusCode::BAD_REQUEST, -32600, m),
-        DriverError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, m),
+fn error_response(err: RunApplicationError) -> Response {
+    use awaken_session_contract::RunErrorKind;
+    let (status, code, message) = match (err.kind, err.message) {
+        (RunErrorKind::BadRequest, message) => (StatusCode::BAD_REQUEST, -32600, message),
+        (RunErrorKind::Internal, message) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, message),
+        (RunErrorKind::Unavailable, message) => (StatusCode::SERVICE_UNAVAILABLE, -32603, message),
     };
     (status, Json(ErrorResponse::new(code, message))).into_response()
 }
 
-fn rest_driver_error(err: DriverError) -> Response {
-    let (status, code, message) = match err {
-        DriverError::BadRequest(message) if message.starts_with("task not found") => {
+fn rest_driver_error(err: RunApplicationError) -> Response {
+    use awaken_session_contract::RunErrorKind;
+    let (status, code, message) = match (err.kind, err.message) {
+        (RunErrorKind::BadRequest, message) if message.starts_with("task not found") => {
             (StatusCode::NOT_FOUND, -32001, message)
         }
-        DriverError::BadRequest(message) if message.starts_with("unsupported output modes") => {
+        (RunErrorKind::BadRequest, message) if message.starts_with("unsupported output modes") => {
             (StatusCode::BAD_REQUEST, -32005, message)
         }
-        DriverError::BadRequest(message) => (StatusCode::BAD_REQUEST, -32602, message),
-        DriverError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, message),
+        (RunErrorKind::BadRequest, message) => (StatusCode::BAD_REQUEST, -32602, message),
+        (RunErrorKind::Internal, message) => (StatusCode::INTERNAL_SERVER_ERROR, -32603, message),
+        (RunErrorKind::Unavailable, message) => (StatusCode::SERVICE_UNAVAILABLE, -32603, message),
     };
     (status, Json(json!({ "code": code, "message": message }))).into_response()
 }
 
 fn stream_binding_error(
-    error: DriverError,
+    error: RunApplicationError,
     rpc_id: Option<&Value>,
     rest_errors: bool,
     version: ProtocolVersion,
@@ -1832,7 +1824,7 @@ fn stream_binding_error(
     }
 }
 
-fn rest_driver_error_version(error: DriverError, version: ProtocolVersion) -> Response {
+fn rest_driver_error_version(error: RunApplicationError, version: ProtocolVersion) -> Response {
     if version == ProtocolVersion::V03 {
         return rest_driver_error(error);
     }
@@ -1945,11 +1937,11 @@ mod tests {
         // A caller fault is a 400; a runtime fault is a 500 — both carry the A2A
         // JSON error envelope (its shape is covered by the `types` tests).
         assert_eq!(
-            error_response(DriverError::BadRequest("bad".into())).status(),
+            error_response(RunApplicationError::bad_request("bad")).status(),
             StatusCode::BAD_REQUEST
         );
         assert_eq!(
-            error_response(DriverError::Internal("boom".into())).status(),
+            error_response(RunApplicationError::internal("boom")).status(),
             StatusCode::INTERNAL_SERVER_ERROR
         );
     }
@@ -1967,7 +1959,7 @@ mod tests {
     fn to_resume_delivers_the_text_to_a_client_executed_tool() {
         let r = to_resume("the answer", &pending(true));
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("the answer")])
+            matches!(r, RunResume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("the answer")])
         );
     }
 
@@ -1977,7 +1969,7 @@ mod tests {
         let r = to_resume("whatever", &pending(false));
         assert!(matches!(
             r,
-            Resume::Confirm {
+            RunResume::Confirm {
                 allow: true,
                 note: None
             }

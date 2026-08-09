@@ -7,6 +7,10 @@
 use async_trait::async_trait;
 use awaken_session_contract::ManagedLifecycleFact;
 
+mod schedule;
+
+pub use schedule::Cron;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploymentRecord {
     pub deployment_id: String,

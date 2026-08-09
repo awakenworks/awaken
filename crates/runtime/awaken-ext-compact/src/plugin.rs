@@ -23,7 +23,7 @@ use awaken_runtime_contract::plugin::{
 };
 use awaken_runtime_contract::tool::{RawTool, ToolCall, invoke_raw_tool};
 
-use crate::agent::{COMPACT_AGENT_ID, SUMMARIZE_PROMPT};
+use crate::agent::SUMMARIZE_PROMPT;
 use crate::backend::{CompactArtifact, CompactBackend, CompactRequest};
 use crate::config::CompactConfig;
 use crate::fold::{fold_point, prefetch_fold_point, token_fold_point};
@@ -214,9 +214,11 @@ impl CompactHook {
         let seed = self.seed(conversation, fold_to);
         let key = format!(
             "compact-{}",
-            content_fingerprint(&(scope, fold_to, &seed)).unwrap_or_default()
+            content_fingerprint(&(scope, &self.config.agent_id, fold_to, &seed))
+                .unwrap_or_default()
         );
         CompactRequest {
+            agent_id: self.config.agent_id.clone(),
             scope: scope.to_string(),
             key,
             covered_messages: fold_to,
@@ -280,7 +282,7 @@ impl CompactHook {
                 call_id: format!("compact/{parent_run_id}"),
                 tool_id: agent_tool.id().to_string(),
                 arguments: serde_json::json!({
-                    "agent_id": COMPACT_AGENT_ID,
+                    "agent_id": self.config.agent_id,
                     "seed": seed,
                 }),
             },
@@ -714,6 +716,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn token_budget_triggers_the_fold_despite_a_huge_message_threshold() {
         let plugin = CompactPlugin::new(CompactConfig {
+            agent_id: crate::COMPACT_AGENT_ID.to_string(),
+            agent_instructions: None,
             threshold: 9999, // message mode would never fire
             keep_last: 2,
             max_tokens: Some(10), // budget = 0.8 * 10 = 8 tokens
@@ -738,6 +742,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_wide_token_window_does_not_fold_a_small_conversation() {
         let plugin = CompactPlugin::new(CompactConfig {
+            agent_id: crate::COMPACT_AGENT_ID.to_string(),
+            agent_instructions: None,
             threshold: 9999,
             keep_last: 2,
             max_tokens: Some(1_000_000), // budget far beyond a tiny conversation

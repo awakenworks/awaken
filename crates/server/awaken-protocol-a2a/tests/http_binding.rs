@@ -7,8 +7,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
 use awaken_protocol_a2a::router;
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -19,29 +19,31 @@ use tower::ServiceExt;
 struct NoopRuntime;
 
 #[async_trait]
-impl ProtocolRuntime for NoopRuntime {
+impl RunApplication for NoopRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
-        Ok(StepOutcome {
-            new_messages: vec![Message::text(
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Ok(StepOutcome::ended(
+            vec![Message::text(
                 awaken_agent_contract::agent::message::Id("a1".into()),
                 awaken_agent_contract::agent::message::Role::Assistant,
                 "done",
             )],
-            terminal: Terminal::Finished,
-        })
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
 
@@ -139,21 +141,21 @@ async fn agent_card_advertises_transport_protocol_and_skills() {
 struct FailingRuntime;
 
 #[async_trait]
-impl ProtocolRuntime for FailingRuntime {
+impl RunApplication for FailingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
-        Err(DriverError::Internal("boom".into()))
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Err(RunApplicationError::internal("boom"))
     }
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
     async fn pending(&self, _thread: &str) -> Option<Pending> {

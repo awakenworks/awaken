@@ -1,4 +1,4 @@
-//! The axum router: AG-UI routes over a `ProtocolRuntime`. Handlers decode the
+//! The axum router: AG-UI routes over a `RunApplication`. Handlers decode the
 //! `RunAgentInput`, drive one turn or resume through the port, and project the
 //! committed step into an AG-UI SSE event stream.
 
@@ -22,9 +22,9 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
-use awaken_protocol_transport::{
-    ChannelStreamSink, CursorParams, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome,
-    paginate_history,
+use awaken_session_contract::{
+    CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume,
+    StepOutcome, paginate_history,
 };
 use awaken_tenancy::{ResolvedAgentId, ResolvedResourceId};
 
@@ -32,7 +32,7 @@ use crate::encoder::{AgUiEncoder, encode_history, encode_step};
 use crate::request::{ToolResultInput, process};
 use crate::types::{AgUiEvent, RunAgentInput};
 
-type Runtime = Arc<dyn ProtocolRuntime>;
+type Runtime = Arc<dyn RunApplication>;
 
 /// A JSON body extractor for the AG-UI routes. On a decode failure (malformed
 /// JSON, wrong field type, bad content-type) it returns a bare `RUN_ERROR` event
@@ -151,7 +151,7 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
             return sse_error(
                 &error_thread,
                 &error_run,
-                DriverError::BadRequest(error.to_string()),
+                RunApplicationError::bad_request(error.to_string()),
             );
         }
     };
@@ -159,7 +159,7 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
     let run_id = processed.run_id.clone();
 
     if processed.messages.is_empty() {
-        // Resume answers an awaiting tool decision — one committed step, framed whole.
+        // RunResume answers an awaiting tool decision — one committed step, framed whole.
         match resume_step(&rt, &thread, &processed.tool_results).await {
             Ok(outcome) => sse_response(encode_step(&outcome, &thread, &run_id)),
             Err(err) => sse_error(&thread, &run_id, err),
@@ -185,7 +185,11 @@ fn stream_turn(
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
     tokio::spawn(async move {
         let (live_tx, mut live_rx) = mpsc::unbounded_channel::<AgentEvent>();
-        let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
+        let sink: Arc<dyn StreamSink> = Arc::new(EventForwardingSink::new(move |event| {
+            live_tx
+                .send(event)
+                .map_err(|_| awaken_agent_contract::stream::sink::Error::Closed)
+        }));
         // One transcoder instance for both tiers (ADR-0058 Axis 9): live `delta()`
         // for increments + `fact(RunStarted)` to open the stream. The authoritative
         // the end comes from the committed tail, not the live channel (G10/G13).
@@ -224,22 +228,22 @@ fn stream_turn(
     stream_response(out_rx)
 }
 
-/// Resume the awaiting tool with the matching tool result. Fails closed when there
+/// RunResume the awaiting tool with the matching tool result. Fails closed when there
 /// is no awaiting tool or no matching result.
 async fn resume_step(
     rt: &Runtime,
     thread: &str,
     tool_results: &[ToolResultInput],
-) -> Result<StepOutcome, DriverError> {
+) -> Result<StepOutcome, RunApplicationError> {
     let pending = rt
         .pending(thread)
         .await
-        .ok_or_else(|| DriverError::BadRequest("no awaiting run to resume".into()))?;
+        .ok_or_else(|| RunApplicationError::bad_request("no awaiting run to resume"))?;
     let result = tool_results
         .iter()
         .find(|r| r.tool_call_id == pending.tool_use_id)
         .ok_or_else(|| {
-            DriverError::BadRequest(format!(
+            RunApplicationError::bad_request(format!(
                 "no tool result matches the awaiting tool {}",
                 pending.tool_use_id
             ))
@@ -253,14 +257,14 @@ async fn resume_step(
 /// the message's `error` (the AG-UI `ToolMessage.error` string) is present; a
 /// built-in tool awaiting approval reads a present `error` as a denial (carrying it
 /// as the note) and anything else as an allow.
-fn to_resume(content: &str, error: Option<&str>, pending: &Pending) -> Resume {
+fn to_resume(content: &str, error: Option<&str>, pending: &Pending) -> RunResume {
     if pending.client_executed {
-        Resume::ClientResult {
+        RunResume::ClientResult {
             content: vec![ContentBlock::text(content)],
             is_error: error.is_some(),
         }
     } else {
-        Resume::Confirm {
+        RunResume::Confirm {
             allow: error.is_none(),
             note: error.map(str::to_string),
         }
@@ -300,7 +304,12 @@ fn sse_response(events: Vec<AgUiEvent>) -> Response {
 
 /// The AG-UI error tail. When the run has not yet been bracketed live, it opens
 /// with `RUN_STARTED` first; when it already streamed, only `RUN_ERROR` is added.
-fn error_events(thread: &str, run_id: &str, err: DriverError, started: bool) -> Vec<AgUiEvent> {
+fn error_events(
+    thread: &str,
+    run_id: &str,
+    err: RunApplicationError,
+    started: bool,
+) -> Vec<AgUiEvent> {
     let message = driver_error_message(err);
     let mut out = Vec::new();
     if !started {
@@ -313,14 +322,12 @@ fn error_events(thread: &str, run_id: &str, err: DriverError, started: bool) -> 
     out
 }
 
-fn driver_error_message(err: DriverError) -> String {
-    match err {
-        DriverError::BadRequest(message) | DriverError::Internal(message) => message,
-    }
+fn driver_error_message(err: RunApplicationError) -> String {
+    err.message
 }
 
 /// A run bracketed by `RUN_STARTED` / `RUN_ERROR` for a non-streaming failure.
-fn sse_error(thread: &str, run_id: &str, err: DriverError) -> Response {
+fn sse_error(thread: &str, run_id: &str, err: RunApplicationError) -> Response {
     sse_response(error_events(thread, run_id, err, false))
 }
 
@@ -341,7 +348,7 @@ mod tests {
     fn client_executed_tool_delivers_the_content_as_its_result() {
         let r = to_resume("the answer", None, &pending(true));
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("the answer")])
+            matches!(r, RunResume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("the answer")])
         );
     }
 
@@ -349,7 +356,7 @@ mod tests {
     fn a_client_executed_tool_error_is_delivered_as_an_error_result() {
         let r = to_resume("it failed", Some("it failed"), &pending(true));
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: true } if content == vec![ContentBlock::text("it failed")])
+            matches!(r, RunResume::ClientResult { content, is_error: true } if content == vec![ContentBlock::text("it failed")])
         );
     }
 
@@ -358,7 +365,7 @@ mod tests {
         let r = to_resume("anything", None, &pending(false));
         assert!(matches!(
             r,
-            Resume::Confirm {
+            RunResume::Confirm {
                 allow: true,
                 note: None
             }
@@ -371,7 +378,7 @@ mod tests {
         let r = to_resume("ignored content", Some("not permitted"), &pending(false));
         assert!(matches!(
             r,
-            Resume::Confirm { allow: false, note: Some(n) } if n == "not permitted"
+            RunResume::Confirm { allow: false, note: Some(n) } if n == "not permitted"
         ));
     }
 }

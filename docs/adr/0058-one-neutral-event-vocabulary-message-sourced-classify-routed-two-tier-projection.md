@@ -8,7 +8,7 @@
   resume rebuilding the transcript from committed messages (`store::thread_reader`,
   G1/G13); the neutral projection fold + `Transcoder` seam (`project::AgentEvent`,
   `project_messages`/`project_step`/`project_history`); the live stream sink
-  (`stream::event::Kind`, `stream::sink::Sink`, `ChannelStreamSink`); the durable
+  (`stream::event::Kind`, `stream::sink::Sink`, neutral `EventForwardingSink`); the durable
   audit event (`event::RunEvent` → `Draft`); telemetry content-capture consent
   (ADR-0050); the best-effort-live / commit-is-truth discipline (G10/G13).
 - Reference architectures (not code dependencies): `~/Codes/goal` — a single stream
@@ -250,7 +250,7 @@ pub trait Transcoder {
 | `event/{kind,draft,record}.rs` | `audit/{kind,draft,record}.rs` | **keep**: audit's durable envelope (a *view*, not truth) |
 | `agent/{message,content,run,state,...}` | unchanged | domain value objects `AgentEvent` references |
 | `fact/`, `commit/coordinator.rs` | unchanged | `commit/staged.rs`: `assemble` shifts from hand-built events to `fold_step` view |
-| `state/types.rs` `TurnOutcome`, `state/events.rs` `append_turn`, `project.rs` `project_turn` | `StepOutcome`, `append_step`, `fold_step` | **rename turn → step** ([[turn/run/step vocabulary]]): the runtime port is already `run()`/`resume()`, and `awaken-protocol-transport` already returns `StepOutcome` — Managed is the lone `Turn*` holdout. `turn` survives only in `types/session.rs` doc comments as a Managed-Agents **wire-spec** mirror; the port and all execution vocabulary is run/step. |
+| `state/types.rs` `TurnOutcome`, `state/events.rs` `append_turn`, `project.rs` `project_turn` | `StepOutcome`, `append_step`, `fold_step` | **rename turn → step** ([[turn/run/step vocabulary]]): the runtime port is already `run()`/`resume()`. `StepOutcome` now lives only in `awaken-session-contract`; the former `awaken-protocol-transport` compatibility crate was retired. `turn` survives only in `types/session.rs` doc comments as a Managed-Agents **wire-spec** mirror; the port and all execution vocabulary is run/step. |
 
 ### Axis 12 — Migration sequence (each step compiles + tests green; standalone commits).
 

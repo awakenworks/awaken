@@ -268,21 +268,6 @@ export interface MemoryStore {
   updated_at: string;
 }
 
-export interface MemoryStoreConfig {
-  memory_store_id: string;
-  version: number;
-  recall_policy: {
-    enabled: boolean;
-    max_results: number;
-  };
-  extraction_policy: {
-    enabled: boolean;
-  };
-  retention_policy: {
-    retention_days?: number | null;
-  };
-}
-
 export interface MemoryEntry {
   id: string;
   type: "memory";

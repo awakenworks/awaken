@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use awaken_agent_contract::agent::message::Message;
-use awaken_protocol_transport::{
-    DriverError, Pending, ProtocolRuntime, Resume, StepOutcome, Terminal,
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
 };
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
@@ -16,25 +16,27 @@ use tower::ServiceExt;
 struct NoAwaitingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for NoAwaitingRuntime {
+impl RunApplication for NoAwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+    ) -> Result<StepOutcome, RunApplicationError> {
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("no run is awaiting, so resume must never be reached")
     }
 
@@ -100,13 +102,13 @@ async fn a_tool_result_with_no_awaiting_run_fails_closed_with_run_error() {
 struct AwaitingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for AwaitingRuntime {
+impl RunApplication for AwaitingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("this test only drives the resume path")
     }
 
@@ -114,13 +116,15 @@ impl ProtocolRuntime for AwaitingRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         use awaken_agent_contract::agent::message::{Id, Role};
-        Ok(StepOutcome {
-            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "done")],
-            terminal: Terminal::Finished,
-        })
+        Ok(StepOutcome::ended(
+            vec![Message::text(Id("a1".into()), Role::Assistant, "done")],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn pending(&self, _thread: &str) -> Option<Pending> {
@@ -172,7 +176,7 @@ async fn a_matching_tool_result_resumes_an_awaiting_run_to_completion() {
     assert!(!types.contains(&"RUN_ERROR".to_string()), "{types:?}");
 }
 
-/// Resume correlation behavior:
+/// RunResume correlation behavior:
 ///
 /// ```text
 /// awaiting(c1) + result(c1) -> resume(c1) -> RUN_FINISHED
@@ -192,13 +196,13 @@ struct ExactResumeRuntime {
 }
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for ExactResumeRuntime {
+impl RunApplication for ExactResumeRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("this test drives only resume")
     }
 
@@ -206,10 +210,15 @@ impl ProtocolRuntime for ExactResumeRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         self.resumed.store(true, Ordering::SeqCst);
-        Ok(StepOutcome::default())
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn pending(&self, _thread: &str) -> Option<Pending> {
@@ -289,23 +298,28 @@ struct AdmissionRecordingRuntime {
 }
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for AdmissionRecordingRuntime {
+impl RunApplication for AdmissionRecordingRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         self.ran.store(true, Ordering::SeqCst);
-        Ok(StepOutcome::default())
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
 
     async fn resume(
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("unsupported fresh input must fail before resume")
     }
 
@@ -422,28 +436,30 @@ struct DenyRecordingRuntime {
 }
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for DenyRecordingRuntime {
+impl RunApplication for DenyRecordingRuntime {
     async fn run(
         &self,
         _t: &str,
         _a: Option<String>,
         _m: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
     async fn resume(
         &self,
         _t: &str,
         _id: &str,
-        resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
-        if let Resume::Confirm { allow: false, .. } = resume {
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        if let RunResume::Confirm { allow: false, .. } = resume {
             self.denied.store(true, Ordering::SeqCst);
         }
-        Ok(StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        })
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
     }
     async fn pending(&self, _t: &str) -> Option<Pending> {
         Some(Pending {
@@ -494,16 +510,21 @@ async fn an_error_flagged_tool_result_denies_an_awaiting_builtin_tool() {
 struct AgUiPanickingRuntime;
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for AgUiPanickingRuntime {
+impl RunApplication for AgUiPanickingRuntime {
     async fn run(
         &self,
         _t: &str,
         _a: Option<String>,
         _m: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         panic!("the turn task died");
     }
-    async fn resume(&self, _t: &str, _id: &str, _r: Resume) -> Result<StepOutcome, DriverError> {
+    async fn resume(
+        &self,
+        _t: &str,
+        _id: &str,
+        _r: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
     async fn pending(&self, _t: &str) -> Option<Pending> {
@@ -517,7 +538,7 @@ impl ProtocolRuntime for AgUiPanickingRuntime {
     }
 }
 
-async fn ag_ui_frame_types(runtime: Arc<dyn ProtocolRuntime>, body: String) -> Vec<String> {
+async fn ag_ui_frame_types(runtime: Arc<dyn RunApplication>, body: String) -> Vec<String> {
     let response = awaken_protocol_ag_ui::router::router(runtime)
         .oneshot(
             Request::builder()

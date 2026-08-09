@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 # The neutral session substrate (SharedHost) and the two port adapters
-# (ManagedHost / ProtocolHost) live here; the assembly bin mounts them.
+# (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
@@ -54,7 +54,6 @@ awaken-run-executor-acp = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-credential-vault = { workspace = true }
 awaken-credential-materializer = { workspace = true }
-awaken-protocol-transport = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -95,10 +94,6 @@ container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
 awaken-file-application.workspace = true
-awaken-resource-application.workspace = true
-# Test-only ZIP construction for the HTTP import compatibility suite. Production
-# decoding is owned by awaken-skill-store's canonical bundle ingestor.
-zip = { version = "8.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 awaken-resource-store = { workspace = true, features = ["sqlite"] }
 awaken-run-ingress-testkit = { workspace = true }
 # The durable session-store round-trip test opens a real sessions.db under a temp dir.
@@ -109,6 +104,3 @@ awaken-store-inmem = { workspace = true }
 # Drives the durable-ops axum router in-process (ServiceExt::oneshot) to exercise
 # the SharedHost operational verbs over their real HTTP surface.
 tower = { version = "0.5", features = ["util"] }
-# The per-plane files/models routers were extracted to this sibling adapter crate;
-# the files + resource-composition HTTP tests drive them over one SharedHost.
-awaken-managed-routers = { workspace = true }

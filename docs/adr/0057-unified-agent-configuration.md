@@ -664,7 +664,7 @@ right column; introducing a parallel type is a defect, not a phase.
 | ACP settings codec | ONE `AcpSpec` serde type (= the `plugin_config["acp"]` codec) shared by authoring + executor | shared contract crate | a separate `AcpSettings` duplicating it |
 | CLI acquisition | existing `AcpAcquisition` on the `AcpCli` row + startup-resolved argv on `AcpWorkerProfile` | executor catalog + product composition root | runtime install stage; per-agent provisioning; second adapter catalog |
 | Hand transport | `ConnectionPlan` / `DialAddr` | `awaken-connection-plan` | ~~`HandTransport`~~ (alias `DialAddr`) |
-| Hand placement entry | `PlacementEntry` / `ConfigToolExecutorProvider` | `awaken-server::placement` | a second placement registry |
+| Hand placement entry | `PlacementEntry` / `ConfigToolExecutorProvider` | `awaken-coordinator::placement` | a second placement registry |
 | GDPR erasure / consent | ADR-0050 eraser fan-out + `consent_ceiling` | `awaken-data-subject` | any new erasure path |
 
 External-dependency auth thus has exactly **one declare-side table**

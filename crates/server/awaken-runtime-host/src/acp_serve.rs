@@ -1,5 +1,5 @@
 //! Serve our brain *as* an ACP agent (the reverse of driving an external CLI): an
-//! ACP client (a gateway / orchestrator) drives our neutral [`ProtocolRuntime`]
+//! ACP client (a gateway / orchestrator) drives our neutral [`RunApplication`]
 //! over the ACP session lifecycle. This is the anti-corruption adapter — it maps
 //! ACP `initialize` / `session/new` / `session/prompt` onto `run`, and the
 //! run's outcome back onto an ACP stop reason. The WS / JSON-RPC transport wraps
@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_protocol_transport::{DriverError, ProtocolRuntime, Terminal};
+use awaken_agent_contract::agent::run::{EndCause, RunState};
+use awaken_session_contract::{RunApplication, RunApplicationError};
 
 /// The ACP stop reason a served turn ended on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,17 +31,17 @@ pub struct AcpTurn {
     pub stop: AcpStop,
 }
 
-/// Serves a [`ProtocolRuntime`] (e.g. `ProtocolHost` over the shared host) as an ACP
+/// Serves a [`RunApplication`] (e.g. `RunApplicationHost` over the shared host) as an ACP
 /// agent. One instance backs many ACP sessions, each keyed by a minted session id
 /// (a thread), so a turn served here is resumable/observable on the same thread
 /// through any other protocol adapter bound to the same host.
 pub struct AcpServeHost {
-    runtime: Arc<dyn ProtocolRuntime>,
+    runtime: Arc<dyn RunApplication>,
 }
 
 impl AcpServeHost {
     #[must_use]
-    pub fn new(runtime: Arc<dyn ProtocolRuntime>) -> Self {
+    pub fn new(runtime: Arc<dyn RunApplication>) -> Self {
         Self { runtime }
     }
 
@@ -72,7 +73,7 @@ impl AcpServeHost {
         session: &str,
         agent: Option<String>,
         text: &str,
-    ) -> Result<AcpTurn, DriverError> {
+    ) -> Result<AcpTurn, RunApplicationError> {
         let user = Message::text(
             MessageId(awaken_runtime::fresh_process_id("acp-u")),
             Role::User,
@@ -80,34 +81,35 @@ impl AcpServeHost {
         );
         let outcome = self.runtime.run(session, agent, vec![user]).await?;
         Ok(AcpTurn {
-            stop: map_stop(&outcome.terminal),
+            stop: map_stop(outcome.state()),
             messages: outcome.new_messages,
         })
     }
 }
 
 /// Map a run's terminal flags onto the ACP stop reason (a pure decision).
-fn map_stop(terminal: &Terminal) -> AcpStop {
-    match terminal {
-        Terminal::Awaiting { .. } => AcpStop::RequiresAction,
-        Terminal::Exhausted => AcpStop::MaxTurns,
+fn map_stop(state: &RunState) -> AcpStop {
+    match state {
+        RunState::Awaiting => AcpStop::RequiresAction,
+        RunState::Ended(EndCause::MaxSteps) => AcpStop::MaxTurns,
         // A natural end or a terminal fault both close the ACP turn (ACP has no
         // distinct fault stop reason; the failure rides the committed record).
-        Terminal::Finished | Terminal::Failed(_) => AcpStop::EndTurn,
+        RunState::Ended(_) => AcpStop::EndTurn,
+        RunState::Running => unreachable!("a completed step cannot still be running"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProtocolHost;
+    use crate::RunApplicationHost;
     use crate::host::SharedHost;
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, TokenUsage,
     };
 
     /// A deterministic model (the external model dependency): the runtime it drives
-    /// is the real `ProtocolHost`/`SharedHost` engine loop, not a double. It reports a
+    /// is the real `RunApplicationHost`/`SharedHost` engine loop, not a double. It reports a
     /// fixed token usage, standing for what a real provider returns.
     struct DeterministicModel;
     #[async_trait::async_trait]
@@ -129,13 +131,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn serves_a_real_turn_over_the_real_protocol_host() {
-        // The real production runtime: ProtocolHost over a real SharedHost.
+    async fn serves_a_real_turn_over_the_real_run_application_host() {
+        // The real production runtime: RunApplicationHost over a real SharedHost.
         let host = Arc::new(SharedHost::new(
             Arc::new(DeterministicModel),
             "served-model",
         ));
-        let serve = AcpServeHost::new(Arc::new(ProtocolHost::new(host)));
+        let serve = AcpServeHost::new(Arc::new(RunApplicationHost::new(host)));
 
         assert_eq!(serve.model(), "served-model");
         let s1 = serve.new_session();
@@ -168,16 +170,25 @@ mod tests {
 
     #[test]
     fn stop_reason_mapping_is_total() {
-        use awaken_protocol_transport::StepFailure;
-        assert_eq!(map_stop(&Terminal::Finished), AcpStop::EndTurn);
+        use awaken_agent_contract::agent::run::Failure;
+
+        // Cause/effect decision table: awaiting -> requires action;
+        // MaxSteps -> max turns; every other committed end -> end turn.
+        assert_eq!(map_stop(&RunState::Awaiting), AcpStop::RequiresAction);
         assert_eq!(
-            map_stop(&Terminal::Awaiting { pending: None }),
-            AcpStop::RequiresAction
+            map_stop(&RunState::Ended(EndCause::MaxSteps)),
+            AcpStop::MaxTurns
         );
-        assert_eq!(map_stop(&Terminal::Exhausted), AcpStop::MaxTurns);
+        assert_eq!(
+            map_stop(&RunState::Ended(EndCause::NaturalEnd)),
+            AcpStop::EndTurn
+        );
         // A terminal fault closes the ACP turn (no distinct fault stop reason).
         assert_eq!(
-            map_stop(&Terminal::Failed(StepFailure::default())),
+            map_stop(&RunState::Ended(EndCause::Error(Failure::Inference {
+                code: "test".into(),
+                message: "failed".into(),
+            }))),
             AcpStop::EndTurn
         );
     }

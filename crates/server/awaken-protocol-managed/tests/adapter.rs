@@ -9,11 +9,12 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
-use awaken_protocol_managed::{
-    AgentCapabilities, BuiltinTool, CustomTool, ManagedState, OutcomeIteration, OutcomeReport,
-    Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, ToolPermissionDecision, router,
+use awaken_protocol_managed::{ManagedState, router};
+use awaken_session_contract::{
+    AgentCapabilities, BuiltinTool, CustomTool, ManagedSessionRepository, OutcomeIteration,
+    OutcomeReport, Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome,
+    ToolPermissionDecision,
 };
-use awaken_session_contract::ManagedSessionRepository;
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
@@ -2350,7 +2351,7 @@ async fn events_are_paged_by_cursor() {
     assert_eq!(p1["has_more"], serde_json::json!(true));
     assert_eq!(p1["next_page"], serde_json::json!(full_ids[1]));
 
-    // Resume after the cursor, to the end.
+    // RunResume after the cursor, to the end.
     let cursor = p1["next_page"].as_str().unwrap();
     let p2 = json_call(
         &app,

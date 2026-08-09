@@ -16,9 +16,9 @@ use awaken_config_store::{
     MultiagentConfig, MultiagentTarget,
 };
 use awaken_protocol_managed::types::agent::{
-    Agent, AgentCreateParams, AgentListParams, AgentMcpServer, AgentSkill, AgentStatus, AgentTool,
-    AgentUpdateParams, AwakenAgentExtensions, CustomToolInputSchema,
-    MultiagentConfig as WireMultiagent, MultiagentRosterEntry,
+    Agent, AgentCreateParams, AgentListParams, AgentMcpServer, AgentSkill, AgentStatus,
+    AgentUpdateParams, AwakenAgentExtensions, MultiagentConfig as WireMultiagent,
+    MultiagentRosterEntry,
 };
 use awaken_protocol_managed::types::{AwakenModelExtensions, ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
@@ -26,6 +26,10 @@ use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::agent_bindings::{InferenceOptions, InferenceSpeed, ReasoningEffort};
 use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_session_contract::{
+    AGENT_TOOLSET_TOOL_IDS, AgentTool, CustomToolInputSchema, is_agent_toolset_member,
+    resolved_toolsets, toolset_policies,
+};
 use awaken_tenancy::ScopeId;
 use sha2::{Digest, Sha256};
 
@@ -53,7 +57,7 @@ fn lifecycle_timestamp() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
-    awaken_protocol_managed::cron::to_rfc3339(milliseconds)
+    awaken_session_contract::epoch_millis_to_rfc3339(milliseconds)
 }
 
 pub struct ConfigPlaneManagedAgentRepository {
@@ -330,7 +334,7 @@ fn config_from_create(
         model_binding,
         inference,
         tool_ids: Vec::new(),
-        toolsets: awaken_protocol_managed::project::toolset_policies(&params.tools),
+        toolsets: toolset_policies(&params.tools),
         client_tools: client_tools(&params.tools),
         plugin_ids,
         plugin_config,
@@ -412,9 +416,7 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
                     entry.name
                 )));
             }
-            if toolset.source == ToolsetSource::Agent
-                && !awaken_protocol_managed::project::is_agent_toolset_member(&entry.name)
-            {
+            if toolset.source == ToolsetSource::Agent && !is_agent_toolset_member(&entry.name) {
                 return Err(ManagedAgentError::Invalid(format!(
                     "unknown agent tool `{}`",
                     entry.name
@@ -443,9 +445,7 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
             .toolsets
             .iter()
             .map(|toolset| match toolset.source {
-                ToolsetSource::Agent => {
-                    awaken_protocol_managed::project::AGENT_TOOLSET_TOOL_IDS.len()
-                }
+                ToolsetSource::Agent => AGENT_TOOLSET_TOOL_IDS.len(),
                 ToolsetSource::Mcp { .. } => toolset.overrides.len(),
             })
             .sum::<usize>();
@@ -539,7 +539,7 @@ fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Ve
     // | server `tool_ids`      | omitted                    |
     // | typed toolset          | typed toolset              |
     // | client tool descriptor | complete `custom`          |
-    let mut tools = awaken_protocol_managed::project::resolved_toolsets(toolsets);
+    let mut tools = resolved_toolsets(toolsets);
     tools.extend(client_tools.iter().map(|tool| {
         AgentTool::Custom {
             name: tool.id.clone(),
@@ -859,7 +859,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         if let Some(tools) = params.tools {
             let tools = tools.unwrap_or_default();
             config.tool_ids.clear();
-            config.toolsets = awaken_protocol_managed::project::toolset_policies(&tools);
+            config.toolsets = toolset_policies(&tools);
             config.client_tools = client_tools(&tools);
         }
         if let Some(multiagent) = params.multiagent {

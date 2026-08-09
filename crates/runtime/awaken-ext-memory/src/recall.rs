@@ -52,32 +52,6 @@ pub fn recall_block(store: &MemoryDir, bounds: &RecallBounds) -> Option<String> 
     render(&store.entries(), bounds)
 }
 
-/// Relevance-aware recall (optimizations ① + ③): when the store is small, inject
-/// the newest memories bounded; once it grows past `bounds.select_over`, pick the
-/// relevant ones for `query` with a single model call, then bound-render those.
-pub async fn recall_relevant(
-    store: &MemoryDir,
-    bounds: &RecallBounds,
-    llm: &dyn awaken_runtime_contract::llm::LlmExecutor,
-    model: &awaken_runtime_contract::resolved::ModelBinding,
-    query: &str,
-) -> Option<String> {
-    let entries = store.entries();
-    if entries.len() <= bounds.select_over {
-        return render(&entries, bounds);
-    }
-    let picked =
-        crate::select::select_relevant(llm, model, query, &entries, bounds.max_entries).await;
-    if picked.is_empty() {
-        return None;
-    }
-    let selected: Vec<crate::localfs::Entry> = picked
-        .into_iter()
-        .filter_map(|i| entries.get(i).cloned())
-        .collect();
-    render(&selected, bounds)
-}
-
 /// Render an already-ordered (newest-first) slice of entries into a bounded recall
 /// block. Shared by whole-store recall and relevance-selected recall.
 pub fn render(entries: &[crate::localfs::Entry], bounds: &RecallBounds) -> Option<String> {
@@ -224,80 +198,6 @@ mod tests {
         let block = recall_block(&store, &bounds).unwrap();
         assert!(block.contains(&"Z".repeat(100)), "first entry always kept");
         assert!(!block.contains("older memories not shown"));
-    }
-
-    // --- recall_relevant: the select_over threshold and empty-selection path ---
-
-    use async_trait::async_trait;
-    use awaken_runtime_contract::llm::{
-        AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
-    };
-    use awaken_runtime_contract::resolved::ModelBinding;
-
-    struct PanicModel;
-    #[async_trait]
-    impl LlmExecutor for PanicModel {
-        async fn infer(&self, _r: ChatRequest) -> LlmResult<ChatResponse> {
-            panic!("the model must not be called at or below select_over");
-        }
-    }
-    struct ReplyModel(&'static str);
-    #[async_trait]
-    impl LlmExecutor for ReplyModel {
-        async fn infer(&self, _r: ChatRequest) -> LlmResult<ChatResponse> {
-            Ok(ChatResponse {
-                output: AssistantOutput::text(self.0),
-                usage: None,
-                stop_reason: None,
-            })
-        }
-    }
-    fn model() -> ModelBinding {
-        ModelBinding::new("p", "m", "b")
-    }
-
-    #[tokio::test]
-    async fn recall_relevant_at_or_below_select_over_skips_the_model() {
-        // 2 entries, select_over == 2 → entries.len() <= select_over → render, no call.
-        let store = store_with(&[("a", "AAA"), ("b", "BBB")]);
-        let bounds = RecallBounds {
-            select_over: 2,
-            ..RecallBounds::default()
-        };
-        let block = recall_relevant(&store, &bounds, &PanicModel, &model(), "q")
-            .await
-            .unwrap();
-        assert!(block.contains("AAA") && block.contains("BBB"));
-    }
-
-    #[tokio::test]
-    async fn recall_relevant_above_select_over_selects_via_the_model() {
-        // 3 entries > select_over(1); max_entries(2) < 3 forces a real model call.
-        let store = store_with(&[("a", "AAA"), ("b", "BBB"), ("c", "CCC")]);
-        let bounds = RecallBounds {
-            select_over: 1,
-            max_entries: 2,
-            ..RecallBounds::default()
-        };
-        // Entries are newest-first (c,b,a); index 0 is "CCC".
-        let block = recall_relevant(&store, &bounds, &ReplyModel("[0]"), &model(), "q")
-            .await
-            .unwrap();
-        assert!(block.contains("CCC"), "picked memory shown: {block}");
-        assert!(!block.contains("AAA"), "unpicked memory absent: {block}");
-    }
-
-    #[tokio::test]
-    async fn recall_relevant_returns_none_when_selection_picks_nothing() {
-        let store = store_with(&[("a", "AAA"), ("b", "BBB"), ("c", "CCC")]);
-        let bounds = RecallBounds {
-            select_over: 1,
-            max_entries: 2,
-            ..RecallBounds::default()
-        };
-        // Model replies NONE → no indices parsed → recall_relevant yields None.
-        let out = recall_relevant(&store, &bounds, &ReplyModel("NONE"), &model(), "q").await;
-        assert!(out.is_none());
     }
 
     // --- char cap: `render` measures the total cap in CHARS, matching the

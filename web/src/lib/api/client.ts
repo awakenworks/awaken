@@ -22,7 +22,7 @@ export function betaForPath(path: string): string | undefined {
   const family = pathname.match(/^\/v1\/(?:workspaces\/[^/]+\/)?([^/]+)/)?.[1];
   if (family === "memory_stores") return API_BETAS.memory;
   if (family === "skills") return API_BETAS.skills;
-  if (["dreams", "dream_policies", "dream_agent_configuration"].includes(family ?? "")) {
+  if (family === "dreams") {
     return `${API_BETAS.managed},${API_BETAS.dreaming}`;
   }
   if (["sessions", "agents", "environments", "deployments", "deployment_runs", "vaults"].includes(family ?? "")) {

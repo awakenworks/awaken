@@ -115,8 +115,6 @@ struct MemoryStore {
 struct MemoryStoreConfigVersion {
     memory_store_id: MemoryStoreId,
     version: ConfigVersion,
-    recall_policy: RecallPolicy,
-    extraction_policy: ExtractionPolicy,
     retention_policy: RetentionPolicy,
 }
 
@@ -167,8 +165,6 @@ struct ResolvedMemoryInput {
     memory_store_id: MemoryStoreId,
     config_version: ConfigVersion,
     access: MemoryAccess,
-    recall_policy: RecallPolicy,
-    extraction_policy: ExtractionPolicy,
     mount_path: SandboxPath,
 }
 
@@ -502,14 +498,12 @@ A shared blob survives removal of one Workspace's ownership edge.
 
 ### Configure
 
-The Resources application creates a Workspace-owned `MemoryStore`, publishes
-config v1, and ensures the Resources-owned aggregate recognizes the logical store id. Config
-updates append an immutable version and atomically advance
-`current_config_version`. They do not copy or version the store's content.
-The Workspace-scoped management boundary exposes current/historical config reads
-and publishes the next policy version only with `expected_config_version` CAS;
-descriptive metadata updates remain separate, so a failed config CAS cannot
-partially mutate the resource definition.
+The Resources application is the sole command path for Workspace-owned
+`MemoryStore` identity, state, retention, and purge scheduling. It creates
+config v1 and ensures the Resources aggregate recognizes the logical store id.
+Config versions carry retention only; recall and extraction are not resource
+policies. The Anthropic MemoryStore API exposes no Awaken-only config/version
+route.
 
 A Memory head update is likewise one resource-aggregate command. The public API
 passes content, optional target path, and the head SHA precondition to
@@ -521,10 +515,11 @@ role, policy, API key, or authorization decision.
 ### Bind and resolve
 
 Agent and Session bindings carry only `MemoryStoreId`. At Session creation the
-resolver selects the current config version and copies its policy values into
-`ResolvedMemoryInput`. Existing Sessions retain that policy/config version;
-later Sessions receive the new one. All Sessions still address the same mutable
-logical store.
+resolver freezes the current resource config version for lifecycle validation.
+All Sessions still address the same mutable logical store. `recall_enabled`,
+`extraction_enabled`, recall bounds, extraction/selector Agent ids, and their
+online prompt overrides come only from the parent Agent's `memory` plugin
+configuration.
 
 ### Activate and use
 

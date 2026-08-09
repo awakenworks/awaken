@@ -77,4 +77,15 @@ DOMAIN_APPLICATION_ALLOWED_DEPS: dict[str, set[str]] = {
         "async-trait",
         "tokio",
     },
+    # Coordinator-owned cross-Session Dream process application. Protocol
+    # adapters drive it; stores implement only the inward Session contract.
+    "awaken-dream-application": {
+        "awaken-session-contract",
+        "async-trait",
+        "chrono",
+        "serde",
+        "thiserror",
+        "tokio",
+        "tracing",
+    },
 }

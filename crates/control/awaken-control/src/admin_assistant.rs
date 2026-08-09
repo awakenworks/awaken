@@ -157,11 +157,11 @@ impl CapabilityReader for CatalogCapabilityReader {
 /// The LIVE data-plane resource inventory (ADR-0038 memory stores + skills) behind the
 /// [`ResourceInventory`] port, so the [`CatalogCapabilityReader`] can report real memory
 /// store + skill ids without `awaken-control` depending on the runtime host. Memory-store
-/// definitions come from the durable [`awaken_protocol_managed::ResourceCatalog`]
+/// definitions come from the durable [`awaken_resource_contract::ResourceCatalog`]
 /// shared by authoring and Session resolution, and skills from the
 /// [`awaken_skill_store::SkillStore`]. Carries only ids — never a secret or policy.
 pub struct HostResourceInventory {
-    memory: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+    memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     skills: Arc<dyn awaken_skill_store::SkillStore>,
     /// Platform-provisioned workspace used to address the skill catalog.
     skill_workspace: String,
@@ -171,7 +171,7 @@ impl HostResourceInventory {
     /// Build the inventory from the two live handles and an edge-provisioned
     /// workspace coordinate. The adapter never invents a tenant.
     pub fn new(
-        memory: Arc<dyn awaken_protocol_managed::ResourceCatalog>,
+        memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
         skills: Arc<dyn awaken_skill_store::SkillStore>,
         skill_workspace: impl Into<String>,
     ) -> Self {
@@ -771,7 +771,7 @@ mod tests {
     /// two data-plane sources the `CatalogCapabilityReader` folds in when wired.
     #[tokio::test]
     async fn host_inventory_reports_put_memory_stores_and_skills() {
-        use awaken_protocol_managed::resource_plane::{
+        use awaken_resource_contract::{
             ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
             ResourceState,
         };
@@ -803,8 +803,6 @@ mod tests {
                     MemoryStoreConfigVersion {
                         memory_store_id: id.into(),
                         version: ConfigVersion::INITIAL,
-                        recall_policy: Default::default(),
-                        extraction_policy: Default::default(),
                         retention_policy: Default::default(),
                     },
                 )

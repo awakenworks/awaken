@@ -1,4 +1,4 @@
-//! The axum router: AI SDK v6 UI Message Stream routes over a `ProtocolRuntime`.
+//! The axum router: AI SDK v6 UI Message Stream routes over a `RunApplication`.
 //!
 //! Handlers decode the request, drive one turn or resume through the port, and
 //! project the committed step into a UI Message Stream SSE response. No runtime or
@@ -24,9 +24,9 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use awaken_api_contract::CursorPage;
-use awaken_protocol_transport::{
-    ChannelStreamSink, CursorParams, DriverError, Pending, ProtocolRuntime, Resume, StepOutcome,
-    paginate_history,
+use awaken_session_contract::{
+    CursorParams, EventForwardingSink, Pending, RunApplication, RunApplicationError, RunResume,
+    StepOutcome, paginate_history,
 };
 use awaken_tenancy::ResolvedResourceId;
 
@@ -34,7 +34,7 @@ use crate::encoder::{AiSdkEncoder, encode_history, encode_step};
 use crate::request::{DecisionKind, process_request, result_text};
 use crate::types::{AiSdkChatRequest, UIStreamEvent, attach_usage};
 
-type Runtime = Arc<dyn ProtocolRuntime>;
+type Runtime = Arc<dyn RunApplication>;
 
 /// The AI SDK v6 header `DefaultChatTransport` uses to identify the stream format.
 const AI_SDK_STREAM_HEADER: &str = "x-vercel-ai-ui-message-stream";
@@ -55,7 +55,9 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
         match Json::<T>::from_request(req, state).await {
             Ok(Json(value)) => Ok(Self(value)),
-            Err(rejection) => Err(sse_error(DriverError::BadRequest(rejection.body_text()))),
+            Err(rejection) => Err(sse_error(RunApplicationError::bad_request(
+                rejection.body_text(),
+            ))),
         }
     }
 }
@@ -126,7 +128,7 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
     let thread = processed.thread_id.clone();
 
     if processed.messages.is_empty() {
-        // Resume answers an awaiting tool decision — a single committed step, framed
+        // RunResume answers an awaiting tool decision — a single committed step, framed
         // whole (no in-flight model output to stream).
         match resume_step(&rt, &thread, &processed.decisions).await {
             Ok(outcome) => {
@@ -160,7 +162,11 @@ fn stream_turn(
     let thread_usage = thread.clone();
     tokio::spawn(async move {
         let (live_tx, mut live_rx) = mpsc::unbounded_channel::<AgentEvent>();
-        let sink: Arc<dyn StreamSink> = Arc::new(ChannelStreamSink::new(live_tx));
+        let sink: Arc<dyn StreamSink> = Arc::new(EventForwardingSink::new(move |event| {
+            live_tx
+                .send(event)
+                .map_err(|_| awaken_agent_contract::stream::sink::Error::Closed)
+        }));
         // One transcoder instance for both tiers (ADR-0058 Axis 9): live `delta()`
         // for increments + `fact(RunStarted)` to open the stream. The authoritative
         // the end comes from the committed tail, so terminal/whole-unit facts on
@@ -213,8 +219,8 @@ async fn resume_step(
     decisions: &[crate::request::Decision],
 ) -> Result<StepOutcome, Response> {
     let Some(pending) = rt.pending(thread).await else {
-        return Err(sse_error(DriverError::BadRequest(
-            "no awaiting run to resume".into(),
+        return Err(sse_error(RunApplicationError::bad_request(
+            "no awaiting run to resume",
         )));
     };
     let decision = decisions
@@ -222,8 +228,8 @@ async fn resume_step(
         .find(|d| d.tool_call_id == pending.tool_use_id)
         .or_else(|| decisions.first())
         .ok_or_else(|| {
-            sse_error(DriverError::BadRequest(
-                "no tool decision for the awaiting tool".into(),
+            sse_error(RunApplicationError::bad_request(
+                "no tool decision for the awaiting tool",
             ))
         })?;
     let resume = to_resume(&decision.kind, &pending);
@@ -234,37 +240,37 @@ async fn resume_step(
 
 /// Map a client decision to a neutral resume, choosing the variant that matches
 /// the pending tool's binding (client-executed vs built-in awaiting approval).
-fn to_resume(kind: &DecisionKind, pending: &Pending) -> Resume {
+fn to_resume(kind: &DecisionKind, pending: &Pending) -> RunResume {
     if pending.client_executed {
         match kind {
-            DecisionKind::Output(v) => Resume::ClientResult {
+            DecisionKind::Output(v) => RunResume::ClientResult {
                 content: vec![ContentBlock::text(result_text(v))],
                 is_error: false,
             },
-            DecisionKind::Error(e) => Resume::ClientResult {
+            DecisionKind::Error(e) => RunResume::ClientResult {
                 content: vec![ContentBlock::text(e)],
                 is_error: true,
             },
-            DecisionKind::Denied => Resume::ClientResult {
+            DecisionKind::Denied => RunResume::ClientResult {
                 content: vec![ContentBlock::text("client denied the tool")],
                 is_error: true,
             },
-            DecisionKind::Approved => Resume::ClientResult {
+            DecisionKind::Approved => RunResume::ClientResult {
                 content: Vec::new(),
                 is_error: false,
             },
         }
     } else {
         match kind {
-            DecisionKind::Approved | DecisionKind::Output(_) => Resume::Confirm {
+            DecisionKind::Approved | DecisionKind::Output(_) => RunResume::Confirm {
                 allow: true,
                 note: None,
             },
-            DecisionKind::Denied => Resume::Confirm {
+            DecisionKind::Denied => RunResume::Confirm {
                 allow: false,
                 note: None,
             },
-            DecisionKind::Error(e) => Resume::Confirm {
+            DecisionKind::Error(e) => RunResume::Confirm {
                 allow: false,
                 note: Some(e.clone()),
             },
@@ -333,7 +339,7 @@ fn sse_response(events: Vec<UIStreamEvent>) -> Response {
 }
 
 /// The AI SDK error tail (`error` + `finish("error")`).
-fn error_events(err: DriverError) -> Vec<UIStreamEvent> {
+fn error_events(err: RunApplicationError) -> Vec<UIStreamEvent> {
     let message = driver_error_message(err);
     vec![
         UIStreamEvent::error(message),
@@ -341,14 +347,12 @@ fn error_events(err: DriverError) -> Vec<UIStreamEvent> {
     ]
 }
 
-fn driver_error_message(err: DriverError) -> String {
-    match err {
-        DriverError::BadRequest(message) | DriverError::Internal(message) => message,
-    }
+fn driver_error_message(err: RunApplicationError) -> String {
+    err.message
 }
 
 /// A single buffered SSE error stream (AI SDK errors use `errorText`).
-fn sse_error(err: DriverError) -> Response {
+fn sse_error(err: RunApplicationError) -> Response {
     sse_response(error_events(err))
 }
 
@@ -374,7 +378,7 @@ mod tests {
             &pending(true),
         );
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("42")])
+            matches!(r, RunResume::ClientResult { content, is_error: false } if content == vec![ContentBlock::text("42")])
         );
     }
 
@@ -382,21 +386,21 @@ mod tests {
     fn client_error_delivers_an_error_result() {
         let r = to_resume(&DecisionKind::Error("boom".into()), &pending(true));
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: true } if content == vec![ContentBlock::text("boom")])
+            matches!(r, RunResume::ClientResult { content, is_error: true } if content == vec![ContentBlock::text("boom")])
         );
     }
 
     #[test]
     fn client_denied_delivers_an_error_result() {
         let r = to_resume(&DecisionKind::Denied, &pending(true));
-        assert!(matches!(r, Resume::ClientResult { is_error: true, .. }));
+        assert!(matches!(r, RunResume::ClientResult { is_error: true, .. }));
     }
 
     #[test]
     fn client_approved_delivers_an_empty_result() {
         let r = to_resume(&DecisionKind::Approved, &pending(true));
         assert!(
-            matches!(r, Resume::ClientResult { content, is_error: false } if content.is_empty())
+            matches!(r, RunResume::ClientResult { content, is_error: false } if content.is_empty())
         );
     }
 
@@ -406,7 +410,7 @@ mod tests {
     fn builtin_approved_allows() {
         assert!(matches!(
             to_resume(&DecisionKind::Approved, &pending(false)),
-            Resume::Confirm { allow: true, .. }
+            RunResume::Confirm { allow: true, .. }
         ));
     }
 
@@ -417,7 +421,7 @@ mod tests {
                 &DecisionKind::Output(serde_json::Value::Null),
                 &pending(false)
             ),
-            Resume::Confirm { allow: true, .. }
+            RunResume::Confirm { allow: true, .. }
         ));
     }
 
@@ -425,7 +429,7 @@ mod tests {
     fn builtin_denied_rejects() {
         assert!(matches!(
             to_resume(&DecisionKind::Denied, &pending(false)),
-            Resume::Confirm {
+            RunResume::Confirm {
                 allow: false,
                 note: None
             }
@@ -435,6 +439,6 @@ mod tests {
     #[test]
     fn builtin_error_rejects_with_a_note() {
         let r = to_resume(&DecisionKind::Error("bad args".into()), &pending(false));
-        assert!(matches!(r, Resume::Confirm { allow: false, note: Some(n) } if n == "bad args"));
+        assert!(matches!(r, RunResume::Confirm { allow: false, note: Some(n) } if n == "bad args"));
     }
 }

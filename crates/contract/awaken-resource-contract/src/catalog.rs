@@ -68,47 +68,10 @@ impl ResourceTimestamps {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecallPolicy {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default = "default_recall_results")]
-    pub max_results: u32,
-}
-
-impl Default for RecallPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_results: default_recall_results(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExtractionPolicy {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for ExtractionPolicy {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RetentionPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u32>,
-}
-
-const fn default_true() -> bool {
-    true
-}
-
-const fn default_recall_results() -> u32 {
-    10
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,10 +94,6 @@ pub struct MemoryStoreDefinition {
 pub struct MemoryStoreConfigVersion {
     pub memory_store_id: MemoryStoreId,
     pub version: ConfigVersion,
-    #[serde(default)]
-    pub recall_policy: RecallPolicy,
-    #[serde(default)]
-    pub extraction_policy: ExtractionPolicy,
     #[serde(default)]
     pub retention_policy: RetentionPolicy,
 }

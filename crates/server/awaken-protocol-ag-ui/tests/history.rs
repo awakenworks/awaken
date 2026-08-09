@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
+use awaken_session_contract::{
+    Pending, RunApplication, RunApplicationError, RunResume, StepOutcome,
+};
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use serde_json::Value;
@@ -22,13 +24,13 @@ struct PersistedRuntime {
 }
 
 #[async_trait::async_trait]
-impl ProtocolRuntime for PersistedRuntime {
+impl RunApplication for PersistedRuntime {
     async fn run(
         &self,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
-    ) -> Result<StepOutcome, DriverError> {
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("history tests never drive a run")
     }
 
@@ -36,8 +38,8 @@ impl ProtocolRuntime for PersistedRuntime {
         &self,
         _thread: &str,
         _tool_use_id: &str,
-        _resume: Resume,
-    ) -> Result<StepOutcome, DriverError> {
+        _resume: RunResume,
+    ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!("history tests never resume")
     }
 
@@ -159,7 +161,7 @@ async fn walks_the_thread_by_cursor() {
     assert_eq!(ids1, vec!["u0", "a0"]);
     assert_eq!(page1["cursor"], "a0");
 
-    // Resume after the cursor.
+    // RunResume after the cursor.
     let (_, page2) = get(
         Arc::clone(&rt),
         "/v1/ag-ui/threads/t-hist/messages?size=2&cursor=a0",

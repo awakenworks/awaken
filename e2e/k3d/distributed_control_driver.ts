@@ -187,14 +187,7 @@ async function bootstrap(base: string) {
   const memory = await expectStatus(base, 'POST', '/v1/memory_stores', 200, {
     name: 'adr71-memory', description: 'distributed Worker memory proof',
   });
-  const memoryConfig = await expectStatus(
-    base, 'POST', `/v1/memory_stores/${memory.id}/config`, 200,
-    {
-      expected_config_version: 1,
-      recall_policy: { enabled: true, max_results: 4 },
-      extraction_policy: { enabled: false }, retention_policy: {},
-    },
-  );
+  await expectStatus(base, 'GET', `/v1/memory_stores/${memory.id}/config`, 404);
   await expectStatus(base, 'POST', `/v1/memory_stores/${memory.id}/memories`, 200, {
     path: '/fact.md', content: 'ADR71-MEMORY-MATERIALIZED',
   });
@@ -242,10 +235,8 @@ async function bootstrap(base: string) {
   assert.equal(run.error, null, JSON.stringify(run));
   assert.ok(run.session_id, JSON.stringify(run));
   await waitForAgentMarkers(base, run.session_id, [initialMarker]);
-  const restoredConfig = await expectStatus(
-    base, 'GET', `/v1/memory_stores/${memory.id}/config`, 200,
-  );
-  assert.equal(restoredConfig.version, memoryConfig.version);
+  const restoredMemory = await expectStatus(base, 'GET', `/v1/memory_stores/${memory.id}`, 200);
+  assert.equal(restoredMemory.id, memory.id);
   console.log(
     `OK ${deployment.id} ${run.session_id} ${environment.id} ${file.id} ${memory.id} ${skill.id}`,
   );

@@ -64,7 +64,7 @@ impl ExecutableAgentWiring {
         let registrar = HttpExecutableAgentRegistrar::new(coordinator_url, token.clone())
             .map_err(|error| error.to_string())?;
         let coordinator_content_eraser = Arc::new(
-            awaken_server::data_subject_boundary::HttpCoordinatorContentEraser::new(
+            awaken_coordinator::data_subject_boundary::HttpCoordinatorContentEraser::new(
                 coordinator_url,
                 token,
             )?,
@@ -118,12 +118,13 @@ impl ExecutableAgentWiring {
         let registrar = Arc::new(registrar);
         let private_router = executable_agent_registration_router(registrar.clone(), token.clone())
             .map_err(|error| format!("construct executable Agent registration router: {error}"))?;
-        let coordinator_content = awaken_server::data_subject_boundary::coordinator_content_eraser(
-            captured_content,
-            deployment.runtime.acp_session_blob_root.clone(),
-        );
+        let coordinator_content =
+            awaken_coordinator::data_subject_boundary::coordinator_content_eraser(
+                captured_content,
+                deployment.runtime.acp_session_blob_root.clone(),
+            );
         let private_router = private_router.merge(
-            awaken_server::data_subject_boundary::router(coordinator_content, token).map_err(
+            awaken_coordinator::data_subject_boundary::router(coordinator_content, token).map_err(
                 |error| format!("construct Coordinator content-erasure router: {error}"),
             )?,
         );

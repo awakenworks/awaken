@@ -20,21 +20,21 @@ use super::{EchoModel, SharedHost, resource_host, scenario_resource_catalog};
 /// activation. Authorization remains outside this helper.
 pub(super) fn mount(host: Arc<SharedHost>) -> Router {
     let catalog = scenario_resource_catalog();
-    let managed = awaken_server::local_managed_state(host.clone(), catalog.clone());
-    awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
+    let managed = awaken_coordinator::local_managed_state(host.clone(), catalog.clone());
+    awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
 }
 
 fn mount_with_agent_source(
     host: Arc<SharedHost>,
-    agent_source: Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>,
+    agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Router {
     let catalog = scenario_resource_catalog();
-    let managed = awaken_server::local_managed_state_with_agent_source(
+    let managed = awaken_coordinator::local_managed_state_with_agent_source(
         host.clone(),
         catalog.clone(),
         agent_source,
     );
-    awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
+    awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
 }
 
 /// Scenario composition with the Environment API and the same Resource Catalog,
@@ -45,7 +45,7 @@ pub(super) fn mount_with_environments(host: Arc<SharedHost>) -> Router {
 
 pub(super) fn mount_with_environments_and_agent_source(
     host: Arc<SharedHost>,
-    agent_source: Option<Arc<dyn awaken_protocol_managed::ExecutableAgentProfileSource>>,
+    agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
 ) -> Router {
     let catalog = scenario_resource_catalog();
     let environments = Arc::new(
@@ -54,20 +54,26 @@ pub(super) fn mount_with_environments_and_agent_source(
         )),
     );
     let managed = match agent_source {
-        Some(source) => awaken_server::local_managed_state_with_environments_and_agent_source(
+        Some(source) => awaken_coordinator::local_managed_state_with_environments_and_agent_source(
             host.clone(),
             catalog.clone(),
             environments.execution(),
             source,
         ),
-        None => awaken_server::local_managed_state_with_environments(
+        None => awaken_coordinator::local_managed_state_with_environments(
             host.clone(),
             catalog.clone(),
             environments.execution(),
         ),
     };
-    awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
-        .merge(awaken_protocol_managed::environments_router(environments))
+    awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
+        .merge(awaken_protocol_managed::environments_router(
+            environments.clone(),
+        ))
+        .merge(awaken_protocol_awaken::environment_extensions_router(
+            environments.authoring().application(),
+            environments.authoring().sandbox_policy_store(),
+        ))
 }
 
 pub(super) struct FixedAgentPublication {
@@ -218,19 +224,19 @@ impl PublishedAgentSnapshotSource for FixedAgentPublication {
     }
 }
 
-impl awaken_protocol_managed::ExecutableAgentProfileSource for FixedAgentPublication {
+impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAgentPublication {
     fn session_profile_in(
         &self,
         workspace_id: &str,
         agent_id: &str,
-    ) -> Option<awaken_protocol_managed::ExecutableAgentSessionProfile> {
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
         let snapshot = self.current(workspace_id, &AgentId(agent_id.to_string()))?;
         let bindings = &snapshot.resolved_spec.plugin_config.agent;
         let mcp_servers = bindings
             .mcp_servers
             .iter()
             .map(|server| {
-                Ok(awaken_protocol_managed::ExecutableAgentMcpServer {
+                Ok(awaken_executable_agent_contract::ExecutableAgentMcpServer {
                     name: server.name.clone(),
                     target: server.transport.normalize()?,
                     prompts_as_skills: server.prompts_as_skills,
@@ -246,20 +252,22 @@ impl awaken_protocol_managed::ExecutableAgentProfileSource for FixedAgentPublica
             })
             .collect::<Result<Vec<_>, String>>()
             .ok()?;
-        Some(awaken_protocol_managed::ExecutableAgentSessionProfile {
-            model: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
-            execution_model_ref: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
-            backend_ref: snapshot.resolved_spec.model_binding.backend_ref.clone(),
-            system: None,
-            tool_ids: Vec::new(),
-            toolsets: bindings.toolsets.clone(),
-            client_tools: Vec::new(),
-            mcp_servers,
-            skills: bindings.skills.clone(),
-            delegate_ids: Vec::new(),
-            resources: Vec::new(),
-            environment: None,
-        })
+        Some(
+            awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                model: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
+                execution_model_ref: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
+                backend_ref: snapshot.resolved_spec.model_binding.backend_ref.clone(),
+                system: None,
+                tool_ids: Vec::new(),
+                toolsets: bindings.toolsets.clone(),
+                client_tools: Vec::new(),
+                mcp_servers,
+                skills: bindings.skills.clone(),
+                delegate_ids: Vec::new(),
+                resources: Vec::new(),
+                environment: None,
+            },
+        )
     }
 }
 
@@ -270,20 +278,24 @@ impl awaken_protocol_managed::ExecutableAgentProfileSource for FixedAgentPublica
 /// authenticated PEP before these routers.
 pub fn build_unscoped_resource_router() -> Router {
     let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
-    let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
-        awaken_server::resource_purge_scheduler(
+    let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> =
+        awaken_coordinator::resource_purge_scheduler(
             host.resource_lifecycle()
                 .expect("scenario resource lifecycle"),
         );
-    awaken_managed_routers::resources_router(awaken_managed_routers::ResourcesRouterInput {
-        files: host
-            .file_application()
-            .expect("scenario resource composition installs File application"),
-        memories: host.memory_repository(),
-        catalog: scenario_resource_catalog(),
-        skills: host.skill_store(),
-        purge,
-    })
+    let memory_stores =
+        awaken_coordinator::memory_store_application(scenario_resource_catalog(), purge.clone());
+    awaken_protocol_managed_resources::resources_router(
+        awaken_protocol_managed_resources::ResourcesRouterInput {
+            files: host
+                .file_application()
+                .expect("scenario resource composition installs File application"),
+            memories: host.memory_repository(),
+            memory_stores,
+            skills: host.skill_store(),
+            purge,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -358,12 +370,13 @@ mod tests {
                 },
             ],
         );
-        let view = awaken_protocol_managed::ExecutableAgentProfileSource::session_profile_in(
-            publication.as_ref(),
-            "workspace",
-            "native-agent",
-        )
-        .expect("fixed publication view");
+        let view =
+            awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_in(
+                publication.as_ref(),
+                "workspace",
+                "native-agent",
+            )
+            .expect("fixed publication view");
         assert_eq!(view.mcp_servers.len(), 1);
         assert_eq!(view.toolsets.len(), 1);
         assert_eq!(

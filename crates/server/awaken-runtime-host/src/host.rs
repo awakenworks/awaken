@@ -54,7 +54,6 @@ use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
 
-use crate::agent_catalog::AgentCatalog;
 use crate::background::BackgroundRuns;
 use crate::compact::{
     compact_backend as build_compact_backend, compact_runner as build_compact_runner,
@@ -64,7 +63,6 @@ use crate::config::{
 };
 use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};
-use crate::memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 use crate::store::HostCommit;
 use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 
@@ -98,7 +96,7 @@ fn sub_base(kind: &str) -> PathBuf {
     } else {
         format!("{pid}-{kind}-{n}")
     };
-    std::env::temp_dir().join("awaken-server").join(name)
+    std::env::temp_dir().join("awaken-coordinator").join(name)
 }
 
 pub(crate) use crate::store::sanitize_thread;
@@ -152,7 +150,7 @@ pub struct SharedHost {
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
     /// Higher-layer transport adapter for Session-owned tools exposed to ACP.
     /// The Host names only this port; concrete MCP server assembly remains in
-    /// `awaken-server` and does not add a protocol dependency to the substrate.
+    /// `awaken-coordinator` and does not add a protocol dependency to the substrate.
     pub(crate) acp_tool_exporter: Option<Arc<dyn crate::AcpToolExporter>>,
     /// Remote attempt adapter injected by the composition root. The neutral host
     /// owns only the `RunAttemptExecutor` port and never names the A2A protocol.
@@ -235,9 +233,6 @@ pub struct SharedHost {
     /// Host-level memory auxiliary-agent capability. It owns no store: every
     /// recall/extraction operation requires a Session-scoped governed binding.
     pub(crate) memory: Arc<crate::memory::MemoryRuntime>,
-    /// The relevance selector for recall (a `memory-selector` sub-agent), wired
-    /// into the memory recall plugin when memory is enabled.
-    memory_selector: Option<Arc<dyn awaken_ext_memory::RecallSelector>>,
     /// Context compaction, when enabled with [`with_compaction`]: the resolved config
     /// plus the `compactor` sub-agent runner, sealed as one [`crate::compact::Compaction`]
     /// so the pair is present-or-absent atomically. The config drives the `compact`

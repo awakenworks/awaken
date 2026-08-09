@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::event::{
     Delta, Fact, HistorySink, ToolUseRef, Transcoder, fold_history, fold_messages,
 };
-use awaken_protocol_transport::{StepOutcome, blocks_text};
+use awaken_session_contract::{StepOutcome, blocks_text};
 use serde_json::{Value, json};
 
 use crate::types::AgUiEvent;
@@ -352,18 +352,23 @@ mod tests {
     use super::*;
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id, Message, Role};
-    use awaken_protocol_transport::{Pending, StepFailure, Terminal};
+    use awaken_agent_contract::agent::run::{EndCause, Failure};
+    use awaken_session_contract::Pending;
     use serde_json::json;
 
     #[test]
     fn terminal_failure_surfaces_run_error() {
-        let outcome = StepOutcome {
-            terminal: Terminal::Failed(StepFailure {
+        // Cause/effect rule F1: a committed inference failure maps to RUN_ERROR
+        // and never also maps to RUN_FINISHED.
+        let outcome = StepOutcome::ended(
+            Vec::new(),
+            EndCause::Error(Failure::Inference {
                 code: "inference_failed".into(),
                 message: "upstream is down".into(),
             }),
-            ..Default::default()
-        };
+            false,
+            false,
+        );
         let step = encode_step(&outcome, "t1", "r1");
         assert!(
             step.iter().any(|e| matches!(e, AgUiEvent::RunError { .. })),
@@ -414,15 +419,17 @@ mod tests {
         }
     }
 
-    /// Budget exhaustion (`Terminal::Exhausted` → `RunFinished{exhausted:true}`)
+    /// Budget exhaustion (`EndCause::MaxSteps` → `RunFinished{exhausted:true}`)
     /// closes an AG-UI run with `RUN_FINISHED`, like a natural end — never
     /// `RUN_ERROR`. Pins that exhaustion is not surfaced as a fault.
     #[test]
     fn an_exhausted_run_finishes_cleanly_not_as_error() {
-        let outcome = StepOutcome {
-            terminal: Terminal::Exhausted,
-            ..Default::default()
-        };
+        let outcome = StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::MaxSteps,
+            false,
+            false,
+        );
         let step = encode_step(&outcome, "t1", "r1");
         assert!(
             step.iter()
@@ -437,10 +444,12 @@ mod tests {
 
     #[test]
     fn plain_turn_brackets_with_run_events() {
-        let outcome = StepOutcome {
-            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
-            terminal: Terminal::Finished,
-        };
+        let outcome = StepOutcome::ended(
+            vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let events = encode_step(&outcome, "t1", "r1");
         assert_eq!(
             events.first(),
@@ -465,8 +474,8 @@ mod tests {
 
     #[test]
     fn close_emits_end_and_finish_without_start_or_args() {
-        let outcome = StepOutcome {
-            new_messages: vec![
+        let outcome = StepOutcome::awaiting(
+            vec![
                 Message::text(Id("a1".into()), Role::Assistant, "reading"),
                 Message {
                     id: Id("a2".into()),
@@ -478,15 +487,15 @@ mod tests {
                     }],
                 },
             ],
-            terminal: Terminal::Awaiting {
-                pending: Some(Pending {
-                    tool_use_id: "c1".into(),
-                    name: "read".into(),
-                    input: json!({"path": "x"}),
-                    client_executed: true,
-                }),
-            },
-        };
+            Some(Pending {
+                tool_use_id: "c1".into(),
+                name: "read".into(),
+                input: json!({"path": "x"}),
+                client_executed: true,
+            }),
+            false,
+            false,
+        );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.fact(&Fact::RunStarted);
         encoder.delta(&Delta::TextDelta {
@@ -521,8 +530,8 @@ mod tests {
 
     #[test]
     fn tool_call_emits_start_args_end() {
-        let outcome = StepOutcome {
-            new_messages: vec![Message {
+        let outcome = StepOutcome::awaiting(
+            vec![Message {
                 id: Id("a1".into()),
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
@@ -531,15 +540,15 @@ mod tests {
                     input: json!({"q": 1}),
                 }],
             }],
-            terminal: Terminal::Awaiting {
-                pending: Some(Pending {
-                    tool_use_id: "c1".into(),
-                    name: "submit".into(),
-                    input: json!({"q": 1}),
-                    client_executed: true,
-                }),
-            },
-        };
+            Some(Pending {
+                tool_use_id: "c1".into(),
+                name: "submit".into(),
+                input: json!({"q": 1}),
+                client_executed: true,
+            }),
+            false,
+            false,
+        );
         let events = encode_step(&outcome, "t1", "r1");
         assert!(events.iter().any(|e| matches!(e, AgUiEvent::ToolCallStart { tool_call_id, tool_call_name } if tool_call_id == "c1" && tool_call_name == "submit")));
         assert!(events.iter().any(
@@ -816,14 +825,16 @@ mod tests {
     // TEXT_MESSAGE_* frames.
     #[test]
     fn an_empty_text_only_assistant_turn_emits_no_text_message() {
-        let outcome = StepOutcome {
-            new_messages: vec![Message::new(
+        let outcome = StepOutcome::ended(
+            vec![Message::new(
                 Id("a1".into()),
                 Role::Assistant,
                 vec![ContentBlock::text("")],
             )],
-            terminal: Terminal::Finished,
-        };
+            EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let events = encode_step(&outcome, "t1", "r1");
         assert!(
             events.iter().all(|e| !matches!(
@@ -845,8 +856,8 @@ mod tests {
     // RUN_FINISHED — the inline-seq path distinct from the streaming transcoder.
     #[test]
     fn close_emits_tool_end_then_result_for_a_server_executed_tool() {
-        let outcome = StepOutcome {
-            new_messages: vec![
+        let outcome = StepOutcome::ended(
+            vec![
                 Message {
                     id: Id("a1".into()),
                     role: Role::Assistant,
@@ -865,8 +876,10 @@ mod tests {
                     }],
                 },
             ],
-            terminal: Terminal::Finished,
-        };
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.fact(&Fact::RunStarted);
         encoder.delta(&Delta::ToolCallDelta {
@@ -904,8 +917,8 @@ mod tests {
     fn completion_reconciles_text_only_prefix_with_committed_tools() {
         // CE-AG7: visible text, L=empty, F={c1}. Completion must close text and
         // emit the committed tool's full START/ARGS/END bracket exactly once.
-        let outcome = StepOutcome {
-            new_messages: vec![Message {
+        let outcome = StepOutcome::ended(
+            vec![Message {
                 id: Id("a1".into()),
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolUse {
@@ -914,8 +927,10 @@ mod tests {
                     input: json!({"path": "x"}),
                 }],
             }],
-            terminal: Terminal::Finished,
-        };
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.fact(&Fact::RunStarted);
         encoder.delta(&Delta::TextDelta { delta: "hi".into() });
@@ -948,8 +963,8 @@ mod tests {
         // CE-AG8/AG9/AG10: L={c1,live-only}, F={c1,c2}. c1 receives only its
         // missing args suffix+END, c2 receives a full bracket, and live-only is
         // closed so no START remains unmatched.
-        let outcome = StepOutcome {
-            new_messages: vec![Message {
+        let outcome = StepOutcome::ended(
+            vec![Message {
                 id: Id("a1".into()),
                 role: Role::Assistant,
                 content: vec![
@@ -957,8 +972,10 @@ mod tests {
                     ContentBlock::tool_use("c2", "write", json!({"path":"y"})),
                 ],
             }],
-            terminal: Terminal::Finished,
-        };
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.fact(&Fact::RunStarted);
         encoder.delta(&Delta::ToolCallDelta {
@@ -993,10 +1010,12 @@ mod tests {
         // CE-AG3/AG4: RUN_STARTED plus a non-projected reasoning delta is not a
         // visible assistant prefix. Completion emits committed text and neither
         // repeats RUN_STARTED nor drops the answer.
-        let outcome = StepOutcome {
-            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
-            terminal: Terminal::Finished,
-        };
+        let outcome = StepOutcome::ended(
+            vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         assert_eq!(encoder.fact(&Fact::RunStarted).len(), 1);
         assert!(
@@ -1021,8 +1040,8 @@ mod tests {
     fn mismatched_live_tool_prefix_fails_closed_and_balances_events() {
         // Extended CE-AG11: live args that are not a prefix of committed args
         // cannot be repaired. Close the tool and terminate with one RUN_ERROR.
-        let outcome = StepOutcome {
-            new_messages: vec![Message {
+        let outcome = StepOutcome::ended(
+            vec![Message {
                 id: Id("a1".into()),
                 role: Role::Assistant,
                 content: vec![ContentBlock::tool_use(
@@ -1031,8 +1050,10 @@ mod tests {
                     json!({"path":"committed"}),
                 )],
             }],
-            terminal: Terminal::Finished,
-        };
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let mut encoder = AgUiEncoder::new("t1", "r1");
         encoder.delta(&Delta::ToolCallDelta {
             id: "c1".into(),

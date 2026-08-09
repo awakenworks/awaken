@@ -213,7 +213,7 @@ cascade.
 
 Implementation of the consumption-side project surface (`Project` /
 `ProjectAgentConfig` in `awaken-config-resolver`, the `/projects/{id}` ingress
-in `awaken-server-local`) refines D2. The letter of D2 — "no
+in `awaken-coordinator-local`) refines D2. The letter of D2 — "no
 `orgs/{org}/projects/{project}` hierarchy in the URL" — was written against
 URL-carried **tenancy**; this amendment records why a project **path prefix**
 does not violate it, and fixes the boundary so it never grows into one.

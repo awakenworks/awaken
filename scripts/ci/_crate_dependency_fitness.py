@@ -10,7 +10,7 @@ from pathlib import Path
 # making that adapter a production dependency. Keeping these exceptions separate
 # means moving one into `[dependencies]` still fails the production boundary.
 DEV_ONLY_ALLOWED_DEPS = {
-    "awaken-managed-routers": {
+    "awaken-protocol-managed-resources": {
         "awaken-file-store",
         "awaken-resource-application",
         "awaken-resource-store",
@@ -19,7 +19,6 @@ DEV_ONLY_ALLOWED_DEPS = {
     "awaken-runtime-host": {
         "awaken-admin-config-api",
         "awaken-file-application",
-        "awaken-resource-application",
     },
 }
 

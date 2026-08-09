@@ -28,25 +28,25 @@ RESOURCE_PLANE_CRATES = {
 RESOURCE_APPLICATION_SOURCES = (
     "crates/stores/awaken-resource-store/src/postgres_catalog.rs",
     "crates/stores/awaken-resource-store/src/sqlite_catalog.rs",
-    "crates/server/awaken-managed-routers/src/files.rs",
+    "crates/server/awaken-protocol-managed-resources/src/files.rs",
     "crates/server/awaken-protocol-managed/src/state/resource.rs",
     "crates/server/awaken-protocol-managed/src/state/resources.rs",
-    "crates/server/awaken-managed-routers/src/memory_stores.rs",
+    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
     "crates/server/awaken-runtime-host/src/memory_stores.rs",
     "crates/server/awaken-runtime-host/src/provisioning.rs",
     "crates/server/awaken-runtime-host/src/resource_reclamation.rs",
-    "crates/server/awaken-managed-routers/src/resource_scope.rs",
+    "crates/server/awaken-protocol-managed-resources/src/resource_scope.rs",
     "crates/server/awaken-runtime-host/src/skill_catalog.rs",
-    "crates/server/awaken-managed-routers/src/skills.rs",
+    "crates/server/awaken-protocol-managed-resources/src/skills.rs",
 )
 
 # HTTP adapters are PEP consumers, not Workspace selectors. Every handler must
 # extract the Workspace stamp installed by the outer composition edge; none may
 # fall back to a Host-local tenant.
 RESOURCE_HTTP_SOURCES = (
-    "crates/server/awaken-managed-routers/src/files.rs",
-    "crates/server/awaken-managed-routers/src/memory_stores.rs",
-    "crates/server/awaken-managed-routers/src/skills.rs",
+    "crates/server/awaken-protocol-managed-resources/src/files.rs",
+    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
+    "crates/server/awaken-protocol-managed-resources/src/skills.rs",
 )
 
 # Recovery already reads a durably persisted Workspace envelope. Re-selecting a
@@ -54,6 +54,14 @@ RESOURCE_HTTP_SOURCES = (
 # access instead of failing closed.
 RESOURCE_RECOVERY_SOURCES = (
     "crates/server/awaken-protocol-managed/src/state/sessions.rs",
+)
+
+# Driving adapters may read MemoryStore identity through the application port,
+# but cannot recreate Catalog mutation coordination. The Resources application
+# is the single owner of these calls.
+MEMORY_STORE_DRIVING_ADAPTERS = (
+    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
+    "crates/server/awaken-coordinator/src/dream.rs",
 )
 
 FORBIDDEN_DEPENDENCY_PREFIXES = ("awaken-authz", "awaken-iam")
@@ -73,8 +81,9 @@ FORBIDDEN_TYPE_NAMES = {
     "WorkUnitId",
 }
 
-# Resource policies (recall_policy/retention_policy) and external-service
-# credential bindings are valid. Target only authorization-plane concepts.
+# Retention policy and external-service credential bindings are valid resource
+# data. Recall/extraction behavior lives in ordinary Agent plugin configuration.
+# Target only authorization-plane concepts here.
 FORBIDDEN_FIELD_NAMES = {
     "principal",
     "principal_id",
@@ -165,7 +174,7 @@ def _has_unversioned_ddl(path: Path, content: str) -> bool:
 
 
 def selftest() -> None:
-    allowed = "pub struct Config { pub workspace_id: String, pub recall_policy: RecallPolicy }"
+    allowed = "pub struct Config { pub workspace_id: String, pub retention_policy: RetentionPolicy }"
     assert not _rust_violations(allowed)
     workspace_context = "fn open(workspace_id: &str, resource_id: &str) {}"
     assert not _rust_violations(workspace_context)
@@ -192,6 +201,10 @@ def selftest() -> None:
     assert not _has_unversioned_ddl(
         Path("schema.rs"), 'const V1: &str = "CREATE TABLE {prefix}_row (id TEXT)";'
     )
+    # Cause/effect rule: a driving adapter that calls a Catalog mutation creates
+    # a second lifecycle owner and is rejected; application-port calls are clean.
+    assert re.search(r"\.create_memory_store\s*\(", "catalog.create_memory_store(x)")
+    assert not re.search(r"\.create_memory_store\s*\(", "stores.create(command)")
 
 
 def check_all(repo_root: Path, crates: Path) -> list[str]:
@@ -278,4 +291,22 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
                 f"{relative}: resource recovery re-selects DEFAULT_SCOPE instead of "
                 "consuming the durable Workspace envelope"
             )
+    for relative in MEMORY_STORE_DRIVING_ADAPTERS:
+        path = repo_root / relative
+        if not path.is_file():
+            errors.append(f"missing MemoryStore driving adapter {relative!r}")
+            continue
+        production = _without_cfg_test_module(path.read_text(encoding="utf-8"))
+        code = _without_rust_comments_and_strings(production)
+        for mutation in (
+            "create_memory_store",
+            "update_memory_store",
+            "publish_memory_config",
+            "set_memory_state",
+        ):
+            if re.search(rf"\.{mutation}\s*\(", code):
+                errors.append(
+                    f"{relative}: calls ResourceCatalog.{mutation} directly; drive the "
+                    "canonical MemoryStoreApplicationService instead"
+                )
     return errors

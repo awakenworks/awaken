@@ -98,15 +98,10 @@ async function main() {
     }
     const memory = await req(base, 'POST', '/v1/memory_stores', token, { name: 'authz-memory' });
     assert.ok(memory.status !== 401 && memory.status !== 403, `admin writes MemoryStore: ${memory.status}`);
-    const memoryConfigRoute = `/v1/memory_stores/${memory.body.id}/config`;
-    assert.equal((await req(base, 'GET', memoryConfigRoute)).status, 401);
+    const memoryRoute = `/v1/memory_stores/${memory.body.id}`;
+    assert.equal((await req(base, 'GET', memoryRoute)).status, 401);
     assert.equal(
-      (
-        await req(base, 'POST', memoryConfigRoute, token, {
-          expected_config_version: 1,
-          recall_policy: { enabled: true, max_results: 5 },
-        })
-      ).status,
+      (await req(base, 'POST', memoryRoute, token, { description: 'admin update' })).status,
       200,
     );
     const skill = await req(base, 'POST', '/v1/skills', token, {
@@ -135,16 +130,11 @@ async function main() {
       403,
       'read-only role cannot create a MemoryStore',
     );
-    assert.equal((await req(base, 'GET', memoryConfigRoute, restricted)).status, 200);
+    assert.equal((await req(base, 'GET', memoryRoute, restricted)).status, 200);
     assert.equal(
-      (
-        await req(base, 'POST', memoryConfigRoute, restricted, {
-          expected_config_version: 2,
-          extraction_policy: { enabled: false },
-        })
-      ).status,
+      (await req(base, 'POST', memoryRoute, restricted, { description: 'denied' })).status,
       403,
-      'read-only role cannot publish resource behavior configuration',
+      'read-only role cannot mutate a MemoryStore',
     );
     assert.ok(
       (await apiKeyReq(base, 'GET', '/v1/files', restricted)).status < 400,

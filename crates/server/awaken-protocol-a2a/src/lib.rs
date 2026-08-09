@@ -3,8 +3,8 @@
 //! The anti-corruption boundary between the public A2A wire (`message:send` over
 //! HTTP+JSON, returning a `Task`) and the neutral runtime. It owns the A2A DTOs,
 //! the projection from committed `Message`s to an A2A `Task`, and the axum router;
-//! it drives the shared neutral `ProtocolRuntime` port (from
-//! `awaken-protocol-transport`) and constructs no runtime itself. It is the only
+//! it drives the shared neutral `RunApplication` port (from
+//! `awaken-session-contract`) and constructs no runtime itself. It is the only
 //! crate permitted to name A2A protocol vocabulary.
 //!
 //! It implements the A2A 0.3 and 1.0 JSON-RPC and HTTP+JSON bindings, including
@@ -23,9 +23,9 @@ mod state;
 mod time;
 pub mod types;
 mod v1;
+mod version;
 
 pub use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
-pub use awaken_protocol_transport::{DriverError, Pending, ProtocolRuntime, Resume, StepOutcome};
 pub use card::agent_card;
 pub use client::{ClientError, HttpTransport, Response, Transport};
 pub use router::{router, router_with_storage_root};

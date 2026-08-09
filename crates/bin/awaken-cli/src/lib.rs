@@ -1,6 +1,6 @@
 //! `awaken-cli` library: the single-machine **composition root**.
 //!
-//! Control (`awaken-control`) and Coordinator (`awaken-server`) do not depend on
+//! Control (`awaken-control`) and Coordinator (`awaken-coordinator`) do not depend on
 //! each other. This crate is their process composition root: it opens deployment
 //! stores, builds shared adapters, asks each owner for its router, and exposes
 //! exactly the API selected by `config::Role`. AllInOne merges those same routers;
@@ -10,7 +10,6 @@
 
 mod acp_local_credentials;
 mod assistant_selection;
-mod brain_admin;
 pub mod config;
 mod console_assets;
 mod control;
@@ -24,6 +23,7 @@ mod executable_projection_refresh;
 mod identity;
 mod local_process_stores;
 mod observation_reconcile;
+mod process_admin;
 mod process_assembly_options;
 mod process_stores;
 mod process_surface;
@@ -45,9 +45,9 @@ use local_process_stores::{
 };
 use local_process_stores::{in_memory_process_stores, open_local_process_stores};
 
-pub use crate::brain_admin::{
-    DrainController, brain_admin_router, register_active_streams_gauge, with_brain_admin,
-    with_connection_metric,
+pub use crate::process_admin::{
+    DrainController, process_admin_router, register_active_streams_gauge, with_connection_metric,
+    with_process_admin,
 };
 pub use acp_local_credentials::{
     AcpLocalCredentialResolver, PreparedLocalAcp, PreparedLocalWorker, build_configured_worker,
@@ -137,7 +137,7 @@ struct ControlServicePorts {
 
 impl ControlServicePorts {
     fn remote(
-        client: Arc<awaken_server::control_service_boundary::HttpControlServiceClient>,
+        client: Arc<awaken_coordinator::control_service_boundary::HttpControlServiceClient>,
     ) -> Self {
         Self {
             audit: client.clone(),
@@ -365,9 +365,9 @@ async fn open_process_stores(
         ensure_parent(&coordinator_cfg.sessions)?;
         ensure_parent(&coordinator_cfg.captured_content)?;
         let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
-        let deployments: Arc<dyn awaken_protocol_managed::DeploymentRepository>;
-        let memory_extractions: Arc<dyn awaken_protocol_managed::MemoryExtractionRepository>;
-        let dream_repository: Arc<dyn awaken_protocol_managed::DreamRepository>;
+        let deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>;
+        let memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>;
+        let dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>;
         match &coordinator_cfg.sessions {
             StoreBackend::Sqlite(p) => {
                 let repository = Arc::new(
@@ -378,7 +378,7 @@ async fn open_process_stores(
                 sessions = repository.clone();
                 deployments = repository.clone();
                 memory_extractions = repository.clone();
-                dream_repository = repository;
+                dream_process_store = repository;
             }
             StoreBackend::Postgres(url) => {
                 let repository = Arc::new(match postgres_schema {
@@ -396,7 +396,7 @@ async fn open_process_stores(
                 sessions = repository.clone();
                 deployments = repository.clone();
                 memory_extractions = repository.clone();
-                dream_repository = repository;
+                dream_process_store = repository;
             }
         }
         let (capture_sink, captured_content_eraser): (
@@ -433,7 +433,7 @@ async fn open_process_stores(
             sessions,
             deployments,
             memory_extractions,
-            dream_repository,
+            dream_process_store,
             capture_sink,
             captured_content_eraser,
             environment_work: environment_work.expect("Coordinator role opens WorkQueue"),
@@ -844,7 +844,7 @@ fn brokered_inference_client(
     remote_iam: Option<&Arc<RemoteManagementAuthz>>,
     cloud_api_base_url: Option<&str>,
     execution_workspace: &str,
-) -> Option<Arc<awaken_server::brokered_inference::HttpBrokeredInferenceClient>> {
+) -> Option<Arc<awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient>> {
     cloud_models_enabled
         .then(|| remote_iam.and_then(|authz| authz.cloud_user_token()))
         .flatten()
@@ -852,7 +852,7 @@ fn brokered_inference_client(
             let base_url = cloud_api_base_url
                 .expect("Awaken Cloud identity requires a Cloud inference API URL");
             Arc::new(
-                awaken_server::brokered_inference::HttpBrokeredInferenceClient::new(
+                awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::new(
                     base_url,
                     token,
                     execution_workspace,
@@ -872,17 +872,17 @@ fn publication_model_assembly(
         .as_ref()
         .expect("model publication requires Control stores");
     let executor_model_capabilities =
-        Arc::new(awaken_server::model_directory::installed_executor_model_capabilities());
+        Arc::new(awaken_coordinator::model_directory::installed_executor_model_capabilities());
     match composition {
         PublicationModelComposition::PublishedProviders => PublicationModelAssembly {
             publication_resolver: Arc::new(
-                awaken_server::model_resolver::CatalogModelPublicationResolver::from_repo(
+                awaken_coordinator::model_resolver::CatalogModelPublicationResolver::from_repo(
                     control.catalog.clone(),
                     control.credentials.clone(),
                 )
                 .with_executor_capabilities(executor_model_capabilities)
                 .with_profiles(control.profiles.clone())
-                .with_worker_directory(awaken_server::worker_directory())
+                .with_worker_directory(awaken_coordinator::worker_directory())
                 .with_brokered_access(cloud_models_enabled),
             ),
             runtime: RuntimeModelAssembly::PublishedProviders,
@@ -908,14 +908,16 @@ fn runtime_model_wiring(
     runtime: RuntimeModelAssembly,
     credential_materializer: &awaken_credential_materializer::PinnedCredentialMaterializer,
     cloud_models_enabled: bool,
-    brokered_client: Option<&Arc<awaken_server::brokered_inference::HttpBrokeredInferenceClient>>,
+    brokered_client: Option<
+        &Arc<awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient>,
+    >,
 ) -> RuntimeModelWiring {
     match runtime {
         RuntimeModelAssembly::PublishedProviders => RuntimeModelWiring {
             executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: Some(Arc::new({
-                let materializer = awaken_server::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+                let materializer = awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::from_pinned(
                     credential_materializer.clone(),
                 )
                 .with_brokered_mode(cloud_models_enabled);
@@ -942,7 +944,7 @@ fn runtime_model_wiring(
 }
 
 /// Assemble Coordinator, optionally composing the canonical Control component
-/// for AllInOne. The data plane comes from [`awaken_server::mount_with_managed`];
+/// for AllInOne. The data plane comes from [`awaken_coordinator::mount_with_managed`];
 /// this process layer merges routers and supervises lifecycle without rebuilding
 /// either domain application.
 /// Resolve the hidden local Org from one composition-root seam. Self-managed
@@ -959,7 +961,7 @@ fn local_org_id() -> String {
 mod runtime_session_store_tests {
     use super::*;
     use awaken_config_service::ModelPublicationResolver;
-    use awaken_protocol_managed::{
+    use awaken_session_contract::{
         ApplicationContributionState, ControlSessionCreationInputs, EnvironmentFingerprint,
         EnvironmentRevision, EnvironmentSnapshot, IdempotencyRecord, PersistedSession,
         SessionBaselineState, SessionCreationIntent, SessionNetworkPolicy, stable_fingerprint,

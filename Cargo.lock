@@ -375,9 +375,11 @@ dependencies = [
  "awaken-config-store",
  "awaken-connection-plan",
  "awaken-control",
+ "awaken-coordinator",
  "awaken-credential-materializer",
  "awaken-credential-vault",
  "awaken-data-subject",
+ "awaken-deployment-contract",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
@@ -389,6 +391,7 @@ dependencies = [
  "awaken-executable-environment-contract",
  "awaken-ext-builtin-tools",
  "awaken-ext-mcp",
+ "awaken-ext-memory",
  "awaken-file-store",
  "awaken-iam-client",
  "awaken-iam-contract",
@@ -397,6 +400,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-observability",
  "awaken-protocol-acp",
+ "awaken-protocol-awaken",
  "awaken-protocol-managed",
  "awaken-provider-genai",
  "awaken-provisioning-contract",
@@ -412,7 +416,6 @@ dependencies = [
  "awaken-sandbox-memoryd",
  "awaken-sandbox-policy-store",
  "awaken-scenario-host",
- "awaken-server",
  "awaken-session-contract",
  "awaken-session-store",
  "awaken-skill-store",
@@ -546,8 +549,10 @@ dependencies = [
  "awaken-iam-server",
  "awaken-model-catalog",
  "awaken-protocol-managed",
+ "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-runtime-contract",
+ "awaken-session-contract",
  "awaken-skill-store",
  "awaken-tenancy",
  "awaken-webhook-managed",
@@ -564,6 +569,85 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "awaken-coordinator"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-acp-application",
+ "awaken-acp-contract",
+ "awaken-admin-assistant",
+ "awaken-admin-config-api",
+ "awaken-agent-contract",
+ "awaken-authz-enforce",
+ "awaken-captured-content-store",
+ "awaken-config-resolver",
+ "awaken-config-service",
+ "awaken-config-store",
+ "awaken-connection-plan",
+ "awaken-credential-materializer",
+ "awaken-credential-vault",
+ "awaken-deployment-contract",
+ "awaken-dream-application",
+ "awaken-executable-agent-contract",
+ "awaken-ext-mcp",
+ "awaken-ext-memory",
+ "awaken-ext-skills",
+ "awaken-file-store",
+ "awaken-iam-contract",
+ "awaken-iam-core",
+ "awaken-iam-host",
+ "awaken-iam-preset",
+ "awaken-iam-server",
+ "awaken-memory-store",
+ "awaken-model-catalog",
+ "awaken-observability",
+ "awaken-protocol-a2a",
+ "awaken-protocol-acp",
+ "awaken-protocol-ag-ui",
+ "awaken-protocol-ai-sdk",
+ "awaken-protocol-awaken",
+ "awaken-protocol-managed",
+ "awaken-protocol-managed-resources",
+ "awaken-protocol-mcp",
+ "awaken-provider-genai",
+ "awaken-provisioning-contract",
+ "awaken-resource-application",
+ "awaken-resource-contract",
+ "awaken-resource-store",
+ "awaken-run-executor-a2a",
+ "awaken-run-executor-acp",
+ "awaken-run-ingress",
+ "awaken-runtime",
+ "awaken-runtime-contract",
+ "awaken-runtime-host",
+ "awaken-sandbox-local",
+ "awaken-sandbox-memoryd",
+ "awaken-scenario-host",
+ "awaken-service-auth-contract",
+ "awaken-session-contract",
+ "awaken-session-store",
+ "awaken-skill-store",
+ "awaken-tenancy",
+ "awaken-tool-relay",
+ "awaken-webhook",
+ "awaken-webhook-managed",
+ "awaken-worker-registry",
+ "awaken-worker-transport-security",
+ "axum",
+ "base64",
+ "http-body-util",
+ "reqwest 0.12.28",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tower",
+ "tower-http",
 ]
 
 [[package]]
@@ -646,7 +730,22 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-session-contract",
+ "chrono",
+ "chrono-tz",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "awaken-dream-application"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-session-contract",
+ "chrono",
+ "serde",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1078,31 +1177,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "awaken-managed-routers"
-version = "1.0.0-dev"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "awaken-ext-skills",
- "awaken-file-store",
- "awaken-memory-store",
- "awaken-protocol-transport",
- "awaken-resource-application",
- "awaken-resource-contract",
- "awaken-resource-store",
- "awaken-runtime-contract",
- "awaken-runtime-host",
- "awaken-skill-store",
- "awaken-tenancy",
- "axum",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tower",
-]
-
-[[package]]
 name = "awaken-mcp-server-core"
 version = "1.0.0-dev"
 dependencies = [
@@ -1200,7 +1274,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-credential",
- "awaken-protocol-transport",
+ "awaken-session-contract",
  "axum",
  "http-body-util",
  "serde",
@@ -1234,7 +1308,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-api-contract",
- "awaken-protocol-transport",
+ "awaken-session-contract",
  "awaken-tenancy",
  "axum",
  "http-body-util",
@@ -1253,7 +1327,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-api-contract",
- "awaken-protocol-transport",
+ "awaken-session-contract",
  "awaken-tenancy",
  "axum",
  "http-body-util",
@@ -1263,6 +1337,18 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
+]
+
+[[package]]
+name = "awaken-protocol-awaken"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-environment-application",
+ "awaken-provisioning-contract",
+ "awaken-session-contract",
+ "axum",
+ "serde",
 ]
 
 [[package]]
@@ -1276,6 +1362,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-deployment-contract",
+ "awaken-dream-application",
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
@@ -1283,10 +1370,8 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
- "awaken-ext-memory",
  "awaken-managed-bridge",
  "awaken-model-catalog",
- "awaken-protocol-transport",
  "awaken-provisioning-contract",
  "awaken-resource-contract",
  "awaken-resource-store",
@@ -1310,6 +1395,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-protocol-managed-resources"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-agent-contract",
+ "awaken-ext-skills",
+ "awaken-file-store",
+ "awaken-memory-store",
+ "awaken-resource-application",
+ "awaken-resource-contract",
+ "awaken-resource-store",
+ "awaken-runtime-contract",
+ "awaken-session-contract",
+ "awaken-skill-store",
+ "awaken-tenancy",
+ "axum",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "zip",
+]
+
+[[package]]
 name = "awaken-protocol-mcp"
 version = "0.0.0"
 dependencies = [
@@ -1328,17 +1436,6 @@ dependencies = [
  "tokio-stream",
  "tower",
  "uuid",
-]
-
-[[package]]
-name = "awaken-protocol-transport"
-version = "0.0.0"
-dependencies = [
- "async-trait",
- "awaken-agent-contract",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
 ]
 
 [[package]]
@@ -1592,12 +1689,9 @@ dependencies = [
  "awaken-ext-state-machine",
  "awaken-file-application",
  "awaken-file-store",
- "awaken-managed-routers",
  "awaken-memory-store",
  "awaken-observability",
- "awaken-protocol-transport",
  "awaken-provisioning-contract",
- "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-run-executor-acp",
@@ -1633,7 +1727,6 @@ dependencies = [
  "tower",
  "tracing",
  "uuid",
- "zip",
 ]
 
 [[package]]
@@ -1752,10 +1845,12 @@ dependencies = [
  "awaken-config-store",
  "awaken-connection-plan",
  "awaken-control",
+ "awaken-coordinator",
  "awaken-credential-vault",
  "awaken-data-subject",
  "awaken-environment-application",
  "awaken-executable-agent-catalog",
+ "awaken-executable-agent-contract",
  "awaken-ext-builtin-tools",
  "awaken-ext-skills",
  "awaken-iam-contract",
@@ -1763,16 +1858,17 @@ dependencies = [
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
- "awaken-managed-routers",
  "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-observability",
  "awaken-protocol-a2a",
  "awaken-protocol-ag-ui",
  "awaken-protocol-ai-sdk",
+ "awaken-protocol-awaken",
  "awaken-protocol-managed",
- "awaken-protocol-transport",
+ "awaken-protocol-managed-resources",
  "awaken-provider-genai",
+ "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
@@ -1782,7 +1878,6 @@ dependencies = [
  "awaken-runtime-host",
  "awaken-sandbox-local",
  "awaken-sandbox-policy-store",
- "awaken-server",
  "awaken-tenancy",
  "awaken-tool-relay",
  "awaken-webhook",
@@ -1825,83 +1920,6 @@ source = "git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe6
 dependencies = [
  "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
  "rusqlite",
-]
-
-[[package]]
-name = "awaken-server"
-version = "1.0.0-dev"
-dependencies = [
- "async-trait",
- "awaken-acp-application",
- "awaken-acp-contract",
- "awaken-admin-assistant",
- "awaken-admin-config-api",
- "awaken-agent-contract",
- "awaken-authz-enforce",
- "awaken-captured-content-store",
- "awaken-config-resolver",
- "awaken-config-service",
- "awaken-config-store",
- "awaken-connection-plan",
- "awaken-credential-materializer",
- "awaken-credential-vault",
- "awaken-deployment-contract",
- "awaken-executable-agent-contract",
- "awaken-ext-mcp",
- "awaken-ext-skills",
- "awaken-file-store",
- "awaken-iam-contract",
- "awaken-iam-core",
- "awaken-iam-host",
- "awaken-iam-preset",
- "awaken-iam-server",
- "awaken-managed-routers",
- "awaken-memory-store",
- "awaken-model-catalog",
- "awaken-observability",
- "awaken-protocol-a2a",
- "awaken-protocol-acp",
- "awaken-protocol-ag-ui",
- "awaken-protocol-ai-sdk",
- "awaken-protocol-managed",
- "awaken-protocol-mcp",
- "awaken-protocol-transport",
- "awaken-provider-genai",
- "awaken-provisioning-contract",
- "awaken-resource-application",
- "awaken-resource-contract",
- "awaken-resource-store",
- "awaken-run-executor-a2a",
- "awaken-run-executor-acp",
- "awaken-run-ingress",
- "awaken-runtime",
- "awaken-runtime-contract",
- "awaken-runtime-host",
- "awaken-sandbox-local",
- "awaken-sandbox-memoryd",
- "awaken-scenario-host",
- "awaken-service-auth-contract",
- "awaken-session-contract",
- "awaken-session-store",
- "awaken-skill-store",
- "awaken-tenancy",
- "awaken-tool-relay",
- "awaken-webhook",
- "awaken-webhook-managed",
- "awaken-worker-registry",
- "awaken-worker-transport-security",
- "axum",
- "base64",
- "http-body-util",
- "reqwest 0.12.28",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.19",
- "tokio",
- "tower",
- "tower-http",
 ]
 
 [[package]]

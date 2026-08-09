@@ -10,7 +10,7 @@ ADR-0009 shipped `DurableRunIngress` (the durable half of the `RunIngress` seam,
 G5) inside `awaken-run-ingress`, and ADR-0011/0015/0020/0022 supplemented it with
 an autonomous dispatch service, a crash-retry budget with dead-lettering,
 scheduled actions, and epoch supersession. Until now none of this was reachable
-from `awaken-server-local`: the server executed every turn by calling
+from `awaken-coordinator-local`: the server executed every turn by calling
 `Runtime::start_turn` directly, so the run-ingress layer was live code with no
 in-process composition root exercising it.
 

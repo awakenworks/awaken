@@ -97,7 +97,7 @@ pub async fn build_acp_jsonrpc_router() -> Router {
     let host = resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
         .with_gate_override(Arc::new(AllowAllGate))
         .with_acp_launch_source(
-            awaken_server::relay_hand_executor_factory(),
+            awaken_coordinator::relay_hand_executor_factory(),
             awaken_runtime_host::LaunchSource::FixedAcp(Box::new(launch)),
         )
         .await;
@@ -431,7 +431,7 @@ pub async fn build_acp_sandboxed_router() -> Router {
     deployment.sandbox_dir = Some(base.join("sandboxes"));
     let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
         .with_acp_launch_source(
-            awaken_server::relay_hand_executor_factory(),
+            awaken_coordinator::relay_hand_executor_factory(),
             awaken_runtime_host::LaunchSource::Fixed(launch),
         )
         .await;
@@ -566,7 +566,7 @@ pub async fn build_acp_container_router() -> Router {
     let host = resource_host_with_deployment(model, "awaken", deployment)
         .with_agent_publications(publication.clone());
     let host = host
-        .with_acp_launch_source(awaken_server::relay_hand_executor_factory(), launch)
+        .with_acp_launch_source(awaken_coordinator::relay_hand_executor_factory(), launch)
         .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
     // scenario, with the exact EnvironmentState mounted by the environment API.

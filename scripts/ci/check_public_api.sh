@@ -38,8 +38,8 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 # scoped-migration dependant is excluded for this reason; their public surface is
 # small and reviewed in code. Re-enable when the nightly toolchain reaches 1.96.
 #
-# The protocol adapters (awaken-protocol-managed / -ai-sdk / -ag-ui) and
-# awaken-server are product adapters and the single-machine assembly binary;
+# The protocol adapters (awaken-protocol-managed / -managed-resources / -ai-sdk / -ag-ui) and
+# awaken-coordinator are product adapters and the single-machine assembly binary;
 # their surface is a product concern that evolves with each public wire, not a
 # stable neutral contract, so they are gated by their own tests and the e2e
 # harness rather than an API snapshot.
@@ -53,8 +53,8 @@ crates=$(cargo metadata --no-deps --format-version 1 \
 # worker), awaken-scenario-host (test-only), and awaken-control (authoring plane,
 # pulls scoped-migration via admin-config-api/model-catalog/credential-vault) — are
 # product binaries / assembly crates, not stable neutral contracts, exactly like
-# awaken-server. Their surface is gated by their own tests + the e2e harness.
-excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-server awaken-model-catalog awaken-credential-vault awaken-config-resolver awaken-managed-bridge awaken-admin-config-api awaken-authz-enforce awaken-webhook-managed awaken-cli awaken-worker awaken-scenario-host awaken-control"
+# awaken-coordinator. Their surface is gated by their own tests + the e2e harness.
+excluded="awaken-store-postgres awaken-store-schema awaken-store-sqlite awaken-run-ingress awaken-config-store awaken-protocol-managed awaken-protocol-managed-resources awaken-protocol-awaken awaken-protocol-ai-sdk awaken-protocol-ag-ui awaken-protocol-acp awaken-coordinator awaken-model-catalog awaken-credential-vault awaken-config-resolver awaken-managed-bridge awaken-admin-config-api awaken-authz-enforce awaken-webhook-managed awaken-cli awaken-worker awaken-scenario-host awaken-control"
 
 fail=0
 drifted=()      # crates whose surface changed

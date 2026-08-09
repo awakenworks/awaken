@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_agent_contract::event::{
     Delta, Fact, HistorySink, ToolDisposition, ToolUseRef, Transcoder, fold_history, fold_messages,
 };
-use awaken_protocol_transport::{StepOutcome, blocks_text};
+use awaken_session_contract::{StepOutcome, blocks_text};
 use serde_json::Value;
 
 use crate::types::{UIStreamEvent, history_message, text_parts};
@@ -318,7 +318,8 @@ impl HistorySink for AiSdkHistorySink {
 mod tests {
     use super::*;
     use awaken_agent_contract::agent::message::Id;
-    use awaken_protocol_transport::{Pending, StepFailure, Terminal};
+    use awaken_agent_contract::agent::run::{EndCause, Failure};
+    use awaken_session_contract::Pending;
     use serde_json::json;
 
     // --- live `delta()` tier (the streamed prefix) ---
@@ -455,13 +456,17 @@ mod tests {
 
     #[test]
     fn terminal_failure_surfaces_an_error_frame() {
-        let outcome = StepOutcome {
-            terminal: Terminal::Failed(StepFailure {
+        // Cause/effect rule F1: a committed inference failure emits an error
+        // frame and finish(error), never an ordinary finish.
+        let outcome = StepOutcome::ended(
+            Vec::new(),
+            EndCause::Error(Failure::Inference {
                 code: "inference_failed".into(),
                 message: "upstream is down".into(),
             }),
-            ..Default::default()
-        };
+            false,
+            false,
+        );
         // A fresh (non-streamed) step: opened stream + error + finish("error").
         let step = encode_step(&outcome);
         assert!(
@@ -485,16 +490,18 @@ mod tests {
         );
     }
 
-    /// Budget exhaustion (`Terminal::Exhausted` → `RunFinished{exhausted:true}`) is
+    /// Budget exhaustion (`EndCause::MaxSteps` → `RunFinished{exhausted:true}`) is
     /// a clean end on the AI-SDK wire: the protocol has no "exhausted" finish
     /// reason, so it closes with `finish("stop")` like a natural end — never an
     /// error frame. Pins that exhaustion doesn't leak as a fault.
     #[test]
     fn an_exhausted_run_finishes_cleanly_not_as_error() {
-        let outcome = StepOutcome {
-            terminal: Terminal::Exhausted,
-            ..Default::default()
-        };
+        let outcome = StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::MaxSteps,
+            false,
+            false,
+        );
         let step = encode_step(&outcome);
         assert!(
             step.iter().any(
@@ -517,14 +524,16 @@ mod tests {
     // assistant text twice.
     #[test]
     fn streamed_text_is_not_re_emitted_by_the_committed_tail() {
-        let outcome = StepOutcome {
-            new_messages: vec![Message::text(
+        let outcome = StepOutcome::ended(
+            vec![Message::text(
                 Id("a1".into()),
                 Role::Assistant,
                 "hello there",
             )],
-            terminal: Terminal::Finished,
-        };
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let mut encoder = AiSdkEncoder::new();
         encoder.fact(&Fact::RunStarted);
         encoder.delta(&Delta::TextDelta {
@@ -569,17 +578,17 @@ mod tests {
 
     #[test]
     fn client_pending_tool_is_not_provider_executed() {
-        let outcome = StepOutcome {
-            new_messages: vec![assistant_tool("a1", "c1", "submit_answer", json!({}))],
-            terminal: Terminal::Awaiting {
-                pending: Some(Pending {
-                    tool_use_id: "c1".into(),
-                    name: "submit_answer".into(),
-                    input: json!({}),
-                    client_executed: true,
-                }),
-            },
-        };
+        let outcome = StepOutcome::awaiting(
+            vec![assistant_tool("a1", "c1", "submit_answer", json!({}))],
+            Some(Pending {
+                tool_use_id: "c1".into(),
+                name: "submit_answer".into(),
+                input: json!({}),
+                client_executed: true,
+            }),
+            false,
+            false,
+        );
         let events = encode_step(&outcome);
         let tool = events
             .iter()
@@ -596,10 +605,12 @@ mod tests {
 
     #[test]
     fn plain_assistant_turn_finishes_stop() {
-        let outcome = StepOutcome {
-            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
-            terminal: Terminal::Finished,
-        };
+        let outcome = StepOutcome::ended(
+            vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
+            EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let events = encode_step(&outcome);
         assert!(events.contains(&UIStreamEvent::finish("stop")));
         assert!(
@@ -611,20 +622,20 @@ mod tests {
 
     #[test]
     fn close_emits_authoritative_tail_without_start_or_text() {
-        let outcome = StepOutcome {
-            new_messages: vec![
+        let outcome = StepOutcome::awaiting(
+            vec![
                 Message::text(Id("a1".into()), Role::Assistant, "let me read"),
                 assistant_tool("a2", "c1", "read", json!({"path": "x"})),
             ],
-            terminal: Terminal::Awaiting {
-                pending: Some(Pending {
-                    tool_use_id: "c1".into(),
-                    name: "read".into(),
-                    input: json!({"path": "x"}),
-                    client_executed: true,
-                }),
-            },
-        };
+            Some(Pending {
+                tool_use_id: "c1".into(),
+                name: "read".into(),
+                input: json!({"path": "x"}),
+                client_executed: true,
+            }),
+            false,
+            false,
+        );
         let mut encoder = AiSdkEncoder::new();
         encoder.fact(&Fact::RunStarted);
         encoder.delta(&Delta::TextDelta {
@@ -658,10 +669,12 @@ mod tests {
     fn reasoning_only_prefix_keeps_committed_text_without_restarting_stream() {
         // CE-AI3/AI4: a non-projected reasoning delta is not visible text.
         // Completion emits the committed answer and does not repeat start frames.
-        let outcome = StepOutcome {
-            new_messages: vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
-            terminal: Terminal::Finished,
-        };
+        let outcome = StepOutcome::ended(
+            vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
+            EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let mut encoder = AiSdkEncoder::new();
         assert_eq!(encoder.fact(&Fact::RunStarted).len(), 2);
         assert!(
@@ -692,10 +705,12 @@ mod tests {
             name: "read".into(),
             args_delta: "{".into(),
         });
-        let events = encoder.complete(&StepOutcome {
-            new_messages: Vec::new(),
-            terminal: Terminal::Finished,
-        });
+        let events = encoder.complete(&StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ));
         assert!(
             events
                 .iter()
@@ -869,14 +884,16 @@ mod tests {
     // carries no spurious `text-*` frames — only the step's start and finish.
     #[test]
     fn an_empty_text_only_assistant_turn_emits_no_text_part() {
-        let outcome = StepOutcome {
-            new_messages: vec![Message::new(
+        let outcome = StepOutcome::ended(
+            vec![Message::new(
                 Id("a1".into()),
                 Role::Assistant,
                 vec![ContentBlock::text("")],
             )],
-            terminal: Terminal::Finished,
-        };
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        );
         let events = encode_step(&outcome);
         assert!(
             events.iter().all(|e| !matches!(
