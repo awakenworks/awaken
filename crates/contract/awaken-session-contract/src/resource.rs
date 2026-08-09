@@ -142,6 +142,10 @@ pub struct ResolvedSessionResources {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionResourceManifest {
     pub workspace_id: String,
+    /// Durable Session resource generation. Zero is the legacy/create-time
+    /// generation; live replacements carry `SessionResourceState::revision`.
+    #[serde(default)]
+    pub revision: u64,
     pub resources: ResolvedSessionResources,
 }
 
@@ -150,6 +154,20 @@ impl SessionResourceManifest {
     pub fn new(workspace_id: impl Into<String>, resources: ResolvedSessionResources) -> Self {
         Self {
             workspace_id: workspace_id.into(),
+            revision: 0,
+            resources,
+        }
+    }
+
+    #[must_use]
+    pub fn at_revision(
+        workspace_id: impl Into<String>,
+        revision: u64,
+        resources: ResolvedSessionResources,
+    ) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            revision,
             resources,
         }
     }
@@ -647,5 +665,31 @@ mod tests {
             detached.detach(&BindingId::from("missing")),
             Err(SessionInputError::UnknownBinding(_))
         ));
+    }
+
+    /// Serialization compatibility causes/effects: C1 a pre-generation durable
+    /// dispatch omits `revision`; C2 a current dispatch declares it. E1 C1
+    /// decodes as legacy revision zero; E2 C2 preserves the exact generation.
+    #[test]
+    fn session_resource_manifest_revision_is_backward_compatible() {
+        let legacy: SessionResourceManifest = serde_json::from_value(serde_json::json!({
+            "workspace_id": "workspace-a",
+            "resources": { "inputs": [] }
+        }))
+        .expect("legacy dispatch manifest");
+        assert_eq!(legacy.revision, 0);
+
+        let current = SessionResourceManifest::at_revision(
+            "workspace-a",
+            7,
+            ResolvedSessionResources::default(),
+        );
+        assert_eq!(
+            serde_json::from_value::<SessionResourceManifest>(
+                serde_json::to_value(&current).expect("serialize current manifest")
+            )
+            .expect("deserialize current manifest"),
+            current
+        );
     }
 }

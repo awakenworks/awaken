@@ -662,6 +662,7 @@ impl SessionRuntime for AcceptingFake {
         &self,
         _thread: &str,
         _workspace_id: &str,
+        _resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         self.applied.lock().unwrap().push(inputs.clone());

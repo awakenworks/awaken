@@ -1227,6 +1227,7 @@ impl SharedHost {
             .flatten()
     }
 
+    #[cfg(test)]
     pub(crate) async fn session_environment_handle(
         &self,
         thread: &str,

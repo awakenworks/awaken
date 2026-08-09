@@ -207,6 +207,9 @@ impl McpToolHost<AwakenMcpContext> for AwakenMcpHost {
             Err(ToolError::InvalidArguments(message)) => {
                 Err(McpHostError::InvalidArguments(message))
             }
+            Err(ToolError::UnavailableBeforeDispatch(message)) => {
+                Err(McpHostError::Internal(message))
+            }
             Err(ToolError::Execution(message)) => Err(McpHostError::Internal(message)),
         }
     }

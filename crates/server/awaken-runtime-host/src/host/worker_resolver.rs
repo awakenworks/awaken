@@ -1489,6 +1489,83 @@ mod tests {
         );
     }
 
+    /// Claimed Session Resource generation cause/effect decision table.
+    /// Causes: C1 prior process-local generation exists; C2 incoming generation
+    /// is exact, newer, older, or same-generation/different-value; C3 Workspace
+    /// partition is unchanged. Effects: E1 revalidate exact bytes without a
+    /// logical replacement; E2 advance to the newer generation; E3 reject stale,
+    /// corrupt, or cross-Workspace replacement and retain the prior manifest.
+    /// Rules: R1 exact+C3=>E1; R2 newer+C3=>E2; R3 older+C3=>E3;
+    /// R4 same-revision/different-value+C3=>E3; R5 !C3=>E3.
+    #[tokio::test]
+    async fn claimed_worker_advances_only_to_a_newer_resource_generation() {
+        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+        let _managed = crate::ManagedHost::new(host.clone());
+        let claim = awaken_run_ingress::RunClaim {
+            run_id: RunId("run-generation-fence".into()),
+            owner: "worker-generation-fence".into(),
+            epoch: 1,
+        };
+        let revision_four = awaken_session_contract::SessionResourceManifest::at_revision(
+            "workspace-a",
+            4,
+            awaken_session_contract::ResolvedSessionResources::default(),
+        );
+        host.install_dispatched_resources("thread-generation-fence", &revision_four, None)
+            .await
+            .expect("install active generation");
+
+        host.install_dispatched_resources("thread-generation-fence", &revision_four, Some(&claim))
+            .await
+            .expect("R1 exact replay");
+
+        for rejected in [
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace-a",
+                3,
+                awaken_session_contract::ResolvedSessionResources::default(),
+            ),
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace-a",
+                4,
+                awaken_session_contract::ResolvedSessionResources {
+                    inputs: Vec::new(),
+                    skills: Some(Vec::new()),
+                },
+            ),
+            awaken_session_contract::SessionResourceManifest::at_revision(
+                "workspace-b",
+                5,
+                awaken_session_contract::ResolvedSessionResources::default(),
+            ),
+        ] {
+            let result = host
+                .install_dispatched_resources("thread-generation-fence", &rejected, Some(&claim))
+                .await;
+            assert!(
+                result.is_err(),
+                "R3/R4/R5 reject non-authoritative replacement: {rejected:?}"
+            );
+            assert_eq!(
+                host.thread_resource_manifest("thread-generation-fence"),
+                Some(revision_four.clone())
+            );
+        }
+
+        let revision_five = awaken_session_contract::SessionResourceManifest::at_revision(
+            "workspace-a",
+            5,
+            awaken_session_contract::ResolvedSessionResources::default(),
+        );
+        host.install_dispatched_resources("thread-generation-fence", &revision_five, Some(&claim))
+            .await
+            .expect("R2 newer generation");
+        assert_eq!(
+            host.thread_resource_manifest("thread-generation-fence"),
+            Some(revision_five)
+        );
+    }
+
     /// Cause/effect decision table for Worker-side File staging:
     /// | Rule | Worker File source | exact claim | local File DB entry | Effect |
     /// |---|---|---|---|---|

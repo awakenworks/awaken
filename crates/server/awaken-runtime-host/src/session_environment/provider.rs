@@ -162,7 +162,7 @@ impl SessionEnvironmentProvider {
                 let environment = provider.create_environment(&spec).await?;
                 SessionEnvironment::container(
                     environment,
-                    hand_factory.as_ref(),
+                    hand_factory.clone(),
                     hand_bin,
                     capabilities,
                 )
@@ -195,7 +195,7 @@ impl SessionEnvironmentProvider {
                 environment.renew_lease().await?;
                 SessionEnvironment::container(
                     environment,
-                    hand_factory.as_ref(),
+                    hand_factory.clone(),
                     hand_bin,
                     capabilities,
                 )

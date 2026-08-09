@@ -269,7 +269,7 @@ impl ManagedState {
 
         if let Err(error) = self
             .runtime
-            .apply_session_inputs(&session_id, owner_scope, &desired)
+            .apply_session_inputs(&session_id, owner_scope, resource_revision, &desired)
             .await
         {
             // Restore the prior projection before reporting synchronous failure.
@@ -277,7 +277,12 @@ impl ManagedState {
             // ResourceReclaimer instead of pretending either generation won.
             let settlement = match self
                 .runtime
-                .apply_session_inputs(&session_id, owner_scope, &previous)
+                .apply_session_inputs(
+                    &session_id,
+                    owner_scope,
+                    resource_revision.saturating_sub(1),
+                    &previous,
+                )
                 .await
             {
                 Ok(()) => ResourceSettlement::Rollback(error.to_string()),

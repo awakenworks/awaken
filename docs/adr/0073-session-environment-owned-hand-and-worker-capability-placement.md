@@ -75,6 +75,22 @@ retried under the existing lease/epoch fence; a failed Environment binding is no
 published; a remote A2A transport failure is an attempt failure and never falls
 back to local Native execution.
 
+The Environment owns the Hand process and its live channel separately from the
+durable Environment identity. If an idle container exec channel expires before a
+tool request is written, that same owner stops the stale binding, starts one
+replacement Hand in the existing Environment, and retries the undispatched call
+once. A channel loss after dispatch remains indeterminate and is never replayed by
+this lifecycle path; it continues through ADR-0044's existing recovery boundary.
+
+The Session supervisor may proactively hibernate that same recreatable Hand after
+a settled end-turn idle horizon. Hibernation releases only the process/channel;
+the Environment, opaque durable binding, and workspace remain resident, and the
+next tool call uses the same serialized replacement path. Awaiting human/tool
+action is not classified as an end-turn idle. Terminal Session release remains a
+different operation: it closes the owner and disposes the Environment, so it can
+never lazily recreate a Hand. Full Pod/container suspension is disabled while the
+workspace is backed by ephemeral storage; reclaiming it would violate continuity.
+
 ## Consequences
 
 - Protocol availability is independent of Worker placement: external clients
@@ -97,6 +113,11 @@ back to local Native execution.
 3. Every claim uses one `SandboxRequirements`/`SandboxCapabilities` predicate.
 4. Agent publications and deployment config carry no Hand placement coordinate.
 5. AllInOne has one registered Worker execution owner even without ACP.
+6. A Session Environment may replace an expired Hand channel, but never owns more
+   than one active binding and never replays a possibly dispatched tool call.
+7. Idle hibernation is reversible and retains the Environment; terminal release is
+   irreversible and never recreates a Hand. A provider may not suspend an
+   Environment until its workspace has a durable continuation contract.
 
 Cause/effect decision tables live beside the corresponding Rust/Python tests.
 The architecture fitness suite rejects retired Hand selection symbols and
