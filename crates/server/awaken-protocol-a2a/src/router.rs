@@ -34,6 +34,10 @@ use crate::encoder::{encode_task, working_task};
 use crate::extract::A2aJson;
 use crate::request::process;
 use crate::state::{A2aState, PushProtocolVersion};
+use crate::state_error::{
+    rpc_error, state_cancel_error, state_failure_update, state_fault_response, state_rpc_response,
+    state_run_error,
+};
 use crate::types::{
     Artifact, DeleteTaskPushNotificationConfigParams, ErrorResponse,
     GetTaskPushNotificationConfigParams, ListPushNotificationConfigsResponse, Part,
@@ -66,7 +70,8 @@ pub fn router_with_storage_root(
     let state = A2aState::new(
         runtime,
         storage_root.map(|root| root.join("a2a-state.json")),
-    );
+    )
+    .unwrap_or_else(|error| panic!("load A2A wire projection: {error}"));
     Router::new()
         // The JSON-RPC binding (the canonical A2A transport the official SDKs
         // default to): a single endpoint dispatching by `method`.
@@ -228,50 +233,27 @@ async fn message_stream_tenant_rest(
 /// streams carry the result object directly.
 async fn stream_send(
     rt: Runtime,
-    mut req: SendMessageRequest,
+    req: SendMessageRequest,
     path_agent: Option<String>,
     rpc_id: Option<Value>,
     rest_errors: bool,
     version: ProtocolVersion,
 ) -> Response {
-    if let Err(error) = validate_send_configuration(&req) {
-        return stream_binding_error(error, rpc_id.as_ref(), rest_errors, version);
-    }
-    let history_length = req
-        .configuration
-        .as_ref()
-        .and_then(|configuration| configuration.history_length)
-        .map(|length| length as usize);
-    if let Err(error) = resolve_task_context(&rt, &mut req, path_agent.as_deref()).await {
-        return stream_binding_error(error, rpc_id.as_ref(), rest_errors, version);
-    }
-    let push_config = req
-        .configuration
-        .as_ref()
-        .and_then(|configuration| configuration.task_push_notification_config.clone());
-    let processed = process(req, path_agent);
+    let prepared = match prepare_send(&rt, req, path_agent, version).await {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return stream_binding_error(error, rpc_id.as_ref(), rest_errors, version);
+        }
+    };
+    let PreparedSend {
+        processed,
+        history_length,
+        working,
+        ..
+    } = prepared;
     let thread = processed.thread_id.clone();
     let task_id = processed.task_id.clone();
     let agent_id = processed.agent_id.clone();
-    let working = working_task(&task_id, &thread);
-    rt.record_task(working.clone(), agent_id.clone()).await;
-    if let Some(config) = push_config
-        && let Err(error) = rt
-            .upsert_config(
-                &task_id,
-                agent_id.as_deref(),
-                config,
-                version.push_version(),
-            )
-            .await
-    {
-        return stream_binding_error(
-            RunApplicationError::bad_request(error),
-            rpc_id.as_ref(),
-            rest_errors,
-            version,
-        );
-    }
 
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
     let initial = StreamResponse::Task(working);
@@ -288,9 +270,7 @@ async fn stream_send(
         let turn_thread = thread.clone();
         let turn_agent = agent_id.clone();
         let turn = tokio::spawn(async move {
-            runtime
-                .run_streaming(&turn_thread, turn_agent, vec![processed.message], sink)
-                .await
+            drive_processed_runtime(&runtime, processed, Some(sink), turn_agent, &turn_thread).await
         });
 
         while let Some(event) = live_rx.recv().await {
@@ -313,8 +293,15 @@ async fn stream_send(
                 last_chunk: Some(false),
                 metadata: None,
             });
-            rt.publish(&task_id, agent_id.as_deref(), response.clone())
-                .await;
+            if let Err(error) = rt
+                .publish(&task_id, agent_id.as_deref(), response.clone())
+                .await
+            {
+                let _ = rt.runtime.interrupt(&thread).await;
+                let failure = state_failure_update(&task_id, &thread, error);
+                let _ = out_tx.send(sse_event(&failure, rpc_id.as_ref(), version));
+                return;
+            }
             if out_tx
                 .send(sse_event(&response, rpc_id.as_ref(), version))
                 .is_err()
@@ -349,7 +336,21 @@ async fn stream_send(
         let mut task = encode_task(&thread, &history, &outcome);
         task.id = task_id.clone();
         truncate_history(&mut task, history_length);
-        rt.record_task(task.clone(), agent_id.clone()).await;
+        if let Err(error) = rt.record_task(task.clone(), agent_id.clone()).await {
+            task.status.state = TaskState::Failed;
+            task.status.message = Some(crate::types::Message::agent_text(
+                format!("a2a-state-{}", task.id),
+                error.to_string(),
+            ));
+            let retry_state = rt.clone();
+            let retry_task = task.clone();
+            let retry_agent = agent_id.clone();
+            tokio::spawn(async move {
+                retry_state
+                    .record_task_reliably(retry_task, retry_agent)
+                    .await;
+            });
+        }
         let terminal = StreamResponse::StatusUpdate(crate::types::TaskStatusUpdateEvent {
             kind: crate::types::TaskStatusUpdateKind::StatusUpdate,
             task_id,
@@ -362,6 +363,59 @@ async fn stream_send(
     });
 
     stream_response(out_rx)
+}
+
+struct PreparedSend {
+    processed: crate::request::Processed,
+    history_length: Option<usize>,
+    asynchronous: bool,
+    working: Task,
+}
+
+/// One authoritative admission and A2A projection-preparation path shared by
+/// request/response and streaming sends. It prevents the two transports from
+/// drifting on context resolution, working-task publication, and inline push
+/// configuration.
+async fn prepare_send(
+    rt: &Runtime,
+    mut req: SendMessageRequest,
+    path_agent: Option<String>,
+    version: ProtocolVersion,
+) -> Result<PreparedSend, RunApplicationError> {
+    validate_send_configuration(&req)?;
+    let history_length = req
+        .configuration
+        .as_ref()
+        .and_then(|configuration| configuration.history_length)
+        .map(|length| length as usize);
+    let asynchronous = req
+        .configuration
+        .as_ref()
+        .is_some_and(|configuration| match version {
+            ProtocolVersion::V03 => configuration.blocking == Some(false),
+            ProtocolVersion::V1 => configuration.return_immediately.unwrap_or(false),
+        });
+    let push_config = req
+        .configuration
+        .as_ref()
+        .and_then(|configuration| configuration.task_push_notification_config.clone());
+    resolve_task_context(rt, &mut req, path_agent.as_deref()).await?;
+    let processed = process(req, path_agent);
+    let working = working_task(&processed.task_id, &processed.thread_id);
+    rt.record_task_with_config(
+        working.clone(),
+        processed.agent_id.clone(),
+        push_config,
+        version.push_version(),
+    )
+    .await
+    .map_err(state_run_error)?;
+    Ok(PreparedSend {
+        processed,
+        history_length,
+        asynchronous,
+        working,
+    })
 }
 
 async fn task_get_http(State(rt): State<Runtime>, Path(task_id): Path<String>) -> Response {
@@ -575,10 +629,7 @@ async fn create_push_config_v1(
                 StatusCode::CREATED,
                 v1_push_value(&task_id, owner.as_deref(), &config),
             ),
-            Err(error) if error.starts_with("task not found") => {
-                v1_fault(StatusCode::NOT_FOUND, -32001, error)
-            }
-            Err(error) => v1_fault(StatusCode::BAD_REQUEST, -32602, error),
+            Err(error) => state_fault_response(error, ProtocolVersion::V1),
         },
         Err(error) => v1_fault(StatusCode::BAD_REQUEST, -32602, error),
     }
@@ -626,10 +677,10 @@ async fn delete_push_config_v1(
     if let Err(response) = require_v1(&headers) {
         return response;
     }
-    if rt.delete_config(&task_id, &config_id, None).await {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        v1_fault(StatusCode::NOT_FOUND, -32001, "config not found")
+    match rt.delete_config(&task_id, &config_id, None).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => v1_fault(StatusCode::NOT_FOUND, -32001, "config not found"),
+        Err(error) => state_fault_response(error, ProtocolVersion::V1),
     }
 }
 
@@ -665,10 +716,7 @@ async fn create_push_config_tenant_v1(
                 StatusCode::CREATED,
                 v1_push_value(&task_id, Some(&tenant), &config),
             ),
-            Err(error) if error.starts_with("task not found") => {
-                v1_fault(StatusCode::NOT_FOUND, -32001, error)
-            }
-            Err(error) => v1_fault(StatusCode::BAD_REQUEST, -32602, error),
+            Err(error) => state_fault_response(error, ProtocolVersion::V1),
         },
         Err(error) => v1_fault(StatusCode::BAD_REQUEST, -32602, error),
     }
@@ -719,10 +767,10 @@ async fn delete_push_config_tenant_v1(
     if let Err(response) = require_v1(&headers) {
         return response;
     }
-    if rt.delete_config(&task_id, &config_id, Some(&tenant)).await {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        v1_fault(StatusCode::NOT_FOUND, -32001, "config not found")
+    match rt.delete_config(&task_id, &config_id, Some(&tenant)).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => v1_fault(StatusCode::NOT_FOUND, -32001, "config not found"),
+        Err(error) => state_fault_response(error, ProtocolVersion::V1),
     }
 }
 
@@ -768,51 +816,19 @@ async fn subscribe_response(
 /// projected into a `Task`.
 async fn run_send(
     rt: &Runtime,
-    mut req: SendMessageRequest,
+    req: SendMessageRequest,
     path_agent: Option<String>,
     version: ProtocolVersion,
 ) -> Result<Task, RunApplicationError> {
-    validate_send_configuration(&req)?;
-    let history_length = req
-        .configuration
-        .as_ref()
-        .and_then(|configuration| configuration.history_length)
-        .map(|length| length as usize);
-    let asynchronous = req
-        .configuration
-        .as_ref()
-        .is_some_and(|configuration| match version {
-            ProtocolVersion::V03 => configuration.blocking == Some(false),
-            ProtocolVersion::V1 => configuration.return_immediately.unwrap_or(false),
-        });
-    resolve_task_context(rt, &mut req, path_agent.as_deref()).await?;
-    let push_config = req
-        .configuration
-        .as_ref()
-        .and_then(|configuration| configuration.task_push_notification_config.clone());
-    let processed = process(req, path_agent);
+    let PreparedSend {
+        processed,
+        history_length,
+        asynchronous,
+        working,
+    } = prepare_send(rt, req, path_agent, version).await?;
     let thread = processed.thread_id.clone();
     let task_id = processed.task_id.clone();
     let agent_id = processed.agent_id.clone();
-
-    let working = working_task(&task_id, &thread);
-    rt.record_task(working.clone(), agent_id.clone()).await;
-    if let Some(config) = push_config {
-        rt.upsert_config(
-            &task_id,
-            processed.agent_id.as_deref(),
-            config,
-            version.push_version(),
-        )
-        .await
-        .map_err(RunApplicationError::bad_request)?;
-        rt.publish(
-            &task_id,
-            processed.agent_id.as_deref(),
-            StreamResponse::Task(working.clone()),
-        )
-        .await;
-    }
 
     if asynchronous {
         let rt = rt.clone();
@@ -835,7 +851,7 @@ async fn run_send(
             let mut task = encode_task(&thread, &history, &step);
             task.id = task_id;
             truncate_history(&mut task, history_length);
-            rt.record_task(task, agent_id).await;
+            rt.record_task_reliably(task, agent_id).await;
         });
         return Ok(working);
     }
@@ -846,7 +862,9 @@ async fn run_send(
     let mut task = encode_task(&thread, &history, &step);
     task.id = task_id;
     truncate_history(&mut task, history_length);
-    rt.record_task(task.clone(), agent_id).await;
+    rt.record_task(task.clone(), agent_id)
+        .await
+        .map_err(state_run_error)?;
     Ok(task)
 }
 
@@ -854,21 +872,33 @@ async fn drive_processed(
     rt: &Runtime,
     processed: crate::request::Processed,
 ) -> Result<StepOutcome, RunApplicationError> {
-    let thread = &processed.thread_id;
-    match rt.runtime.pending(thread).await {
+    let thread = processed.thread_id.clone();
+    let agent_id = processed.agent_id.clone();
+    drive_processed_runtime(&rt.runtime, processed, None, agent_id, &thread).await
+}
+
+async fn drive_processed_runtime(
+    runtime: &Arc<dyn RunApplication>,
+    processed: crate::request::Processed,
+    sink: Option<Arc<dyn StreamSink>>,
+    agent_id: Option<String>,
+    thread: &str,
+) -> Result<StepOutcome, RunApplicationError> {
+    match runtime.pending(thread).await {
         // A awaiting run on this context → the message is the awaited input.
         Some(pending) => {
             let resume = to_resume(&processed.text, &pending);
-            rt.runtime
-                .resume(thread, &pending.tool_use_id, resume)
-                .await
+            runtime.resume(thread, &pending.tool_use_id, resume).await
         }
         // No awaiting run → a fresh turn.
-        None => {
-            rt.runtime
-                .run(thread, processed.agent_id, vec![processed.message])
-                .await
-        }
+        None => match sink {
+            Some(sink) => {
+                runtime
+                    .run_streaming(thread, agent_id, vec![processed.message], sink)
+                    .await
+            }
+            None => runtime.run(thread, agent_id, vec![processed.message]).await,
+        },
     }
 }
 
@@ -1032,10 +1062,7 @@ async fn create_push_config(
             push_notification_config: config.redacted(),
         })
         .into_response(),
-        Err(error) if error.starts_with("task not found") => {
-            a2a_fault(StatusCode::NOT_FOUND, -32001, error)
-        }
-        Err(error) => a2a_fault(StatusCode::BAD_REQUEST, -32602, error),
+        Err(error) => state_fault_response(error, ProtocolVersion::V03),
     }
 }
 
@@ -1078,14 +1105,14 @@ async fn delete_push_config(
     State(rt): State<Runtime>,
     Path((task_id, config_id)): Path<(String, String)>,
 ) -> Response {
-    if rt.delete_config(&task_id, &config_id, None).await {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        a2a_fault(
+    match rt.delete_config(&task_id, &config_id, None).await {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => a2a_fault(
             StatusCode::NOT_FOUND,
             -32001,
             "task or push notification config not found",
-        )
+        ),
+        Err(error) => state_fault_response(error, ProtocolVersion::V03),
     }
 }
 
@@ -1134,7 +1161,8 @@ async fn cancel_task(
     task.status.state = TaskState::Canceled;
     task.status.timestamp = Some(crate::time::now_rfc3339());
     rt.record_task(task.clone(), owner.map(ToOwned::to_owned))
-        .await;
+        .await
+        .map_err(state_cancel_error)?;
     Ok(task)
 }
 
@@ -1326,10 +1354,7 @@ async fn jsonrpc(
                                 push_notification_config: config.redacted(),
                             },
                         ),
-                        Err(error) if error.starts_with("task not found") => {
-                            rpc_error(id, -32001, error)
-                        }
-                        Err(error) => rpc_error(id, -32602, error),
+                        Err(error) => state_rpc_response(id, error),
                     }
                 }
                 Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
@@ -1482,13 +1507,13 @@ async fn jsonrpc(
         "tasks/pushNotificationConfig/delete" if version == ProtocolVersion::V03 => {
             match serde_json::from_value::<DeleteTaskPushNotificationConfigParams>(req.params) {
                 Ok(params) => {
-                    if rt
+                    match rt
                         .delete_config(&params.id, &params.push_notification_config_id, None)
                         .await
                     {
-                        rpc_ok(id, Value::Null)
-                    } else {
-                        rpc_error(id, -32001, "push notification config not found")
+                        Ok(true) => rpc_ok(id, Value::Null),
+                        Ok(false) => rpc_error(id, -32001, "push notification config not found"),
+                        Err(error) => state_rpc_response(id, error),
                     }
                 }
                 Err(error) => rpc_error(id, -32602, format!("invalid params: {error}")),
@@ -1518,10 +1543,10 @@ async fn jsonrpc(
                 .filter(|tenant| !tenant.is_empty());
             match (task_id, config_id) {
                 (Some(task_id), Some(config_id)) => {
-                    if rt.delete_config(task_id, config_id, owner).await {
-                        rpc_ok(id, Value::Null)
-                    } else {
-                        rpc_error(id, -32001, "push notification config not found")
+                    match rt.delete_config(task_id, config_id, owner).await {
+                        Ok(true) => rpc_ok(id, Value::Null),
+                        Ok(false) => rpc_error(id, -32001, "push notification config not found"),
+                        Err(error) => state_rpc_response(id, error),
                     }
                 }
                 _ => rpc_error(id, -32602, "invalid params"),
@@ -1745,13 +1770,6 @@ fn rpc_ok(id: Value, result: impl serde::Serialize) -> Response {
     Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response()
 }
 
-/// A JSON-RPC error member on a 200 (the transport succeeded; the call did not).
-fn rpc_error(id: Value, code: i32, message: impl Into<String>) -> Response {
-    let message = message.into();
-    Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }))
-        .into_response()
-}
-
 /// Map a driver error to a JSON-RPC (code, message).
 fn rpc_fault(err: RunApplicationError) -> (i32, String) {
     use awaken_session_contract::RunErrorKind;
@@ -1880,7 +1898,7 @@ pub(crate) fn v1_json_response(status: StatusCode, value: Value) -> Response {
     response
 }
 
-fn v1_fault(status: StatusCode, code: i32, message: impl Into<String>) -> Response {
+pub(crate) fn v1_fault(status: StatusCode, code: i32, message: impl Into<String>) -> Response {
     let reason = match code {
         -32001 => "TASK_NOT_FOUND",
         -32002 => "TASK_NOT_CANCELABLE",

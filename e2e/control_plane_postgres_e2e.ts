@@ -86,6 +86,12 @@ function start(bin: string, directory: string, databaseUrl: string): ChildProces
     env: {
       ...process.env,
       ...deploymentEnv(directory, {
+        // Authentication is an independent axis in this persistence scenario.
+        // Cause/effect rule: no-login => config requests exercise only the five
+        // selected Postgres repositories; embedded-IAM default => every request
+        // must carry its bootstrap token and the scenario no longer isolates the
+        // control-plane persistence boundary.
+        identityMode: 'no-login',
         controlSealKey: SEAL_KEY,
         databases: {
           catalog_db: databaseUrl,
@@ -278,6 +284,13 @@ async function main(): Promise<void> {
     response = await request('PUT', `/v1/config/webhook-subscriptions/${webhookId}`, {
       url: 'https://hooks.example.invalid/awaken',
       event_types: ['session.created', 3, 'session.ended'],
+    });
+    // Cause/effect rules: every event type is a non-empty string => create;
+    // a mixed-type array => reject the complete request without coercion.
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    response = await request('PUT', `/v1/config/webhook-subscriptions/${webhookId}`, {
+      url: 'https://hooks.example.invalid/awaken',
+      event_types: ['session.created', 'session.ended'],
     });
     assert.equal(response.status, 201, JSON.stringify(response.body));
     assert.match(response.body.secret, /^whsec_/);

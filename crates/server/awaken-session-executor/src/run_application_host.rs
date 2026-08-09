@@ -13,7 +13,9 @@ use crate::{HostResume, SharedHost};
 
 fn to_application_error(error: HostError) -> RunApplicationError {
     match error.kind {
-        HostErrorKind::BadRequest => RunApplicationError::bad_request(error.message),
+        HostErrorKind::BadRequest | HostErrorKind::Conflict => {
+            RunApplicationError::bad_request(error.message)
+        }
         HostErrorKind::Internal => RunApplicationError::internal(error.message),
     }
 }
@@ -167,7 +169,11 @@ impl RunApplication for RunApplicationHost {
     }
 
     async fn pending(&self, thread: &str) -> Option<Pending> {
-        to_pending(self.host.pending_tool(thread).await)
+        self.host
+            .pending_tool(thread)
+            .await
+            .ok()
+            .and_then(to_pending)
     }
 
     async fn history(&self, thread: &str) -> Vec<Message> {

@@ -1,4 +1,5 @@
 pub mod awaken_acp_application
+pub use awaken_acp_application::AcpCapabilityNegotiator
 pub enum awaken_acp_application::AcpCapabilityState
 pub awaken_acp_application::AcpCapabilityState::ProbeFailed
 pub awaken_acp_application::AcpCapabilityState::Unavailable
@@ -29,13 +30,25 @@ pub struct awaken_acp_application::AcpLocalCredentialResolver
 impl awaken_acp_application::AcpLocalCredentialResolver
 pub fn awaken_acp_application::AcpLocalCredentialResolver::add_sources(&self, impl core::iter::traits::collect::IntoIterator<Item = awaken_credential_vault::CredentialSource>) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_acp_application::AcpLocalCredentialResolver::from_sources(alloc::sync::Arc<dyn awaken_acp_application::AcpDiscovery>, impl core::iter::traits::collect::IntoIterator<Item = awaken_credential_vault::CredentialSource>) -> core::result::Result<Self, alloc::string::String>
-pub fn awaken_acp_application::AcpLocalCredentialResolver::with_capability_observations(self, alloc::sync::Arc<dyn awaken_acp_application::AcpCapabilityNegotiator>, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>, std::path::PathBuf) -> Self
+pub fn awaken_acp_application::AcpLocalCredentialResolver::with_capability_observations(self, alloc::sync::Arc<dyn awaken_acp_contract::AcpCapabilityNegotiator>, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>, std::path::PathBuf) -> Self
 impl awaken_acp_contract::AcpCapabilityObservationSource for awaken_acp_application::AcpLocalCredentialResolver
 pub fn awaken_acp_application::AcpLocalCredentialResolver::capability_observations<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_acp_contract::AcpCapabilityObservation>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_credential_contract::CredentialObservationSource for awaken_acp_application::AcpLocalCredentialResolver
 pub fn awaken_acp_application::AcpLocalCredentialResolver::credential_observations<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialObservation>, awaken_credential_contract::CredentialMaterialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_credential_contract::WorkerLocalReferenceRevalidator for awaken_acp_application::AcpLocalCredentialResolver
 pub fn awaken_acp_application::AcpLocalCredentialResolver::revalidate_worker_reference<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential_contract::CredentialRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::CredentialObservation, awaken_credential_contract::CredentialMaterialError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_acp_application::ConfiguredAcpCapabilityObservationSource
+impl awaken_acp_application::ConfiguredAcpCapabilityObservationSource
+pub fn awaken_acp_application::ConfiguredAcpCapabilityObservationSource::new(alloc::vec::Vec<awaken_acp_application::ConfiguredAcpCapabilityTarget>, alloc::sync::Arc<dyn awaken_acp_contract::AcpCapabilityNegotiator>, std::path::PathBuf) -> Self
+impl awaken_acp_contract::AcpCapabilityObservationSource for awaken_acp_application::ConfiguredAcpCapabilityObservationSource
+pub fn awaken_acp_application::ConfiguredAcpCapabilityObservationSource::capability_observations<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_acp_contract::AcpCapabilityObservation>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_acp_application::ConfiguredAcpCapabilityTarget
+pub awaken_acp_application::ConfiguredAcpCapabilityTarget::adapter_version: alloc::string::String
+pub awaken_acp_application::ConfiguredAcpCapabilityTarget::argv: alloc::vec::Vec<alloc::string::String>
+pub awaken_acp_application::ConfiguredAcpCapabilityTarget::auth_method_id: core::option::Option<alloc::string::String>
+pub awaken_acp_application::ConfiguredAcpCapabilityTarget::cli_id: alloc::string::String
+impl awaken_acp_application::ConfiguredAcpCapabilityTarget
+pub fn awaken_acp_application::ConfiguredAcpCapabilityTarget::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
 pub struct awaken_acp_application::EffectiveAcpCapabilityProfile
 pub awaken_acp_application::EffectiveAcpCapabilityProfile::cli_id: alloc::string::String
 pub awaken_acp_application::EffectiveAcpCapabilityProfile::cli_version: alloc::string::String
@@ -47,7 +60,7 @@ pub fn awaken_acp_application::EffectiveAcpCapabilityProfile::verified(impl core
 pub struct awaken_acp_application::HostAcpCapabilityNegotiator
 impl awaken_acp_application::HostAcpCapabilityNegotiator
 pub fn awaken_acp_application::HostAcpCapabilityNegotiator::new(core::time::Duration, alloc::sync::Arc<dyn awaken_acp_contract::AcpCapabilityHandshake>) -> Self
-impl awaken_acp_application::AcpCapabilityNegotiator for awaken_acp_application::HostAcpCapabilityNegotiator
+impl awaken_acp_contract::AcpCapabilityNegotiator for awaken_acp_application::HostAcpCapabilityNegotiator
 pub fn awaken_acp_application::HostAcpCapabilityNegotiator::negotiate<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 [alloc::string::String], &'life2 std::path::Path, core::option::Option<&'life3 str>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_acp_contract::NegotiatedAcpCapabilities, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub struct awaken_acp_application::LocalAcpPreparation
 pub awaken_acp_application::LocalAcpPreparation::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>
@@ -67,10 +80,6 @@ impl awaken_acp_application::PreparedAcpCapabilities
 pub async fn awaken_acp_application::PreparedAcpCapabilities::bind_workspace(&self, &dyn awaken_credential_vault::repo::CredentialRepo, &str) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_acp_application::PreparedAcpCapabilities::routable_cli_ids(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn awaken_acp_application::PreparedAcpCapabilities::routable_launch_argv(&self) -> alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::vec::Vec<alloc::string::String>>
-pub trait awaken_acp_application::AcpCapabilityNegotiator: core::marker::Send + core::marker::Sync
-pub fn awaken_acp_application::AcpCapabilityNegotiator::negotiate<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 [alloc::string::String], &'life2 std::path::Path, core::option::Option<&'life3 str>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_acp_contract::NegotiatedAcpCapabilities, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-impl awaken_acp_application::AcpCapabilityNegotiator for awaken_acp_application::HostAcpCapabilityNegotiator
-pub fn awaken_acp_application::HostAcpCapabilityNegotiator::negotiate<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 [alloc::string::String], &'life2 std::path::Path, core::option::Option<&'life3 str>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_acp_contract::NegotiatedAcpCapabilities, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub trait awaken_acp_application::AcpDiscovery: core::marker::Send + core::marker::Sync
 pub fn awaken_acp_application::AcpDiscovery::discover<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::acp_cli::AcpCli) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_acp_application::AcpHostObservation> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_acp_application::AcpDiscovery::discover_all<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_acp_application::AcpHostObservation>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -82,4 +91,4 @@ pub fn awaken_acp_application::AcpWrapperInstaller::resolved_argv<'life0, 'life1
 impl awaken_acp_application::AcpWrapperInstaller for awaken_acp_application::NpmWrapperInstaller
 pub fn awaken_acp_application::NpmWrapperInstaller::resolved_argv<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::acp_cli::AcpCli, &'life2 std::path::Path) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<alloc::string::String>>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub async fn awaken_acp_application::ensure_workspace_bindings<'a>(&dyn awaken_credential_vault::repo::CredentialRepo, &str, impl core::iter::traits::collect::IntoIterator<Item = &'a str>) -> core::result::Result<(), alloc::string::String>
-pub async fn awaken_acp_application::prepare_host_acp_with(awaken_acp_application::LocalAcpPreparation, alloc::sync::Arc<dyn awaken_acp_application::AcpDiscovery>, alloc::sync::Arc<dyn awaken_acp_application::AcpWrapperInstaller>, alloc::sync::Arc<dyn awaken_acp_application::AcpCapabilityNegotiator>) -> core::result::Result<awaken_acp_application::PreparedAcpCapabilities, alloc::string::String>
+pub async fn awaken_acp_application::prepare_host_acp_with(awaken_acp_application::LocalAcpPreparation, alloc::sync::Arc<dyn awaken_acp_application::AcpDiscovery>, alloc::sync::Arc<dyn awaken_acp_application::AcpWrapperInstaller>, alloc::sync::Arc<dyn awaken_acp_contract::AcpCapabilityNegotiator>) -> core::result::Result<awaken_acp_application::PreparedAcpCapabilities, alloc::string::String>

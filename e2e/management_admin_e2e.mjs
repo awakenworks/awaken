@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { withScenarioServer, pass } from './harness.mjs';
+import { closeHttpServer } from './http_server.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CONTRACT = JSON.parse(
@@ -92,7 +93,7 @@ async function startModelDirectory(apiKey) {
   return {
     state,
     url: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => closeHttpServer(server),
   };
 }
 

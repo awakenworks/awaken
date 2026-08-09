@@ -10,8 +10,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { closeHttpServer } from './http_server.mjs';
 // @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
-import { sqliteExec, sqliteRows, sqliteRun } from './sqlite.mjs';
+import { sqliteDatabaseForThread, sqliteExec, sqliteRows, sqliteRun } from './sqlite.mjs';
 
 type SeenMessage = { messageId?: string; contextId?: string; text?: string };
 
@@ -193,7 +194,7 @@ async function startPeer(): Promise<{
   assert.ok(address && typeof address !== 'string');
   return {
     endpoint: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () => closeHttpServer(server),
     crashPoll,
     completeCrash: () => {
       crashComplete = true;
@@ -272,7 +273,7 @@ function dispatchDatabases(root: string): string[] {
 }
 
 function committedState(root: string, thread: string): string {
-  const database = path.join(root, `${thread}.db`);
+  const database = sqliteDatabaseForThread(root, thread, 'runtime_state_command');
   return sqliteRows(
     database,
     `SELECT data FROM runtime_state_command WHERE thread_id = '${thread.replaceAll("'", "''")}' ORDER BY id`,
@@ -284,7 +285,7 @@ function rewriteLatestTaskReference(
   thread: string,
   rewrite: (command: any) => void,
 ): void {
-  const database = path.join(root, `${thread}.db`);
+  const database = sqliteDatabaseForThread(root, thread, 'runtime_state_command');
   const row = sqliteRows(
     database,
       `SELECT id || char(9) || data FROM runtime_state_command
@@ -329,6 +330,16 @@ function taskReferenceCleared(root: string, thread: string): boolean {
     .map((row) => JSON.parse(row))
     .filter((command) => command.scope === 'Run' && command.key === '__a2a_task');
   return commands.length > 0 && commands.at(-1)?.action === 'Remove';
+}
+
+function persistedSessions(root: string, threads: string[]): string[] {
+  const database = path.join(root, 'sessions.db');
+  const placeholders = threads.map(() => '?').join(', ');
+  return sqliteRows(
+    database,
+    `SELECT session_id FROM managed_session WHERE session_id IN (${placeholders}) ORDER BY session_id`,
+    ...threads,
+  ).map((row: { session_id: string }) => row.session_id);
 }
 
 async function waitForMessage(thread: string, marker: string, timeoutMs = 30_000): Promise<any[]> {
@@ -474,6 +485,16 @@ async function main(): Promise<void> {
     });
     assert.equal(cancelSubmit.status, 200);
     await waitForAwaiting(cancelThread, cancelSubmit.body.run_id);
+    // Commit-boundary lookup cause/effect graph: C1=candidate is a SQLite DB
+    // containing runtime_state_command; C2=it contains the exact Session thread.
+    // Effects: E1 select the one authoritative boundary; E2 reject missing or
+    // ambiguous persistence. The product alone owns its filename codec.
+    //
+    // | Rule | C1 | C2 | effect |
+    // | D1 | yes | yes, unique | inspect the committed state |
+    // | D2 | yes | no | ignore the candidate |
+    // | D3 | no | n/a | ignore the non-commit DB |
+    // | D4 | any | zero or multiple | fail closed |
     const stateBeforeCancel = committedState(storage, cancelThread);
     assert.ok(
       stateBeforeCancel.includes('__a2a_task') && stateBeforeCancel.includes('cancel-task'),
@@ -517,6 +538,11 @@ async function main(): Promise<void> {
       }),
     );
     const corruptionKilled = new Promise<void>((resolve) => server.once('exit', () => resolve()));
+    const corruptionThreads = corruptions.map(({ thread }) => thread).sort();
+    // Recovery admission decision table: every created Session committed to the
+    // durable aggregate => all exact ids survive restart; any missing id => fail
+    // before interpreting the separately committed A2A continuation state.
+    assert.deepEqual(persistedSessions(storage, corruptionThreads), corruptionThreads);
     server.kill('SIGKILL');
     await corruptionKilled;
     for (const { marker, thread } of corruptions) {
@@ -530,6 +556,7 @@ async function main(): Promise<void> {
     }
     server = spawnServer('config', PORT, environment).server;
     await waitForPort(PORT, 180_000, server);
+    assert.deepEqual(persistedSessions(storage, corruptionThreads), corruptionThreads);
     for (const { marker, thread } of corruptions) await expectResumeFailure(thread, marker);
     assert.ok(
       !peer.sent.some((message) => corruptions.some(({ marker }) => message.text === marker)),

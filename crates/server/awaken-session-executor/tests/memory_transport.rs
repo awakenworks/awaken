@@ -69,6 +69,7 @@ fn create_store(catalog: &awaken_resource_store::SqliteResourceStore, id: &str) 
 /// | M5 | current/live | wrong Workspace | any | n/a | deny before repository access |
 /// | M6 | current/stale | exact store/config | any | n/a | reject after claim settlement |
 /// | M7 | current/live | exact store/config | read-write | n/a | reject rename outside the snapshot/CAS boundary |
+/// | M8 | current/live | archived store | any | n/a | typed not-active denial; no repository read |
 #[tokio::test]
 async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     let repository = Arc::new(awaken_memory_store::VolatileMemoryRepository::new());
@@ -114,7 +115,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     let claim = RunClaim::from(&claimed.lease);
     let service = Arc::new(WorkerMemoryService::new(
         repository.clone(),
-        catalog,
+        catalog.clone(),
         dispatch.clone(),
         Arc::new(HeaderWorkerAuthenticator),
         directory,
@@ -189,6 +190,15 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
     assert!(
         client.rename(&rw, "/seed.md", "/renamed.md").await.is_err(),
         "M7"
+    );
+
+    catalog
+        .set_memory_state("workspace-memory", "memory-rw", ResourceState::Archived)
+        .unwrap();
+    let archived = client.snapshot_heads(&rw).await.expect_err("M8");
+    assert!(
+        archived.to_string().contains("not active"),
+        "M8: {archived}"
     );
 
     dispatch

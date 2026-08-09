@@ -388,7 +388,7 @@ async function main() {
       `only the valid pin reached the provider endpoint: ${JSON.stringify(upstream.requests)}`,
     );
     for (const forbidden of [
-      'credential.db', 'files.db', 'memory_fs.db', 'resource-lifecycle.db', 'control-seal.key',
+      'credential.db', 'files.db', 'memory_fs.db', 'resources.db', 'control-seal.key',
     ]) {
       assert.equal(
         fs.existsSync(path.join(storage, 'worker', forbidden)),

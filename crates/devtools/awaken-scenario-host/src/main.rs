@@ -51,11 +51,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(error) = deployment.durable_needs_persistence_error(false) {
         return Err(error.to_owned().into());
     }
-    // The scenario host is a Local composition and therefore reuses the same
-    // canonical Coordinator migrate-and-connect path as Local AllInOne.
-    awaken_coordinator::open_coordinator_persistence(&deployment)
-        .await
-        .map(drop)?;
+    // Scenario routers inject the explicit test-support WorkerDirectory owned by
+    // their Managed composition. Initialize only the selected shared runtime
+    // backends here; the production AllInOne modes below open their own durable
+    // WorkerDirectory through awaken-cli's canonical composition root.
+    awaken_coordinator::init_scenario_runtime(&deployment).await?;
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {
             awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")

@@ -308,16 +308,20 @@ async fn memory_operation(
     if !manifest_allows(guard.request(), &reference, request.operation.writes()) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if service
-        .validator
-        .validate_memory_binding(
-            &reference.workspace_id,
-            &reference.memory_store_id,
-            reference.config_version,
+    if let Err(error) = service.validator.validate_memory_binding(
+        &reference.workspace_id,
+        &reference.memory_store_id,
+        reference.config_version,
+    ) {
+        return (
+            StatusCode::CONFLICT,
+            Json(MemoryOperationResponse::Error {
+                error: MemoryWireError::Storage {
+                    message: error.to_string(),
+                },
+            }),
         )
-        .is_err()
-    {
-        return StatusCode::CONFLICT.into_response();
+            .into_response();
     }
 
     let result = match request.operation {
@@ -421,16 +425,21 @@ async fn send_operation(
         .send()
         .await
         .map_err(|error| MemErr::Storage(error.to_string()))?;
-    if response.status() != StatusCode::OK {
-        return Err(MemErr::Storage(format!(
-            "Memory authority returned HTTP {}",
-            response.status()
-        )));
-    }
+    let status = response.status();
     let body = response
         .text()
         .await
         .map_err(|error| MemErr::Storage(error.to_string()))?;
+    if status != StatusCode::OK {
+        if let Ok(MemoryOperationResponse::Error { error }) =
+            serde_json::from_str::<MemoryOperationResponse>(&body)
+        {
+            return Err(error.into());
+        }
+        return Err(MemErr::Storage(format!(
+            "Memory authority returned HTTP {status}; body={body}"
+        )));
+    }
     let response = serde_json::from_str::<MemoryOperationResponse>(&body).map_err(|error| {
         MemErr::Storage(format!(
             "decode Memory authority response: {error}; body={body}"

@@ -19,6 +19,7 @@ import { sqliteRun, sqliteScalar } from './sqlite.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 39774);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
+const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 const MARKER = 'RECOVERY-BINDING-OK';
 const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
@@ -77,9 +78,10 @@ function binding(storage: string, sessionId: string): Binding {
     path.join(storage, 'sessions.db'),
     `SELECT aggregate_json FROM managed_session WHERE session_id = '${escaped}'`,
   )));
-  const encoded = aggregate.environment_binding;
-  assert.ok(encoded, `Session ${sessionId} has a durable environment binding`);
-  return JSON.parse(encoded);
+  const environment = aggregate.environment;
+  assert.equal(environment?.phase, 'resident', `Session ${sessionId} is durably resident`);
+  assert.ok(environment.binding, `Session ${sessionId} has a durable environment binding`);
+  return JSON.parse(environment.binding);
 }
 
 function rewriteBinding(storage: string, sessionId: string, encoded: string): void {
@@ -89,7 +91,7 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
     database,
     `SELECT aggregate_json FROM managed_session WHERE session_id = '${id}'`,
   )));
-  aggregate.environment_binding = encoded;
+  aggregate.environment = { phase: 'resident', binding: encoded };
   const value = JSON.stringify(aggregate).replaceAll("'", "''");
   // Cause/effect graph / decision table for durable corruption injection:
   // C1=root aggregate exists; C2=environment binding is damaged; C3=legacy
@@ -97,8 +99,11 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
   // the aggregate is the sole authority and the old column is never dual-written.
   //
   // | Rule | aggregate binding | legacy column | recovery result |
-  // | A1   | valid             | stale/null    | adopt          |
-  // | A2   | corrupt           | any           | fail closed    |
+  // | A1   | valid + available | stale/null    | adopt           |
+  // | A2   | corrupt/foreign   | any           | fail closed     |
+  // | A3   | valid + unavailable| any          | fail closed     |
+  // A3 is distinct from a dispatch run explicitly pinned to
+  // RebuildFromCommittedTruth; Managed Session restoration promises continuity.
   assert.equal(
     Number(sqliteRun(
       database,
@@ -178,10 +183,12 @@ async function main(): Promise<void> {
     // fails before realization; published id + present resource -> the recovery
     // cases reach their intended Session-environment boundary.
     //
-    // | publication skill | Workspace skill | expected setup result |
-    // | delivered-container | absent       | reject              |
-    // | delivered-container | present      | realize container   |
+    // | skill beta | publication skill  | Workspace skill | setup result     |
+    // | absent     | any                | any             | reject route     |
+    // | present    | delivered-container| absent          | reject publish   |
+    // | present    | delivered-container| present         | realize container|
     await client.post('/v1/skills', {
+      headers: SKILL_HEADERS,
       body: {
         id: 'delivered-container',
         content: '---\ndescription: recovery fixture skill\n---\nRECOVERY-SKILL-OK',

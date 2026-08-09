@@ -380,6 +380,13 @@ pub struct K8sRuntime {
 /// role reads the `AWAKEN_MEMORY_*` env this plan injects below.
 const DEFAULT_MEMORYD_IMAGE: &str = "ghcr.io/awaken/memoryd:latest";
 
+/// Select the process-wide provider before any kube client is built. Workspace
+/// feature unification can compile both rustls providers, so relying on rustls'
+/// implicit selection is not deterministic.
+pub(crate) fn install_rustls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 impl K8sRuntime {
     /// Connect via in-cluster ServiceAccount or the ambient kubeconfig.
     pub async fn connect(
@@ -388,7 +395,7 @@ impl K8sRuntime {
     ) -> Result<Self, RuntimeError> {
         // kube's rustls client needs a process-level CryptoProvider; install ring
         // once (idempotent — a prior install by the host is fine).
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        install_rustls_crypto_provider();
         let client = Client::try_default().await.map_err(backend)?;
         Ok(Self {
             client,
@@ -451,7 +458,7 @@ impl K8sRuntime {
     /// real apiserver (exercised by the gated `k8s_it` integration test).
     #[cfg(test)]
     fn for_test(agent_addr: SocketAddr) -> Self {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        install_rustls_crypto_provider();
         let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
         let client = Client::try_from(config).expect("lazy kube client builds without a cluster");
         Self {
@@ -607,7 +614,7 @@ fn build_pod(
         // and later generations share the runtime-owned live projector. Other paths
         // keep the exact read-only subPath projection used by bwrap parity.
         for (i, bind) in content_binds(plan).iter().enumerate() {
-            if live_inputs::manages(bind) {
+            if crate::live_inputs::manages(bind) {
                 continue;
             }
             let vol = format!("cfg-{i}");
@@ -840,7 +847,7 @@ impl ContainerRuntime for K8sRuntime {
         // this immutable path and use the one stable live projector after readiness.
         let cms = self.configmaps();
         for (i, bind) in content_binds(plan).iter().enumerate() {
-            if live_inputs::manages(bind) {
+            if crate::live_inputs::manages(bind) {
                 continue;
             }
             let mut cm = build_configmap(
@@ -1148,7 +1155,10 @@ mod tests {
         // Registry emits an explicit BuildKit host policy; R3 the Job is rootless,
         // tokenless, no-retry, and ends before Coordinator's lease; R4 output is
         // recorded through the termination digest contract; R5 an unsafe Registry
-        // prefix is rejected before it can enter generated BuildKit configuration.
+        // prefix is rejected before it can enter generated BuildKit configuration;
+        // R6 ring+aws-lc feature unification => select the canonical ring provider
+        // before constructing the lazy kube client (no provider ambiguity panic).
+        install_rustls_crypto_provider();
         let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
         let client = Client::try_from(config).unwrap();
         let builder = K8sPackageImageProvisioner::new(

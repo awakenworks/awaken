@@ -1,4 +1,6 @@
 pub mod awaken_webhook
+pub use awaken_webhook::UrlRejected
+pub use awaken_webhook::validate_endpoint_url
 pub enum awaken_webhook::SignError
 pub awaken_webhook::SignError::MalformedSecret
 impl core::error::Error for awaken_webhook::SignError
@@ -8,13 +10,6 @@ pub enum awaken_webhook::SubscriptionFailureState
 pub awaken_webhook::SubscriptionFailureState::Active
 pub awaken_webhook::SubscriptionFailureState::Disabled
 pub awaken_webhook::SubscriptionFailureState::Removed
-pub enum awaken_webhook::UrlRejected
-pub awaken_webhook::UrlRejected::Malformed
-pub awaken_webhook::UrlRejected::NotHttps
-pub awaken_webhook::UrlRejected::PrivateHost
-impl core::error::Error for awaken_webhook::UrlRejected
-impl core::fmt::Display for awaken_webhook::UrlRejected
-pub fn awaken_webhook::UrlRejected::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_webhook::DispatchError
 pub awaken_webhook::DispatchError::message: alloc::string::String
 pub awaken_webhook::DispatchError::operation: &'static str
@@ -69,6 +64,5 @@ pub fn awaken_webhook::generate_secret_reference() -> alloc::string::String
 pub fn awaken_webhook::sign_bytes(&str, &str, i64, &str) -> core::result::Result<alloc::string::String, awaken_webhook::SignError>
 pub fn awaken_webhook::signature_header(&str, &str, i64, &str) -> core::result::Result<alloc::string::String, awaken_webhook::SignError>
 pub fn awaken_webhook::timestamp_within_tolerance(i64, i64, i64) -> bool
-pub fn awaken_webhook::validate_endpoint_url(&str) -> core::result::Result<(), awaken_webhook::UrlRejected>
 pub fn awaken_webhook::verify(&str, &str, i64, &str, &str) -> core::result::Result<bool, awaken_webhook::SignError>
 pub fn awaken_webhook::verify_fresh(&str, &str, i64, &str, &str, i64, i64) -> core::result::Result<bool, awaken_webhook::SignError>

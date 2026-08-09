@@ -54,7 +54,12 @@ function awakenBin() {
 }
 
 function startAwaken(bin, port, configPath, extraEnv = {}) {
-  const server = spawn(bin, ['all-in-one', '--config', configPath, '--port', String(port)], {
+  // This is a process-lifecycle test, not a browser-launch test. Keeping the
+  // product opener enabled can leave a desktop/browser descendant holding the
+  // harness PTY after Awaken itself has shut down and make a passing run hang.
+  const server = spawn(bin, [
+    'all-in-one', '--config', configPath, '--port', String(port), '--no-browser',
+  ], {
     env: { ...process.env, ...extraEnv },
     stdio: ['ignore', 'inherit', 'pipe'],
   });
@@ -349,8 +354,17 @@ async function main() {
     assert.ok(upstream.requests.length >= 1, 'the fake upstream received the configured-model call');
     console.log('ok: session used the snapshot-pinned endpoint despite a later catalog mutation');
 
-    // A fresh composition warm-installs the durable publication. It must retain
-    // the original snapshot pin rather than resolving the mutated catalog again.
+    // Restart/shutdown cause-effect graph: C1 the AllInOne Worker owns an active
+    // registry generation; C2 SIGINT requests process shutdown; C3 Control stays
+    // reachable through Worker drain/quiesce/deregister. C1+C2+C3 -> E1 the
+    // immediate replacement registers a new generation and becomes ready. If C3
+    // is false, the stale generation fences replacement and readiness times out.
+    //
+    // | Rule | C1 active Worker | C2 SIGINT | C3 Control through deregister | E1 restart ready |
+    // | R1   | T                | T         | T                            | T                |
+    //
+    // The fresh composition also warm-installs the durable publication. It must
+    // retain the original snapshot pin rather than resolving the mutated catalog.
     await h.stop();
     h = startAwaken(bin, PORT, configPath, serverEnv);
     base = h.baseUrl;

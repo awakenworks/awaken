@@ -144,7 +144,7 @@ impl crate::host::SharedHost {
         if self.backend_owned_session_provider.is_none() {
             let provider =
                 crate::session_environment::SessionEnvironmentProvider::workdir_with_agent_stderr(
-                    acp_sandbox_base(&self.deployment).join("backend-owned"),
+                    session_sandbox_base(&self.deployment).join("backend-owned"),
                     self.deployment.sandbox.inherit_agent_stderr,
                 );
             if let Some(mounter) = self.memory_mounter() {
@@ -181,7 +181,7 @@ impl crate::host::SharedHost {
                 None => self,
             };
         };
-        let base = acp_sandbox_base(&deployment);
+        let base = session_sandbox_base(&deployment);
         let credentials = credentials.unwrap_or_else(|| {
             panic!("configured ACP CLIs require persisted credential materialization stores")
         });
@@ -225,7 +225,7 @@ impl crate::host::SharedHost {
             return self;
         }
         let deployment = self.deployment.clone();
-        let base = acp_sandbox_base(&deployment);
+        let base = session_sandbox_base(&deployment);
         let tier = crate::resolve_sandbox_tier(
             deployment.sandbox_tier,
             deployment.sandbox.allow_local_fallback,
@@ -324,20 +324,31 @@ impl crate::host::SharedHost {
     }
 
     /// Stage the exact backend copied from the frozen Session baseline. This is a
-    /// realization cache, not another selection API.
+    /// realization cache, not another selection API. `default` is the canonical
+    /// Native absence and therefore must not create a redundant second authority
+    /// beside the immutable publication/host executor.
     pub(crate) fn register_thread_backend_projection(&self, thread: &str, backend_ref: &str) {
         self.session_slots.update(thread, |slot| {
-            slot.backend_ref = Some(backend_ref.to_string());
+            slot.backend_ref = (backend_ref != "default").then(|| backend_ref.to_string());
         });
     }
 }
 
 /// The base dir the ACP sandbox roots and per-thread config homes live under
 /// (`AWAKEN_SANDBOX_DIR`), or a per-process temp dir when unset.
-fn acp_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::PathBuf {
-    deployment.sandbox_dir.clone().unwrap_or_else(|| {
-        std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
-    })
+pub(crate) fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std::path::PathBuf {
+    deployment
+        .sandbox_dir
+        .clone()
+        .or_else(|| {
+            deployment
+                .storage_dir
+                .as_ref()
+                .map(|storage| storage.join("sandboxes"))
+        })
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
+        })
 }
 
 #[cfg(test)]
@@ -346,6 +357,39 @@ mod tests {
     use crate::host::SharedHost;
 
     struct NoLlm;
+
+    #[test]
+    fn session_sandbox_root_has_one_precedence_for_build_and_tier_selection() {
+        // Cause/effect graph: C1=explicit sandbox root; C2=durable runtime root.
+        // Effects: E1=use explicit operator root; E2=derive stable sandboxes
+        // below runtime storage; E3=use process-temporary root only for a fully
+        // ephemeral host. Constraint: C1 has precedence over C2.
+        //
+        // Decision table: S1 C1+C2=>E1; S2 !C1+C2=>E2; S3 !C1+!C2=>E3.
+        let mut deployment = crate::DeploymentConfig::ephemeral();
+        deployment.storage_dir = Some("/durable/runtime".into());
+        deployment.sandbox_dir = Some("/operator/sandboxes".into());
+        assert_eq!(
+            session_sandbox_base(&deployment),
+            std::path::PathBuf::from("/operator/sandboxes"),
+            "S1"
+        );
+
+        deployment.sandbox_dir = None;
+        assert_eq!(
+            session_sandbox_base(&deployment),
+            std::path::PathBuf::from("/durable/runtime/sandboxes"),
+            "S2"
+        );
+
+        deployment.storage_dir = None;
+        assert!(
+            session_sandbox_base(&deployment)
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("awaken-acp-sbx-")),
+            "S3"
+        );
+    }
     #[async_trait::async_trait]
     impl awaken_runtime_contract::llm::LlmExecutor for NoLlm {
         async fn infer(

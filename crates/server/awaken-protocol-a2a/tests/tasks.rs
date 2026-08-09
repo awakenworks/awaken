@@ -210,8 +210,10 @@ impl RunApplication for ClientToolRuntime {
 
 #[tokio::test]
 async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
-    // A message on a context awaiting on a client-executed tool is delivered as that
-    // tool's result (not read as an approval): the router's `ClientResult` branch.
+    // Cause/effect graph for the shared send driver: C1 the context is pending;
+    // C2 transport is request/response (C3 is streaming); C4 the pending tool is
+    // client-executed. Effects: E1 call resume, E2 never start a new run, E3 carry
+    // the exact text as ClientResult. Decision rule R1=C1,C2,C4 -> E1,E2,E3.
     let delivered = Arc::new(Mutex::new(None));
     let app = router(Arc::new(ClientToolRuntime {
         delivered: delivered.clone(),
@@ -239,6 +241,50 @@ async fn message_send_delivers_the_text_as_the_client_tool_result_on_resume() {
     let r: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
     assert_eq!(delivered.lock().unwrap().as_deref(), Some("42"));
+}
+
+#[tokio::test]
+async fn message_stream_on_an_awaiting_context_uses_the_same_resume_driver() {
+    // Same graph as R1 above. R2=C1,C3,C4 -> E1,E2,E3 plus one terminal SSE
+    // status. R3=!C1,C3 -> run_streaming is covered by the SDK streaming tests.
+    // Together R1/R2 pin transport parity and prevent a second send path from
+    // silently turning a resume message into a fresh Run.
+    let delivered = Arc::new(Mutex::new(None));
+    let app = router(Arc::new(ClientToolRuntime {
+        delivered: delivered.clone(),
+    }));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/a2a")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "method": "message/stream",
+                        "params": { "message": { "kind": "message", "messageId": "m2", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "streamed 42" }] } }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let frames = String::from_utf8(bytes.to_vec()).unwrap();
+    let terminal = frames
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .next_back()
+        .expect("stream has a terminal frame");
+    assert_eq!(
+        terminal["result"]["status"]["state"], "completed",
+        "{frames}"
+    );
+    assert_eq!(delivered.lock().unwrap().as_deref(), Some("streamed 42"));
 }
 
 #[tokio::test]

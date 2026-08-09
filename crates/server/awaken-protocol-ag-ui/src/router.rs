@@ -216,7 +216,7 @@ fn stream_turn(
         }
         let close = match turn.await {
             Ok(Ok(outcome)) => transcoder.complete(&outcome),
-            Ok(Err(err)) => transcoder.fail(driver_error_message(err)),
+            Ok(Err(err)) => transcoder.fail_with_code(err.code, err.message),
             Err(_) => transcoder.fail("turn task cancelled"),
         };
         for event in close {
@@ -310,7 +310,6 @@ fn error_events(
     err: RunApplicationError,
     started: bool,
 ) -> Vec<AgUiEvent> {
-    let message = driver_error_message(err);
     let mut out = Vec::new();
     if !started {
         out.push(AgUiEvent::RunStarted {
@@ -318,12 +317,8 @@ fn error_events(
             run_id: run_id.to_string(),
         });
     }
-    out.push(AgUiEvent::error(message));
+    out.push(AgUiEvent::classified_error(err.code, err.message));
     out
-}
-
-fn driver_error_message(err: RunApplicationError) -> String {
-    err.message
 }
 
 /// A run bracketed by `RUN_STARTED` / `RUN_ERROR` for a non-streaming failure.

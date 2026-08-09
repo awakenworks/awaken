@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync as rawExecFileSync, execSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
+import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { REPO_ROOT } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
@@ -115,6 +116,7 @@ async function exerciseContainerEnvironment(
   const realizedContainers = [];
   const attempts = proveImageReuse ? 2 : 1;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const containersBefore = new Set(testContainerNames());
     const session = await client.beta.sessions.create({
       agent: 'namespace-agent',
       environment_id: environment.id,
@@ -143,8 +145,13 @@ async function exerciseContainerEnvironment(
         `${name} must run the containerized agent: ${JSON.stringify(events)}`,
       );
       if (proveImageReuse || proofCommands.length > 0) {
+        // Container ownership cause/effect rule: C1 any unrelated pre-existing
+        // test containers + C2 one successful Session realization => E1 exactly
+        // one new container. Use the observable set delta; the runtime's opaque,
+        // collision-safe name is not an API contract and must not be reimplemented
+        // here as a suffix assumption.
         const names = testContainerNames()
-          .filter((candidate) => candidate.endsWith(`-${session.id}`));
+          .filter((candidate) => !containersBefore.has(candidate));
         assert.equal(names.length, 1, `${name} session must own one fresh container: ${names}`);
         for (const command of proofCommands) {
           execFileSync(ENGINE, ['exec', names[0], 'sh', '-lc', command], { encoding: 'utf8' });
@@ -351,13 +358,20 @@ function testContainerNames({ all = false } = {}) {
 }
 
 function testContainerImage(image) {
-  return image === IMAGE
-    || image === PACKAGE_BASE_IMAGE
-    || image.startsWith('awaken-packages:')
+  // Engine display decision table: Docker preserves an unqualified local tag;
+  // Podman renders that same local store tag with its implicit `localhost/`
+  // registry. Normalize only that Podman-owned prefix; explicit registries and
+  // immutable digest references remain exact evidence.
+  const displayed = ENGINE === 'podman' && image.startsWith('localhost/')
+    ? image.slice('localhost/'.length)
+    : image;
+  return displayed === IMAGE
+    || displayed === PACKAGE_BASE_IMAGE
+    || displayed.startsWith('awaken-packages:')
     // Docker's `ps --format {{.Image}}` drops the digest for containers created
     // from a registry digest even though inspect retains the immutable reference.
-    || image.endsWith('/awaken-packages')
-    || image.includes('/awaken-packages@sha256:');
+    || displayed.endsWith('/awaken-packages')
+    || displayed.includes('/awaken-packages@sha256:');
 }
 
 function cleanupTestContainers() {
@@ -372,14 +386,11 @@ function cleanupTestContainers() {
 // fixed launch input (read from AWAKEN_ACP_ARGV only by the scenario host).
 // The image still contains the real `awaken-sandbox hand --stdio` binary.
 function ensureSessionImage() {
-  const existing = spawnSync(ENGINE, [
-    'image', 'inspect', '--format', '{{index .Config.Labels "org.awaken.environment-packages"}}', IMAGE,
-  ], { encoding: 'utf8', timeout: ENGINE_TIMEOUT_MS });
-  if (existing.status === 0 && existing.stdout.trim() === '1') return;
-  execFileSync('bash', ['deploy/images/sandbox/build.sh', IMAGE, ''], {
-    cwd: REPO_ROOT,
-    env: { ...process.env, CONTAINER_ENGINE: ENGINE },
-    stdio: 'inherit',
+  ensureCanonicalSandboxImage({
+    engine: ENGINE,
+    image: IMAGE,
+    repoRoot: REPO_ROOT,
+    timeoutMs: ENGINE_TIMEOUT_MS,
   });
 }
 
@@ -565,6 +576,18 @@ async function main() {
       file: await toFile(Buffer.from('CONTAINER-FILE-OK'), 'input.txt'),
       betas: BETAS,
     });
+    // Memory projection cause/effect graph:
+    // C1 container tier + C2 host FUSE available -> E1 force portable copy-bind;
+    // C3 seeded store -> E2 hydrate bytes before launch; C4 writable agent edit +
+    // C5 Session release -> E3 harvest once into durable store. C4 without C5
+    // must not make a read API acquire the release side effect.
+    //
+    // | Rule | container | host FUSE | seed | edit | release | expected effect        |
+    // | M1   | yes       | yes/none  | yes  | no   | no      | create + hydrate       |
+    // | M2   | yes       | yes/none  | yes  | yes  | yes     | harvest durable edit   |
+    // | M3   | yes       | yes/none  | yes  | yes  | no      | no read-side harvest   |
+    // M1 is observed by the in-container seed assertion; M2 by the post-delete
+    // repository assertion. The delete boundary between them excludes M3.
     const memory = await client.post('/v1/memory_stores', { headers: MEMORY_HEADERS });
     await client.post(`/v1/memory_stores/${memory.id}/memories`, {
       body: { path: '/seed.txt', content: 'CONTAINER-MEMORY-SEED' },
@@ -608,7 +631,7 @@ async function main() {
     assert.equal(containers.length, 1, 'the Session must own one shared container, not one per attempt');
     const container = containers[0];
     assert.equal(
-      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/workspace/input.txt'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/mnt/session/uploads/workspace/input.txt'], {
         encoding: 'utf8',
       }),
       'CONTAINER-FILE-OK',
@@ -655,7 +678,7 @@ async function main() {
       betas: BETAS,
     }));
     assert.equal(
-      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/workspace/live.txt'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/mnt/session/uploads/workspace/live.txt'], {
         encoding: 'utf8',
       }),
       'CONTAINER-LIVE-FILE-OK',
@@ -677,10 +700,10 @@ async function main() {
       container,
       'sh',
       '-c',
-      'test ! -e /workspace/.mnt/workspace/live.txt',
+      'test ! -e /mnt/session/uploads/workspace/live.txt',
     ]);
     assert.equal(
-      execFileSync(ENGINE, ['exec', container, 'cat', '/workspace/.mnt/workspace/renamed.txt'], {
+      execFileSync(ENGINE, ['exec', container, 'cat', '/mnt/session/uploads/workspace/renamed.txt'], {
         encoding: 'utf8',
       }),
       'CONTAINER-LIVE-FILE-OK',
@@ -696,7 +719,7 @@ async function main() {
       container,
       'sh',
       '-c',
-      'test ! -e /workspace/.mnt/workspace/live.txt && test ! -e /workspace/.mnt/workspace/renamed.txt',
+      'test ! -e /mnt/session/uploads/workspace/live.txt && test ! -e /mnt/session/uploads/workspace/renamed.txt',
     ]);
 
     // A hard brain crash must retain the Session-owned environment. The replacement
@@ -737,11 +760,6 @@ async function main() {
       '-c',
       'printf %s CONTAINER-ARTIFACT-OK > /outputs/result.txt',
     ]);
-    const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
-    const artifact = artifacts.data.find((entry) => entry.filename === 'result.txt');
-    assert.ok(artifact, `container output must project through the files API: ${JSON.stringify(artifacts)}`);
-    const artifactContent = await client.beta.files.download(artifact.id, { betas: BETAS });
-    assert.equal(await artifactContent.text(), 'CONTAINER-ARTIFACT-OK');
 
     execFileSync(ENGINE, [
       'exec',
@@ -752,8 +770,18 @@ async function main() {
     ]);
     // Copy-backed MemoryRepository mounts reconcile only at the Session's terminal
     // release edge. Read-only resource APIs must never acquire this write side effect.
+    // Output cause/effect decision table: O1 live Session + output present => no
+    // Files API side effect; O2 terminal release + output present => harvest before
+    // sandbox disposal; O3 retry of the same terminal release => same content-id,
+    // no duplicate File. This E2E covers O2 and relies on the Rust idempotency test
+    // for O3; querying only after delete keeps the read plane side-effect free (O1).
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     assert.equal(testContainers({ all: true }).length, 0, 'Session release must reap its container');
+    const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
+    const artifact = artifacts.data.find((entry) => entry.filename === 'result.txt');
+    assert.ok(artifact, `terminal release must harvest container output: ${JSON.stringify(artifacts)}`);
+    const artifactContent = await client.beta.files.download(artifact.id, { betas: BETAS });
+    assert.equal(await artifactContent.text(), 'CONTAINER-ARTIFACT-OK');
     const harvested = await client.get(`/v1/memory_stores/${memory.id}/memories?view=full`, {
       headers: MEMORY_HEADERS,
     });

@@ -94,6 +94,7 @@ async function main() {
       });
       assert.equal(mem.type, 'memory');
       assert.equal(mem.path, '/notes.md');
+      assert.equal(mem.content, null, 'create defaults to the basic projection');
       assert.ok(mem.content_sha256.length === 64, 'content_sha256 is a 64-char hex digest');
       assert.equal(mem.content_size_bytes, 5);
       pass('beta.memoryStores.memories.create -> BetaManagedAgentsMemory');
@@ -103,6 +104,13 @@ async function main() {
         betas: BETAS,
       });
       assert.equal(gotMem.id, mem.id);
+      assert.equal(gotMem.content, 'first', 'retrieve defaults to the full projection');
+      const gotMemBasic = await client.beta.memoryStores.memories.retrieve(mem.id, {
+        memory_store_id: store.id,
+        view: 'basic',
+        betas: BETAS,
+      });
+      assert.equal(gotMemBasic.content, null, 'explicit basic retrieve elides content');
 
       // Update with a stale precondition -> 409, then with the correct one.
       await assert.rejects(
@@ -117,6 +125,7 @@ async function main() {
       );
       const upMem = await client.beta.memoryStores.memories.update(mem.id, {
         memory_store_id: store.id,
+        view: 'full',
         content: 'second',
         precondition: { type: 'content_sha256', content_sha256: mem.content_sha256 },
         betas: BETAS,
@@ -163,6 +172,7 @@ async function main() {
       const versions = await drain(client.beta.memoryStores.memoryVersions.list(store.id, { betas: BETAS }));
       const ops = versions.map((v) => v.operation);
       assert.ok(ops.includes('created') && ops.includes('modified'), `ops: ${ops}`);
+      assert.ok(versions.every((v) => v.content === null), 'version list defaults to basic');
       pass(`beta.memoryStores.memoryVersions.list -> ${versions.length} versions`);
 
       const firstVer = versions[0];
@@ -171,6 +181,7 @@ async function main() {
         betas: BETAS,
       });
       assert.equal(gotVer.id, firstVer.id);
+      assert.equal(gotVer.content, 'first', 'version retrieve defaults to full');
 
       const redacted = await client.beta.memoryStores.memoryVersions.redact(firstVer.id, {
         memory_store_id: store.id,

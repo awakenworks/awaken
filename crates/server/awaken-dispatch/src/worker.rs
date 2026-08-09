@@ -34,7 +34,9 @@ use tracing::Instrument;
 use crate::Error;
 use crate::clock::{Clock, SystemClock};
 use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
-use crate::dispatch::{Claimed, Dispatch, DispatchOutcome, PendingInput, RunClaim, SettleOutcome};
+use crate::dispatch::{
+    Claimed, Dispatch, DispatchOutcome, DispatchState, PendingInput, RunClaim, SettleOutcome,
+};
 use crate::worker_context::WorkerContext;
 
 /// Default lease: how long a claimed dispatch is owned before it is reclaimable.
@@ -952,6 +954,81 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             }
             _ => Err(err.into()),
         }
+    }
+
+    /// Reconcile one quiescent awaiting dispatch or expired running lease whose
+    /// committed Run is already terminal. The committed reader is checked before
+    /// the special claim, and
+    /// [`settle_claimed_terminal`](Self::settle_claimed_terminal) checks it again
+    /// under that claim before reusing the ordinary fenced Done settlement and
+    /// completion tombstone.
+    pub async fn reconcile_committed_terminal(
+        &self,
+        run_id: &RunId,
+        now_ms: u64,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        if !matches!(self.reader.run_state(run_id), Some(RunState::Ended(_))) {
+            return Ok(None);
+        }
+        let Some(claimed) = self
+            .store
+            .claim_for_terminal_recovery(run_id, &self.owner, self.lease_ms, now_ms)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.settle_claimed_terminal(claimed).await
+    }
+
+    /// Bounded scan used by both the per-Session daemon and process pool host
+    /// adapter. Rows outside this Worker's committed reader naturally return no
+    /// state, so one implementation owns selection and settlement semantics.
+    pub async fn reconcile_committed_terminals(
+        &self,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<(RunId, RunState)>, Error> {
+        let rows = self.store.list_dispatches().await?;
+        let mut processed = Vec::new();
+        for row in rows
+            .into_iter()
+            .filter(|row| matches!(row.state, DispatchState::Awaiting | DispatchState::Leased))
+        {
+            if processed.len() >= limit {
+                break;
+            }
+            if let Some(terminal) = self
+                .reconcile_committed_terminal(&row.run_id, now_ms)
+                .await?
+            {
+                processed.push(terminal);
+            }
+        }
+        Ok(processed)
+    }
+
+    /// Complete a terminal-recovery claim without executing the Run. If the
+    /// caller raced stale or incorrect read evidence, restore the row to
+    /// Awaiting; only exact committed `Ended` truth can reach Done.
+    pub async fn settle_claimed_terminal(
+        &self,
+        claimed: Claimed,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let run_id = claimed.lease.run_id.clone();
+        let epoch = claimed.lease.epoch;
+        let Some(state @ RunState::Ended(_)) = self.reader.run_state(&run_id) else {
+            let _ = self
+                .settle(&run_id, epoch, DispatchOutcome::Awaiting, &[])
+                .await?;
+            return Ok(None);
+        };
+        let thread_id = claimed.request.thread_id().clone();
+        self.redeliver_terminal_observers(&run_id, &thread_id).await;
+        Ok(self
+            .settle(&run_id, epoch, DispatchOutcome::Done, &[])
+            .await?
+            .applied()
+            .then_some((run_id, state)))
     }
 
     async fn redeliver_terminal_observers(&self, run_id: &RunId, thread_id: &ThreadId) {

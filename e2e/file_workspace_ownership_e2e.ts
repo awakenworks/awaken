@@ -1,6 +1,7 @@
-// Content-addressed file bytes are shared, but ownership is workspace-scoped.
-// Drive the durable SQLite ownership projection through IAM and the public Files
-// API with two real workspace tokens.
+// Logical File identity and ownership are workspace-scoped. Drive the durable
+// SQLite ownership projection through IAM and the public Files API with two real
+// workspace tokens. Physical content deduplication belongs to FileStore and is
+// covered by the resource-reclamation E2E rather than duplicated here.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -72,20 +73,36 @@ async function main(): Promise<void> {
 
     const fileA = await upload(baseUrl, tokenA, 'same-content-across-workspaces');
     const fileB = await upload(baseUrl, tokenB, 'same-content-across-workspaces');
-    assert.equal(fileB, fileA, 'content identity is tenant-neutral');
+
+    // Workspace ownership decision table:
+    // C1 caller owns the logical File, C2 another Workspace uploaded equal bytes,
+    // C3 owner A has deleted its File. Effects are E1 authorized reads succeed,
+    // E2 cross-Workspace reads fail closed, E3 equal bytes retain distinct logical
+    // identities, and E4 deleting A does not revoke B.
+    //
+    // | Rule | C1 owns | C2 equal bytes elsewhere | C3 A deleted | Effect |
+    // |---|---|---|---|---|
+    // | D1 | T | T | F | E1 + E3 |
+    // | D2 | F | T | F | E2 |
+    // | D3 | T(B) | T | T | E4 |
+    assert.notEqual(fileB, fileA, 'equal bytes keep distinct workspace-owned logical identities');
+    assert.equal((await request(baseUrl, 'GET', `/v1/files/${fileA}`, tokenA)).status, 200, 'D1');
+    assert.equal((await request(baseUrl, 'GET', `/v1/files/${fileB}`, tokenB)).status, 200, 'D1');
+    assert.equal((await request(baseUrl, 'GET', `/v1/files/${fileA}`, tokenB)).status, 404, 'D2');
+    assert.equal((await request(baseUrl, 'GET', `/v1/files/${fileB}`, tokenA)).status, 404, 'D2');
 
     const deleteA = await request(baseUrl, 'DELETE', `/v1/files/${fileA}`, tokenA);
     assert.equal(deleteA.status, 200, deleteA.text);
     assert.equal((await request(baseUrl, 'GET', `/v1/files/${fileB}`, tokenB)).status, 200);
     assert.equal((await request(baseUrl, 'GET', `/v1/files/${fileA}`, tokenA)).status, 404);
-    pass('revoking one durable owner preserves bytes and the other workspace owner');
+    pass('revoking one durable owner preserves the other workspace logical File');
 
     const duplicateDelete = await request(baseUrl, 'DELETE', `/v1/files/${fileA}`, tokenA);
     assert.equal(duplicateDelete.status, 404, duplicateDelete.text);
     const deleteB = await request(baseUrl, 'DELETE', `/v1/files/${fileB}`, tokenB);
     assert.equal(deleteB.status, 200, deleteB.text);
     assert.equal((await request(baseUrl, 'GET', `/v1/files/${fileB}`, tokenB)).status, 404);
-    pass('last-owner deletion removes the shared blob and duplicate revoke fails closed');
+    pass('each workspace can revoke only its own logical File; duplicate revoke fails closed');
 
     console.log('FILE WORKSPACE OWNERSHIP TS API E2E PASS.');
   } finally {

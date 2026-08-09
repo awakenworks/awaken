@@ -452,6 +452,19 @@ pub(crate) fn provision_repo_at(
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
 ) -> Result<(), SandboxError> {
     let dest = jailed_at(root, logical)?;
+    match std::fs::symlink_metadata(&dest) {
+        Ok(_) if realized_repository_matches(&dest, url, initial_branch, initial_commit) => {
+            return Ok(());
+        }
+        Ok(_) => {
+            return Err(SandboxError(format!(
+                "repository destination `{}` already exists with a different realization",
+                dest.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(SandboxError(error.to_string())),
+    }
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| SandboxError(e.to_string()))?;
     }
@@ -474,6 +487,37 @@ pub(crate) fn provision_repo_at(
     // The committer identity is the AGENT's to set (its own name/email on its own commits),
     // not provision's — a harvest can neither author a meaningful message nor a real user.
     Ok(())
+}
+
+fn realized_repository_matches(
+    destination: &Path,
+    url: &str,
+    initial_branch: Option<&str>,
+    initial_commit: Option<&str>,
+) -> bool {
+    if !git_stdout(Some(destination), &["remote", "get-url", "origin"])
+        .is_ok_and(|actual| actual.trim() == url)
+    {
+        return false;
+    }
+    if initial_branch.is_some_and(|expected| {
+        !git_stdout(Some(destination), &["symbolic-ref", "--short", "HEAD"])
+            .is_ok_and(|actual| actual.trim() == expected)
+    }) {
+        return false;
+    }
+    if let Some(expected) = initial_commit {
+        let Ok(actual) = git_stdout(Some(destination), &["rev-parse", "HEAD"]) else {
+            return false;
+        };
+        let Ok(expected) = git_stdout(Some(destination), &["rev-parse", expected]) else {
+            return false;
+        };
+        if actual.trim() != expected.trim() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Push the repo at `<root>/<logical>` to its origin **host-side** (ADR-0038 write-back).

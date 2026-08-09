@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import { spawnProduction, stopServer, waitForPort, waitForValue } from './harness.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -187,14 +187,14 @@ function persistInconsistentRelease(database, sessionId) {
 function repositoryRecord(database, id) {
   const rows = sqliteRows(
     database,
-    `SELECT data FROM admin_resource_catalog WHERE kind='repository' AND id=${sqlQuote(id)}`,
+    `SELECT data FROM resource_catalog_entry WHERE kind='repository' AND id=${sqlQuote(id)}`,
   );
   assert.equal(rows.length, 1, `missing Repository aggregate ${id}`);
   return rows[0].data;
 }
 
 function receipts(directory) {
-  const database = path.join(directory, 'resource-lifecycle.db');
+  const database = path.join(directory, 'resources.db');
   if (!fs.existsSync(database)) return [];
   return sqliteRows(database, 'SELECT data FROM resource_lifecycle_purge_intents')
     .map((row) => JSON.parse(row.data));
@@ -216,8 +216,9 @@ async function waitRepositoryReceipt(directory, resourceId) {
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-activation-recovery-'));
   const sessionsDatabase = path.join(directory, 'sessions.db');
-  const adminDatabase = path.join(directory, 'admin.db');
-  const lifecycleDatabase = path.join(directory, 'resource-lifecycle.db');
+  // Resource Catalog and lifecycle are independently migrated aggregates owned
+  // by the one Resources component and persisted in its one database.
+  const resourceDatabase = path.join(directory, 'resources.db');
   let server = start(directory);
   try {
     await ready();
@@ -297,24 +298,24 @@ async function main() {
     const purgeSchedule = cleanupCases.find((entry) => entry.name === 'purge-schedule');
     const catalogWrite = cleanupCases.find((entry) => entry.name === 'catalog-write');
     const alreadyGone = cleanupCases.find((entry) => entry.name === 'already-gone');
-    const catalogReadRecord = repositoryRecord(adminDatabase, catalogRead.repositoryId);
+    const catalogReadRecord = repositoryRecord(resourceDatabase, catalogRead.repositoryId);
     sqlite(
-      adminDatabase,
+      resourceDatabase,
       `
-        UPDATE admin_resource_catalog SET data='{broken-repository-aggregate'
+        UPDATE resource_catalog_entry SET data='{broken-repository-aggregate'
           WHERE kind='repository' AND id=${sqlQuote(catalogRead.repositoryId)};
         CREATE TRIGGER reject_repository_state_update
-          BEFORE UPDATE ON admin_resource_catalog
+          BEFORE UPDATE ON resource_catalog_entry
           WHEN OLD.kind='repository' AND OLD.id=${sqlQuote(catalogWrite.repositoryId)}
         BEGIN
           SELECT RAISE(ABORT, 'injected Repository lifecycle write failure');
         END;
-        DELETE FROM admin_resource_catalog
+        DELETE FROM resource_catalog_entry
           WHERE kind='repository' AND id=${sqlQuote(alreadyGone.repositoryId)};
       `,
     );
     sqlite(
-      lifecycleDatabase,
+      resourceDatabase,
       `
         CREATE TRIGGER reject_repository_purge_schedule
           BEFORE INSERT ON resource_lifecycle_purge_intents
@@ -328,7 +329,27 @@ async function main() {
     server = start(directory);
     await ready();
 
-    const recovered = sessionRow(sessionsDatabase, recovering.body.id);
+    // Cause/effect graph: listener readiness starts one authoritative background
+    // realization supervisor; it does not imply that durable recovery has
+    // completed. A Prepared generation (C1) therefore remains pending until the
+    // supervisor realizes it (E1), while a terminal Releasing generation (C2)
+    // remains fenced until teardown completes (E2).
+    //
+    // Decision table:
+    // | Rule | durable state | HTTP ready | required observation             |
+    // | R1   | Prepared      | yes        | wait for Active + no pending     |
+    // | R2   | Releasing     | yes        | wait for Released                |
+    // | R3   | faulted edge  | yes        | remains Releasing until repaired |
+    //
+    // The bounded durable-state waits cover R1/R2 without creating a second
+    // readiness contract or racing the sole supervisor.
+    const recovered = await waitForValue(
+      () => sessionRow(sessionsDatabase, recovering.body.id),
+      (row) => row.resources.pending === undefined
+        && row.resources.activations.map((activation) => activation.state).join(',')
+          === 'released,active',
+      'prepared resource generation did not recover',
+    );
     assert.equal(recovered.status, 'idle');
     assert.equal(recovered.resources.pending, undefined);
     assert.deepEqual(
@@ -341,7 +362,10 @@ async function main() {
     // Legacy resource state stored only the resolved manifest. The durable
     // live-inbox ingress reads the same Session aggregate after restart,
     // realizes that manifest, and upgrades it to the activation state machine.
-    const legacyLookup = await json('GET', scoped(`sessions/${legacy.body.id}/live-inbox`));
+    const legacyLookup = await json(
+      'GET',
+      `http://127.0.0.1:${PORT}/v1/awaken/sessions/${legacy.body.id}/live-inbox`,
+    );
     assert.equal(legacyLookup.status, 200);
     const upgraded = sessionRow(sessionsDatabase, legacy.body.id);
     assert.equal(upgraded.status, 'idle');
@@ -352,7 +376,12 @@ async function main() {
     assert.equal(upgraded.resources.activations[0].attempts, 1);
     assert.equal(upgraded.resources.activations[0].last_error, undefined);
 
-    const released = sessionRow(sessionsDatabase, terminating.body.id);
+    const released = await waitForValue(
+      () => sessionRow(sessionsDatabase, terminating.body.id),
+      (row) => row.resources.pending === undefined
+        && row.resources.activations.every((activation) => activation.state === 'released'),
+      'terminal resource generation did not release',
+    );
     assert.equal(released.status, 'terminated');
     assert.equal(released.resources.pending, undefined);
     assert.ok(released.resources.activations.every((activation) => activation.state === 'released'));
@@ -377,10 +406,11 @@ async function main() {
         cleanup.name,
       );
     }
-    assert.ok(
-      sessionRow(sessionsDatabase, alreadyGone.sessionId).resources.activations.every(
-        (activation) => activation.state === 'released',
-      ),
+    await waitForValue(
+      () => sessionRow(sessionsDatabase, alreadyGone.sessionId),
+      (row) => row.resources.activations.every(
+        (activation) => activation.state === 'released'),
+      'already-absent Repository did not converge to Released',
     );
 
     // Repair only the failed durable dependencies. The next process must finish
@@ -401,22 +431,24 @@ async function main() {
       repairedInconsistent.resources,
     );
     sqlite(
-      adminDatabase,
+      resourceDatabase,
       `
-        UPDATE admin_resource_catalog SET data=${sqlQuote(catalogReadRecord)}
+        UPDATE resource_catalog_entry SET data=${sqlQuote(catalogReadRecord)}
           WHERE kind='repository' AND id=${sqlQuote(catalogRead.repositoryId)};
         DROP TRIGGER reject_repository_state_update;
       `,
     );
-    sqlite(lifecycleDatabase, 'DROP TRIGGER reject_repository_purge_schedule;');
+    sqlite(resourceDatabase, 'DROP TRIGGER reject_repository_purge_schedule;');
     server = start(directory);
     await ready();
     for (const cleanup of cleanupCases.filter((entry) => entry.name !== 'already-gone')) {
-      const settled = sessionRow(sessionsDatabase, cleanup.sessionId);
-      assert.ok(
-        settled.resources.activations.every((activation) => activation.state === 'released'),
-        cleanup.name,
+      const settled = await waitForValue(
+        () => sessionRow(sessionsDatabase, cleanup.sessionId),
+        (row) => row.resources.activations.every(
+          (activation) => activation.state === 'released'),
+        `${cleanup.name} cleanup did not settle after dependency repair`,
       );
+      assert.equal(settled.status, 'terminated', cleanup.name);
       assert.equal(
         (await waitRepositoryReceipt(directory, cleanup.repositoryId))
           .receipt.evidence.local_realizations_deleted,

@@ -33,6 +33,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { generateKeyPairSync, sign } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import { closeHttpServer } from './http_server.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { deploymentEnv, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
@@ -242,7 +243,7 @@ async function startIamFixture() {
     decide(value) { decision = value; },
     failNextReadiness(status, code) { readinessFailures.push({ status, code }); },
     setCloudModels(value) { cloudModels = value; },
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => closeHttpServer(server),
   };
 }
 

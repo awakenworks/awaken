@@ -283,7 +283,24 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     /// Reclaim and re-run any dispatch whose lease expired (crash recovery), plus
     /// any work that became runnable. Returns each processed run and its state.
     pub async fn recover(&self, now_ms: u64) -> Result<Vec<(RunId, RunState)>, Error> {
-        self.worker.run_until_idle(now_ms).await
+        let mut processed = self.reconcile_committed_terminals(now_ms, 256).await?;
+        processed.extend(self.worker.run_until_idle(now_ms).await?);
+        Ok(processed)
+    }
+
+    /// Repair quiescent awaiting delivery rows and expired running leases whose
+    /// matching committed Run is already terminal. This is bounded maintenance
+    /// over the queue's operational projection; the worker's committed reader
+    /// remains the only outcome authority and every repair uses the ordinary
+    /// fenced settlement.
+    pub async fn reconcile_committed_terminals(
+        &self,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<(RunId, RunState)>, Error> {
+        self.worker
+            .reconcile_committed_terminals(now_ms, limit)
+            .await
     }
 
     /// Stage a cross-thread delivery to another thread's awaiting run (M3b). It is

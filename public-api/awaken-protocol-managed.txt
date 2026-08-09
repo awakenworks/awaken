@@ -26,7 +26,7 @@ pub fn awaken_protocol_managed::project::agent_skills(&awaken_session_contract::
 pub fn awaken_protocol_managed::project::agent_tools(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
 pub fn awaken_protocol_managed::project::managed_tools(&awaken_session_contract::tool_configuration::SessionToolConfiguration) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
 pub fn awaken_protocol_managed::project::outcome_evaluation(&awaken_session_contract::session::OutcomeIteration) -> awaken_protocol_managed::types::OutcomeEvaluation
-pub fn awaken_protocol_managed::project::project_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_protocol_managed::project::ProjectedEvent>
+pub fn awaken_protocol_managed::project::project_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<&awaken_session_contract::session::Pending>) -> alloc::vec::Vec<awaken_protocol_managed::project::ProjectedEvent>
 pub fn awaken_protocol_managed::project::resolved_tools(&[awaken_session_contract::agent_config::AgentTool]) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
 pub fn awaken_protocol_managed::project::session_tool_configuration(&[awaken_session_contract::agent_config::AgentTool]) -> awaken_session_contract::tool_configuration::SessionToolConfiguration
 pub fn awaken_protocol_managed::project::validate_custom_tool(&awaken_session_contract::session::CustomTool) -> core::result::Result<(), alloc::string::String>

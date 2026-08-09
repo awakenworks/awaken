@@ -13,13 +13,17 @@ import path from 'node:path';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
+import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
+import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
+import { closeHttpServer } from './http_server.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38513);
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-acp-projected-container-'));
 const STORAGE = path.join(TMP, 'storage');
 const IMAGE = `awaken-acp-projected-e2e:${process.pid}`;
+const BASE_IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e2e';
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MCP_TOKEN = 'projected-container-mcp-token'; // awaken-allow: secret (fixture)
 let WORKSPACE;
@@ -31,34 +35,35 @@ function dockerAvailable() {
 }
 
 function buildFixtureImage() {
+  ensureCanonicalSandboxImage({
+    engine: 'docker',
+    image: BASE_IMAGE,
+    repoRoot: ROOT,
+  });
   const context = path.join(TMP, 'image');
   fs.mkdirSync(context, { recursive: true });
-  fs.writeFileSync(path.join(context, 'Dockerfile'), `FROM busybox:1.36
-COPY bridge /usr/local/bin/bridge
+  fs.writeFileSync(path.join(context, 'Dockerfile'), `FROM ${BASE_IMAGE}
+USER root
 COPY gemini /usr/local/bin/gemini
-RUN chmod 0555 /usr/local/bin/bridge /usr/local/bin/gemini && mkdir -p /workspace
-ENTRYPOINT ["/usr/local/bin/bridge"]
-`);
-  fs.writeFileSync(path.join(context, 'bridge'), `#!/bin/sh
-set -eu
-test "$1" = gemini
-test "$2" = --acp
-exec nc -lk -p 8080 -e /usr/local/bin/gemini
+RUN chmod 0555 /usr/local/bin/gemini
+USER 10001
 `);
   fs.writeFileSync(path.join(context, 'gemini'), `#!/bin/sh
 set -eu
 mcp=no
 while IFS= read -r line; do
   id="$(printf '%s' "$line" | sed -n 's/.*"id":\\([0-9][0-9]*\\).*/\\1/p')"
+  # MCP delivery is a negotiated ACP-wire fact; its exact request phase belongs
+  # to the canonical protocol codec and may be initialize or session/new.
+  case "$line" in *container-fixture*) mcp=yes ;; esac
   case "$line" in
     *'"method":"initialize"'*)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"embeddedContext":true},"mcpCapabilities":{"http":true}}}}\\n' "$id" ;;
     *'"method":"session/new"'*)
-      case "$line" in *container-fixture*) mcp=yes ;; esac
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"container-projected-session","modes":{"currentModeId":"code","availableModes":[{"id":"code","name":"Code"}]},"configOptions":[]}}\\n' "$id" ;;
     *'"method":"session/prompt"'*)
       mounted=no
-      test "$(cat /workspace/.mnt/workspace/container-input.txt 2>/dev/null || true)" = CONTAINER_INPUT_OK && mounted=yes
+      test "$(cat /mnt/session/uploads/workspace/container-input.txt 2>/dev/null || true)" = CONTAINER_INPUT_OK && mounted=yes
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"container-projected-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"CONTAINER_PROJECTED base=%s model=%s key=%s file=%s mcp=%s home=%s"}}}}\\n' \
         "$GOOGLE_GEMINI_BASE_URL" "$GEMINI_MODEL" "$(printf %s "$GEMINI_API_KEY" | cut -c1-6)" "$mounted" "$mcp" "$GEMINI_DIR"
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\\n' "$id"
@@ -161,11 +166,7 @@ async function publishAgent(base, directoryUrl) {
   });
   await request(base, 'PUT', `/v1/config/agents/${AGENT}`, {
     name: AGENT,
-    model: {
-      id: 'container-upstream',
-      provider_identity_ref: 'gemini',
-      backend_ref: 'acp:gemini',
-    },
+    model: 'acp:gemini@gemini/container-upstream',
     system: 'Exercise publication-pinned container ACP provisioning.',
     tools: [],
   });
@@ -185,7 +186,7 @@ async function startModelDirectory() {
   assert.ok(address && typeof address === 'object');
   return {
     url: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => closeHttpServer(server),
   };
 }
 
@@ -213,12 +214,15 @@ async function main() {
     `data_dir = ${JSON.stringify(STORAGE)}`,
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
     `control_seal_key = ${JSON.stringify(SEAL_KEY)}`,
+    // Rule A1 mirrors the local projection test: IAM is an orthogonal suite;
+    // this one isolates container ACP capability and resource realization.
+    'identity_mode = "no-login"',
     'sandbox_tier = "docker"',
     `container_image = ${JSON.stringify(IMAGE)}`,
     'acp_clis = ["gemini"]',
     'acp_default_cli = "gemini"',
   ].join('\n'));
-  const server = spawn(binary, ['all-in-one', '--config', configPath], {
+  const server = spawn(binary, ['all-in-one', '--config', configPath, '--no-browser'], {
     env: {
       ...environment,
       // Ambient values are discovery hints only. The published endpoint, model,
@@ -236,6 +240,11 @@ async function main() {
     await ready(server);
     WORKSPACE = fs.readFileSync(path.join(STORAGE, 'platform-workspace-id'), 'utf8').trim();
     const base = `http://127.0.0.1:${PORT}`;
+    // Publication readiness cause/effect table:
+    // R1 port ready + no negotiated heartbeat -> publish rejects stale/absent proof;
+    // R2 port ready + exact negotiated heartbeat -> publication may resolve.
+    // The helper owns the common observation loop used by every ACP projection E2E.
+    await waitForVerifiedAcpCapability(base, 'gemini');
     await publishAgent(base, directory.url);
     client = new Anthropic({
       apiKey: 'e2e-dummy',
