@@ -52,9 +52,11 @@ impl ManagedSessionRepository for SessionOutbox {
         awaken_session_contract::SessionRevision,
         awaken_session_contract::SessionRepositoryError,
     > {
-        Err(awaken_session_contract::SessionRepositoryError::Storage(
-            "SessionOutbox test double does not own aggregate creation".into(),
-        ))
+        Err(
+            awaken_session_contract::SessionRepositoryError::Unavailable(
+                "SessionOutbox test double does not own aggregate creation".into(),
+            ),
+        )
     }
 
     async fn commit_mutation(
@@ -65,42 +67,68 @@ impl ManagedSessionRepository for SessionOutbox {
         awaken_session_contract::SessionMutationResult,
         awaken_session_contract::SessionRepositoryError,
     > {
-        Err(awaken_session_contract::SessionRepositoryError::Storage(
-            "SessionOutbox test double does not own aggregate mutation".into(),
-        ))
+        Err(
+            awaken_session_contract::SessionRepositoryError::Unavailable(
+                "SessionOutbox test double does not own aggregate mutation".into(),
+            ),
+        )
     }
 
-    async fn append_lifecycle(&self, fact: ManagedLifecycleFact) {
+    async fn append_lifecycle(
+        &self,
+        fact: ManagedLifecycleFact,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
         self.0
             .lock()
             .unwrap()
             .entry(fact.id.clone())
             .or_insert(fact);
+        Ok(())
     }
-    async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
-        self.0.lock().unwrap().values().cloned().collect()
+    async fn pending_lifecycle(
+        &self,
+    ) -> Result<Vec<ManagedLifecycleFact>, awaken_session_contract::SessionRepositoryError> {
+        Ok(self.0.lock().unwrap().values().cloned().collect())
     }
-    async fn complete_lifecycle(&self, fact_id: &str) {
+    async fn complete_lifecycle(
+        &self,
+        fact_id: &str,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
         self.0.lock().unwrap().remove(fact_id);
+        Ok(())
     }
-    async fn get(&self, _session_id: &str) -> Option<PersistedSession> {
-        None
+    async fn get(
+        &self,
+        _session_id: &str,
+    ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
     }
 
-    async fn reconcilable_sessions(&self) -> Vec<awaken_session_contract::ScopedPersistedSession> {
-        Vec::new()
+    async fn reconcilable_sessions(
+        &self,
+    ) -> Result<
+        Vec<awaken_session_contract::ScopedPersistedSession>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        Ok(Vec::new())
     }
 
     async fn idempotency_receipt(
         &self,
         _session_id: &str,
         _key: &str,
-    ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
-        None
+    ) -> Result<
+        Option<awaken_session_contract::SessionIdempotencyReceipt>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        Ok(None)
     }
 
-    async fn owner(&self, _session_id: &str) -> Option<String> {
-        None
+    async fn owner(
+        &self,
+        _session_id: &str,
+    ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
     }
 }
 
@@ -1116,7 +1144,8 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
             event_type: "session.created".into(),
             timestamp: 1_768_780_800,
         })
-        .await;
+        .await
+        .expect("append lifecycle");
     let calls = Arc::new(AtomicUsize::new(0));
     let dispatcher = Arc::new(WebhookDispatcher::new(
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
@@ -1150,7 +1179,11 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(
-        outbox.pending_lifecycle().await.is_empty(),
+        outbox
+            .pending_lifecycle()
+            .await
+            .expect("pending lifecycle")
+            .is_empty(),
         "successful delivery retires the row"
     );
 }
@@ -1168,7 +1201,8 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
             event_type: "session.archived".into(),
             timestamp: 1_768_780_800,
         })
-        .await;
+        .await
+        .expect("append lifecycle");
     let calls = Arc::new(AtomicUsize::new(0));
     let dispatcher = Arc::new(WebhookDispatcher::new(
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
@@ -1193,7 +1227,7 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
     wait_for_calls(&calls, 3).await;
     tokio::task::yield_now().await;
 
-    let pending = outbox.pending_lifecycle().await;
+    let pending = outbox.pending_lifecycle().await.expect("pending lifecycle");
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, "session:sesn_1:archived");
     assert_eq!(pending[0].object_id, "sesn_1");
@@ -1212,7 +1246,8 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
             event_type: "session.deleted".into(),
             timestamp: 1_768_780_800,
         })
-        .await;
+        .await
+        .expect("append lifecycle");
     let calls = Arc::new(AtomicUsize::new(0));
     let dispatcher = Arc::new(WebhookDispatcher::new(
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
@@ -1231,7 +1266,11 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
     tokio::task::yield_now().await;
 
     assert!(
-        outbox.pending_lifecycle().await.is_empty(),
+        outbox
+            .pending_lifecycle()
+            .await
+            .expect("pending lifecycle")
+            .is_empty(),
         "startup recovery retires a successfully redelivered row"
     );
 }
@@ -1247,7 +1286,8 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
             event_type: "session.status_idled".into(),
             timestamp: 1_768_780_800,
         })
-        .await;
+        .await
+        .expect("append lifecycle");
     // No sink existed at commit time: this is the exact former crash window.
     let calls = Arc::new(AtomicUsize::new(0));
     let dispatcher = Arc::new(WebhookDispatcher::new(
@@ -1264,7 +1304,13 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
     );
 
     wait_for_calls(&calls, 1).await;
-    assert!(outbox.pending_lifecycle().await.is_empty());
+    assert!(
+        outbox
+            .pending_lifecycle()
+            .await
+            .expect("pending lifecycle")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -1278,7 +1324,8 @@ async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
             event_type: "session.status_idled".into(),
             timestamp: 1_768_780_800,
         })
-        .await;
+        .await
+        .expect("append lifecycle");
     let calls = Arc::new(AtomicUsize::new(0));
     let failing = Arc::new(AtomicBool::new(true));
     let dispatcher = Arc::new(WebhookDispatcher::new(
@@ -1295,11 +1342,23 @@ async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
         std::time::Duration::from_millis(10),
     );
     wait_for_calls(&calls, 3).await;
-    assert_eq!(outbox.pending_lifecycle().await.len(), 1);
+    assert_eq!(
+        outbox
+            .pending_lifecycle()
+            .await
+            .expect("pending lifecycle")
+            .len(),
+        1
+    );
 
     failing.store(false, Ordering::SeqCst);
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while !outbox.pending_lifecycle().await.is_empty() {
+        while !outbox
+            .pending_lifecycle()
+            .await
+            .expect("pending lifecycle")
+            .is_empty()
+        {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     })

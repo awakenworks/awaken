@@ -12,6 +12,78 @@
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
+/// The only representation permitted at the `u64`/SQL `BIGINT` authority
+/// boundary. SQL backends are signed; silently casting either direction can
+/// turn overflow into a negative fence or corruption into a huge valid cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StoredU64(i64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum StoredU64Error {
+    #[error("durable authority value {0} is negative")]
+    Negative(i64),
+    #[error("durable authority value {0} exceeds signed database range")]
+    OutOfRange(u64),
+    #[error("durable authority arithmetic overflow")]
+    ArithmeticOverflow,
+}
+
+impl StoredU64 {
+    #[must_use]
+    pub const fn database_value(self) -> i64 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn domain_value(self) -> u64 {
+        self.0 as u64
+    }
+
+    pub fn checked_add(self, increment: u64) -> Result<Self, StoredU64Error> {
+        let value = self
+            .domain_value()
+            .checked_add(increment)
+            .ok_or(StoredU64Error::ArithmeticOverflow)?;
+        Self::try_from(value)
+    }
+
+    pub fn checked_scale_and_offset(
+        self,
+        scale: u64,
+        offset: usize,
+    ) -> Result<Self, StoredU64Error> {
+        let offset = u64::try_from(offset).map_err(|_| StoredU64Error::ArithmeticOverflow)?;
+        let value = self
+            .domain_value()
+            .checked_mul(scale)
+            .and_then(|value| value.checked_add(offset))
+            .ok_or(StoredU64Error::ArithmeticOverflow)?;
+        Self::try_from(value)
+    }
+}
+
+impl TryFrom<u64> for StoredU64 {
+    type Error = StoredU64Error;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        i64::try_from(value)
+            .map(Self)
+            .map_err(|_| StoredU64Error::OutOfRange(value))
+    }
+}
+
+impl TryFrom<i64> for StoredU64 {
+    type Error = StoredU64Error;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        if value < 0 {
+            Err(StoredU64Error::Negative(value))
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+
 /// The bundle id for the runtime commit schema. Scoped so it never collides with
 /// another component's migrations in the same database.
 pub const COMMIT_BUNDLE_ID: &str = "awaken.runtime_commit";
@@ -127,11 +199,59 @@ pub fn commit_bundle() -> Result<MigrationBundle, MigrationError> {
         versions_are_dense_from_one(&versions),
         "runtime commit migrations must be a dense prefix"
     );
-    let migrations = COMMIT_SPECS
+    let mut migrations = COMMIT_SPECS
         .iter()
         .map(|(version, description, sql)| Migration::new(*version, *description, *sql))
         .collect::<Result<Vec<_>, _>>()?;
+    migrations.push(Migration::per_dialect(
+        9,
+        "enforce non-negative runtime commit authority",
+        "ALTER TABLE {prefix}_commit ADD CONSTRAINT {prefix}_commit_sequence_nonnegative CHECK (sequence >= 0);\
+         ALTER TABLE {prefix}_message ADD CONSTRAINT {prefix}_message_commit_nonnegative CHECK (commit_sequence >= 0);\
+         ALTER TABLE {prefix}_state_command ADD CONSTRAINT {prefix}_state_commit_nonnegative CHECK (commit_sequence >= 0);\
+         ALTER TABLE {prefix}_event ADD CONSTRAINT {prefix}_event_sequence_nonnegative CHECK (sequence >= 0);\
+         ALTER TABLE {prefix}_thread_version ADD CONSTRAINT {prefix}_thread_version_nonnegative CHECK (version >= 0);\
+         ALTER TABLE {prefix}_commit_receipt ADD CONSTRAINT {prefix}_receipt_authority_nonnegative CHECK (operation_ordinal >= 0 AND commit_sequence >= 0 AND thread_version >= 0)",
+        "CREATE TRIGGER {prefix}_commit_nonnegative_insert BEFORE INSERT ON {prefix}_commit WHEN NEW.sequence < 0 BEGIN SELECT RAISE(ABORT, 'negative commit sequence'); END;\
+         CREATE TRIGGER {prefix}_commit_nonnegative_update BEFORE UPDATE OF sequence ON {prefix}_commit WHEN NEW.sequence < 0 BEGIN SELECT RAISE(ABORT, 'negative commit sequence'); END;\
+         CREATE TRIGGER {prefix}_message_nonnegative_insert BEFORE INSERT ON {prefix}_message WHEN NEW.commit_sequence < 0 BEGIN SELECT RAISE(ABORT, 'negative message commit sequence'); END;\
+         CREATE TRIGGER {prefix}_message_nonnegative_update BEFORE UPDATE OF commit_sequence ON {prefix}_message WHEN NEW.commit_sequence < 0 BEGIN SELECT RAISE(ABORT, 'negative message commit sequence'); END;\
+         CREATE TRIGGER {prefix}_state_nonnegative_insert BEFORE INSERT ON {prefix}_state_command WHEN NEW.commit_sequence < 0 BEGIN SELECT RAISE(ABORT, 'negative state commit sequence'); END;\
+         CREATE TRIGGER {prefix}_state_nonnegative_update BEFORE UPDATE OF commit_sequence ON {prefix}_state_command WHEN NEW.commit_sequence < 0 BEGIN SELECT RAISE(ABORT, 'negative state commit sequence'); END;\
+         CREATE TRIGGER {prefix}_event_nonnegative_insert BEFORE INSERT ON {prefix}_event WHEN NEW.sequence < 0 BEGIN SELECT RAISE(ABORT, 'negative event sequence'); END;\
+         CREATE TRIGGER {prefix}_event_nonnegative_update BEFORE UPDATE OF sequence ON {prefix}_event WHEN NEW.sequence < 0 BEGIN SELECT RAISE(ABORT, 'negative event sequence'); END;\
+         CREATE TRIGGER {prefix}_thread_version_nonnegative_insert BEFORE INSERT ON {prefix}_thread_version WHEN NEW.version < 0 BEGIN SELECT RAISE(ABORT, 'negative thread version'); END;\
+         CREATE TRIGGER {prefix}_thread_version_nonnegative_update BEFORE UPDATE OF version ON {prefix}_thread_version WHEN NEW.version < 0 BEGIN SELECT RAISE(ABORT, 'negative thread version'); END;\
+         CREATE TRIGGER {prefix}_receipt_nonnegative_insert BEFORE INSERT ON {prefix}_commit_receipt WHEN NEW.operation_ordinal < 0 OR NEW.commit_sequence < 0 OR NEW.thread_version < 0 BEGIN SELECT RAISE(ABORT, 'negative commit receipt authority'); END;\
+         CREATE TRIGGER {prefix}_receipt_nonnegative_update BEFORE UPDATE OF operation_ordinal, commit_sequence, thread_version ON {prefix}_commit_receipt WHEN NEW.operation_ordinal < 0 OR NEW.commit_sequence < 0 OR NEW.thread_version < 0 BEGIN SELECT RAISE(ABORT, 'negative commit receipt authority'); END",
+    )?);
     MigrationBundle::new(COMMIT_BUNDLE_ID, migrations)
+}
+
+#[cfg(test)]
+mod stored_integer_tests {
+    use super::*;
+
+    #[test]
+    fn signed_database_boundary_is_fail_closed() {
+        assert_eq!(
+            StoredU64::try_from(-1_i64),
+            Err(StoredU64Error::Negative(-1))
+        );
+        assert_eq!(StoredU64::try_from(0_i64).unwrap().domain_value(), 0);
+        assert_eq!(
+            StoredU64::try_from(i64::MAX).unwrap().domain_value(),
+            i64::MAX as u64
+        );
+        assert!(matches!(
+            StoredU64::try_from(i64::MAX as u64 + 1),
+            Err(StoredU64Error::OutOfRange(_))
+        ));
+        assert_eq!(
+            StoredU64::try_from(i64::MAX).unwrap().checked_add(1),
+            Err(StoredU64Error::OutOfRange(i64::MAX as u64 + 1))
+        );
+    }
 }
 
 #[cfg(kani)]
@@ -180,22 +300,22 @@ mod tests {
     }
 
     #[test]
-    fn commit_bundle_has_one_table_per_committed_field() {
+    fn commit_bundle_has_one_table_per_committed_field_plus_authority_constraint() {
         let bundle = commit_bundle().expect("bundle builds");
-        assert_eq!(bundle.migrations().len(), 8);
+        assert_eq!(bundle.migrations().len(), 9);
     }
 
     // The migrator requires a strictly increasing version stream; a duplicated or
     // out-of-order version (a copy-paste slip when appending a spec) must be caught
-    // here, not at first migration against a live DB. Pin the stream is dense 1..=8.
+    // here, not at first migration against a live DB. Pin the stream is dense 1..=9.
     #[test]
     fn commit_bundle_versions_are_dense_and_strictly_increasing() {
         let bundle = commit_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
         assert_eq!(
             versions,
-            vec![1, 2, 3, 4, 5, 6, 7, 8],
-            "dense 1..=8, in order"
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+            "dense 1..=9, in order"
         );
         assert!(
             versions.windows(2).all(|w| w[0] < w[1]),

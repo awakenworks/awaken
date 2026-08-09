@@ -2247,6 +2247,7 @@ dependencies = [
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "sqlx",
+ "thiserror 2.0.19",
  "tokio",
 ]
 

@@ -1,0 +1,130 @@
+"""Enforce the Session aggregate's bounded-context state ownership."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+
+SESSION_CONTRACT = "crates/contract/awaken-session-contract/src/session_repo.rs"
+SESSION_MUTATION_ROOTS = (
+    "crates/server/awaken-session-application/src",
+    "crates/server/awaken-protocol-managed/src",
+    "crates/stores/awaken-session-store/src",
+)
+
+DIRECT_STATE_WRITE = re.compile(r"\.(?:execution|disposition)\s*=(?!=)")
+RETIRED_SESSION_STATE = re.compile(
+    r"\bSessionLifecycleState\b|\bSessionExecutionState::Deleted\b"
+)
+
+
+def _production(text: str) -> str:
+    """Exclude the terminal inline Rust test module from ownership checks."""
+    return re.split(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", text, maxsplit=1)[0]
+
+
+def _is_test_module(relative: str) -> bool:
+    """Recognize source modules whose parent declaration is test-only."""
+    parts = Path(relative).parts
+    try:
+        source_index = parts.index("src")
+    except ValueError:
+        return False
+    return parts[-1] == "tests.rs" or "tests" in parts[source_index + 1 : -1]
+
+
+def session_state_ownership_violations(sources: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    contract = sources.get(SESSION_CONTRACT, "")
+    for declaration in (
+        "pub enum SessionExecutionState",
+        "pub enum SessionDisposition",
+        "pub execution: SessionExecutionState",
+        "pub disposition: SessionDisposition",
+        "pub fn transition_execution",
+        "pub fn archive",
+        "pub fn request_delete",
+    ):
+        if declaration not in contract:
+            errors.append(
+                f"{SESSION_CONTRACT}: missing authoritative Session state declaration "
+                f"{declaration!r}"
+            )
+    if "pub archived_at:" in contract:
+        errors.append(
+            f"{SESSION_CONTRACT}: archived_at is a projection of SessionDisposition, "
+            "not a parallel aggregate field"
+        )
+
+    for relative, text in sources.items():
+        production = "" if _is_test_module(relative) else _production(text)
+        if RETIRED_SESSION_STATE.search(production):
+            errors.append(
+                f"{relative}: retired one-dimensional Session state; use "
+                "SessionExecutionState plus SessionDisposition"
+            )
+        if relative == SESSION_CONTRACT:
+            continue
+        if relative.startswith(SESSION_MUTATION_ROOTS) and DIRECT_STATE_WRITE.search(production):
+            errors.append(
+                f"{relative}: direct Session state write outside the aggregate; use "
+                "PersistedSession transition methods through SessionApplication"
+            )
+    return errors
+
+
+def check_all(repo_root: Path) -> list[str]:
+    sources = {
+        str(path.relative_to(repo_root)): path.read_text(encoding="utf-8")
+        for path in sorted((repo_root / "crates").glob("**/src/**/*.rs"))
+    }
+    return session_state_ownership_violations(sources)
+
+
+def selftest() -> None:
+    owner = """
+pub enum SessionExecutionState { Idle, Terminated }
+pub enum SessionDisposition { Active, Archived }
+pub struct PersistedSession {
+    pub execution: SessionExecutionState,
+    pub disposition: SessionDisposition,
+}
+impl PersistedSession {
+    pub fn transition_execution(&mut self) {}
+    pub fn archive(&mut self) {}
+    pub fn request_delete(&mut self) {}
+}
+"""
+    sources = {
+        SESSION_CONTRACT: owner,
+        f"{SESSION_MUTATION_ROOTS[0]}/activity.rs": "session.transition_execution();",
+        f"{SESSION_MUTATION_ROOTS[1]}/sessions.rs": "project(session.execution);",
+        f"{SESSION_MUTATION_ROOTS[2]}/row_codec.rs": "decode(SessionDisposition::Active);",
+    }
+    assert session_state_ownership_violations(sources) == [], "canonical ownership"
+
+    stale = dict(sources)
+    stale[f"{SESSION_MUTATION_ROOTS[0]}/activity.rs"] = (
+        "session.execution = SessionExecutionState::Running;"
+    )
+    assert session_state_ownership_violations(stale), "direct write rejected"
+
+    retired = dict(sources)
+    retired[f"{SESSION_MUTATION_ROOTS[1]}/sessions.rs"] = "SessionLifecycleState::Deleted"
+    assert session_state_ownership_violations(retired), "retired state rejected"
+
+    tests_only = dict(sources)
+    tests_only[f"{SESSION_MUTATION_ROOTS[0]}/activity.rs"] = (
+        "session.transition_execution();\n"
+        "#[cfg(test)] mod tests { session.execution = SessionExecutionState::Running; }"
+    )
+    assert session_state_ownership_violations(tests_only) == [], "fixture writes allowed"
+
+    split_tests = dict(sources)
+    split_tests[f"{SESSION_MUTATION_ROOTS[0]}/tests/authority.rs"] = (
+        "session.execution = SessionExecutionState::Running;"
+    )
+    assert session_state_ownership_violations(split_tests) == [], (
+        "cfg(test) source modules remain fixture-only after responsibility splits"
+    )

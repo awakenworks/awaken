@@ -226,6 +226,48 @@ impl McpRealizationReceipt {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpProjectionEffectKind {
+    Publish,
+    Drain,
+}
+
+/// Exact evidence for the externally visible publish/drain phases. Stage uses
+/// [`McpRealizationReceipt`]; all phases therefore expose a verifiable receipt
+/// before Control advances durable state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpProjectionReceipt {
+    pub generation: McpGenerationRef,
+    pub effect: McpProjectionEffectKind,
+    pub effect_id: String,
+}
+
+impl McpProjectionReceipt {
+    #[must_use]
+    pub fn new(generation: McpGenerationRef, effect: McpProjectionEffectKind) -> Self {
+        let effect_id =
+            crate::stable_fingerprint(&("mcp-projection-effect-v1", &generation, effect));
+        Self {
+            generation,
+            effect,
+            effect_id,
+        }
+    }
+
+    pub fn verify(
+        &self,
+        generation: &McpGenerationRef,
+        effect: McpProjectionEffectKind,
+    ) -> Result<(), McpRealizationReceiptError> {
+        if self == &Self::new(generation.clone(), effect) {
+            Ok(())
+        } else {
+            Err(McpRealizationReceiptError::Mismatch)
+        }
+    }
+}
+
 impl Default for SessionMcpAttachmentSet {
     fn default() -> Self {
         Self::from_initial(Vec::new(), None).expect("empty MCP attachment set is valid")
@@ -1557,5 +1599,38 @@ mod tests {
             "D4 only active generation drains"
         );
         assert_eq!(add.visible().len(), 0, "D4");
+    }
+
+    #[test]
+    fn projection_receipt_is_bound_to_generation_and_effect_kind() {
+        let generation = McpGenerationRef {
+            session_id: "session".into(),
+            attachment_id: McpAttachmentId("attachment".into()),
+            generation: McpGeneration(3),
+            runtime_incarnation: "runtime".into(),
+            lease_epoch: 7,
+            lease_expires_at_unix_ms: 99,
+        };
+        let receipt =
+            McpProjectionReceipt::new(generation.clone(), McpProjectionEffectKind::Publish);
+        assert!(
+            receipt
+                .verify(&generation, McpProjectionEffectKind::Publish)
+                .is_ok()
+        );
+        assert!(
+            receipt
+                .verify(&generation, McpProjectionEffectKind::Drain)
+                .is_err(),
+            "publish evidence cannot acknowledge drain"
+        );
+        let mut stale = generation;
+        stale.lease_epoch += 1;
+        assert!(
+            receipt
+                .verify(&stale, McpProjectionEffectKind::Publish)
+                .is_err(),
+            "a stale owner cannot reuse projection evidence"
+        );
     }
 }

@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use awaken_agent_contract::AgentSkillKind;
 use awaken_resource_contract::{
-    ArtifactPublication, ArtifactPublicationError, ArtifactPublisher, FileApplicationService,
-    FileContentSource, FileContentSourceError, RepositoryBindingVerifier,
+    ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
+    FileApplicationService, FileContentSource, FileContentSourceError, RepositoryBindingVerifier,
     RepositoryBindingVerifierError, ResourceBindingValidator, SkillStore, SkillVersion, content_id,
 };
 use awaken_session_contract::{
@@ -66,23 +66,27 @@ impl<C: Send + Sync + 'static> ArtifactPublisher<C> for ApplicationArtifactPubli
     async fn publish(
         &self,
         publication: ArtifactPublication<C>,
-    ) -> Result<awaken_resource_contract::FileRecord, ArtifactPublicationError> {
-        let digest = content_id(&publication.bytes);
-        self.application
+    ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
+        publication.verify()?;
+        let record = self
+            .application
             .create_artifact(
                 &publication.workspace_id,
                 &publication.session_id,
                 publication.logical_path.clone(),
-                publication.mime_type,
+                publication.mime_type.clone(),
                 &publication.bytes,
-                awaken_resource_contract::harvest_idempotency_key(
-                    &publication.session_id,
-                    &publication.logical_path,
-                    &digest,
-                ),
+                publication.effect_id.clone(),
             )
             .await
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        let receipt = ArtifactPublicationReceipt {
+            effect_id: publication.effect_id.clone(),
+            content_id: publication.content_id.clone(),
+            record,
+        };
+        receipt.verify(&publication)?;
+        Ok(receipt)
     }
 }
 

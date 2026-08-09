@@ -543,8 +543,11 @@ mod tests {
         // D2 missing       -> ExecutableNotFound
         // D3 exceeds bound -> TimedOut
         // The shell also proves Cargo's ambient env is cleared while HOME remains.
-        let probe = TokioAcpProcessProbe::new(Duration::from_millis(100));
-        let output = probe
+        // Successful process startup is not a timing assertion. Give the host a
+        // production-like budget so scheduler/load variance cannot turn valid
+        // environment evidence into a false timeout.
+        let ordinary_probe = TokioAcpProcessProbe::new(Duration::from_secs(2));
+        let output = ordinary_probe
             .run(AcpProbeCommand {
                 executable: "/bin/sh",
                 args: &["-c", "test -n \"$HOME\" && test -n \"$PATH\" && env"],
@@ -557,7 +560,7 @@ mod tests {
         assert!(!output.stdout.contains("CARGO_"), "D1");
 
         assert!(matches!(
-            probe
+            ordinary_probe
                 .run(AcpProbeCommand {
                     executable: "/definitely/missing/awaken-acp-probe",
                     args: &[],
@@ -565,11 +568,15 @@ mod tests {
                 .await,
             Err(AcpProcessProbeError::ExecutableNotFound { .. })
         ));
+        // Timeout behavior is a separate deterministic case: `exec` makes the
+        // shell and sleeper one kill-on-drop process instead of leaving a child
+        // that can retain the captured output pipes.
+        let bounded_probe = TokioAcpProcessProbe::new(Duration::from_millis(25));
         assert!(matches!(
-            probe
+            bounded_probe
                 .run(AcpProbeCommand {
                     executable: "/bin/sh",
-                    args: &["-c", "sleep 1"],
+                    args: &["-c", "exec sleep 10"],
                 })
                 .await,
             Err(AcpProcessProbeError::TimedOut { .. })

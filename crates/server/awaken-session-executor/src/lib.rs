@@ -872,8 +872,14 @@ impl ManagedHost {
                 .validate_live_mount_replacement(&old.mounts, &new.mounts)
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
         }
-        self.host.harvest_thread_skills(thread).await;
-        self.host.publish_thread_repositories(thread).await;
+        self.host
+            .harvest_thread_skills(thread)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        self.host
+            .publish_thread_repositories(thread)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?;
         if let Some(environment) = &live_environment {
             // Realize the desired live projection before committing its logical
             // manifest. Every operation is idempotent, so a failed attempt leaves
@@ -967,25 +973,65 @@ impl SessionRuntime for ManagedHost {
         self.host.delegated_runs(thread).await.map_err(to_run_error)
     }
 
+    async fn quiesce_terminal_delegations(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, RunError> {
+        self.host
+            .quiesce_terminal_delegations(thread)
+            .await
+            .map_err(to_run_error)
+    }
+
     async fn owns_thread(&self, thread: &str) -> bool {
         self.host.has_durable_thread(thread)
     }
 
     async fn end_session(&self, thread: &str) -> Result<(), RunError> {
+        let intent =
+            awaken_session_contract::SessionTerminalCleanupIntent::for_thread(thread, thread);
+        self.execute_terminal_cleanup(intent).await.map(|_| ())
+    }
+
+    async fn execute_terminal_cleanup(
+        &self,
+        intent: awaken_session_contract::SessionTerminalCleanupIntent,
+    ) -> Result<awaken_session_contract::SessionTerminalCleanupReceipt, RunError> {
         // Terminal release owns every reverse operation: publish Agent-authored Repo
         // commits (when the Agent did not own publication through MCP), persist
         // run-authored Skills, then dispose. A GET /files poll is never a write edge.
-        self.host.publish_thread_repositories(thread).await;
-        self.host.harvest_thread_skills(thread).await;
+        self.host
+            .publish_thread_repositories(&intent.thread_id)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        self.host
+            .harvest_thread_skills(&intent.thread_id)
+            .await
+            .map_err(|error| RunError::internal(error.to_string()))?;
         // Failure is terminal-release blocking: keep the Sandbox available for
         // the durable cleanup retry instead of disposing unharvested outputs.
-        self.host
-            .harvest_thread_artifacts(thread)
+        let artifact_receipts = self
+            .host
+            .harvest_thread_artifacts(&intent.thread_id)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
         // Memory is owned by its MemoryMount guard: FUSE writes through live and
         // copy realization performs one CAS harvest during teardown.
-        self.host.end_session(thread).await.map_err(to_run_error)
+        self.host
+            .end_session(&intent.thread_id)
+            .await
+            .map_err(to_run_error)?;
+        let receipt = awaken_session_contract::SessionTerminalCleanupReceipt::new(
+            &intent,
+            artifact_receipts,
+            true,
+            true,
+            true,
+        );
+        receipt
+            .verify(&intent)
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        Ok(receipt)
     }
 
     async fn run(

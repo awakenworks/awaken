@@ -40,11 +40,14 @@ fn publication(
     path: &str,
     bytes: &[u8],
 ) -> ArtifactPublication<RunClaim> {
+    let content_id = awaken_resource_contract::content_id(bytes);
     ArtifactPublication {
+        effect_id: awaken_resource_contract::harvest_idempotency_key(session, path, &content_id),
         workspace_id: workspace.into(),
         session_id: session.into(),
         logical_path: path.into(),
         mime_type: "text/html".into(),
+        content_id,
         bytes: bytes.to_vec(),
         fence: claim,
     }
@@ -58,6 +61,7 @@ fn metadata_header(
     path: &str,
     digest: &str,
 ) -> String {
+    let effect_id = awaken_resource_contract::harvest_idempotency_key(session, path, digest);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&serde_json::json!({
             "claim": claim,
@@ -67,6 +71,7 @@ fn metadata_header(
             "logical_path": path,
             "mime_type": "text/html",
             "content_id": digest,
+            "effect_id": effect_id,
         }))
         .unwrap(),
     )
@@ -147,12 +152,12 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         .await
         .expect("A1 exact artifact");
     assert_eq!(
-        first.scope_id.as_deref(),
+        first.record.scope_id.as_deref(),
         Some("thread-session-artifacts"),
         "A1"
     );
     assert_eq!(
-        first.logical_path.as_deref(),
+        first.record.logical_path.as_deref(),
         Some("prototype/index.html"),
         "A1"
     );
@@ -167,7 +172,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         ))
         .await
         .expect("A2 retry");
-    assert_eq!(retry.id, first.id, "A2");
+    assert_eq!(retry.record.id, first.record.id, "A2");
 
     let changed = publisher
         .publish(publication(
@@ -179,7 +184,7 @@ async fn artifact_publication_is_claim_fenced_digest_verified_and_idempotent() {
         ))
         .await
         .expect("A3 changed bytes");
-    assert_ne!(changed.id, first.id, "A3");
+    assert_ne!(changed.record.id, first.record.id, "A3");
     assert_eq!(
         application
             .list("workspace-artifacts", Some("thread-session-artifacts"))

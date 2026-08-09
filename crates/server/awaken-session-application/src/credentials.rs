@@ -8,7 +8,10 @@ use awaken_session_contract::{
     ResolvedSessionResources, RunError,
 };
 
-use super::{SessionApplication, SessionMutationError};
+use super::{
+    SessionApplication, SessionMutationError, mutation::repository_failure,
+    resource_reconciliation::mutation_failure,
+};
 
 /// Failure from compiling or migrating exact Session credential pins.
 #[derive(Debug, thiserror::Error)]
@@ -156,7 +159,8 @@ impl SessionApplication {
                         .session_repository()
                         .get(&session_id)
                         .await
-                        .ok_or(SessionPreparationError::NotFound)?;
+                        .map_err(repository_failure)
+                        .map_err(mutation_failure)?;
                 }
                 Err(SessionMutationError::Conflict) => {
                     return Err(SessionPreparationError::Conflict);

@@ -3,8 +3,24 @@
 use super::*;
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
-    SessionMutationPayload, SessionMutationResult,
+    SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
+    SessionRepositoryError,
 };
+
+pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutationError {
+    match error {
+        SessionRepositoryError::NotFound => SessionMutationError::NotFound,
+        SessionRepositoryError::Conflict(SessionRepositoryConflict::IdempotencyMismatch) => {
+            SessionMutationError::IdempotencyMismatch
+        }
+        SessionRepositoryError::Conflict(_conflict) => SessionMutationError::Conflict,
+        SessionRepositoryError::Unavailable(message)
+        | SessionRepositoryError::Corrupt(message)
+        | SessionRepositoryError::InvalidMutation(message) => {
+            SessionMutationError::Unavailable(message)
+        }
+    }
+}
 
 /// Failure returned by the Session application's one repository CAS boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -24,8 +40,11 @@ impl SessionApplication {
     /// must never merge a stale snapshot after this many conflicts.
     pub const ROOT_CAS_ATTEMPTS: usize = 3;
 
-    pub async fn owner(&self, session_id: &str) -> Option<String> {
-        self.sessions_repo.owner(session_id).await
+    pub async fn owner(&self, session_id: &str) -> Result<String, SessionMutationError> {
+        self.sessions_repo
+            .owner(session_id)
+            .await
+            .map_err(repository_failure)
     }
 
     /// Insert one newly compiled Session root. Exact replays return the durable
@@ -41,15 +60,7 @@ impl SessionApplication {
             .sessions_repo
             .create(owner_scope, session.clone(), idempotency, lifecycle_facts)
             .await
-            .map_err(|error| match error {
-                awaken_session_contract::SessionRepositoryError::AlreadyExists => {
-                    SessionMutationError::Conflict
-                }
-                awaken_session_contract::SessionRepositoryError::IdempotencyMismatch => {
-                    SessionMutationError::IdempotencyMismatch
-                }
-                error => SessionMutationError::Unavailable(error.to_string()),
-            })?;
+            .map_err(repository_failure)?;
         session.revision = revision;
         Ok(session)
     }
@@ -102,7 +113,7 @@ impl SessionApplication {
                 .get(&session_id)
                 .await
                 .map(|session| (session, false))
-                .ok_or(SessionMutationError::NotFound),
+                .map_err(repository_failure),
             SessionMutationResult::Conflict { .. } => Err(SessionMutationError::Conflict),
             SessionMutationResult::IdempotencyMismatch => {
                 Err(SessionMutationError::IdempotencyMismatch)
@@ -121,6 +132,6 @@ impl SessionApplication {
         self.sessions_repo
             .commit_mutation(owner_scope, mutation)
             .await
-            .map_err(|error| SessionMutationError::Unavailable(error.to_string()))
+            .map_err(repository_failure)
     }
 }

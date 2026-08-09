@@ -14,8 +14,8 @@ use awaken_protocol_managed::{
     ManagedState, VaultState, router, types::SessionStatus, vault_router,
 };
 use awaken_session_contract::{
-    ManagedSessionRepository, OutcomeReport, PersistedSession, RunError, RunErrorKind, SessionInit,
-    SessionLifecycleFactSink, SessionLifecycleState, SessionRuntime, StepOutcome,
+    ManagedSessionRepository, OutcomeReport, PersistedSession, RunError, RunErrorKind,
+    SessionExecutionState, SessionInit, SessionLifecycleFactSink, SessionRuntime, StepOutcome,
     ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -41,10 +41,12 @@ struct PreparingFake {
 #[async_trait::async_trait]
 impl SessionRuntime for PreparingFake {
     async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
-        if let Some(repo) = &self.repo
-            && let Some(session) = repo.get(thread).await
-        {
-            self.observed_durable.lock().unwrap().push(session);
+        if let Some(repo) = &self.repo {
+            match repo.get(thread).await {
+                Ok(session) => self.observed_durable.lock().unwrap().push(session),
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => {}
+                Err(error) => return Err(RunError::internal(error.to_string())),
+            }
         }
         self.captured.lock().unwrap().push(init);
         match self.fail_with {
@@ -1377,7 +1379,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         awaken_session_contract::McpAttachmentState::Failed,
         "R5"
     );
-    assert_eq!(failed_retry.lifecycle, SessionLifecycleState::Idle, "R5");
+    assert_eq!(failed_retry.execution, SessionExecutionState::Idle, "R5");
 
     let (status, _) = call(
         &h.app,
@@ -1582,6 +1584,7 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         .repo
         .idempotency_receipt(id, &legacy_key)
         .await
+        .expect("I2c receipt read")
         .expect("I2c stable pre-upgrade receipt namespace");
     assert_eq!(legacy_receipt.payload_hash, legacy_hash, "I2c");
     let applied_etag = applied_headers["etag"].clone();

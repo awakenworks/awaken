@@ -12,9 +12,12 @@ impl SessionApplication {
         session_id: &str,
     ) -> Result<(), LiveInboxApplicationError> {
         match self.owner(session_id).await {
-            Some(owner) if owner == workspace_id => Ok(()),
+            Ok(owner) if owner == workspace_id => Ok(()),
             // Unknown and foreign Sessions are intentionally indistinguishable.
-            Some(_) | None => Err(LiveInboxApplicationError::NotFound),
+            Ok(_) | Err(crate::SessionMutationError::NotFound) => {
+                Err(LiveInboxApplicationError::NotFound)
+            }
+            Err(error) => Err(LiveInboxApplicationError::Unavailable(error.to_string())),
         }
     }
 }
