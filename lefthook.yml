@@ -42,6 +42,10 @@ pre-commit:
       glob: "{Cargo.toml,Cargo.lock,crates/**/*.rs,crates/**/Cargo.toml,apps/**/*.rs,apps/**/Cargo.toml,tests/**/*.rs,xtask/**/*.rs,xtask/**/Cargo.toml}"
       run: scripts/ci/check-rust.sh --quick
 
+    dependency-sources:
+      glob: "{Cargo.toml,Cargo.lock,crates/**/Cargo.toml,apps/**/Cargo.toml,scripts/ci/check_dependency_sources.py}"
+      run: python3 scripts/ci/check_dependency_sources.py
+
     # Architecture fitness (pure Python, no toolchain): crate layering and the
     # product-bucket direction. crates/runtime/* must never depend on — hence can
     # never call — crates/agents/*; contracts stay below the kernel, extensions on

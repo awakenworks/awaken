@@ -1,41 +1,19 @@
 #!/usr/bin/env bash
 # Build the production ACP sandbox image without assuming Cargo writes to ./target.
 set -euo pipefail
-
-run_with_deadline() {
-  local seconds=$1
-  shift
-  local marker
-  marker=$(mktemp "${TMPDIR:-/tmp}/awaken-sandbox-build-timeout.XXXXXX")
-  rm -f "$marker"
-
-  "$@" &
-  local command_pid=$!
-  (
-    sleep "$seconds"
-    if kill -0 "$command_pid" 2>/dev/null; then
-      : >"$marker"
-      kill -TERM "$command_pid" 2>/dev/null || true
-      sleep 5
-      kill -KILL "$command_pid" 2>/dev/null || true
-    fi
-  ) &
-  local watchdog_pid=$!
-
-  local status=0
-  wait "$command_pid" || status=$?
-  kill "$watchdog_pid" 2>/dev/null || true
-  wait "$watchdog_pid" 2>/dev/null || true
-  if [[ -f "$marker" ]]; then
-    rm -f "$marker"
-    return 124
-  fi
-  rm -f "$marker"
-  return "$status"
-}
+repo_root="$(cd "$(dirname "$0")/../../.." && pwd)"
+source "$repo_root/scripts/ci/_deadline.sh"
 
 make_public_build_input() {
   chmod 0644 "$1"
+}
+
+file_mode() {
+  if stat -c '%a' "$1" >/dev/null 2>&1; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
 }
 
 # Build-harness cause/effect graph and decision table:
@@ -57,7 +35,7 @@ if [[ ${1:-} == --self-test ]]; then
   contract=$(mktemp "${TMPDIR:-/tmp}/awaken-sandbox-contract.XXXXXX")
   chmod 0600 "$contract"
   make_public_build_input "$contract"
-  [[ $(stat -c '%a' "$contract") == 644 ]] || {
+  [[ $(file_mode "$contract") == 644 ]] || {
     echo "sandbox image build input self-test: generated contract is not mode 0644" >&2
     rm -f "$contract"
     exit 1

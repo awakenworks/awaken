@@ -278,7 +278,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-model-catalog",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "awaken-store-runtime",
  "awaken-tenancy",
@@ -336,7 +336,7 @@ dependencies = [
 [[package]]
 name = "awaken-api-contract"
 version = "0.1.0-dev"
-source = "git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8#c8a0139e1861a964c475f1b748c90d75a06027c8"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176#5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176"
 dependencies = [
  "serde",
  "serde_json",
@@ -364,7 +364,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -513,7 +513,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "awaken-store-inmem",
  "awaken-store-sqlite",
@@ -529,7 +529,7 @@ dependencies = [
 [[package]]
 name = "awaken-connection"
 version = "0.1.0-dev"
-source = "git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8#c8a0139e1861a964c475f1b748c90d75a06027c8"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176#5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176"
 dependencies = [
  "async-trait",
  "futures",
@@ -743,7 +743,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-credential-contract",
  "awaken-credential-vault",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "chacha20poly1305",
  "rusqlite",
@@ -792,7 +792,7 @@ dependencies = [
  "async-trait",
  "awaken-data-subject-application",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -859,7 +859,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-environment-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "proptest",
  "rusqlite",
@@ -923,7 +923,7 @@ dependencies = [
  "awaken-environment-realization-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -985,7 +985,7 @@ dependencies = [
  "awaken-executable-agent-contract",
  "awaken-resource-contract",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-service-auth-contract",
  "axum",
  "reqwest 0.12.28",
@@ -1018,7 +1018,7 @@ dependencies = [
  "awaken-environment-contract",
  "awaken-executable-environment-contract",
  "awaken-provisioning-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-service-auth-contract",
  "axum",
  "reqwest 0.12.28",
@@ -1157,7 +1157,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "blake3",
  "futures",
@@ -1315,7 +1315,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -1343,7 +1343,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-model-catalog",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -1616,7 +1616,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "awaken-store-runtime",
  "parking_lot",
@@ -1702,7 +1702,7 @@ dependencies = [
  "awaken-run-ingress-testkit",
  "awaken-runtime",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "awaken-store-inmem",
  "awaken-store-postgres",
@@ -1991,7 +1991,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-provisioning-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde_json",
@@ -2073,16 +2073,7 @@ dependencies = [
 [[package]]
 name = "awaken-scoped-migration"
 version = "0.1.0-dev"
-source = "git+https://github.com/awakenworks/awaken-foundation?rev=97717ab58faaa1ab9957e4c638aa367fb24334ee#97717ab58faaa1ab9957e4c638aa367fb24334ee"
-dependencies = [
- "sha2 0.10.9",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "awaken-scoped-migration"
-version = "0.1.0-dev"
-source = "git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8#c8a0139e1861a964c475f1b748c90d75a06027c8"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176#5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176"
 dependencies = [
  "sha2 0.10.9",
  "sqlx",
@@ -2090,11 +2081,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-scoped-migration"
+version = "0.1.0-dev"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=97717ab58faaa1ab9957e4c638aa367fb24334ee#97717ab58faaa1ab9957e4c638aa367fb24334ee"
+dependencies = [
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "awaken-scoped-migration-sqlite"
 version = "0.1.0-dev"
-source = "git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8#c8a0139e1861a964c475f1b748c90d75a06027c8"
+source = "git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176#5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176"
 dependencies = [
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "rusqlite",
 ]
 
@@ -2151,7 +2151,7 @@ dependencies = [
  "awaken-credential-contract",
  "awaken-deployment-contract",
  "awaken-ext-memory",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
  "awaken-store-runtime",
@@ -2171,7 +2171,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-resource-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "serde",
@@ -2222,7 +2222,7 @@ dependencies = [
  "async-trait",
  "awaken-agent-contract",
  "awaken-runtime-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-store-conformance",
  "awaken-store-schema",
  "serde_json",
@@ -2242,7 +2242,7 @@ dependencies = [
 name = "awaken-store-schema"
 version = "1.0.0-dev"
 dependencies = [
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
  "sqlx",
@@ -2255,7 +2255,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "awaken-store-conformance",
  "awaken-store-schema",
@@ -2342,7 +2342,7 @@ name = "awaken-work-store"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
  "proptest",
@@ -2404,7 +2404,7 @@ name = "awaken-worker-registry"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-scoped-migration 0.1.0-dev (git+ssh://chaizhenhua@192.168.96.16/home/chaizhenhua/Codes/awaken-foundation?rev=c8a0139e1861a964c475f1b748c90d75a06027c8)",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176)",
  "awaken-scoped-migration-sqlite",
  "awaken-worker-contract",
  "loom",

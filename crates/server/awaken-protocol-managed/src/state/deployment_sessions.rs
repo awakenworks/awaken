@@ -206,4 +206,28 @@ mod tests {
             "R3"
         );
     }
+
+    #[tokio::test]
+    async fn deployment_launch_never_downgrades_an_unrepresentable_agent_version_to_latest() {
+        let state = Arc::new(ManagedState::new(RehydrateFake::default()));
+        let launcher = crate::LocalDeploymentSessionLauncher::new(state);
+        let request = DeploymentLaunch {
+            deployment_id: "depl_version".into(),
+            deployment_run_id: "deprun_version".into(),
+            workspace_id: "workspace_a".into(),
+            agent: DeploymentAgent::new("agent_a", u64::from(u32::MAX) + 1),
+            environment_id: "env_local".into(),
+            metadata: BTreeMap::new(),
+            initial_events: Vec::new(),
+            resources: Vec::new(),
+            vault_ids: Vec::new(),
+        };
+
+        assert!(matches!(
+            DeploymentSessionLauncher::launch(&launcher, request).await,
+            DeploymentLaunchOutcome::Failed {
+                error: awaken_deployment_application::DeploymentRunFailure::SessionCreationRejectedError { message }
+            } if message.contains("exceeds the Managed Session protocol range")
+        ));
+    }
 }

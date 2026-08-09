@@ -21,6 +21,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source scripts/ci/_deadline.sh
 
 # A dedicated, fresh target dir so the instrumented build is not shadowed by a
 # cached non-instrumented binary from the shared cargo target-dir.
@@ -38,7 +39,7 @@ cargo build --quiet -p awaken-cli --bin awaken
 cd e2e
 run() { # file, label, extra-env...
   local f="$1"; shift; local label="$1"; shift
-  if env "$@" timeout 150 node "$f" 2>&1 | grep -q "E2E PASS"; then
+  if run_with_deadline 150 env "$@" node "$f" 2>&1 | grep -q "E2E PASS"; then
     echo "PASS $f [$label]"
   else
     echo "MISS $f [$label]"

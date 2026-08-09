@@ -68,6 +68,7 @@ run() {
 
 run static "repository-hygiene self-test" python3 scripts/ci/check_repository_hygiene.py --self-test
 run static "repository-hygiene" python3 scripts/ci/check_repository_hygiene.py
+run static "dependency-sources self-test" python3 scripts/ci/check_dependency_sources.py --self-test
 run static "test-orchestration self-test" python3 scripts/ci/check_test_orchestration.py --self-test
 run static "test-orchestration" python3 scripts/ci/check_test_orchestration.py
 run static "e2e runner unit" npm --prefix e2e run test:runner

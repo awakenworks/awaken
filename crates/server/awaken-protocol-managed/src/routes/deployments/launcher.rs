@@ -49,6 +49,17 @@ impl DeploymentSessionLauncher for LocalDeploymentSessionLauncher {
                 message: "deployment_run_id is required for Session launch".into(),
             });
         }
+        let agent_version = match u32::try_from(request.agent.version) {
+            Ok(version) => version,
+            Err(_) => {
+                return failed(RunError::SessionCreationRejectedError {
+                    message: format!(
+                        "stored Deployment Agent version {} exceeds the Managed Session protocol range",
+                        request.agent.version
+                    ),
+                });
+            }
+        };
         if self
             .rate_limiter
             .as_ref()
@@ -141,7 +152,7 @@ impl DeploymentSessionLauncher for LocalDeploymentSessionLauncher {
             agent: crate::types::AgentRef::Object(crate::types::AgentRefObject {
                 id: request.agent.id,
                 kind: Some(crate::types::AgentRefKind::Agent),
-                version: u32::try_from(request.agent.version).ok(),
+                version: Some(agent_version),
                 system: None,
                 tools: None,
                 mcp_servers: None,
