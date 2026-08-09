@@ -120,14 +120,22 @@ impl crate::ManagedHost {
             } => {
                 let materialization_reference = match (&self.host.upstream, claim) {
                     (Some(_), Some(claim)) => Some(
-                        awaken_resource_worker_http::memory_materialization_reference(
-                            workspace,
-                            memory_store_id.as_str(),
-                            config.version,
-                            input.access,
-                            claim,
-                        )
-                        .map_err(|error| RunError::internal(error.to_string()))?,
+                        self.host
+                            .memory_reference_encoder
+                            .as_ref()
+                            .ok_or_else(|| {
+                                RunError::internal(
+                                    "remote Memory materialization encoder is not configured",
+                                )
+                            })?
+                            .encode(
+                                workspace,
+                                memory_store_id.as_str(),
+                                config.version,
+                                input.access,
+                                claim,
+                            )
+                            .map_err(|error| RunError::internal(error.to_string()))?,
                     ),
                     (Some(_), None) => {
                         return Err(RunError::bad_request(

@@ -19,9 +19,11 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 mod catalog;
 mod component;
+mod execution;
 mod input;
 mod lifecycle;
 mod memory_application;
@@ -33,6 +35,12 @@ pub use catalog::{
     ResourceTimestamps, RetentionPolicy,
 };
 pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
+pub use execution::{
+    ArtifactPublication, ArtifactPublicationError, ArtifactPublisher, FileContentSource,
+    FileContentSourceError, MemoryMaterializationReferenceEncoder,
+    MemoryMaterializationReferenceError, RepositoryBindingVerifier, RepositoryBindingVerifierError,
+    UnavailableArtifactPublisher, UnavailableFileContentSource,
+};
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
     SkillId, SkillVersionId,
@@ -64,9 +72,29 @@ pub fn content_id(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
 
+/// Stable, database-portable identity for one Sandbox artifact harvest.
+/// Length framing prevents tuple ambiguity; the digest keeps internal tuple
+/// components and PostgreSQL-forbidden separators out of persistence.
+#[must_use]
+pub fn harvest_idempotency_key(thread: &str, logical_path: &str, content_id: &str) -> String {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"awaken-file-harvest-v1\0");
+    for component in [thread, logical_path, content_id] {
+        hash.update(&(component.len() as u64).to_be_bytes());
+        hash.update(component.as_bytes());
+    }
+    hash.finalize().to_hex().to_string()
+}
+
+/// Maximum size of one logical File accepted by every driving adapter.
+pub const MAX_MANAGED_FILE_SIZE_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Maximum active logical File bytes owned by one Workspace.
+pub const MAX_WORKSPACE_FILE_BYTES: u64 = 500 * 1024 * 1024 * 1024;
+
 #[cfg(test)]
 mod content_id_tests {
-    use super::content_id;
+    use super::{content_id, harvest_idempotency_key};
 
     #[test]
     fn canonical_content_id_is_stable_and_content_sensitive() {
@@ -82,6 +110,39 @@ mod content_id_tests {
         );
         assert_eq!(content_id(b"same"), content_id(b"same"), "H1");
         assert_ne!(content_id(b"same"), content_id(b"different"), "H2");
+    }
+
+    #[test]
+    fn harvest_key_is_framed_portable_and_sensitive_to_every_component() {
+        // Harvest-identity FMECA and cause/effect table: C1 the same ordered
+        // tuple is retried; C2 one tuple component changes; C3 components contain
+        // delimiter-like bytes. Effects: E1 stable idempotency, E2 distinct
+        // logical versions, E3 printable database-safe identity. Rules: K1
+        // C1=>E1; K2 C2=>E2; K3 C3=>E3. Length framing, not a delimiter, owns
+        // tuple identity.
+        let key = harvest_idempotency_key("thread", "a\0b", "content");
+        assert_eq!(
+            key,
+            harvest_idempotency_key("thread", "a\0b", "content"),
+            "K1"
+        );
+        assert_ne!(
+            key,
+            harvest_idempotency_key("thread-2", "a\0b", "content"),
+            "K2"
+        );
+        assert_ne!(
+            key,
+            harvest_idempotency_key("thread", "a\0b-2", "content"),
+            "K2"
+        );
+        assert_ne!(
+            key,
+            harvest_idempotency_key("thread", "a\0b", "content-2"),
+            "K2"
+        );
+        assert!(!key.contains('\0'), "K3");
+        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()), "K3");
     }
 }
 
@@ -296,6 +357,28 @@ pub struct SkillVersion {
     pub files: Vec<SkillBundleFile>,
     #[serde(default)]
     pub created_unix_nanos: u64,
+}
+
+/// Canonical SHA-256 identity of a complete immutable Skill bundle.
+///
+/// The Resources contract owns this algorithm because stores, HTTP transports,
+/// execution materializers, and Managed projections must reject exactly the
+/// same mutations. Paths are sorted and every variable-length field is framed.
+#[must_use]
+pub fn skill_bundle_sha256(files: &[SkillBundleFile]) -> String {
+    let mut ordered = files.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hash = Sha256::new();
+    for file in ordered {
+        hash.update((file.path.len() as u64).to_be_bytes());
+        hash.update(file.path.as_bytes());
+        hash.update((file.content.len() as u64).to_be_bytes());
+        hash.update(&file.content);
+        if file.executable {
+            hash.update(b"\0awaken-skill-executable\0");
+        }
+    }
+    format!("sha256:{:x}", hash.finalize())
 }
 
 impl SkillVersion {

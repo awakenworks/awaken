@@ -11,7 +11,6 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 mod bundle;
 #[cfg(feature = "postgres")]
@@ -74,7 +73,7 @@ pub fn catalog_id(name: &str) -> String {
 // The aggregate port + values live in the port-only contract crate.
 pub use awaken_resource_contract::{
     SkillBundleFile, SkillDefinition, SkillId, SkillStore, SkillStoreError, SkillVersion,
-    SkillVersionId,
+    SkillVersionId, skill_bundle_sha256 as bundle_sha256,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,27 +84,6 @@ pub(crate) struct SkillAggregate {
     pub retired_versions: std::collections::BTreeSet<u64>,
     #[serde(default)]
     pub deleted: bool,
-}
-
-/// Canonical SHA-256 of the complete bundle. Paths are ordered and length-framed so
-/// distinct path/content partitions cannot hash to the same byte stream.
-#[must_use]
-pub fn bundle_sha256(files: &[SkillBundleFile]) -> String {
-    let mut ordered = files.iter().collect::<Vec<_>>();
-    ordered.sort_by(|a, b| a.path.cmp(&b.path));
-    let mut hash = Sha256::new();
-    for file in ordered {
-        hash.update((file.path.len() as u64).to_be_bytes());
-        hash.update(file.path.as_bytes());
-        hash.update((file.content.len() as u64).to_be_bytes());
-        hash.update(&file.content);
-        // Keep legacy hashes stable for the default (`false`) value while binding
-        // the security-relevant executable bit whenever it is enabled.
-        if file.executable {
-            hash.update(b"\0awaken-skill-executable\0");
-        }
-    }
-    format!("sha256:{:x}", hash.finalize())
 }
 
 pub(crate) fn validate_create(

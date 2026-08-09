@@ -5,15 +5,15 @@ use awaken_dispatch_testkit::worker_http as support;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_resource_contract::RepositoryBindingVerifier as _;
 use awaken_resource_contract::{ConfigVersion, ResourceBindingValidator, ResourceCatalogError};
+use awaken_resource_worker_http::HttpRepositoryBindingVerifier;
 use awaken_resource_worker_http::{
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
 use awaken_dispatch::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
-use awaken_dispatch_contract::RepositoryBindingVerifier as _;
-use awaken_coordinator_client::HttpRepositoryBindingVerifier;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 struct ExactRepositoryCatalog {

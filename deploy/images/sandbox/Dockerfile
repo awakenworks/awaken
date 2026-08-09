@@ -40,7 +40,8 @@ LABEL org.awaken.environment-packages="1" \
 # pass a comma-separated subset, while an empty value creates a transport-only
 # hermetic test fixture. No Session startup installs or downloads an Agent.
 ARG ACP_RUNTIME_IDS=all
-COPY deploy/images/sandbox/acp-runtimes.json /usr/local/share/awaken/acp-runtimes.json
+ARG ACP_RUNTIME_CONTRACT=deploy/images/sandbox/.acp-runtimes.generated.json
+COPY ${ACP_RUNTIME_CONTRACT} /usr/local/share/awaken/acp-runtimes.json
 COPY deploy/images/sandbox/install-acp-runtimes.py /tmp/install-acp-runtimes.py
 RUN /usr/bin/python3 /tmp/install-acp-runtimes.py \
       /usr/local/share/awaken/acp-runtimes.json "${ACP_RUNTIME_IDS}" \
@@ -54,7 +55,8 @@ RUN if [ -x /opt/awaken-python/bin/hermes-acp ]; then \
     fi \
     && rm -f /tmp/hermes-acp-bootstrap.py
 COPY deploy/images/sandbox/verify-acp-runtimes.py /usr/local/bin/awaken-verify-acp-runtimes
-RUN chmod 0755 /usr/local/bin/awaken-verify-acp-runtimes
+RUN chmod 0755 /usr/local/bin/awaken-verify-acp-runtimes \
+    && /usr/local/bin/awaken-verify-acp-runtimes --self-test
 
 # The execution-plane binary (host-built with `hand`) supplies both the ACP bridge
 # entrypoint and the Session's attached `hand --stdio` exec process.

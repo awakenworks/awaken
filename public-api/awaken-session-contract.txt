@@ -506,6 +506,7 @@ pub awaken_session_contract::FailSessionRealization::reason: alloc::string::Stri
 pub awaken_session_contract::FailSessionRealization::session_id: alloc::string::String
 pub struct awaken_session_contract::FrozenSessionProjection
 pub awaken_session_contract::FrozenSessionProjection::baseline: awaken_session_contract::SessionBaseline
+pub awaken_session_contract::FrozenSessionProjection::environment: awaken_session_contract::SessionEnvironmentState
 pub awaken_session_contract::FrozenSessionProjection::mcp: alloc::vec::Vec<awaken_session_contract::SessionMcpAttachment>
 pub awaken_session_contract::FrozenSessionProjection::resource_revision: u64
 pub awaken_session_contract::FrozenSessionProjection::resources: awaken_session_contract::ResolvedSessionResources

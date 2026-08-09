@@ -6,6 +6,7 @@
 
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_provisioning_contract::SandboxCapacityShapeId;
 use awaken_runtime_contract::PlaintextHolder;
 use awaken_runtime_contract::activation::RunActivation;
 pub use awaken_tenancy::ExecutionScopeRef;
@@ -137,7 +138,7 @@ pub struct RunDispatch {
     /// preference only: workers without a ready receipt remain eligible and use
     /// the canonical cold path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preferred_environment_shape: Option<String>,
+    pub preferred_environment_shape: Option<SandboxCapacityShapeId>,
     /// Exact Environment/deployment request for inference credential plaintext.
     /// Claim admission validates it against every selected published candidate
     /// and the selected Worker's installed capabilities before persisting the
@@ -205,8 +206,8 @@ impl RunDispatch {
     }
 
     #[must_use]
-    pub fn with_preferred_environment_shape(mut self, shape: impl Into<String>) -> Self {
-        self.preferred_environment_shape = Some(shape.into());
+    pub fn with_preferred_environment_shape(mut self, shape: SandboxCapacityShapeId) -> Self {
+        self.preferred_environment_shape = Some(shape);
         self
     }
 

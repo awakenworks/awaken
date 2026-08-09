@@ -130,9 +130,10 @@ fn file_bind_spec(scope: &str, host_file: &str, command: &str) -> pc::SandboxSpe
         mounts: vec![pc::MountRequirement {
             mount_id: "in".into(),
             source: pc::MountSource::CacheVolume {
-                host_path: host_file.into(),
+                location: pc::CacheVolumeLocation::HostPath {
+                    path: host_file.into(),
+                },
                 key: "in-cache".into(),
-                persistent_volume_claim: None,
             },
             mount_path: "/data/in.txt".into(),
             access: pc::MountAccess::ReadOnly,
@@ -325,9 +326,8 @@ async fn a_cachevolume_binds_a_host_directory_the_repo_checkout_shape() {
         mounts: vec![pc::MountRequirement {
             mount_id: "repo".into(),
             source: pc::MountSource::CacheVolume {
-                host_path: host_dir,
+                location: pc::CacheVolumeLocation::HostPath { path: host_dir },
                 key: "repo".into(),
-                persistent_volume_claim: None,
             },
             mount_path: "/workspace/repo".into(),
             access: pc::MountAccess::ReadWrite,

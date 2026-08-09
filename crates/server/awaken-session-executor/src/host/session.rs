@@ -249,7 +249,7 @@ impl SharedHost {
     ) -> Result<bool, HostError> {
         let claim = self
             .session_slots
-            .read(thread, |slot| slot.deferred_claim.clone())
+            .read(thread, |slot| slot.dispatch_claim.clone())
             .flatten();
         let Some(claim) = claim else {
             return Ok(false);
@@ -339,10 +339,8 @@ impl SharedHost {
             }
             return Err(error);
         }
-        self.session_slots.update(thread, |slot| {
-            slot.environment = Some(environment.clone());
-            slot.deferred_claim = None;
-        });
+        self.session_slots
+            .update(thread, |slot| slot.environment = Some(environment.clone()));
         Ok(environment)
     }
 
@@ -1293,6 +1291,14 @@ impl SharedHost {
                 self.capture_decision.clone(),
                 capture_sink,
                 self.data_subject_consent.clone(),
+            ));
+        // This is the one post-attempt output edge. Because it wraps the final
+        // executor shared by DirectRunIngress and DurableRunIngress, claimed
+        // recovery cannot bypass artifact publication.
+        let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
+            Arc::new(crate::run_exec::ArtifactHarvestAttemptExecutor::new(
+                attempt_executor,
+                self.artifact_harvester(),
             ));
         // The foreground delivery seam (slice C/D): a turn's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct

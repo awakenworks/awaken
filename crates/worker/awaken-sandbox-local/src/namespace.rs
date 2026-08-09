@@ -904,6 +904,7 @@ impl NamespaceSandbox {
     pub fn rooted_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
         namespace_raw_tools(
             self.workspace_root(),
+            self.host_outputs.clone(),
             if cfg!(target_os = "macos") {
                 crate::RuntimePathEnv::new(
                     self.host_workspace.to_string_lossy().into_owned(),

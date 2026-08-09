@@ -25,6 +25,7 @@ mod run_application;
 mod session;
 mod session_realization;
 mod session_repo;
+mod skill_execution;
 mod tool_configuration;
 pub mod work_queue;
 
@@ -115,4 +116,5 @@ pub use session_repo::{
     SessionMutationValidationError, SessionRealizationLease, SessionRepositoryError,
     SessionRevision, SessionTombstone, VisibleMcpServer,
 };
+pub use skill_execution::{SkillBundleSource, SkillBundleSourceError, validate_skill_bundle};
 pub use tool_configuration::SessionToolConfiguration;

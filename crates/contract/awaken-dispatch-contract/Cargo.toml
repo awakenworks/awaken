@@ -11,8 +11,8 @@ authority = "durable-run-ingress"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-provisioning-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-resource-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-tenancy.workspace = true
 awaken-worker-contract.workspace = true

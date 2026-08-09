@@ -436,23 +436,26 @@ async fn worker_reconciles_current_environment_shape_before_ready() {
     // (S5 O6 D2, RPN60); F2 warmup uses a default spec instead of the frozen
     // projection (S8 O4 D3, RPN96); F3 warmup transport failure blocks Worker
     // readiness (S7 O3 D2, RPN42); F4 receipt is published for failed/zero
-    // capacity (S6 O3 D3, RPN54); F5 desired shapes beyond the global budget
-    // rotate and recreate capacity forever (S5 O6 D3, RPN90); F6 a config update
-    // retains unused old capacity (S5 O5 D2, RPN50). Mitigation is authenticated
-    // pull after registration, canonical Host projection, cold-path degradation,
-    // observed receipts, stable budget selection, and desired-state discard.
+    // capacity (S6 O3 D3, RPN54); F5 independent default and Environment
+    // producers oversubscribe one global pool and immediately evict a just-created
+    // container (S6 O6 D4, RPN144); F6 desired shapes beyond the global budget
+    // rotate forever (S5 O6 D3, RPN90); F7 a config update retains unused old
+    // capacity (S5 O5 D2, RPN50). Mitigation is one Environment-first capacity
+    // plan, canonical typed shape identity, cold-path degradation, observed
+    // receipts, stable budget selection, and desired-state discard.
     // Cause graph: C1=current cloud snapshot; C2=capacity enabled; C3=prewarm
     // succeeds; C4=transport available; C5=desired cost exceeds total budget;
-    // C6=current config shape changes.
-    // E1=exact shape requested before heartbeat; E2=Worker continues cold without
-    // receipt; E3=stable prefix selected within budget; E4=old unused capacity
-    // discarded before replacement warmup. Decision table:
-    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
-    // | E1   | 1  | 1  | 1  | 1  | 0  | 0  | exact warm then Ready |
-    // | E2   | 1  | 1  | 0  | 1  | -  | 0  | cold Ready, no receipt |
-    // | E3   | -  | 1  | -  | 0  | -  | 0  | cold Ready, prior receipt retained |
-    // | E4   | 1  | 1  | 1  | 1  | 1  | 0  | E3, no over-budget prewarm |
-    // | E5   | 1  | 1  | 1  | 1  | -  | 1  | E4, then exact replacement |
+    // C6=current config shape changes; C7=default and Environment compete for a
+    // total budget of one. E1=exact shape requested before heartbeat; E2=Worker
+    // continues cold without receipt; E3=stable prefix selected within budget;
+    // E4=old unused capacity discarded before replacement warmup; E5=only one
+    // prewarm call occurs, with Environment priority. Decision table:
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | Effect |
+    // | E1   | 1  | 1  | 1  | 1  | 0  | 0  | 0  | exact warm then Ready |
+    // | E2   | 1  | 1  | 0  | 1  | -  | 0  | -  | cold Ready, no receipt |
+    // | E3   | -  | 1  | -  | 0  | -  | 0  | -  | cold Ready, prior receipt retained |
+    // | E4   | 1  | 1  | 1  | 1  | 1  | 0  | 1  | E3,E5, one exact prewarm |
+    // | E5   | 1  | 1  | 1  | 1  | -  | 1  | 1  | E4, then exact replacement |
     let upstream = FakeWorkerUpstream::start();
     let snapshot = awaken_session_contract::EnvironmentSnapshot {
         environment_id: "env-current".into(),
@@ -509,10 +512,10 @@ async fn worker_reconciles_current_environment_shape_before_ready() {
                 if !changed {
                     assert_eq!(
                         warmups.len(),
-                        2,
-                        "E4 default plus one stable budget-selected exact shape"
+                        1,
+                        "E4/E5 one unified plan cannot oversubscribe total=1"
                     );
-                    let exact = &warmups[1].0;
+                    let exact = &warmups[0].0;
                     assert_eq!(
                         exact.network,
                         awaken_provisioning_contract::NetworkPolicy::None,
@@ -532,9 +535,9 @@ async fn worker_reconciles_current_environment_shape_before_ready() {
                     drop(warmups);
                     upstream.set_environment_warmups_json(replacement_response.clone());
                     changed = true;
-                } else if warmups.len() == 3 && !capacity.discarded.lock().unwrap().is_empty() {
+                } else if warmups.len() == 2 && !capacity.discarded.lock().unwrap().is_empty() {
                     assert_eq!(
-                        warmups[2].0.network,
+                        warmups[1].0.network,
                         awaken_provisioning_contract::NetworkPolicy::Unrestricted,
                         "E5 replacement exact network"
                     );
