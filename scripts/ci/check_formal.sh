@@ -29,113 +29,80 @@ python3 scripts/ci/render_runtime_refinement_traces.py \
   "$rust_trace_dir" "$rendered_trace_dir"
 
 if command -v cargo-kani >/dev/null 2>&1; then
-  cargo kani -p awaken-agent-contract \
-    --harness ended_is_absorbing_for_every_next_state
-  cargo kani -p awaken-agent-contract \
-    --harness legacy_wire_accepts_exactly_the_legal_dispositions
-  cargo kani -p awaken-agent-contract \
-    --harness only_unsettled_relationships_occupy_a_parallel_slot
-  cargo kani -p awaken-agent-contract \
-    --harness every_relationship_effect_has_one_documented_precondition
-  cargo kani -p awaken-agent-contract \
-    --harness delegation_admission_requires_every_budget_and_lineage_guard
-  cargo kani -p awaken-agent-contract \
+  # Kani compiles every selected package once and verifies its named harnesses
+  # with a bounded worker pool. The old one-process-per-harness path rebuilt the
+  # same package 54 times. Two jobs is the conservative default because CBMC is
+  # memory-heavy; CI can raise AWAKEN_KANI_JOBS after observing peak RSS.
+  kani_jobs="${AWAKEN_KANI_JOBS:-2}"
+  run_kani() {
+    local package="$1"; shift
+    cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"
+  }
+  run_kani awaken-agent-contract \
+    --harness ended_is_absorbing_for_every_next_state \
+    --harness legacy_wire_accepts_exactly_the_legal_dispositions \
+    --harness only_unsettled_relationships_occupy_a_parallel_slot \
+    --harness every_relationship_effect_has_one_documented_precondition \
+    --harness delegation_admission_requires_every_budget_and_lineage_guard \
     --harness cancellation_delivery_is_enabled_only_by_durable_intent
-  cargo kani -p awaken-session-contract \
-    --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome
-  cargo kani -p awaken-session-contract \
-    --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool
-  cargo kani -p awaken-session-contract \
-    --harness only_queued_work_is_claimable
-  cargo kani -p awaken-session-contract \
-    --harness only_active_work_accepts_lease_extension
-  cargo kani -p awaken-session-contract \
-    --harness stop_is_absorbing_for_every_work_state
-  cargo kani -p awaken-session-contract \
-    --harness first_heartbeat_is_authorized_exactly_once
-  cargo kani -p awaken-session-contract \
+  run_kani awaken-session-contract \
+    --harness awaiting_constructor_cannot_create_a_terminal_or_failed_outcome \
+    --harness ended_constructor_carries_the_only_failure_authority_and_no_pending_tool \
+    --harness only_queued_work_is_claimable \
+    --harness only_active_work_accepts_lease_extension \
+    --harness stop_is_absorbing_for_every_work_state \
+    --harness first_heartbeat_is_authorized_exactly_once \
     --harness matching_heartbeat_rejects_every_other_receipt
-  cargo kani -p awaken-tenancy \
-    --harness successful_scope_resolution_never_widens_authority
-  cargo kani -p awaken-tenancy \
-    --harness any_uncovered_selector_fails_closed
-  cargo kani -p awaken-tenancy \
+  run_kani awaken-tenancy \
+    --harness successful_scope_resolution_never_widens_authority \
+    --harness any_uncovered_selector_fails_closed \
     --harness selector_order_cannot_change_an_authorized_result
-  cargo kani -p awaken-provisioning-contract \
-    --harness credential_expiry_never_exceeds_lease_or_own_ttl
-  cargo kani -p awaken-provisioning-contract \
-    --harness revoked_or_expired_lease_always_denies_egress
-  cargo kani -p awaken-provisioning-contract \
-    --harness reap_reason_obeys_fixed_fail_closed_priority
-  cargo kani -p awaken-provisioning-contract \
-    --harness sandbox_admission_never_weakens_the_isolation_floor
-  cargo kani -p awaken-provisioning-contract \
-    --harness sandbox_admission_requires_every_requested_capability
-  cargo kani -p awaken-provisioning-contract \
+  run_kani awaken-provisioning-contract \
+    --harness credential_expiry_never_exceeds_lease_or_own_ttl \
+    --harness revoked_or_expired_lease_always_denies_egress \
+    --harness reap_reason_obeys_fixed_fail_closed_priority \
+    --harness sandbox_admission_never_weakens_the_isolation_floor \
+    --harness sandbox_admission_requires_every_requested_capability \
     --harness fail_closed_sandbox_policy_never_authorizes_a_downgrade
-  cargo kani -p awaken-data-subject-application \
-    --harness any_withdrawal_vetoes_full_content_capture
-  cargo kani -p awaken-data-subject-application \
-    --harness consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose
-  cargo kani -p awaken-data-subject-application \
-    --harness erasure_withdrawal_is_absorbing_and_idempotent
-  cargo kani -p awaken-data-subject-application \
+  run_kani awaken-data-subject-application \
+    --harness any_withdrawal_vetoes_full_content_capture \
+    --harness consent_upsert_leaves_exactly_one_row_for_the_incoming_purpose \
+    --harness erasure_withdrawal_is_absorbing_and_idempotent \
     --harness revision_advance_is_strict_or_explicitly_exhausted
-  cargo kani -p awaken-credential-vault \
-    --harness disabled_credential_pool_members_are_never_eligible
-  cargo kani -p awaken-credential-vault \
-    --harness credential_cooldown_boundary_is_exact_and_inclusive
-  cargo kani -p awaken-credential-vault \
-    --harness exhausted_credentials_are_unavailable_at_every_time
-  cargo kani -p awaken-credential-vault \
+  run_kani awaken-credential-vault \
+    --harness disabled_credential_pool_members_are_never_eligible \
+    --harness credential_cooldown_boundary_is_exact_and_inclusive \
+    --harness exhausted_credentials_are_unavailable_at_every_time \
     --harness a_pool_with_no_enabled_available_member_fails_closed
-  cargo kani -p awaken-store-schema \
-    --harness dense_migration_versions_are_strictly_increasing
-  cargo kani -p awaken-store-schema \
-    --harness migration_step_never_rolls_back_or_skips_a_version
-  cargo kani -p awaken-store-schema \
+  run_kani awaken-store-schema \
+    --harness dense_migration_versions_are_strictly_increasing \
+    --harness migration_step_never_rolls_back_or_skips_a_version \
     --harness replaying_a_fully_applied_migration_plan_is_a_noop
-  cargo kani -p awaken-ext-compact \
-    --harness fold_point_preserves_the_requested_suffix
-  cargo kani -p awaken-ext-compact \
+  run_kani awaken-ext-compact \
+    --harness fold_point_preserves_the_requested_suffix \
     --harness fold_point_is_present_exactly_when_triggered_with_nonempty_prefix
-  cargo kani -p awaken-ext-goal \
-    --harness applying_a_grade_obeys_decision_and_budget
-  cargo kani -p awaken-ext-goal \
+  run_kani awaken-ext-goal \
+    --harness applying_a_grade_obeys_decision_and_budget \
     --harness terminal_outcomes_are_absorbing
-  cargo kani -p awaken-runtime-contract \
-    --harness terminal_calls_are_never_reentered
-  cargo kani -p awaken-runtime-contract \
-    --harness only_the_matching_approval_ticket_enters_execution
-  cargo kani -p awaken-runtime-contract \
-    --harness every_tool_call_transition_has_the_unique_documented_precondition
-  cargo kani -p awaken-runtime-contract \
-    --harness terminal_tool_calls_only_accept_result_staging
-  cargo kani -p awaken-runtime-contract \
-    --harness run_end_sealing_targets_exactly_nonterminal_calls
-  cargo kani -p awaken-runtime-contract \
-    --harness child_result_is_consumed_only_from_ready
-  cargo kani -p awaken-runtime-contract \
+  run_kani awaken-runtime-contract \
+    --harness terminal_calls_are_never_reentered \
+    --harness only_the_matching_approval_ticket_enters_execution \
+    --harness every_tool_call_transition_has_the_unique_documented_precondition \
+    --harness terminal_tool_calls_only_accept_result_staging \
+    --harness run_end_sealing_targets_exactly_nonterminal_calls \
+    --harness child_result_is_consumed_only_from_ready \
     --harness terminal_delivery_phases_never_reopen
-  cargo kani -p awaken-mcp-server-core \
-    --harness one_request_has_at_most_one_final_response
-  cargo kani -p awaken-mcp-server-core \
-    --harness notifications_never_have_a_jsonrpc_response
-  cargo kani -p awaken-mcp-server-core \
-    --harness final_response_is_progress_absorbing
-  cargo kani -p awaken-mcp-server-core \
-    --harness rejected_requests_never_enter_the_host
-  cargo kani -p awaken-mcp-server-core \
+  run_kani awaken-mcp-server-core \
+    --harness one_request_has_at_most_one_final_response \
+    --harness notifications_never_have_a_jsonrpc_response \
+    --harness final_response_is_progress_absorbing \
+    --harness rejected_requests_never_enter_the_host \
     --harness cancellation_never_produces_a_success_result
-  cargo kani -p awaken-worker-contract \
-    --harness accepted_version_is_inside_worker_range
-  cargo kani -p awaken-worker-contract \
-    --harness non_ready_worker_never_accepts_work
-  cargo kani -p awaken-worker-contract \
-    --harness never_replace_rejects_every_replacement
-  cargo kani -p awaken-worker-contract \
-    --harness sandbox_continuity_authorizes_replacement_exactly_when_bound
-  cargo kani -p awaken-worker-contract \
+  run_kani awaken-worker-contract \
+    --harness accepted_version_is_inside_worker_range \
+    --harness non_ready_worker_never_accepts_work \
+    --harness never_replace_rejects_every_replacement \
+    --harness sandbox_continuity_authorizes_replacement_exactly_when_bound \
     --harness same_incarnation_never_spends_replacement_authority
 else
   echo "skipped Kani: install with 'cargo install --locked kani-verifier && cargo kani setup'"

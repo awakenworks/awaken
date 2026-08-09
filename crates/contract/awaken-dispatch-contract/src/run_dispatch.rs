@@ -133,6 +133,11 @@ pub struct RunDispatch {
     /// their historical eager behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_runtime: Option<SessionRuntimeEnvelope>,
+    /// Provider-neutral Environment creation shape. This is a placement
+    /// preference only: workers without a ready receipt remain eligible and use
+    /// the canonical cold path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_environment_shape: Option<String>,
     /// Exact Environment/deployment request for inference credential plaintext.
     /// Claim admission validates it against every selected published candidate
     /// and the selected Worker's installed capabilities before persisting the
@@ -159,6 +164,7 @@ impl RunDispatch {
             execution_scope: None,
             session_resources: None,
             session_runtime: None,
+            preferred_environment_shape: None,
             inference_plaintext_holder: None,
             placement: PlacementRequirements::default(),
         }
@@ -195,6 +201,12 @@ impl RunDispatch {
     #[must_use]
     pub fn with_session_runtime(mut self, runtime: SessionRuntimeEnvelope) -> Self {
         self.session_runtime = Some(runtime);
+        self
+    }
+
+    #[must_use]
+    pub fn with_preferred_environment_shape(mut self, shape: impl Into<String>) -> Self {
+        self.preferred_environment_shape = Some(shape.into());
         self
     }
 

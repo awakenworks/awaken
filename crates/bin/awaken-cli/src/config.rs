@@ -1034,6 +1034,8 @@ mod tests {
             .sandbox;
         assert!(!defaults.allow_local_fallback, "S1");
         assert_eq!(defaults.warm_pool_size, 0, "S1");
+        assert_eq!(defaults.warm_pool_total_size, 16, "S1");
+        assert_eq!(defaults.warm_pool_idle_ttl_secs, 300, "S1");
         assert_eq!(defaults.container_forward_proxy, None, "S1");
         assert_eq!(defaults.k8s_namespace, "default", "S1");
         assert!(defaults.k8s_image_pull_secrets.is_empty(), "S1");
@@ -1058,6 +1060,8 @@ mod tests {
             FileConfig {
                 sandbox_allow_local_fallback: Some(true),
                 sandbox_warm_pool_size: Some(3),
+                sandbox_warm_pool_total_size: Some(7),
+                sandbox_warm_pool_idle_ttl_secs: Some(41),
                 container_forward_proxy: Some("http://proxy.internal:8080".into()),
                 k8s_namespace: Some("agents".into()),
                 k8s_image_pull_secrets: Some(vec![" registry-pull ".into(), String::new()]),
@@ -1084,6 +1088,8 @@ mod tests {
         .sandbox;
         assert!(selected.allow_local_fallback, "S2");
         assert_eq!(selected.warm_pool_size, 3, "S2");
+        assert_eq!(selected.warm_pool_total_size, 7, "S2");
+        assert_eq!(selected.warm_pool_idle_ttl_secs, 41, "S2");
         assert_eq!(
             selected.container_forward_proxy.as_deref(),
             Some("http://proxy.internal:8080"),

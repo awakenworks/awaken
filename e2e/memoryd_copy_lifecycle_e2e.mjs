@@ -12,37 +12,17 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { REPO_ROOT } from './harness.mjs';
+import { cargoExecutable } from './cargo_binary.mjs';
 
 function ensureMemorydBin() {
-  const output = execFileSync(
-    'cargo',
-    [
-      'build',
-      '--quiet',
-      '--message-format=json',
-      '-p',
-      'awaken-sandbox',
-      '--bin',
-      'awaken-sandbox',
-      '--features',
-      'memoryd',
-    ],
-    { cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
-  ).toString();
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken-sandbox') {
-        return message.executable;
-      }
-    } catch {
-      // Cargo diagnostics are not JSON messages with an executable.
-    }
-  }
-  throw new Error('could not resolve the awaken-sandbox memoryd binary path');
+  return cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-sandbox',
+    targetName: 'awaken-sandbox',
+    features: ['memoryd'],
+  });
 }
 
 function waitForExit(child) {

@@ -109,6 +109,7 @@ impl EnvironmentExecutionApplication {
             runtime,
             mcp_targets,
             self.image_readiness.as_ref(),
+            true,
         )
         .await
     }
@@ -171,6 +172,7 @@ impl EnvironmentExecutionApplication {
             runtime,
             mcp_targets,
             self.image_readiness.as_ref(),
+            true,
         )
         .await
     }
@@ -418,6 +420,7 @@ async fn snapshot_from_registration(
     runtime: Option<&str>,
     mcp_targets: &[awaken_session_contract::McpTarget],
     image_readiness: Option<&Arc<dyn EnvironmentImageReadiness>>,
+    wait_for_image: bool,
 ) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError> {
     let item = &registration.definition;
     if item.archived_at.is_some() {
@@ -448,34 +451,34 @@ async fn snapshot_from_registration(
             awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         ),
     };
-    let (sandbox, sandbox_provisioning, base_image) = match &registration.sandbox_policy {
+    let (sandbox, sandbox_provisioning) = match &registration.sandbox_policy {
         Some(policy) if policy.disabled => return Ok(None),
         Some(policy) => {
-            let base_image = match &policy.config.environment {
-                Some(awaken_provisioning_contract::EnvironmentKind::Image { reference }) => {
-                    Some(reference.clone())
-                }
-                _ => None,
-            };
             let Ok(config) = serde_json::to_value(&policy.config) else {
                 return Ok(None);
             };
-            (config, policy.provisioning, base_image)
+            (config, policy.provisioning)
         }
         None => (
             serde_json::json!({}),
             awaken_session_contract::SandboxProvisioning::Eager,
-            None,
         ),
     };
     let prepared_image = match image_readiness {
-        Some(readiness) => {
-            readiness
-                .ready_image(&registration, base_image.as_deref())
-                .await?
-        }
+        Some(readiness) if wait_for_image => readiness.ready_image(&registration, None).await?,
+        Some(readiness) => readiness.ready_image_now(&registration, None).await?,
         None => None,
     };
+    // A package-bearing shape cannot be prewarmed against a mutable/unprepared
+    // image while Coordinator owns image realization. Keep the previous receipt
+    // until the exact immutable image becomes ready on a later reconciliation.
+    if !wait_for_image
+        && image_readiness.is_some()
+        && !packages.is_empty()
+        && prepared_image.is_none()
+    {
+        return Ok(None);
+    }
     let self_hosted = item.is_self_hosted();
     let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
         awaken_session_contract::stable_fingerprint(&(
@@ -500,6 +503,43 @@ async fn snapshot_from_registration(
         network,
         credential_realization,
     }))
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::EnvironmentWarmupSource for EnvironmentExecutionApplication {
+    async fn current_environment_warmups(
+        &self,
+    ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+        let registrations = self
+            .execution_source
+            .current_registrations()
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut warmups = Vec::new();
+        for registration in registrations {
+            if registration.definition.is_self_hosted() {
+                continue;
+            }
+            if let Some(snapshot) = snapshot_from_registration(
+                registration,
+                None,
+                &[],
+                self.image_readiness.as_ref(),
+                false,
+            )
+            .await
+            .map_err(|error| error.to_string())?
+            {
+                warmups.push(snapshot);
+            }
+        }
+        warmups.sort_by(|left, right| {
+            left.environment_id
+                .cmp(&right.environment_id)
+                .then_with(|| left.revision.cmp(&right.revision))
+        });
+        Ok(warmups)
+    }
 }
 
 fn session_network_policy(
@@ -588,6 +628,142 @@ mod tests {
         );
         let application = EnvironmentExecutionApplication::new(work.clone(), catalog.clone());
         (catalog, work, registrar, application)
+    }
+
+    struct ToggleImageReadiness(AtomicBool);
+
+    #[async_trait::async_trait]
+    impl EnvironmentImageReadiness for ToggleImageReadiness {
+        async fn ready_image(
+            &self,
+            _registration: &ExecutableEnvironmentRegistration,
+            _base_image: Option<&str>,
+        ) -> Result<Option<String>, EnvironmentImageBuildError> {
+            Ok(Some("registry/env@sha256:ready".into()))
+        }
+
+        async fn ready_image_now(
+            &self,
+            _registration: &ExecutableEnvironmentRegistration,
+            _base_image: Option<&str>,
+        ) -> Result<Option<String>, EnvironmentImageBuildError> {
+            Ok(self
+                .0
+                .load(Ordering::SeqCst)
+                .then(|| "registry/env@sha256:ready".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn current_catalog_derives_nonblocking_warmup_demand() {
+        // FMECA: F1 self-hosted Environment creates local capacity (S7 O3 D2,
+        // RPN42); F2 package shape warms before immutable image Ready (S8 O4 D3,
+        // RPN96); F3 image worker outage blocks unrelated package-free warmup
+        // (S4 O3 D3, RPN36); F4 config revision leaves the old catalog entry as
+        // desired (S5 O4 D2, RPN40). The catalog is the sole desired-state owner,
+        // and image readiness is a non-blocking filter.
+        // Cause graph: C1=current; C2=self-hosted; C3=packages; C4=image ready;
+        // C5=new revision supersedes old. Effects: E1=emit snapshot; E2=omit;
+        // E3=prepared image pinned; E4=only new revision emitted.
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | W1   | 1  | 1  | -  | -  | 0  | E2     |
+        // | W2   | 1  | 0  | 0  | -  | 0  | E1     |
+        // | W3   | 1  | 0  | 1  | 0  | 0  | E2     |
+        // | W4   | 1  | 0  | 1  | 1  | 0  | E1,E3  |
+        // | W5   | -  | 0  | 0  | -  | 1  | E1,E4  |
+        let (catalog, _, registrar, _) = fixture();
+        registrar
+            .register(registration("external", 1, EnvironmentConfig::SelfHosted))
+            .await
+            .unwrap();
+        registrar
+            .register(registration(
+                "plain",
+                1,
+                EnvironmentConfig::Cloud {
+                    networking: Default::default(),
+                    packages: Default::default(),
+                },
+            ))
+            .await
+            .unwrap();
+        registrar
+            .register(registration(
+                "packaged",
+                1,
+                EnvironmentConfig::Cloud {
+                    networking: Default::default(),
+                    packages: EnvironmentPackages {
+                        npm: vec!["tsx@latest".into()],
+                        ..Default::default()
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        let readiness = Arc::new(ToggleImageReadiness(AtomicBool::new(false)));
+        let application =
+            EnvironmentExecutionApplication::new(Arc::new(InMemoryWorkQueue::new()), catalog)
+                .with_image_readiness(readiness.clone());
+        let pending =
+            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+                &application,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|snapshot| snapshot.environment_id.as_str())
+                .collect::<Vec<_>>(),
+            ["plain"],
+            "W1-W3"
+        );
+        readiness.0.store(true, Ordering::SeqCst);
+        let ready = awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+            &application,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ready.len(), 2, "W4");
+        assert_eq!(
+            ready
+                .iter()
+                .find(|snapshot| snapshot.environment_id == "packaged")
+                .and_then(|snapshot| snapshot.prepared_image.as_deref()),
+            Some("registry/env@sha256:ready"),
+            "W4"
+        );
+        registrar
+            .register(registration(
+                "plain",
+                2,
+                EnvironmentConfig::Cloud {
+                    networking: EnvironmentNetworking::Limited {
+                        allowed_hosts: Vec::new(),
+                        allow_mcp_servers: false,
+                        allow_package_managers: false,
+                    },
+                    packages: Default::default(),
+                },
+            ))
+            .await
+            .unwrap();
+        let revised =
+            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+                &application,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            revised
+                .iter()
+                .filter(|snapshot| snapshot.environment_id == "plain")
+                .map(|snapshot| snapshot.revision.0)
+                .collect::<Vec<_>>(),
+            [2],
+            "W5"
+        );
     }
 
     #[tokio::test]

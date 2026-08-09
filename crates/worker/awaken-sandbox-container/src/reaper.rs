@@ -1,21 +1,19 @@
 //! The cross-restart container reaper — the garbage collector for awaken-managed
 //! containers a **crashed** worker left behind.
 //!
-//! Why this exists (and why it is not a duplicate mechanism): [`SandboxManager`] is the
-//! in-process reuse orchestrator (ADR-0056) — it renews/reconciles the sandboxes THIS
-//! worker created, from an in-memory registry that dies with the process. So it
-//! structurally cannot reap what a process that already crashed left running. Kubernetes
-//! uses native GC when a platform owner exists, but local/control-plane deployments can
-//! legitimately create ownerless Pods. Docker and Podman likewise have no native
-//! lease/TTL. This reaper closes the cross-restart gap for all three backends.
+//! Why this exists (and why it is not a duplicate mechanism): the Session Environment
+//! lifecycle owns live environments of this worker, while [`crate::WarmContainerPool`]
+//! owns never-used warm capacity. Both are in-process owners and therefore structurally
+//! cannot reap what a process that already crashed left running. Kubernetes uses native
+//! GC when a platform owner exists, but local/control-plane deployments can legitimately
+//! create ownerless Pods. Docker and Podman likewise have no native lease/TTL. This
+//! reaper closes the cross-restart gap for all three backends.
 //!
 //! The decision is a pure value test over the signals the runtime discovers
 //! ([`ManagedContainer`]): containers protected by this runtime instance are never
 //! touched; among prior-owner containers, an exited agent is garbage and a running
 //! one is collected only after the max-age cap. This ownership fence prevents the
 //! crash reaper from racing normal channel drain and credential write-back.
-//!
-//! [`SandboxManager`]: https://docs.rs/awaken-sandbox-manager
 
 use std::sync::Arc;
 

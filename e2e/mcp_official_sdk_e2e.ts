@@ -16,7 +16,7 @@
 // JSON-RPC partitions that the official SDK intentionally prevents callers creating.
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -24,27 +24,19 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 // @ts-expect-error The shared JavaScript harness intentionally has no declaration file.
 import { stopServer, waitForPort } from './harness.mjs';
+// @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
+import { cargoExecutable } from './cargo_binary.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38816);
 const TOKEN = 'mcp-official-sdk-token'; // awaken-allow: secret
 
 function buildDemo(): string {
-  const output = execFileSync(
-    'cargo',
-    ['build', '--quiet', '--message-format=json', '-p', 'awaken-protocol-mcp', '--bin', 'awaken-mcp-stdio-demo'],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
-  );
-  for (const line of output.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      const message = JSON.parse(line);
-      if (message.executable && message.target?.name === 'awaken-mcp-stdio-demo') return message.executable;
-    } catch {
-      // Cargo may interleave human diagnostics.
-    }
-  }
-  throw new Error('could not resolve awaken-mcp-stdio-demo');
+  return cargoExecutable({
+    cwd: ROOT,
+    packageName: 'awaken-protocol-mcp',
+    targetName: 'awaken-mcp-stdio-demo',
+  });
 }
 
 async function main(): Promise<void> {

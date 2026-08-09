@@ -1071,13 +1071,14 @@ mod tests {
                 "{id}"
             );
         }
+        let hermes = acp_cli("hermes")
+            .unwrap()
+            .project(&route, Some(1_000_000), &[]);
+        assert_eq!(hermes.session_model.as_deref(), Some("MiniMax-M3[1m]"));
         assert_eq!(
-            acp_cli("hermes")
-                .unwrap()
-                .project(&route, None, &[])
-                .session_model
-                .as_deref(),
-            Some("MiniMax-M3[1m]")
+            env_of(&hermes, "HERMES_CONTEXT_WINDOW").as_deref(),
+            Some("1000000"),
+            "Hermes' offline startup metadata must retain the catalog window"
         );
     }
 
@@ -1672,6 +1673,25 @@ mod tests {
         );
         assert_eq!(cli.capability_probe_auth_method_id, Some("api-key"));
         assert_eq!(cli.auth_method_id, None);
+
+        let hermes = acp_cli("hermes").unwrap();
+        assert_eq!(hermes.container_argv, ["hermes-acp"]);
+        assert_eq!(
+            hermes.container_probe_argv.unwrap(),
+            [
+                "/usr/bin/env",
+                "DEEPSEEK_API_KEY=awaken-capability-probe",
+                "DEEPSEEK_BASE_URL=http://127.0.0.1:9/v1",
+                "HERMES_MODEL=deepseek-v4-flash",
+                "hermes-acp"
+            ],
+            "a prompt-free capability probe must not depend on provider egress"
+        );
+        assert_eq!(
+            hermes.model_delivery.unwrap().base_url,
+            "DEEPSEEK_BASE_URL",
+            "the real managed route remains runtime-provisioned"
+        );
 
         for cli in known_acp_clis() {
             for argument in cli.container_probe_argv.unwrap_or_default() {

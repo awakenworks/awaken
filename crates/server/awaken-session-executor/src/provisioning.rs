@@ -102,6 +102,63 @@ pub(crate) fn sandbox_requirements(
     pc::SandboxRequirements::from_spec(&spec, opaque_process)
 }
 
+/// Canonical mount/env-independent Environment projection used by both Session
+/// creation and proactive capacity. Callers supply per-Session mounts and env;
+/// an empty pair therefore yields the exact poolable shape, not a second warmup
+/// approximation.
+fn sandbox_spec_from_projection(
+    scope: &str,
+    mounts: Vec<pc::MountRequirement>,
+    env: Vec<pc::EnvVar>,
+    environment: Option<&crate::session_slot::FrozenEnvironmentRuntimeProjection>,
+    provider_enforces_network_isolation: bool,
+) -> pc::SandboxSpec {
+    let projected_network = environment
+        .map(|projection| projection.network.clone())
+        .unwrap_or(pc::NetworkPolicy::Unrestricted);
+    // Workdir can enforce denial only for spawned tools via its wrapper. Stronger
+    // providers retain the exact frozen policy for admission and enforcement.
+    let network = if projected_network.is_restricted() && !provider_enforces_network_isolation {
+        pc::NetworkPolicy::Unrestricted
+    } else {
+        projected_network
+    };
+    let extra = environment
+        .is_some_and(|projection| projection.network.is_restricted())
+        .then(|| serde_json::json!({ "deny_egress": true }));
+    let base = pc::SandboxSpec {
+        scope: scope.to_owned(),
+        isolation: pc::IsolationClass::Workdir,
+        mounts,
+        env,
+        packages: environment
+            .map(|projection| projection.packages.clone())
+            .unwrap_or_default(),
+        network,
+        outputs_path: OUTPUTS_PATH.to_owned(),
+        limits: pc::ResourceLimits::default(),
+        lease_ttl_secs: None,
+        extra,
+    };
+    environment
+        .and_then(|projection| projection.sandbox.clone())
+        .map_or(base.clone(), |sandbox| sandbox.apply(base))
+}
+
+pub(crate) fn environment_capacity_spec(
+    environment: &awaken_session_contract::EnvironmentSnapshot,
+    provider_enforces_network_isolation: bool,
+) -> pc::SandboxSpec {
+    let projection = project_environment(environment);
+    sandbox_spec_from_projection(
+        "environment-warmup",
+        Vec::new(),
+        Vec::new(),
+        Some(&projection),
+        provider_enforces_network_isolation,
+    )
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 struct DispatchedSessionRuntimeProjection {
     environment: awaken_session_contract::EnvironmentSnapshot,
@@ -236,69 +293,17 @@ impl SharedHost {
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
     pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
         let mounts = self.thread_session_mounts(thread);
-        // Egress denial is a Workdir-tier bwrap convenience (not admission-gated
-        // network isolation, which this tier cannot enforce), so it rides `extra`.
-        let extra = self
+        let environment = self
             .session_slots
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .is_some_and(|environment| environment.network.is_restricted())
-            })
-            .unwrap_or(false)
-            .then(|| serde_json::json!({ "deny_egress": true }));
-        let projected_network = self
-            .session_slots
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .map(|environment| environment.network.clone())
-            })
-            .flatten()
-            .unwrap_or(pc::NetworkPolicy::Unrestricted);
-        let packages = self
-            .session_slots
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .map(|environment| environment.packages.clone())
-            })
-            .flatten()
-            .unwrap_or_default();
-        // Workdir can enforce the same deny-all intent only for spawned tools via
-        // its `deny_egress` wrapper; it must not advertise an OS network-isolation
-        // requirement that its provider deliberately does not claim. Stronger
-        // providers retain the exact frozen policy for admission and enforcement.
-        let network = if projected_network.is_restricted()
-            && !self.session_provider.capabilities().network_isolation
-        {
-            pc::NetworkPolicy::Unrestricted
-        } else {
-            projected_network
-        };
-        let base = pc::SandboxSpec {
-            scope: thread.to_string(),
-            isolation: pc::IsolationClass::Workdir,
+            .read(thread, |slot| slot.environment_projection.clone())
+            .flatten();
+        sandbox_spec_from_projection(
+            thread,
             mounts,
-            env: self.thread_session_env(thread),
-            packages,
-            network,
-            outputs_path: OUTPUTS_PATH.to_string(),
-            limits: pc::ResourceLimits::default(),
-            lease_ttl_secs: None,
-            extra,
-        };
-        // Apply only the network-free Sandbox requirement from the same frozen
-        // Environment projection ACP consumes. Reachability remains the distinct
-        // `network` fact above; retained sandbox.network fields were discarded.
-        self.session_slots
-            .read(thread, |slot| {
-                slot.environment_projection
-                    .as_ref()
-                    .and_then(|environment| environment.sandbox.clone())
-            })
-            .flatten()
-            .map_or(base.clone(), |sandbox| sandbox.apply(base))
+            self.thread_session_env(thread),
+            environment.as_ref(),
+            self.session_provider.capabilities().network_isolation,
+        )
     }
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by

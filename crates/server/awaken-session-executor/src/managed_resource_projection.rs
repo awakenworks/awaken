@@ -120,7 +120,7 @@ impl crate::ManagedHost {
             } => {
                 let materialization_reference = match (&self.host.upstream, claim) {
                     (Some(_), Some(claim)) => Some(
-                        crate::memory_transport::memory_materialization_reference(
+                        awaken_resource_worker_http::memory_materialization_reference(
                             workspace,
                             memory_store_id.as_str(),
                             config.version,

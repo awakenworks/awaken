@@ -69,6 +69,16 @@ impl ExecutableEnvironmentCatalog {
             .and_then(|entry| entry.registration.clone())
     }
 
+    pub fn current_all(&self) -> Vec<ExecutableEnvironmentRegistration> {
+        self.state
+            .read()
+            .expect("executable Environment catalog")
+            .current
+            .values()
+            .filter_map(|entry| entry.registration.clone())
+            .collect()
+    }
+
     pub fn at_revision(
         &self,
         environment_id: &str,
@@ -183,6 +193,13 @@ impl ExecutableEnvironmentCatalog {
 
 #[async_trait]
 impl ExecutableEnvironmentRegistrationSource for ExecutableEnvironmentCatalog {
+    async fn current_registrations(
+        &self,
+    ) -> Result<Vec<ExecutableEnvironmentRegistration>, ExecutableEnvironmentRegistrationError>
+    {
+        Ok(self.current_all())
+    }
+
     async fn current_registration(
         &self,
         environment_id: &str,

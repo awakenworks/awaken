@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Keep the repository's test graph on one executable authority.
 
-``e2e/package.json`` owns suite composition and
+``e2e/package.json`` owns suite composition and its deterministic suite order;
 ``e2e/stage_change_coverage_e2e.ts`` owns functional obligations.  CI and
 coverage scripts may invoke those authorities, but may not maintain their own
-scenario lists or turn a failed test into a successful report.
+scenario lists, execute a scenario twice, or turn a failure into success.
 """
 
 from __future__ import annotations
@@ -26,16 +26,20 @@ REQUIRED_DETERMINISTIC_SUITES = (
     "test:fs",
     "test:extended",
     "test:environment-matrix",
+    "test:composition",
     "test:coordinator-authority",
     "test:runtime-stages",
     "test:coverage-gaps",
+    "test:delegation-restart",
 )
+DETERMINISTIC_RUNNER = "node deterministic_runner.mjs"
 SECONDARY_RUNNERS = (
     "scripts/ci/e2e-coverage.sh",
     "scripts/ci/combined-coverage.sh",
 )
 REQUIRED_RELEASE_COMMANDS = (
     "check_test_orchestration.py",
+    "npm --prefix e2e run test:runner",
     "check_public_api.sh --require-tools",
     "cargo deny --log-level error check bans",
     "check_formal.sh --require-tools",
@@ -45,6 +49,19 @@ REQUIRED_RELEASE_COMMANDS = (
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12",
     "npm --prefix e2e run test:deterministic",
     "sandbox_capability_suite.sh --require-substrates",
+)
+REQUIRED_RELEASE_GROUPS = (
+    "static",
+    "docs",
+    "rust",
+    "api",
+    "formal",
+    "postgres",
+    "kubernetes",
+    "k3d",
+    "frontend",
+    "e2e",
+    "sandbox",
 )
 STORE_CONFORMANCE = "crates/stores/awaken-store-conformance/src/lib.rs"
 STORE_BACKEND_TESTS = (
@@ -68,16 +85,51 @@ def e2e_files(root: Path) -> set[str]:
 
 def orchestration_errors(
     scripts: dict[str, str],
+    deterministic_suites: list[str],
     stage_text: str,
     files: set[str],
     runner_texts: dict[str, str],
 ) -> list[str]:
     errors: list[str] = []
-    deterministic = scripts.get("test:deterministic", "")
+    if scripts.get("test:deterministic") != DETERMINISTIC_RUNNER:
+        errors.append("test:deterministic does not delegate to deterministic_runner.mjs")
+    if len(deterministic_suites) != len(set(deterministic_suites)):
+        errors.append("deterministic suite order contains duplicates")
 
     for suite in REQUIRED_DETERMINISTIC_SUITES:
-        if f"npm run {suite}" not in deterministic:
-            errors.append(f"test:deterministic does not invoke {suite}")
+        if suite not in deterministic_suites:
+            errors.append(f"deterministic suite order does not invoke {suite}")
+
+    expanded: list[tuple[str, str]] = []
+
+    def visit(name: str, stack: tuple[str, ...] = ()) -> None:
+        if name in stack:
+            errors.append("cyclic deterministic suite: " + " -> ".join((*stack, name)))
+            return
+        body = scripts.get(name)
+        if body is None:
+            errors.append(f"deterministic suite does not exist: {name}")
+            return
+        if name == "test" and scripts.get("pretest"):
+            visit("pretest", (*stack, name))
+        for command in re.split(r"\s*&&\s*", body):
+            nested = re.fullmatch(r"npm run ([^ ]+)", command)
+            if nested and nested.group(1) in scripts:
+                visit(nested.group(1), (*stack, name))
+            else:
+                expanded.append((command, " > ".join((*stack, name))))
+
+    for suite in deterministic_suites:
+        visit(suite)
+
+    by_command: dict[str, list[str]] = {}
+    for command, owner in expanded:
+        by_command.setdefault(command, []).append(owner)
+    for command, owners in sorted(by_command.items()):
+        if len(owners) > 1:
+            errors.append(
+                f"duplicate deterministic command `{command}` via " + ", ".join(owners)
+            )
 
     scenario_text, _, obligation_text = stage_text.partition("const obligations")
     scenario_ids = re.findall(r"\bid:\s*'([^']+)'", scenario_text)
@@ -104,6 +156,18 @@ def orchestration_errors(
     for relative in scenario_files:
         if relative not in files:
             errors.append(f"stage scenario file does not exist: {relative}")
+
+    direct_scenario_files: set[str] = set()
+    for command, _ in expanded:
+        direct_scenario_files.update(
+            re.findall(r"(?:^|\s)(?:node|tsx)\s+([^\s]+_e2e\.(?:js|mjs|ts))", command)
+        )
+    stage_overlap = sorted(set(scenario_files) & direct_scenario_files)
+    if stage_overlap:
+        errors.append(
+            "stage scenarios also execute in deterministic package suites: "
+            + ", ".join(stage_overlap)
+        )
 
     # The package scripts plus the executable stage cause/effect graph are the
     # complete classification source. A newly added E2E must be deterministic,
@@ -136,6 +200,11 @@ def release_gate_errors(check_all: str, public_api: str) -> list[str]:
     ]
     if re.search(r'^excluded="[^"\n]+"', public_api, re.MULTILINE):
         errors.append("public API gate still excludes workspace crates")
+    for group in REQUIRED_RELEASE_GROUPS:
+        if not re.search(rf"^run {re.escape(group)} ", check_all, re.MULTILINE):
+            errors.append(f"check-all has no executable {group} group")
+    if "duration_seconds" not in check_all or "AWAKEN_TEST_TIMINGS_FILE" not in check_all:
+        errors.append("check-all does not publish a configurable timing artifact")
     return errors
 
 
@@ -172,9 +241,15 @@ def shared_conformance_errors(
 def validate(root: Path) -> list[str]:
     package = json.loads((root / "e2e/package.json").read_text(encoding="utf-8"))
     scripts: dict[str, str] = package.get("scripts", {})
+    deterministic_suites = package.get("awakenTest", {}).get("deterministicSuites", [])
+    if not isinstance(deterministic_suites, list) or not all(
+        isinstance(suite, str) for suite in deterministic_suites
+    ):
+        return ["awakenTest.deterministicSuites must be an array of script names"]
     stage_text = (root / "e2e/stage_change_coverage_e2e.ts").read_text(encoding="utf-8")
     errors = orchestration_errors(
         scripts,
+        deterministic_suites,
         stage_text,
         e2e_files(root),
         {
@@ -208,48 +283,49 @@ def self_test() -> None:
     # C3 secondary runners delegate to the aggregate; C4 secondary runners
     # preserve failure status; C5 functional obligation ids are unique; C6 the
     # release gate requires every external/API/dependency suite without exclusions;
-    # C7 every shared conformance testkit is executed by every production backend.
+    # C7 every shared conformance testkit is executed by every production backend;
+    # C8 deterministic leaf commands are unique; C9 stage scenarios have one owner.
     #
-    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
-    # | R1   | T  | T  | T  | T  | T  | T  | accept |
-    # | R2   | F  | *  | *  | *  | *  | *  | reject missing suite |
-    # | R3   | T  | F  | *  | *  | *  | *  | reject unclassified E2E |
-    # | R4   | T  | T  | F  | *  | *  | *  | reject parallel runner |
-    # | R5   | T  | T  | T  | F  | *  | *  | reject swallowed failure |
-    # | R6   | T  | T  | T  | T  | F  | *  | reject duplicate obligation |
-    # | R7   | T  | T  | T  | T  | T  | F  | reject incomplete release gate |
-    # | R8   | T  | T  | T  | T  | T  | T, C7=F | reject detached testkit/backend |
+    # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | Effect |
+    # | R1   | T  | T  | T  | T  | T  | T  | T  | T  | T  | accept |
+    # | R2   | F  | *  | *  | *  | *  | *  | *  | *  | *  | reject missing suite |
+    # | R3   | T  | F  | *  | *  | *  | *  | *  | *  | *  | reject unclassified E2E |
+    # | R4   | T  | T  | F  | *  | *  | *  | *  | *  | *  | reject parallel runner |
+    # | R5   | T  | T  | T  | F  | *  | *  | *  | *  | *  | reject swallowed failure |
+    # | R6   | T  | T  | T  | T  | F  | *  | *  | *  | *  | reject duplicate obligation |
+    # | R7   | T  | T  | T  | T  | T  | F  | *  | *  | *  | reject incomplete release gate |
+    # | R8   | T  | T  | T  | T  | T  | T  | F  | *  | *  | reject detached testkit/backend |
+    # | R9   | T  | T  | T  | T  | T  | T  | T  | F  | *  | reject duplicate command |
+    # | R10  | T  | T  | T  | T  | T  | T  | T  | T  | F  | reject package/stage overlap |
     package = json.loads(PACKAGE.read_text(encoding="utf-8"))
     scripts: dict[str, str] = package["scripts"]
+    deterministic_suites: list[str] = package["awakenTest"]["deterministicSuites"]
     stage_text = STAGE_GRAPH.read_text(encoding="utf-8")
     files = e2e_files(ROOT)
     runners = {
         relative: (ROOT / relative).read_text(encoding="utf-8")
         for relative in SECONDARY_RUNNERS
     }
-    errors = orchestration_errors(scripts, stage_text, files, runners)
+    errors = orchestration_errors(scripts, deterministic_suites, stage_text, files, runners)
     if errors:
         raise AssertionError("R1 repository fixture must be valid: " + "; ".join(errors))
 
-    missing_suite = dict(scripts)
-    missing_suite["test:deterministic"] = missing_suite["test:deterministic"].replace(
-        "npm run test:protocols", ""
-    )
+    missing_suite = [suite for suite in deterministic_suites if suite != "test:protocols"]
     assert any(
         "does not invoke test:protocols" in error
-        for error in orchestration_errors(missing_suite, stage_text, files, runners)
+        for error in orchestration_errors(scripts, missing_suite, stage_text, files, runners)
     ), "R2"
 
     unclassified = set(files)
     unclassified.add("unclassified_e2e.mjs")
     assert any(
         "unclassified_e2e.mjs" in error
-        for error in orchestration_errors(scripts, stage_text, unclassified, runners)
+        for error in orchestration_errors(scripts, deterministic_suites, stage_text, unclassified, runners)
     ), "R3"
 
     parallel = dict(runners)
     parallel[SECONDARY_RUNNERS[0]] = "for f in *_e2e.mjs; do node $f; done"
-    parallel_errors = orchestration_errors(scripts, stage_text, files, parallel)
+    parallel_errors = orchestration_errors(scripts, deterministic_suites, stage_text, files, parallel)
     assert any("does not delegate" in error for error in parallel_errors), "R4 delegate"
     assert any("parallel E2E" in error for error in parallel_errors), "R4 list"
 
@@ -257,7 +333,7 @@ def self_test() -> None:
     swallowed[SECONDARY_RUNNERS[1]] += "\nnpm run test:deterministic || true\n"
     assert any(
         "suppresses command failure" in error
-        for error in orchestration_errors(scripts, stage_text, files, swallowed)
+        for error in orchestration_errors(scripts, deterministic_suites, stage_text, files, swallowed)
     ), "R5"
 
     duplicate_obligation = stage_text.replace(
@@ -266,9 +342,27 @@ def self_test() -> None:
     assert any(
         "duplicate obligation ids" in error
         for error in orchestration_errors(
-            scripts, duplicate_obligation, files, runners
+            scripts, deterministic_suites, duplicate_obligation, files, runners
         )
     ), "R6"
+
+    duplicate_command = dict(scripts)
+    duplicate_command["test:protocols"] += " && node managed_e2e.mjs"
+    assert any(
+        "duplicate deterministic command `node managed_e2e.mjs`" in error
+        for error in orchestration_errors(
+            duplicate_command, deterministic_suites, stage_text, files, runners
+        )
+    ), "R9"
+
+    stage_overlap = dict(scripts)
+    stage_overlap["test:protocols"] += " && node sandbox_provisioning_e2e.mjs"
+    assert any(
+        "stage scenarios also execute" in error
+        for error in orchestration_errors(
+            stage_overlap, deterministic_suites, stage_text, files, runners
+        )
+    ), "R10"
 
     check_all = (ROOT / "scripts/ci/check-all.sh").read_text(encoding="utf-8")
     public_api = (ROOT / "scripts/ci/check_public_api.sh").read_text(encoding="utf-8")
@@ -284,6 +378,14 @@ def self_test() -> None:
     assert release_gate_errors(check_all, public_api + '\nexcluded="awaken-cli"\n'), (
         "R7 public API exclusion"
     )
+    assert release_gate_errors(
+        check_all.replace('run e2e "deterministic-e2e"', 'run static "deterministic-e2e"'),
+        public_api,
+    ), "R7 independently sharded release group"
+    assert release_gate_errors(
+        check_all.replace("AWAKEN_TEST_TIMINGS_FILE", "REMOVED_TIMINGS_FILE"),
+        public_api,
+    ), "R7 timing artifact"
 
     store_suite = (ROOT / STORE_CONFORMANCE).read_text(encoding="utf-8")
     backend_tests = {

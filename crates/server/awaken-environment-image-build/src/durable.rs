@@ -85,7 +85,7 @@ impl<B: RecordBackend> EnvironmentImageBuildStore for DurableEnvironmentImageBui
             return Ok(());
         }
         match self.backend.get(&demand.build_key).await? {
-            Some(existing) if existing.record.demand == demand => Ok(()),
+            Some(existing) if existing.record.demand.same_recipe(&demand) => Ok(()),
             Some(_) => Err(EnvironmentImageBuildError::Conflict(demand.build_key)),
             None => Err(EnvironmentImageBuildError::Storage(
                 "image-build job disappeared after insert conflict".into(),
