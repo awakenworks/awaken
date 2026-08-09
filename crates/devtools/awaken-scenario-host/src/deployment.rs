@@ -34,6 +34,16 @@ fn scenario_deployment_from(
     deployment.durable = read("SESSION_DEPLOYMENT_INGRESS").as_deref() == Some("durable");
     deployment.disable_local_pool =
         read("SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL").as_deref() == Some("1");
+    deployment.sandbox_tier = match read("SESSION_DEPLOYMENT_SANDBOX_TIER").as_deref() {
+        None | Some("") | Some("namespace") => awaken_runtime_host::SandboxTier::Namespace,
+        Some("local") => awaken_runtime_host::SandboxTier::Local,
+        Some("docker") => awaken_runtime_host::SandboxTier::Docker,
+        Some("podman") => awaken_runtime_host::SandboxTier::Podman,
+        Some("k8s") | Some("kubernetes") => awaken_runtime_host::SandboxTier::K8s,
+        Some(value) => panic!(
+            "SESSION_DEPLOYMENT_SANDBOX_TIER must be local, namespace, docker, podman, or k8s (got {value})"
+        ),
+    };
     deployment.database_url =
         read("SESSION_DEPLOYMENT_DATABASE_URL").filter(|value| !value.trim().is_empty());
     if let Some(value) = read("SESSION_DEPLOYMENT_POSTGRES_MAX_CONNECTIONS") {
@@ -163,6 +173,7 @@ mod tests {
             ("SESSION_DEPLOYMENT_NATS_URL", "nats://fixture"),
             ("SESSION_DEPLOYMENT_DISPATCH_OWNER", "brain-2"),
             ("SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL", "1"),
+            ("SESSION_DEPLOYMENT_SANDBOX_TIER", "local"),
         ]);
 
         assert!(deployment.durable);
@@ -185,6 +196,10 @@ mod tests {
         assert_eq!(deployment.nats_url.as_deref(), Some("nats://fixture"));
         assert_eq!(deployment.dispatch_owner, "brain-2");
         assert!(deployment.disable_local_pool);
+        assert_eq!(
+            deployment.sandbox_tier,
+            awaken_runtime_host::SandboxTier::Local
+        );
     }
 
     #[test]
@@ -193,5 +208,11 @@ mod tests {
         // Cause/effect rule SD3: an unknown wake selector -> startup failure before
         // the scenario can silently degrade to local polling.
         let _ = from(&[("SESSION_DEPLOYMENT_WAKE", "maybe")]);
+    }
+
+    #[test]
+    #[should_panic(expected = "SESSION_DEPLOYMENT_SANDBOX_TIER must be")]
+    fn unknown_sandbox_tier_fails_closed() {
+        let _ = from(&[("SESSION_DEPLOYMENT_SANDBOX_TIER", "auto")]);
     }
 }

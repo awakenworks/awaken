@@ -603,14 +603,14 @@ impl DispatchQueue for MemoryDispatchStore {
         let thread = request.thread_id().clone();
         let mut epoch = 0;
         if options.supersede {
-            epoch = state
+            let max_epoch = state
                 .rows
                 .values()
                 .filter(|r| *r.request.thread_id() == thread)
                 .map(|r| r.epoch)
                 .max()
-                .unwrap_or(0)
-                + 1;
+                .unwrap_or(0);
+            epoch = crate::next_supersession_epoch(max_epoch)?;
             for row in state.rows.values_mut() {
                 if *row.request.thread_id() == thread
                     && matches!(row.state, RowState::Pending | RowState::Awaiting)
@@ -1246,7 +1246,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 // its old epoch is fenced while cancellation becomes claimable now.
                 let lease = row.lease.take();
                 row.state = RowState::Pending;
-                row.lease_epoch += 1;
+                row.lease_epoch = crate::next_memory_epoch(row.lease_epoch, "dispatch claim")?;
                 lease
             } else {
                 None

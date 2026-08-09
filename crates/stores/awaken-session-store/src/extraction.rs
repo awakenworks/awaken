@@ -38,6 +38,38 @@ fn decode(data: &str) -> Result<MemoryExtractionIntent, MemoryExtractionError> {
     Ok(intent)
 }
 
+fn postgres_integer(value: u64, field: &str) -> Result<i64, MemoryExtractionError> {
+    i64::try_from(value).map_err(|_| {
+        MemoryExtractionError::Storage(format!(
+            "Memory extraction {field} exceeds Postgres BIGINT storage"
+        ))
+    })
+}
+
+fn postgres_optional_integer(
+    value: Option<u64>,
+    field: &str,
+) -> Result<Option<i64>, MemoryExtractionError> {
+    value
+        .map(|value| postgres_integer(value, field))
+        .transpose()
+}
+
+fn validate_next_revision(
+    expected_revision: u64,
+    intent: &MemoryExtractionIntent,
+) -> Result<(), MemoryExtractionError> {
+    let next_revision = expected_revision
+        .checked_add(1)
+        .ok_or_else(|| MemoryExtractionError::RevisionConflict(intent.intent_id.clone()))?;
+    if intent.revision != next_revision {
+        return Err(MemoryExtractionError::RevisionConflict(
+            intent.intent_id.clone(),
+        ));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl MemoryExtractionRepository for SqliteManagedSessionRepository {
     async fn put_extraction_if_absent(
@@ -162,9 +194,7 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
         expected_revision: u64,
         intent: MemoryExtractionIntent,
     ) -> Result<(), MemoryExtractionError> {
-        if intent.revision != expected_revision.saturating_add(1) {
-            return Err(MemoryExtractionError::RevisionConflict(intent.intent_id));
-        }
+        validate_next_revision(expected_revision, &intent)?;
         let data = encode(&intent)?;
         let changed = self
             .conn
@@ -202,6 +232,9 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         intent: MemoryExtractionIntent,
     ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
         let data = encode(&intent)?;
+        let revision = postgres_integer(intent.revision, "revision")?;
+        let lease_expires_at_unix_ms =
+            postgres_optional_integer(intent.lease_expires_at_unix_ms, "lease_expires_at_unix_ms")?;
         let inserted = sqlx::query(
             "INSERT INTO managed_memory_extraction
                 (intent_id, idempotency_key, status, revision, lease_expires_at_unix_ms, data)
@@ -211,12 +244,8 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         .bind(&intent.intent_id)
         .bind(&intent.idempotency_key)
         .bind(status_name(intent.status))
-        .bind(i64::try_from(intent.revision).unwrap_or(i64::MAX))
-        .bind(
-            intent
-                .lease_expires_at_unix_ms
-                .and_then(|value| i64::try_from(value).ok()),
-        )
+        .bind(revision)
+        .bind(lease_expires_at_unix_ms)
         .bind(data)
         .execute(&self.pool)
         .await
@@ -300,10 +329,12 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         expected_revision: u64,
         intent: MemoryExtractionIntent,
     ) -> Result<(), MemoryExtractionError> {
-        if intent.revision != expected_revision.saturating_add(1) {
-            return Err(MemoryExtractionError::RevisionConflict(intent.intent_id));
-        }
+        validate_next_revision(expected_revision, &intent)?;
         let data = encode(&intent)?;
+        let revision = postgres_integer(intent.revision, "revision")?;
+        let expected_revision = postgres_integer(expected_revision, "expected_revision")?;
+        let lease_expires_at_unix_ms =
+            postgres_optional_integer(intent.lease_expires_at_unix_ms, "lease_expires_at_unix_ms")?;
         let changed = sqlx::query(
             "UPDATE managed_memory_extraction
              SET status = $3, revision = $4, lease_expires_at_unix_ms = $5, data = $6
@@ -312,14 +343,10 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         .bind(&intent.intent_id)
         .bind(&intent.idempotency_key)
         .bind(status_name(intent.status))
-        .bind(i64::try_from(intent.revision).unwrap_or(i64::MAX))
-        .bind(
-            intent
-                .lease_expires_at_unix_ms
-                .and_then(|value| i64::try_from(value).ok()),
-        )
+        .bind(revision)
+        .bind(lease_expires_at_unix_ms)
         .bind(data)
-        .bind(i64::try_from(expected_revision).unwrap_or(i64::MAX))
+        .bind(expected_revision)
         .execute(&self.pool)
         .await
         .map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
@@ -328,5 +355,24 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         } else {
             Err(MemoryExtractionError::RevisionConflict(intent.intent_id))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn postgres_integer_conversion_rejects_clamping_and_lease_erasure() {
+        assert!(matches!(
+            postgres_integer(u64::MAX, "revision"),
+            Err(MemoryExtractionError::Storage(message))
+                if message.contains("revision") && message.contains("BIGINT")
+        ));
+        assert!(matches!(
+            postgres_optional_integer(Some(u64::MAX), "lease"),
+            Err(MemoryExtractionError::Storage(message))
+                if message.contains("lease") && message.contains("BIGINT")
+        ));
     }
 }

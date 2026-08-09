@@ -63,18 +63,24 @@ fn storage(error: impl std::fmt::Display) -> SessionRepositoryError {
     SessionRepositoryError::Storage(error.to_string())
 }
 
+#[derive(serde::Deserialize)]
+struct EncodedLifecycleFact {
+    id: String,
+    #[serde(alias = "session_id")]
+    object_id: String,
+    workspace_id: Option<String>,
+    event_type: String,
+    timestamp: i64,
+}
+
 fn decode_lifecycle(data: &str) -> Result<ManagedLifecycleFact, serde_json::Error> {
-    let value: serde_json::Value = serde_json::from_str(data)?;
+    let value: EncodedLifecycleFact = serde_json::from_str(data)?;
     Ok(ManagedLifecycleFact {
-        id: value["id"].as_str().unwrap_or_default().to_string(),
-        object_id: value["object_id"]
-            .as_str()
-            .or_else(|| value["session_id"].as_str())
-            .unwrap_or_default()
-            .to_string(),
-        workspace_id: value["workspace_id"].as_str().map(str::to_string),
-        event_type: value["event_type"].as_str().unwrap_or_default().to_string(),
-        timestamp: value["timestamp"].as_i64().unwrap_or_default(),
+        id: value.id,
+        object_id: value.object_id,
+        workspace_id: value.workspace_id,
+        event_type: value.event_type,
+        timestamp: value.timestamp,
     })
 }
 
@@ -269,10 +275,10 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 .optional()
                 .map_err(storage)?
                 .unwrap_or_default();
+            let tombstone_revision = u64::try_from(tombstone_revision)
+                .map_err(|_| storage("negative deleted Session revision"))?;
             return Ok(SessionMutationResult::Conflict {
-                current_revision: SessionRevision(
-                    u64::try_from(tombstone_revision).unwrap_or_default(),
-                ),
+                current_revision: SessionRevision(tombstone_revision),
             });
         };
         let current_revision = SessionRevision(
@@ -736,8 +742,10 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             .await
             .map_err(storage)?;
             let revision = tombstone.map_or(0, |row| row.get::<i64, _>("deleted_revision"));
+            let revision = u64::try_from(revision)
+                .map_err(|_| storage("negative deleted Session revision"))?;
             return Ok(SessionMutationResult::Conflict {
-                current_revision: SessionRevision(u64::try_from(revision).unwrap_or_default()),
+                current_revision: SessionRevision(revision),
             });
         };
         let current_revision = SessionRevision(
@@ -999,6 +1007,17 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn lifecycle_decoder_rejects_missing_authoritative_fields_but_accepts_legacy_object_id() {
+        assert!(decode_lifecycle("{}").is_err());
+        let legacy = decode_lifecycle(
+            r#"{"id":"fact-1","session_id":"sesn-1","event_type":"created","timestamp":1}"#,
+        )
+        .expect("legacy session_id alias remains readable");
+        assert_eq!(legacy.object_id, "sesn-1");
+        assert_eq!(legacy.workspace_id, None);
+    }
 
     #[tokio::test]
     async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
@@ -1389,6 +1408,38 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn negative_tombstone_revision_uses_the_repository_error_channel() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        let session_id = "negative-tombstone";
+        repo.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO managed_session_tombstone
+                    (session_id, scope_id, deleted_revision, deleted_at)
+                 VALUES (?1, 'ws_a', -1, 'now')",
+                params![session_id],
+            )
+            .unwrap();
+        let payload = SessionMutationPayload::Replace(sample(session_id));
+        let mutation = SessionMutation {
+            expected_revision: SessionRevision(0),
+            idempotency: IdempotencyRecord {
+                key: "negative-tombstone:replace".into(),
+                payload_hash: payload.stable_hash(),
+            },
+            payload,
+            lifecycle_facts: Vec::new(),
+        };
+
+        assert!(matches!(
+            repo.commit_mutation("ws_a", mutation).await,
+            Err(SessionRepositoryError::Storage(message))
+                if message.contains("negative deleted Session revision")
+        ));
+    }
+
     fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
         awaken_ext_memory::MemoryExtractionIntent::new_range(
             id,
@@ -1461,6 +1512,20 @@ mod tests {
             Err(awaken_ext_memory::MemoryExtractionError::RevisionConflict(
                 _
             ))
+        ));
+    }
+
+    #[tokio::test]
+    async fn extraction_revision_overflow_is_rejected_before_storage() {
+        use awaken_ext_memory::{MemoryExtractionError, MemoryExtractionRepository};
+
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        let mut intent = extraction("extract-overflow", "terminal-overflow");
+        intent.revision = u64::MAX;
+
+        assert!(matches!(
+            repo.compare_and_swap_extraction(u64::MAX, intent).await,
+            Err(MemoryExtractionError::RevisionConflict(id)) if id == "extract-overflow"
         ));
     }
 

@@ -195,7 +195,8 @@ impl DispatchQueue for SqliteDispatchStore {
             // prior pending/awaiting work superseded — newest wins (ADR-0022).
             let mut epoch = 0i64;
             if options.supersede {
-                epoch = tx
+                epoch = crate::next_supersession_epoch(
+                    tx
                     .query_row(
                         &format!(
                             "SELECT COALESCE(MAX(epoch), 0) FROM {p}_dispatch WHERE thread_id = ?1"
@@ -203,8 +204,8 @@ impl DispatchQueue for SqliteDispatchStore {
                         params![thread_id],
                         |r| r.get::<_, i64>(0),
                     )
-                    .map_err(reject)?
-                    + 1;
+                    .map_err(reject)?,
+                )?;
                 tx.execute(
                     &format!(
                         "UPDATE {p}_dispatch SET status = 'superseded', lease_owner = NULL, \
@@ -1315,17 +1316,26 @@ impl DispatchQueue for SqliteDispatchStore {
                 )
                 .optional()
                 .map_err(reject)?;
-            if let Some((_, status, _, _)) = &current {
+            if let Some((_, status, _, epoch)) = &current {
+                let next_epoch = if status == "running" {
+                    Some(i64::try_from(crate::next_claim_epoch(*epoch)?).map_err(|_| {
+                        DispatchError::Rejected(
+                            "dispatch claim epoch exceeds the SQLite authority range".to_string(),
+                        )
+                    })?)
+                } else {
+                    None
+                };
                 tx.execute(
                     &format!(
                         "UPDATE {p}_dispatch SET cancel_requested = 1, \
-                         lease_epoch = lease_epoch + CASE WHEN status = 'running' THEN 1 ELSE 0 END, \
+                         lease_epoch = CASE WHEN status = 'running' THEN ?2 ELSE lease_epoch END, \
                          lease_owner = CASE WHEN status = 'running' THEN NULL ELSE lease_owner END, \
                          lease_until = CASE WHEN status = 'running' THEN NULL ELSE lease_until END, \
                          status = CASE WHEN status = 'running' THEN 'pending' ELSE status END \
                          WHERE run_id = ?1"
                     ),
-                    params![run_id],
+                    params![run_id, next_epoch],
                 )
                 .map_err(reject)?;
                 if status == "running" {
@@ -1341,7 +1351,11 @@ impl DispatchQueue for SqliteDispatchStore {
                                         "running dispatch has no persisted lease owner".to_string(),
                                     )
                                 })?,
-                                epoch: (*epoch).max(0) as u64,
+                                epoch: u64::try_from(*epoch).map_err(|_| {
+                                    DispatchError::Rejected(
+                                        "persisted dispatch claim epoch is negative".to_string(),
+                                    )
+                                })?,
                             },
                             reason: LeaseLossReason::Cancelled,
                         },

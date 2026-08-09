@@ -291,7 +291,7 @@ impl DispatchQueue for PostgresDispatchStore {
             .fetch_one(&mut *tx)
             .await
             .map_err(reject)?;
-            epoch = max.unwrap_or(0) + 1;
+            epoch = crate::next_supersession_epoch(max.unwrap_or(0))?;
             sqlx::query(&format!(
                 "UPDATE {p}_dispatch SET status = 'superseded', lease_owner = NULL, \
                  lease_until = NULL WHERE thread_id = $1 AND status IN ('pending', 'awaiting') \
@@ -1218,15 +1218,27 @@ impl DispatchQueue for PostgresDispatchStore {
             .try_get::<Option<String>, _>("lease_owner")
             .map_err(reject)?;
         let previous_epoch = current.try_get::<i64, _>("lease_epoch").map_err(reject)?;
+        let next_epoch = if status == "running" {
+            Some(
+                i64::try_from(crate::next_claim_epoch(previous_epoch)?).map_err(|_| {
+                    DispatchError::Rejected(
+                        "dispatch claim epoch exceeds the Postgres authority range".to_string(),
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
         sqlx::query(&format!(
             "UPDATE {p}_dispatch SET cancel_requested = 1, \
-             lease_epoch = lease_epoch + CASE WHEN status = 'running' THEN 1 ELSE 0 END, \
+             lease_epoch = CASE WHEN status = 'running' THEN $2 ELSE lease_epoch END, \
              lease_owner = CASE WHEN status = 'running' THEN NULL ELSE lease_owner END, \
              lease_until = CASE WHEN status = 'running' THEN NULL ELSE lease_until END, \
              status = CASE WHEN status = 'running' THEN 'pending' ELSE status END \
              WHERE run_id = $1"
         ))
         .bind(&run_id.0)
+        .bind(next_epoch)
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
@@ -1241,7 +1253,11 @@ impl DispatchQueue for PostgresDispatchStore {
                                 "running dispatch has no persisted lease owner".to_string(),
                             )
                         })?,
-                        epoch: previous_epoch.max(0) as u64,
+                        epoch: u64::try_from(previous_epoch).map_err(|_| {
+                            DispatchError::Rejected(
+                                "persisted dispatch claim epoch is negative".to_string(),
+                            )
+                        })?,
                     },
                     reason: LeaseLossReason::Cancelled,
                 },
@@ -1683,9 +1699,7 @@ async fn claim_exact_transaction_with_mode(
         return Ok(None);
     }
     let status: String = row.try_get("status").map_err(reject)?;
-    let claim_epoch = (previous_epoch.max(0) as u64)
-        .checked_add(1)
-        .ok_or_else(|| DispatchError::Rejected("dispatch claim epoch exhausted".to_string()))?;
+    let claim_epoch = crate::next_claim_epoch(previous_epoch)?;
     let credential_bindings = if terminal_recovery || cancellation_requested != 0 {
         Vec::new()
     } else {
@@ -1705,7 +1719,11 @@ async fn claim_exact_transaction_with_mode(
     .bind(crate::clock::db_millis(expires))
     .bind(i64::from(status == "running"))
     .bind(&requested_run.0)
-    .bind(claim_epoch as i64)
+    .bind(i64::try_from(claim_epoch).map_err(|_| {
+        DispatchError::Rejected(
+            "dispatch claim epoch exceeds the Postgres authority range".to_string(),
+        )
+    })?)
     .bind(
         (!terminal_recovery)
             .then(|| worker.map(WorkerAssignment::from))
@@ -1730,7 +1748,9 @@ async fn claim_exact_transaction_with_mode(
                     "expired running dispatch has no persisted lease owner".to_string(),
                 )
             })?,
-            epoch: previous_epoch.max(0) as u64,
+            epoch: u64::try_from(previous_epoch).map_err(|_| {
+                DispatchError::Rejected("persisted dispatch claim epoch is negative".to_string())
+            })?,
         };
         insert_operation(
             tx,

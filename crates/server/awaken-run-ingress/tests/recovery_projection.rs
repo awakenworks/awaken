@@ -116,6 +116,39 @@ fn acknowledged_commit_advances_projection_once() {
 }
 
 #[test]
+fn projection_counter_overflow_is_rejected_without_partial_update() {
+    let projection = RecoveryProjection::new();
+    let run_id = RunId("run".to_string());
+    let mut at_limit = snapshot();
+    at_limit.thread_version = u64::MAX;
+    projection
+        .install(&run_id, at_limit.clone())
+        .expect("install snapshot at boundary");
+
+    let result = projection.apply_committed(
+        ThreadCommit {
+            thread_id: ThreadId("thread".to_string()),
+            run: RunDisposition::running(run_id),
+            messages: vec![Message::text(
+                MessageId("must-not-appear".to_string()),
+                Role::Assistant,
+                "must not appear",
+            )],
+            state: Vec::new(),
+            events: Vec::new(),
+        },
+        &CommitRecord { sequence: 8 },
+    );
+
+    assert!(matches!(result, Err(CommitError::Rejected(message)) if message.contains("overflow")));
+    assert_eq!(
+        projection.current().expect("projection remains installed"),
+        at_limit,
+        "a rejected boundary transition cannot partially mutate the cache"
+    );
+}
+
+#[test]
 fn wrong_claim_cannot_install_or_advance_projection() {
     let projection = RecoveryProjection::new();
     assert!(
