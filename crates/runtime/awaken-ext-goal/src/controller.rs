@@ -5,10 +5,12 @@
 //! backend selection, durable ingress, live context construction, locking, and
 //! protocol projection.
 
+#[cfg(test)]
+use awaken_runtime_contract::RunRecord;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::{
-    EndCause, Message, MessageId, Role, RunActivation, RunId, RunState, RuntimeRunContext,
-    ThreadId, ThreadReader, TranscriptRange, TranscriptSliceSpec, TranscriptView,
+    CommittedThreadView, EndCause, Message, MessageId, Role, RunActivation, RunId, RunState,
+    RuntimeRunContext, ThreadId, TranscriptRange, TranscriptSliceSpec, TranscriptView,
 };
 
 use crate::outcome::{
@@ -81,7 +83,7 @@ struct WorkerExecution {
 /// state, so a replacement process may construct another controller and resume.
 pub struct Controller<'a> {
     thread_id: &'a ThreadId,
-    reader: &'a dyn ThreadReader,
+    reader: &'a dyn CommittedThreadView,
     state: ThreadOutcomeState<'a>,
     executor: &'a dyn RunExecutor,
     run_context: RuntimeRunContext,
@@ -92,7 +94,7 @@ impl<'a> Controller<'a> {
     #[must_use]
     pub fn new(
         thread_id: &'a ThreadId,
-        reader: &'a dyn ThreadReader,
+        reader: &'a dyn CommittedThreadView,
         coordinator: &'a dyn awaken_runtime_contract::CommitCoordinator,
         executor: &'a dyn RunExecutor,
         run_context: RuntimeRunContext,
@@ -551,7 +553,7 @@ mod tests {
         }
     }
 
-    impl ThreadReader for World {
+    impl CommittedThreadView for World {
         fn committed_messages(&self, thread_id: &ThreadId) -> Vec<Message> {
             self.commits
                 .lock()
@@ -564,6 +566,34 @@ mod tests {
 
         fn resume_ticket(&self, _run_id: &RunId) -> Option<ResumeTicket> {
             None
+        }
+
+        fn run(&self, run_id: &RunId) -> Option<RunRecord> {
+            self.commits
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|commit| commit.run_id() == run_id)
+                .map(|commit| RunRecord {
+                    id: run_id.clone(),
+                    thread_id: commit.thread_id.clone(),
+                    state: commit.run_state(),
+                })
+        }
+
+        fn latest_run(&self, thread_id: &ThreadId) -> Option<RunRecord> {
+            self.commits
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|commit| &commit.thread_id == thread_id)
+                .map(|commit| RunRecord {
+                    id: commit.run_id().clone(),
+                    thread_id: thread_id.clone(),
+                    state: commit.run_state(),
+                })
         }
 
         fn run_state(&self, run_id: &RunId) -> Option<RunState> {

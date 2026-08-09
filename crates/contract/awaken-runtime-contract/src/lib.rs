@@ -80,7 +80,7 @@ pub use plugin::{
 pub use awaken_agent_contract::agent::awaiting::ResumeTicket;
 pub use awaken_agent_contract::agent::content::{ContentBlock, ImageSource, extract_text};
 pub use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-pub use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+pub use awaken_agent_contract::agent::run::{EndCause, Id as RunId, Record as RunRecord, RunState};
 pub use awaken_agent_contract::agent::state::{Command as StateCommand, Key as StateKey};
 pub use awaken_agent_contract::agent::state::{MergePolicy, Scope, Store};
 pub use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -98,7 +98,7 @@ pub use awaken_agent_contract::thread::commit::operation::{
 pub use awaken_agent_contract::thread::commit::staged::{
     CommitRecord, RunDisposition, ThreadCommit,
 };
-pub use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+pub use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 pub use awaken_agent_contract::thread::read::transcript::{
     TranscriptRange, TranscriptSliceSpec, TranscriptSnapshotRef, TranscriptView,
 };

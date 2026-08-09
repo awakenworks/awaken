@@ -1,5 +1,6 @@
 //! Small coverage for default/edge paths: empty capability catalog, the thread
-//! reader on unknown ids, and a system-role message reaching inference.
+//! committed execution view on unknown ids, and a system-role message reaching
+//! inference.
 
 use std::sync::Arc;
 
@@ -7,7 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -38,7 +39,7 @@ impl LlmExecutor for TextLlm {
 }
 
 #[test]
-fn thread_reader_returns_empty_for_unknown_ids() {
+fn committed_thread_view_returns_empty_for_unknown_ids() {
     let commit = MemoryCommitCoordinator::new();
     assert!(
         commit

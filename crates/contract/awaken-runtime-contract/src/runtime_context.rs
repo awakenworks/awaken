@@ -18,7 +18,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use tokio_util::sync::CancellationToken;
 
 use crate::capture::CaptureDecision;
@@ -91,7 +91,7 @@ pub struct RuntimeRunContext {
     /// Committed-history read port. When set, a fresh run seeds its transcript
     /// with the Thread's committed messages, so a new Run continues the
     /// conversation; absent means the run starts from its input alone.
-    pub reader: Option<Arc<dyn ThreadReader>>,
+    pub reader: Option<Arc<dyn CommittedThreadView>>,
     /// Cooperative cancellation observed at step boundaries.
     pub cancellation: Option<CancellationToken>,
     /// Cooperative pause observed at safe loop boundaries (ADR-0054). When set and
@@ -245,7 +245,7 @@ impl RuntimeRunContext {
     /// Provide the committed-history read port so a fresh run continues the
     /// thread's conversation. Usually the same store as `commit`.
     #[must_use]
-    pub fn with_reader(mut self, reader: Arc<dyn ThreadReader>) -> Self {
+    pub fn with_reader(mut self, reader: Arc<dyn CommittedThreadView>) -> Self {
         self.reader = Some(reader);
         self
     }

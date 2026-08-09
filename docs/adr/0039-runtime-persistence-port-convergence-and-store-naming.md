@@ -39,9 +39,13 @@ truth aggregate (thread transcript, run, state, committed events) has exactly:
 
 - **`CommitCoordinator`** — the single durable write boundary (unchanged; G1).
   `commit(ThreadCommit) -> CommitRecord`.
-- **`CheckpointReader`** — the single after-commit read repository. It subsumes
-  today's `ThreadReader` and `RunStore`: `committed_messages`, `committed_state`,
-  `run`, `latest_run`, `resume_ticket`, and `list_events(scope, cursor)`.
+- **`CommittedThreadView`** — the single internally consistent execution view:
+  `committed_messages`, `committed_state`, `run`, `latest_run`, and
+  `resume_ticket`. Local authorities implement it from committed facts; a Worker
+  implements it from one claim-fenced recovery snapshot, never from storage.
+- **`CheckpointReader: CommittedThreadView`** — the single durable after-commit
+  repository. It adds only `list_events(scope, cursor)`; there is no second
+  Thread or Run persistence port.
 - **`StreamSink`** — best-effort live delivery (unchanged; G10).
 
 The dispatch aggregate keeps its existing cohesive composite —
@@ -92,8 +96,8 @@ through `StreamSink` and is reconciled by committed history.
 
 ### D4: Reads derive from committed facts, not an in-process projection cache
 
-Today `PostgresCommitCoordinator` / `SqliteCommitCoordinator` serve `ThreadReader`
-and `RunStore` from an in-memory `Mutex<Projection>`. That projection is empty in a
+Before this decision, `PostgresCommitCoordinator` / `SqliteCommitCoordinator` served
+`ThreadReader` and `RunStore` from an in-memory `Mutex<Projection>`. That projection was empty in a
 fresh process, so a durable run cannot resume after a restart — the exact failure
 the durable slice exists to prevent (ADR-0009). `CheckpointReader` must read from
 the committed tables / fact log (ADR-0006: facts are the authority, the run record
@@ -136,7 +140,8 @@ concrete slice requires it, not before.
 
 ### Rename list
 
-`ThreadReader` + `RunStore` → **`CheckpointReader`**; `MessageOutbox` → **`Outbox`**;
+`ThreadReader` + `RunStore` → **`CommittedThreadView`**, extended by the durable
+**`CheckpointReader`** only for committed events; `MessageOutbox` → **`Outbox`**;
 `PendingInbox` → **`Inbox`**; `RunDispatch` / `DispatchStore` → **`DispatchQueue`**
 (composite `Dispatch`); wake hint → **`Signal`**; `ConfigStore` → **`ConfigRegistry`**;
 new backend crates are **`awaken-store-inmem`** / **`awaken-store-fs`** (existing

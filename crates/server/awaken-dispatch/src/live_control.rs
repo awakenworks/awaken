@@ -242,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn queued_cancel_persists_then_commits_through_the_worker() {
         use awaken_agent_contract::agent::run::{EndCause, RunState};
-        use awaken_agent_contract::thread::read::run_store::RunStore;
+        use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 
         let runtime = Arc::new(Runtime::new());
         let store = Arc::new(MemoryDispatchStore::new());
@@ -263,7 +263,7 @@ mod tests {
 
         assert_eq!(store.dispatch_count(), 0);
         assert_eq!(
-            RunStore::get(commit.as_ref(), &RunId("queued-cancel".into()))
+            CommittedThreadView::run(commit.as_ref(), &RunId("queued-cancel".into()))
                 .expect("terminal record")
                 .state,
             RunState::Ended(EndCause::Cancelled)

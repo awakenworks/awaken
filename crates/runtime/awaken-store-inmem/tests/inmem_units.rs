@@ -1,9 +1,10 @@
 //! White-box decision-table coverage for the in-memory reference backend, filling
 //! the rows the shared conformance suite does not reach: commit validation and
 //! terminal-is-final rejection, awaiting-ticket await/clear, event-id density across
-//! commits, empty-store and non-matching reads, the `RunStore` vs `CheckpointReader`
-//! latest-only-vs-history split, the live `MemoryStreamSink`, the pure replay
-//! helpers, and the `MemoryStreamCheckpointStore` overwrite/idempotency contract.
+//! commits, empty-store and non-matching reads, the live `MemoryStreamSink`, the
+//! pure replay helpers, and the `MemoryStreamCheckpointStore`
+//! overwrite/idempotency contract. Cross-backend Run history semantics belong
+//! to the shared store-conformance suite.
 
 use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MsgId, Message, Role};
@@ -22,9 +23,8 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
-use awaken_agent_contract::thread::read::run_store::RunStore;
-use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_store_inmem::{
     MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink, replay_latest_state,
     replay_state,
@@ -276,9 +276,9 @@ async fn awaiting_state_with_ticket_awaits_then_ended_clears_it() {
         .expect("await commit");
     let awaiting = store.resume_ticket_for(&run).expect("ticket awaiting");
     assert_eq!(awaiting.correlation_id, "corr-1");
-    // Same value is visible through the ThreadReader read port.
+    // Same value is visible through the CommittedThreadView read port.
     assert_eq!(
-        (&store as &dyn ThreadReader)
+        (&store as &dyn CommittedThreadView)
             .resume_ticket(&run)
             .map(|t| t.correlation_id),
         Some("corr-1".to_string())
@@ -440,52 +440,6 @@ async fn list_events_run_scope_filters_by_run_thread_scope_spans_runs() {
             .len(),
         1
     );
-}
-
-// ---- RunStore::get (latest only) vs CheckpointReader::run (full history) ---
-
-#[tokio::test]
-async fn run_store_get_sees_only_latest_while_checkpoint_reader_finds_history() {
-    let store = MemoryCommitCoordinator::new();
-    for run in ["r1", "r2"] {
-        store
-            .commit(commit_with(
-                "t",
-                run,
-                run,
-                RunState::Ended(EndCause::NaturalEnd),
-                vec![],
-                vec![],
-                None,
-            ))
-            .await
-            .expect("commit");
-    }
-    let r1 = RunId("r1".to_string());
-    // RunStore::get is a latest-run projection: the superseded run is invisible.
-    assert!(
-        (&store as &dyn RunStore).get(&r1).is_none(),
-        "RunStore::get returns only the latest run"
-    );
-    assert_eq!(
-        (&store as &dyn RunStore)
-            .get(&RunId("r2".to_string()))
-            .map(|r| r.id),
-        Some(RunId("r2".to_string()))
-    );
-    // CheckpointReader::run reconstructs any run from the committed fact log.
-    assert_eq!(
-        store.run(&r1).map(|r| r.state),
-        Some(RunState::Ended(EndCause::NaturalEnd)),
-        "history reader still finds the earlier run"
-    );
-    // Unknown run → None on both.
-    assert!(
-        (&store as &dyn RunStore)
-            .get(&RunId("ghost".to_string()))
-            .is_none()
-    );
-    assert!(store.run(&RunId("ghost".to_string())).is_none());
 }
 
 // ---- reads over a non-matching / empty thread -----------------------------

@@ -245,8 +245,16 @@ pub async fn terminal_run_is_fenced<S: Coordinator + CheckpointReader>(store: &S
     );
 }
 
-/// Successive commits on a thread accumulate transcript; the latest run wins.
+/// Successive commits accumulate transcript and retain historical Run identity;
+/// `latest_run` independently tracks the Thread head.
 pub async fn commits_accumulate<S: Coordinator + CheckpointReader>(store: &S) {
+    // Cause/effect graph: C1 the first Run is committed; C2 a distinct second
+    // Run is committed on the same Thread; C3 an unknown Run is queried.
+    // Effects: E1 transcript contains both commits in order; E2 both known Runs
+    // remain addressable; E3 latest_run selects the second Run; E4 unknown Run
+    // stays absent. Constraint: C2 follows C1. Decision table: R1 C1&&!C2 ->
+    // first is historical+latest; R2 C1&&C2 -> E1+E2+E3; R3 C3 -> E4. Every
+    // backend executes these rules through this canonical conformance case.
     let thread = ThreadId("conf-acc".to_string());
     let run1 = RunId("conf-acc-r1".to_string());
     let run2 = RunId("conf-acc-r2".to_string());
@@ -266,8 +274,22 @@ pub async fn commits_accumulate<S: Coordinator + CheckpointReader>(store: &S) {
     );
     assert_eq!(
         store.latest_run(&thread).map(|record| record.id),
-        Some(run2),
+        Some(run2.clone()),
         "latest run wins"
+    );
+    assert_eq!(
+        store.run(&run1).map(|record| record.id),
+        Some(run1),
+        "the first Run remains addressable after the Thread head advances"
+    );
+    assert_eq!(
+        store.run(&run2).map(|record| record.id),
+        Some(run2),
+        "the latest Run is addressable through the same view"
+    );
+    assert!(
+        store.run(&RunId("conf-acc-missing".to_string())).is_none(),
+        "an unknown Run remains absent"
     );
 }
 

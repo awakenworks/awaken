@@ -586,7 +586,7 @@ mod tests {
 
         let thread = "resident-renewal-resources";
         let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let resident = frozen_projection();
         host.install_frozen_session_projection(thread, resident.clone(), None, true)
             .await
@@ -803,9 +803,9 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_application_session_control(control.clone()),
         );
-        let managed =
-            crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone());
-        drop(managed);
+        let _managed = crate::ManagedHost::new(host.clone())
+            .with_mcp_attachment_realizer(realizer.clone())
+            .install_dispatch_session_runtime();
         let directive = awaken_session_contract::SessionRealizationDirective {
             projection,
             lease,
@@ -974,9 +974,9 @@ mod tests {
             required_environment: Some((Arc::downgrade(&host), thread.into())),
             ..Default::default()
         });
-        let managed =
-            crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone());
-        drop(managed);
+        let _managed = crate::ManagedHost::new(host.clone())
+            .with_mcp_attachment_realizer(realizer.clone())
+            .install_dispatch_session_runtime();
         HostWorkerResolver::realize_application_session(
             &host,
             &control,
@@ -1059,9 +1059,9 @@ mod tests {
             required_environment: Some((Arc::downgrade(&first_use_host), first_use_thread.into())),
             ..Default::default()
         });
-        let managed = crate::ManagedHost::new(first_use_host.clone())
-            .with_mcp_attachment_realizer(first_use_realizer.clone());
-        drop(managed);
+        let _managed = crate::ManagedHost::new(first_use_host.clone())
+            .with_mcp_attachment_realizer(first_use_realizer.clone())
+            .install_dispatch_session_runtime();
         HostWorkerResolver::realize_application_session(
             &first_use_host,
             &RecoveryControl {
@@ -1085,9 +1085,9 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
         let unpinned_realizer = Arc::new(RecordingMcpRealizer::default());
-        let managed = crate::ManagedHost::new(unpinned_host.clone())
-            .with_mcp_attachment_realizer(unpinned_realizer.clone());
-        drop(managed);
+        let _managed = crate::ManagedHost::new(unpinned_host.clone())
+            .with_mcp_attachment_realizer(unpinned_realizer.clone())
+            .install_dispatch_session_runtime();
         let error = HostWorkerResolver::realize_application_session(
             &unpinned_host,
             &RecoveryControl {
@@ -1149,8 +1149,8 @@ mod tests {
         let rebuild_host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
-        let managed = crate::ManagedHost::new(rebuild_host.clone());
-        drop(managed);
+        let _managed =
+            crate::ManagedHost::new(rebuild_host.clone()).install_dispatch_session_runtime();
         HostWorkerResolver::realize_application_session(
             &rebuild_host,
             &RecoveryControl {
@@ -1196,8 +1196,8 @@ mod tests {
         let continuity_host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
         );
-        let managed = crate::ManagedHost::new(continuity_host.clone());
-        drop(managed);
+        let _managed =
+            crate::ManagedHost::new(continuity_host.clone()).install_dispatch_session_runtime();
         HostWorkerResolver::realize_application_session(
             &continuity_host,
             &RecoveryControl {

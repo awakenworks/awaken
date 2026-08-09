@@ -12,6 +12,7 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
+use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed,
 };
@@ -162,7 +163,7 @@ async fn reopen_file_resumes_from_committed_facts() {
 #[tokio::test]
 async fn reopen_file_replays_committed_state() {
     use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, Scope};
-    use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+    use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 
     let dir = std::env::temp_dir().join("awaken_store_sqlite_reopen_state");
     let _ = std::fs::remove_dir_all(&dir);
@@ -203,7 +204,7 @@ async fn reopen_file_replays_committed_state() {
 
     let store = SqliteCommitCoordinator::open(path).expect("reopen");
     assert_eq!(
-        ThreadReader::committed_state(&store, &thread),
+        CommittedThreadView::committed_state(&store, &thread),
         commands,
         "committed state replays from durable truth after a reopen"
     );
