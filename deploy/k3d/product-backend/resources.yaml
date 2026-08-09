@@ -24,7 +24,7 @@ data:
     sandbox_tier = "k8s"
     sandbox_dir = "/var/lib/awaken/sandboxes"
     k8s_namespace = "awaken-system"
-    container_image = "k3d-awaken-registry.localhost:5111/awaken-sandbox:latest"
+    container_image = "awaken-sandbox:local"
     package_image_registry = "k3d-awaken-registry.localhost:5111/environments"
     package_image_builder = "k8s"
     package_registry_insecure = true

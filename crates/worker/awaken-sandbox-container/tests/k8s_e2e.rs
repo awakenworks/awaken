@@ -40,7 +40,8 @@ impl pc::SecretBroker for CredentialBroker {
 /// the Pod exec subresource; they do not create a second, direct TCP control path.
 fn agent_argv() -> Vec<String> {
     let script = "read _p; \
-        printf '%s\\n' '{\"type\":\"message\",\"text\":\"sandboxed reply\"}'; \
+        printf '{\"type\":\"message\",\"text\":\"sandboxed reply:%s:%s\"}\\n' \
+          \"$AWAKEN_PROJECT_DIR\" \"$AWAKEN_OUTPUTS_DIR\"; \
         printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
     vec!["sh".into(), "-c".into(), script.into()]
 }
@@ -250,6 +251,16 @@ fn kubectl(args: &[&str]) -> std::process::Output {
         .expect("kubectl runs")
 }
 
+fn pod_of(sandbox: &ContainerSandbox<K8sRuntime>) -> String {
+    pc::Sandbox::handle(sandbox)
+        .extra
+        .as_ref()
+        .and_then(|extra| extra.get("container_id"))
+        .and_then(serde_json::Value::as_str)
+        .expect("the provider handle owns the exact Kubernetes Pod identity")
+        .to_string()
+}
+
 #[tokio::test]
 async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
     if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1")
@@ -261,9 +272,6 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
     let initial = br#"{"tokens":{"access_token":"old","refresh_token":"old"}}"#;
     let refreshed = br#"{"tokens":{"access_token":"new","refresh_token":"rotated"}}"#;
     let scope = format!("k8s-credential-{}", std::process::id());
-    let pod = format!("awaken-{scope}");
-    let secret = format!("{pod}-credential-0");
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
     let broker = Arc::new(CredentialBroker(Mutex::new(initial.to_vec())));
     let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
@@ -275,6 +283,8 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
         .create_container(&spec)
         .await
         .expect("create Pod with writable native credential");
+    let pod = pod_of(&sandbox);
+    let secret = format!("{pod}-credential-0");
     let mut ready = false;
     for _ in 0..120 {
         let phase = kubectl(&["get", "pod", &pod, "-o", "jsonpath={.status.phase}"]);
@@ -318,6 +328,11 @@ async fn a_k8s_pod_rotates_and_persists_a_native_credential_file() {
 
 #[tokio::test]
 async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
+    // Cause/effect decision table — KRP1: C1 a Session-owned Pod is running;
+    // C2 its opaque agent starts through attached exec; C3 runtime paths are not
+    // part of the Pod's static environment. C1+C2+C3 => E1 the process receives
+    // /workspace and the exact SandboxSpec output boundary, E2 it speaks on the
+    // same stdio channel, and E3 disposal removes the Pod.
     if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
         eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
         return;
@@ -329,10 +344,6 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     }
 
     let scope = format!("k8s-e2e-{}", std::process::id());
-    let pod = format!("awaken-{scope}");
-    // Reap any leftover Pod from an interrupted prior run.
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
-
     let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
         .expect("connect to the cluster");
@@ -342,6 +353,7 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
         .create_container(&spec(&scope))
         .await
         .expect("create the agent Pod");
+    let pod = pod_of(&sandbox);
 
     // The long-lived Session environment must be Running before its agent is exec'd.
     let ready = {
@@ -365,10 +377,84 @@ async fn a_pod_agent_speaks_the_wire_over_the_exec_channel() {
     let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
     assert!(
-        got.contains("sandboxed reply"),
-        "the Pod agent's reply must reach the host over exec stdio: {got:?}"
+        got.contains("sandboxed reply:/workspace:/mnt/session/outputs"),
+        "the Pod agent must observe runtime paths over exec stdio: {got:?}"
     );
     assert!(got.contains("turn_end"), "the turn completed: {got:?}");
+}
+
+#[tokio::test]
+async fn a_live_managed_file_is_replaceable_by_the_runtime_and_read_only_to_the_agent() {
+    // Cause/effect decision table — KLI1: C1 a live K8s Session receives a
+    // read-only File below the managed input root; C2 the runtime projector owns
+    // the writable side of the shared volume; C3 the Agent owns neither projector
+    // nor Kubernetes credentials. C1+C2+C3 => E1 attach becomes immediately
+    // visible, E2 Agent writes fail while bytes stay unchanged, and E3 runtime
+    // removal makes the path absent without replacing the Pod.
+    if std::env::var("AWAKEN_K8S_E2E").as_deref() != Ok("1") {
+        eprintln!("skipping: set AWAKEN_K8S_E2E=1 with a reachable cluster to run");
+        return;
+    }
+    if !kubectl(&["get", "nodes"]).status.success() {
+        eprintln!("skipping: no reachable Kubernetes cluster");
+        return;
+    }
+
+    let scope = format!("k8s-live-input-{}", std::process::id());
+    let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect to the cluster");
+    let provider = ContainerProvider::new(Arc::new(runtime), "awaken-bb:1");
+    let sandbox = provider
+        .create_container(&spec(&scope))
+        .await
+        .expect("create the agent Pod");
+    let pod = pod_of(&sandbox);
+    let path = "/mnt/session/uploads/awaken-design/current/index.html";
+    let marker = "runtime-projected-generation-2";
+    let requirement = pc::MountRequirement {
+        mount_id: "current-index".into(),
+        source: pc::MountSource::Inline {
+            contents: marker.into(),
+        },
+        mount_path: path.into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    };
+
+    pc::Sandbox::attach(&sandbox, requirement)
+        .await
+        .expect("project a live managed File");
+    let read = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path]);
+    assert!(read.status.success());
+    assert_eq!(String::from_utf8_lossy(&read.stdout), marker);
+
+    let write = kubectl(&[
+        "exec",
+        &pod,
+        "-c",
+        "agent",
+        "--",
+        "sh",
+        "-c",
+        "printf changed > /mnt/session/uploads/awaken-design/current/index.html",
+    ]);
+    assert!(
+        !write.status.success(),
+        "Agent must not mutate managed inputs"
+    );
+    let unchanged = kubectl(&["exec", &pod, "-c", "agent", "--", "cat", path]);
+    assert_eq!(String::from_utf8_lossy(&unchanged.stdout), marker);
+
+    sandbox
+        .remove_live_input_path(path)
+        .await
+        .expect("remove the managed File through the projector");
+    let absent = kubectl(&["exec", &pod, "-c", "agent", "--", "test", "!", "-e", path]);
+    assert!(absent.status.success());
+
+    pc::Sandbox::dispose(&sandbox).await.unwrap();
 }
 
 #[tokio::test]
@@ -383,9 +469,7 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
     }
 
     let scope = format!("k8s-cfg-{}", std::process::id());
-    let pod = format!("awaken-{scope}");
     let marker = "inline-configmap-marker-42";
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
     let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
@@ -396,6 +480,7 @@ async fn inline_content_reaches_the_pod_as_a_configmap_volume() {
         .create_container(&inline_spec(&scope, marker))
         .await
         .expect("create the agent Pod with a ConfigMap-backed inline mount");
+    let pod = pod_of(&sandbox);
 
     // The ConfigMap must exist (created before the Pod, referenced as a volume).
     let cm = kubectl(&[
@@ -464,9 +549,7 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
     }
 
     let scope = format!("k8s-file-{}", std::process::id());
-    let pod = format!("awaken-{scope}");
     let marker = "file-via-blobsource-99";
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
     let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
@@ -480,6 +563,7 @@ async fn a_file_resolved_from_the_blob_source_reaches_the_pod() {
         .create_container(&file_spec(&scope))
         .await
         .expect("create the agent Pod with a File mount resolved via BlobSource");
+    let pod = pod_of(&sandbox);
 
     let ready = {
         let mut ok = false;
@@ -521,8 +605,6 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
     }
 
     let scope = format!("k8s-bin-{}", std::process::id());
-    let pod = format!("awaken-{scope}");
-    let _ = kubectl(&["delete", "pod", &pod, "--ignore-not-found", "--now"]);
 
     let runtime = K8sRuntime::connect("default", "127.0.0.1:1".parse().unwrap())
         .await
@@ -538,6 +620,7 @@ async fn a_binary_file_reaches_the_pod_via_configmap_binary_data() {
         .create_container(&binary_file_spec(&scope))
         .await
         .expect("create the agent Pod with a binaryData ConfigMap mount");
+    let pod = pod_of(&sandbox);
 
     let ready = {
         let mut ok = false;

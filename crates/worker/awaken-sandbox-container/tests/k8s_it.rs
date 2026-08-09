@@ -4,8 +4,6 @@
 //! Run with: `cargo test -p awaken-sandbox-container --features k8s --test k8s_it`
 #![cfg(feature = "k8s")]
 
-use std::time::Duration;
-
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::k8s::K8sRuntime;
 use awaken_sandbox_container::{
@@ -14,7 +12,7 @@ use awaken_sandbox_container::{
 
 fn plan(cmd: &[&str]) -> ContainerPlan {
     ContainerPlan {
-        image: "awaken-bb:1".into(),
+        image: "busybox:1.37.0".into(),
         command: cmd.iter().map(|s| s.to_string()).collect(),
         env: Vec::new(),
         packages: Default::default(),
@@ -29,6 +27,18 @@ fn plan(cmd: &[&str]) -> ContainerPlan {
 
 #[tokio::test]
 async fn k8s_pod_lifecycle_against_a_real_cluster() {
+    // Cause/effect decision-table rule K1:
+    // - Cause: a managed Session scope contains `_` and `:`, both invalid in a
+    //   Kubernetes DNS label, while the cluster is reachable.
+    // - Effect: create maps the opaque scope to the exact reversible runtime
+    //   identity, the apiserver accepts it, an identical retry adopts that exact
+    //   realization, a changed plan fails closed, inspect observes a live sandbox,
+    //   and remove waits until that same Pod is absent.
+    // This is the original production failure path; using a DNS-safe fixture
+    // here would not prove the adapter boundary handles managed Session IDs.
+    const SCOPE: &str = "sesn_fnv1a64:a13b83a56e2f77d0";
+    const POD_NAME: &str = "awaken-sesn-5ffnv1a64-3aa13b83a56e2f77d0";
+
     let addr = "127.0.0.1:8080".parse().unwrap();
     let Ok(rt) = K8sRuntime::connect("default", addr).await else {
         eprintln!("skipping: no kube client (no in-cluster SA / kubeconfig)");
@@ -39,21 +49,28 @@ async fn k8s_pod_lifecycle_against_a_real_cluster() {
         return;
     }
 
-    // Clear a leftover pod and wait for termination to settle.
-    let _ = rt.remove("awaken-it-pod").await;
-    for _ in 0..30 {
-        if rt.inspect("awaken-it-pod").await.is_err() {
-            break; // gone
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
+    // Clear a leftover Pod. `remove` returns only after the API observes 404, so
+    // recreating the deterministic name cannot race a terminating incarnation.
+    let _ = rt.remove(POD_NAME).await;
 
     // process-as-container Pod (busybox sleep as the container command).
+    let desired = plan(&["sleep", "30"]);
     let id = rt
-        .create("it-pod", &plan(&["sleep", "30"]))
+        .create(SCOPE, &desired)
         .await
         .expect("create a real Pod via the apiserver");
-    assert_eq!(id, "awaken-it-pod");
+    assert_eq!(id, POD_NAME);
+
+    let retried = rt
+        .create(SCOPE, &desired)
+        .await
+        .expect("an identical retry must adopt the existing realization");
+    assert_eq!(retried, id);
+    let mismatch = rt
+        .create(SCOPE, &plan(&["sleep", "31"]))
+        .await
+        .expect_err("a changed plan must not adopt a same-name Pod");
+    assert!(mismatch.to_string().contains("different realization"));
 
     // Pending/Running both project to a live sandbox.
     assert!(matches!(

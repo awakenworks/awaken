@@ -432,7 +432,6 @@ pub(crate) async fn run_configured_agent_until_boundary(
             Ok((Some(activation), None))
         }
         (None, Some(result)) => {
-            runtime.register_snapshot(config.clone());
             let ticket = reader.resume_ticket(&child_run_id).ok_or_else(|| {
                 AgentRunError::Configuration(format!(
                     "child Run {:?} is not awaiting",
