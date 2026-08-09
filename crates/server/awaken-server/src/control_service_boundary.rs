@@ -121,7 +121,7 @@ pub fn router(
 }
 
 fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    awaken_executable_agent_contract::service_bearer_token_matches(
+    awaken_service_auth_contract::service_bearer_token_matches(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),

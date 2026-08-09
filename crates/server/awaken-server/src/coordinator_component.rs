@@ -11,7 +11,7 @@ use awaken_deployment_contract::DeploymentRepository;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationSource;
 use awaken_managed_routers::ModelDirectory;
 use awaken_protocol_managed::{
-    DeploymentState, DreamRepository, EnvironmentState, ManagedRateLimiter, ManagedState,
+    DeploymentState, DreamRepository, EnvironmentExecutionState, ManagedRateLimiter, ManagedState,
     ResourceCatalog,
 };
 use awaken_session_contract::ManagedSessionRepository;
@@ -30,6 +30,8 @@ pub struct CoordinatorDependencies {
     pub host: Arc<SharedHost>,
     pub managed_state: Arc<ManagedState>,
     pub resource_catalog: Arc<dyn ResourceCatalog>,
+    /// Resources-owned public API, assembled from its application component.
+    pub resource_management_router: Router,
     pub application_access: Arc<ApplicationAccessStore>,
     pub model_directory: Arc<dyn ModelDirectory>,
     pub dream_repository: Arc<dyn DreamRepository>,
@@ -37,7 +39,7 @@ pub struct CoordinatorDependencies {
     pub deployment_repository: Arc<dyn DeploymentRepository>,
     pub executable_agents: Arc<dyn ExecutableAgentRegistrationSource>,
     pub rate_limiter: Arc<ManagedRateLimiter>,
-    pub environments: Arc<EnvironmentState>,
+    pub environments: Arc<EnvironmentExecutionState>,
     pub sessions: Arc<dyn ManagedSessionRepository>,
     pub default_workspace: String,
     /// Authenticated executable-Agent registration routes, including any
@@ -76,6 +78,7 @@ pub async fn build_coordinator_component(
         host,
         managed_state,
         resource_catalog,
+        resource_management_router,
         application_access,
         model_directory,
         dream_repository,
@@ -115,11 +118,14 @@ pub async fn build_coordinator_component(
         application_access.clone(),
         model_directory,
         dream_repository,
+        resource_management_router,
         worker_authenticator,
     );
     let data = data.merge(registration_router);
     let management_router = awaken_protocol_managed::deployments_router(deployment_state.clone())
-        .merge(awaken_protocol_managed::environments_router(environments))
+        .merge(awaken_protocol_managed::environment_work_router(
+            environments,
+        ))
         .merge(crate::application_access::router(
             application_access,
             sessions,

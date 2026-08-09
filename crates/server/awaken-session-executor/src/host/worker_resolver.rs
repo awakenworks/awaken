@@ -526,7 +526,7 @@ mod tests {
     fn deferred_environment() -> awaken_session_contract::EnvironmentSnapshot {
         awaken_session_contract::EnvironmentSnapshot {
             environment_id: "lazy-env".into(),
-            revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+            revision: awaken_session_contract::EnvironmentRevision(1),
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                 "lazy-env-v1".into(),
             ),
@@ -888,7 +888,7 @@ mod tests {
                 awaken_session_contract::SessionBaselineInputs {
                     environment: awaken_session_contract::EnvironmentSnapshot {
                         environment_id: "env".into(),
-                        revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                        revision: awaken_session_contract::EnvironmentRevision(1),
                         config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
                             "env-fingerprint".into(),
                         ),
@@ -1425,6 +1425,8 @@ mod tests {
         let _managed = crate::ManagedHost::new(host.clone());
         let bytes = b"frozen worker input".to_vec();
         let file_id = host
+            .file_application()
+            .expect("test composition installs File application")
             .create_uploaded_file(
                 "workspace-a",
                 "input.bin".into(),

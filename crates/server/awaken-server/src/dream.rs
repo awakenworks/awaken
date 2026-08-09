@@ -152,6 +152,10 @@ impl BuiltInDreamAgent {
             let filename = format!("{session_id}.jsonl");
             let file = self
                 .host
+                .file_application()
+                .ok_or_else(|| {
+                    DreamFailure::new("internal_error", "File application is unavailable")
+                })?
                 .create_generated_file(
                     &request.workspace_id,
                     filename.clone(),
@@ -311,10 +315,9 @@ impl BuiltInDreamAgent {
 
     async fn delete_transcript_files(&self, workspace_id: &str, file_ids: &[String]) {
         for file_id in file_ids {
-            let _ = self
-                .host
-                .delete_file_record(workspace_id, file_id, now_ms())
-                .await;
+            if let Some(files) = self.host.file_application() {
+                let _ = files.delete(workspace_id, file_id, now_ms()).await;
+            }
         }
     }
 }
@@ -520,7 +523,11 @@ impl DreamWorker for BuiltInDreamAgent {
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             for file_id in &preparation.transcript_file_ids {
                 self.host
-                    .delete_file_record(&request.workspace_id, file_id, now_ms())
+                    .file_application()
+                    .ok_or_else(|| {
+                        DreamFailure::new("internal_error", "File application is unavailable")
+                    })?
+                    .delete(&request.workspace_id, file_id, now_ms())
                     .await
                     .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             }

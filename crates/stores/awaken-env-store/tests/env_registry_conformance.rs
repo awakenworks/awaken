@@ -10,11 +10,11 @@
 //! here as a contract violation. Postgres joins behind its DB harness.
 
 use awaken_env_store::{InMemoryEnvRegistry, SqliteEnvRegistry};
-use awaken_session_contract::env_registry::{
+use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvRegistry,
     EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentNetworking,
     EnvironmentNetworkingMutation, EnvironmentPackages, EnvironmentPackagesMutation,
-    EnvironmentRevision,
+    EnvironmentRevision, EnvironmentSandboxPolicyRef,
 };
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
@@ -50,10 +50,9 @@ async fn unique_ids<R: EnvRegistry>(r: &R) {
     }
 }
 
-/// Archive is SOFT (record stays retrievable, leaves list_active); delete is HARD.
-async fn archive_soft_delete_hard<R: EnvRegistry>(r: &R) {
+/// Terminal denial is an archive: history and exact lookup remain available.
+async fn archive_preserves_authoritative_history<R: EnvRegistry>(r: &R) {
     let a = make(r, "a").await;
-    let d = make(r, "d").await;
     assert!(r.archive(&a).await.is_some());
     assert!(
         r.get(&a).await.is_some(),
@@ -64,25 +63,19 @@ async fn archive_soft_delete_hard<R: EnvRegistry>(r: &R) {
         !active.contains(&a),
         "archived record must leave list_active"
     );
-    assert!(active.contains(&d), "a live record stays in list_active");
-    assert!(r.delete(&d).await, "delete of an existing id reports true");
-    assert!(r.get(&d).await.is_none(), "delete must remove the record");
+    assert!(
+        r.get_revision(&a, awaken_environment_contract::EnvironmentRevision(1))
+            .await
+            .is_some(),
+        "the authored revision remains exact-readable"
+    );
 }
 
-/// Fail-closed: archive/update/delete on a never-created id → None/false.
+/// Fail-closed: archive/update on a never-created id → None.
 async fn missing_id_fails_closed<R: EnvRegistry>(r: &R) {
     assert!(r.archive("env_missing").await.is_none());
     assert!(r.update("env_missing", Default::default()).await.is_none());
-    assert!(!r.delete("env_missing").await);
     assert!(!r.exists("env_missing").await);
-}
-
-/// Delete is idempotent: the second delete reports false, nothing resurrects.
-async fn delete_idempotent<R: EnvRegistry>(r: &R) {
-    let id = make(r, "e").await;
-    assert!(r.delete(&id).await, "first delete true");
-    assert!(!r.delete(&id).await, "second delete false");
-    assert!(r.get(&id).await.is_none());
 }
 
 async fn revision_decision_table<R: EnvRegistry>(r: &R) {
@@ -107,6 +100,11 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
         )
         .await;
     assert_eq!(item.revision, EnvironmentRevision(1), "V1");
+    assert_eq!(
+        r.get_revision(&item.id, EnvironmentRevision(1)).await,
+        Some(item.clone()),
+        "V1 immutable history"
+    );
     let item = r
         .update(
             &item.id,
@@ -118,8 +116,24 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
         .await
         .expect("V2 update");
     assert_eq!(item.revision, EnvironmentRevision(2), "V2");
+    assert_eq!(
+        r.get_revision(&item.id, EnvironmentRevision(1))
+            .await
+            .unwrap()
+            .name,
+        "versioned",
+        "V2 does not rewrite V1"
+    );
     let item = r.archive(&item.id).await.expect("V3 archive");
     assert_eq!(item.revision, EnvironmentRevision(3), "V3");
+    assert!(
+        r.get_revision(&item.id, EnvironmentRevision(2))
+            .await
+            .unwrap()
+            .archived_at
+            .is_none(),
+        "V3 archive does not rewrite V2"
+    );
     assert_eq!(
         r.archive(&item.id).await.unwrap().revision,
         EnvironmentRevision(3),
@@ -130,6 +144,58 @@ async fn revision_decision_table<R: EnvRegistry>(r: &R) {
             .await
             .is_none(),
         "V5"
+    );
+}
+
+async fn sandbox_binding_is_one_environment_revision<R: EnvRegistry>(r: &R) {
+    // Cause/effect decision table:
+    // | Rule | Environment | exact policy ref | effect |
+    // | B1 | existing rev1 | p@3 | atomically append rev2 containing p@3 |
+    // | B2 | after B1 | read rev1 | no policy binding (history unchanged) |
+    // | B3 | missing | p@3 | no row or invented revision |
+    let item = r
+        .create(
+            "policy-bound".into(),
+            String::new(),
+            Default::default(),
+            EnvironmentConfig::SelfHosted,
+        )
+        .await;
+    let reference = EnvironmentSandboxPolicyRef {
+        policy_id: "p".into(),
+        version: 3,
+    };
+    let bound = r
+        .update(
+            &item.id,
+            EnvUpdate {
+                sandbox_policy: Some(Some(reference.clone())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("B1");
+    assert_eq!(bound.revision, EnvironmentRevision(2), "B1");
+    assert_eq!(bound.sandbox_policy, Some(reference), "B1");
+    assert_eq!(
+        r.get_revision(&item.id, EnvironmentRevision(1))
+            .await
+            .unwrap()
+            .sandbox_policy,
+        None,
+        "B2"
+    );
+    assert!(
+        r.update(
+            "env_missing",
+            EnvUpdate {
+                sandbox_policy: Some(None),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_none(),
+        "B3"
     );
 }
 
@@ -254,13 +320,13 @@ async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
 
 async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     unique_ids(&fresh()).await;
-    archive_soft_delete_hard(&fresh()).await;
+    archive_preserves_authoritative_history(&fresh()).await;
     missing_id_fails_closed(&fresh()).await;
-    delete_idempotent(&fresh()).await;
     revision_decision_table(&fresh()).await;
     scope_round_trips_and_updates(&fresh()).await;
     nested_config_patch_is_atomic_and_durable(&fresh()).await;
     idempotent_create_decision_table(&fresh()).await;
+    sandbox_binding_is_one_environment_revision(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────

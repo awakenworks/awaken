@@ -30,6 +30,10 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             ),
             data_subjects: data_subjects.clone(),
             erasure_jobs: data_subjects,
+            environments: Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+            sandbox_policies: Arc::new(
+                awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+            ),
         }),
         coordinator: Some(CoordinatorStores {
             resource_component: ephemeral_resource_component(),
@@ -39,8 +43,8 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             dream_repository: sessions,
             capture_sink: captured_content.clone(),
             captured_content_eraser: captured_content,
+            environment_work: Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
         }),
-        environments: Some(Arc::new(EnvironmentState::new())),
     }
 }
 
@@ -123,14 +127,13 @@ pub(super) async fn open_local_process_stores(
     key: &[u8; 32],
 ) -> Result<ProcessStores, String> {
     let resource_component = open_resource_component(
-        config::ResourcePlaneStoreBackend::Embedded(dir.to_path_buf()),
+        config::ResourceStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
     )
     .await?;
     open_process_stores(ProcessStoreOpenOptions {
         control: awaken_control::ControlStoreConfig::local(dir),
         coordinator: config::CoordinatorStoreConfig {
-            environments: awaken_control::StoreBackend::Sqlite(dir.join("environments.db")),
             sessions: awaken_control::StoreBackend::Sqlite(dir.join("sessions.db")),
             captured_content: awaken_control::StoreBackend::Sqlite(dir.join("captured_content.db")),
         },
@@ -139,7 +142,6 @@ pub(super) async fn open_local_process_stores(
         seal_key: Some(key),
         role: config::Role::AllInOne,
         postgres_schema: PostgresSchemaMode::Migrate,
-        open_environment_stores: true,
     })
     .await
 }

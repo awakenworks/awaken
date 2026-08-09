@@ -1,0 +1,24 @@
+[package]
+name = "awaken-environment-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "application-service"
+authority = "environment"
+
+[dependencies]
+awaken-admin-assistant.workspace = true
+awaken-environment-contract.workspace = true
+awaken-executable-environment-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+awaken-env-store.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

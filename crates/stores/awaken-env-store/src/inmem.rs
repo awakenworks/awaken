@@ -11,14 +11,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 #[cfg(test)]
-use awaken_session_contract::env_registry::EnvironmentConfig;
-use awaken_session_contract::env_registry::{
+use awaken_environment_contract::EnvironmentConfig;
+use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
     EnvRegistry, EnvUpdate, EnvironmentRevision, OBJECT_AT,
 };
 
 pub struct InMemoryEnvRegistry {
     envs: Mutex<BTreeMap<String, EnvItem>>,
+    revisions: Mutex<BTreeMap<(String, EnvironmentRevision), EnvItem>>,
     commands: Mutex<BTreeMap<String, (String, String)>>,
     seq: AtomicU64,
 }
@@ -34,6 +35,7 @@ impl InMemoryEnvRegistry {
     pub fn new() -> Self {
         Self {
             envs: Mutex::new(BTreeMap::new()),
+            revisions: Mutex::new(BTreeMap::new()),
             commands: Mutex::new(BTreeMap::new()),
             seq: AtomicU64::new(0),
         }
@@ -71,9 +73,14 @@ impl EnvRegistry for InMemoryEnvRegistry {
             metadata: command.metadata,
             scope: command.scope,
             config: command.config,
+            sandbox_policy: None,
             archived_at: None,
         };
         self.envs.lock().unwrap().insert(id, item.clone());
+        self.revisions
+            .lock()
+            .unwrap()
+            .insert((item.id.clone(), item.revision), item.clone());
         commands.insert(command.command_id, (fingerprint, item.id.clone()));
         Ok(CreateEnvironmentOutcome::Created(item))
     }
@@ -88,8 +95,20 @@ impl EnvRegistry for InMemoryEnvRegistry {
             .collect()
     }
 
+    async fn list_all(&self) -> Vec<EnvItem> {
+        self.envs.lock().unwrap().values().cloned().collect()
+    }
+
     async fn get(&self, id: &str) -> Option<EnvItem> {
         self.envs.lock().unwrap().get(id).cloned()
+    }
+
+    async fn get_revision(&self, id: &str, revision: EnvironmentRevision) -> Option<EnvItem> {
+        self.revisions
+            .lock()
+            .unwrap()
+            .get(&(id.to_string(), revision))
+            .cloned()
     }
 
     async fn exists(&self, id: &str) -> bool {
@@ -100,11 +119,12 @@ impl EnvRegistry for InMemoryEnvRegistry {
         let mut envs = self.envs.lock().unwrap();
         let item = envs.get_mut(id)?;
         item.apply(patch);
-        Some(item.clone())
-    }
-
-    async fn delete(&self, id: &str) -> bool {
-        self.envs.lock().unwrap().remove(id).is_some()
+        let item = item.clone();
+        self.revisions
+            .lock()
+            .unwrap()
+            .insert((item.id.clone(), item.revision), item.clone());
+        Some(item)
     }
 
     async fn archive(&self, id: &str) -> Option<EnvItem> {
@@ -120,7 +140,12 @@ impl EnvRegistry for InMemoryEnvRegistry {
                 .checked_add(1)
                 .expect("Environment revision exhausted"),
         );
-        Some(item.clone())
+        let item = item.clone();
+        self.revisions
+            .lock()
+            .unwrap()
+            .insert((item.id.clone(), item.revision), item.clone());
+        Some(item)
     }
 }
 
@@ -150,13 +175,10 @@ mod tests {
         assert!(r.get(&e.id).await.is_some(), "still retrievable");
     }
 
-    /// Cause-effect on the archive-vs-delete + existence axes: archive is SOFT (the
-    /// record stays retrievable by `get`, only leaves `list_active`) while delete is
-    /// HARD (`get` returns `None` after); and archiving a non-existent id fails closed
-    /// with `None` rather than fabricating a record. Pins the two distinctions a
-    /// refactor of the registry could blur.
+    /// Terminal archive preserves immutable history while denying new selection;
+    /// archiving a non-existent id fails closed without fabricating a record.
     #[tokio::test]
-    async fn archive_is_soft_delete_is_hard_and_missing_id_fails_closed() {
+    async fn archive_preserves_history_and_missing_id_fails_closed() {
         let r = r();
         // C: id does not exist -> archive returns None (fail-closed, no fabrication).
         assert!(
@@ -166,12 +188,15 @@ mod tests {
         let e = r
             .create("prod".into(), String::new(), BTreeMap::new(), config())
             .await;
-        // Archive is soft: get still returns the (now archived) record.
+        // Terminal denial keeps the current tombstone and exact authored revision.
         assert!(r.archive(&e.id).await.is_some());
         assert!(r.get(&e.id).await.is_some(), "archive keeps the record");
-        // Delete is hard: get returns None afterwards.
-        assert!(r.delete(&e.id).await, "delete reports it existed");
-        assert!(r.get(&e.id).await.is_none(), "delete removes the record");
+        assert!(
+            r.get_revision(&e.id, EnvironmentRevision(1))
+                .await
+                .is_some(),
+            "authored history remains"
+        );
     }
 
     #[tokio::test]
@@ -203,15 +228,4 @@ mod tests {
 
     // (`network_policy`/`project` are wire/provisioning projections; they moved to the
     // Managed adapter along with their tests. This crate keeps only the neutral registry.)
-
-    #[tokio::test]
-    async fn create_delete_is_idempotent() {
-        let r = r();
-        let closed = r
-            .create("c".into(), String::new(), BTreeMap::new(), config())
-            .await;
-        assert!(r.exists(&closed.id).await);
-        assert!(r.delete(&closed.id).await);
-        assert!(!r.delete(&closed.id).await, "second delete is false");
-    }
 }

@@ -1,0 +1,23 @@
+[package]
+name = "awaken-file-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "application"
+authority = "resource"
+
+[dependencies]
+async-trait.workspace = true
+awaken-resource-contract.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+awaken-file-store.workspace = true
+awaken-resource-store.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

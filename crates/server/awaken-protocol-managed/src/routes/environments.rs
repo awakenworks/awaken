@@ -34,132 +34,109 @@ use crate::types::environment::{
     WorkUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
+use awaken_environment_application::{
+    EnvironmentApplication, EnvironmentApplicationError, default_environment_registration,
+};
 use awaken_work_store::InMemoryWorkQueue;
 
 use crate::work_queue::{HeartbeatResult, LeaseHeartbeat, WorkQueue};
+use awaken_executable_environment_contract::{
+    ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
+    ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
+    ExecutableEnvironmentRegistrationSource, ExecutableEnvironmentWithdrawal,
+    ExecutableEnvironmentWithdrawalOutcome,
+};
 
-/// Canonical unrestricted snapshot for a composition without an Environment
-/// registry. An installed registry reuses it only for its implicit `env_local`.
-pub(crate) fn default_environment_snapshot(
-    environment_id: String,
-    runtime: Option<&str>,
-) -> awaken_session_contract::EnvironmentSnapshot {
-    let acp = runtime.is_some_and(|runtime| runtime.starts_with("acp:"));
-    let inference_holder = if acp {
-        awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Workload,
-            "awaken.workload.acp",
-        )
-    } else {
-        awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            "awaken.worker",
-        )
-    };
-    let sandbox = serde_json::json!({});
-    let sandbox_provisioning = awaken_session_contract::SandboxProvisioning::Eager;
-    let packages = awaken_session_contract::env_registry::EnvironmentPackages::default();
-    let network = awaken_session_contract::SessionNetworkPolicy::Unrestricted;
-    let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
-        inference_holder,
-        mcp_holder: awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-        ),
-        resource_holder: awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-        ),
-    };
-    awaken_session_contract::EnvironmentSnapshot {
-        environment_id,
-        revision: awaken_session_contract::env_registry::EnvironmentRevision(0),
-        config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-            awaken_session_contract::stable_fingerprint(&(
-                &sandbox,
-                &sandbox_provisioning,
-                &packages,
-                &network,
-                &credential_realization,
-            )),
-        ),
-        sandbox,
-        sandbox_provisioning,
-        packages,
-        network,
-        credential_realization,
-    }
-}
-
-/// The self-hosted environment registry + work queue, both behind ports so a
-/// durable backend (sqlite/postgres) serves standalone and distributed deployments
-/// unchanged; the default is in-memory.
-pub struct EnvironmentState {
+/// Control-owned Environment definitions, immutable revision history, policy
+/// versions, and publication application.
+pub struct EnvironmentAuthoringState {
     envs: Arc<dyn EnvRegistry>,
-    work: Arc<dyn WorkQueue>,
     application: Arc<EnvironmentApplication>,
     sandbox_policies: Option<Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>>,
 }
 
-impl Default for EnvironmentState {
-    fn default() -> Self {
-        let envs: Arc<dyn EnvRegistry> = Arc::new(InMemoryEnvRegistry::new());
-        let work: Arc<dyn WorkQueue> = Arc::new(InMemoryWorkQueue::new());
-        Self {
-            application: Arc::new(EnvironmentApplication::new(envs.clone(), work.clone())),
-            envs,
-            work,
-            sandbox_policies: None,
-        }
-    }
+/// Coordinator-owned executable projection and WorkQueue. It has no definition
+/// registry or sandbox-policy repository.
+pub struct EnvironmentExecutionState {
+    work: Arc<dyn WorkQueue>,
+    execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
 }
 
-/// The single Coordinator application service for Environment creation. Public
-/// Managed HTTP, private Control commands, and AllInOne local calls all enter
-/// here; storage adapters never coordinate the work-queue side effect themselves.
-pub struct EnvironmentApplication {
-    envs: Arc<dyn EnvRegistry>,
+/// AllInOne/test composition facade. It contains no business behavior of its
+/// own and only combines the two canonical domain states.
+pub struct EnvironmentState {
+    authoring: Arc<EnvironmentAuthoringState>,
+    execution: Arc<EnvironmentExecutionState>,
+}
+
+/// Coordinator application adapter around the rebuildable catalog. Registration
+/// and WorkQueue healthcheck convergence share one idempotent boundary; Control
+/// sees only `ExecutableEnvironmentRegistrar` and cannot access the queue.
+pub struct CoordinatorEnvironmentRegistrar {
+    delegate: Arc<dyn ExecutableEnvironmentRegistrar>,
     work: Arc<dyn WorkQueue>,
 }
 
-impl EnvironmentApplication {
-    fn new(envs: Arc<dyn EnvRegistry>, work: Arc<dyn WorkQueue>) -> Self {
-        Self { envs, work }
-    }
-
-    pub async fn create(
-        &self,
-        command: awaken_session_contract::env_registry::CreateEnvironmentCommand,
-    ) -> Result<EnvItem, awaken_session_contract::env_registry::CreateEnvironmentError> {
-        let outcome = self.envs.create_once(command).await?;
-        let item = outcome.item().clone();
-        self.work.ensure_healthcheck(&item.id).await;
-        Ok(item)
+impl CoordinatorEnvironmentRegistrar {
+    #[must_use]
+    pub fn new(
+        delegate: Arc<dyn ExecutableEnvironmentRegistrar>,
+        work: Arc<dyn WorkQueue>,
+    ) -> Self {
+        Self { delegate, work }
     }
 }
 
-impl EnvironmentState {
-    /// Read the authoritative Environment row, including archived rows. Session
-    /// snapshot compilation intentionally hides archived rows; deployment launch
-    /// classification needs to distinguish archived from never-created without a
-    /// second Environment registry.
-    pub async fn get(&self, environment_id: &str) -> Option<EnvItem> {
-        self.envs.get(environment_id).await
+#[async_trait::async_trait]
+impl ExecutableEnvironmentRegistrar for CoordinatorEnvironmentRegistrar {
+    async fn register(
+        &self,
+        registration: ExecutableEnvironmentRegistration,
+    ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
+    {
+        let environment_id = registration.definition.id.clone();
+        let outcome = self.delegate.register(registration).await?;
+        self.work.ensure_healthcheck(&environment_id).await;
+        Ok(outcome)
     }
 
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    async fn withdraw(
+        &self,
+        withdrawal: ExecutableEnvironmentWithdrawal,
+    ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>
+    {
+        let environment_id = withdrawal.environment_id.clone();
+        let outcome = self.delegate.withdraw(withdrawal).await?;
+        self.work.remove_env(&environment_id).await;
+        Ok(outcome)
     }
+}
 
-    /// Install durable registry + work-queue backends (sqlite/postgres) in place of
-    /// the in-memory defaults; the same routes then serve any deployment mode.
+impl EnvironmentAuthoringState {
     #[must_use]
-    pub fn with_stores(envs: Arc<dyn EnvRegistry>, work: Arc<dyn WorkQueue>) -> Self {
+    pub fn new(
+        envs: Arc<dyn EnvRegistry>,
+        sandbox_policies: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
+        registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
+    ) -> Self {
         Self {
-            application: Arc::new(EnvironmentApplication::new(envs.clone(), work.clone())),
+            application: Arc::new(EnvironmentApplication::new(
+                envs.clone(),
+                registrar,
+                Some(sandbox_policies.clone()),
+            )),
             envs,
-            work,
+            sandbox_policies: Some(sandbox_policies),
+        }
+    }
+
+    fn without_policies(
+        envs: Arc<dyn EnvRegistry>,
+        registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
+    ) -> Self {
+        Self {
+            application: Arc::new(EnvironmentApplication::new(envs.clone(), registrar, None)),
+            envs,
             sandbox_policies: None,
         }
     }
@@ -168,38 +145,29 @@ impl EnvironmentState {
     pub fn application(&self) -> Arc<EnvironmentApplication> {
         self.application.clone()
     }
+}
 
-    #[cfg(test)]
-    async fn author(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
-        static NEXT_TEST_COMMAND: AtomicU64 = AtomicU64::new(0);
-        let typed = serde_json::from_value::<EnvironmentConfigParams>(config)
-            .map_err(|error| format!("invalid Environment config: {error}"))?;
-        self.application
-            .create(
-                awaken_session_contract::env_registry::CreateEnvironmentCommand {
-                    command_id: format!(
-                        "test:{}",
-                        NEXT_TEST_COMMAND.fetch_add(1, Ordering::Relaxed)
-                    ),
-                    name: name.to_owned(),
-                    description: String::new(),
-                    metadata: Default::default(),
-                    scope: None,
-                    config: canonical_environment_config(typed),
-                },
-            )
-            .await
-            .map(|item| item.id)
-            .map_err(|error| error.to_string())
+impl EnvironmentExecutionState {
+    #[must_use]
+    pub fn new(
+        work: Arc<dyn WorkQueue>,
+        execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
+    ) -> Self {
+        Self {
+            work,
+            execution_source,
+        }
     }
 
-    #[must_use]
-    pub fn with_sandbox_policies(
-        mut self,
-        store: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
-    ) -> Self {
-        self.sandbox_policies = Some(store);
-        self
+    /// Read Coordinator's current executable definition projection. Archived or
+    /// withdrawn definitions are unavailable even though exact history remains.
+    pub async fn get(&self, environment_id: &str) -> Option<EnvItem> {
+        self.execution_source
+            .current_registration(environment_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|registration| registration.definition)
     }
 
     /// Compile the one immutable, normalized Environment snapshot consumed by a
@@ -220,89 +188,14 @@ impl EnvironmentState {
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
-        let Some(item) = self.envs.get(env_id).await else {
-            return (env_id == "env_local")
-                .then(|| default_environment_snapshot(env_id.to_string(), runtime));
-        };
-        if item.archived_at.is_some() {
-            return None;
-        }
-        let packages = item.config.packages();
-        let network = item
-            .config
-            .network_policy_for_session(mcp_targets)
-            .normalized();
-        let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
-        let holder = if acp {
-            awaken_credential_contract::PlaintextHolder::new(
-                awaken_credential_contract::PlaintextBoundary::Workload,
-                "awaken.workload.acp",
-            )
-        } else {
-            awaken_credential_contract::PlaintextHolder::new(
-                awaken_credential_contract::PlaintextBoundary::Worker,
-                "awaken.worker",
-            )
-        };
-        let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
-            inference_holder: holder,
-            mcp_holder: awaken_credential_contract::PlaintextHolder::new(
-                awaken_credential_contract::PlaintextBoundary::Worker,
-                awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            ),
-            resource_holder: awaken_credential_contract::PlaintextHolder::new(
-                awaken_credential_contract::PlaintextBoundary::Worker,
-                awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-            ),
-        };
-        // Anthropic Environment config owns cloud networking/packages and
-        // self-hosted routing only. Awaken sandbox policy has a separate owner.
-        let (sandbox, sandbox_provisioning) = match &self.sandbox_policies {
-            Some(store) => match store.environment_binding(env_id).await {
-                Ok(Some(reference)) => {
-                    let policy = store.get_exact(&reference).await.ok()?;
-                    if policy.disabled {
-                        return None;
-                    }
-                    (
-                        serde_json::to_value(policy.config).ok()?,
-                        policy.provisioning,
-                    )
-                }
-                Ok(None) => (
-                    serde_json::json!({}),
-                    awaken_session_contract::SandboxProvisioning::Eager,
-                ),
-                Err(_) => return None,
-            },
-            None => (
-                serde_json::json!({}),
-                awaken_session_contract::SandboxProvisioning::Eager,
-            ),
-        };
-        let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
-            awaken_session_contract::stable_fingerprint(&(
-                &sandbox,
-                &sandbox_provisioning,
-                &packages,
-                &network,
-                &credential_realization,
-            )),
-        );
-        Some(awaken_session_contract::EnvironmentSnapshot {
-            environment_id: item.id,
-            revision: item.revision,
-            config_fingerprint,
-            sandbox,
-            sandbox_provisioning,
-            packages,
-            network,
-            credential_realization,
-        })
+        let registration = self
+            .execution_source
+            .current_registration(env_id)
+            .await
+            .ok()??;
+        snapshot_from_registration(registration, runtime, mcp_targets)
     }
 
-    /// Resolve an Agent-published exact Environment revision. The registry never
-    /// substitutes its current revision when the binding is stale.
     pub async fn snapshot_exact(
         &self,
         env_id: &str,
@@ -320,19 +213,33 @@ impl EnvironmentState {
         runtime: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
     ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
-        let snapshot = self
-            .snapshot_for_session(env_id, runtime, mcp_targets)
-            .await?;
-        (snapshot.revision.0 == revision).then_some(snapshot)
+        // Current availability is a live deny overlay. If Control withdrew the
+        // Environment, an old Agent binding cannot start a new Session even though
+        // the immutable historical registration remains queryable for audit.
+        self.execution_source
+            .current_registration(env_id)
+            .await
+            .ok()??;
+        let registration = self
+            .execution_source
+            .registration_at_revision(
+                env_id,
+                awaken_environment_contract::EnvironmentRevision(revision),
+            )
+            .await
+            .ok()??;
+        snapshot_from_registration(registration, runtime, mcp_targets)
     }
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
     /// dispatched through the work queue for an external worker to run.
     pub async fn is_self_hosted(&self, env_id: &str) -> bool {
-        self.envs
-            .get(env_id)
+        self.execution_source
+            .current_registration(env_id)
             .await
-            .is_some_and(|rec| rec.is_self_hosted())
+            .ok()
+            .flatten()
+            .is_some_and(|registration| registration.definition.is_self_hosted())
     }
 
     /// Enqueue a `session` work item for `session_id` on `env_id`'s queue — the way
@@ -343,8 +250,298 @@ impl EnvironmentState {
     }
 }
 
-/// Mount the environments + work routes.
+impl Default for EnvironmentExecutionState {
+    fn default() -> Self {
+        let catalog =
+            Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
+        catalog
+            .install_seed(default_environment_registration())
+            .expect("install built-in local Environment");
+        Self::new(Arc::new(InMemoryWorkQueue::new()), catalog)
+    }
+}
+
+impl Default for EnvironmentState {
+    fn default() -> Self {
+        let envs: Arc<dyn EnvRegistry> = Arc::new(InMemoryEnvRegistry::new());
+        let work: Arc<dyn WorkQueue> = Arc::new(InMemoryWorkQueue::new());
+        let catalog =
+            Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
+        catalog
+            .install_seed(default_environment_registration())
+            .expect("install built-in local Environment");
+        let registrar: Arc<dyn ExecutableEnvironmentRegistrar> =
+            Arc::new(CoordinatorEnvironmentRegistrar::new(
+                Arc::new(
+                    awaken_executable_environment_catalog::LocalExecutableEnvironmentRegistrar::new(
+                        catalog.clone(),
+                    ),
+                ),
+                work.clone(),
+            ));
+        Self {
+            authoring: Arc::new(EnvironmentAuthoringState::without_policies(envs, registrar)),
+            execution: Arc::new(EnvironmentExecutionState::new(work, catalog)),
+        }
+    }
+}
+
+impl EnvironmentState {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn with_stores(envs: Arc<dyn EnvRegistry>, work: Arc<dyn WorkQueue>) -> Self {
+        let catalog =
+            Arc::new(awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new());
+        catalog
+            .install_seed(default_environment_registration())
+            .expect("install built-in local Environment");
+        let registrar: Arc<dyn ExecutableEnvironmentRegistrar> =
+            Arc::new(CoordinatorEnvironmentRegistrar::new(
+                Arc::new(
+                    awaken_executable_environment_catalog::LocalExecutableEnvironmentRegistrar::new(
+                        catalog.clone(),
+                    ),
+                ),
+                work.clone(),
+            ));
+        Self {
+            authoring: Arc::new(EnvironmentAuthoringState::without_policies(envs, registrar)),
+            execution: Arc::new(EnvironmentExecutionState::new(work, catalog)),
+        }
+    }
+
+    #[must_use]
+    pub fn application(&self) -> Arc<EnvironmentApplication> {
+        self.authoring.application()
+    }
+
+    #[must_use]
+    pub fn authoring(&self) -> Arc<EnvironmentAuthoringState> {
+        self.authoring.clone()
+    }
+
+    #[must_use]
+    pub fn execution(&self) -> Arc<EnvironmentExecutionState> {
+        self.execution.clone()
+    }
+
+    pub async fn get(&self, environment_id: &str) -> Option<EnvItem> {
+        self.execution.get(environment_id).await
+    }
+
+    pub async fn snapshot(
+        &self,
+        env_id: &str,
+        runtime: Option<&str>,
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        self.execution.snapshot(env_id, runtime).await
+    }
+
+    pub async fn snapshot_for_session(
+        &self,
+        env_id: &str,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        self.execution
+            .snapshot_for_session(env_id, runtime, mcp_targets)
+            .await
+    }
+
+    pub async fn snapshot_exact(
+        &self,
+        env_id: &str,
+        revision: u64,
+        runtime: Option<&str>,
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        self.execution
+            .snapshot_exact(env_id, revision, runtime)
+            .await
+    }
+
+    pub async fn snapshot_exact_for_session(
+        &self,
+        env_id: &str,
+        revision: u64,
+        runtime: Option<&str>,
+        mcp_targets: &[awaken_session_contract::McpTarget],
+    ) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+        self.execution
+            .snapshot_exact_for_session(env_id, revision, runtime, mcp_targets)
+            .await
+    }
+
+    pub async fn is_self_hosted(&self, environment_id: &str) -> bool {
+        self.execution.is_self_hosted(environment_id).await
+    }
+
+    pub async fn enqueue_session_work(&self, environment_id: &str, session_id: &str) -> String {
+        self.execution
+            .enqueue_session_work(environment_id, session_id)
+            .await
+    }
+
+    #[must_use]
+    pub fn with_sandbox_policies(
+        mut self,
+        store: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
+    ) -> Self {
+        self.authoring = Arc::new(EnvironmentAuthoringState {
+            envs: self.authoring.envs.clone(),
+            application: Arc::new(
+                self.authoring
+                    .application
+                    .with_sandbox_policies(store.clone()),
+            ),
+            sandbox_policies: Some(store),
+        });
+        self
+    }
+
+    #[cfg(test)]
+    async fn author(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
+        static NEXT_TEST_COMMAND: AtomicU64 = AtomicU64::new(0);
+        let typed = serde_json::from_value::<EnvironmentConfigParams>(config)
+            .map_err(|error| format!("invalid Environment config: {error}"))?;
+        self.application()
+            .create(awaken_environment_contract::CreateEnvironmentCommand {
+                command_id: format!("test:{}", NEXT_TEST_COMMAND.fetch_add(1, Ordering::Relaxed)),
+                name: name.to_owned(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: canonical_environment_config(typed),
+            })
+            .await
+            .map(|item| item.id)
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn snapshot_from_registration(
+    registration: ExecutableEnvironmentRegistration,
+    runtime: Option<&str>,
+    mcp_targets: &[awaken_session_contract::McpTarget],
+) -> Option<awaken_session_contract::EnvironmentSnapshot> {
+    let item = registration.definition;
+    if item.archived_at.is_some() {
+        return None;
+    }
+    let packages = item.config.packages();
+    let network = session_network_policy(&item.config, mcp_targets);
+    let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
+    let holder = if acp {
+        awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Workload,
+            "awaken.workload.acp",
+        )
+    } else {
+        awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            "awaken.worker",
+        )
+    };
+    let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
+        inference_holder: holder,
+        mcp_holder: awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        ),
+        resource_holder: awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+        ),
+    };
+    // Anthropic Environment config owns cloud networking/packages and
+    // self-hosted routing only. Awaken sandbox policy has a separate owner.
+    let (sandbox, sandbox_provisioning) = match registration.sandbox_policy {
+        Some(policy) if policy.disabled => return None,
+        Some(policy) => (
+            serde_json::to_value(policy.config).ok()?,
+            policy.provisioning,
+        ),
+        None => (
+            serde_json::json!({}),
+            awaken_session_contract::SandboxProvisioning::Eager,
+        ),
+    };
+    let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
+        awaken_session_contract::stable_fingerprint(&(
+            &sandbox,
+            &sandbox_provisioning,
+            &packages,
+            &network,
+            &credential_realization,
+        )),
+    );
+    Some(awaken_session_contract::EnvironmentSnapshot {
+        environment_id: item.id,
+        revision: item.revision,
+        config_fingerprint,
+        sandbox,
+        sandbox_provisioning,
+        packages,
+        network,
+        credential_realization,
+    })
+}
+
+/// Compile static Environment networking plus the exact Session MCP set into
+/// the dynamic frozen Session policy. Keeping this at the projection boundary
+/// prevents the Control aggregate from depending on Session/runtime types.
+fn session_network_policy(
+    config: &awaken_environment_contract::EnvironmentConfig,
+    mcp_targets: &[awaken_session_contract::McpTarget],
+) -> awaken_session_contract::SessionNetworkPolicy {
+    use awaken_environment_contract::EnvironmentNetworking;
+    use awaken_session_contract::SessionNetworkPolicy;
+
+    let EnvironmentNetworking::Limited {
+        allowed_hosts,
+        allow_mcp_servers,
+        allow_package_managers,
+    } = (match config {
+        awaken_environment_contract::EnvironmentConfig::Cloud { networking, .. } => networking,
+        awaken_environment_contract::EnvironmentConfig::SelfHosted => {
+            return SessionNetworkPolicy::Unrestricted;
+        }
+    })
+    else {
+        return SessionNetworkPolicy::Unrestricted;
+    };
+
+    let mut hosts = allowed_hosts.clone();
+    if *allow_mcp_servers {
+        hosts.extend(mcp_targets.iter().filter_map(|target| {
+            target.http_url().and_then(|url| {
+                awaken_session_contract::McpTarget::identity(url)
+                    .ok()
+                    .map(|identity| identity.host)
+            })
+        }));
+    }
+    if *allow_package_managers {
+        hosts.extend(
+            awaken_environment_contract::PUBLIC_PACKAGE_REGISTRY_HOSTS
+                .iter()
+                .map(ToString::to_string),
+        );
+    }
+    SessionNetworkPolicy::Allowlist { hosts }.normalized()
+}
+
+/// AllInOne/test composition of the two canonical Environment route groups.
 pub fn environments_router(state: Arc<EnvironmentState>) -> Router {
+    environment_authoring_router(state.authoring())
+        .merge(environment_work_router(state.execution()))
+}
+
+/// Mount Control-owned definition and sandbox-policy authoring routes.
+pub fn environment_authoring_router(state: Arc<EnvironmentAuthoringState>) -> Router {
     Router::new()
         .route("/v1/environments", post(create_env).get(list_envs))
         .route(
@@ -352,6 +549,24 @@ pub fn environments_router(state: Arc<EnvironmentState>) -> Router {
             get(retrieve_env).post(update_env).delete(delete_env),
         )
         .route("/v1/environments/{id}/archive", post(archive_env))
+        .route(
+            "/v1/awaken/sandbox-execution-policies",
+            post(create_sandbox_policy),
+        )
+        .route(
+            "/v1/awaken/sandbox-execution-policies/{id}/versions",
+            post(publish_sandbox_policy),
+        )
+        .route(
+            "/v1/awaken/environments/{id}/sandbox-execution-policy",
+            get(get_environment_sandbox_policy).post(bind_environment_sandbox_policy),
+        )
+        .with_state(state)
+}
+
+/// Mount Coordinator-owned work coordination routes.
+pub fn environment_work_router(state: Arc<EnvironmentExecutionState>) -> Router {
+    Router::new()
         .route("/v1/environments/{id}/work", get(list_work))
         .route("/v1/environments/{id}/work/poll", get(poll_work))
         .route("/v1/environments/{id}/work/stats", get(work_stats))
@@ -365,18 +580,6 @@ pub fn environments_router(state: Arc<EnvironmentState>) -> Router {
             post(heartbeat_work),
         )
         .route("/v1/environments/{id}/work/{wid}/stop", post(stop_work))
-        .route(
-            "/v1/awaken/sandbox-execution-policies",
-            post(create_sandbox_policy),
-        )
-        .route(
-            "/v1/awaken/sandbox-execution-policies/{id}/versions",
-            post(publish_sandbox_policy),
-        )
-        .route(
-            "/v1/awaken/environments/{id}/sandbox-execution-policy",
-            get(get_environment_sandbox_policy).post(bind_environment_sandbox_policy),
-        )
         .with_state(state)
 }
 
@@ -418,7 +621,7 @@ struct SandboxPolicyBindingOutput {
 }
 
 async fn project_policy_binding(
-    state: &EnvironmentState,
+    state: &EnvironmentAuthoringState,
     environment_id: String,
     reference: awaken_provisioning_contract::SandboxExecutionPolicyRef,
 ) -> Result<SandboxPolicyBindingOutput, StatusCode> {
@@ -435,7 +638,7 @@ async fn project_policy_binding(
 }
 
 fn policy_store(
-    state: &EnvironmentState,
+    state: &EnvironmentAuthoringState,
 ) -> Result<&dyn awaken_provisioning_contract::SandboxExecutionPolicyStore, StatusCode> {
     state
         .sandbox_policies
@@ -444,7 +647,7 @@ fn policy_store(
 }
 
 async fn create_sandbox_policy(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Json(input): Json<SandboxPolicyCreate>,
 ) -> Result<
     (
@@ -468,7 +671,7 @@ async fn create_sandbox_policy(
 }
 
 async fn publish_sandbox_policy(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Path(id): Path<String>,
     Json(input): Json<SandboxPolicyPublish>,
 ) -> Result<Json<awaken_provisioning_contract::SandboxExecutionPolicy>, StatusCode> {
@@ -494,34 +697,47 @@ async fn publish_sandbox_policy(
 }
 
 async fn bind_environment_sandbox_policy(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Path(environment_id): Path<String>,
     Json(input): Json<SandboxPolicyBindingInput>,
 ) -> Result<Json<SandboxPolicyBindingOutput>, StatusCode> {
-    if !state.envs.exists(&environment_id).await {
-        return Err(StatusCode::NOT_FOUND);
-    }
     let reference = awaken_provisioning_contract::SandboxExecutionPolicyRef {
         id: awaken_provisioning_contract::SandboxExecutionPolicyId(input.policy_id),
         version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(input.version),
     };
-    policy_store(&state)?
-        .bind_environment(&environment_id, reference.clone())
+    state
+        .application
+        .bind_sandbox_policy(&environment_id, reference.clone())
         .await
-        .map_err(map_policy_error)?;
+        .map_err(|error| match error {
+            EnvironmentApplicationError::NotFound => StatusCode::NOT_FOUND,
+            EnvironmentApplicationError::BuiltinImmutable => StatusCode::CONFLICT,
+            EnvironmentApplicationError::Policy(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            EnvironmentApplicationError::Create(_)
+            | EnvironmentApplicationError::Registration(_) => StatusCode::SERVICE_UNAVAILABLE,
+        })?;
     Ok(Json(
         project_policy_binding(&state, environment_id, reference).await?,
     ))
 }
 
 async fn get_environment_sandbox_policy(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Path(environment_id): Path<String>,
 ) -> Result<Json<SandboxPolicyBindingOutput>, StatusCode> {
-    let reference = policy_store(&state)?
-        .environment_binding(&environment_id)
+    let reference = state
+        .application
+        .get(&environment_id)
         .await
-        .map_err(map_policy_error)?
+        .and_then(|item| item.sandbox_policy)
+        .map(
+            |reference| awaken_provisioning_contract::SandboxExecutionPolicyRef {
+                id: awaken_provisioning_contract::SandboxExecutionPolicyId(reference.policy_id),
+                version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(
+                    reference.version,
+                ),
+            },
+        )
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(
         project_policy_binding(&state, environment_id, reference).await?,
@@ -533,10 +749,38 @@ fn map_policy_error(
 ) -> StatusCode {
     use awaken_provisioning_contract::SandboxExecutionPolicyError::*;
     match error {
-        NotFound | BindingUnavailable => StatusCode::NOT_FOUND,
+        NotFound => StatusCode::NOT_FOUND,
         VersionConflict => StatusCode::CONFLICT,
         Disabled | Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
         StoreFailed(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+fn map_environment_application_error(error: EnvironmentApplicationError) -> WireError {
+    let message = error.to_string();
+    match error {
+        EnvironmentApplicationError::Create(
+            awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict,
+        ) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse::new("conflict_error", message)),
+        ),
+        EnvironmentApplicationError::NotFound => not_found("environment"),
+        EnvironmentApplicationError::BuiltinImmutable => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse::new("conflict_error", message)),
+        ),
+        EnvironmentApplicationError::Policy(_) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse::new("invalid_request_error", message)),
+        ),
+        EnvironmentApplicationError::Create(
+            awaken_environment_contract::CreateEnvironmentError::Store(_),
+        )
+        | EnvironmentApplicationError::Registration(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new("api_error", message)),
+        ),
     }
 }
 
@@ -562,7 +806,7 @@ fn bad_request(message: impl Into<String>) -> WireError {
 // ---- Environment routes ----------------------------------------------------
 
 async fn create_env(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     headers: HeaderMap,
     ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
 ) -> Result<Json<Environment>, WireError> {
@@ -570,27 +814,16 @@ async fn create_env(
     let command_id = environment_command_id(&headers)?;
     let item = state
         .application
-        .create(
-            awaken_session_contract::env_registry::CreateEnvironmentCommand {
-                command_id,
-                name: params.name,
-                description: params.description.unwrap_or_default(),
-                metadata: params.metadata,
-                scope: params.scope.map(|scope| scope.as_str().to_string()),
-                config,
-            },
-        )
+        .create(awaken_environment_contract::CreateEnvironmentCommand {
+            command_id,
+            name: params.name,
+            description: params.description.unwrap_or_default(),
+            metadata: params.metadata,
+            scope: params.scope.map(|scope| scope.as_str().to_string()),
+            config,
+        })
         .await
-        .map_err(|error| match error {
-            awaken_session_contract::env_registry::CreateEnvironmentError::IdempotencyConflict => (
-                StatusCode::CONFLICT,
-                Json(ErrorResponse::new("conflict_error", error.to_string())),
-            ),
-            awaken_session_contract::env_registry::CreateEnvironmentError::Store(_) => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::new("api_error", error.to_string())),
-            ),
-        })?;
+        .map_err(map_environment_application_error)?;
     Ok(Json(crate::env_registry::project_env(&item)))
 }
 
@@ -617,11 +850,11 @@ fn environment_command_id(headers: &HeaderMap) -> Result<String, WireError> {
 }
 
 async fn retrieve_env(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Environment>, WireError> {
     let item = state
-        .envs
+        .application
         .get(&id)
         .await
         .ok_or_else(|| not_found("environment"))?;
@@ -629,11 +862,11 @@ async fn retrieve_env(
 }
 
 async fn list_envs(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Query(page): Query<PageQuery>,
 ) -> Json<Page<Environment>> {
     let data: Vec<Environment> = state
-        .envs
+        .application
         .list_active()
         .await
         .iter()
@@ -643,7 +876,7 @@ async fn list_envs(
 }
 
 async fn update_env(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Path(id): Path<String>,
     ManagedJson(params): ManagedJson<EnvironmentUpdateParams>,
 ) -> Result<Json<Environment>, WireError> {
@@ -657,12 +890,13 @@ async fn update_env(
         config,
         scope: params.scope.map(|scope| Some(scope.as_str().to_string())),
         metadata: params.metadata,
+        ..Default::default()
     };
     let item = state
-        .envs
+        .application
         .update(&id, patch)
         .await
-        .ok_or_else(|| not_found("environment"))?;
+        .map_err(map_environment_application_error)?;
     Ok(Json(crate::env_registry::project_env(&item)))
 }
 
@@ -741,8 +975,8 @@ fn package_patch(
 
 fn canonical_environment_config(
     config: EnvironmentConfigParams,
-) -> awaken_session_contract::env_registry::EnvironmentConfig {
-    use awaken_session_contract::env_registry::{
+) -> awaken_environment_contract::EnvironmentConfig {
+    use awaken_environment_contract::{
         EnvironmentConfig, EnvironmentNetworking, EnvironmentPackages, EnvironmentPackagesKind,
     };
     match config {
@@ -787,13 +1021,14 @@ fn canonical_environment_config(
 }
 
 async fn delete_env(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Path(id): Path<String>,
 ) -> Result<Json<DeletedEnvironment>, WireError> {
-    if !state.envs.delete(&id).await {
-        return Err(not_found("environment"));
-    }
-    state.work.remove_env(&id).await;
+    state
+        .application
+        .delete(&id)
+        .await
+        .map_err(map_environment_application_error)?;
     Ok(Json(DeletedEnvironment {
         id,
         object_type: "environment_deleted",
@@ -801,21 +1036,28 @@ async fn delete_env(
 }
 
 async fn archive_env(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentAuthoringState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Environment>, WireError> {
     let item = state
-        .envs
+        .application
         .archive(&id)
         .await
-        .ok_or_else(|| not_found("environment"))?;
+        .map_err(map_environment_application_error)?;
     Ok(Json(crate::env_registry::project_env(&item)))
 }
 
 // ---- Work routes -----------------------------------------------------------
 
-async fn require_env(state: &EnvironmentState, id: &str) -> Result<(), WireError> {
-    if state.envs.exists(id).await {
+async fn require_env(state: &EnvironmentExecutionState, id: &str) -> Result<(), WireError> {
+    if state
+        .execution_source
+        .current_registration(id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
         Ok(())
     } else {
         Err(not_found("environment"))
@@ -824,7 +1066,7 @@ async fn require_env(state: &EnvironmentState, id: &str) -> Result<(), WireError
 
 /// `GET /v1/environments/:id/work` — the environment's work items.
 async fn list_work(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentExecutionState>>,
     Path(id): Path<String>,
     Query(page): Query<PageQuery>,
 ) -> Result<Json<Page<Work>>, WireError> {
@@ -843,7 +1085,7 @@ async fn list_work(
 /// single worker. Open-tier cap: returns `null` when an item is already `active`
 /// in this environment (one lease at a time) or the queue is empty.
 async fn poll_work(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentExecutionState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
@@ -925,7 +1167,7 @@ struct HeartbeatParams {
 
 /// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
 async fn work_stats(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentExecutionState>>,
     Path(id): Path<String>,
 ) -> Result<Json<WorkQueueStats>, WireError> {
     require_env(&state, &id).await?;
@@ -940,7 +1182,7 @@ async fn work_stats(
 }
 
 async fn retrieve_work(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentExecutionState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
     require_env(&state, &id).await?;
@@ -953,7 +1195,7 @@ async fn retrieve_work(
 }
 
 async fn update_work(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentExecutionState>>,
     Path((id, wid)): Path<(String, String)>,
     ManagedJson(params): ManagedJson<WorkUpdateParams>,
 ) -> Result<Json<Work>, WireError> {
@@ -968,7 +1210,7 @@ async fn update_work(
 
 /// `POST …/work/:wid/ack` — the worker acknowledges it picked up the item.
 async fn ack_work(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentExecutionState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
     require_env(&state, &id).await?;
@@ -982,7 +1224,7 @@ async fn ack_work(
 
 /// `POST …/work/:wid/heartbeat` — extend the lease; returns the TTL.
 async fn heartbeat_work(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentExecutionState>>,
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
     Query(params): Query<HeartbeatParams>,
@@ -1041,7 +1283,7 @@ fn now_ms() -> u64 {
 
 /// `POST …/work/:wid/stop` — request the worker stop the item.
 async fn stop_work(
-    State(state): State<Arc<EnvironmentState>>,
+    State(state): State<Arc<EnvironmentExecutionState>>,
     Path((id, wid)): Path<(String, String)>,
 ) -> Result<Json<Work>, WireError> {
     require_env(&state, &id).await?;
@@ -1055,14 +1297,93 @@ async fn stop_work(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
 
-    fn config(
-        value: serde_json::Value,
-    ) -> awaken_session_contract::env_registry::EnvironmentConfig {
+    fn config(value: serde_json::Value) -> awaken_environment_contract::EnvironmentConfig {
         serde_json::from_value(value).expect("valid neutral Environment config")
+    }
+
+    async fn create_definition(
+        state: &EnvironmentState,
+        name: &str,
+        environment_config: awaken_environment_contract::EnvironmentConfig,
+    ) -> EnvItem {
+        static NEXT_COMMAND: AtomicU64 = AtomicU64::new(0);
+        state
+            .application()
+            .create(awaken_environment_contract::CreateEnvironmentCommand {
+                command_id: format!(
+                    "environment-test:{}",
+                    NEXT_COMMAND.fetch_add(1, Ordering::Relaxed)
+                ),
+                name: name.into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: environment_config,
+            })
+            .await
+            .expect("create and publish test Environment")
+    }
+
+    #[tokio::test]
+    async fn control_directory_owns_builtin_and_terminal_history() {
+        // Cause/effect decision table:
+        // R1 empty Control store + reconciliation -> built-in env_local is
+        // queryable in Control and registered current in Coordinator;
+        // R2 built-in mutation -> conflict and no new revision;
+        // R3 authored Environment delete -> final archived revision retained in
+        // Control, current execution withdrawn, every exact revision retained.
+        use awaken_executable_environment_catalog::{
+            ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
+        };
+
+        let envs: Arc<dyn EnvRegistry> = Arc::new(InMemoryEnvRegistry::new());
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let authoring = EnvironmentAuthoringState::without_policies(
+            envs.clone(),
+            Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
+        );
+        let application = authoring.application();
+        application.reconcile_registrations().await.expect("R1");
+        assert_eq!(
+            application.get("env_local").await.expect("R1").revision.0,
+            1
+        );
+        assert!(catalog.current("env_local").is_some(), "R1");
+        assert!(
+            matches!(
+                application.update("env_local", EnvUpdate::default()).await,
+                Err(EnvironmentApplicationError::BuiltinImmutable)
+            ),
+            "R2"
+        );
+
+        let authored = application
+            .create(awaken_environment_contract::CreateEnvironmentCommand {
+                command_id: "terminal-history".into(),
+                name: "terminal".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: Default::default(),
+            })
+            .await
+            .expect("R3 create");
+        application.delete(&authored.id).await.expect("R3 delete");
+        let terminal = envs.get(&authored.id).await.expect("R3 tombstone");
+        assert!(terminal.archived_at.is_some(), "R3");
+        assert_eq!(terminal.revision.0, 2, "R3");
+        assert!(catalog.current(&authored.id).is_none(), "R3");
+        assert!(
+            catalog
+                .at_revision(
+                    &authored.id,
+                    awaken_environment_contract::EnvironmentRevision(1),
+                )
+                .is_some(),
+            "R3"
+        );
     }
 
     #[tokio::test]
@@ -1071,15 +1392,7 @@ mod tests {
             Arc::new(InMemoryEnvRegistry::new()),
             Arc::new(InMemoryWorkQueue::new()),
         );
-        let e = state
-            .envs
-            .create(
-                "e".into(),
-                String::new(),
-                BTreeMap::new(),
-                config(json!({ "type": "self_hosted" })),
-            )
-            .await;
+        let e = create_definition(&state, "e", config(json!({ "type": "self_hosted" }))).await;
         assert!(state.is_self_hosted(&e.id).await);
         assert!(
             !state.is_self_hosted("missing").await,
@@ -1103,20 +1416,18 @@ mod tests {
         // | S4   | missing/archived custom | any | - | None |
         // | S5   | implicit env_local | native/ACP | - | canonical local snapshot |
         // | S6   | active empty limited allowlist | any | - | network None |
-        // Sandbox policy is not part of the Environment graph.
+        // An exact sandbox-policy reference, when present, belongs to the authored
+        // Environment revision and the registration carries the resolved body.
         let state = EnvironmentState::new();
-        let item = state
-            .envs
-            .create(
-                "snapshot".into(),
-                String::new(),
-                BTreeMap::new(),
-                config(json!({
-                    "type": "cloud",
-                    "networking": {"type": "limited", "allowed_hosts": ["a.test", "shared.test"]}
-                })),
-            )
-            .await;
+        let item = create_definition(
+            &state,
+            "snapshot",
+            config(json!({
+                "type": "cloud",
+                "networking": {"type": "limited", "allowed_hosts": ["a.test", "shared.test"]}
+            })),
+        )
+        .await;
         let native = state.snapshot(&item.id, None).await.expect("S1");
         assert_eq!(
             native.network,
@@ -1149,7 +1460,7 @@ mod tests {
             "S2 MCP"
         );
         state
-            .envs
+            .application()
             .update(
                 &item.id,
                 EnvUpdate {
@@ -1157,7 +1468,8 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .await;
+            .await
+            .unwrap();
         let changed = state.snapshot(&item.id, None).await.expect("S3");
         assert_ne!(changed.revision, native.revision, "S3 revision");
         assert_eq!(
@@ -1168,7 +1480,7 @@ mod tests {
             state.snapshot("missing", None).await.is_none(),
             "S4 missing"
         );
-        state.envs.archive(&item.id).await;
+        state.application().archive(&item.id).await.unwrap();
         assert!(
             state.snapshot(&item.id, None).await.is_none(),
             "S4 archived"
@@ -1176,7 +1488,7 @@ mod tests {
         let local = state.snapshot("env_local", None).await.expect("S5");
         assert_eq!(
             local,
-            default_environment_snapshot("env_local".into(), None),
+            snapshot_from_registration(default_environment_registration(), None, &[]).unwrap(),
             "S5 native"
         );
         let local_acp = state
@@ -1185,18 +1497,20 @@ mod tests {
             .expect("S5 ACP");
         assert_eq!(
             local_acp,
-            default_environment_snapshot("env_local".into(), Some("acp:claude")),
+            snapshot_from_registration(
+                default_environment_registration(),
+                Some("acp:claude"),
+                &[],
+            )
+            .unwrap(),
             "S5 ACP"
         );
-        let closed = state
-            .envs
-            .create(
-                "closed".into(),
-                String::new(),
-                BTreeMap::new(),
-                config(json!({"type": "cloud", "networking": {"type": "limited"}})),
-            )
-            .await;
+        let closed = create_definition(
+            &state,
+            "closed",
+            config(json!({"type": "cloud", "networking": {"type": "limited"}})),
+        )
+        .await;
         assert_eq!(
             state.snapshot(&closed.id, None).await.expect("S6").network,
             awaken_session_contract::SessionNetworkPolicy::None,
@@ -1206,6 +1520,10 @@ mod tests {
 
     #[tokio::test]
     async fn assistant_authoring_uses_the_same_official_union_guard() {
+        // Cause/effect rules: R1 a valid official union creates an executable
+        // revision; R2 a later active revision preserves exact historical reads
+        // without substituting current; R3 wire-only runtime/sandbox fields are
+        // rejected before authoring or registration.
         let state = EnvironmentState::new();
         let id = state
             .author(
@@ -1226,7 +1544,7 @@ mod tests {
             "exact current revision"
         );
         state
-            .envs
+            .application()
             .update(
                 &id,
                 EnvUpdate {
@@ -1234,13 +1552,14 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .await;
+            .await
+            .unwrap();
         assert!(
             state
                 .snapshot_exact(&id, exact.revision.0, None)
                 .await
-                .is_none(),
-            "a stale binding never substitutes current"
+                .is_some(),
+            "R2 exact history remains executable while current is active"
         );
 
         for (case, config) in [
@@ -1293,8 +1612,9 @@ mod tests {
             disabled: false,
         };
         policies.create(v1.clone()).await.unwrap();
-        policies
-            .bind_environment(
+        state
+            .application()
+            .bind_sandbox_policy(
                 &environment_id,
                 SandboxExecutionPolicyRef {
                     id: v1.id.clone(),
@@ -1362,15 +1682,16 @@ mod tests {
             id: policy.id.clone(),
             version: policy.version,
         };
-        policies
-            .bind_environment(&environment_id, reference.clone())
+        state
+            .application()
+            .bind_sandbox_policy(&environment_id, reference.clone())
             .await
             .unwrap();
 
         let lazy = state.snapshot(&environment_id, None).await.unwrap();
         assert_eq!(lazy.sandbox_provisioning, SandboxProvisioning::OnToolUse);
         assert_ne!(lazy.config_fingerprint, eager.config_fingerprint);
-        let projected = project_policy_binding(&state, environment_id, reference)
+        let projected = project_policy_binding(&state.authoring, environment_id, reference)
             .await
             .unwrap();
         assert_eq!(projected.provisioning, SandboxProvisioning::OnToolUse);

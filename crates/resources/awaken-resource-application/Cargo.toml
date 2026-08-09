@@ -1,0 +1,24 @@
+[package]
+name = "awaken-resource-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "application"
+authority = "resource"
+
+[dependencies]
+async-trait.workspace = true
+awaken-file-application.workspace = true
+awaken-resource-contract.workspace = true
+
+[dev-dependencies]
+awaken-file-store.workspace = true
+awaken-memory-store.workspace = true
+awaken-resource-store.workspace = true
+awaken-skill-store.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

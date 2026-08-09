@@ -12,6 +12,10 @@ MANAGED_PROTOCOL_ALLOWED_DEPS = {
     "awaken-protocol-managed": {
         "awaken-agent-contract",
         "awaken-executable-agent-contract",
+        "awaken-executable-environment-contract",
+        "awaken-executable-environment-catalog",
+        "awaken-environment-contract",
+        "awaken-environment-application",
         "awaken-protocol-transport",
         "awaken-credential-contract",
         "awaken-session-contract",

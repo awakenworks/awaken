@@ -108,6 +108,13 @@ pub trait PublicationBindingReconciler: Send + Sync {
     /// Reconcile every policy-bound Agent in every authoring scope. This is the
     /// Worker-observation event path; authored values are preserved.
     async fn reconcile_all(&self) -> Result<usize, String>;
+
+    /// Replay every durable publication and lifecycle tombstone through the
+    /// ordinary registrar. Implementations that have no broader durable history
+    /// may reuse their all-scope freshness operation.
+    async fn recover_registrations(&self) -> Result<usize, String> {
+        self.reconcile_all().await
+    }
 }
 
 /// The concrete reconciler the host wires. Catalog changes use its fixed Agent
@@ -163,6 +170,12 @@ impl PublicationBindingReconciler for ConfigServiceReconciler {
     async fn reconcile_all(&self) -> Result<usize, String> {
         self.plane
             .reconcile_all_policy_bound(&self.execution_workspace)
+            .await
+    }
+
+    async fn recover_registrations(&self) -> Result<usize, String> {
+        self.plane
+            .recover_all_registrations(&self.execution_workspace)
             .await
     }
 }
