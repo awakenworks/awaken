@@ -255,7 +255,8 @@ pub trait DraftStore: Send + Sync {
 /// A write port over the managed-plane environment registry — the "where/how it runs"
 /// resource, distinct from an agent draft. `admin_draft_environment` persists through
 /// it (the same `POST /v1/environments` the console's New-environment modal drives).
-/// The impl lives at the composition root, which owns the `EnvironmentState`.
+/// The implementation lives at the composition root and delegates to Control's
+/// canonical Environment authoring application.
 #[async_trait]
 pub trait EnvironmentAuthor: Send + Sync {
     /// Create an environment from the closed, secret-free authoring command.

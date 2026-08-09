@@ -1,0 +1,12 @@
+[package]
+name = "awaken-service-auth-contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "contract"
+authority = "private-service-authentication"
+
+[lints]
+workspace = true

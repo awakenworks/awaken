@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-30
+- Amended: 2026-08-01 — static Environment ownership, Resources application
+  composition, registration supervision, and durable projection high-water marks
 - Depends on: ADR-0031, ADR-0032, ADR-0038, ADR-0062, ADR-0063,
   ADR-0065, ADR-0066, ADR-0067
 - Supersedes: ADR-0031 D1/D4 and ADR-0032 D1/D4 only where they require a
@@ -71,6 +73,12 @@ publication may exist while registration is temporarily unavailable; that call
 returns an availability failure and an idempotent retry registers the same
 publication.
 
+Control startup does not make process liveness depend on Coordinator
+availability. The one `StaticRegistrationSupervisor` concurrently recovers Agent
+and Environment registrations from their durable Control authorities, marks
+readiness only after both succeed, and retries failures with bounded exponential
+backoff. Its wake signal contains no work data and cannot become another outbox.
+
 ### D3: Coordinator owns Deployment and reuses the existing Session authority
 
 `DeploymentState`, its public API, scheduler, repository, and lifecycle outbox are
@@ -112,13 +120,14 @@ receipt, or continue mutable Resource write-back.
 
 ### D6: Data ownership is enforced at composition time
 
-Control owns authoring, publication, IAM, credential mutation, and Data Subject
-consent/accountability stores.
-Coordinator owns executable Agent registration, Deployment, DeploymentRun,
-Environment execution state, Session, subject-tagged captured content, dispatch,
-and commit stores. Resource
-providers own their content. Worker owns only ephemeral execution state and must
-not receive authority database connections.
+Control owns Agent and Environment authoring, immutable revisions/publications,
+sandbox-policy versions, IAM, credential mutation, and Data Subject
+consent/accountability stores. Coordinator owns rebuildable executable Agent and
+Environment projections, Deployment, DeploymentRun, Session, WorkQueue,
+subject-tagged captured content, dispatch, and commit stores. Resources owns its
+catalog, File/Memory/Skill data, references, purge intents, and reclamation
+fences. Worker owns only ephemeral execution state and must not receive authority
+database connections.
 
 The process store bundle is split into optional Control and Coordinator groups.
 Split Coordinator cannot configure or acquire Catalog, Credential, Config,
@@ -141,13 +150,25 @@ Coordinator model discovery is derived from
 for Session resolution. It does not reopen Control's mutable model or credential
 catalogs merely to populate `/v1/models`.
 
-Environment is Coordinator-owned. Public Managed HTTP, the authenticated private
-Control command, and the AllInOne local adapter all invoke the same
-`EnvironmentApplication::create`; the Registry atomically owns command-id /
-fingerprint replay and the application converges one healthcheck through the Work
-Queue. Control receives only `EnvironmentAuthor`, never `EnvironmentState` or an
-Environment database address. `environment_db` remains an external deployment
-field but resolves into the Coordinator store group.
+Environment is a static Control aggregate. `awaken-environment-contract` owns
+`EnvItem`, exact revisions, the selected sandbox-policy reference, and
+`EnvRegistry`. Public definition and policy routes plus the Admin Assistant call
+the same `EnvironmentApplication`. Each committed revision is registered through
+`ExecutableEnvironmentRegistrar`; split deployment uses authenticated HTTP and
+AllInOne uses a local adapter. Coordinator stores only the rebuildable exact/current
+projection and WorkQueue, and converges the healthcheck after registration.
+Archive/delete preserves terminal Control history, withdraws current executable
+availability, and removes queued work. `environment_db` therefore belongs to the
+Control store group; Coordinator rejects it before store acquisition.
+
+Resources has one application composition. `ResourcesApplication` derives the
+single `FileApplicationService` and purge scheduler from one canonical
+`ResourceComponent`; the public File/Memory/Skill router and Runtime artifact
+harvesting consume those same ports. Coordinator may co-deploy and mount this
+component, but does not acquire its database authority. A separate Resources
+process can be introduced only with authenticated claim/grant ports that preserve
+the existing dispatch fence; sharing the Coordinator dispatch database is not an
+acceptable split.
 
 Data Subject is Control-owned; captured runtime content is Coordinator-owned.
 Control builds the only `RepoDataSubjectResolver`, persists its erasure-process
@@ -161,9 +182,26 @@ and stable receipt, preventing both late-write resurrection and receipt loss on
 an ambiguous retry. AllInOne replaces both HTTP adapters with the same local
 ports; neither role opens the other's database.
 
+### D7: Projection freshness uses one durable high-water mechanism
+
+The executable-Agent and executable-Environment command logs each append a
+monotonic `command_sequence` through a deterministic versioned migration.
+Coordinator replicas compare the durable maximum with their last applied cursor
+before Runtime-admitting Session and Deployment writes. Equal cursors require no
+command load; an advanced authority loads only the ordered tail.
+
+The shared cursor accepts non-contiguous database identity values but requires
+the batch to reach the observed high-water. A missing or out-of-order tail, or an
+authority high-water behind the local cursor, triggers complete replay through
+the owning catalog state machine into a replacement projection. Replay failure
+rejects admission before any Session mutation. Database notification may later
+be added only as a hint; durable high-water comparison and full replay remain the
+correctness path.
+
 ## Implementation Status
 
-The decision is implemented. The canonical component inventory, request flows,
+The decision, registration supervisor, and high-water refresh are implemented.
+The canonical component inventory, request flows,
 failure semantics, and verification matrix live in
 [Configuration-To-Application And Request-To-Response Flows](../design/config-to-run-execution-flow.md).
 Keeping that evidence in one owner prevents the ADR and implementation guide
@@ -182,11 +220,19 @@ that loses ownership of `ResourceCatalog`.
 - The same application ports support AllInOne and distributed deployment.
 - `StoredPublication` remains the single publication authority; Coordinator data
   is explicitly rebuildable.
+- Control remains live but unready while either static registration domain is
+  pending; lag and retry state are observable without another work store.
+- Active-active Coordinator admission is constant-read when current and
+  incremental when behind, with complete replay as the fail-safe.
 - No whole-catalog installation track survives beside per-Agent registration.
+- No Session-owned Environment definition contract or sandbox-policy binding
+  table survives beside the Control aggregate.
 - Deployment recovery, publication retries, claimed commits, and mutable Resource
   write-back have stable idempotency or fencing identities.
 - Resource semantics remain type-specific instead of accumulating optional
   behavior in a generic service.
+- HTTP and Runtime File commands share one Resources application path, and
+  AllInOne does not reconstruct any of the four domain components.
 - Split Coordinator no longer needs Control database credentials or the Control
   seal key; loss of the reverse Control boundary fails closed while durable
   Coordinator outbox/audit identities remain retryable.

@@ -1,11 +1,11 @@
 //! The self-hosted environment registry: the port + neutral `EnvItem` now live in
-//! `awaken-session-contract` (a contract/ leaf); this module re-exports them and owns
+//! `awaken-environment-contract`; this module re-exports them and owns
 //! the two projections the neutral crate must not name — the `BetaEnvironment` wire
 //! shape and the sandbox `NetworkPolicy` derived from a record's `config`.
 
 pub use awaken_env_store::InMemoryEnvRegistry;
-use awaken_session_contract::env_registry::OBJECT_AT;
-pub use awaken_session_contract::env_registry::{
+use awaken_environment_contract::OBJECT_AT;
+pub use awaken_environment_contract::{
     EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
     EnvironmentPackagesMutation,
 };

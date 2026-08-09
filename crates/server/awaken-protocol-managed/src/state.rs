@@ -93,7 +93,7 @@ pub struct ManagedState {
     /// The environments surface, when the server mounts one: a session's
     /// `environment_id` is resolved to its networking policy (egress on/off) at
     /// creation. `None` → every session gets host network (unrestricted).
-    environments: Option<Arc<crate::routes::environments::EnvironmentState>>,
+    environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
     /// The config-plane agent projection source (ADR-0043): when wired, a session
     /// referencing an agent published on the config plane inherits that agent's
     /// authoritative `model` (the config plane owns model/system/tools), so it runs
@@ -182,8 +182,7 @@ impl ManagedState {
         &self,
         environment_id: &str,
     ) -> Option<Option<crate::env_registry::EnvItem>> {
-        let environments = self.environments.as_ref()?;
-        Some(environments.get(environment_id).await)
+        Some(self.environments.get(environment_id).await)
     }
 
     pub(crate) fn deployment_agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
@@ -239,7 +238,9 @@ impl ManagedState {
             runtime,
             mcp_realizer,
             credential_source: None,
-            environments: None,
+            environments: Arc::new(
+                crate::routes::environments::EnvironmentExecutionState::default(),
+            ),
             config_source: None,
             resource_catalog: None,
             resource_purge_scheduler: None,
@@ -268,14 +269,13 @@ impl ManagedState {
 
     /// Wire the environments surface, so `POST /v1/sessions` resolves the session's
     /// `environment_id` to its networking policy (egress on/off). Share the same
-    /// `EnvironmentState` with [`crate::environments_router`], or the sessions and the
-    /// environment routes see different environments.
+    /// Coordinator's one executable Environment projection and WorkQueue.
     #[must_use]
     pub fn with_environments(
         mut self,
-        environments: Arc<crate::routes::environments::EnvironmentState>,
+        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
     ) -> Self {
-        self.environments = Some(environments);
+        self.environments = environments;
         self
     }
 
@@ -1110,7 +1110,7 @@ mod tests {
         );
         let environment = awaken_session_contract::EnvironmentSnapshot {
             environment_id: "env_local".into(),
-            revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+            revision: awaken_environment_contract::EnvironmentRevision(1),
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
             sandbox: serde_json::json!({"isolation": "namespace"}),
             sandbox_provisioning: Default::default(),

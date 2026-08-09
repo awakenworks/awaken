@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 
 use super::{
-    EchoModel, FAKE_ACP_CLI, SharedHost, mount_with_host_backend_publication,
+    EchoModel, FAKE_ACP_CLI, mount_with_host_backend_publication, resource_host,
     scenario_host_acp_cli, scenario_model, scenario_storage_dir,
 };
 
@@ -15,7 +15,7 @@ pub fn build_acp_gateway_router() -> Router {
     let store_dir = scenario_storage_dir();
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
     mount_with_host_backend_publication(
-        SharedHost::new(model, model_ref).with_projected_acp(
+        resource_host(model, model_ref).with_projected_acp(
             scenario_host_acp_cli(FAKE_ACP_CLI),
             Arc::new(ScenarioEnvAcpModel),
             store_dir,

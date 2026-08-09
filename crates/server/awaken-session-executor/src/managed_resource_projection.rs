@@ -157,7 +157,7 @@ impl crate::ManagedHost {
                     );
                 }
                 // The worker realizes one governed store directory through its
-                // MemoryMounter. The resource plane never receives a principal,
+                // MemoryMounter. Resources never receives a principal,
                 // role, API key, or policy: the outer authorization/ACL seam has
                 // already selected workspace, store, and maximum access.
                 staged

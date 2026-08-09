@@ -29,7 +29,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
     );
     let environment = awaken_session_contract::EnvironmentSnapshot {
         environment_id: "env".into(),
-        revision: awaken_session_contract::env_registry::EnvironmentRevision(4),
+        revision: awaken_session_contract::EnvironmentRevision(4),
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-4".into()),
         sandbox: json!({"isolation": "namespace"}),
         sandbox_provisioning: Default::default(),

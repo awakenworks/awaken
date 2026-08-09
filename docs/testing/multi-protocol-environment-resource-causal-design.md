@@ -160,7 +160,7 @@ configuration input, resolver, or expected-result branch.
 
 ```text
 typed deployment with storage root
-    -> one durable ResourcePlane + Host constructor
+    -> one durable ResourceComponent + Host constructor
     -> stable local Workspace id + Session repository + thread store
     -> restart reconstructs the same owner and exact Session baseline
 ```
@@ -182,7 +182,7 @@ a process-specific owner before durability exists and creates a second resource
 composition path.
 The same rule covers every Resource family, including the delivered Skill store:
 durable File, Memory, Skill, lifecycle, Session, and sandbox adapters come from the
-one ResourcePlane/deployment constructor and survive or fail together.
+one ResourceComponent/deployment constructor and survive or fail together.
 Production-config E2E fixtures isolate the standard path itself: a temporary HOME
 contains `~/.awaken/config.toml`, whose `data_dir` is the only persisted catalog
 root. Inherited user data and removed `AWAKEN_*` compatibility inputs are never
@@ -199,7 +199,7 @@ silently replace the explicit scheduling policy.
 ```text
 OS HOME + standard ~/.awaken/config.toml
     -> typed ResolvedDeployment
-    -> one data_dir owns control stores, IAM bootstrap and ResourcePlane
+    -> one data_dir owns control stores, IAM bootstrap and ResourceComponent
 removed AWAKEN_MGMT_* inputs
     -> no deployment effect
 ```
@@ -266,7 +266,7 @@ field would duplicate the versioned SandboxExecutionPolicy boundary.
 ```text
 scenario_deployment()
   -> resource_host_with_deployment()
-  -> ResourcePlane + durable queue/store + sandbox provider
+  -> ResourceComponent + durable queue/store + sandbox provider
   -> scenario-specific decorators (ACP, delegate, tools, skills, gate)
 ```
 
@@ -278,7 +278,7 @@ scenario_deployment()
 | H4 | present | yes | direct `SharedHost::new` | forbidden duplicate composition |
 
 Scenario behavior is a decorator, never an alternative constructor. The helper
-is the only owner of the ephemeral-versus-durable ResourcePlane decision, so a
+is the only owner of the ephemeral-versus-durable ResourceComponent decision, so a
 special protocol cannot silently discard storage, pool, Environment, or Resource
 ownership selected by the test deployment.
 
@@ -345,11 +345,11 @@ copied per protocol test. Fault injection edits `aggregate_json` as one value.
 Only the explicit retained-row case clears it and writes legacy columns, so the
 test cannot accidentally create a second live Session state authority.
 
-## Phase 15: ephemeral ResourcePlane without inferred durability
+## Phase 15: ephemeral ResourceComponent without inferred durability
 
 ```text
 scenario DeploymentConfig::ephemeral
-  -> canonical in-memory ResourcePlane
+  -> canonical in-memory ResourceComponent
   -> production workspace-path adapter
   -> File/Memory ownership + lifecycle
   -> Skill requires its independent durable store
@@ -451,14 +451,14 @@ rejected as ambiguous rather than creating two topology authorities.
 ## Phase 20: typed remote Worker resource composition
 
 ```text
-production config ResourcePlane
+production config Resources backend
   -> frozen Session Resource manifest
   -> placement requires resource-capable Worker
-  -> explicit embedded Worker deployment + same shared ResourcePlane
+  -> explicit embedded Worker deployment + same shared ResourceComponent
   -> exact File/Skill/Memory projection and detach
 ```
 
-| Rule | Worker ResourcePlane | Manifest | Workspace | Expected |
+| Rule | Worker ResourceComponent | Manifest | Workspace | Expected |
 |---|---:|---|---|---|
 | W1 | absent | non-empty | exact | cannot claim |
 | W2 | shared Postgres | File/Skill/Memory | exact | claim and realize exact tree |
@@ -508,7 +508,7 @@ one typed deployment file
 | T4 | admin_db / data_subject_db / environment_db / sessions_db / captured_content_db absent | data_dir | default role-owned database files |
 | T5 | removed per-component environment variables | any inherited value | no topology effect |
 | T6 | `management_database_url_file` only | projected Secret file | all control + Resource stores share one URL |
-| T7 | Control has environment_db, sessions_db, or captured_content_db | any | reject before store acquisition; Control uses Coordinator ports only |
+| T7 | Control has sessions_db/captured_content_db, or Coordinator has environment_db | any | reject before store acquisition; Environment definitions belong to Control and execution state belongs to Coordinator |
 
 `spawnProduction` accepts the same database map already owned by
 `deploymentEnv`; per-component tests no longer duplicate binary discovery,
@@ -586,10 +586,11 @@ Session deployment root owns runtime persistence.
 
 ```text
 typed environment_db = Postgres
-  -> production EnvironmentState composition
+  -> production Control Environment authoring composition
   -> canonical SandboxExecutionPolicyStore port
   -> Postgres exact-version aggregate
-  -> Environment snapshot consumes the pinned revision
+  -> executable Environment registration
+  -> Coordinator Session snapshot consumes the pinned revision
 ```
 
 | Rule | Exact policy | Disabled | Current fence | Expected |

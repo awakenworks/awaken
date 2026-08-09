@@ -270,12 +270,16 @@ pub struct SharedHost {
     /// Logical Files-API truth: public identity, metadata, Workspace visibility,
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
     pub(crate) file_catalog: Arc<dyn FileCatalog>,
+    /// Resources-owned command application. It is absent only on database-less
+    /// Workers, which receive immutable content through `file_content_source` and
+    /// cannot expose management or artifact-publication commands.
+    pub(crate) file_application: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
     /// Durable workspace ownership projection for content-addressed resources.
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.
     pub(crate) resource_lifecycle:
         Option<Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>>,
-    /// The memory resource plane's path-addressed content backend shared by API,
+    /// The Resources context's path-addressed Memory backend shared by API,
     /// mounts, recall, and extraction. See [`crate::memory_stores`].
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,
     /// Worker-side realization port for governed MemoryStore mounts. The runtime

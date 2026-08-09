@@ -1168,7 +1168,7 @@ mod tests {
                 awaken_session_contract::SessionBaselineInputs {
                     environment: EnvironmentSnapshot {
                         environment_id: "env_local".into(),
-                        revision: awaken_session_contract::env_registry::EnvironmentRevision(1),
+                        revision: awaken_session_contract::EnvironmentRevision(1),
                         config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
                         sandbox: serde_json::json!({}),
                         sandbox_provisioning: Default::default(),

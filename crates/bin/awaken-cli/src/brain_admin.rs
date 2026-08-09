@@ -10,10 +10,11 @@
 //!   (a `preStop` hook calls this before SIGTERM; interrupted clients reconnect and
 //!   resume from durable truth).
 //! - `GET /readyz` — readiness for the Service: 200 normally, 503 while draining.
-//! - `GET /metrics` — the two gauges in Prometheus text format.
+//! - `GET /metrics` — connection/drain gauges plus Control registration
+//!   readiness, pending-domain, failure, and lag gauges.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -27,6 +28,8 @@ use axum::routing::{get, post};
 pub struct DrainController {
     draining: AtomicBool,
     active: AtomicUsize,
+    registration_supervisor: RwLock<Option<Arc<awaken_control::StaticRegistrationSupervisor>>>,
+    registration_health: RwLock<Option<Arc<awaken_control::RegistrationHealth>>>,
 }
 
 impl DrainController {
@@ -45,6 +48,50 @@ impl DrainController {
     #[must_use]
     pub fn is_draining(&self) -> bool {
         self.draining.load(Ordering::Relaxed)
+    }
+
+    /// Retain the Control-owned supervisor for the complete process lifetime and
+    /// project its one health source into readiness and metrics.
+    pub fn set_registration_supervisor(
+        &self,
+        supervisor: Arc<awaken_control::StaticRegistrationSupervisor>,
+    ) {
+        let health = supervisor.health();
+        *self
+            .registration_supervisor
+            .write()
+            .expect("registration supervisor lock poisoned") = Some(supervisor);
+        *self
+            .registration_health
+            .write()
+            .expect("registration health lock poisoned") = Some(health);
+    }
+
+    #[cfg(test)]
+    fn set_registration_health_for_test(&self, health: Arc<awaken_control::RegistrationHealth>) {
+        *self
+            .registration_health
+            .write()
+            .expect("registration health lock poisoned") = Some(health);
+    }
+
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        !self.is_draining()
+            && self
+                .registration_health
+                .read()
+                .expect("registration health lock poisoned")
+                .as_ref()
+                .is_none_or(|health| health.snapshot().ready)
+    }
+
+    fn registration_snapshot(&self) -> Option<awaken_control::RegistrationHealthSnapshot> {
+        self.registration_health
+            .read()
+            .expect("registration health lock poisoned")
+            .as_ref()
+            .map(|health| health.snapshot())
     }
 
     fn begin_drain(&self) {
@@ -78,14 +125,13 @@ async fn drain(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
 }
 
 async fn readyz(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
-    awaken_server::admin::readyz(!ctrl.is_draining())
+    awaken_server::admin::readyz(ctrl.is_ready())
 }
 
 /// The Brain's Prometheus scrape: the whole process's OTel metrics — the
-/// `awaken_brain_active_streams` connection-load gauge and the `awaken_brain_draining`
-/// scale-in gauge (both registered on the global meter at startup) plus the business
-/// `gen_ai.*`/`awaken.*` metrics. The `/readyz` 503 is the routing signal the k8s
-/// Service acts on; the `draining` gauge is the same state for autoscalers/dashboards.
+/// Brain lifecycle and Control registration gauges registered on the global
+/// meter at startup, plus business `gen_ai.*`/`awaken.*` metrics. `/readyz` is
+/// the routing signal; gauges expose the cause to autoscalers and dashboards.
 async fn metrics() -> impl IntoResponse {
     (StatusCode::OK, awaken_observability::render_prometheus())
 }
@@ -119,10 +165,7 @@ pub fn brain_admin_router(ctrl: Arc<DrainController>) -> Router {
 #[must_use]
 pub fn register_active_streams_gauge(
     ctrl: Arc<DrainController>,
-) -> (
-    opentelemetry::metrics::ObservableGauge<u64>,
-    opentelemetry::metrics::ObservableGauge<u64>,
-) {
+) -> Vec<opentelemetry::metrics::ObservableGauge<u64>> {
     let meter = opentelemetry::global::meter("awaken-brain");
     let active = {
         let ctrl = ctrl.clone();
@@ -132,12 +175,65 @@ pub fn register_active_streams_gauge(
             .with_callback(move |obs| obs.observe(ctrl.active_streams() as u64, &[]))
             .build()
     };
+    let draining_ctrl = ctrl.clone();
     let draining = meter
         .u64_observable_gauge("awaken_brain_draining")
         .with_description("1 while the Brain is draining for graceful scale-in, else 0.")
-        .with_callback(move |obs| obs.observe(u64::from(ctrl.is_draining()), &[]))
+        .with_callback(move |obs| obs.observe(u64::from(draining_ctrl.is_draining()), &[]))
         .build();
-    (active, draining)
+    let registration_ready = {
+        let ctrl = ctrl.clone();
+        meter
+            .u64_observable_gauge("awaken_control_registration_ready")
+            .with_description("1 when Agent and Environment registrations are reconciled.")
+            .with_callback(move |obs| {
+                if let Some(snapshot) = ctrl.registration_snapshot() {
+                    obs.observe(u64::from(snapshot.ready), &[]);
+                }
+            })
+            .build()
+    };
+    let registration_pending = {
+        let ctrl = ctrl.clone();
+        meter
+            .u64_observable_gauge("awaken_control_registration_pending_domains")
+            .with_description("Static registration domains whose recovery remains pending.")
+            .with_callback(move |obs| {
+                if let Some(snapshot) = ctrl.registration_snapshot() {
+                    obs.observe(snapshot.pending_domains as u64, &[]);
+                }
+            })
+            .build()
+    };
+    let registration_failures = {
+        let ctrl = ctrl.clone();
+        meter
+            .u64_observable_gauge("awaken_control_registration_consecutive_failures")
+            .with_description("Consecutive static-registration recovery failures.")
+            .with_callback(move |obs| {
+                if let Some(snapshot) = ctrl.registration_snapshot() {
+                    obs.observe(snapshot.consecutive_failures, &[]);
+                }
+            })
+            .build()
+    };
+    let registration_lag = meter
+        .u64_observable_gauge("awaken_control_registration_lag_seconds")
+        .with_description("Seconds since the last successful static-registration recovery.")
+        .with_callback(move |obs| {
+            if let Some(snapshot) = ctrl.registration_snapshot() {
+                obs.observe(snapshot.lag_seconds, &[]);
+            }
+        })
+        .build();
+    vec![
+        active,
+        draining,
+        registration_ready,
+        registration_pending,
+        registration_failures,
+        registration_lag,
+    ]
 }
 
 /// Layer the Brain admin surface onto a single router (one-port deployment): the
@@ -178,6 +274,9 @@ mod tests {
 
     #[tokio::test]
     async fn readyz_flips_to_503_after_drain() {
+        // Cause/effect decision table: R1 no registration source and not
+        // draining -> ready; R2 drain requested -> unavailable. Registration
+        // recovery is covered independently below.
         let (app, _) = app();
         assert_eq!(get(&app, "/readyz").await.0, StatusCode::OK);
 
@@ -195,6 +294,24 @@ mod tests {
         assert_eq!(
             get(&app, "/readyz").await.0,
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn readyz_waits_for_control_registration_recovery() {
+        // Cause/effect decision table: R1 a role without Control registration
+        // authority has no health source -> ready; R2 Control attaches its
+        // initial pending health -> 503. Supervisor success transitions are
+        // tested at the Control component, so this test owns only probe mapping.
+        let (app, ctrl) = app();
+        assert_eq!(get(&app, "/readyz").await.0, StatusCode::OK, "R1");
+        ctrl.set_registration_health_for_test(Arc::new(
+            awaken_control::RegistrationHealth::default(),
+        ));
+        assert_eq!(
+            get(&app, "/readyz").await.0,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "R2"
         );
     }
 
@@ -234,12 +351,15 @@ mod tests {
 
     #[test]
     fn active_streams_gauge_is_registered_on_the_global_meter_and_scrapeable() {
-        // The connection-load gauge is a composition-root concern (registered on the
-        // global OTel meter), rendered via the process Prometheus scrape — not
-        // embedded in the router. Install a Prometheus-only provider, register it, and
-        // confirm the scrape reflects the controller's live value.
+        // Cause/effect decision table: R1 zero active requests/not draining ->
+        // both lifecycle gauges are zero; R2 attached initial Control health ->
+        // registration ready=0 and pending_domains=2. The supervisor test owns
+        // later success/failure transitions; this test owns metric projection.
         awaken_observability::init_meters(&awaken_observability::OtelConfig::default()).ok();
         let ctrl = DrainController::new();
+        ctrl.set_registration_health_for_test(Arc::new(
+            awaken_control::RegistrationHealth::default(),
+        ));
         let _gauge = register_active_streams_gauge(ctrl.clone());
         let scrape = awaken_observability::render_prometheus();
         assert!(
@@ -256,6 +376,20 @@ mod tests {
                 .lines()
                 .any(|l| l.starts_with("awaken_brain_draining") && l.trim_end().ends_with(" 0")),
             "the draining gauge reads 0: {scrape}"
+        );
+        assert!(
+            scrape.lines().any(|line| {
+                line.starts_with("awaken_control_registration_ready")
+                    && line.trim_end().ends_with(" 0")
+            }),
+            "R2 registration readiness is exported: {scrape}"
+        );
+        assert!(
+            scrape.lines().any(|line| {
+                line.starts_with("awaken_control_registration_pending_domains")
+                    && line.trim_end().ends_with(" 2")
+            }),
+            "R2 pending domains are exported: {scrape}"
         );
     }
 }

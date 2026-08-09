@@ -20,6 +20,8 @@ pub(super) async fn control_component_for_process(
     runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
     environment_author: Arc<dyn awaken_admin_assistant::EnvironmentAuthor>,
+    environment_application: Arc<awaken_environment_application::EnvironmentApplication>,
+    environment_router: Router,
     coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
     content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     iam: Option<Arc<ManagementAuthz>>,
@@ -74,6 +76,8 @@ pub(super) async fn control_component_for_process(
         runtimes,
         resource_inventory,
         environment_author,
+        environment_application,
+        environment_router,
         data_subjects: control.data_subjects.clone(),
         erasure_jobs: control.erasure_jobs.clone(),
         coordinator_content_eraser,
@@ -84,7 +88,6 @@ pub(super) async fn control_component_for_process(
         remote_iam,
     })
     .await
-    .unwrap_or_else(|error| panic!("build Control component: {error}"))
 }
 
 /// Standalone Control process assembly. It opens no Managed Execution path and
@@ -97,10 +100,24 @@ pub(super) async fn assemble_control_process_router(
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
     model_composition: PublicationModelComposition,
     assembly: ProcessAssemblyOptions,
-) -> Router {
+) -> ProcessRouterAssembly {
     debug_assert_eq!(assembly.role, config::Role::Control);
-    let (_, executable_agent_registrar, _, _, environment_author, coordinator_content_eraser) =
+    let (_, executable_agent_registrar, _, _, coordinator_content_eraser) =
         executable_agent_registration::process_parts(assembly.executable_agent_wiring);
+    let executable_environment_registrar = assembly
+        .executable_environment_wiring
+        .map(|wiring| wiring.registrar)
+        .unwrap_or_else(|| {
+            let catalog = Arc::new(
+                awaken_executable_environment_catalog::ExecutableEnvironmentCatalog::new(),
+            );
+            Arc::new(
+                awaken_executable_environment_catalog::LocalExecutableEnvironmentRegistrar::new(
+                    catalog,
+                ),
+            )
+                as Arc<dyn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar>
+        });
     let content_capture_ceiling = assembly.content_capture_ceiling;
     let execution_workspace = stores.workspace_root.as_deref().map_or_else(
         SharedHost::provision_local_workspace,
@@ -136,6 +153,18 @@ pub(super) async fn assemble_control_process_router(
             .clone(),
         workspace: execution_workspace.clone(),
     });
+    let environment_authoring = {
+        let control = stores
+            .control
+            .as_ref()
+            .expect("Control process requires Control stores");
+        Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
+            control.environments.clone(),
+            control.sandbox_policies.clone(),
+            executable_environment_registrar,
+        ))
+    };
+    let environment_application = environment_authoring.application();
     let component = control_component_for_process(
         &stores,
         &execution_workspace,
@@ -149,7 +178,13 @@ pub(super) async fn assemble_control_process_router(
         &assembly.local_acp_observations,
         runtimes,
         None,
-        environment_author.unwrap_or_else(test_environment_author),
+        Arc::new(
+            awaken_environment_application::EnvironmentApplicationAuthor::new(
+                environment_authoring.application(),
+            ),
+        ),
+        environment_application,
+        awaken_protocol_managed::environment_authoring_router(environment_authoring),
         coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
         content_capture_ceiling,
         iam,
@@ -186,16 +221,19 @@ pub(super) async fn assemble_control_process_router(
         component.admin_tools,
         assembly.mcp_bearer_token,
     );
-    process_surface::finish(
-        router,
-        mcp_export,
-        Some(component.publication_reconciler),
-        execution_workspace,
-        Arc::new(
-            awaken_protocol_managed::ManagedRateLimiter::for_organization(
-                assembly.org_id.unwrap_or_else(local_org_id),
+    ProcessRouterAssembly::new(
+        process_surface::finish(
+            router,
+            mcp_export,
+            Some(component.publication_reconciler),
+            execution_workspace,
+            Arc::new(
+                awaken_protocol_managed::ManagedRateLimiter::for_organization(
+                    assembly.org_id.unwrap_or_else(local_org_id),
+                ),
             ),
         ),
+        Some(component.registration_supervisor),
     )
 }
 
@@ -224,7 +262,8 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
             ..Default::default()
         },
     )
-    .await;
+    .await
+    .router;
     let response = app
         .oneshot(
             Request::get("/v1/user_profiles/unknown/capture-decision?requested=full")
@@ -239,15 +278,6 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
 }
 
 #[cfg(test)]
-fn test_environment_author() -> Arc<dyn awaken_admin_assistant::EnvironmentAuthor> {
-    Arc::new(
-        awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
-            awaken_protocol_managed::EnvironmentState::new().application(),
-        ),
-    )
-}
-
-#[cfg(test)]
 fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
     Arc::new(awaken_captured_content_store::InMemoryCapturedContentStore::new())
 }
@@ -255,9 +285,4 @@ fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::Content
 #[cfg(not(test))]
 fn test_coordinator_content_eraser() -> Arc<dyn awaken_runtime_contract::ContentEraser> {
     panic!("split Control requires Coordinator content-erasure adapter")
-}
-
-#[cfg(not(test))]
-fn test_environment_author() -> Arc<dyn awaken_admin_assistant::EnvironmentAuthor> {
-    panic!("split Control requires Coordinator Environment adapter")
 }

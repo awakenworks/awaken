@@ -231,6 +231,7 @@ async fn serve_resolved(
         Role::Worker => unreachable!("Worker has its own process composition"),
     };
     let local_setup = assembly.local_setup;
+    let registration_supervisor = assembly.registration_supervisor;
     // The beta gate is a composition-edge concern: it wraps both Session and
     // control-plane Managed families while leaving AI SDK/A2A and family-specific
     // betas untouched. Router-level domain tests intentionally remain headerless.
@@ -238,6 +239,9 @@ async fn serve_resolved(
         awaken_protocol_managed::enforce_managed_beta,
     ));
     let ctrl = awaken_cli::DrainController::new();
+    if let Some(supervisor) = registration_supervisor {
+        ctrl.set_registration_supervisor(supervisor);
+    }
     let _active_streams_gauge = awaken_cli::register_active_streams_gauge(ctrl.clone());
     let app = match &deployment.admin_listen {
         Some(_) => awaken_cli::with_connection_metric(app, ctrl.clone()),

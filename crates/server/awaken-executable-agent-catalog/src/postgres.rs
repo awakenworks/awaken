@@ -7,6 +7,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_durable_projection::{
+    ProjectionBatch, ProjectionCursor, ProjectionLoadError, ProjectionLog, Sequenced, load_full,
+    load_refresh,
+};
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentRegistrationError,
     ExecutableAgentRegistrationOutcome, ExecutableAgentWithdrawal,
@@ -94,13 +98,13 @@ fn corrupt(kind: &str, error: impl std::fmt::Display) -> ExecutableAgentRegistra
 }
 
 #[async_trait]
-trait CatalogCommandLog: Send + Sync {
+trait CatalogCommandLog:
+    ProjectionLog<CatalogCommand, Error = ExecutableAgentRegistrationError> + Send + Sync
+{
     async fn append(
         &self,
         command: &CatalogCommand,
-    ) -> Result<(), ExecutableAgentRegistrationError>;
-
-    async fn load(&self) -> Result<Vec<CatalogCommand>, ExecutableAgentRegistrationError>;
+    ) -> Result<u64, ExecutableAgentRegistrationError>;
 }
 
 struct PostgresCatalogCommandLog {
@@ -112,31 +116,33 @@ impl CatalogCommandLog for PostgresCatalogCommandLog {
     async fn append(
         &self,
         command: &CatalogCommand,
-    ) -> Result<(), ExecutableAgentRegistrationError> {
+    ) -> Result<u64, ExecutableAgentRegistrationError> {
         let (workspace_id, agent_id, revision, kind) = command.identity();
         let revision = i64::try_from(revision)
             .map_err(|_| storage("executable Agent lifecycle revision exceeds i64 storage"))?;
         let encoded = command.encode()?;
         let mut transaction = self.pool.begin().await.map_err(storage)?;
-        let inserted = sqlx::query(
+        let inserted: Option<i64> = sqlx::query_scalar(
             "INSERT INTO executable_agent_command \
                 (workspace_id, agent_id, lifecycle_revision, command_kind, command_json) \
              VALUES ($1, $2, $3, $4, $5) \
              ON CONFLICT (workspace_id, agent_id, lifecycle_revision, command_kind) \
-             DO NOTHING",
+             DO NOTHING \
+             RETURNING command_sequence",
         )
         .bind(workspace_id)
         .bind(agent_id)
         .bind(revision)
         .bind(kind)
         .bind(&encoded)
-        .execute(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await
-        .map_err(storage)?
-        .rows_affected();
-        if inserted == 0 {
-            let existing: String = sqlx::query_scalar(
-                "SELECT command_json FROM executable_agent_command \
+        .map_err(storage)?;
+        let sequence = if let Some(sequence) = inserted {
+            sequence
+        } else {
+            let (existing, sequence): (String, i64) = sqlx::query_as(
+                "SELECT command_json, command_sequence FROM executable_agent_command \
                  WHERE workspace_id = $1 AND agent_id = $2 \
                    AND lifecycle_revision = $3 AND command_kind = $4",
             )
@@ -153,22 +159,54 @@ impl CatalogCommandLog for PostgresCatalogCommandLog {
                      already has a different {kind} command"
                 )));
             }
-        }
-        transaction.commit().await.map_err(storage)
+            sequence
+        };
+        transaction.commit().await.map_err(storage)?;
+        u64::try_from(sequence).map_err(|_| storage("negative executable Agent command sequence"))
+    }
+}
+
+#[async_trait]
+impl ProjectionLog<CatalogCommand> for PostgresCatalogCommandLog {
+    type Error = ExecutableAgentRegistrationError;
+
+    async fn high_water(&self) -> Result<u64, Self::Error> {
+        let high: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(command_sequence), 0) FROM executable_agent_command",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage)?;
+        u64::try_from(high).map_err(|_| storage("negative executable Agent high-water mark"))
     }
 
-    async fn load(&self) -> Result<Vec<CatalogCommand>, ExecutableAgentRegistrationError> {
-        let rows: Vec<(String, String, i64, String, String)> = sqlx::query_as(
-            "SELECT workspace_id, agent_id, lifecycle_revision, command_kind, command_json \
+    async fn load_range(
+        &self,
+        after: u64,
+        through: u64,
+    ) -> Result<Vec<Sequenced<CatalogCommand>>, ExecutableAgentRegistrationError> {
+        let after = i64::try_from(after)
+            .map_err(|_| storage("executable Agent command sequence exceeds i64 storage"))?;
+        let through = i64::try_from(through)
+            .map_err(|_| storage("executable Agent high-water mark exceeds i64 storage"))?;
+        let rows: Vec<(i64, String, String, i64, String, String)> = sqlx::query_as(
+            "SELECT command_sequence, workspace_id, agent_id, lifecycle_revision, command_kind, command_json \
              FROM executable_agent_command \
-             ORDER BY workspace_id, agent_id, lifecycle_revision, command_kind",
+             WHERE command_sequence > $1 AND command_sequence <= $2 \
+             ORDER BY command_sequence",
         )
+        .bind(after)
+        .bind(through)
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
         rows.into_iter()
-            .map(|(workspace, agent, revision, kind, encoded)| {
-                CatalogCommand::decode(&workspace, &agent, revision, &kind, &encoded)
+            .map(|(sequence, workspace, agent, revision, kind, encoded)| {
+                Ok(Sequenced {
+                    sequence: u64::try_from(sequence)
+                        .map_err(|_| storage("negative executable Agent command sequence"))?,
+                    command: CatalogCommand::decode(&workspace, &agent, revision, &kind, &encoded)?,
+                })
             })
             .collect()
     }
@@ -179,6 +217,7 @@ struct DurableRegistrar {
     local: LocalExecutableAgentRegistrar,
     log: Arc<dyn CatalogCommandLog>,
     mutation: Mutex<()>,
+    cursor: ProjectionCursor,
 }
 
 impl DurableRegistrar {
@@ -186,26 +225,15 @@ impl DurableRegistrar {
         catalog: Arc<ExecutableAgentCatalog>,
         log: Arc<dyn CatalogCommandLog>,
     ) -> Result<Self, ExecutableAgentRegistrationError> {
+        let (high_water, commands) = load_full(log.as_ref()).await.map_err(projection_load)?;
         let local = LocalExecutableAgentRegistrar::new(catalog.clone());
-        for command in log.load().await? {
-            match command {
-                CatalogCommand::Registration(command) => {
-                    local.register(*command).await.map_err(|error| {
-                        storage(format!("replay persisted registration: {error}"))
-                    })?;
-                }
-                CatalogCommand::Withdrawal(command) => {
-                    local.withdraw(command).await.map_err(|error| {
-                        storage(format!("replay persisted withdrawal: {error}"))
-                    })?;
-                }
-            }
-        }
+        replay_commands(&local, commands).await?;
         Ok(Self {
             catalog,
             local,
             log,
             mutation: Mutex::new(()),
+            cursor: ProjectionCursor::at(high_water),
         })
     }
 
@@ -215,7 +243,8 @@ impl DurableRegistrar {
     ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
         let _guard = self.mutation.lock().await;
         let expected = self.catalog.preview_registration(registration.clone())?;
-        self.log
+        let _sequence = self
+            .log
             .append(&CatalogCommand::Registration(Box::new(
                 registration.clone(),
             )))
@@ -229,33 +258,34 @@ impl DurableRegistrar {
 
     async fn refresh_projection(&self) -> Result<(), ExecutableAgentRegistrationError> {
         let _guard = self.mutation.lock().await;
-        let refreshed = Arc::new(ExecutableAgentCatalog::new());
-        let local = LocalExecutableAgentRegistrar::new(refreshed.clone());
-        for command in self.log.load().await? {
-            match command {
-                CatalogCommand::Registration(command) => {
-                    local.register(*command).await.map_err(|error| {
-                        storage(format!("replay persisted registration: {error}"))
-                    })?;
-                }
-                CatalogCommand::Withdrawal(command) => {
-                    local.withdraw(command).await.map_err(|error| {
-                        storage(format!("replay persisted withdrawal: {error}"))
-                    })?;
-                }
+        match load_refresh(&self.cursor, self.log.as_ref())
+            .await
+            .map_err(projection_load)?
+        {
+            ProjectionBatch::Current => Ok(()),
+            ProjectionBatch::Incremental { through, commands } => {
+                let refreshed = clone_catalog(&self.catalog)?;
+                replay_commands(
+                    &LocalExecutableAgentRegistrar::new(refreshed.clone()),
+                    commands,
+                )
+                .await?;
+                install_catalog(&self.catalog, &refreshed)?;
+                self.cursor.advance(through);
+                Ok(())
+            }
+            ProjectionBatch::FullReplay { through, commands } => {
+                let refreshed = Arc::new(ExecutableAgentCatalog::new());
+                replay_commands(
+                    &LocalExecutableAgentRegistrar::new(refreshed.clone()),
+                    commands,
+                )
+                .await?;
+                install_catalog(&self.catalog, &refreshed)?;
+                self.cursor.advance(through);
+                Ok(())
             }
         }
-        let state = refreshed
-            .state
-            .read()
-            .map_err(|_| storage("refreshed executable Agent catalog lock poisoned"))?
-            .clone();
-        *self
-            .catalog
-            .state
-            .write()
-            .map_err(|_| storage("executable Agent catalog lock poisoned"))? = state;
-        Ok(())
     }
 
     async fn withdraw(
@@ -264,7 +294,8 @@ impl DurableRegistrar {
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
         let _guard = self.mutation.lock().await;
         let expected = self.catalog.preview_withdrawal(withdrawal.clone())?;
-        self.log
+        let _sequence = self
+            .log
             .append(&CatalogCommand::Withdrawal(withdrawal.clone()))
             .await?;
         let actual = self.local.withdraw(withdrawal).await?;
@@ -273,6 +304,71 @@ impl DurableRegistrar {
         }
         Ok(actual)
     }
+}
+
+async fn replay_commands(
+    local: &LocalExecutableAgentRegistrar,
+    commands: Vec<Sequenced<CatalogCommand>>,
+) -> Result<(), ExecutableAgentRegistrationError> {
+    for command in commands {
+        match command.command {
+            CatalogCommand::Registration(command) => {
+                local
+                    .register(*command)
+                    .await
+                    .map_err(|error| storage(format!("replay persisted registration: {error}")))?;
+            }
+            CatalogCommand::Withdrawal(command) => {
+                local
+                    .withdraw(command)
+                    .await
+                    .map_err(|error| storage(format!("replay persisted withdrawal: {error}")))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn projection_load(
+    error: ProjectionLoadError<ExecutableAgentRegistrationError>,
+) -> ExecutableAgentRegistrationError {
+    match error {
+        ProjectionLoadError::Source(error) => error,
+        ProjectionLoadError::Incomplete { through } => storage(format!(
+            "executable Agent command replay did not reach durable high-water {through}"
+        )),
+    }
+}
+
+fn clone_catalog(
+    source: &Arc<ExecutableAgentCatalog>,
+) -> Result<Arc<ExecutableAgentCatalog>, ExecutableAgentRegistrationError> {
+    let cloned = Arc::new(ExecutableAgentCatalog::new());
+    *cloned
+        .state
+        .write()
+        .map_err(|_| storage("cloned executable Agent catalog lock poisoned"))? = source
+        .state
+        .read()
+        .map_err(|_| storage("executable Agent catalog lock poisoned"))?
+        .clone();
+    Ok(cloned)
+}
+
+fn install_catalog(
+    target: &Arc<ExecutableAgentCatalog>,
+    refreshed: &Arc<ExecutableAgentCatalog>,
+) -> Result<(), ExecutableAgentRegistrationError> {
+    let state = refreshed
+        .state
+        .read()
+        .map_err(|_| storage("refreshed executable Agent catalog lock poisoned"))?
+        .clone();
+    *target
+        .state
+        .write()
+        .map_err(|_| storage("executable Agent catalog lock poisoned"))? = state;
+    Ok(())
 }
 
 /// Coordinator PostgreSQL adapter. It acknowledges a command only after the
@@ -284,10 +380,9 @@ pub struct PostgresExecutableAgentRegistrar {
 }
 
 impl PostgresExecutableAgentRegistrar {
-    /// Rebuild this replica's read projection from the one durable command log.
-    /// Session admission and Runtime-resuming writes call this narrow boundary
-    /// before resolving an Agent; registration transition rules remain solely in
-    /// `ExecutableAgentCatalog`.
+    /// Advance this replica from the durable high-water mark, falling back to a
+    /// complete replay if the cursor or incremental tail is inconsistent.
+    /// Registration transition rules remain solely in `ExecutableAgentCatalog`.
     pub async fn refresh_projection(&self) -> Result<(), ExecutableAgentRegistrationError> {
         self.inner.refresh_projection().await
     }
@@ -375,8 +470,10 @@ mod tests {
 
     #[derive(Default)]
     struct MemoryCommandLog {
-        commands: StdMutex<Vec<CatalogCommand>>,
+        commands: StdMutex<Vec<Sequenced<CatalogCommand>>>,
         fail_next_append: AtomicBool,
+        drop_incremental_tail_once: AtomicBool,
+        load_after_calls: StdMutex<Vec<u64>>,
     }
 
     #[async_trait]
@@ -384,33 +481,69 @@ mod tests {
         async fn append(
             &self,
             command: &CatalogCommand,
-        ) -> Result<(), ExecutableAgentRegistrationError> {
+        ) -> Result<u64, ExecutableAgentRegistrationError> {
             if self.fail_next_append.swap(false, Ordering::SeqCst) {
                 return Err(storage("injected append failure"));
             }
             let mut commands = self.commands.lock().unwrap();
             if let Some(existing) = commands
                 .iter()
-                .find(|existing| existing.identity() == command.identity())
+                .find(|existing| existing.command.identity() == command.identity())
             {
-                return if existing == command {
-                    Ok(())
+                return if existing.command == *command {
+                    Ok(existing.sequence)
                 } else {
                     Err(ExecutableAgentRegistrationError::Conflict(
                         "incompatible persisted command".into(),
                     ))
                 };
             }
-            commands.push(command.clone());
-            commands.sort_by_key(|command| {
-                let (workspace, agent, revision, kind) = command.identity();
-                (workspace.to_owned(), agent.to_owned(), revision, kind)
+            let sequence = commands
+                .last()
+                .map_or(2, |command| command.sequence.saturating_add(2));
+            commands.push(Sequenced {
+                sequence,
+                command: command.clone(),
             });
-            Ok(())
+            Ok(sequence)
+        }
+    }
+
+    #[async_trait]
+    impl ProjectionLog<CatalogCommand> for MemoryCommandLog {
+        type Error = ExecutableAgentRegistrationError;
+
+        async fn high_water(&self) -> Result<u64, Self::Error> {
+            Ok(self
+                .commands
+                .lock()
+                .unwrap()
+                .last()
+                .map_or(0, |command| command.sequence))
         }
 
-        async fn load(&self) -> Result<Vec<CatalogCommand>, ExecutableAgentRegistrationError> {
-            Ok(self.commands.lock().unwrap().clone())
+        async fn load_range(
+            &self,
+            after: u64,
+            through: u64,
+        ) -> Result<Vec<Sequenced<CatalogCommand>>, ExecutableAgentRegistrationError> {
+            self.load_after_calls.lock().unwrap().push(after);
+            let mut commands = self
+                .commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|command| command.sequence > after && command.sequence <= through)
+                .cloned()
+                .collect::<Vec<_>>();
+            if after > 0
+                && self
+                    .drop_incremental_tail_once
+                    .swap(false, Ordering::SeqCst)
+            {
+                commands.pop();
+            }
+            Ok(commands)
         }
     }
 
@@ -504,10 +637,12 @@ mod tests {
 
     #[tokio::test]
     async fn active_active_peer_refreshes_the_durable_command_projection() {
-        // Cause/effect decision table: A1 two replicas hydrate before a command ->
-        // both empty; A2 replica L registers -> durable log and L projection update,
-        // while R remains stale; A3 R refreshes before Session admission -> R sees
-        // the exact publication; A4 refresh again -> idempotent, one durable command.
+        // Cause/effect decision table: A1 peers start empty; A2 authority advances
+        // -> stale peer incrementally loads only commands above its durable cursor;
+        // A3 unchanged high-water -> no command read; A4 an incomplete incremental
+        // batch (the same effect as a missed/invalid change signal) -> full replay
+        // from durable truth, never partial admission. The memory sequence uses
+        // deliberate gaps to prove identity values need not be contiguous.
         let log = Arc::new(MemoryCommandLog::default());
         let left_catalog = Arc::new(ExecutableAgentCatalog::new());
         let right_catalog = Arc::new(ExecutableAgentCatalog::new());
@@ -543,8 +678,48 @@ mod tests {
             "fp-a",
             "A3"
         );
+        let reads_after_first_refresh = log.load_after_calls.lock().unwrap().len();
         right.refresh_projection().await.unwrap();
-        assert_eq!(log.commands.lock().unwrap().len(), 1, "A4");
+        assert_eq!(
+            log.load_after_calls.lock().unwrap().len(),
+            reads_after_first_refresh,
+            "A3"
+        );
+
+        left.register(test_registration(8, "fp-b")).await.unwrap();
+        right.refresh_projection().await.unwrap();
+        assert_eq!(
+            *log.load_after_calls.lock().unwrap().last().unwrap(),
+            2,
+            "A2"
+        );
+        assert_eq!(
+            right_catalog
+                .current("workspace-a", "agent-a")
+                .unwrap()
+                .snapshot
+                .fingerprint
+                .0,
+            "fp-b",
+            "A2"
+        );
+
+        left.register(test_registration(9, "fp-c")).await.unwrap();
+        log.drop_incremental_tail_once.store(true, Ordering::SeqCst);
+        right.refresh_projection().await.unwrap();
+        let calls = log.load_after_calls.lock().unwrap();
+        assert_eq!(&calls[calls.len() - 2..], &[4, 0], "A4");
+        assert_eq!(
+            right_catalog
+                .current("workspace-a", "agent-a")
+                .unwrap()
+                .snapshot
+                .fingerprint
+                .0,
+            "fp-c",
+            "A4"
+        );
+        assert_eq!(log.commands.lock().unwrap().len(), 3, "A4");
     }
 
     #[tokio::test]

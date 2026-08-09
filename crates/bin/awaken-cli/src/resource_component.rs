@@ -5,32 +5,18 @@ use std::sync::Arc;
 use super::{PostgresSchemaMode, config};
 
 pub(super) fn ephemeral_resource_component() -> awaken_resource_contract::ResourceComponent {
-    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let resources = Arc::new(
-        awaken_resource_store::SqliteResourceStore::in_memory()
-            .expect("open ephemeral Resources store"),
-    );
-    awaken_resource_contract::build_resource_component(
-        awaken_resource_contract::ResourceDependencies {
-            resource_catalog: resources.clone(),
-            file_store: files.clone(),
-            file_catalog: files,
-            memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-            skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-            lifecycle: resources,
-        },
-    )
+    awaken_server::ephemeral_resources_application().ports()
 }
 
 pub(super) async fn open_resource_component(
-    backend: config::ResourcePlaneStoreBackend,
+    backend: config::ResourceStoreBackend,
     postgres_schema: PostgresSchemaMode,
 ) -> Result<awaken_resource_contract::ResourceComponent, String> {
     match backend {
-        config::ResourcePlaneStoreBackend::Embedded(root) => {
+        config::ResourceStoreBackend::Embedded(root) => {
             Ok(awaken_server::embedded_resource_component(&root))
         }
-        config::ResourcePlaneStoreBackend::Postgres(url) => {
+        config::ResourceStoreBackend::Postgres(url) => {
             let resources = Arc::new(
                 match postgres_schema {
                     PostgresSchemaMode::Migrate => {
@@ -109,7 +95,7 @@ mod tests {
 
         let root = tempfile::tempdir().expect("resource component root");
         let embedded = open_resource_component(
-            config::ResourcePlaneStoreBackend::Embedded(root.path().to_path_buf()),
+            config::ResourceStoreBackend::Embedded(root.path().to_path_buf()),
             PostgresSchemaMode::Migrate,
         )
         .await

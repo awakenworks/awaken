@@ -84,7 +84,7 @@ async fn handle_erase(
     headers: HeaderMap,
     Json(command): Json<EraseCommand>,
 ) -> axum::response::Response {
-    if !awaken_executable_agent_contract::service_bearer_token_matches(
+    if !awaken_service_auth_contract::service_bearer_token_matches(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),

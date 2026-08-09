@@ -22,6 +22,7 @@ pub mod control_stores;
 mod credential_reference;
 mod data_subject;
 mod managed_agents;
+mod registration_supervisor;
 pub mod worker_stores;
 
 #[cfg(test)]
@@ -45,13 +46,15 @@ pub use crate::authz::{
     embedded_iam_for_tenant, embedded_iam_for_workspace, hosted_runtime_authorization_profile,
     management_authorization_profile, management_resource_authorization_profile,
 };
-pub use crate::component::{
-    ControlBuildError, ControlComponent, ControlDependencies, build_control_component,
-};
+pub use crate::component::{ControlComponent, ControlDependencies, build_control_component};
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};
 pub use crate::credential_reference::CredentialRevisionValidator;
 pub use crate::data_subject::{consent_router, erasure_router};
 pub use crate::managed_agents::ConfigPlaneManagedAgentRepository;
+pub use crate::registration_supervisor::{
+    RegistrationHealth, RegistrationHealthSnapshot, RegistrationSupervisorConfig,
+    StaticRegistrationSupervisor,
+};
 pub use awaken_config_service::{
     LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, static_runtime_capabilities,
 };
@@ -215,6 +218,8 @@ pub struct ControlRouterInput {
     /// Process-configured workspace used only when no authenticated scope is
     /// stamped (the explicit no-login deployment mode).
     pub platform_workspace: String,
+    /// Control-owned Environment definition and sandbox-policy routes.
+    pub environment_router: Router,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Canonical local setup/session routes, mounted outside the protected
@@ -247,6 +252,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         plugins,
         runtimes,
         platform_workspace,
+        environment_router,
         iam,
         local_browser_auth,
         remote_iam,
@@ -342,7 +348,8 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         .merge(agents)
         .merge(config_plane)
         .merge(workspace_context)
-        .merge(capabilities);
+        .merge(capabilities)
+        .merge(environment_router);
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
     }

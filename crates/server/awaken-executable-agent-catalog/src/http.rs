@@ -6,8 +6,9 @@ use std::time::Duration;
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentRegistrationError,
     ExecutableAgentRegistrationOutcome, ExecutableAgentWithdrawal,
-    ExecutableAgentWithdrawalOutcome, service_bearer_token_matches,
+    ExecutableAgentWithdrawalOutcome,
 };
+use awaken_service_auth_contract::service_bearer_token_matches;
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -394,25 +395,6 @@ mod tests {
                 "",
             )
             .is_err()
-        );
-    }
-
-    #[test]
-    fn private_bearer_matching_fails_closed() {
-        // Causes: header presence, exact scheme, exact token bytes. Effects:
-        // authorize only R1; missing, wrong scheme, and wrong token are denied.
-        assert!(
-            service_bearer_token_matches(Some(b"Bearer secret"), "secret"),
-            "R1"
-        );
-        assert!(!service_bearer_token_matches(None, "secret"), "R2");
-        assert!(
-            !service_bearer_token_matches(Some(b"bearer secret"), "secret"),
-            "R3"
-        );
-        assert!(
-            !service_bearer_token_matches(Some(b"Bearer other"), "secret"),
-            "R4"
         );
     }
 

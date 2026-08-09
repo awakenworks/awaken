@@ -1,7 +1,7 @@
 //! Immutable Session baseline and its consumed creation intent (ADR-0066 D1).
 
-use crate::env_registry::EnvironmentRevision;
 use awaken_credential_contract::CredentialRealizationProfile;
+use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 
 /// Frozen network fact. This is Session state, not a provider request; the Host
 /// projects it to the provisioning contract at realization time.
@@ -111,7 +111,7 @@ pub struct EnvironmentSnapshot {
     /// Exact package inputs frozen with this Environment revision. Providers
     /// provision them before workload launch or reject the spec fail-closed.
     #[serde(default)]
-    pub packages: crate::env_registry::EnvironmentPackages,
+    pub packages: EnvironmentPackages,
     pub network: SessionNetworkPolicy,
     pub credential_realization: CredentialRealizationProfile,
 }

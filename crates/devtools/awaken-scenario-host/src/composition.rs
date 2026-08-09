@@ -13,10 +13,7 @@ use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_runtime_contract::{PublishedAgentSnapshotSource, StaticPublishedAgentSnapshots};
 use axum::Router;
 
-use super::{
-    EchoModel, SharedHost, files_router, memory_stores_router_with_catalog, resource_host,
-    scenario_resource_catalog, skills_router,
-};
+use super::{EchoModel, SharedHost, resource_host, scenario_resource_catalog};
 
 /// Scenario equivalent of the production composition root: one secret-free
 /// Resource Catalog is shared by the Memory API, Managed ACL, and runtime
@@ -60,13 +57,13 @@ pub(super) fn mount_with_environments_and_agent_source(
         Some(source) => awaken_server::local_managed_state_with_environments_and_agent_source(
             host.clone(),
             catalog.clone(),
-            environments.clone(),
+            environments.execution(),
             source,
         ),
         None => awaken_server::local_managed_state_with_environments(
             host.clone(),
             catalog.clone(),
-            environments.clone(),
+            environments.execution(),
         ),
     };
     awaken_server::mount_with_managed_and_resource_catalog(host, managed, catalog)
@@ -274,15 +271,19 @@ impl awaken_protocol_managed::ExecutableAgentProfileSource for FixedAgentPublica
 pub fn build_unscoped_resource_router() -> Router {
     let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
     let purge: Arc<dyn awaken_protocol_managed::resource_plane::ResourcePurgeScheduler> =
-        host.clone();
-    Router::new()
-        .merge(files_router(host.clone()))
-        .merge(memory_stores_router_with_catalog(
-            host.memory_repository(),
-            scenario_resource_catalog(),
-            purge.clone(),
-        ))
-        .merge(skills_router(host.skill_store(), purge))
+        awaken_server::resource_purge_scheduler(
+            host.resource_lifecycle()
+                .expect("scenario resource lifecycle"),
+        );
+    awaken_managed_routers::resources_router(awaken_managed_routers::ResourcesRouterInput {
+        files: host
+            .file_application()
+            .expect("scenario resource composition installs File application"),
+        memories: host.memory_repository(),
+        catalog: scenario_resource_catalog(),
+        skills: host.skill_store(),
+        purge,
+    })
 }
 
 #[cfg(test)]

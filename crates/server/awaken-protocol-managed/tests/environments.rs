@@ -199,10 +199,11 @@ async fn environment_config_admission_follows_the_official_union_decision_table(
 
     let (status, page) = call(&app, "GET", "/v1/environments", None).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["data"].as_array().unwrap().len(), 1);
+    assert_eq!(page["data"][0]["id"], "env_local");
     assert_eq!(
-        page["data"],
-        json!([]),
-        "A3-A5 fail before persisting an Environment or seeding work"
+        page["data"][0]["name"], "Local",
+        "A3-A5 persist no authored Environment; the immutable built-in remains"
     );
 
     let (status, cloud) = call(
@@ -520,13 +521,13 @@ async fn environment_application_replay_converges_one_environment_and_healthchec
     // leaves one healthcheck; R3 conflicting payload is rejected by the registry
     // before another Environment or work item can appear.
     let state = Arc::new(EnvironmentState::new());
-    let command = awaken_session_contract::env_registry::CreateEnvironmentCommand {
+    let command = awaken_environment_contract::CreateEnvironmentCommand {
         command_id: "control:call-1".into(),
         name: "stable".into(),
         description: String::new(),
         metadata: Default::default(),
         scope: None,
-        config: awaken_session_contract::env_registry::EnvironmentConfig::SelfHosted,
+        config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
     };
     let first = state.application().create(command.clone()).await.unwrap();
     let replay = state.application().create(command).await.unwrap();

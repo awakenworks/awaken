@@ -47,12 +47,14 @@ pub struct ControlStoreConfig {
     pub admin: StoreBackend,
     /// The Control-owned Data Subject aggregate and erasure process checkpoints.
     pub data_subject: StoreBackend,
+    /// Control-owned Environment definitions, revision history, and policies.
+    pub environment: StoreBackend,
 }
 
 impl ControlStoreConfig {
     #[must_use]
     pub fn local(dir: &Path) -> Self {
-        Self::from_values(dir, None, None, None, None, None)
+        Self::from_values(dir, None, None, None, None, None, None)
     }
 
     #[must_use]
@@ -63,6 +65,7 @@ impl ControlStoreConfig {
         config: Option<String>,
         admin: Option<String>,
         data_subject: Option<String>,
+        environment: Option<String>,
     ) -> Self {
         let bundle = |name: &str| dir.join(name);
         Self {
@@ -71,6 +74,7 @@ impl ControlStoreConfig {
             config: StoreBackend::resolve(config, bundle("config.db")),
             admin: StoreBackend::resolve(admin, bundle("admin.db")),
             data_subject: StoreBackend::resolve(data_subject, bundle("data_subject.db")),
+            environment: StoreBackend::resolve(environment, bundle("environments.db")),
         }
     }
 }
@@ -93,6 +97,7 @@ mod tests {
             get("AWAKEN_CONFIG_DB"),
             get("AWAKEN_ADMIN_DB"),
             get("AWAKEN_DATA_SUBJECT_DB"),
+            get("AWAKEN_ENVIRONMENT_DB"),
         )
     }
 
@@ -115,6 +120,10 @@ mod tests {
         assert_eq!(
             c.data_subject,
             StoreBackend::Sqlite("/var/awaken/data_subject.db".into())
+        );
+        assert_eq!(
+            c.environment,
+            StoreBackend::Sqlite("/var/awaken/environments.db".into())
         );
     }
 

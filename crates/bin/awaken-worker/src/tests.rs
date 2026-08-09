@@ -578,7 +578,7 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
 }
 
 #[test]
-/// Cause graph: C1 Resource plane installed -> session capability; C2 exact
+/// Cause graph: C1 Resources component installed -> session capability; C2 exact
 /// Repository credential backend installed -> Repository capability; C3
 /// inference materializer installed -> its exact realization evidence.
 /// C1/C2 never synthesize C3: a Repository transport cannot authorize an

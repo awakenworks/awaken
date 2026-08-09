@@ -15,16 +15,6 @@ pub use session_profile::{
     ExecutableAgentSessionProfile,
 };
 
-/// Match the private Coordinator credential used by this boundary. Environment
-/// commands deliberately reuse the same projected Control-to-Coordinator
-/// service identity, so all handlers share this exact fail-closed rule.
-#[must_use]
-pub fn service_bearer_token_matches(authorization: Option<&[u8]>, expected: &str) -> bool {
-    authorization
-        .and_then(|value| value.strip_prefix(b"Bearer "))
-        .is_some_and(|actual| actual == expected.as_bytes())
-}
-
 /// One immutable Control publication made available for future Coordinator
 /// Session resolution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

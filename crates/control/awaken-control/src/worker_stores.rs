@@ -93,6 +93,7 @@ mod tests {
             config: StoreBackend::Sqlite(dir.join("config.db")),
             admin: StoreBackend::Sqlite(dir.join("admin.db")),
             data_subject: StoreBackend::Sqlite(dir.join("data_subject.db")),
+            environment: StoreBackend::Sqlite(dir.join("environments.db")),
         }
     }
 

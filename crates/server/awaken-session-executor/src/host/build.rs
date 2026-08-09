@@ -234,6 +234,16 @@ impl SharedHost {
         #[cfg(test)]
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
+        #[cfg(not(test))]
+        let file_application = None;
+        #[cfg(test)]
+        let file_application = resource_lifecycle.as_ref().map(|lifecycle| {
+            Arc::new(awaken_file_application::FileApplication::new(
+                file_store.clone(),
+                file_catalog.clone(),
+                lifecycle.clone(),
+            )) as Arc<dyn awaken_resource_contract::FileApplicationService>
+        });
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
         let file_content_source: Arc<dyn crate::FileContentSource> = worker_content
             .as_ref()
@@ -298,6 +308,7 @@ impl SharedHost {
             file_store,
             file_content_source,
             file_catalog,
+            file_application,
             resource_lifecycle,
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),
@@ -459,7 +470,26 @@ impl SharedHost {
         mut self,
         repository: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
     ) -> Self {
+        #[cfg(test)]
+        {
+            self.file_application = Some(Arc::new(awaken_file_application::FileApplication::new(
+                self.file_store.clone(),
+                self.file_catalog.clone(),
+                repository.clone(),
+            )));
+        }
         self.resource_lifecycle = Some(repository);
+        self
+    }
+
+    /// Install the one Resources-owned File command application. Runtime stores
+    /// only this inward port and cannot construct a parallel implementation.
+    #[must_use]
+    pub fn with_file_application(
+        mut self,
+        application: Arc<dyn awaken_resource_contract::FileApplicationService>,
+    ) -> Self {
+        self.file_application = Some(application);
         self
     }
 
