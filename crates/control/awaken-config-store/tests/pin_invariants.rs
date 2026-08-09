@@ -160,7 +160,9 @@ fn configs_round_trip_through_json_losslessly() {
     full.mcp_servers = vec![
         awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
             name: "gh".into(),
-            url: "https://mcp.example".into(),
+            transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+                "https://mcp.example",
+            ),
             credential: None,
             prompts_as_skills: false,
         },

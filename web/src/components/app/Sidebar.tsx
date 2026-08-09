@@ -5,9 +5,9 @@ import { useConfigCapabilities } from "../../lib/useConfigCapabilities";
 
 const GROUP_CAPTIONS: Record<NavGroup, [string, string]> = {
   workspace: ["Workspace", "工作区"],
-  build: ["Build", "构建"],
+  author: ["Author", "创作"],
   run: ["Run", "运行"],
-  supply: ["AI supply", "AI 供给"],
+  connect: ["Connect", "连接"],
   govern: ["Govern", "治理"],
 };
 
@@ -32,7 +32,7 @@ export default function Sidebar() {
   const capabilities = useConfigCapabilities();
   const byokEnabled = capabilities.data?.models.byok_enabled === true;
   const navigation = visibleNavigation(byokEnabled);
-  const groups: NavGroup[] = ["workspace", "build", "run", "supply", "govern"];
+  const groups: NavGroup[] = ["workspace", "author", "run", "connect", "govern"];
   return (
     <aside className="sidebar">
       <div className="nav-caption" title={app.workspaceId}>
@@ -42,7 +42,14 @@ export default function Sidebar() {
         <div key={group} className="nav-group">
           <div className="nav-caption">{app.t(...GROUP_CAPTIONS[group])}</div>
           {navigation.filter((item) => item.group === group).map((item) => (
-            <SidebarItem key={item.key} item={item} />
+            <div key={item.key}>
+              {item.sectionLabel && (
+                <div className="nav-subcaption">
+                  {app.t(item.sectionLabel, item.sectionLabelZh ?? item.sectionLabel)}
+                </div>
+              )}
+              <SidebarItem item={item} />
+            </div>
           ))}
         </div>
       ))}

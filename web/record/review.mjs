@@ -68,7 +68,7 @@ const checks = [
   })],
   ["state runtime proof", () => {
     const source = requiredFlow("06-ai-state-machine.mjs");
-    assert.match(source, /Try it\|试运行/);
+    assert.match(source, /Try draft\|试运行草稿/);
     assert.match(source, /State Machine blocks the unread write at runtime/);
     assert.match(source, /Agent working\|Agent 工作中/);
   }],
@@ -87,6 +87,9 @@ const checks = [
     assert.match(source, /not\.toHaveProperty\("material_ref"\)/);
     assert.match(source, /not\.toHaveProperty\("oauth_command"\)/);
     assert.doesNotMatch(source, /console\.log\([^\n]*KEY/);
+    assert.match(harness, /AWAKEN_RECORD_SETUP_TOKEN/);
+    assert.match(harness, /\/v1\/auth\/local\/exchange/);
+    assert.doesNotMatch(harness, /admin-token/);
   }],
   ["single model-connection workflow", () => {
     const source = requiredFlow("01-connect-model.mjs");
@@ -133,11 +136,12 @@ const checks = [
       }
     });
   }],
-  ["responsive Agent feedback", () => {
+  ["unsaved Agent preview", () => {
     const authoring = requiredFlow("02-build-agent.mjs");
-    assert.match(authoring, /Shift\+Enter/);
-    assert.match(authoring, /transcript-pending-message/);
-    assert.match(authoring, /agent-working/);
+    assert.match(authoring, /Start preview\|开始预览/);
+    assert.match(authoring, /status\(\)\)\.toBe\(404\)/);
+    assert.match(authoring, /publication\.agent_inputs\.inputs/);
+    assert.doesNotMatch(authoring, /Save resources|保存资源/);
   }],
   ["MCP override proof", () => {
     const tools = requiredFlow("03-tools-permissions.mjs");
@@ -150,6 +154,8 @@ const checks = [
     assert.ok(matches(memory, /\/v1\/sessions/g) >= 2, "memory: use two fresh sessions");
     assert.match(memory, /persisted\.content/);
     assert.match(memory, /getByText\(secret/);
+    assert.match(memory, /publication\.agent_inputs\.inputs/);
+    assert.doesNotMatch(memory, /Save resources|保存资源/);
   }],
   ["recording test contract", () => {
     assert.match(readme, /intro\(intent, capability\)/);

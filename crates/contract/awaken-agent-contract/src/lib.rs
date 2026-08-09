@@ -24,7 +24,10 @@ pub use agent::thread::Id as ThreadId;
 pub use audit::record::Record as EventRecord;
 pub use event::AgentEvent;
 pub use fingerprint::stable_fingerprint;
-pub use mcp_target::{McpTarget, McpTargetError, McpTargetIdentity};
+pub use mcp_target::{
+    HttpMcpTarget, McpTarget, McpTargetError, McpTargetIdentity, SandboxStdioMcpTarget,
+    SandboxStdioMcpTargetKind,
+};
 pub use model_spec::ModelSpec;
 pub use model_target::ModelTarget;
 pub use secret::{RedactedString, StructuredCredentialMaterial};

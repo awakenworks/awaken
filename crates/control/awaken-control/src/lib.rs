@@ -77,10 +77,12 @@ use awaken_protocol_managed::{
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
-use axum::Router;
 use axum::body::{Body, to_bytes};
+use axum::extract::Extension;
 use axum::http::{Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Json, Router};
 use sha2::{Digest, Sha256};
 
 static AUDIT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -210,6 +212,9 @@ pub struct ControlRouterInput {
     /// Runtime capabilities projected by the composition root from the one
     /// executable catalog.
     pub runtimes: Arc<dyn RuntimeCapabilitySource>,
+    /// Process-configured workspace used only when no authenticated scope is
+    /// stamped (the explicit no-login deployment mode).
+    pub platform_workspace: String,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Canonical local setup/session routes, mounted outside the protected
@@ -241,6 +246,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         global_tools,
         plugins,
         runtimes,
+        platform_workspace,
         iam,
         local_browser_auth,
         remote_iam,
@@ -308,6 +314,21 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // installable plugins (with config schema) so the console authors data-driven.
     let capabilities =
         awaken_config_service::capabilities_router_with_source(global_tools, plugins, runtimes);
+    let fallback_workspace = platform_workspace;
+    let workspace_context = Router::new().route(
+        "/v1/config/workspace-context",
+        get(
+            move |scope: Option<Extension<awaken_tenancy::WorkspaceScope>>| {
+                let fallback_workspace = fallback_workspace.clone();
+                async move {
+                    let workspace_id = scope
+                        .map(|Extension(scope)| scope.0)
+                        .unwrap_or(fallback_workspace);
+                    Json(serde_json::json!({ "workspace_id": workspace_id }))
+                }
+            },
+        ),
+    );
 
     // The IAM guard (when enabled) wraps the admin + vault routers only. An
     // axum layer binds to the routes present when it is applied, so merging
@@ -320,6 +341,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         .merge(user_profiles)
         .merge(agents)
         .merge(config_plane)
+        .merge(workspace_context)
         .merge(capabilities);
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));

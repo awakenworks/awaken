@@ -30,54 +30,55 @@ for (const item of NAV) {
 
 test("Agent configuration exposes every controllable capability by user intent", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  for (const tab of ["Overview", "Behavior", "Tools", "Integrations", "Resources"]) {
+  for (const tab of ["Quickstart", "Build", "Advanced"]) {
     await expect(page.getByRole("tab", { name: tab, exact: true })).toBeVisible();
   }
 
   await expect(page.getByPlaceholder("coding-agent")).toBeVisible();
-  await expect(page.locator("textarea").first()).toBeVisible();
+  await expect(page.getByLabel("Task sent to the new Session")).toBeVisible();
+  await expect(page.getByLabel("Environment for this run")).toBeVisible();
 
-  await page.getByRole("tab", { name: "Behavior", exact: true }).click();
+  await page.getByRole("tab", { name: "Build", exact: true }).click();
+  await page.getByRole("tab", { name: "Instructions", exact: true }).click();
   await expect(page.getByText(/Context window policy/)).toBeVisible();
-  for (const capability of ["Auto-compaction", "Memory recall", "Agent behavior state machine"]) {
-    await expect(page.locator(".behavior-card", { hasText: capability })).toBeVisible();
-  }
   await page.getByRole("switch", { name: "Auto-compaction" }).check();
   const compact = page.locator(".behavior-card", { hasText: "Auto-compaction" });
   await expect(compact.getByText("Compaction instructions", { exact: true })).toBeVisible();
   await expect(compact.locator("textarea").first()).toBeVisible();
 
-  await page.getByRole("switch", { name: "Memory recall" }).check();
-  const memory = page.locator(".behavior-card", { hasText: "Memory recall" });
+  await page.getByRole("tab", { name: "Memory & resources", exact: true }).click();
+  const memory = page.locator(".behavior-card", { hasText: /Memory/ });
+  await memory.getByRole("switch").check();
   await expect(memory.getByText("Memory extraction instructions", { exact: true })).toBeVisible();
   await expect(memory.getByText("Extraction task prompt", { exact: true })).toBeVisible();
   await expect(memory.getByLabel("Memory extraction instructions", { exact: true })).toBeVisible();
   await expect(memory.getByLabel("Extraction task prompt", { exact: true })).toBeVisible();
 
+  await page.getByRole("tab", { name: "Advanced", exact: true }).click();
+  await page.getByRole("tab", { name: "Orchestration", exact: true }).click();
   await page.getByRole("switch", { name: "Agent behavior state machine" }).check();
   const machine = page.locator(".behavior-card", { hasText: "Agent behavior state machine" });
   await expect(machine.getByRole("button", { name: /Background-task reminder/ })).toBeVisible();
   await expect(machine.getByRole("button", { name: /Todo reminder/i })).toBeVisible();
 
-  await page.getByRole("tab", { name: "Tools", exact: true }).click();
+  await page.getByRole("tab", { name: "Build", exact: true }).click();
+  await page.getByRole("tab", { name: "Tools & permissions", exact: true }).click();
   await expect(page.getByText("Permissions", { exact: true })).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /bash Run a shell command/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /override an MCP tool/ })).toBeVisible();
 
-  await page.getByRole("tab", { name: "Integrations", exact: true }).click();
+  await page.getByRole("tab", { name: "Skills & MCP", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Direct MCP servers" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Skill bindings" })).toBeVisible();
   await expect(page.getByText(/state only the goal/)).toBeVisible();
 
-  await page.getByRole("button", { name: "{} JSON" }).click();
+  await page.getByRole("tab", { name: "Advanced", exact: true }).click();
+  await page.getByRole("tab", { name: "Raw configuration", exact: true }).click();
   await expect(page.getByLabel("Agent JSON")).toBeVisible();
   await expect(page.getByText(/Lossless Agent object view/)).toBeVisible();
 
-  await page.getByRole("tab", { name: "Resources", exact: true }).click();
-  await expect(page.getByText(/Save the agent first, then bind resources/)).toBeVisible();
-
-  await page.getByRole("button", { name: /Try it/ }).click();
-  await expect(page.getByText(/Publish to test in Live Preview/)).toBeVisible();
+  await page.getByRole("button", { name: /Try draft/ }).click();
+  await expect(page.getByText(/Complete the runnable fields to Try/)).toBeVisible();
 });
 
 // Cause/effect inventory: each authoritative aggregate exposes exactly one primary

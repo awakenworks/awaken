@@ -66,6 +66,8 @@ async function main() {
       // | either        | unknown/private field  | reject    | no env and no work     |
       const rejectedConfigs = [
         ['private sandbox', { type: 'self_hosted', sandbox: { isolation: 'container' } }],
+        ['self-hosted packages', { type: 'self_hosted', packages: { pip: ['httpx'] } }],
+        ['self-hosted networking', { type: 'self_hosted', networking: { type: 'unrestricted' } }],
         ['unknown variant', { type: 'custom_cloud' }],
         ['unknown network field', { type: 'cloud', networking: { type: 'limited', proxy: 'x' } }],
         ['unknown package manager', { type: 'cloud', packages: { docker: ['x'] } }],

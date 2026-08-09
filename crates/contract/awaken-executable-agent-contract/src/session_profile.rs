@@ -4,14 +4,14 @@
 //! authors it once from the same publication as the executable snapshot, and the
 //! Coordinator catalog serves it when a future Session freezes its baseline.
 
-use awaken_agent_contract::{AgentSkillBinding, ClientToolDescriptor, ToolsetPolicy};
+use awaken_agent_contract::{AgentSkillBinding, ClientToolDescriptor, McpTarget, ToolsetPolicy};
 use awaken_resource_contract::InputBinding;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutableAgentMcpServer {
     pub name: String,
-    pub url: String,
+    pub target: McpTarget,
     pub prompts_as_skills: bool,
     pub credential_source_id: Option<String>,
     pub credential_revision: Option<u64>,

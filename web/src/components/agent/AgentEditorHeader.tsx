@@ -7,13 +7,11 @@ export default function AgentEditorHeader({
   isNew,
   dirty,
   status,
-  rawOpen,
   canSave,
   validatePending,
   savePending,
   publishPending,
   onBack,
-  onToggleRaw,
   onValidate,
   onSave,
   onPublish,
@@ -22,13 +20,11 @@ export default function AgentEditorHeader({
   isNew: boolean;
   dirty: boolean;
   status: ReviewStatus;
-  rawOpen: boolean;
   canSave: boolean;
   validatePending: boolean;
   savePending: boolean;
   publishPending: boolean;
   onBack: () => void;
-  onToggleRaw: () => void;
   onValidate: () => void;
   onSave: () => void;
   onPublish: () => void;
@@ -48,11 +44,8 @@ export default function AgentEditorHeader({
         {status === "needs_input" && <Pill tone="danger">{app.t("Needs input", "需要处理")}</Pill>}
       </span>
       <span className="row">
-        <Button variant="ghost" aria-pressed={rawOpen} onClick={onToggleRaw}>
-          {rawOpen ? app.t("Visual editor", "可视化编辑") : "{} JSON"}
-        </Button>
         <Button variant="ghost" disabled={!canSave || validatePending} onClick={onValidate}>{app.t("Validate", "校验")}</Button>
-        <Button disabled={!canSave || savePending} onClick={onSave}>{app.t("Save", "保存")}</Button>
+        <Button disabled={!canSave || savePending} onClick={onSave} title={app.t("Optional: keep this draft for later", "可选：保存草稿供稍后继续")}>{app.t("Save draft", "保存草稿")}</Button>
         <Button
           variant="primary"
           disabled={!canSave || publishPending || busy}

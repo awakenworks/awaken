@@ -742,7 +742,11 @@ mod tests {
             )])
             .expect("Z6");
         assert_eq!(z6.initial_mcp.len(), 1, "Z6");
-        assert_eq!(z6.initial_mcp[0].target.url, "https://app.example", "Z6");
+        assert_eq!(
+            z6.initial_mcp[0].target.http_url(),
+            Some("https://app.example"),
+            "Z6"
+        );
         assert_eq!(z6.baseline.mounts.len(), 2, "Z6");
         assert_eq!(z6.baseline.env.len(), 2, "Z6");
         assert_eq!(z6.baseline.prompts, vec!["control", "application"], "Z6");

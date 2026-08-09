@@ -1,4 +1,26 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+import { MANAGED_HEADERS } from "./betas";
+import { SyntheticModelDirectory } from "./synthetic-model";
+
+const syntheticModels = new SyntheticModelDirectory();
+
+test.beforeAll(async () => {
+  await syntheticModels.start();
+});
+
+test.afterAll(async () => {
+  await syntheticModels.stop();
+});
+
+async function openBuild(page: Page, section: "Instructions" | "Tools & permissions" | "Skills & MCP" | "Memory & resources") {
+  await page.getByRole("tab", { name: "Build", exact: true }).click();
+  await page.getByRole("tab", { name: section, exact: true }).click();
+}
+
+async function openAdvanced(page: Page, section: "Orchestration" | "Plugin configuration" | "Raw configuration" | "Release & diff") {
+  await page.getByRole("tab", { name: "Advanced", exact: true }).click();
+  await page.getByRole("tab", { name: section, exact: true }).click();
+}
 
 // Drives the real console against a real management backend. Covers the shell/nav,
 // the capability-driven agent editor (S1–S3), truth-driven gating (S4), the config
@@ -16,7 +38,11 @@ test("shell renders the Awaken Agents brand, route scope and task-oriented rail"
   const rail = page.locator(".sidebar");
   await expect(rail.getByRole("button", { name: "Sessions" })).toBeVisible();
   await expect(rail.getByRole("button", { name: "Agents", exact: true })).toBeVisible();
-  await expect(rail.getByRole("button", { name: "Providers & models" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "Files", exact: true })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "Artifacts", exact: true })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "Models & providers" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "MCP overview" })).toBeVisible();
+  await expect(rail.getByRole("button", { name: "Inference credentials" })).toHaveCount(0);
 });
 
 test("responsive: a narrow viewport keeps the shell usable with no horizontal overflow", async ({ page }) => {
@@ -39,25 +65,24 @@ test("Workspace overview exposes one live readiness path instead of a client ros
   await expect(page.getByPlaceholder("ws_acme")).toHaveCount(0);
 });
 
-test("agent editor Tools/Behavior are data-driven from /v1/capabilities", async ({ page }) => {
+test("agent editor Build/Advanced stages are data-driven from /v1/capabilities", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  // Tools tab → CheckPicker fed by capabilities.tools (a hand tool like bash/write).
-  await page.getByRole("tab", { name: "Tools" }).click();
+  await openBuild(page, "Tools & permissions");
   const picker = page.locator(".check-picker").first();
   await expect(picker).toBeVisible();
   await expect(picker.locator(".check-row").first()).toBeVisible();
 
-  // Behavior tab → the schema-carrying plugins from capabilities.plugins, rendered as
-  // named behavior cards (not raw ids).
-  await page.getByRole("tab", { name: "Behavior" }).click();
-  for (const title of ["Auto-compaction", "Memory recall", "Agent behavior state machine"]) {
-    await expect(page.locator(".behavior-card", { hasText: title })).toBeVisible();
-  }
+  await openBuild(page, "Instructions");
+  await expect(page.locator(".behavior-card", { hasText: "Auto-compaction" })).toBeVisible();
+  await openBuild(page, "Memory & resources");
+  await expect(page.locator(".behavior-card", { hasText: /Memory/ })).toBeVisible();
+  await openAdvanced(page, "Orchestration");
+  await expect(page.locator(".behavior-card", { hasText: "Agent behavior state machine" })).toBeVisible();
 });
 
 test("Tools tab renders the Permissions editor (data-driven from capabilities.policies)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("tab", { name: "Tools" }).click();
+  await openBuild(page, "Tools & permissions");
   await expect(page.getByText("Permissions", { exact: true })).toBeVisible();
   await expect(page.getByText("Default decision", { exact: true })).toBeVisible();
   // Add a rule → an editable glob-pattern row appears.
@@ -65,12 +90,61 @@ test("Tools tab renders the Permissions editor (data-driven from capabilities.po
   await expect(page.getByPlaceholder('bash(command ~ "*rm -rf*")')).toBeVisible();
 });
 
+test("Quickstart publishes the reviewed draft and starts a durable Session in the chosen Environment", async ({ page, request }) => {
+  const stamp = Date.now();
+  const id = `quickstart-${stamp}`;
+  const model = `quickstart-model-${stamp}`;
+  await syntheticModels.configure(request, model);
+  const environmentResponse = await request.post("/v1/environments", {
+    headers: MANAGED_HEADERS,
+    data: {
+      name: `quickstart-env-${stamp}`,
+      config: { type: "cloud", networking: { type: "unrestricted" } },
+    },
+  });
+  const environmentBody = await environmentResponse.text();
+  expect(environmentResponse.ok(), environmentBody).toBe(true);
+  const environment = JSON.parse(environmentBody);
+
+  await page.goto("/w/default/agents/new");
+  await page.getByRole("button", { name: /Coding/ }).click();
+  await page.getByPlaceholder("coding-agent").fill(id);
+  await page.getByLabel("Model (references workspace catalog)", { exact: true })
+    .selectOption({ label: model });
+  await page.getByLabel("Environment for this run")
+    .selectOption(environment.id);
+  const task = `Quickstart proof ${stamp}`;
+  await page.getByLabel("Task sent to the new Session").fill(task);
+  await page.getByRole("button", { name: /Review & run/ }).click();
+
+  const modal = page.locator(".modal");
+  await expect(modal.getByRole("heading", { name: /Review the first real run/ })).toBeVisible();
+  await expect(modal).toContainText(environment.id);
+  await expect(modal).toContainText(task);
+  const sessionResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" && response.url().endsWith("/v1/sessions"));
+  const eventRequest = page.waitForRequest((req) =>
+    req.method() === "POST" && /\/v1\/sessions\/[^/]+\/events$/.test(req.url()));
+  await modal.getByRole("button", { name: /Publish & run/ }).click();
+  const session = await (await sessionResponse).json();
+  expect((await eventRequest).postDataJSON()).toEqual({
+    events: [{ type: "user.message", content: [{ type: "text", text: task }] }],
+  });
+  await expect(page).toHaveURL(new RegExp(`/sessions/${session.id}$`));
+  const stored = await (await request.get(`/v1/sessions/${session.id}`, {
+    headers: MANAGED_HEADERS,
+  })).json();
+  expect(stored.environment_id).toBe(environment.id);
+  expect(stored.agent.id).toBe(id);
+});
+
 test("PermissionEditor authors a rule and persists it through save + reload", async ({ page }) => {
   const id = `perm-e2e-${Date.now()}`;
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
-  await page.locator("textarea").first().fill("You gate your tools.");
-  await page.getByRole("tab", { name: "Tools" }).click();
+  await openBuild(page, "Instructions");
+  await page.getByLabel("System instructions").fill("You gate your tools.");
+  await openBuild(page, "Tools & permissions");
 
   const editor = page.locator(".permission-editor");
   // Default decision → Deny (only the default-decision Segmented exists yet).
@@ -82,55 +156,70 @@ test("PermissionEditor authors a rule and persists it through save + reload", as
   const initialSave = page.waitForResponse((response) =>
     response.request().method() === "PUT"
       && response.url().endsWith(`/v1/config/agents/${id}`));
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
   expect((await initialSave).ok()).toBe(true);
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
 
   // Reload → the authored policy rehydrates from the stored config (round-trips).
   await page.reload();
-  await page.getByRole("tab", { name: "Tools" }).click();
+  await openBuild(page, "Tools & permissions");
   await expect(editor.getByPlaceholder(pattern)).toHaveValue(pattern);
 });
 
 test("Agent editor persists and publishes a direct MCP binding plus MCP tool override", async ({ page, request }) => {
   const id = `mcp-agent-${Date.now()}`;
-  const provider = `mcp-provider-${Date.now()}`;
-  const endpoint = `${provider}-endpoint`;
-  const model = `${provider}-model`;
-  expect((await request.put(`/v1/config/providers/${provider}`, { data: { id: provider, slug: provider, display_name: "MCP E2E", version: 1 } })).ok()).toBe(true);
-  expect((await request.put(`/v1/config/endpoints/${endpoint}`, { data: { id: endpoint, provider_id: provider, dialect: "open_ai_chat", base_url: "https://model.example.test/v1/", timeout_secs: 60, display_name: "MCP E2E", version: 1 } })).ok()).toBe(true);
-  expect((await request.post("/v1/config/offerings", { data: { model_id: model, provider_id: provider, protocol_endpoint_id: endpoint, dialect: "open_ai_chat", upstream_model: null } })).ok()).toBe(true);
-  expect((await request.post("/v1/config/credentials", { data: { workspace_id: "wrkspc_default", kind: "vault", provider_id: provider, secret: "sk-mcp-e2e" } })).ok()).toBe(true); // awaken-allow: secret (synthetic e2e fixture)
+  const model = `mcp-model-${Date.now()}`;
+  await syntheticModels.configure(request, model);
+  const credentialResponse = await request.get("/v1/config/credentials?workspace_id=default");
+  const credentialBody = await credentialResponse.text();
+  expect(credentialResponse.ok(), credentialBody).toBe(true);
+  const credentialSources = JSON.parse(credentialBody);
+  const mcpCredential = credentialSources.find((credential: { status: string }) =>
+    credential.status === "active");
+  expect(mcpCredential).toBeTruthy();
 
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
+  await openBuild(page, "Instructions");
   await page.getByLabel("System instructions").fill("Use the issue tracker when the goal requires it.");
-  await page.locator(".field", { hasText: "Model (references workspace catalog)" }).locator("select").selectOption(model);
+  await page.getByLabel("Model (references workspace catalog)", { exact: true })
+    .selectOption({ label: model });
 
-  await page.getByRole("tab", { name: "Tools", exact: true }).click();
+  await openBuild(page, "Tools & permissions");
   await page.getByRole("button", { name: /override an MCP tool/ }).click();
   await page.getByLabel("Canonical tool id 1").fill("mcp__issues__create_issue");
   await page.getByLabel("Alias").fill("file_issue");
   await page.getByLabel("Description").last().fill("Create an issue with the verified acceptance criteria.");
   await page.getByLabel("Defer this tool").check();
-  await expect(page.getByText(/Runtime-discovered MCP tool/)).toBeVisible();
+  await expect(page.getByText("Runtime-discovered MCP tool; resolved when the server connects.")).toBeVisible();
 
-  await page.getByRole("tab", { name: "Integrations", exact: true }).click();
+  await openBuild(page, "Skills & MCP");
   await page.getByRole("button", { name: "+ MCP server", exact: true }).click();
   await page.getByLabel("Server name").fill("issues");
   await page.getByLabel("URL").fill("https://mcp.example.test/issues");
+  await page.getByLabel("Credential source").selectOption(
+    `${mcpCredential.id}@${mcpCredential.version}`,
+  );
   await page.getByLabel("Prompts as skills").check();
+  await page.getByRole("button", { name: "+ MCP server", exact: true }).click();
+  await page.getByLabel("Transport").last().selectOption("sandbox_stdio");
+  await page.getByLabel("Server name").last().fill("browser");
+  await page.getByLabel("Sandbox command").fill("playwright-mcp");
+  await page.getByLabel("Arguments (one per line)").fill("--headless\n--isolated");
+  await openAdvanced(page, "Orchestration");
   await page.getByLabel("multiagent JSON").fill("{");
-  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeDisabled();
   await expect(page.getByRole("alert")).toContainText("Invalid JSON");
   await page.getByLabel("multiagent JSON").fill("");
-  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Save draft", exact: true })).toBeEnabled();
 
   const initialMcpSave = page.waitForResponse((response) =>
     response.request().method() === "PUT"
       && response.url().endsWith(`/v1/config/agents/${id}`));
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  expect((await initialMcpSave).ok()).toBe(true);
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
+  const initialMcpResponse = await initialMcpSave;
+  const initialMcpBody = await initialMcpResponse.text();
+  expect(initialMcpResponse.ok(), initialMcpBody).toBe(true);
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
 
   const response = await request.get(`/v1/config/agents/${id}`);
@@ -138,7 +227,18 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   const stored = await response.json();
   expect(stored.tools).not.toContain("mcp__issues__create_issue");
   expect(stored.mcp_servers).toEqual([
-    { name: "issues", url: "https://mcp.example.test/issues", prompts_as_skills: true },
+    {
+      name: "issues",
+      url: "https://mcp.example.test/issues",
+      credential: { id: mcpCredential.id, revision: mcpCredential.version },
+      prompts_as_skills: true,
+    },
+    {
+      type: "sandbox_stdio",
+      name: "browser",
+      command: "playwright-mcp",
+      args: ["--headless", "--isolated"],
+    },
   ]);
   expect(stored.tool_overrides).toEqual([
     {
@@ -150,7 +250,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   ]);
 
   await page.reload();
-  await page.getByRole("button", { name: "{} JSON" }).click();
+  await openAdvanced(page, "Raw configuration");
   const rawEditor = page.getByLabel("Agent JSON");
   await expect(rawEditor).toHaveValue(/mcp__issues__create_issue/);
   const rawConfig = JSON.parse(await rawEditor.inputValue());
@@ -159,7 +259,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   const rawSave = page.waitForResponse((response) =>
     response.request().method() === "PUT"
       && response.url().endsWith(`/v1/config/agents/${id}`));
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
   expect((await rawSave).ok()).toBe(true);
   const lossless = await (await request.get(`/v1/config/agents/${id}`)).json();
   expect(lossless.compaction).toEqual({ window: 32000, keep_recent: 12 });
@@ -171,6 +271,15 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await page.locator(".modal").getByRole("button", { name: "Publish", exact: false }).click();
   expect((await publication).ok()).toBe(true);
   expect((await request.get(`/v1/config/agents/${id}`)).ok()).toBe(true);
+
+  await page.goto("/w/default/mcp");
+  await expect(page.getByText("https://mcp.example.test/issues")).toBeVisible();
+  await expect(page.getByText("sandbox stdio · playwright-mcp")).toBeVisible();
+  const issuesRow = page.getByRole("row", { name: /issues https:\/\/mcp\.example\.test\/issues/ });
+  await expect(issuesRow.getByText(id, { exact: true })).toBeVisible();
+  await issuesRow.getByText(id, { exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/agents/${id}\\?stage=build&section=integrations$`));
+  await expect(page.getByRole("heading", { name: "Direct MCP servers" })).toBeVisible();
 });
 
 test("new session sends the inline MCP prompt-skill opt-in", async ({ page }) => {
@@ -208,7 +317,7 @@ test("new session sends the inline MCP prompt-skill opt-in", async ({ page }) =>
 
 test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("tab", { name: "Behavior" }).click();
+  await openBuild(page, "Instructions");
   // Toggle the Auto-compaction behavior on → its config_schema renders as a form.
   await page.locator(".behavior-card", { hasText: "Auto-compaction" }).getByRole("switch").check();
   // The schema-driven form exposes compact's fields (e.g. keep_last).
@@ -217,18 +326,19 @@ test("enabling a behavior renders a schema-driven form (not raw JSON)", async ({
 
 test("State Machine editor exposes scope, pre-execution gate, lifecycle events and request context", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("tab", { name: "Behavior" }).click();
+  await openAdvanced(page, "Orchestration");
   const card = page.locator(".behavior-card", { hasText: "Agent behavior state machine" });
   await card.getByRole("switch").check();
 
   await card.getByRole("button", { name: /Read before write/ }).click();
   await expect(card.getByText("1 · Instance & lifetime")).toBeVisible();
   await expect(card.getByText("2 · Trigger, guard & effect")).toBeVisible();
-  await expect(card.getByText("pre + post").first()).toBeVisible();
+  await expect(card.getByRole("group").filter({ hasText: /tool:read/ })).toBeVisible();
   await expect(card.getByLabel("Scope")).toHaveValue("thread");
   await expect(card.getByLabel("Before run action").last()).toHaveValue("deny");
 
   await card.getByRole("button", { name: /Todo reminder/ }).click();
+  await card.getByRole("button", { name: /Expand transitions/ }).click();
   await expect(card.locator('input[value="step.before_inference"]')).toBeVisible();
   await expect(card.getByLabel("Reminder target").last()).toBeDisabled();
   await expect(card.getByPlaceholder("cooldown steps").last()).toHaveValue("5");
@@ -241,9 +351,28 @@ test("gated Observe page is truth-driven: probes the endpoint and shows the gate
 });
 
 test("session detail toggles Chat ⇄ Trace (the log read as spans)", async ({ page, request }) => {
-  // A fresh session (via the vite proxy) has no events → the Trace view shows its
-  // empty-spans hint, proving the toggle switched away from the chat composer.
-  const res = await request.post("/v1/sessions", { data: { agent: "default", title: "trace-e2e" } });
+  const stamp = Date.now();
+  const model = `trace-model-${stamp}`;
+  const agent = `trace-agent-${stamp}`;
+  await syntheticModels.configure(request, model);
+  expect((await request.put(`/v1/config/agents/${agent}`, {
+    data: {
+      id: agent,
+      model: { id: model },
+      system: "Trace test",
+      tools: [],
+      plugins: [],
+      plugin_config: {},
+      context_policy: { kind: "keep_all" },
+      max_steps: 8,
+    },
+  })).ok()).toBe(true);
+  expect((await request.post(`/v1/config/agents/${agent}/publish`)).ok()).toBe(true);
+  const res = await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent, title: "trace-e2e" },
+  });
+  expect(res.ok()).toBe(true);
   const sid = (await res.json()).id as string;
   await page.goto(`/w/default/sessions/${sid}`);
   await expect(page.getByRole("button", { name: "Chat", exact: true })).toBeVisible();
@@ -251,8 +380,50 @@ test("session detail toggles Chat ⇄ Trace (the log read as spans)", async ({ p
   await expect(page.getByText(/No spans yet|暂无 span/)).toBeVisible();
 });
 
+test("Session Integrations shows only the durable active MCP projection", async ({ page }) => {
+  const sessionId = "session-active-mcp";
+  await page.route(`**/v1/sessions/${sessionId}`, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: sessionId,
+        type: "session",
+        agent: {
+          id: "mcp-agent",
+          type: "agent",
+          tools: [],
+          skills: [],
+          mcp_servers: [{
+            name: "docs",
+            url: "https://mcp.example.test/docs",
+            prompts_as_skills: true,
+          }],
+        },
+        created_at: "2026-07-31T00:00:00Z",
+        updated_at: "2026-07-31T00:00:00Z",
+        metadata: {},
+        resources: [],
+        outcome_evaluations: [],
+        status: "idle",
+      }),
+    });
+  });
+
+  await page.goto(`/w/default/sessions/${sessionId}`);
+  await page.locator(".segmented").getByRole("button", { name: "Integrations", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Active MCP integrations" })).toBeVisible();
+  await expect(page.getByText("https://mcp.example.test/docs")).toBeVisible();
+  await expect(page.getByText("remote Skills")).toBeVisible();
+  await expect(page.getByText("active", { exact: true }).last()).toBeVisible();
+});
+
 test("Agent composer supports multiline input and shows work immediately on the first message", async ({ page, request }) => {
-  const res = await request.post("/v1/sessions", { data: { agent: "default", title: "composer-e2e" } });
+  const res = await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent: "default", title: "composer-e2e" },
+  });
   const sid = (await res.json()).id as string;
   let postedText = "";
   let release!: () => void;
@@ -297,6 +468,12 @@ test("Models either tests a discovered model or closes the provider prerequisite
     await expect(page.getByRole("button", { name: "Author", exact: true })).toHaveCount(0);
     return;
   }
+  if (await testBtn.isDisabled()) {
+    // A discovered but inactive offering is truthfully visible and not runnable;
+    // the Console must not open a transcript for it.
+    await expect(testBtn).toBeDisabled();
+    return;
+  }
   await testBtn.click();
   // The modal mounts the shared transcript against the pinned model.
   await expect(page.getByRole("heading", { name: /Test model ·/ })).toBeVisible();
@@ -313,10 +490,10 @@ test("Admin Assistant truthfully shows a composer or the missing-model prerequis
   await expect(composer.or(prerequisite)).toBeVisible();
 });
 
-test("Sandbox tab gates an unpublished draft (nothing live to talk to yet)", async ({ page }) => {
+test("Try draft truthfully requires runnable fields", async ({ page }) => {
   await page.goto("/w/default/agents/new");
-  await page.getByRole("button", { name: /Try it/ }).click();
-  await expect(page.getByText(/Publish to test in Live Preview|发布后即可在实时预览中试运行/)).toBeVisible();
+  await page.getByRole("button", { name: /Try draft/ }).click();
+  await expect(page.getByText(/Complete the runnable fields to Try|补全运行必填项后即可试运行/)).toBeVisible();
 });
 
 test("author an agent, publish when runnable, and see the truthful outcome", async ({ page }) => {
@@ -324,9 +501,9 @@ test("author an agent, publish when runnable, and see the truthful outcome", asy
   await page.goto("/w/default/agents/new");
 
   await page.getByPlaceholder("coding-agent").fill(id);
-  // System instructions (a textarea in Basics).
-  await page.locator("textarea").first().fill("You are an e2e test agent.");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await openBuild(page, "Instructions");
+  await page.getByLabel("System instructions").fill("You are an e2e test agent.");
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
 
   // After the first save the editor navigates to the new id URL (guard-safe nav —
@@ -353,12 +530,12 @@ test("author an agent, publish when runnable, and see the truthful outcome", asy
   // the session detail uses). No provider key in CI, so we assert the session + composer
   // come up, not a model reply.
   await page.goto(`/w/default/agents/${id}`);
-  await page.getByRole("button", { name: /Try it/ }).click();
+  await page.getByRole("button", { name: /Try draft/ }).click();
   if (!canPublish) {
-    await expect(page.getByText(/Publish to test in Live Preview|发布后即可在实时预览中试运行/)).toBeVisible();
+    await expect(page.getByText(/Complete the runnable fields to Try|补全运行必填项后即可试运行/)).toBeVisible();
     return;
   }
-  await page.getByRole("button", { name: /Start session/ }).click();
+  await page.getByRole("button", { name: /Start preview/ }).click();
   await expect(page.getByPlaceholder("Ask the agent…")).toBeVisible();
 });
 
@@ -366,7 +543,13 @@ test("Publish saves the Draft, validates it, and withholds confirmation when inv
   const id = `publish-flow-${Date.now()}`;
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
+  await openBuild(page, "Instructions");
   await page.getByLabel("System instructions").fill("Keep the release notes concise.");
+  await openAdvanced(page, "Raw configuration");
+  const raw = page.getByLabel("Agent JSON");
+  const invalid = JSON.parse(await raw.inputValue());
+  invalid.tools = ["tool_that_does_not_exist"];
+  await raw.fill(JSON.stringify(invalid, null, 2));
 
   // No separate Save or Validate click: Publish performs both and only then opens
   // the operator checkpoint.
@@ -389,6 +572,7 @@ test("Agent-authored fields and the State Machine behavior are highlighted after
   };
   await request.put(`/v1/config/agents/${id}`, { data: original });
   await page.goto(`/w/default/agents/${id}`);
+  await openBuild(page, "Instructions");
   await expect(page.getByLabel("System instructions")).toHaveValue("original instructions");
   await page.getByPlaceholder("Coding Assistant").fill("operator's unsaved name");
   await request.put(`/v1/config/agents/${id}`, { data: { ...original, system: "agent refined instructions" } });
@@ -403,8 +587,8 @@ test("Agent-authored fields and the State Machine behavior are highlighted after
   await expect(page.getByPlaceholder("Coding Assistant")).toHaveValue("operator's unsaved name");
   await expect(page.getByText(/unsaved|未保存/)).toBeVisible();
   await expect(page.locator(".agent-change-highlight", { hasText: "System instructions" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Behavior" }).locator(".agent-change-dot")).toBeVisible();
-  await page.getByRole("tab", { name: "Behavior" }).click();
+  await expect(page.getByRole("tab", { name: "Advanced" }).locator(".agent-change-dot")).toBeVisible();
+  await openAdvanced(page, "Orchestration");
   const stateMachine = page.locator(".behavior-card", { hasText: "Agent behavior state machine" });
   await expect(stateMachine).toHaveClass(/agent-change-highlight/);
   await expect(stateMachine.getByText(/Agent updated|Agent 已更新/)).toBeVisible();
@@ -414,11 +598,12 @@ test("publish preview shows the config diff, domain-labeled", async ({ page, req
   const id = `diff-e2e-${Date.now()}`;
   await request.put(`/v1/config/agents/${id}`, { data: { id, system: "original", tools: [], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
   await page.goto(`/w/default/agents/${id}`);
+  await openBuild(page, "Instructions");
   // Wait for the stored config to load into the field before editing, else the load
   // effect would overwrite the edit (and the diff would be empty).
   await expect(page.locator("textarea").first()).toHaveValue("original");
   await page.locator("textarea").first().fill("edited instructions");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
   await page.getByRole("button", { name: /Publish/ }).click();
   // The diff names the change with its domain label (not the raw path).
@@ -434,11 +619,13 @@ test("validation issues are field-routed to their section", async ({ page, reque
   // A config that fails compile: a selected tool that isn't in the catalog.
   await request.put(`/v1/config/agents/${id}`, { data: { id, model: { id: "m" }, system: "hi", tools: ["nonexistent_tool"], plugins: [], plugin_config: {}, context_policy: { kind: "keep_all" }, max_steps: 8 } });
   await page.goto(`/w/default/agents/${id}`);
-  await expect(page.locator("textarea").first()).toHaveValue("hi"); // wait for load
+  await openBuild(page, "Instructions");
+  await expect(page.getByLabel("System instructions")).toHaveValue("hi"); // wait for load
   await page.getByRole("button", { name: "Validate", exact: true }).click();
   // The first backend-owned structured issue is projected with its section…
   await expect(page.locator(".banner").filter({ hasText: "Model" })).toBeVisible();
   // …and routes the user there (no client-side rule was re-derived).
-  await page.getByRole("button", { name: /Go to section/ }).click();
-  await expect(page.getByRole("tab", { name: /Overview/ })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: /Open field/ }).click();
+  await expect(page.getByRole("tab", { name: "Build", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Instructions", exact: true })).toHaveAttribute("aria-selected", "true");
 });

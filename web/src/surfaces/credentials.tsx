@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Navigate, useNavigate } from "react-router";
-import { api, ws } from "../lib/api/client";
+import { api, workspaceFields, workspaceQuery, ws } from "../lib/api/client";
 import type {
   CredentialSource,
   CredentialValidation,
@@ -13,13 +13,15 @@ import type {
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
-import { Button, Card, Modal, Pill, SecretField, Skeleton } from "../components/ui";
+import { Button, Card, Modal, Pill, SecretField, Skeleton, useConfirm, useToast } from "../components/ui";
 
 const CLAUDE_CODE_SETUP_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 
 function SourceRow({ source, probeModel }: { source: CredentialSource; probeModel?: string }) {
   const app = useApp();
   const qc = useQueryClient();
+  const confirm = useConfirm();
+  const toast = useToast();
   const validate = useMutation({
     mutationFn: () => {
       if (!probeModel) throw new Error("No compatible active model is available");
@@ -31,8 +33,20 @@ function SourceRow({ source, probeModel }: { source: CredentialSource; probeMode
   });
   const archive = useMutation({
     mutationFn: () => api.post(ws(`/v1/config/credentials/${source.id}/archive`)),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["credentials"] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["credentials"] });
+      toast.ok(app.t("Credential archived.", "凭证已归档。"));
+    },
+    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
+  const archiveSource = async () => {
+    const approved = await confirm({
+      title: app.t("Archive this credential?", "归档该凭证？"),
+      body: app.t("New runs can no longer materialize it. The secret is not shown or copied.", "新的运行将不能再实例化它；密钥不会被显示或复制。"),
+      confirmLabel: app.t("Archive", "归档"),
+    });
+    if (approved) archive.mutate();
+  };
   const statusTone = source.status === "active" ? "ok" : "neutral";
   const isClaudeSetupToken = source.env_key === CLAUDE_CODE_SETUP_TOKEN_ENV;
   return (
@@ -79,9 +93,9 @@ function SourceRow({ source, probeModel }: { source: CredentialSource; probeMode
           variant="ghost"
           style={{ height: 26 }}
           disabled={archive.isPending || source.status !== "active"}
-          onClick={() => archive.mutate()}
+          onClick={() => void archiveSource()}
         >
-          {app.t("Archive", "归档")}
+          {archive.isPending ? app.t("Archiving…", "正在归档…") : app.t("Archive", "归档")}
         </Button>
       </td>
     </tr>
@@ -99,7 +113,7 @@ export default function CredentialsSurface() {
   const [setupToken, setSetupToken] = useState("");
   const sources = useQuery({
     queryKey: ["credentials", workspace],
-    queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
+    queryFn: () => api.get<CredentialSource[]>(ws(workspaceQuery("/v1/config/credentials", workspace))),
     enabled: byokEnabled,
   });
   const catalog = useQuery({
@@ -110,7 +124,7 @@ export default function CredentialsSurface() {
   const addSetupToken = useMutation({
     mutationFn: () =>
       api.post<CredentialSource>(ws("/v1/config/credentials"), {
-        workspace_id: workspace,
+        ...workspaceFields(workspace),
         kind: "vault",
         provider_id: "anthropic",
         env_key: CLAUDE_CODE_SETUP_TOKEN_ENV,

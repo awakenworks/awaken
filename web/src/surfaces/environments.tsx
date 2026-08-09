@@ -15,7 +15,7 @@ import type {
   WorkQueueStats,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Modal, Pill, Segmented, TextField } from "../components/ui";
+import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
 
 /** The environment's durable work-queue state (EnvRegistry + WorkQueue). A self-hosted
  * worker polls this queue; `depth` = items queued (backlog waiting to be claimed),
@@ -163,6 +163,8 @@ export default function EnvironmentsSurface() {
   const app = useApp();
   const workspace = app.workspaceId;
   const qc = useQueryClient();
+  const confirm = useConfirm();
+  const toast = useToast();
   const [creating, setCreating] = useState(false);
   const envs = useQuery({
     queryKey: ["environments", workspace],
@@ -171,8 +173,20 @@ export default function EnvironmentsSurface() {
   });
   const archive = useMutation({
     mutationFn: (id: string) => api.post(ws(`/v1/environments/${id}/archive`)),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["environments", workspace] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["environments", workspace] });
+      toast.ok(app.t("Environment archived.", "运行环境已归档。"));
+    },
+    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
+  const archiveEnvironment = async (id: string) => {
+    const approved = await confirm({
+      title: app.t("Archive this environment?", "归档该运行环境？"),
+      body: app.t("New sessions can no longer select it. Existing sessions are not deleted.", "新会话将不能再选择它；已有会话不会被删除。"),
+      confirmLabel: app.t("Archive", "归档"),
+    });
+    if (approved) archive.mutate(id);
+  };
   const rows = envs.data?.data ?? [];
 
   return (
@@ -222,10 +236,10 @@ export default function EnvironmentsSurface() {
                     <Button
                       variant="ghost"
                       style={{ height: 22 }}
-                      disabled={archive.isPending}
-                      onClick={() => archive.mutate(e.id)}
+                      disabled={archive.isPending && archive.variables === e.id}
+                      onClick={() => void archiveEnvironment(e.id)}
                     >
-                      {app.t("Archive", "归档")}
+                      {archive.isPending && archive.variables === e.id ? app.t("Archiving…", "正在归档…") : app.t("Archive", "归档")}
                     </Button>
                   )}
                 </td>

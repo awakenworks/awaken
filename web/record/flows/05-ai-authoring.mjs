@@ -54,7 +54,8 @@ export async function run({ page, goto, say, clearCaption, intro, runtimeCheckpo
   await wait(1500);
 
   // Show the auto-selected tools + the tool-description override the assistant authored.
-  await click(page.getByRole("tab", { name: /Tools|工具/ }));
+  await click(page.getByRole("tab", { name: /Build|构建/, exact: true }));
+  await click(page.getByRole("tab", { name: /Tools & permissions|工具与权限/ }));
   await wait(900);
   await say("Auto-selected tools, and grep renamed to search_code — authored by AI, in config.", 4600);
   await wait(1500);

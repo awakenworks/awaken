@@ -43,6 +43,12 @@ export default function WorkspaceOverviewSurface() {
         </span>
       </div>
       <ReadinessPanel />
+      {sessions.error instanceof Error && (
+        <div className="banner err">
+          <span>{sessions.error.message}</span>
+          <Button variant="ghost" onClick={() => void sessions.refetch()}>{app.t("Try again", "重试")}</Button>
+        </div>
+      )}
       <div className="kpis">
         <button className="kpi" onClick={() => nav(`/w/${wsId}/sessions`)}>
           <span className="val">{sessions.data ? active.length : "—"}</span>
@@ -72,7 +78,7 @@ export default function WorkspaceOverviewSurface() {
                 <td style={{ textAlign: "right", color: "var(--fg3)" }}>▸</td>
               </tr>
             ))}
-            {recent.length === 0 && (
+            {!sessions.error && recent.length === 0 && (
               <tr>
                 <td className="mut">
                   {sessions.isLoading ? "…" : app.t("No sessions yet.", "还没有会话。")}

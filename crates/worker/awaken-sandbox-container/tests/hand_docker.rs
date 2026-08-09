@@ -4,11 +4,10 @@
 //! hand needs a transport that crosses the boundary WITHOUT a network — a unix socket
 //! in a host<->container bind-mount rendezvous (the host then dials `DialAddr::Unix`).
 //!
-//! This proves the whole path works with EXISTING container primitives: a `CacheVolume`
-//! mount is already a RW host-dir bind, the bound Session environment execs the hand
-//! under `network: None`, and the host reaches the unix socket the
-//! hand bound in the shared dir. (The fake hand is a python unix-echo — self-contained,
-//! no egress install — standing in for `awaken-sandbox hand`.)
+//! This proves the whole path only on a native Linux Docker host. Docker Desktop's
+//! VM boundary does not forward AF_UNIX socket operations through a bind mount, so
+//! macOS/Windows must use a different no-network control transport and this test
+//! explicitly skips instead of hanging or claiming that topology works.
 //!
 //! Gated on the `docker` feature AND a reachable daemon (self-skips otherwise).
 //! Run: `cargo test -p awaken-sandbox-container --features docker --test hand_docker`
@@ -50,6 +49,12 @@ c,_=s.accept(); d=c.recv(64); c.sendall(b'hand:'+d)\n";
 
 #[tokio::test]
 async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous() {
+    if !cfg!(target_os = "linux") {
+        eprintln!(
+            "skipping: bind-mounted AF_UNIX rendezvous is unsupported across Docker Desktop's VM boundary"
+        );
+        return;
+    }
     if !docker_available() {
         eprintln!("skipping: no reachable Docker daemon");
         return;
@@ -120,7 +125,15 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    assert_eq!(hand.wait().await.expect("hand exit").code, Some(0));
+    if !connected {
+        hand.signal(pc::Signal::Kill)
+            .await
+            .expect("terminate an unreachable hand");
+    }
+    let status = tokio::time::timeout(Duration::from_secs(5), hand.wait())
+        .await
+        .expect("hand exit is bounded")
+        .expect("hand exit");
     sandbox.dispose().await.expect("dispose");
     let _ = std::fs::remove_dir_all(&rv);
 
@@ -128,6 +141,7 @@ async fn a_hand_in_a_network_denied_container_is_reached_over_a_unix_rendezvous(
         connected,
         "the host must reach the hand's unix socket across the --network none boundary"
     );
+    assert_eq!(status.code, Some(0));
     assert!(
         got.contains("hand:ping"),
         "the network-denied in-container hand served the host over the unix rendezvous: {got:?}"

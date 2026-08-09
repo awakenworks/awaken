@@ -2,6 +2,7 @@
 // seeded, real control-plane objects keep the sweep deterministic and testable.
 
 import { configureSyntheticModel } from "../support/models.mjs";
+import { MANAGED_HEADERS, MEMORY_HEADERS } from "../support/betas.mjs";
 
 const AGENT = "platform-overview-agent";
 const MODEL = "overview-model";
@@ -17,6 +18,7 @@ export const story = {
 
 export async function run({ page, goto, intro, beat, clearCaption, checkpoint, aha, expect, click, wait }) {
   const store = await (await page.request.post("http://127.0.0.1:38080/v1/memory_stores", {
+    headers: MEMORY_HEADERS,
     data: { name: `Overview memory ${Date.now()}` },
   })).json();
   await configureSyntheticModel(page, MODEL);
@@ -53,6 +55,7 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
   const published = await page.request.post(`http://127.0.0.1:38080/v1/config/agents/${AGENT}/publish`);
   expect(published.ok()).toBeTruthy();
   const managedSession = await (await page.request.post("http://127.0.0.1:38080/v1/sessions", {
+    headers: MANAGED_HEADERS,
     data: {
       agent: AGENT,
       environment_id: environment.id,
@@ -72,18 +75,23 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
   await beat("Models resolve through the visible provider → endpoint → offering chain.", page.locator("tr", { hasText: MODEL }), 2600);
 
   await goto(`/w/default/agents/${AGENT}`);
-  await beat("One guided Agent editor exposes identity, system intent, behavior, tools, integrations, and resources.", page.locator(".editor-rail"), 2800);
-  await click(page.getByRole("tab", { name: "Behavior", exact: true }));
-  await beat("Behavior makes context, compaction, memory prompts, and the generic State Machine configurable.", page.locator(".editor-content"), 2800);
+  await beat("Author progresses from Quickstart to Build and Advanced without splitting the Agent draft.", page.locator(".author-stage-nav"), 2800);
+  await click(page.getByRole("tab", { name: "Build", exact: true }));
+  await click(page.getByRole("tab", { name: "Instructions", exact: true }));
+  await beat("Build keeps prompt and context controls in the everyday authoring path.", page.locator(".agent-editor"), 2800);
 
-  await click(page.getByRole("tab", { name: "Tools", exact: true }));
+  await click(page.getByRole("tab", { name: "Tools & permissions", exact: true }));
   await beat("Tool Overrides also target runtime-discovered MCP tools by canonical id, with alias and deferred schema.", page.getByLabel("Canonical tool id 1"), 3000);
 
-  await click(page.getByRole("tab", { name: "Integrations", exact: true }));
+  await click(page.getByRole("tab", { name: "Skills & MCP", exact: true }));
   await beat("Direct MCP and Skills keep user prompts short: state the goal; the Agent activates procedural detail.", page.locator(".agent-integration-stack"), 3000);
 
-  await click(page.getByRole("tab", { name: "Resources", exact: true }));
-  await beat("A bound Memory store is explicit, writable, and mounted into every new Agent session.", page.locator(".editor-content"), 2800);
+  await click(page.getByRole("tab", { name: "Memory & resources", exact: true }));
+  await beat("A bound Memory store is explicit, writable, and mounted into every new Agent session.", page.locator(".agent-editor"), 2800);
+
+  await click(page.getByRole("tab", { name: "Advanced", exact: true }));
+  await click(page.getByRole("tab", { name: "Orchestration", exact: true }));
+  await beat("Advanced exposes the generic State Machine without crowding the normal build path.", page.locator(".behavior-card"), 2800);
 
   await goto("/w/default/environments");
   await beat("Execution stays independent: this official Environment has restricted networking and an exact sandbox policy.", page.locator("tr", { hasText: environment.id }), 3000);
@@ -106,7 +114,7 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
     expect(config.mcp_servers[0].name).toBe("issues");
     expect(config.skills[0].id).toBe("release-review");
     expect(config.tool_overrides[0].target).toBe("mcp__issues__create_issue");
-    expect(resources.resources[0].resource_id).toBe(store.id);
+    expect(resources.inputs[0].target.id).toBe(store.id);
     const policyBinding = await (await page.request.get(`http://127.0.0.1:38080/v1/awaken/environments/${environment.id}/sandbox-execution-policy`)).json();
     expect(policyBinding).toMatchObject({ policy_id: "overview-strict", version: 1 });
     expect(managedSession.agent.id).toBe(AGENT);

@@ -507,7 +507,7 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         let staged = h.staged.lock().unwrap();
         assert_eq!(staged.len(), 1);
         assert_eq!(staged[0].name, "calc");
-        assert_eq!(staged[0].target.url, MCP_URL);
+        assert_eq!(staged[0].target.http_url(), Some(MCP_URL));
         // The binding carries the neutral row-id string (the port speaks no vault vocab).
         assert_eq!(
             staged[0]
@@ -1114,7 +1114,7 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
         "H5"
     );
     assert_eq!(
-        durable.visible_mcp_servers()[0].url,
+        durable.visible_mcp_servers()[0].target.http_url().unwrap(),
         "https://old.example/mcp",
         "H5"
     );

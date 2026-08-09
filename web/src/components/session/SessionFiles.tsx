@@ -19,19 +19,29 @@ const KIND_TONE: Record<string, "agent" | "info" | "ok" | "neutral"> = {
   skill: "ok",
 };
 
-export default function SessionFiles({ base, sid }: { base: string; sid: string }) {
+export default function SessionFiles({
+  base,
+  sid,
+  view,
+}: {
+  base: string;
+  sid: string;
+  view: "inputs" | "artifacts";
+}) {
   const app = useApp();
   const toast = useToast();
 
   const resources = useQuery({
     queryKey: ["session-resources", sid],
     queryFn: () => api.get<Page<SessionResourceDto>>(`${base}/resources`),
+    enabled: view === "inputs",
     retry: false,
   });
   const artifacts = useQuery({
     queryKey: ["session-artifacts", sid],
     // scope_id must be the raw session id (the backend keys artifacts by it).
     queryFn: () => api.get<{ data: FileArtifact[] }>(ws(`/v1/files?scope_id=${sid}`)),
+    enabled: view === "artifacts",
     retry: false,
     refetchInterval: 15_000,
   });
@@ -45,10 +55,14 @@ export default function SessionFiles({ base, sid }: { base: string; sid: string 
 
   return (
     <Card style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 16 }}>
-      <div>
+      {view === "inputs" && <div>
         <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
-          {app.t("Mounted resources", "挂载的资源")}
+          {app.t("Session inputs", "Session 输入")}
         </h2>
+        <p className="hint">{app.t(
+          "Files may be added through the live resource endpoint. Memory and repository bindings are fixed by the Session creation snapshot.",
+          "File 可以通过实时资源接口添加；Memory 与 Repository 绑定由 Session 创建快照固定。",
+        )}</p>
         {mounts.length === 0 ? (
           <span className="mut">{app.t("No resources mounted for this session.", "本会话未挂载资源。")}</span>
         ) : (
@@ -66,12 +80,16 @@ export default function SessionFiles({ base, sid }: { base: string; sid: string 
             ))}
           </div>
         )}
-      </div>
+      </div>}
 
-      <div>
+      {view === "artifacts" && <div>
         <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
-          {app.t("Output artifacts", "输出产物")}
+          {app.t("Session artifacts", "Session 产物")}
         </h2>
+        <p className="hint">{app.t(
+          "Read-only FileCatalog projection for outputs harvested from this Session.",
+          "这是从当前 Session 收获的输出在 FileCatalog 中形成的只读投影。",
+        )}</p>
         {files.length === 0 ? (
           <EmptyState
             title={app.t("No artifacts yet.", "还没有产物。")}
@@ -89,7 +107,7 @@ export default function SessionFiles({ base, sid }: { base: string; sid: string 
             ))}
           </div>
         )}
-      </div>
+      </div>}
     </Card>
   );
 }

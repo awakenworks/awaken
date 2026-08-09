@@ -320,6 +320,14 @@ a {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.nav-subcaption {
+  color: var(--fg3);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  padding: 8px 10px 3px;
+  text-transform: uppercase;
+}
 .nav-item {
   display: flex;
   align-items: center;
@@ -917,6 +925,128 @@ textarea.input {
   gap: 10px;
   margin-top: 10px;
 }
+.author-stage-nav {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: stretch;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 7px;
+  border-radius: var(--r-lg);
+  background: var(--soft);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.author-stage-button {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-height: 52px;
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+.author-stage-button:hover { background: var(--surface); border-color: var(--line); }
+.author-stage-button[data-active="true"] {
+  color: var(--accent-ink);
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  box-shadow: var(--shadow-sm);
+}
+.author-stage-button strong,
+.author-stage-button small { display: block; }
+.author-stage-button small {
+  margin-top: 2px;
+  color: var(--fg2);
+  font-size: 10.5px;
+  line-height: 1.25;
+}
+.author-stage-index {
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg2);
+  background: var(--soft);
+  box-shadow: inset 0 0 0 1px var(--line);
+  font-size: 11px;
+  font-weight: 700;
+}
+.author-stage-button[data-active="true"] .author-stage-index {
+  color: #fff;
+  background: var(--accent);
+  box-shadow: none;
+}
+.subsection-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 5px;
+  border-bottom: 1px solid var(--line);
+}
+.subsection-tabs .btn { min-width: 130px; justify-content: center; }
+.section-title { margin: 0 0 4px; font-size: 14px; }
+.quickstart-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 310px;
+  gap: 14px;
+  align-items: start;
+}
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.template-card {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 92px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--fg);
+  background: var(--surface);
+  text-align: left;
+  cursor: pointer;
+}
+.template-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-sm); }
+.template-card[data-selected="true"] {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+.template-card span { color: var(--fg2); font-size: 11.5px; line-height: 1.45; }
+.quickstart-step { padding: 14px; }
+.quickstart-summary {
+  position: sticky;
+  top: 72px;
+}
+.readiness-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.readiness-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 6px;
+  color: var(--fg2);
+}
+.readiness-item[data-ready="true"] { color: var(--ok); }
+.readiness-item strong,
+.readiness-item small { display: block; }
+.readiness-item small { margin-top: 1px; color: var(--fg2); font-size: 10.5px; }
+.issue-banner { flex-direction: column; align-items: stretch; gap: 5px; margin-top: 10px; }
 .editor-rail {
   display: flex;
   flex-direction: row;
@@ -1092,6 +1222,10 @@ textarea.input {
 
 /* ── Responsive: stack the rail above the content on narrow viewports ───── */
 @media (max-width: 820px) {
+  .author-stage-nav { grid-template-columns: 1fr; }
+  .quickstart-layout { grid-template-columns: 1fr; }
+  .quickstart-summary { position: static; }
+  .template-grid { grid-template-columns: 1fr; }
   .editor-rail {
     flex-wrap: wrap;
   }
@@ -1127,6 +1261,7 @@ textarea.input {
   }
   .sidebar .nav-group { display: contents; }
   .sidebar .nav-caption,
+  .sidebar .nav-subcaption,
   .sidebar-footer { display: none; }
   .sidebar .nav-item { width: auto; max-width: 11rem; }
   .topbar { height: auto; min-height: 52px; flex-wrap: wrap; padding: 6px 8px; }

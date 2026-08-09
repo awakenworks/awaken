@@ -23,10 +23,10 @@ export const BEHAVIORS: Record<string, { title: string; zh: string; desc: string
     descZh: "对话变长时,在后台把较早的轮次总结压缩,让模型保留要点而不必带上全部历史。",
   },
   memory: {
-    title: "Memory recall",
-    zh: "记忆召回",
-    desc: "Control what the background extractor remembers, then recall relevant long-term memory as bounded request context.",
-    descZh: "控制后台抽取器记住什么，再把相关长期记忆作为有界请求上下文召回。",
+    title: "Memory extraction & recall tuning",
+    zh: "记忆提取与召回调优",
+    desc: "Configure this Agent's background extraction prompts and optional recall bounds. Whether recall runs is governed by each bound Memory Store policy.",
+    descZh: "配置该 Agent 的后台提取提示词和可选召回边界；是否执行召回由各个已绑定记忆库的策略决定。",
   },
   state_machine: {
     title: "Agent behavior state machine",

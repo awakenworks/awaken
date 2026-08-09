@@ -27,6 +27,11 @@ pub fn files_router(host: Arc<SharedHost>) -> Router {
 }
 
 fn metadata(record: &FileRecord) -> Value {
+    let purpose = if record.harvest_key.is_some() {
+        "artifact"
+    } else {
+        "input"
+    };
     json!({
         "id": record.id,
         "type": "file",
@@ -35,6 +40,12 @@ fn metadata(record: &FileRecord) -> Value {
         "size_bytes": record.size_bytes,
         "created_at": record.created_at,
         "downloadable": record.downloadable,
+        // Awaken extension fields. Artifacts remain ordinary File records; these
+        // fields let the Console project separate input and output views without
+        // introducing a second Artifact aggregate.
+        "purpose": purpose,
+        "session_id": record.scope_id,
+        "logical_path": record.logical_path,
     })
 }
 
@@ -84,6 +95,30 @@ async fn list_files(
             return error(StatusCode::INTERNAL_SERVER_ERROR, error_value.to_string());
         }
     };
+    let purpose = match query.get("purpose").map(String::as_str) {
+        None => None,
+        Some("input") => Some("input"),
+        Some("artifact") => Some("artifact"),
+        Some(_) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "purpose must be either input or artifact",
+            );
+        }
+    };
+    let records = records
+        .into_iter()
+        .filter(|record| {
+            purpose.is_none_or(|purpose| {
+                let record_purpose = if record.harvest_key.is_some() {
+                    "artifact"
+                } else {
+                    "input"
+                };
+                record_purpose == purpose
+            })
+        })
+        .collect::<Vec<_>>();
     let start = if let Some(cursor) = after_id.map(String::as_str) {
         match records.iter().position(|record| record.id == cursor) {
             Some(position) => position + 1,

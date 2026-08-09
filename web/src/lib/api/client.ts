@@ -5,6 +5,41 @@
 
 const CLOUD_SESSION_TOKEN_KEY = "awaken.product.session-bearer";
 
+export const API_BETAS = {
+  managed: "managed-agents-2026-04-01",
+  memory: "agent-memory-2026-07-22",
+  skills: "skills-2025-10-02",
+  dreaming: "dreaming-2026-04-21",
+} as const;
+
+/**
+ * Select the exact protocol opt-in for one API family. Memory and Skills are
+ * intentionally exclusive families: the server rejects a Managed beta on
+ * Memory routes, so this must be path-aware rather than a global default.
+ */
+export function betaForPath(path: string): string | undefined {
+  const pathname = path.split(/[?#]/, 1)[0];
+  const family = pathname.match(/^\/v1\/(?:workspaces\/[^/]+\/)?([^/]+)/)?.[1];
+  if (family === "memory_stores") return API_BETAS.memory;
+  if (family === "skills") return API_BETAS.skills;
+  if (["dreams", "dream_policies", "dream_agent_configuration"].includes(family ?? "")) {
+    return `${API_BETAS.managed},${API_BETAS.dreaming}`;
+  }
+  if (["sessions", "agents", "environments", "deployments", "deployment_runs", "vaults"].includes(family ?? "")) {
+    return API_BETAS.managed;
+  }
+  return undefined;
+}
+
+function requestHeaders(path: string, extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra ?? {}) };
+  const beta = betaForPath(path);
+  if (beta) headers["anthropic-beta"] = beta;
+  const token = getToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+  return headers;
+}
+
 export function getToken(): string {
   try {
     return globalThis.sessionStorage?.getItem(CLOUD_SESSION_TOKEN_KEY)
@@ -20,12 +55,43 @@ export function getToken(): string {
 // workspace routes them through `/v1/workspaces/{ws}/…`, which the host rewrites
 // back to flat `/v1/…` and stamps `{ws}` as the edge scope (multi-tenant, Option B).
 const WS_KEY = "awaken.console.workspace";
+let resolvedWorkspaceId = "";
 export function getWorkspace(): string {
   return localStorage.getItem(WS_KEY) ?? "";
 }
 export function setWorkspace(workspace: string): void {
   if (workspace) localStorage.setItem(WS_KEY, workspace);
   else localStorage.removeItem(WS_KEY);
+}
+
+/** Pure decision seam: the route-selected workspace wins; the authenticated
+ * server context resolves the presentation-only `default` label; only a real
+ * non-default display id may be used as a final explicit fallback. */
+export function workspaceIdForRequest(
+  displayWorkspace: string,
+  pathWorkspace: string,
+  resolvedWorkspace: string,
+): string | undefined {
+  return pathWorkspace || resolvedWorkspace || (displayWorkspace && displayWorkspace !== "default" ? displayWorkspace : undefined);
+}
+
+export function setResolvedWorkspace(workspace: string): void {
+  resolvedWorkspaceId = workspace;
+}
+
+export function requestWorkspaceId(displayWorkspace: string): string | undefined {
+  return workspaceIdForRequest(displayWorkspace, getWorkspace(), resolvedWorkspaceId);
+}
+
+export function workspaceQuery(path: string, displayWorkspace: string): string {
+  const workspace = requestWorkspaceId(displayWorkspace);
+  if (!workspace) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}workspace_id=${encodeURIComponent(workspace)}`;
+}
+
+export function workspaceFields(displayWorkspace: string): { workspace_id?: string } {
+  const workspace_id = requestWorkspaceId(displayWorkspace);
+  return workspace_id ? { workspace_id } : {};
 }
 /** Scope a flat `/v1/...` path to the active workspace. No workspace → unchanged
  * (default scope); otherwise `/v1/foo` → `/v1/workspaces/{ws}/foo`. This is the
@@ -81,9 +147,7 @@ async function toError(res: Response): Promise<ApiClientError> {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = {};
-  const token = getToken();
-  if (token) headers.authorization = `Bearer ${token}`;
+  const headers = requestHeaders(path);
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(path, {
     method,
@@ -99,9 +163,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 /** Multipart upload (the Files API is the one endpoint that takes bytes, not JSON).
  * FormData sets its own multipart content-type + boundary, so we must NOT set it. */
 async function upload<T>(path: string, file: File, fields?: Record<string, string>): Promise<T> {
-  const headers: Record<string, string> = {};
-  const token = getToken();
-  if (token) headers.authorization = `Bearer ${token}`;
+  const headers = requestHeaders(path);
   const form = new FormData();
   form.append("file", file);
   for (const [k, v] of Object.entries(fields ?? {})) form.append(k, v);
@@ -124,15 +186,13 @@ async function uploadMany<T>(
   fields?: Record<string, string>,
   headers?: Record<string, string>,
 ): Promise<T> {
-  const requestHeaders: Record<string, string> = { ...(headers ?? {}) };
-  const token = getToken();
-  if (token) requestHeaders.authorization = `Bearer ${token}`;
+  const resolvedHeaders = requestHeaders(path, headers);
   const form = new FormData();
   for (const file of files) form.append("files", file.blob, file.path);
   for (const [key, value] of Object.entries(fields ?? {})) form.append(key, value);
   const response = await fetch(path, {
     method: "POST",
-    headers: requestHeaders,
+    headers: resolvedHeaders,
     body: form,
     credentials: "same-origin",
   });
@@ -141,9 +201,7 @@ async function uploadMany<T>(
 }
 
 async function bytes(path: string): Promise<ArrayBuffer> {
-  const headers: Record<string, string> = {};
-  const token = getToken();
-  if (token) headers.authorization = `Bearer ${token}`;
+  const headers = requestHeaders(path);
   const response = await fetch(path, { headers, credentials: "same-origin" });
   if (!response.ok) throw await toError(response);
   return response.arrayBuffer();
@@ -153,9 +211,7 @@ async function bytes(path: string): Promise<ArrayBuffer> {
  * the bearer like any GET, so it goes through the auth path — not a bare `<a href>` that
  * would omit the token. Symmetric with `upload`. */
 async function download(path: string, filename: string): Promise<void> {
-  const headers: Record<string, string> = {};
-  const token = getToken();
-  if (token) headers.authorization = `Bearer ${token}`;
+  const headers = requestHeaders(path);
   const res = await fetch(path, { headers, credentials: "same-origin" });
   if (!res.ok) throw await toError(res);
   const blob = await res.blob();
@@ -177,6 +233,12 @@ export const api = {
   bytes,
   download,
 };
+
+export async function resolveWorkspaceContext(): Promise<string> {
+  const context = await api.get<{ workspace_id: string }>(ws("/v1/config/workspace-context"));
+  setResolvedWorkspace(context.workspace_id);
+  return context.workspace_id;
+}
 
 export interface ApplicationAccessTokenRequest {
   authority_id: string;

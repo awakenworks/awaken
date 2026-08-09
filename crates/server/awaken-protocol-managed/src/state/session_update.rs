@@ -146,20 +146,16 @@ impl ManagedState {
                     ))
                 })?
                 .clone();
-            let servers = wire_servers
-                .into_iter()
-                .map(|server| crate::types::McpServer {
-                    name: server.name,
-                    url: server.url,
-                    prompts_as_skills: server.prompts_as_skills,
-                })
-                .collect::<Vec<_>>();
             let drafts = self
                 .normalize_mcp_drafts(
-                    servers
+                    wire_servers
                         .into_iter()
                         .map(|server| ManagedMcpCandidate {
-                            server,
+                            name: server.name,
+                            target: super::application::ManagedMcpCandidateTarget::WireUrl(
+                                server.url,
+                            ),
+                            prompts_as_skills: server.prompts_as_skills,
                             published_credential: None,
                             origin: awaken_session_contract::McpAttachmentOrigin::Session,
                         })

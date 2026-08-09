@@ -33,7 +33,124 @@ pub fn config_router(plane: ConfigPlane) -> Router {
         .route("/v1/config/agents/{id}/validate", post(validate))
         .route("/v1/config/agents/{id}/publish", post(publish))
         .route("/v1/config/agents/{id}", get(get_config).put(put_config))
+        .route(
+            "/v1/config/agent-previews/{preview_id}",
+            post(create_preview).delete(delete_preview),
+        )
         .with_state(plane)
+}
+
+fn valid_preview_id(id: &str) -> bool {
+    id.strip_prefix("preview-").is_some_and(|suffix| {
+        !suffix.is_empty()
+            && suffix.len() <= 96
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
+async fn create_preview(
+    State(plane): State<ConfigPlane>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    execution: Option<Extension<ExecutionWorkspace>>,
+    Path(preview_id): Path<String>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    if !valid_preview_id(&preview_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(
+                json!({ "error": "preview id must start with `preview-` and contain only letters, numbers, or dashes" }),
+            ),
+        );
+    }
+    let Some(config_body) = body.get("config") else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "preview request requires config" })),
+        );
+    };
+    let config = match agent_config_from_managed(preview_id.clone(), config_body) {
+        Ok(config) => config,
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+    };
+    let resources = match body
+        .get("resources")
+        .cloned()
+        .map(serde_json::from_value::<awaken_config_resolver::AgentInputConfig>)
+    {
+        Some(Ok(resources)) => resources,
+        Some(Err(error)) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("invalid preview resources: {error}") })),
+            );
+        }
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "preview request requires resources" })),
+            );
+        }
+    };
+    let scope = request_scope(scope);
+    let Some(workspace) = publication_workspace(&scope, execution.as_ref()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": PublishError::ExecutionWorkspaceRequired.to_string() })),
+        );
+    };
+    match plane
+        .preview_for_execution_workspace(&scope, workspace, &preview_id, &config, resources)
+        .await
+    {
+        Ok(snapshot) => (
+            StatusCode::OK,
+            Json(json!({
+                "preview_id": preview_id,
+                "fingerprint": snapshot.fingerprint.0,
+                "installed": true,
+                "persistent": false,
+            })),
+        ),
+        Err(error @ PublishError::Unresolvable(_)) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": error.to_string() })),
+        ),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error.to_string() })),
+        ),
+    }
+}
+
+async fn delete_preview(
+    State(plane): State<ConfigPlane>,
+    scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
+    execution: Option<Extension<ExecutionWorkspace>>,
+    Path(preview_id): Path<String>,
+) -> (StatusCode, Json<Value>) {
+    if !valid_preview_id(&preview_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid preview id" })),
+        );
+    }
+    let scope = request_scope(scope);
+    let Some(workspace) = publication_workspace(&scope, execution.as_ref()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": PublishError::ExecutionWorkspaceRequired.to_string() })),
+        );
+    };
+    match plane.remove_preview(workspace, &preview_id).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "preview_id": preview_id, "installed": false })),
+        ),
+        Err(error) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": error }))),
+    }
 }
 
 pub(crate) fn request_scope(ext: Option<Extension<awaken_tenancy::WorkspaceScope>>) -> ScopeId {
@@ -278,12 +395,26 @@ pub(crate) async fn publish(
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     execution: Option<Extension<ExecutionWorkspace>>,
     Path(id): Path<String>,
+    request: Option<Json<Value>>,
 ) -> (StatusCode, Json<Value>) {
     let scope = request_scope(scope);
+    let request = match request
+        .map(|Json(request)| PublishRequest::try_from(request))
+        .transpose()
+    {
+        Ok(request) => request.unwrap_or_default(),
+        Err(error) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))),
+    };
     let result = match publication_workspace(&scope, execution.as_ref()) {
         Some(workspace) => {
             plane
-                .publish_for_execution_workspace(&scope, workspace, &id)
+                .publish_for_execution_workspace_at_revisions(
+                    &scope,
+                    workspace,
+                    &id,
+                    request.source_revision,
+                    request.resource_revision,
+                )
                 .await
         }
         None => Err(PublishError::ExecutionWorkspaceRequired),
@@ -298,7 +429,11 @@ pub(crate) async fn publish(
                 "installed": true,
             })),
         ),
-        Err(error @ (PublishError::Unresolvable(_) | PublishError::StaleRevision(_))) => (
+        Err(
+            error @ (PublishError::Unresolvable(_)
+            | PublishError::StaleRevision(_)
+            | PublishError::StaleResourceRevision(_)),
+        ) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": error.to_string() })),
         ),
@@ -324,6 +459,33 @@ pub(crate) async fn publish(
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": error.to_string() })),
         ),
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PublishRequest {
+    source_revision: Option<u64>,
+    resource_revision: Option<i64>,
+}
+
+impl TryFrom<Value> for PublishRequest {
+    type Error = String;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        let source_revision =
+            serde_json::from_value(value.get("source_revision").cloned().unwrap_or(Value::Null))
+                .map_err(|error| format!("invalid source_revision: {error}"))?;
+        let resource_revision = serde_json::from_value(
+            value
+                .get("resource_revision")
+                .cloned()
+                .unwrap_or(Value::Null),
+        )
+        .map_err(|error| format!("invalid resource_revision: {error}"))?;
+        Ok(Self {
+            source_revision,
+            resource_revision,
+        })
     }
 }
 

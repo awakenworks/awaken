@@ -86,6 +86,9 @@ impl McpRelay {
         generation: &awaken_session_contract::McpGenerationRef,
         server: &McpTransportMaterial,
     ) -> bool {
+        let Some(url) = server.http_url() else {
+            return false;
+        };
         let mut routes = self.routes.lock().unwrap();
         let key = route_key(generation);
         if routes.contains_key(&key) {
@@ -94,8 +97,8 @@ impl McpRelay {
         routes.insert(
             key,
             Route {
-                url: server.url.clone(),
-                bearer: server.bearer.clone(),
+                url: url.to_string(),
+                bearer: server.bearer().cloned(),
                 capability: uuid::Uuid::new_v4().simple().to_string(),
                 lease_expires_at_unix_ms: generation.lease_expires_at_unix_ms,
             },
@@ -115,8 +118,11 @@ impl McpRelay {
         let Some(route) = routes.get_mut(&route_key(generation)) else {
             return false;
         };
-        route.url = server.url.clone();
-        route.bearer = server.bearer.clone();
+        let Some(url) = server.http_url() else {
+            return false;
+        };
+        route.url = url.to_string();
+        route.bearer = server.bearer().cloned();
         route.lease_expires_at_unix_ms = generation.lease_expires_at_unix_ms;
         true
     }
@@ -261,6 +267,22 @@ mod tests {
         }
     }
 
+    fn http_material(
+        name: impl Into<String>,
+        url: impl Into<String>,
+        bearer: Option<String>,
+    ) -> McpTransportMaterial {
+        McpTransportMaterial {
+            name: name.into(),
+            prompts_as_skills: false,
+            transport: crate::mcp::McpTransportMaterialKind::Http {
+                url: url.into(),
+                bearer: bearer.map(awaken_agent_contract::RedactedString::from),
+                refresh: None,
+            },
+        }
+    }
+
     /// A fake upstream MCP server that echoes back the `Authorization` header it received, so
     /// the test can prove the relay injected the real bearer.
     async fn fake_upstream() -> SocketAddr {
@@ -285,13 +307,7 @@ mod tests {
     #[tokio::test]
     async fn exact_generation_routes_coexist_and_drain_independently() {
         let relay = McpRelay::start().await.unwrap();
-        let server = |name: &str| McpTransportMaterial {
-            name: name.into(),
-            url: "https://example.invalid/mcp".into(),
-            prompts_as_skills: false,
-            bearer: None,
-            refresh: None,
-        };
+        let server = |name: &str| http_material(name, "https://example.invalid/mcp", None);
         let old = generation("thread", "mcp", 1);
         let new = generation("thread", "mcp", 2);
         let other = generation("other", "mcp", 1);
@@ -313,15 +329,11 @@ mod tests {
         let generation = generation("t1", "mcp-github", 1);
         relay.set_route(
             &generation,
-            &McpTransportMaterial {
-                name: "github:repo".into(),
-                url: format!("http://{upstream}/"),
-                prompts_as_skills: false,
-                bearer: Some(awaken_agent_contract::RedactedString::from(
-                    "ghp_real_secret".to_string(),
-                )),
-                refresh: None,
-            },
+            &http_material(
+                "github:repo",
+                format!("http://{upstream}/"),
+                Some("ghp_real_secret".into()),
+            ),
         );
 
         // A compromised client may try to override the route credential. The relay must
@@ -358,14 +370,12 @@ mod tests {
     async fn rotating_and_removing_a_route_updates_the_next_mcp_request() {
         let upstream = fake_upstream().await;
         let relay = McpRelay::start().await.unwrap();
-        let server = |secret: &str| McpTransportMaterial {
-            name: "github".into(),
-            url: format!("http://{upstream}/"),
-            prompts_as_skills: false,
-            bearer: Some(awaken_agent_contract::RedactedString::from(
-                secret.to_string(),
-            )),
-            refresh: None,
+        let server = |secret: &str| {
+            http_material(
+                "github",
+                format!("http://{upstream}/"),
+                Some(secret.to_string()),
+            )
         };
         let client = reqwest::Client::new();
         let old_generation = generation("session", "mcp-github", 1);
@@ -426,15 +436,11 @@ mod tests {
     async fn route_capability_is_generation_scoped_expiring_and_idempotent() {
         let upstream = fake_upstream().await;
         let relay = McpRelay::start().await.unwrap();
-        let server = McpTransportMaterial {
-            name: "github".into(),
-            url: format!("http://{upstream}/"),
-            prompts_as_skills: false,
-            bearer: Some(awaken_agent_contract::RedactedString::from(
-                "route-secret".to_string(),
-            )),
-            refresh: None,
-        };
+        let server = http_material(
+            "github",
+            format!("http://{upstream}/"),
+            Some("route-secret".into()),
+        );
         let mut live = generation("session-cap", "mcp-github", 1);
         live.lease_expires_at_unix_ms = u64::MAX - 1;
         relay.set_route(&live, &server);
@@ -494,15 +500,7 @@ mod tests {
         let generation = generation("session-1", "mcp-functional", 1);
         relay.set_route(
             &generation,
-            &McpTransportMaterial {
-                name: "functional".into(),
-                url: upstream,
-                prompts_as_skills: false,
-                bearer: Some(awaken_agent_contract::RedactedString::from(
-                    "relay-only-secret".to_string(),
-                )),
-                refresh: None,
-            },
+            &http_material("functional", upstream, Some("relay-only-secret".into())),
         );
 
         // This is the sandbox-side client: it receives the loopback route and no
@@ -570,15 +568,7 @@ mod tests {
         let generation = generation("t1", "mcp-gh", 1);
         relay.set_route(
             &generation,
-            &McpTransportMaterial {
-                name: "gh".into(),
-                url: format!("http://{addr}/"),
-                prompts_as_skills: false,
-                bearer: Some(awaken_agent_contract::RedactedString::from(
-                    "tok".to_string(),
-                )),
-                refresh: None,
-            },
+            &http_material("gh", format!("http://{addr}/"), Some("tok".into())),
         );
         let resp = reqwest::Client::new()
             .post(relay.route_url(&generation).unwrap())
@@ -615,13 +605,7 @@ mod tests {
         let generation = generation("t1", "mcp-github", 1);
         relay.set_route(
             &generation,
-            &McpTransportMaterial {
-                name: "github".into(),
-                url: "https://api.githubcopilot.com/mcp/".into(),
-                prompts_as_skills: false,
-                bearer: Some(awaken_agent_contract::RedactedString::from(token)),
-                refresh: None,
-            },
+            &http_material("github", "https://api.githubcopilot.com/mcp/", Some(token)),
         );
         // An MCP `initialize` handshake through the relay without a workload credential.
         let body = serde_json::json!({

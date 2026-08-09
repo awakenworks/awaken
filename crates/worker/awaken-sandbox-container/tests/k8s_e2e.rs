@@ -45,6 +45,10 @@ fn agent_argv() -> Vec<String> {
     vec!["sh".into(), "-c".into(), script.into()]
 }
 
+fn session_argv() -> Vec<String> {
+    vec!["sh".into(), "-c".into(), "sleep 300".into()]
+}
+
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
         scope: scope.into(),
@@ -56,7 +60,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": agent_argv(), "image": "awaken-bb:1" })),
+        extra: Some(serde_json::json!({ "command": session_argv(), "image": "awaken-bb:1" })),
     }
 }
 
@@ -93,7 +97,7 @@ fn inline_spec(scope: &str, marker: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": cat_mount_argv(), "image": "awaken-bb:1" })),
+        extra: Some(serde_json::json!({ "command": session_argv(), "image": "awaken-bb:1" })),
     }
 }
 
@@ -120,7 +124,7 @@ fn file_spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": cat_mount_argv(), "image": "awaken-bb:1" })),
+        extra: Some(serde_json::json!({ "command": session_argv(), "image": "awaken-bb:1" })),
     }
 }
 
@@ -207,7 +211,7 @@ fn binary_file_spec(scope: &str) -> pc::SandboxSpec {
         outputs_path: "/mnt/session/outputs".into(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
-        extra: Some(serde_json::json!({ "command": grep_binary_argv(), "image": "awaken-bb:1" })),
+        extra: Some(serde_json::json!({ "command": session_argv(), "image": "awaken-bb:1" })),
     }
 }
 

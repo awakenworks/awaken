@@ -421,6 +421,12 @@ pub enum EnvVisibility {
 pub struct PackageRequirements {
     #[serde(default)]
     pub managers: std::collections::BTreeMap<String, Vec<String>>,
+    /// Frozen Environment identity used only when at least one requirement is
+    /// unpinned. This gives "latest" a precise lifecycle: it resolves once for
+    /// one Environment snapshot, is cached across that snapshot's Sessions, and
+    /// is resolved again after the Environment revision changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_id: Option<String>,
 }
 
 impl PackageRequirements {

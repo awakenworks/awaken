@@ -591,6 +591,7 @@ impl crate::SharedHost {
             }
             self.session_slots.update(thread, |slot| {
                 slot.has_mcp_projection = has_mcp_projection;
+                slot.agent_id = Some(baseline.agent_id.clone());
                 slot.toolsets = Some(projection.toolsets.clone());
             });
             return Ok(());
@@ -622,6 +623,7 @@ impl crate::SharedHost {
         self.session_slots.update(thread, |slot| {
             slot.baseline = Some(baseline);
             slot.has_mcp_projection = has_mcp_projection;
+            slot.agent_id = Some(projection.baseline.agent_id.clone());
             slot.toolsets = Some(projection.toolsets);
         });
         self.install_environment_projection(thread, &projection.baseline.environment)?;
@@ -734,6 +736,7 @@ fn decode_baseline_projection(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(crate::session_slot::FrozenBaselineRuntimeProjection {
         fingerprint: baseline.fingerprint.clone(),
+        agent_id: baseline.agent_id.clone(),
         mounts,
         env,
         prompts: baseline.prompts.clone(),
@@ -770,6 +773,13 @@ fn decode_environment_projection(
         .filter(|(_, packages)| !packages.is_empty())
         .map(|(manager, packages)| (manager.to_string(), packages.clone()))
         .collect(),
+        // Unpinned requirements resolve once per concrete Environment revision.
+        // Two independently created Environments with identical config must not
+        // share an indefinitely frozen "latest" image.
+        resolution_id: Some(format!(
+            "{}:{}",
+            environment.environment_id, environment.revision.0
+        )),
     };
     let sandbox =
         awaken_provisioning_contract::SandboxOverride::from_config_value(&environment.sandbox)
@@ -903,5 +913,9 @@ mod network_policy_tests {
             .collect()
         );
         assert!(!projected.packages.managers.contains_key("apt"));
+        assert_eq!(
+            projected.packages.resolution_id.as_deref(),
+            Some("env_packages:3")
+        );
     }
 }

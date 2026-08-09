@@ -23,7 +23,7 @@ use crate::ManagedLifecycleFact;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VisibleMcpServer {
     pub name: String,
-    pub url: String,
+    pub target: crate::McpTarget,
     pub prompts_as_skills: bool,
 }
 
@@ -140,7 +140,7 @@ impl PersistedSession {
             .into_iter()
             .map(|attachment| VisibleMcpServer {
                 name: attachment.name.clone(),
-                url: attachment.target.url.clone(),
+                target: attachment.target.clone(),
                 prompts_as_skills: attachment.prompts_as_skills,
             })
             .collect()

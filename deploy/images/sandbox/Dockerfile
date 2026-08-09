@@ -16,10 +16,21 @@
 # 24.04/glibc 2.39); bookworm's 2.36 made the container exit before opening ACP.
 FROM node:22-trixie-slim
 
-# Agent tooling most CLIs assume on PATH (git for repo work, rg for search).
+# Agent tooling most CLIs assume on PATH (git for repo work, rg for search), plus
+# the six package-manager runtimes supported by Managed Environment provisioning.
+# Python packages live in an image-owned virtual environment so pip never mutates
+# Debian's externally-managed system interpreter.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git ripgrep tini \
+    && apt-get install -y --no-install-recommends \
+      ca-certificates cargo git golang-go python3 python3-venv ripgrep ruby tini \
+    && python3 -m venv /opt/awaken-python \
     && rm -rf /var/lib/apt/lists/*
+ENV PATH="/opt/awaken-python/bin:${PATH}"
+
+# The E2E harness checks this capability label before reusing a locally cached
+# base image, preventing an older image without the package runtimes from being
+# mistaken for a complete Environment base.
+LABEL org.awaken.environment-packages="1"
 
 # Pre-bake the ACP adapters + native CLIs. Pin every version (no @latest) so an
 # egress-fenced launch is reproducible and the wire codec is a known quantity. Keep

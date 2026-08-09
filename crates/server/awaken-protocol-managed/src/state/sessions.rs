@@ -1,20 +1,31 @@
 //! Session lifecycle for [`ManagedState`]: create, rehydrate, get/list,
 //! update, delete, and archive.
 
-use super::application::{ManagedMcpCandidate, initial_mcp_candidates};
+use super::application::{ManagedMcpCandidate, ManagedMcpCandidateTarget, initial_mcp_candidates};
 use super::sandbox_provisioning::validate_sandbox_provisioning_runtime;
 use super::*;
 
 pub(super) fn typed_mcp_servers(
     values: Vec<awaken_session_contract::VisibleMcpServer>,
-) -> Vec<crate::types::agent::UrlMcpServer> {
+) -> Vec<crate::types::agent::McpServerView> {
     values
         .into_iter()
-        .map(|server| crate::types::agent::UrlMcpServer {
-            name: server.name,
-            url: server.url,
-            kind: crate::types::agent::UrlMcpServerKind::Url,
-            prompts_as_skills: server.prompts_as_skills,
+        .map(|server| match server.target {
+            awaken_session_contract::McpTarget::Http(target) => {
+                crate::types::agent::McpServerView::Url {
+                    name: server.name,
+                    url: target.url,
+                    prompts_as_skills: server.prompts_as_skills,
+                }
+            }
+            awaken_session_contract::McpTarget::SandboxStdio(target) => {
+                crate::types::agent::McpServerView::SandboxStdio {
+                    name: server.name,
+                    command: target.command,
+                    args: target.args,
+                    prompts_as_skills: server.prompts_as_skills,
+                }
+            }
         })
         .collect()
 }
@@ -225,7 +236,17 @@ impl ManagedState {
     ) -> Result<Vec<awaken_session_contract::McpAttachmentDraft>, StateError> {
         let mut drafts = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            let server = candidate.server;
+            let name = candidate.name;
+            let target = match candidate.target {
+                ManagedMcpCandidateTarget::WireUrl(url) => {
+                    awaken_session_contract::McpTarget::parse_http(&url).map_err(|_| {
+                        StateError::Run(RunError::bad_request(format!(
+                            "invalid MCP server URL for `{name}`"
+                        )))
+                    })?
+                }
+                ManagedMcpCandidateTarget::Normalized(target) => target,
+            };
             let credential = match candidate.published_credential {
                 Some((id, revision)) => {
                     let source_id = awaken_credential_vault::CredentialSourceId(id.clone());
@@ -260,14 +281,18 @@ impl ManagedState {
                 }
                 None => match &self.credential_source {
                     Some(vaults) => {
-                        match vaults
-                            .mcp_credential_source_for_url(ordered_vault_ids, &server.url)
-                            .await
-                            .map_err(|error| {
-                                StateError::Run(RunError::bad_request(format!(
-                                    "MCP credential selection failed: {error}"
-                                )))
-                            })? {
+                        let source_id = match target.http_url() {
+                            Some(url) => vaults
+                                .mcp_credential_source_for_url(ordered_vault_ids, url)
+                                .await
+                                .map_err(|error| {
+                                    StateError::Run(RunError::bad_request(format!(
+                                        "MCP credential selection failed: {error}"
+                                    )))
+                                })?,
+                            None => None,
+                        };
+                        match source_id {
                             Some(source_id) => {
                                 Some(vaults.mcp_access_for_source(&source_id).await.map_err(
                                     |error| {
@@ -283,17 +308,10 @@ impl ManagedState {
                     None => None,
                 },
             };
-            let target =
-                awaken_session_contract::McpTarget::parse_http(&server.url).map_err(|_| {
-                    StateError::Run(RunError::bad_request(format!(
-                        "invalid MCP server URL for `{}`",
-                        server.name
-                    )))
-                })?;
             drafts.push(awaken_session_contract::McpAttachmentDraft {
-                name: server.name,
+                name,
                 target,
-                prompts_as_skills: server.prompts_as_skills,
+                prompts_as_skills: candidate.prompts_as_skills,
                 credential,
                 origin: candidate.origin,
             });

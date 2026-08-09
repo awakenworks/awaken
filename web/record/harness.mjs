@@ -25,6 +25,7 @@ const CONSOLE = process.env.CONSOLE_URL ?? "http://127.0.0.1:3002";
 const BACKEND = process.env.BACKEND_URL ?? "http://127.0.0.1:38080";
 const SIZE = { width: 1600, height: 1000 };
 const outDir = resolve(here, "out");
+const browserState = resolve(here, "../../.recording-awaken/browser-state.json");
 mkdirSync(outDir, { recursive: true });
 const rawDir = resolve(outDir, `.raw-${slug}`);
 rmSync(rawDir, { recursive: true, force: true });
@@ -35,7 +36,7 @@ const MAX_FLOW_MS = 172_000; // reserve time for the branded close and final mux
 let activeStory;
 
 try {
-  const response = await fetch(`${BACKEND}/v1/config/catalog`, { signal: AbortSignal.timeout(4000) });
+  const response = await fetch(`${BACKEND}/readyz`, { signal: AbortSignal.timeout(4000) });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
 } catch (error) {
   console.error(`[record] backend preflight failed at ${BACKEND}: ${error.message}`);
@@ -48,8 +49,9 @@ const ctx = await browser.newContext({
   deviceScaleFactor: 1,
   colorScheme: "dark",
   recordVideo: { dir: rawDir, size: SIZE },
+  ...(existsSync(browserState) ? { storageState: browserState } : {}),
 });
-// Default scope, no auth (backend runs open) — go straight to the workspace.
+// Default scope — go straight to the local Workspace after browser authentication.
 await ctx.addInitScript(() => {
   try {
     localStorage.setItem("awaken.console.workspace", "");
@@ -61,6 +63,30 @@ const page = await ctx.newPage();
 let introCount = 0;
 let checkpointCount = 0;
 let ahaCount = 0;
+
+// Current local Awaken uses a one-time setup handoff and an HttpOnly browser
+// session. Exchange it into this context instead of injecting the long-lived
+// management service credential into page JavaScript.
+let catalog = await ctx.request.get(`${BACKEND}/v1/config/catalog`);
+if (catalog.status() === 401) {
+  const setupToken = process.env.AWAKEN_RECORD_SETUP_TOKEN?.trim();
+  if (!setupToken) {
+    throw new Error(
+      "backend requires local browser setup; set AWAKEN_RECORD_SETUP_TOKEN to the one-time token printed by `awaken serve`",
+    );
+  }
+  const exchange = await ctx.request.post(`${BACKEND}/v1/auth/local/exchange`, {
+    data: { setup_token: setupToken },
+  });
+  if (!exchange.ok()) {
+    throw new Error(`local browser setup exchange failed: HTTP ${exchange.status()} ${await exchange.text()}`);
+  }
+  await ctx.storageState({ path: browserState });
+  catalog = await ctx.request.get(`${BACKEND}/v1/config/catalog`);
+}
+if (!catalog.ok()) {
+  throw new Error(`authenticated catalog preflight failed: HTTP ${catalog.status()} ${await catalog.text()}`);
+}
 
 // ---- injected demo chrome: caption bar + fake cursor (not product DOM) ----
 async function installChrome() {

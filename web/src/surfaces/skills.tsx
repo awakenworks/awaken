@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ws, type MultipartFile } from "../lib/api/client";
 import type { Page, Skill, SkillVersion } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Modal, TextAreaField, TextField } from "../components/ui";
+import { Button, Card, EmptyState, Modal, SkeletonRows, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
 
 interface DraftFile {
   path: string;
@@ -254,6 +254,8 @@ function SkillEditorModal({ skill, onClose, onPublished }: { skill: Skill; onClo
 export default function SkillsSurface() {
   const app = useApp();
   const qc = useQueryClient();
+  const confirm = useConfirm();
+  const toast = useToast();
   const [importing, setImporting] = useState(false);
   const [editing, setEditing] = useState<Skill | null>(null);
   const skills = useQuery({
@@ -263,7 +265,11 @@ export default function SkillsSurface() {
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.del(ws(`/v1/skills/${encodeURIComponent(id)}`)),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["skills"] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["skills"] });
+      toast.ok(app.t("Skill deleted.", "技能已删除。"));
+    },
+    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
   const refresh = () => void qc.invalidateQueries({ queryKey: ["skills"] });
   const rows = skills.data?.data ?? [];
@@ -274,23 +280,34 @@ export default function SkillsSurface() {
         <span className="mut">{app.t("Import a complete Skill bundle or publish browser edits as a new immutable version.", "导入完整技能 Bundle，或将浏览器编辑发布为新的不可变版本。")}</span>
         <Button variant="primary" onClick={() => setImporting(true)}>{app.t("Import Skill", "导入技能")}</Button>
       </div>
-      {skills.error instanceof Error && <div className="err">{skills.error.message}</div>}
-      <Card style={{ padding: 0 }}>
+      {skills.error instanceof Error ? <Card><EmptyState
+        title={app.t("Skills could not be loaded", "技能加载失败")}
+        hint={skills.error.message}
+        action={<Button onClick={() => void skills.refetch()}>{app.t("Try again", "重试")}</Button>}
+      /></Card> : <Card style={{ padding: 0 }}>
         <table className="table">
           <thead><tr><th>{app.t("Skill", "技能")}</th><th>{app.t("Title", "名称")}</th><th>{app.t("Version", "版本")}</th><th /></tr></thead>
-          <tbody>
+          {skills.isLoading ? <SkeletonRows rows={4} cols={4} /> : <tbody>
             {rows.map((skill) => (
               <tr key={skill.id}>
                 <td className="mono">{skill.id}</td>
                 <td>{skill.display_title ?? skill.name ?? skill.display_name ?? skill.id}</td>
                 <td className="mut">{skill.latest_version ?? "—"}</td>
-                <td style={{ textAlign: "right" }}><div className="row" style={{ justifyContent: "flex-end", gap: 6 }}><Button onClick={() => setEditing(skill)}>{app.t("Edit", "编辑")}</Button><Button variant="danger" disabled={remove.isPending} onClick={() => remove.mutate(skill.id)}>{app.t("Delete", "删除")}</Button></div></td>
+                <td style={{ textAlign: "right" }}><div className="row" style={{ justifyContent: "flex-end", gap: 6 }}><Button onClick={() => setEditing(skill)}>{app.t("Edit", "编辑")}</Button><Button variant="danger" disabled={remove.isPending} onClick={async () => {
+                  const approved = await confirm({
+                    title: app.t("Delete this Skill?", "删除该技能？"),
+                    body: app.t("All published versions in this catalog entry will become unavailable to new sessions.", "该目录项中的所有已发布版本都将对新会话不可用。"),
+                    confirmLabel: app.t("Delete", "删除"),
+                    danger: true,
+                  });
+                  if (approved) remove.mutate(skill.id);
+                }}>{app.t("Delete", "删除")}</Button></div></td>
               </tr>
             ))}
-            {rows.length === 0 && <tr><td colSpan={4} className="mut">{skills.isLoading ? "…" : app.t("No skills delivered yet.", "尚无已交付技能。")}</td></tr>}
-          </tbody>
+            {!skills.isLoading && rows.length === 0 && <tr><td colSpan={4} className="mut">{app.t("No skills delivered yet.", "尚无已交付技能。")}</td></tr>}
+          </tbody>}
         </table>
-      </Card>
+      </Card>}
       {importing && <ImportSkillModal onClose={() => setImporting(false)} onImported={refresh} />}
       {editing && <SkillEditorModal skill={editing} onClose={() => setEditing(null)} onPublished={refresh} />}
     </>
