@@ -1,44 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { workspaceLabel } from "../app-state";
+import type { ConfigCapabilitiesView } from "../api/types";
 import { NAV, WORKSPACE_JOURNEY, navPath, titleForPath, visibleNavigation } from "./paths";
 
-// Hosted navigation cause/effect decision table:
-// T1 C1 BYOK enabled -> E1 expose Models & providers under Connect.
-// T2 !C1 -> E2 expose the managed model catalog as Models under Author.
-// Constraint: credential setup is owned by the model workflow, so navigation
-// never introduces a second credential surface.
-// Workspace label partition:
-// T3 default -> E3 friendly Default; T4 hosted personal coordinate -> E4 Personal
-// Workspace; T5 short authored name -> E5 preserve; T6 long opaque coordinate ->
-// E6 bounded, recognizable prefix/suffix while the full value remains in title.
-describe("deployment-aware navigation", () => {
-  it("retains local provider authoring when BYOK is enabled", () => {
-    expect(visibleNavigation(true).find((item) => item.key === "models")).toMatchObject({
-      label: "Models & providers",
-      group: "connect",
-    });
-  });
+function capabilities(
+  byokEnabled: boolean,
+  managedRuntime: boolean,
+  accessManagement: boolean,
+): ConfigCapabilitiesView {
+  return {
+    identity: { mode: "test", cloud_login_enabled: false, authenticated: true },
+    models: {
+      local_catalog_enabled: byokEnabled,
+      byok_enabled: byokEnabled,
+      cloud_models_enabled: !byokEnabled,
+      profile_authoring_enabled: byokEnabled,
+    },
+    surfaces: {
+      managed_runtime: managedRuntime,
+      access_management: accessManagement,
+    },
+  };
+}
 
-  it("projects only the Cloud model catalog when BYOK is disabled", () => {
-    const navigation = visibleNavigation(false);
-    expect(navigation.some((item) => item.key === "credentials")).toBe(false);
-    expect(navigation.find((item) => item.key === "models")).toMatchObject({
-      label: "Models",
-      group: "author",
-    });
-  });
-});
-
-describe("workspaceLabel", () => {
-  it("bounds opaque coordinates without changing authored short names", () => {
-    expect(workspaceLabel("default")).toBe("Default");
-    expect(workspaceLabel("awaken:personal:acct_0123456789")).toBe("Personal Workspace");
-    expect(workspaceLabel("product-design")).toBe("product-design");
-    expect(workspaceLabel("workspace_abcdefghijklmnopqrstuvwxyz_0123456789")).toBe(
-      "workspace_ab…23456789",
-    );
-  });
-});
 describe("console information architecture", () => {
   it("keeps one source-of-truth route for every primary surface", () => {
     expect(NAV.map((item) => item.group)).toEqual([
@@ -103,4 +87,47 @@ describe("console information architecture", () => {
     expect(navPath(WORKSPACE_JOURNEY[2].destination, "workspace-a")).toBe("/w/workspace-a/sessions");
   });
 
+  /**
+   * Hosted navigation cause/effect table.
+   * R1 BYOK + Managed runtime + embedded IAM -> retain the full canonical IA.
+   * R2 managed supply + split Control + remote IAM -> only overview, Agent,
+   * model and settings surfaces, with Models relabelled for managed supply.
+   * R3 Managed runtime + remote IAM -> retain runtime, omit Access.
+   * R4 rolling-version skew without the surface projection -> fail closed to
+   * the untagged authoring routes instead of throwing or guessing availability.
+   * Constraint: all rules filter NAV; no second route registry is introduced.
+   */
+  it("projects model-supply posture without creating another route registry", () => {
+    const local = visibleNavigation(capabilities(true, true, true));
+    const hosted = visibleNavigation(capabilities(false, false, false));
+    expect(local.find((item) => item.key === "models")?.label).toBe("Models & providers");
+    expect(hosted.find((item) => item.key === "models")?.label).toBe("Models");
+    expect(hosted.find((item) => item.key === "models")?.group).toBe("author");
+    expect(local.map((item) => item.path)).toEqual(NAV.map((item) => item.path));
+    expect(hosted.map((item) => item.key)).toEqual(["overview", "agents", "models", "settings"]);
+    expect(local.some((item) => item.key === "credentials")).toBe(false);
+    expect(hosted.some((item) => item.key === "credentials")).toBe(false);
+
+    const runtimeWithoutEmbeddedIam = visibleNavigation(capabilities(true, true, false));
+    expect(runtimeWithoutEmbeddedIam.some((item) => item.key === "sessions")).toBe(true);
+    expect(runtimeWithoutEmbeddedIam.some((item) => item.key === "access")).toBe(false);
+
+    const { surfaces: _surfaces, ...oldResponse } = capabilities(false, false, false);
+    expect(visibleNavigation(oldResponse as ConfigCapabilitiesView).map((item) => item.key))
+      .toEqual(["overview", "agents", "models", "settings"]);
+  });
+
+  /**
+   * Workspace-label partitions: default, hosted personal, short authored, and
+   * long opaque coordinates cause friendly, personal, unchanged, and bounded
+   * effects respectively. These four rows cover every branch of workspaceLabel.
+   */
+  it("bounds opaque workspace coordinates without changing short authored names", () => {
+    expect(workspaceLabel("default")).toBe("Default");
+    expect(workspaceLabel("awaken:personal:acct_0123456789")).toBe("Personal Workspace");
+    expect(workspaceLabel("product-design")).toBe("product-design");
+    expect(workspaceLabel("workspace_abcdefghijklmnopqrstuvwxyz_0123456789")).toBe(
+      "workspace_ab…23456789",
+    );
+  });
 });

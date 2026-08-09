@@ -353,10 +353,6 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(
-        action_for(&get, "/v1/config/provider-descriptors"),
-        Some(WORKSPACE_READ)
-    );
-    assert_eq!(
         action_for(&post, "/v1/config/provider-connections"),
         Some(MODEL_SUPPLY_CONNECT)
     );

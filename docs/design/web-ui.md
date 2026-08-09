@@ -98,6 +98,23 @@ Session 后必须自动提交一条固定的无工具测试消息，并显示创
 通过正常 Agent Run 验证使用结果，不能从管理 UI 绕过 Hosted admission、配额或
 计费边界直连 Provider。
 
+### 3.2 进程组合能力决定页面呈现
+
+同一个前端可以由本地 `AllInOne` 或云端拆分的 `Control` 提供，但不能把另一
+进程拥有的页面显示成可用后再以 `404 Not Found` 失败。前端只读取
+`ConfigCapabilitiesView.surfaces`：
+
+| 组合事实 | 呈现结果 |
+|---|---|
+| `managed_runtime=true` | Sessions、Environments、Deployments、Skills、Memory、Vaults、协议、A2A 和运行助手 |
+| `managed_runtime=false` | 仅保留当前进程实际拥有的 Agent/模型配置页面；旧深链接回到 Workspace 概览 |
+| `access_management=true` | 显示当前进程拥有的 Access/token 管理页 |
+| `access_management=false` | 隐藏 Access；远端 IAM 的账号/成员管理回到套件入口 |
+
+侧栏、命令面板、Settings、浮动助手和直接路由共用这一份判定，不允许分别维护
+页面清单。Cloud HostedRun/Flow 不是 `/v1/sessions` 的兼容实现，Cloud 不增加
+翻译代理或第二套资源 API。
+
 ## 4. 路由和寻址
 
 | 用途 | 路径 | Workspace 来源 |

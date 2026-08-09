@@ -140,6 +140,7 @@ export interface CatalogSyncResult {
 export interface ConfigCapabilitiesView {
     identity: Identity;
     models:   Models;
+    surfaces: Surfaces;
     [property: string]: unknown;
 }
 
@@ -151,10 +152,20 @@ export interface Identity {
 }
 
 export interface Models {
-    byok_enabled:          boolean;
-    cloud_models_enabled:  boolean;
-    local_catalog_enabled: boolean;
+    byok_enabled:              boolean;
+    cloud_models_enabled:      boolean;
+    local_catalog_enabled:     boolean;
     profile_authoring_enabled: boolean;
+    [property: string]: unknown;
+}
+
+/**
+ * Product surfaces actually mounted by the same-origin process composition.
+ * This is presentation discovery only; mounted routes retain their own PEP.
+ */
+export interface Surfaces {
+    access_management: boolean;
+    managed_runtime:   boolean;
     [property: string]: unknown;
 }
 
@@ -274,14 +285,15 @@ export interface CredentialPoolMember {
  * never cross the admin boundary; consumers bind this stable source id.
  */
 export interface CredentialSourceView {
-    env_key?:      null | string;
-    id:            string;
-    kind:          CredentialKind;
-    oauth_helper?: CredentialSource | null;
-    provider_id?:  null | string;
-    status:        CredentialStatus;
-    version:       number;
-    workspace_id:  string;
+    env_key?:              null | string;
+    id:                    string;
+    kind:                  CredentialKind;
+    oauth_helper?:         CredentialSource | null;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
+    status:                CredentialStatus;
+    version:               number;
+    workspace_id:          string;
     [property: string]: unknown;
 }
 
@@ -378,6 +390,8 @@ export interface MaterialObject {
 }
 
 export interface ExecutableModelOption {
+    backend_ref: string;
+    dialect:     string;
     endpoint_id: string;
     model_id:    string;
     provider_id: string;
@@ -385,14 +399,13 @@ export interface ExecutableModelOption {
     [property: string]: unknown;
 }
 
-export type ExecutableModelReadiness = "ready" | "offering_unavailable" | "credential_unavailable";
+export type ExecutableModelReadiness = "ready" | "offering_unavailable" | "credential_unavailable" | "runtime_unavailable" | "dialect_unavailable";
 
 /**
- * An authored "how to run this model" unit (ADR-0043 `InferenceProfile` /
- * oversight-next `ProviderIdentity`): it names an exact primary and ordered
- * fallback candidates, each with a vault-backed (never inline) credential
- * binding, plus endpoints the operator has toggled off. The resolver reads it —
- * it is never flowed into the runtime.
+ * An authored "how to run this model" unit: it names an exact primary and
+ * ordered fallback candidates, each with a vault-backed (never inline)
+ * credential binding, plus endpoints the operator has toggled off. The resolver
+ * reads it — it is never flowed into the runtime.
  */
 export interface InferenceProfile {
     disabled_endpoint_ids?: string[];
@@ -449,10 +462,15 @@ export interface CredentialBindingObject {
 }
 
 /**
- * Stable, secret-free identity used to select one catalog offering. Qualifiers
- * may be omitted when `model_id` identifies exactly one active offering.
+ * Stable authoring identity used to select one catalog Offering.
+ *
+ * `endpoint_name` is the human qualifier used by public model ids. Resolution
+ * maps it to a concrete endpoint after dialect negotiation. Exact config and
+ * profile authoring may instead use `protocol_endpoint_id`; admission rejects
+ * a target containing both.
  */
 export interface PrimaryTarget {
+    endpoint_name?:        null | string;
     model_id:              string;
     protocol_endpoint_id?: null | string;
     provider_id?:          null | string;
@@ -504,27 +522,51 @@ export interface ModelSelection {
     profile_id?:            string;
     backend_ref?:           string;
     configuration?:         Tion;
+    target?:                ModelSelectionTarget;
     model_ref?:             string;
     provider_identity_ref?: string;
 }
 
 /**
- * Adapter-native ACP Session intent frozen with one BackendOwned candidate.
- * Omission preserves backend defaults; no discovered schema is copied here.
+ * Adapter-native ACP Session intent attached to an Agent model selection.
+ *
+ * Values remain strings because the selected ACP runtime's negotiated
+ * capability descriptor is the authority that validates supported modes and
+ * option values at publication time.
  */
 export interface Tion {
     mode?:    null | string;
     options?: { [key: string]: string };
+}
+
+export type Mode = "auto" | "profile" | "target" | "backend_default" | "backend_exact" | "pinned";
+
+/**
+ * Stable authoring identity used to select one catalog Offering.
+ *
+ * `endpoint_name` is the human qualifier used by public model ids. Resolution
+ * maps it to a concrete endpoint after dialect negotiation. Exact config and
+ * profile authoring may instead use `protocol_endpoint_id`; admission rejects
+ * a target containing both.
+ */
+export interface ModelSelectionTarget {
+    endpoint_name?:        null | string;
+    model_id:              string;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
     [property: string]: unknown;
 }
 
-export type Mode = "auto" | "profile" | "backend_default" | "backend_exact" | "pinned";
-
 /**
- * Stable, secret-free identity used to select one catalog offering. Qualifiers
- * may be omitted when `model_id` identifies exactly one active offering.
+ * Stable authoring identity used to select one catalog Offering.
+ *
+ * `endpoint_name` is the human qualifier used by public model ids. Resolution
+ * maps it to a concrete endpoint after dialect negotiation. Exact config and
+ * profile authoring may instead use `protocol_endpoint_id`; admission rejects
+ * a target containing both.
  */
 export interface ModelTarget {
+    endpoint_name?:        null | string;
     model_id:              string;
     protocol_endpoint_id?: null | string;
     provider_id?:          null | string;
@@ -816,14 +858,15 @@ export interface ProviderConnectionView {
  * never cross the admin boundary; consumers bind this stable source id.
  */
 export interface Credential {
-    env_key?:      null | string;
-    id:            string;
-    kind:          CredentialKind;
-    oauth_helper?: CredentialSource | null;
-    provider_id?:  null | string;
-    status:        CredentialStatus;
-    version:       number;
-    workspace_id:  string;
+    env_key?:              null | string;
+    id:                    string;
+    kind:                  CredentialKind;
+    oauth_helper?:         CredentialSource | null;
+    protocol_endpoint_id?: null | string;
+    provider_id?:          null | string;
+    status:                CredentialStatus;
+    version:               number;
+    workspace_id:          string;
     [property: string]: unknown;
 }
 
@@ -921,6 +964,11 @@ export type ConfigurationFieldKind = "secret" | "text" | "url";
 export interface DefaultEndpointElement {
     base_url: string;
     dialect:  APIDialect;
+    /**
+     * Optional provider-owned model-directory base when discovery is exposed
+     * separately from the inference protocol surface.
+     */
+    model_discovery_base_url?: null | string;
     [property: string]: unknown;
 }
 
@@ -973,10 +1021,15 @@ export interface Binding {
 }
 
 /**
- * Stable, secret-free identity used to select one catalog offering. Qualifiers
- * may be omitted when `model_id` identifies exactly one active offering.
+ * Stable authoring identity used to select one catalog Offering.
+ *
+ * `endpoint_name` is the human qualifier used by public model ids. Resolution
+ * maps it to a concrete endpoint after dialect negotiation. Exact config and
+ * profile authoring may instead use `protocol_endpoint_id`; admission rejects
+ * a target containing both.
  */
 export interface ResolveRequestTarget {
+    endpoint_name?:        null | string;
     model_id:              string;
     protocol_endpoint_id?: null | string;
     provider_id?:          null | string;
@@ -1025,6 +1078,16 @@ export interface ResolvedInferenceView {
     model_id:             string;
     protocol_endpoint_id: string;
     provider_id:          string;
+    [property: string]: unknown;
+}
+
+/**
+ * Rotate the primary material of one exact active Vault credential revision.
+ * The secret is write-only and the response remains a secret-free source view.
+ */
+export interface RotateCredentialRequest {
+    expected_version: number;
+    secret:           string;
     [property: string]: unknown;
 }
 
