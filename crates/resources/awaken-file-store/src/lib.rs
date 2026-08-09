@@ -28,17 +28,11 @@ use tokio::sync::Mutex;
 // implements them and re-exports so `awaken_file_store::FileStore` keeps resolving.
 pub use awaken_resource_contract::{
     CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
+    content_id,
 };
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
-}
-
-/// The content-addressed id of `bytes`: a BLAKE3 hex digest. Stable across process
-/// runs, Rust versions, and every backend — unlike a `DefaultHasher` fingerprint.
-#[must_use]
-pub fn content_id(bytes: &[u8]) -> String {
-    blake3::hash(bytes).to_hex().to_string()
 }
 
 /// Stable, database-portable identity for one Sandbox artifact harvest.

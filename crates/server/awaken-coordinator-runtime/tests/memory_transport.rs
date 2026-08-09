@@ -1,4 +1,4 @@
-//! Claim-fenced Memory snapshot/write-back tests over real HTTP.
+//! Claim-fenced Memory Coordinator tests over real HTTP.
 
 mod support;
 

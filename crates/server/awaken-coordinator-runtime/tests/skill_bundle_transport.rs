@@ -1,4 +1,4 @@
-//! Custom-Skill Resource boundary tests over real HTTP.
+//! Custom-Skill Resource Coordinator boundary tests over real HTTP.
 
 mod support;
 
