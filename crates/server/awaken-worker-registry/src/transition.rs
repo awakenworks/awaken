@@ -37,9 +37,17 @@ pub(crate) fn register(
             });
         }
     }
-    let generation = current.map_or(1, |record| {
-        record.snapshot.identity.generation.saturating_add(1)
-    });
+    let generation = match current {
+        None => 1,
+        Some(record) => record
+            .snapshot
+            .identity
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| RegistryError::GenerationExhausted {
+                worker_id: registration.worker_id.clone(),
+            })?,
+    };
     Ok((
         RegisteredWorker {
             snapshot: WorkerSnapshot {
@@ -219,6 +227,17 @@ mod tests {
         let (second, changed) = register(Some(&first), registration("boot-2"), 111, 100).unwrap();
         assert!(changed);
         assert_eq!(second.snapshot.identity.generation, 2);
+    }
+
+    #[test]
+    fn exhausted_generation_cannot_be_reused() {
+        let (mut current, _) = register(None, registration("boot-1"), 10, 100).unwrap();
+        current.snapshot.identity.generation = u64::MAX;
+        current.snapshot.expires_at_ms = 10;
+        assert!(matches!(
+            register(Some(&current), registration("boot-2"), 11, 100),
+            Err(RegistryError::GenerationExhausted { .. })
+        ));
     }
 
     #[test]

@@ -22,7 +22,9 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 
-pub(crate) fn worker_admin_router_with_lifecycle(lifecycle: Arc<crate::WorkerLifecycle>) -> Router {
+pub(crate) fn worker_admin_router_with_lifecycle(
+    lifecycle: Arc<crate::WorkerSupervisor>,
+) -> Router {
     Router::new()
         .route("/livez", get(livez))
         .route("/readyz", get(lifecycle_readyz))
@@ -36,7 +38,7 @@ pub(crate) fn worker_admin_router_with_lifecycle(lifecycle: Arc<crate::WorkerLif
 }
 
 async fn lifecycle_readyz(
-    State(lifecycle): State<Arc<crate::WorkerLifecycle>>,
+    State(lifecycle): State<Arc<crate::WorkerSupervisor>>,
 ) -> impl IntoResponse {
     if lifecycle.host.pool_accepting_work() {
         (StatusCode::OK, "ready\n")
@@ -46,7 +48,7 @@ async fn lifecycle_readyz(
 }
 
 async fn lifecycle_drain(
-    State(lifecycle): State<Arc<crate::WorkerLifecycle>>,
+    State(lifecycle): State<Arc<crate::WorkerSupervisor>>,
 ) -> impl IntoResponse {
     match lifecycle.begin_drain(None).await {
         Ok(()) => (StatusCode::OK, "draining\n"),
@@ -58,7 +60,7 @@ async fn lifecycle_drain(
 }
 
 async fn lifecycle_refresh_observations(
-    State(lifecycle): State<Arc<crate::WorkerLifecycle>>,
+    State(lifecycle): State<Arc<crate::WorkerSupervisor>>,
 ) -> impl IntoResponse {
     match lifecycle.refresh_observations().await {
         Ok(()) => (StatusCode::OK, "observations refreshed\n"),
@@ -115,7 +117,7 @@ mod tests {
             Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             "worker-test",
         ));
-        let lifecycle = Arc::new(crate::WorkerLifecycle {
+        let lifecycle = Arc::new(crate::WorkerSupervisor {
             host,
             control: awaken_worker_runtime::WorkerControlClient::new(
                 awaken_worker_transport_security::WorkerUpstream::new("http://127.0.0.1:1")

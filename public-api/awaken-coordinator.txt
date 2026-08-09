@@ -280,6 +280,6 @@ pub fn awaken_coordinator::mount_with_managed_application_access_models_and_drea
 pub async fn awaken_coordinator::open_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub async fn awaken_coordinator::open_existing_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub async fn awaken_coordinator::prepare_local_acp(awaken_acp_application::LocalAcpPreparation) -> core::result::Result<awaken_acp_application::PreparedAcpCapabilities, alloc::string::String>
-pub fn awaken_coordinator::resource_purge_scheduler(alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
+pub fn awaken_coordinator::resource_purge_scheduler(alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReclamationRepository>) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
 pub async fn awaken_coordinator::restore_deployment_application(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>, awaken_coordinator::CoordinatorBuildError>
 pub type awaken_coordinator::WorkerDirectoryHandle = alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>

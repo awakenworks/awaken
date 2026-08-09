@@ -72,7 +72,7 @@ impl ManagedState {
         };
         if !initial_events.is_empty() {
             self.start_initial_events(&session.id, initial_events)?;
-            session.status = "running";
+            session.status = SessionStatus::Running;
         }
         Ok(session)
     }

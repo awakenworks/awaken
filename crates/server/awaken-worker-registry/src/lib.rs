@@ -24,3 +24,29 @@ pub use memory::MemoryWorkerDirectory;
 pub use postgres::PostgresWorkerDirectory;
 pub use schema::{BUNDLE_ID, registry_bundle};
 pub use sqlite::SqliteWorkerDirectory;
+
+fn durable_i64(field: &'static str, value: u64) -> Result<i64, RegistryError> {
+    i64::try_from(value).map_err(|_| {
+        RegistryError::Persistence(format!(
+            "worker registry {field} {value} exceeds durable BIGINT range"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod durable_integer_tests {
+    use super::*;
+
+    #[test]
+    fn durable_bigint_conversion_fails_closed() {
+        assert_eq!(
+            durable_i64("generation", i64::MAX as u64).unwrap(),
+            i64::MAX
+        );
+        assert!(matches!(
+            durable_i64("generation", i64::MAX as u64 + 1),
+            Err(RegistryError::Persistence(message))
+                if message.contains("generation") && message.contains("exceeds")
+        ));
+    }
+}

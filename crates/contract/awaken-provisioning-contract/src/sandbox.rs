@@ -688,8 +688,10 @@ pub trait ProcessHandle: Send + Sync {
     /// is how you resolve an indeterminate outcome without re-running the process.
     async fn poll(&self) -> Result<Option<ExitStatus>, SandboxError>;
 
-    /// Deliver a signal (terminate/kill/interrupt). Tearing down the sandbox reaps
-    /// the whole process group regardless.
+    /// Deliver a signal (terminate/kill/interrupt). This operation is idempotent:
+    /// if the owned process exits before or during delivery, implementations return
+    /// success after confirming that exit. Tearing down the sandbox reaps the whole
+    /// process group regardless.
     async fn signal(&self, signal: Signal) -> Result<(), SandboxError>;
 }
 

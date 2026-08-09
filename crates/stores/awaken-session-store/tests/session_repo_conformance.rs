@@ -12,9 +12,9 @@ use awaken_deployment_contract::{
 };
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, McpAttachmentDraft,
-    McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession, SessionMutation,
-    SessionMutationPayload, SessionMutationResult, SessionRepositoryError, SessionRevision,
-    SessionTombstone,
+    McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession,
+    SessionLifecycleState, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionRepositoryError, SessionRevision, SessionTombstone,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use serde_json::json;
@@ -108,7 +108,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
             .unwrap(),
         ),
         realization: None,
-        status: "idle".into(),
+        lifecycle: SessionLifecycleState::Idle,
         archived_at: None,
     }
 }
@@ -278,11 +278,11 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
 
     let archived = fact("evt:archive", "sesn_lifecycle", "session.archived");
     let mut archive = r.get("sesn_lifecycle").await.unwrap();
-    archive.status = "terminated".into();
+    archive.lifecycle = SessionLifecycleState::Terminated;
     archive.archived_at = Some("2026-07-19T00:00:00Z".into());
     replace_session(r, "ws_a", archive, "test:archive", vec![archived.clone()]).await;
     let durable = r.get("sesn_lifecycle").await.expect("archived session");
-    assert_eq!(durable.status, "terminated");
+    assert_eq!(durable.lifecycle, SessionLifecycleState::Terminated);
     assert_eq!(durable.archived_at.as_deref(), Some("2026-07-19T00:00:00Z"));
     assert_eq!(r.pending_lifecycle().await, vec![archived.clone()]);
     r.complete_lifecycle(&archived.id).await;
@@ -364,7 +364,7 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
         "I2/E4: active Resource retention remains recoverable"
     );
 
-    pending.status = "terminated".into();
+    pending.lifecycle = SessionLifecycleState::Terminated;
     pending
         .resources
         .complete_terminal_release("conformance cleanup");

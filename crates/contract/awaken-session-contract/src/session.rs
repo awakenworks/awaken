@@ -8,7 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
-use awaken_agent_contract::{LifecycleCursor, LifecyclePage};
+use awaken_agent_contract::{RunLifecycleCursor, RunLifecyclePage};
 
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
@@ -551,10 +551,10 @@ pub trait SessionRuntime: Send + Sync {
     async fn committed_run_lifecycle(
         &self,
         _thread: &str,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         _limit: usize,
-    ) -> Result<LifecyclePage, RunError> {
-        Ok(LifecyclePage {
+    ) -> Result<RunLifecyclePage, RunError> {
+        Ok(RunLifecyclePage {
             events: Vec::new(),
             next_cursor: cursor,
         })

@@ -54,6 +54,21 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resu
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
 
+fn preserve_terminal_outcome<T>(
+    outcome: std::result::Result<T, AcpError>,
+    cleanup: std::result::Result<bool, AcpError>,
+    process_id: &str,
+) -> std::result::Result<T, AcpError> {
+    if let Err(cleanup_error) = cleanup {
+        tracing::warn!(
+            process_id,
+            error = %cleanup_error,
+            "ACP terminal process cleanup failed after the turn outcome was fixed"
+        );
+    }
+    outcome
+}
+
 /// An already-launched ACP agent: the duplex channel plus the process handle for
 /// reaping. The host produces this — locally by launching the CLI into a sandbox,
 /// remotely by dialing an intermediary — so this executor stays transport- and
@@ -652,7 +667,7 @@ impl AcpRunExecutor {
                     .map(str::to_string),
                 _ => None,
             };
-            let mut outcome = Supervisor::supervise_with_config(
+            let outcome = Supervisor::supervise_with_config(
                 session.channel.as_mut(),
                 process.as_ref(),
                 &prompt,
@@ -673,12 +688,18 @@ impl AcpRunExecutor {
                 outcome,
                 Ok(TerminationReason::Cancelled | TerminationReason::TimedOut)
             );
-            if !already_reaped
-                && let Err(reap) = Supervisor::reap(process.as_ref(), self.policy.reap_grace).await
-                && outcome.is_ok()
-            {
-                outcome = Err(reap);
-            }
+            let outcome = if already_reaped {
+                outcome
+            } else {
+                // The protocol terminal fact is the business outcome. Cleanup is
+                // an independently observable lifecycle concern and must never
+                // rewrite a completed turn into a different result.
+                preserve_terminal_outcome(
+                    outcome,
+                    Supervisor::reap_after_terminal(process.as_ref(), self.policy.reap_grace).await,
+                    process.id(),
+                )
+            };
             // The turn is over — stop the cancellation→interrupt forwarder so it does
             // not outlive this turn's injection channel.
             if let Some(handle) = interrupt_forwarder {

@@ -1403,9 +1403,9 @@ impl SessionRuntime for ManagedHost {
     async fn committed_run_lifecycle(
         &self,
         thread: &str,
-        cursor: awaken_agent_contract::LifecycleCursor,
+        cursor: awaken_agent_contract::RunLifecycleCursor,
         limit: usize,
-    ) -> Result<awaken_agent_contract::LifecyclePage, RunError> {
+    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
         let feed = self
             .host
             .run_lifecycle_feed(thread)

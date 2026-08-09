@@ -1,5 +1,5 @@
 //! The managed webhook bridge: connects the managed session lifecycle (the
-//! `SessionLifecycleSink` port, in `awaken-session-contract`) to `awaken-webhook`'s
+//! `SessionLifecycleFactSink` port, in `awaken-session-contract`) to `awaken-webhook`'s
 //! neutral delivery machinery, backed by the **config plane**. Subscriptions are an
 //! id-addressed config resource (`awaken-config-resolver`'s [`WebhookStore`],
 //! durably the admin store) and their `whsec_` signing secret is sealed in the
@@ -24,7 +24,7 @@ use awaken_config_resolver::{
 };
 use awaken_credential_vault::{SecretRef, SecretStore};
 use awaken_session_contract::{
-    ManagedLifecycleFact, ManagedSessionRepository, SessionLifecycleSink,
+    ManagedLifecycleFact, ManagedSessionRepository, SessionLifecycleFactSink,
 };
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
@@ -62,7 +62,7 @@ pub async fn stamp_workspace_scope(
 /// Bridges the managed session lifecycle to the webhook dispatcher: on a committed
 /// lifecycle fact it builds the Anthropic-shaped event (stamping the session's
 /// owner) and delivers out-of-band, so a slow endpoint never blocks the session.
-pub struct WebhookLifecycleSink {
+pub struct WebhookLifecycleFactSink {
     delivery: Arc<dyn LifecycleFactDelivery>,
     /// Monotonic event-id source (`event_<n>`).
     seq: AtomicU64,
@@ -133,7 +133,7 @@ pub fn config_plane_lifecycle_delivery(
 
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
 
-impl WebhookLifecycleSink {
+impl WebhookLifecycleFactSink {
     /// Lifecycle facts are read from the same repository transaction that commits
     /// the Session transition. This is the only webhook outbox authority.
     pub fn new(
@@ -221,7 +221,14 @@ impl WebhookLifecycleSink {
         draining: &Arc<tokio::sync::Mutex<()>>,
     ) {
         let _guard = draining.lock().await;
-        for row in session_outbox.pending_lifecycle().await {
+        let rows = match session_outbox.try_pending_lifecycle().await {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(%error, "Session lifecycle outbox remains pending");
+                return;
+            }
+        };
+        for row in rows {
             if delivery.deliver(&row).await.is_ok() {
                 session_outbox.complete_lifecycle(&row.id).await;
             }
@@ -230,7 +237,7 @@ impl WebhookLifecycleSink {
 }
 
 #[async_trait::async_trait]
-impl SessionLifecycleSink for WebhookLifecycleSink {
+impl SessionLifecycleFactSink for WebhookLifecycleFactSink {
     async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
         let n = self.seq.fetch_add(1, Ordering::SeqCst);
         let now = SystemTime::now()
@@ -797,7 +804,7 @@ pub fn assemble_with_session_repo(
     secrets: Arc<dyn SecretStore>,
     org_id: Option<String>,
     sessions: Arc<dyn ManagedSessionRepository>,
-) -> (Arc<WebhookLifecycleSink>, Router) {
+) -> (Arc<WebhookLifecycleFactSink>, Router) {
     assemble_with(
         store,
         secrets,
@@ -820,7 +827,7 @@ pub fn assemble_loopback(
     secrets: Arc<dyn SecretStore>,
     org_id: Option<String>,
     sessions: Arc<dyn ManagedSessionRepository>,
-) -> (Arc<WebhookLifecycleSink>, Router) {
+) -> (Arc<WebhookLifecycleFactSink>, Router) {
     assemble_with(
         store,
         secrets,
@@ -838,13 +845,13 @@ fn assemble_with(
     sender: Arc<dyn WebhookSender>,
     url_policy: EndpointUrlPolicy,
     sessions: Arc<dyn ManagedSessionRepository>,
-) -> (Arc<WebhookLifecycleSink>, Router) {
+) -> (Arc<WebhookLifecycleFactSink>, Router) {
     let source = Arc::new(ConfigPlaneSubscriptionSource::new(
         store.clone(),
         secrets.clone(),
     ));
     let dispatcher = Arc::new(WebhookDispatcher::new(source, sender));
-    let sink = Arc::new(WebhookLifecycleSink::new(dispatcher, org_id, sessions));
+    let sink = Arc::new(WebhookLifecycleFactSink::new(dispatcher, org_id, sessions));
     (
         sink,
         webhook_config_router_with_policy(store, secrets, url_policy),

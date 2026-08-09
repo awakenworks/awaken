@@ -20,14 +20,14 @@ use crate::project::{self, project_messages, project_messages_with_mcp_ids, proj
 use crate::types::{
     ConfirmResult, Event, EventReceipt, InboundEvent, ListEventsResponse, ModelConfig,
     ModelOverride, OutboundKind, SendEventsRequest, SendEventsResponse, Session, SessionAgent,
-    SessionCreateParams, SessionError, SessionStats, SessionThread, SessionThreadAgent,
-    SessionThreadStatus, StopReason, StreamFrame, Usage,
+    SessionCreateParams, SessionError, SessionStats, SessionStatus, SessionThread,
+    SessionThreadAgent, SessionThreadStatus, StopReason, StreamFrame, Usage,
 };
 #[cfg(test)]
 use awaken_session_contract::ManagedSessionRepository;
 #[cfg(test)]
 use awaken_session_contract::SessionInit;
-use awaken_session_contract::{ManagedLifecycleFact, PersistedSession};
+use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionLifecycleState};
 #[cfg(test)]
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -201,7 +201,8 @@ mod tests {
             .expect("P1 durable aggregate");
 
         assert_eq!(
-            created.status, "preparing",
+            created.status,
+            SessionStatus::Preparing,
             "P1 durable status owns wire status"
         );
 
@@ -559,10 +560,13 @@ mod tests {
             .archive_session(&id)
             .await
             .expect("archive durable Session after restart");
-        assert_eq!(archived.status, "terminated");
+        assert_eq!(archived.status, SessionStatus::Terminated);
         assert_eq!(*ended.lock().unwrap(), vec![id.clone()]);
         assert!(prepared.lock().unwrap().is_empty());
-        assert_eq!(repo.get(&id).await.unwrap().status, "terminated");
+        assert_eq!(
+            repo.get(&id).await.unwrap().lifecycle,
+            SessionLifecycleState::Terminated
+        );
     }
 
     #[tokio::test]
@@ -587,7 +591,7 @@ mod tests {
 
         state.archive_session(&id).await.unwrap();
         let durable = repo.get(&id).await.unwrap();
-        assert_eq!(durable.status, "terminated");
+        assert_eq!(durable.lifecycle, SessionLifecycleState::Terminated);
         assert_eq!(
             durable.resources.activations[0].state,
             awaken_session_contract::ActivationState::Released
@@ -738,7 +742,7 @@ mod tests {
             "the session is gone even though its sandbox dispose errored"
         );
         let durable = repo.get(&id).await.unwrap();
-        assert_eq!(durable.status, "deleted");
+        assert_eq!(durable.lifecycle, SessionLifecycleState::Deleted);
         assert_eq!(
             durable.resources.activations[0].state,
             awaken_session_contract::ActivationState::Releasing,
@@ -817,7 +821,7 @@ mod tests {
             mcp,
             resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
             realization: None,
-            status: "idle".into(),
+            lifecycle: SessionLifecycleState::Idle,
             archived_at: None,
         }
     }
@@ -1457,7 +1461,7 @@ mod tests {
     async fn resource_reclaimer_finishes_terminal_release_after_restart() {
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut deleted = sample_persisted("sesn_deleted");
-        deleted.status = "deleted".into();
+        deleted.lifecycle = SessionLifecycleState::Deleted;
         deleted.resources.adopt_legacy_active("sesn_deleted");
         deleted.resources.begin_release().unwrap();
         create_session_fixture(repo.as_ref(), "workspace-a", deleted).await;
@@ -1493,7 +1497,7 @@ mod tests {
         for status in ["idle", "running", "rescheduling", "terminated"] {
             let id = format!("sesn_{status}");
             let mut session = sample_persisted(&id);
-            session.status = status.into();
+            session.lifecycle = status.parse().expect("fixture lifecycle state");
             session.resources.adopt_legacy_active(&id);
             session
                 .environment
@@ -1501,7 +1505,7 @@ mod tests {
             create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, session).await;
         }
         let mut deleted = sample_persisted("sesn_deleted_empty");
-        deleted.status = "deleted".into();
+        deleted.lifecycle = SessionLifecycleState::Deleted;
         deleted.resources = Default::default();
         create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, deleted).await;
 
@@ -1540,7 +1544,7 @@ mod tests {
         // above and `ensure_session_retries_and_commits_a_crash_interrupted_activation`.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut running = sample_persisted("sesn_running_rehydrate");
-        running.status = "running".into();
+        running.lifecycle = SessionLifecycleState::Running;
         running
             .resources
             .adopt_legacy_active("sesn_running_rehydrate");
@@ -1577,22 +1581,41 @@ mod tests {
     fn wire_projection_preserves_the_durable_execution_lifecycle() {
         // Session-status cause/effect decision table. C1 the durable activity
         // aggregate is running; C2 it is rescheduling; C3 it is idle; C4 it is
-        // preparing/activating/failed; C5 it is terminal; C6 a legacy unknown
-        // value is read. E1 public GET reports running; E2 reports rescheduling;
+        // preparing/activating/failed; C5 it is terminal. E1 public GET reports running; E2 reports rescheduling;
         // E3 reports idle; E4 preserves the existing preparation vocabulary;
-        // E5 reports terminated; E6 fails safe to idle. Rules S1=C1=>E1,
-        // S2=C2=>E2, S3=C3=>E3, S4=C4=>E4, S5=C5=>E5, S6=C6=>E6. This keeps
+        // E5 reports terminated. Rules S1=C1=>E1, S2=C2=>E2, S3=C3=>E3,
+        // S4=C4=>E4, S5=C5=>E5. Unknown durable values fail during decoding
+        // instead of being projected as a healthy idle Session. This keeps
         // the durable Session aggregate as the sole status truth; the wire cache
         // owns no separate dispatch inference.
         for (rule, durable, public) in [
-            ("S1", "running", "running"),
-            ("S2", "rescheduling", "rescheduling"),
-            ("S3", "idle", "idle"),
-            ("S4a", "preparing", "preparing"),
-            ("S4b", "activating", "activating"),
-            ("S4c", "activation_failed", "failed"),
-            ("S5", "terminated", "terminated"),
-            ("S6", "legacy-unknown", "idle"),
+            ("S1", SessionLifecycleState::Running, SessionStatus::Running),
+            (
+                "S2",
+                SessionLifecycleState::Rescheduling,
+                SessionStatus::Rescheduling,
+            ),
+            ("S3", SessionLifecycleState::Idle, SessionStatus::Idle),
+            (
+                "S4a",
+                SessionLifecycleState::Preparing,
+                SessionStatus::Preparing,
+            ),
+            (
+                "S4b",
+                SessionLifecycleState::Activating,
+                SessionStatus::Activating,
+            ),
+            (
+                "S4c",
+                SessionLifecycleState::ActivationFailed,
+                SessionStatus::Failed,
+            ),
+            (
+                "S5",
+                SessionLifecycleState::Terminated,
+                SessionStatus::Terminated,
+            ),
         ] {
             assert_eq!(ManagedState::wire_session_status(durable), public, "{rule}");
         }
@@ -1605,7 +1628,7 @@ mod tests {
         // PersistedSession; this integration rule proves the scanner consumes it.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut failed = sample_persisted("sesn_failed_mcp");
-        failed.status = "activation_failed".into();
+        failed.lifecycle = SessionLifecycleState::ActivationFailed;
         create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
         assert_eq!(repo.reconcilable_sessions().await.len(), 1, "T1 indexed");
 
@@ -1799,7 +1822,11 @@ mod tests {
             .await
             .expect("E1");
         assert_eq!(created.id, "flow/run-1", "E1 exact identity");
-        assert_eq!(created.status, "preparing", "E1 waits for contribution");
+        assert_eq!(
+            created.status,
+            SessionStatus::Preparing,
+            "E1 waits for contribution"
+        );
         let replayed = state
             .create_application_session("flow/run-1", required.clone(), Some("workspace".into()))
             .await

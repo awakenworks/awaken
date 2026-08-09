@@ -64,7 +64,7 @@ impl EnvironmentImageBuildStore for InMemoryEnvironmentImageBuildStore {
     ) -> Result<Option<EnvironmentImageBuildClaim>, EnvironmentImageBuildError> {
         let mut records = self.records.lock().expect("image build store");
         for record in records.values_mut() {
-            let Some(state) = record.state.claim(owner, now_ms, lease_ms) else {
+            let Some(state) = record.state.claim(owner, now_ms, lease_ms)? else {
                 continue;
             };
             let EnvironmentImageBuildState::Building { lease_epoch, .. } = state else {

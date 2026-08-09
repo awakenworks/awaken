@@ -16,6 +16,13 @@ pub struct SandboxExecutionPolicyVersion(pub u64);
 
 impl SandboxExecutionPolicyVersion {
     pub const INITIAL: Self = Self(1);
+
+    pub fn checked_next(self) -> Result<Self, SandboxExecutionPolicyError> {
+        self.0
+            .checked_add(1)
+            .map(Self)
+            .ok_or_else(|| SandboxExecutionPolicyError::Invalid("version exhausted".to_string()))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,6 +81,18 @@ pub trait SandboxExecutionPolicyStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_version_exhaustion_fails_closed() {
+        assert_eq!(
+            SandboxExecutionPolicyVersion(1).checked_next().unwrap(),
+            SandboxExecutionPolicyVersion(2)
+        );
+        assert!(matches!(
+            SandboxExecutionPolicyVersion(u64::MAX).checked_next(),
+            Err(SandboxExecutionPolicyError::Invalid(message)) if message.contains("exhausted")
+        ));
+    }
 
     #[test]
     fn provisioning_wire_defaults_to_eager_and_round_trips_lazy() {

@@ -19,7 +19,7 @@ use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitRe
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
 use awaken_agent_contract::thread::read::lifecycle::{
-    LifecycleCursor, LifecyclePage, RunLifecycleFeedError, checkpoint_lifecycle_events_after,
+    RunLifecycleCursor, RunLifecycleFeedError, RunLifecyclePage, checkpoint_lifecycle_events_after,
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
@@ -50,9 +50,9 @@ pub trait LocalCommit: Send + Sync {
 
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError>;
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError>;
 
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error>;
 
@@ -117,9 +117,9 @@ where
 
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         checkpoint_lifecycle_events_after(&self.0, cursor, limit)
     }
 

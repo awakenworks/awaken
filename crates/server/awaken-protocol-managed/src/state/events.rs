@@ -3,7 +3,7 @@
 
 use super::*;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
-use awaken_agent_contract::{LifecycleCursor, RunLifecycleKind};
+use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
 
 struct DelegateCall {
     run_id: String,
@@ -221,7 +221,7 @@ impl ManagedState {
         {
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-            record.project_runtime_status("running");
+            record.project_runtime_status(SessionStatus::Running);
         }
         let state = Arc::clone(self);
         let session_id = session_id.to_string();
@@ -343,7 +343,7 @@ impl ManagedState {
         }
     }
 
-    fn lifecycle_cursor(&self, session_id: &str) -> Result<LifecycleCursor, StateError> {
+    fn lifecycle_cursor(&self, session_id: &str) -> Result<RunLifecycleCursor, StateError> {
         self.sessions
             .lock()
             .unwrap()
@@ -355,9 +355,9 @@ impl ManagedState {
     async fn terminal_cursor_after(
         &self,
         session_id: &str,
-        after: LifecycleCursor,
+        after: RunLifecycleCursor,
         outcome: &StepOutcome,
-    ) -> Result<Option<LifecycleCursor>, StateError> {
+    ) -> Result<Option<RunLifecycleCursor>, StateError> {
         let Some(run_id) = outcome.run_id() else {
             return Ok(None);
         };
@@ -378,10 +378,10 @@ impl ManagedState {
                     && &event.state == outcome.state()
                     && matches!(
                         event.kind,
-                        RunLifecycleKind::Awaiting
-                            | RunLifecycleKind::Completed
-                            | RunLifecycleKind::Failed
-                            | RunLifecycleKind::Cancelled
+                        RunLifecycleEventKind::Awaiting
+                            | RunLifecycleEventKind::Completed
+                            | RunLifecycleEventKind::Failed
+                            | RunLifecycleEventKind::Cancelled
                     )
                 {
                     found = Some(event.cursor);
@@ -399,7 +399,7 @@ impl ManagedState {
         session_id: &str,
         outcome: StepOutcome,
         preview_ids: PreviewAllocations,
-        lifecycle_start: LifecycleCursor,
+        lifecycle_start: RunLifecycleCursor,
     ) -> Result<(), StateError> {
         let terminal_cursor = self
             .terminal_cursor_after(session_id, lifecycle_start, &outcome)
@@ -422,7 +422,7 @@ impl ManagedState {
         session_id: &str,
         outcome: StepOutcome,
         mut preview_ids: PreviewAllocations,
-        terminal_cursor: Option<LifecycleCursor>,
+        terminal_cursor: Option<RunLifecycleCursor>,
     ) -> Result<(), StateError> {
         let pending = outcome.pending();
         let delegated_runs = outcome.delegated_runs().to_vec();
@@ -521,7 +521,7 @@ impl ManagedState {
             });
         }
         self.append_delegation_projections(record, &delegated_runs);
-        record.project_runtime_status("idle");
+        record.project_runtime_status(SessionStatus::Idle);
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -602,7 +602,7 @@ impl ManagedState {
                 record.session.outcome_evaluations.push(evaluation);
             }
         }
-        record.project_runtime_status("idle");
+        record.project_runtime_status(SessionStatus::Idle);
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -942,7 +942,7 @@ impl ManagedState {
             if processing.is_err()
                 && let Some(record) = self.sessions.lock().unwrap().get_mut(session_id)
             {
-                record.project_runtime_status("idle");
+                record.project_runtime_status(SessionStatus::Idle);
             }
             if let Some(activity_epoch) = activity_epoch {
                 let session = self
@@ -991,7 +991,7 @@ impl ManagedState {
             },
             processed_at,
         });
-        record.project_runtime_status("idle");
+        record.project_runtime_status(SessionStatus::Idle);
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -1069,29 +1069,30 @@ impl ManagedState {
         let terminal = latest_lifecycle.as_ref().filter(|event| {
             matches!(
                 event.kind,
-                RunLifecycleKind::Awaiting
-                    | RunLifecycleKind::Completed
-                    | RunLifecycleKind::Failed
-                    | RunLifecycleKind::Cancelled
+                RunLifecycleEventKind::Awaiting
+                    | RunLifecycleEventKind::Completed
+                    | RunLifecycleEventKind::Failed
+                    | RunLifecycleEventKind::Cancelled
             )
         });
         // An Awaiting fact without its exact committed ticket cannot carry the
         // required action id. Keep the cursor before it and retry; never publish an
         // empty requires_action terminal that could supersede the real call.
-        let awaiting_ticket_pending = terminal
-            .is_some_and(|event| event.kind == RunLifecycleKind::Awaiting && pending.is_none());
+        let awaiting_ticket_pending = terminal.is_some_and(|event| {
+            event.kind == RunLifecycleEventKind::Awaiting && pending.is_none()
+        });
         if !awaiting_ticket_pending {
             record.projected_lifecycle_cursor = lifecycle_cursor;
         }
         if latest_lifecycle.as_ref().is_some_and(|event| {
             matches!(
                 event.kind,
-                RunLifecycleKind::Running | RunLifecycleKind::Resumed
+                RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed
             )
         }) {
-            record.project_runtime_status("running");
+            record.project_runtime_status(SessionStatus::Running);
         } else if terminal.is_some() {
-            record.project_runtime_status("idle");
+            record.project_runtime_status(SessionStatus::Idle);
         }
         let project_terminal = terminal.filter(|event| {
             !awaiting_ticket_pending && record.projected_terminal_cursors.insert(event.cursor)
@@ -1186,7 +1187,7 @@ mod tests {
     use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_agent_contract::{LifecycleCursor, LifecyclePage, RunLifecycleEvent};
+    use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecyclePage};
     use awaken_session_contract::{
         OutcomeReport, Pending, RunError, SessionRuntime, ToolPermissionDecision,
     };
@@ -1236,9 +1237,9 @@ mod tests {
         async fn committed_run_lifecycle(
             &self,
             _thread: &str,
-            cursor: LifecycleCursor,
+            cursor: RunLifecycleCursor,
             limit: usize,
-        ) -> Result<LifecyclePage, RunError> {
+        ) -> Result<RunLifecyclePage, RunError> {
             let events = self
                 .lifecycle
                 .lock()
@@ -1248,7 +1249,7 @@ mod tests {
                 .take(limit)
                 .cloned()
                 .collect::<Vec<_>>();
-            Ok(LifecyclePage {
+            Ok(RunLifecyclePage {
                 next_cursor: events.last().map_or(cursor, |event| event.cursor),
                 events,
             })
@@ -1281,11 +1282,11 @@ mod tests {
         cursor: u64,
         thread: &str,
         run_id: &RunId,
-        kind: RunLifecycleKind,
+        kind: RunLifecycleEventKind,
         state: RunState,
     ) -> RunLifecycleEvent {
         RunLifecycleEvent {
-            cursor: LifecycleCursor(cursor),
+            cursor: RunLifecycleCursor(cursor),
             thread_id: ThreadId(thread.into()),
             run_id: run_id.clone(),
             kind,
@@ -1334,11 +1335,15 @@ mod tests {
             10,
             &thread,
             &run,
-            RunLifecycleKind::Running,
+            RunLifecycleEventKind::Running,
             RunState::Running,
         ));
         state.refresh_committed_events(&thread).await.unwrap();
-        assert_eq!(state.get_session(&thread).unwrap().status, "running", "R1");
+        assert_eq!(
+            state.get_session(&thread).unwrap().status,
+            SessionStatus::Running,
+            "R1"
+        );
         let rendered =
             serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
                 .unwrap();
@@ -1364,7 +1369,7 @@ mod tests {
             20,
             &thread,
             &run,
-            RunLifecycleKind::Awaiting,
+            RunLifecycleEventKind::Awaiting,
             RunState::Awaiting,
         ));
         state.refresh_committed_events(&thread).await.unwrap();
@@ -1382,14 +1387,14 @@ mod tests {
                 30,
                 &thread,
                 &second_run,
-                RunLifecycleKind::Running,
+                RunLifecycleEventKind::Running,
                 RunState::Running,
             ),
             lifecycle(
                 40,
                 &thread,
                 &second_run,
-                RunLifecycleKind::Completed,
+                RunLifecycleEventKind::Completed,
                 RunState::Ended(EndCause::NaturalEnd),
             ),
         ]);
@@ -1423,7 +1428,7 @@ mod tests {
                 )
                 .with_run_id(local_run.clone()),
                 PreviewAllocations::default(),
-                Some(LifecycleCursor(60)),
+                Some(RunLifecycleCursor(60)),
             )
             .unwrap();
         runtime.lifecycle.lock().unwrap().extend([
@@ -1431,14 +1436,14 @@ mod tests {
                 50,
                 &thread,
                 &local_run,
-                RunLifecycleKind::Running,
+                RunLifecycleEventKind::Running,
                 RunState::Running,
             ),
             lifecycle(
                 60,
                 &thread,
                 &local_run,
-                RunLifecycleKind::Completed,
+                RunLifecycleEventKind::Completed,
                 RunState::Ended(EndCause::NaturalEnd),
             ),
         ]);
@@ -1474,14 +1479,14 @@ mod tests {
                 70,
                 &thread,
                 &local_run,
-                RunLifecycleKind::Resumed,
+                RunLifecycleEventKind::Resumed,
                 RunState::Running,
             ),
             lifecycle(
                 80,
                 &thread,
                 &local_run,
-                RunLifecycleKind::Awaiting,
+                RunLifecycleEventKind::Awaiting,
                 RunState::Awaiting,
             ),
         ]);
@@ -1497,7 +1502,7 @@ mod tests {
                 )
                 .with_run_id(local_run.clone()),
                 PreviewAllocations::default(),
-                Some(LifecycleCursor(80)),
+                Some(RunLifecycleCursor(80)),
             )
             .unwrap();
         state.refresh_committed_events(&thread).await.unwrap();
@@ -1529,14 +1534,14 @@ mod tests {
                 90,
                 &thread,
                 &cold_run,
-                RunLifecycleKind::Running,
+                RunLifecycleEventKind::Running,
                 RunState::Running,
             ),
             lifecycle(
                 100,
                 &thread,
                 &cold_run,
-                RunLifecycleKind::Awaiting,
+                RunLifecycleEventKind::Awaiting,
                 RunState::Awaiting,
             ),
         ]);
@@ -1565,7 +1570,7 @@ mod tests {
                 StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, false, false)
                     .with_run_id(RunId("run-missing-lifecycle".into())),
                 PreviewAllocations::default(),
-                LifecycleCursor(100),
+                RunLifecycleCursor(100),
             )
             .await
             .unwrap_err();

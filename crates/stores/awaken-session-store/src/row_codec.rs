@@ -8,8 +8,8 @@ use awaken_credential_contract::{
 use awaken_session_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, McpAttachmentDraft, McpAttachmentOrigin,
     McpAttachmentState, McpTarget, PersistedSession, ResolvedSessionResources, SessionBaseline,
-    SessionBaselineState, SessionMcpAttachmentSet, SessionMcpAuthoringContext,
-    SessionNetworkPolicy, SessionResourceState, SessionRevision,
+    SessionBaselineState, SessionLifecycleState, SessionMcpAttachmentSet,
+    SessionMcpAuthoringContext, SessionNetworkPolicy, SessionResourceState, SessionRevision,
 };
 
 pub(super) struct EncodedSessionRow {
@@ -76,9 +76,12 @@ fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json:
 }
 
 pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
-    let revision = SessionRevision(
-        u64::try_from(row.revision).expect("managed Session revision is non-negative"),
-    );
+    let revision = SessionRevision(u64::try_from(row.revision).map_err(|_| {
+        serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "managed Session revision is negative",
+        ))
+    })?);
     if let Some(aggregate_json) = row.aggregate_json {
         let mut value: serde_json::Value = serde_json::from_str(&aggregate_json)?;
         // Collapse the former parallel activity state to its only independent
@@ -93,7 +96,12 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
                 .unwrap_or_default();
             value
                 .as_object_mut()
-                .expect("Session aggregate is an object")
+                .ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Session aggregate must be an object",
+                    ))
+                })?
                 .insert("activity_epoch".into(), serde_json::json!(epoch));
         }
         // One-way migration from the former nullable binding. The canonical
@@ -111,7 +119,12 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
             };
             value
                 .as_object_mut()
-                .expect("Session aggregate is an object")
+                .ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Session aggregate must be an object",
+                    ))
+                })?
                 .insert(
                     "environment".into(),
                     serde_json::to_value(environment)
@@ -145,7 +158,12 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
                 .collect();
             value
                 .as_object_mut()
-                .expect("Session aggregate is an object")
+                .ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Session aggregate must be an object",
+                    ))
+                })?
                 .insert(
                     "tools".into(),
                     serde_json::to_value(awaken_session_contract::SessionToolConfiguration {
@@ -257,7 +275,10 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         mcp,
         resources,
         realization: None,
-        status: row.status,
+        lifecycle: row
+            .status
+            .parse::<SessionLifecycleState>()
+            .map_err(|error| <serde_json::Error as serde::de::Error>::custom(error.to_string()))?,
         archived_at: row.archived_at,
     })
 }

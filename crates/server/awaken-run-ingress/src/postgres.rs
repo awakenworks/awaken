@@ -30,7 +30,8 @@ use crate::dispatch_schema::dispatch_bundle;
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, DispatchPlacement, LeaseLossReason, PlacementPolicy, WorkerAssignment,
-    WorkerSnapshot, can_assign, can_claim_locally, policy_selects_requester,
+    WorkerSnapshot, can_assign, can_claim_locally, durable_i64, durable_u64, next_claim_epoch,
+    policy_selects_requester,
 };
 use awaken_run_ingress_contract::RunDispatch;
 
@@ -476,13 +477,20 @@ impl DispatchQueue for PostgresDispatchStore {
             .fetch_optional(&mut *tx)
             .await
             .map_err(reject)?;
-        let request = current
-            .filter(|(epoch, owner, _, _)| {
-                (*epoch).max(0) as u64 == claim.epoch && owner.as_deref() == Some(&claim.owner)
-            })
-            .and_then(|(_, _, expires_ms, Json(request))| {
-                expires_ms.map(|expires_ms| (request, expires_ms.max(0) as u64))
-            });
+        let request = match current {
+            Some((epoch, owner, expires_ms, Json(request)))
+                if durable_u64("dispatch lease epoch", epoch)? == claim.epoch
+                    && owner.as_deref() == Some(&claim.owner) =>
+            {
+                expires_ms
+                    .map(|expires_ms| {
+                        durable_u64("dispatch lease expiry", expires_ms)
+                            .map(|expires_ms| (request, expires_ms))
+                    })
+                    .transpose()?
+            }
+            Some(_) | None => None,
+        };
         Ok(request.map(|(request, expires_ms)| CommitEpochGuard::new(tx, request, expires_ms)))
     }
 
@@ -604,6 +612,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 row.try_get("worker_assignment").map_err(reject)?;
             let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
             let lease_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
+            let next_epoch = next_claim_epoch(lease_epoch)?;
             if cancellation_requested != 0
                 || (can_assign(
                     worker,
@@ -613,11 +622,7 @@ impl DispatchQueue for PostgresDispatchStore {
                     now_ms,
                 )
                 .is_ok()
-                    && (lease_epoch.max(0) as u64)
-                        .checked_add(1)
-                        .is_some_and(|epoch| {
-                            can_admit_attempt_credentials(&request, &capabilities, epoch, now_ms)
-                        }))
+                    && can_admit_attempt_credentials(&request, &capabilities, next_epoch, now_ms))
             {
                 selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
                 break;
@@ -675,6 +680,7 @@ impl DispatchQueue for PostgresDispatchStore {
             let status: String = row.try_get("status").map_err(reject)?;
             let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
             let lease_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
+            let next_epoch = next_claim_epoch(lease_epoch)?;
             if cancellation_requested != 0
                 || (policy_selects_requester(
                     &request,
@@ -687,11 +693,12 @@ impl DispatchQueue for PostgresDispatchStore {
                         workers: &workers,
                         now_ms,
                     },
-                )? && (lease_epoch.max(0) as u64)
-                    .checked_add(1)
-                    .is_some_and(|epoch| {
-                        can_admit_attempt_credentials(&request, &capabilities, epoch, now_ms)
-                    }))
+                )? && can_admit_attempt_credentials(
+                    &request,
+                    &capabilities,
+                    next_epoch,
+                    now_ms,
+                ))
             {
                 selected = Some(RunId(row.try_get("run_id").map_err(reject)?));
                 break;
@@ -812,6 +819,7 @@ impl DispatchQueue for PostgresDispatchStore {
         sandbox_ref: &str,
     ) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
+        let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET sandbox = $1 WHERE run_id = $2 \
              AND status = 'running' AND lease_owner = $3 AND lease_epoch = $4"
@@ -819,7 +827,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(sandbox_ref)
         .bind(&claim.run_id.0)
         .bind(&claim.owner)
-        .bind(claim.epoch as i64)
+        .bind(claim_epoch)
         .execute(&self.pool)
         .await
         .map_err(reject)?;
@@ -836,6 +844,7 @@ impl DispatchQueue for PostgresDispatchStore {
         receipt: CredentialRealizationReceipt,
     ) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
+        let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let current = sqlx::query(&format!(
             "SELECT credential_bindings, credential_receipts FROM {p}_dispatch \
@@ -844,7 +853,7 @@ impl DispatchQueue for PostgresDispatchStore {
         ))
         .bind(&claim.run_id.0)
         .bind(&claim.owner)
-        .bind(claim.epoch as i64)
+        .bind(claim_epoch)
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
@@ -885,7 +894,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(Json(&receipts))
         .bind(&claim.run_id.0)
         .bind(&claim.owner)
-        .bind(claim.epoch as i64)
+        .bind(claim_epoch)
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
@@ -912,7 +921,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .fetch_one(&self.pool)
         .await
         .map_err(reject)?;
-        Ok(Some(depth as u64))
+        Ok(Some(durable_u64("runnable dispatch depth", depth)?))
     }
 
     async fn renew_owned_leases(
@@ -952,6 +961,7 @@ impl DispatchQueue for PostgresDispatchStore {
         consumed: &[String],
     ) -> Result<SettleOutcome, DispatchError> {
         let p = NS;
+        let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let owner = sqlx::query_scalar::<_, String>(&format!(
             "SELECT lease_owner FROM {p}_dispatch WHERE run_id = $1 \
@@ -959,7 +969,7 @@ impl DispatchQueue for PostgresDispatchStore {
              FOR UPDATE"
         ))
         .bind(&run_id.0)
-        .bind(epoch as i64)
+        .bind(epoch_i64)
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
@@ -982,7 +992,7 @@ impl DispatchQueue for PostgresDispatchStore {
                  AND status = 'running' AND lease_epoch = $2"
             ))
             .bind(&run_id.0)
-            .bind(epoch as i64)
+            .bind(epoch_i64)
             .execute(&mut *tx)
             .await
             .map_err(reject)?
@@ -993,7 +1003,7 @@ impl DispatchQueue for PostgresDispatchStore {
                  AND status = 'running' AND lease_epoch = $2"
             ))
             .bind(&run_id.0)
-            .bind(epoch as i64)
+            .bind(epoch_i64)
             .execute(&mut *tx)
             .await
             .map_err(reject)?
@@ -1083,6 +1093,7 @@ impl DispatchQueue for PostgresDispatchStore {
 
     async fn reap(&self, max_attempts: u64, now_ms: u64) -> Result<usize, DispatchError> {
         let p = NS;
+        let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let rows = sqlx::query(&format!(
             "WITH candidates AS ( \
@@ -1098,7 +1109,7 @@ impl DispatchQueue for PostgresDispatchStore {
                        candidates.lease_epoch, candidates.attempt_count"
         ))
         .bind(crate::clock::db_millis(now_ms))
-        .bind(max_attempts as i64)
+        .bind(max_attempts_i64)
         .fetch_all(&mut *tx)
         .await
         .map_err(reject)?;
@@ -1116,7 +1127,7 @@ impl DispatchQueue for PostgresDispatchStore {
             let claim = RunClaim {
                 run_id: RunId(row.try_get("run_id").map_err(reject)?),
                 owner,
-                epoch: epoch.max(0) as u64,
+                epoch: durable_u64("dispatch lease epoch", epoch)?,
             };
             insert_operation(
                 &mut tx,
@@ -1130,7 +1141,7 @@ impl DispatchQueue for PostgresDispatchStore {
                 &mut tx,
                 &DispatchOperation::DeadLettered {
                     claim,
-                    attempt_count: attempt_count.max(0) as u64,
+                    attempt_count: durable_u64("dispatch attempt count", attempt_count)?,
                 },
             )
             .await?;
@@ -1173,7 +1184,10 @@ impl DispatchQueue for PostgresDispatchStore {
                         .try_get::<i64, _>("cancel_requested")
                         .map_err(reject)?
                         != 0,
-                    attempt_count: row.try_get::<i64, _>("attempt_count").map_err(reject)? as u64,
+                    attempt_count: durable_u64(
+                        "dispatch attempt count",
+                        row.try_get::<i64, _>("attempt_count").map_err(reject)?,
+                    )?,
                     sandbox_bound: row
                         .try_get::<Option<String>, _>("sandbox")
                         .map_err(reject)?
@@ -1428,7 +1442,7 @@ impl Inbox for PostgresDispatchStore {
                         .map_err(|err| DispatchError::Rejected(err.to_string()))?,
                     result,
                 },
-                revision: revision as u64,
+                revision: durable_u64("pending input revision", revision)?,
             });
         }
         Ok(records)
@@ -1566,7 +1580,9 @@ async fn current_revision(
     .fetch_optional(&mut **tx)
     .await
     .map_err(reject)?;
-    Ok(revision.map(|r| r as u64))
+    revision
+        .map(|revision| durable_u64("pending input revision", revision))
+        .transpose()
 }
 
 async fn insert_operation(

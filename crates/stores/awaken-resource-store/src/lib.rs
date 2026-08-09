@@ -75,7 +75,7 @@ impl SqliteResourceStore {
     pub fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
         let connection = self.connection();
         let lifecycle =
-            schema::resource_lifecycle_bundle().map_err(|error| storage(error.to_string()))?;
+            schema::resource_reclamation_bundle().map_err(|error| storage(error.to_string()))?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(schema::NS)
             .map_err(|error| storage(error.to_string()))?
             .run_bundle(&connection, &lifecycle)
@@ -1011,7 +1011,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_records_the_scoped_resource_lifecycle_migration() {
+    fn sqlite_records_the_scoped_resource_reclamation_migration() {
         let store = SqliteResourceStore::in_memory().unwrap();
         let applied = store
             .connection()

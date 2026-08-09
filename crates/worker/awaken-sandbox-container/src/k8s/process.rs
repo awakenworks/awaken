@@ -161,6 +161,9 @@ impl pc::ProcessHandle for K8sExecProcess {
     }
 
     async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+        if self.poll().await?.is_some() {
+            return Ok(());
+        }
         let name = match signal {
             pc::Signal::Term => "TERM",
             pc::Signal::Kill => "KILL",
@@ -194,6 +197,8 @@ impl pc::ProcessHandle for K8sExecProcess {
         let (read, status) = tokio::join!(stdout.read_to_end(&mut ignored), status);
         read.map_err(|error| pc::SandboxError::new(error.to_string()))?;
         if k8s_exit_status(status).code == Some(0) {
+            Ok(())
+        } else if self.poll().await?.is_some() {
             Ok(())
         } else {
             Err(pc::SandboxError::new("k8s exec signal failed"))

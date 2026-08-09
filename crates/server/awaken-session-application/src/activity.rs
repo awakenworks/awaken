@@ -1,6 +1,6 @@
 //! Durable activity fencing for overlapping Session turns.
 
-use awaken_session_contract::PersistedSession;
+use awaken_session_contract::{PersistedSession, SessionLifecycleState};
 
 use super::{SessionApplication, SessionMutationError};
 
@@ -61,8 +61,10 @@ impl SessionApplication {
             // stronger realization phase until it converges: replacing it with
             // `running` would let a failed Stage look like an ordinary turn and
             // a later settlement could erase `activation_failed` back to idle.
-            if session.status == "idle" {
-                session.status = "running".into();
+            if session.lifecycle == SessionLifecycleState::Idle {
+                session
+                    .transition_lifecycle(SessionLifecycleState::Running)
+                    .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
             }
             match self
                 .commit_session_snapshot(&owner_scope, session, "begin-activity", Vec::new())
@@ -102,10 +104,12 @@ impl SessionApplication {
             // transition. Initial realization may still be preparing/activating,
             // or may have failed terminally on another process while this event
             // was queued; settlement must not overwrite either authority.
-            if session.status != "running" {
+            if session.lifecycle != SessionLifecycleState::Running {
                 return Ok(session);
             }
-            session.status = "idle".into();
+            session
+                .transition_lifecycle(SessionLifecycleState::Idle)
+                .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
             match self
                 .commit_session_snapshot(&owner_scope, session, "settle-activity", Vec::new())
                 .await

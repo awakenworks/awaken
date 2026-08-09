@@ -15,11 +15,11 @@ pub(super) struct SessionRecord {
     /// request finisher from projecting the same committed message twice.
     pub(super) projected_message_ids: HashSet<String>,
     /// Last committed Run lifecycle fact consumed by this disposable projection.
-    pub(super) projected_lifecycle_cursor: awaken_agent_contract::LifecycleCursor,
+    pub(super) projected_lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor,
     /// Exact committed lifecycle positions already lowered locally or from the
     /// feed. A Run may await and resume repeatedly, so Run id alone is not an
     /// idempotency key; each terminal transition owns a distinct cursor.
-    pub(super) projected_terminal_cursors: HashSet<awaken_agent_contract::LifecycleCursor>,
+    pub(super) projected_terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
     /// Subagent child threads spawned in this Session. Each is announced by a
     /// `session.thread_created` event and remains a projection of durable truth.
     pub(super) child_threads: Vec<SessionThread>,
@@ -30,14 +30,14 @@ impl SessionRecord {
     /// view to reverse the Session application's realization, recovery, or
     /// terminal transition. Runtime feeds may be consumed after any of those
     /// CASes, but they are not a second authority for Session lifecycle state.
-    pub(super) fn project_runtime_status(&mut self, status: &'static str) {
+    pub(super) fn project_runtime_status(&mut self, status: SessionStatus) {
         if Self::accepts_runtime_status(self.session.status) {
             self.session.status = status;
         }
     }
 
-    fn accepts_runtime_status(status: &str) -> bool {
-        matches!(status, "idle" | "running")
+    fn accepts_runtime_status(status: SessionStatus) -> bool {
+        matches!(status, SessionStatus::Idle | SessionStatus::Running)
     }
 
     /// IDs already lowered into tool-use events, plus the MCP subset needed to
@@ -112,22 +112,22 @@ mod tests {
         // | R1   | T  | F  | F  | T  | E1     |
         // | R2   | F  | T  | F  | T  | E2     |
         // | R3   | F  | F  | T  | T  | E2     |
-        for initial in ["idle", "running"] {
+        for initial in [SessionStatus::Idle, SessionStatus::Running] {
             assert!(
                 SessionRecord::accepts_runtime_status(initial),
-                "R1/{initial}"
+                "R1/{initial:?}"
             );
         }
         for initial in [
-            "preparing",
-            "activating",
-            "rescheduling",
-            "failed",
-            "terminated",
+            SessionStatus::Preparing,
+            SessionStatus::Activating,
+            SessionStatus::Rescheduling,
+            SessionStatus::Failed,
+            SessionStatus::Terminated,
         ] {
             assert!(
                 !SessionRecord::accepts_runtime_status(initial),
-                "R2-R3/{initial}"
+                "R2-R3/{initial:?}"
             );
         }
     }

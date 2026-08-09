@@ -272,20 +272,20 @@ impl SharedHost {
                 |plane| (plane.file_store(), plane.file_catalog()),
             )
         };
-        let resource_lifecycle = resources.as_ref().map(|plane| plane.lifecycle());
+        let resource_reclamation = resources.as_ref().map(|plane| plane.reclamation());
         #[cfg(test)]
-        let resource_lifecycle =
-            resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
+        let resource_reclamation =
+            resource_reclamation.or_else(|| Some(super::tests::test_resource_reclamation()));
         #[cfg(not(test))]
         let file_application: Option<
             Arc<dyn awaken_resource_contract::FileApplicationService>,
         > = None;
         #[cfg(test)]
-        let file_application = resource_lifecycle.as_ref().map(|lifecycle| {
+        let file_application = resource_reclamation.as_ref().map(|reclamation| {
             Arc::new(awaken_resource_application::FileApplication::new(
                 file_store.clone(),
                 file_catalog.clone(),
-                lifecycle.clone(),
+                reclamation.clone(),
             )) as Arc<dyn awaken_resource_contract::FileApplicationService>
         });
         let session_slots = crate::session_slot::SessionRuntimeSlots::default();
@@ -378,7 +378,7 @@ impl SharedHost {
             file_catalog,
             file_application,
             artifact_publisher,
-            resource_lifecycle,
+            resource_reclamation,
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
@@ -544,9 +544,9 @@ impl SharedHost {
     /// Test-support replacement of a volatile fixture's Resource lifecycle port.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub fn with_resource_lifecycle(
+    pub fn with_resource_reclamation(
         mut self,
-        repository: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
+        repository: Arc<dyn awaken_resource_contract::ResourceReclamationRepository>,
     ) -> Self {
         #[cfg(test)]
         {
@@ -564,7 +564,7 @@ impl SharedHost {
             );
             self.file_application = Some(application);
         }
-        self.resource_lifecycle = Some(repository);
+        self.resource_reclamation = Some(repository);
         self
     }
 
@@ -602,10 +602,10 @@ impl SharedHost {
         self
     }
 
-    pub fn resource_lifecycle(
+    pub fn resource_reclamation(
         &self,
-    ) -> Option<Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>> {
-        self.resource_lifecycle.clone()
+    ) -> Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>> {
+        self.resource_reclamation.clone()
     }
 
     pub(crate) fn register_thread_workspace(&self, thread: &str, workspace: &str) {

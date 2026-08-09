@@ -17,7 +17,7 @@ use sqlx::postgres::PgPool;
 use sqlx::{Postgres, Row, Transaction};
 use tokio::runtime::Handle;
 
-use crate::schema::{CATALOG_NS, NS, resource_catalog_bundle, resource_lifecycle_bundle};
+use crate::schema::{CATALOG_NS, NS, resource_catalog_bundle, resource_reclamation_bundle};
 use crate::{
     decode_intent, encode_intent, kind_name, parse_reference_kind, prepare_replacement,
     reference_kind_name, status_name, storage, to_i64, validate_fence_request, validate_reference,
@@ -50,7 +50,8 @@ impl PostgresResourceStore {
 
     /// Wrap a shared pool after verifying its externally-owned migration ledger.
     pub async fn with_existing_pool(pool: PgPool) -> Result<Self, ResourcePurgeError> {
-        let lifecycle = resource_lifecycle_bundle().map_err(|error| storage(error.to_string()))?;
+        let lifecycle =
+            resource_reclamation_bundle().map_err(|error| storage(error.to_string()))?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(|error| storage(error.to_string()))?
             .verify_bundle(&lifecycle)
@@ -79,7 +80,8 @@ impl PostgresResourceStore {
 
     /// Apply the namespaced migration bundle idempotently.
     pub async fn ensure_schema(&self) -> Result<(), ResourcePurgeError> {
-        let lifecycle = resource_lifecycle_bundle().map_err(|error| storage(error.to_string()))?;
+        let lifecycle =
+            resource_reclamation_bundle().map_err(|error| storage(error.to_string()))?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
             self.pool.clone(),
             NS,

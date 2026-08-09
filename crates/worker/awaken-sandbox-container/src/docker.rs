@@ -159,67 +159,74 @@ impl pc::ProcessHandle for DockerExecProcess {
         if self.status().await?.is_some() {
             return Ok(());
         }
-        let pid_file = self.pid_file.as_ref().ok_or_else(|| {
-            pc::SandboxError::new("legacy docker exec handle has no in-container pid reference")
-        })?;
-        let name = match signal {
-            pc::Signal::Term => "TERM",
-            pc::Signal::Kill => "KILL",
-            pc::Signal::Int => "INT",
-        };
-        let request = self
-            .docker
-            .create_exec(
-                &self.container_id,
-                CreateExecOptions {
-                    cmd: Some(vec![
-                        "sh".to_string(),
-                        "-c".to_string(),
-                        "pid=$(cat -- \"$1\") && kill -\"$2\" \"$pid\"".to_string(),
-                        "awaken-signal".to_string(),
-                        pid_file.clone(),
-                        name.to_string(),
-                    ]),
-                    attach_stdout: Some(true),
-                    attach_stderr: Some(true),
-                    ..Default::default()
-                },
-            )
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        let mut output = match self
-            .docker
-            .start_exec(
-                &request.id,
-                Some(StartExecOptions {
-                    ..Default::default()
-                }),
-            )
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?
-        {
-            StartExecResults::Attached { output, .. } => output,
-            StartExecResults::Detached => {
-                return Err(pc::SandboxError::new(
-                    "docker returned detached result for signal exec",
-                ));
+        let result = async {
+            let pid_file = self.pid_file.as_ref().ok_or_else(|| {
+                pc::SandboxError::new("legacy docker exec handle has no in-container pid reference")
+            })?;
+            let name = match signal {
+                pc::Signal::Term => "TERM",
+                pc::Signal::Kill => "KILL",
+                pc::Signal::Int => "INT",
+            };
+            let request = self
+                .docker
+                .create_exec(
+                    &self.container_id,
+                    CreateExecOptions {
+                        cmd: Some(vec![
+                            "sh".to_string(),
+                            "-c".to_string(),
+                            "pid=$(cat -- \"$1\") && kill -\"$2\" \"$pid\"".to_string(),
+                            "awaken-signal".to_string(),
+                            pid_file.clone(),
+                            name.to_string(),
+                        ]),
+                        attach_stdout: Some(true),
+                        attach_stderr: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            let mut output = match self
+                .docker
+                .start_exec(
+                    &request.id,
+                    Some(StartExecOptions {
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?
+            {
+                StartExecResults::Attached { output, .. } => output,
+                StartExecResults::Detached => {
+                    return Err(pc::SandboxError::new(
+                        "docker returned detached result for signal exec",
+                    ));
+                }
+            };
+            while let Some(frame) = output.next().await {
+                frame.map_err(|error| pc::SandboxError::new(error.to_string()))?;
             }
-        };
-        while let Some(frame) = output.next().await {
-            frame.map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            let state = self
+                .docker
+                .inspect_exec(&request.id)
+                .await
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            if state.exit_code == Some(0) {
+                Ok(())
+            } else {
+                Err(pc::SandboxError::new(format!(
+                    "docker exec signal failed with {:?}",
+                    state.exit_code
+                )))
+            }
         }
-        let state = self
-            .docker
-            .inspect_exec(&request.id)
-            .await
-            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        if state.exit_code == Some(0) {
-            Ok(())
-        } else {
-            Err(pc::SandboxError::new(format!(
-                "docker exec signal failed with {:?}",
-                state.exit_code
-            )))
+        .await;
+        match result {
+            Err(_) if self.status().await?.is_some() => Ok(()),
+            result => result,
         }
     }
 }

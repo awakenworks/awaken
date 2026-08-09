@@ -16,7 +16,7 @@ impl DreamSessionSource for crate::ManagedState {
         let mut sessions = self
             .list_sessions_scoped(workspace_id)
             .into_iter()
-            .filter(|session| session.status != "running")
+            .filter(|session| session.status != crate::types::SessionStatus::Running)
             .filter(|session| {
                 session
                     .metadata

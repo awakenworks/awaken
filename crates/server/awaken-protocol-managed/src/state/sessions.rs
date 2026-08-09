@@ -146,15 +146,17 @@ impl ManagedState {
         }
     }
 
-    pub(super) fn wire_session_status(status: &str) -> &'static str {
-        match status {
-            "preparing" => "preparing",
-            "activating" => "activating",
-            "activation_failed" => "failed",
-            "running" => "running",
-            "rescheduling" => "rescheduling",
-            "terminated" => "terminated",
-            _ => "idle",
+    pub(super) const fn wire_session_status(lifecycle: SessionLifecycleState) -> SessionStatus {
+        match lifecycle {
+            SessionLifecycleState::Preparing => SessionStatus::Preparing,
+            SessionLifecycleState::Activating => SessionStatus::Activating,
+            SessionLifecycleState::ActivationFailed => SessionStatus::Failed,
+            SessionLifecycleState::Running => SessionStatus::Running,
+            SessionLifecycleState::Rescheduling => SessionStatus::Rescheduling,
+            SessionLifecycleState::Idle => SessionStatus::Idle,
+            SessionLifecycleState::Terminated | SessionLifecycleState::Deleted => {
+                SessionStatus::Terminated
+            }
         }
     }
 
@@ -170,7 +172,7 @@ impl ManagedState {
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
             return Ok(());
         };
-        record.session.status = Self::wire_session_status(&persisted.status);
+        record.session.status = Self::wire_session_status(persisted.lifecycle);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
@@ -309,7 +311,7 @@ impl ManagedState {
             .await?;
         if !initial_events.is_empty() {
             self.start_initial_events(&session.id, initial_events)?;
-            session.status = "running";
+            session.status = SessionStatus::Running;
         }
         Ok(session)
     }
@@ -702,7 +704,7 @@ impl ManagedState {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            status: "preparing".to_string(),
+            lifecycle: SessionLifecycleState::Preparing,
             archived_at: None,
         };
         // The activation intent and owner fence commit before Host/worker IO.
@@ -793,7 +795,7 @@ impl ManagedState {
             // A registered-Worker placement remains preparing until its claimed
             // realization acknowledges the exact frozen projection; hardcoding
             // non-Application creation to idle created a second, unsafe status.
-            status: Self::wire_session_status(&persisted.status),
+            status: Self::wire_session_status(persisted.lifecycle),
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
@@ -962,7 +964,7 @@ impl ManagedState {
                     p.metadata,
                     project::managed_tools(&p.tools),
                     mcp_servers,
-                    Self::wire_session_status(&p.status),
+                    Self::wire_session_status(p.lifecycle),
                     p.archived_at,
                 )
             }
@@ -974,7 +976,7 @@ impl ManagedState {
                 Default::default(),
                 default_tools,
                 Vec::new(),
-                "idle",
+                SessionStatus::Idle,
                 None,
             ),
         };
@@ -1024,7 +1026,12 @@ impl ManagedState {
             .session_repository()
             .get(id)
             .await
-            .filter(|session| !matches!(session.status.as_str(), "deleted" | "activation_failed"))
+            .filter(|session| {
+                !matches!(
+                    session.lifecycle,
+                    SessionLifecycleState::Deleted | SessionLifecycleState::ActivationFailed
+                )
+            })
             .ok_or(StateError::NotFound)?;
         let owner_scope = self
             .application

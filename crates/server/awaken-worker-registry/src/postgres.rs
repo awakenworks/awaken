@@ -6,6 +6,7 @@ use awaken_worker_contract::{
 use sqlx::PgConnection;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
+use crate::durable_i64;
 use crate::schema::{NS, registry_bundle};
 use crate::transition;
 
@@ -104,6 +105,8 @@ impl PostgresWorkerDirectory {
         conn: &mut PgConnection,
         record: &RegisteredWorker,
     ) -> Result<(), RegistryError> {
+        let generation = durable_i64("generation", record.snapshot.identity.generation)?;
+        let expires_at_ms = durable_i64("expires_at_ms", record.snapshot.expires_at_ms)?;
         sqlx::query(
             "INSERT INTO worker_registry_worker \
                 (worker_id, incarnation_id, generation, state, expires_at_ms, record_json) \
@@ -115,9 +118,9 @@ impl PostgresWorkerDirectory {
         )
         .bind(&record.snapshot.identity.worker_id)
         .bind(&record.snapshot.identity.incarnation_id)
-        .bind(record.snapshot.identity.generation as i64)
+        .bind(generation)
         .bind(transition::state_name(record.snapshot.state))
-        .bind(record.snapshot.expires_at_ms as i64)
+        .bind(expires_at_ms)
         .bind(serde_json::to_string(record).map_err(persist)?)
         .execute(conn)
         .await
@@ -248,13 +251,14 @@ impl WorkerDirectory for PostgresWorkerDirectory {
     }
 
     async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
+        let durable_now_ms = durable_i64("now_ms", now_ms)?;
         let mut tx = self.pool.begin().await.map_err(persist)?;
         let encoded: Vec<String> = sqlx::query_scalar(
             "SELECT record_json FROM worker_registry_worker \
              WHERE state IN ('starting', 'ready', 'draining') AND expires_at_ms <= $1 \
              FOR UPDATE SKIP LOCKED",
         )
-        .bind(now_ms as i64)
+        .bind(durable_now_ms)
         .fetch_all(&mut *tx)
         .await
         .map_err(persist)?;

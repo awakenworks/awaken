@@ -1345,7 +1345,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             live_input_projection: self.runtime.supports_live_input_projection(),
             realized,
             recovered: false,
-            lifecycle: Arc::new(ContainerLifecycle {
+            lifecycle: Arc::new(ContainerCleanupState {
                 staging: std::sync::Mutex::new(staging.guard),
                 secret_writebacks: staging.secret_writebacks,
                 secret_broker,
@@ -1387,7 +1387,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .unwrap_or(false),
             realized: Vec::new(),
             recovered: true,
-            lifecycle: Arc::new(ContainerLifecycle::completed(
+            lifecycle: Arc::new(ContainerCleanupState::completed(
                 self.secret_broker
                     .read()
                     .expect("container secret broker lock poisoned")
@@ -1529,7 +1529,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// Host staging dir for materialized inline-mount content, held for the container's
     /// lifetime and removed on drop (after the container is gone). `None` when the run
     /// staged nothing.
-    lifecycle: Arc<ContainerLifecycle>,
+    lifecycle: Arc<ContainerCleanupState>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
@@ -1706,7 +1706,7 @@ pub trait ContainerEnvironmentCapacity: Send + Sync {
     async fn shutdown_capacity(&self);
 }
 
-struct ContainerLifecycle {
+struct ContainerCleanupState {
     staging: std::sync::Mutex<Option<StagingGuard>>,
     secret_writebacks: Vec<SecretWriteback>,
     secret_broker: Option<Arc<dyn pc::SecretBroker>>,
@@ -1715,7 +1715,7 @@ struct ContainerLifecycle {
     remove_done: tokio::sync::Mutex<bool>,
 }
 
-impl ContainerLifecycle {
+impl ContainerCleanupState {
     fn completed(secret_broker: Option<Arc<dyn pc::SecretBroker>>) -> Self {
         Self {
             staging: std::sync::Mutex::new(None),

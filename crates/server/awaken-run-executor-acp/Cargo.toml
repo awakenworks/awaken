@@ -22,6 +22,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "time", "process", "io-util"] }
+tracing = "0.1"
 
 [features]
 # Speak the official agent-client-protocol JSON-RPC wire to a real CLI (the

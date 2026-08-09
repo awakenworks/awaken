@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
-    SessionMutationPayload,
+    SessionLifecycleState, SessionMutationPayload,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -62,7 +62,7 @@ fn session() -> PersistedSession {
         mcp: Default::default(),
         resources: Default::default(),
         realization: None,
-        status: "idle".into(),
+        lifecycle: SessionLifecycleState::Idle,
         archived_at: None,
     }
 }

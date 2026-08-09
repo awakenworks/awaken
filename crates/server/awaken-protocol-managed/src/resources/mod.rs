@@ -56,7 +56,7 @@ mod tests {
                 file_catalog: files,
                 memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
                 skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-                lifecycle: catalog,
+                reclamation: catalog,
             }),
         );
         let ports = application.ports();

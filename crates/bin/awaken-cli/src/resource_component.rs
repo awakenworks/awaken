@@ -65,7 +65,7 @@ pub(super) async fn open_resource_component(
                     file_catalog: files,
                     memory_repository: Arc::new(memory),
                     skill_store: Arc::new(skills),
-                    lifecycle: resources,
+                    reclamation: resources,
                 },
             ))
         }
@@ -90,7 +90,7 @@ mod tests {
             let _ = component.file_catalog();
             let _ = component.memory_repository();
             let _ = component.skill_store();
-            let _ = component.lifecycle();
+            let _ = component.reclamation();
         };
         assert_complete(&ephemeral_resource_component());
 

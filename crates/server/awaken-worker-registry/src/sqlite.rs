@@ -8,6 +8,7 @@ use awaken_worker_contract::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
+use crate::durable_i64;
 use crate::schema::{NS, registry_bundle};
 use crate::transition;
 
@@ -54,6 +55,8 @@ impl SqliteWorkerDirectory {
     }
 
     fn write(tx: &Transaction<'_>, record: &RegisteredWorker) -> Result<(), RegistryError> {
+        let generation = durable_i64("generation", record.snapshot.identity.generation)?;
+        let expires_at_ms = durable_i64("expires_at_ms", record.snapshot.expires_at_ms)?;
         tx.execute(
             "INSERT INTO worker_registry_worker \
                 (worker_id, incarnation_id, generation, state, expires_at_ms, record_json) \
@@ -65,9 +68,9 @@ impl SqliteWorkerDirectory {
             params![
                 record.snapshot.identity.worker_id,
                 record.snapshot.identity.incarnation_id,
-                record.snapshot.identity.generation,
+                generation,
                 transition::state_name(record.snapshot.state),
-                record.snapshot.expires_at_ms,
+                expires_at_ms,
                 serde_json::to_string(record).map_err(persist)?,
             ],
         )
@@ -196,6 +199,7 @@ impl WorkerDirectory for SqliteWorkerDirectory {
     }
 
     async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
+        let durable_now_ms = durable_i64("now_ms", now_ms)?;
         let mut conn = self
             .conn
             .lock()
@@ -211,7 +215,7 @@ impl WorkerDirectory for SqliteWorkerDirectory {
                 )
                 .map_err(persist)?;
             let rows = stmt
-                .query_map(params![now_ms], |row| row.get::<_, String>(0))
+                .query_map(params![durable_now_ms], |row| row.get::<_, String>(0))
                 .map_err(persist)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(persist)?
         };

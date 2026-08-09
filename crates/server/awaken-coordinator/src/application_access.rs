@@ -92,8 +92,17 @@ async fn create(
         if owner.as_deref() != Some(workspace_id.as_str()) {
             return problem(StatusCode::NOT_FOUND, "bound Managed Session not found");
         }
-        let Some(session) = state.sessions.get(&requested.managed_session_id).await else {
-            return problem(StatusCode::NOT_FOUND, "bound Managed Session not found");
+        let session = match state.sessions.try_get(&requested.managed_session_id).await {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                return problem(StatusCode::NOT_FOUND, "bound Managed Session not found");
+            }
+            Err(error) => {
+                return problem(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("Managed Session repository unavailable: {error}"),
+                );
+            }
         };
         let Some(agent_id) = session.agent_id() else {
             return problem(
@@ -369,7 +378,7 @@ mod tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            status: status.into(),
+            lifecycle: status.parse().expect("fixture lifecycle state"),
             archived_at: None,
         }
     }

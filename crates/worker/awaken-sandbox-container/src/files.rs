@@ -249,7 +249,7 @@ mod tests {
             live_input_projection: false,
             realized: Vec::new(),
             recovered: false,
-            lifecycle: Arc::new(crate::ContainerLifecycle::completed(None)),
+            lifecycle: Arc::new(crate::ContainerCleanupState::completed(None)),
         }
     }
 

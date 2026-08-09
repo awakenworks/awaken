@@ -375,7 +375,7 @@ fn session_matches(session: &Session, params: &SessionListParams) -> bool {
     }) {
         return false;
     }
-    if !params.statuses.is_empty() && !params.statuses.contains(session.status) {
+    if !params.statuses.is_empty() && !params.statuses.contains(session.status.as_str()) {
         return false;
     }
     let Ok(created) = chrono::DateTime::parse_from_rfc3339(&session.created_at) else {

@@ -39,8 +39,8 @@ pub use thread::commit::run_fact::RunFact;
 pub use thread::commit::staged::ThreadCommit;
 pub use thread::read::checkpoint::{CheckpointReader, EventScope};
 pub use thread::read::lifecycle::{
-    CheckpointRunLifecycleFeed, LifecycleCursor, LifecyclePage, RunLifecycleEvent,
-    RunLifecycleFeed, RunLifecycleFeedError, RunLifecycleKind, classify_run_lifecycle,
+    CheckpointRunLifecycleFeed, RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind,
+    RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage, classify_run_lifecycle_event,
 };
 pub use thread::read::transcript::{
     TranscriptError, TranscriptRange, TranscriptSlice, TranscriptSliceSpec, TranscriptSnapshot,

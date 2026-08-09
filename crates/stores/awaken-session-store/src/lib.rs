@@ -16,6 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+#[cfg(test)]
+use awaken_session_contract::SessionLifecycleState;
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
     ScopedPersistedSession, SessionMutation, SessionMutationPayload, SessionMutationResult,
@@ -371,26 +373,29 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     }
 
     async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
-        let conn = self.conn.lock().expect("session store mutex poisoned");
-        let result = (|| -> Result<Vec<_>, SessionRepositoryError> {
-            let mut statement = conn
-                .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
-                .map_err(storage)?;
-            let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(storage)?;
-            rows.map(|row| {
-                let encoded = row.map_err(storage)?;
-                decode_lifecycle(&encoded).map_err(storage)
-            })
-            .collect()
-        })();
-        result.unwrap_or_else(|error| {
+        self.try_pending_lifecycle().await.unwrap_or_else(|error| {
             // An unavailable/corrupt outbox is not equivalent to acknowledged
             // delivery. Preserve every row and let the periodic owner retry.
             tracing::warn!(%error, "Session lifecycle outbox scan remains pending");
             Vec::new()
         })
+    }
+
+    async fn try_pending_lifecycle(
+        &self,
+    ) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        let mut statement = conn
+            .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
+            .map_err(storage)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(storage)?;
+        rows.map(|row| {
+            let encoded = row.map_err(storage)?;
+            decode_lifecycle(&encoded).map_err(storage)
+        })
+        .collect()
     }
 
     async fn complete_lifecycle(&self, fact_id: &str) {
@@ -405,7 +410,17 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     }
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
-        let conn = self.conn.lock().expect("session store mutex poisoned");
+        self.try_get(session_id).await.unwrap_or_else(|error| {
+            tracing::warn!(%error, session_id, "Session read failed closed");
+            None
+        })
+    }
+
+    async fn try_get(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
+        let conn = self.conn.lock().map_err(storage)?;
         let raw = conn
             .query_row(
                 "SELECT aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
@@ -429,7 +444,10 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 },
             )
             .optional()
-            .expect("read managed session")?;
+            .map_err(storage)?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
         let (
             aggregate_json,
             agent_id,
@@ -444,29 +462,39 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             runtime_json,
             revision,
         ) = raw;
-        Some(
-            decode(EncodedSessionRow {
-                aggregate_json,
-                session_id: session_id.to_string(),
-                agent_id,
-                model,
-                title,
-                metadata_json,
-                environment_id,
-                effective_inputs_json,
-                environment_binding,
-                runtime_json,
-                status,
-                archived_at,
-                revision,
-            })
-            .expect("decode managed session"),
-        )
+        decode(EncodedSessionRow {
+            aggregate_json,
+            session_id: session_id.to_string(),
+            agent_id,
+            model,
+            title,
+            metadata_json,
+            environment_id,
+            effective_inputs_json,
+            environment_binding,
+            runtime_json,
+            status,
+            archived_at,
+            revision,
+        })
+        .map(Some)
+        .map_err(storage)
     }
 
     async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
-        let conn = self.conn.lock().expect("session store mutex poisoned");
-        let result = (|| -> Result<Vec<_>, SessionRepositoryError> {
+        self.try_reconcilable_sessions()
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "Session reconciliation scan remains pending");
+                Vec::new()
+            })
+    }
+
+    async fn try_reconcilable_sessions(
+        &self,
+    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        (|| -> Result<Vec<_>, SessionRepositoryError> {
             let mut statement = conn.prepare(
                 "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
                  FROM managed_session ORDER BY session_id",
@@ -501,15 +529,13 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 })
             })
             .collect::<Result<Vec<_>, SessionRepositoryError>>()
-        })();
-        result
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "Session reconciliation scan remains pending");
-                Vec::new()
-            })
-            .into_iter()
-            .filter(|record| record.session.needs_reconciliation())
-            .collect()
+        })()
+        .map(|records| {
+            records
+                .into_iter()
+                .filter(|record| record.session.needs_reconciliation())
+                .collect()
+        })
     }
 
     async fn idempotency_receipt(
@@ -847,30 +873,27 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     }
 
     async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
-        let rows = match sqlx::query(
-            "SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        {
-            Ok(rows) => rows,
-            Err(error) => {
-                tracing::warn!(%error, "Session lifecycle outbox scan remains pending");
-                return Vec::new();
-            }
-        };
-        let decoded = rows
-            .into_iter()
+        self.try_pending_lifecycle().await.unwrap_or_else(|error| {
+            tracing::warn!(%error, "Session lifecycle outbox scan remains pending");
+            Vec::new()
+        })
+    }
+
+    async fn try_pending_lifecycle(
+        &self,
+    ) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
+        let rows =
+            sqlx::query("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(storage)?;
+        rows.into_iter()
             .map(|row| {
                 row.try_get::<String, _>("data")
                     .map_err(storage)
                     .and_then(|data| decode_lifecycle(&data).map_err(storage))
             })
-            .collect::<Result<Vec<_>, SessionRepositoryError>>();
-        decoded.unwrap_or_else(|error| {
-            tracing::warn!(%error, "Session lifecycle outbox scan remains pending");
-            Vec::new()
-        })
+            .collect()
     }
 
     async fn complete_lifecycle(&self, fact_id: &str) {
@@ -882,6 +905,16 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     }
 
     async fn get(&self, session_id: &str) -> Option<PersistedSession> {
+        self.try_get(session_id).await.unwrap_or_else(|error| {
+            tracing::warn!(%error, session_id, "Session read failed closed");
+            None
+        })
+    }
+
+    async fn try_get(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
         let row = sqlx::query(
             "SELECT aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
              FROM managed_session WHERE session_id = $1",
@@ -889,45 +922,52 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await
-        .expect("read managed session")?;
-        let metadata_json: String = row.get("metadata_json");
-        let effective_inputs_json: String = row.get("effective_inputs_json");
-        Some(
-            decode(EncodedSessionRow {
-                aggregate_json: row.get("aggregate_json"),
-                session_id: session_id.to_string(),
-                agent_id: row.get("agent_id"),
-                model: row.get("model"),
-                title: row.get("title"),
-                metadata_json,
-                environment_id: row.get("environment_id"),
-                effective_inputs_json,
-                environment_binding: row.get("environment_binding"),
-                runtime_json: row.get("runtime_json"),
-                status: row.get("status"),
-                archived_at: row.get("archived_at"),
-                revision: row.get("revision"),
-            })
-            .expect("decode managed session"),
-        )
+        .map_err(storage)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let metadata_json: String = row.try_get("metadata_json").map_err(storage)?;
+        let effective_inputs_json: String =
+            row.try_get("effective_inputs_json").map_err(storage)?;
+        decode(EncodedSessionRow {
+            aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+            session_id: session_id.to_string(),
+            agent_id: row.try_get("agent_id").map_err(storage)?,
+            model: row.try_get("model").map_err(storage)?,
+            title: row.try_get("title").map_err(storage)?,
+            metadata_json,
+            environment_id: row.try_get("environment_id").map_err(storage)?,
+            effective_inputs_json,
+            environment_binding: row.try_get("environment_binding").map_err(storage)?,
+            runtime_json: row.try_get("runtime_json").map_err(storage)?,
+            status: row.try_get("status").map_err(storage)?,
+            archived_at: row.try_get("archived_at").map_err(storage)?,
+            revision: row.try_get("revision").map_err(storage)?,
+        })
+        .map(Some)
+        .map_err(storage)
     }
 
     async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
-        let rows = match sqlx::query(
+        self.try_reconcilable_sessions()
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "Session reconciliation scan remains pending");
+                Vec::new()
+            })
+    }
+
+    async fn try_reconcilable_sessions(
+        &self,
+    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError> {
+        let rows = sqlx::query(
             "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
              FROM managed_session ORDER BY session_id",
         )
         .fetch_all(&self.pool)
         .await
-        {
-            Ok(rows) => rows,
-            Err(error) => {
-                tracing::warn!(%error, "Session reconciliation scan remains pending");
-                return Vec::new();
-            }
-        };
-        let decoded = rows
-            .into_iter()
+        .map_err(storage)?;
+        rows.into_iter()
             .map(|row| {
                 let encoded = EncodedSessionRow {
                     aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
@@ -949,15 +989,13 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                     session: decode(encoded).map_err(storage)?,
                 })
             })
-            .collect::<Result<Vec<_>, SessionRepositoryError>>();
-        decoded
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "Session reconciliation scan remains pending");
-                Vec::new()
+            .collect::<Result<Vec<_>, SessionRepositoryError>>()
+            .map(|records| {
+                records
+                    .into_iter()
+                    .filter(|record| record.session.needs_reconciliation())
+                    .collect()
             })
-            .into_iter()
-            .filter(|record| record.session.needs_reconciliation())
-            .collect()
     }
 
     async fn idempotency_receipt(
@@ -1023,9 +1061,9 @@ mod tests {
     async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         /* FMECA cause/effect decision table. Causes: C1 the Postgres authority
          * is unavailable; C2 a durable lifecycle row cannot decode; C3 a
-         * durable Session aggregate cannot decode. Effects: E1 return no work
-         * for this tick; E2 preserve durable rows for a later/operator-assisted
-         * retry; E3 do not panic the periodic supervisor task. Rules: healthy
+         * durable Session aggregate cannot decode. Effects: E1 expose a typed
+         * scan error; E2 preserve durable rows for a later/operator-assisted
+         * retry; E3 compatibility wrappers do not panic. Rules: healthy
          * scans are covered by repository conformance; R1 C1=>E1+E3; R2
          * C2=>E1+E2+E3; R3 C3=>E1+E2+E3. Partial results are forbidden because
          * they would make a corrupt/unavailable authority look complete. */
@@ -1038,6 +1076,14 @@ mod tests {
             handle: tokio::runtime::Handle::current(),
         };
         postgres.pool.close().await;
+        assert!(
+            postgres.try_pending_lifecycle().await.is_err(),
+            "R1 typed outbox"
+        );
+        assert!(
+            postgres.try_reconcilable_sessions().await.is_err(),
+            "R1 typed reconciliation"
+        );
         assert!(postgres.pending_lifecycle().await.is_empty(), "R1 outbox");
         assert!(
             postgres.reconcilable_sessions().await.is_empty(),
@@ -1057,6 +1103,10 @@ mod tests {
                 params!["corrupt", "{"],
             )
             .unwrap();
+        assert!(
+            sqlite.try_pending_lifecycle().await.is_err(),
+            "R2 typed error"
+        );
         assert!(sqlite.pending_lifecycle().await.is_empty(), "R2");
 
         create_fixture(&sqlite, "workspace", sample("sesn_corrupt"), Vec::new()).await;
@@ -1069,6 +1119,10 @@ mod tests {
                 params!["{", "sesn_corrupt"],
             )
             .unwrap();
+        assert!(
+            sqlite.try_reconcilable_sessions().await.is_err(),
+            "R3 typed error"
+        );
         assert!(sqlite.reconcilable_sessions().await.is_empty(), "R3");
     }
 
@@ -1191,7 +1245,7 @@ mod tests {
                 .unwrap(),
             ),
             realization: None,
-            status: "idle".into(),
+            lifecycle: SessionLifecycleState::Idle,
             archived_at: None,
         }
     }
@@ -1597,7 +1651,7 @@ mod tests {
         repo.complete_lifecycle("created").await;
 
         let mut terminal = repo.get("sesn_terminal").await.unwrap();
-        terminal.status = "terminated".into();
+        terminal.lifecycle = SessionLifecycleState::Terminated;
         terminal.archived_at = Some("2026-01-01T00:00:00Z".into());
         replace_fixture(
             &repo,
@@ -1612,7 +1666,7 @@ mod tests {
         )
         .await;
         let archived = repo.get("sesn_terminal").await.unwrap();
-        assert_eq!(archived.status, "terminated");
+        assert_eq!(archived.lifecycle, SessionLifecycleState::Terminated);
         assert_eq!(
             archived.archived_at.as_deref(),
             Some("2026-01-01T00:00:00Z")
@@ -1733,7 +1787,6 @@ mod tests {
     /// | P3 | F | T | T | legacy migration |
     /// | P4 | F | F | F | fail closed |
     #[tokio::test]
-    #[should_panic(expected = "decode managed session")]
     async fn corrupt_canonical_aggregate_fails_closed() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
         create_fixture(&repo, "default", sample("sesn_1"), Vec::new()).await;
@@ -1746,7 +1799,11 @@ mod tests {
             )
             .unwrap();
         }
-        let _ = repo.get("sesn_1").await;
+        let error = repo
+            .try_get("sesn_1")
+            .await
+            .expect_err("corrupt canonical authority must be distinguishable from absence");
+        assert!(matches!(error, SessionRepositoryError::Storage(_)));
     }
 
     #[tokio::test]
@@ -1804,7 +1861,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "decode managed session")]
     async fn corrupt_selected_legacy_payload_fails_closed() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
         repo.conn
@@ -1819,7 +1875,11 @@ mod tests {
                 params!["legacy-corrupt", "{bad"],
             )
             .unwrap();
-        let _ = repo.get("legacy-corrupt").await;
+        let error = repo
+            .try_get("legacy-corrupt")
+            .await
+            .expect_err("corrupt legacy authority must be distinguishable from absence");
+        assert!(matches!(error, SessionRepositoryError::Storage(_)));
     }
 
     /// Live Postgres round-trip, isolated in its own schema. Skips when no Postgres
@@ -1889,7 +1949,7 @@ mod tests {
         );
         repo.complete_lifecycle("session:sesn_pg_tx:created").await;
         let mut terminal = repo.get("sesn_pg_tx").await.unwrap();
-        terminal.status = "terminated".into();
+        terminal.lifecycle = SessionLifecycleState::Terminated;
         terminal.archived_at = Some("2026-07-19T00:00:00Z".into());
         replace_fixture(
             &repo,
@@ -1903,7 +1963,10 @@ mod tests {
             )],
         )
         .await;
-        assert_eq!(repo.get("sesn_pg_tx").await.unwrap().status, "terminated");
+        assert_eq!(
+            repo.get("sesn_pg_tx").await.unwrap().lifecycle,
+            SessionLifecycleState::Terminated
+        );
         assert_eq!(
             repo.pending_lifecycle().await[0].id,
             "session:sesn_pg_tx:terminated"

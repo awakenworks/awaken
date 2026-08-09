@@ -35,7 +35,10 @@ impl ManagedState {
         // Terminated Sessions remain readable tombstones; deleted and failed
         // activation rows are hidden from the public read model.
         if persisted.as_ref().is_some_and(|session| {
-            matches!(session.status.as_str(), "deleted" | "activation_failed")
+            matches!(
+                session.lifecycle,
+                SessionLifecycleState::Deleted | SessionLifecycleState::ActivationFailed
+            )
         }) {
             return Err(StateError::NotFound);
         }

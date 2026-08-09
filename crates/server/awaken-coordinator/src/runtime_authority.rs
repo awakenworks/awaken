@@ -21,7 +21,7 @@ use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitRe
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::CheckpointReader;
 use awaken_agent_contract::thread::read::lifecycle::{
-    LifecycleCursor, LifecyclePage, RunLifecycleFeed, RunLifecycleFeedError,
+    RunLifecycleCursor, RunLifecycleFeed, RunLifecycleFeedError, RunLifecyclePage,
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource,
@@ -362,9 +362,9 @@ impl LocalCommit for SqliteCommit {
     }
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         RunLifecycleFeed::events_after(&self.0, cursor, limit).await
     }
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {
@@ -426,9 +426,9 @@ impl LocalCommit for PostgresCommit {
     }
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         RunLifecycleFeed::events_after(self.0.as_ref(), cursor, limit).await
     }
     async fn commit(&self, commit: ThreadCommit) -> Result<CommitRecord, Error> {

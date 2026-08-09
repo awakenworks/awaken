@@ -9,7 +9,7 @@ use awaken_session_application::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_contract::ManagedSessionRepository;
-use awaken_session_contract::SessionLifecycleSink;
+use awaken_session_contract::SessionLifecycleFactSink;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -96,7 +96,7 @@ impl ManagedState {
     /// Wire a projection sink (a webhook dispatcher) so committed session lifecycle
     /// facts fan out to workspace-scoped subscribers (ADR-0048). Default: none.
     #[must_use]
-    pub fn with_lifecycle_sink(mut self, sink: Arc<dyn SessionLifecycleSink>) -> Self {
+    pub fn with_lifecycle_sink(mut self, sink: Arc<dyn SessionLifecycleFactSink>) -> Self {
         self.application_mut().set_lifecycle_sink(sink);
         self
     }

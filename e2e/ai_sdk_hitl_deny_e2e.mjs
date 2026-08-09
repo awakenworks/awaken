@@ -31,11 +31,18 @@ async function settle(chat, effect) {
 
 async function main() {
   await withRealServer('probe', 38147, async (base) => {
+    const rawResponses = [];
+    const transport = new DefaultChatTransport({
+      api: `${base}/v1/ai-sdk/threads/${THREAD}/runs`,
+      fetch: async (...args) => {
+        const response = await fetch(...args);
+        rawResponses.push(response.clone().text());
+        return response;
+      },
+    });
     const chat = new Chat({
       id: THREAD,
-      transport: new DefaultChatTransport({
-        api: `${base}/v1/ai-sdk/threads/${THREAD}/runs`,
-      }),
+      transport,
       sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     });
     await chat.sendMessage({ text: NOTE });
@@ -49,7 +56,11 @@ async function main() {
     // | yes         | deny              | blocked     | `done`          | (R2)
     // R1 (allow -> write -> done) is owned by ai_sdk_e2e.mjs.
     assert.ok(toolPart, `expected an awaiting tool part: ${JSON.stringify(chat.lastMessage?.parts)}`);
-    assert.equal(toolPart.state, 'approval-requested', 'the write must await explicit permission');
+    assert.equal(
+      toolPart.state,
+      'approval-requested',
+      `the write must await explicit permission: parts=${JSON.stringify(chat.lastMessage?.parts)} wire=${await rawResponses[0]}`,
+    );
     assert.ok(toolPart.approval?.id, 'the approval request carries a stable id');
 
     await chat.addToolApprovalResponse({

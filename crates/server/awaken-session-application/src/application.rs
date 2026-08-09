@@ -56,7 +56,7 @@ pub struct SessionApplication {
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     sessions_repo: Arc<dyn ManagedSessionRepository>,
-    lifecycle_sink: Option<Arc<dyn SessionLifecycleSink>>,
+    lifecycle_sink: Option<Arc<dyn SessionLifecycleFactSink>>,
     local_realization_owner: String,
     runtime_incarnation: String,
     lifecycle_supervisor_started: AtomicBool,
@@ -202,7 +202,7 @@ impl SessionApplication {
     }
 
     #[must_use]
-    pub fn lifecycle_sink(&self) -> Option<&dyn SessionLifecycleSink> {
+    pub fn lifecycle_sink(&self) -> Option<&dyn SessionLifecycleFactSink> {
         self.lifecycle_sink.as_deref()
     }
 
@@ -318,7 +318,7 @@ impl SessionApplication {
         self.environments = source;
     }
 
-    pub fn set_lifecycle_sink(&mut self, sink: Arc<dyn SessionLifecycleSink>) {
+    pub fn set_lifecycle_sink(&mut self, sink: Arc<dyn SessionLifecycleFactSink>) {
         self.lifecycle_sink = Some(sink);
     }
 
@@ -408,7 +408,18 @@ async fn reconcile_work_dispatches(
     environments: &dyn SessionEnvironmentSource,
 ) -> WorkDispatchReconciliation {
     let mut report = WorkDispatchReconciliation::default();
-    for scoped in sessions.reconcilable_sessions().await {
+    let sessions = match sessions.try_reconcilable_sessions().await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            report.failures.push(WorkDispatchFailure {
+                session_id: "<repository>".to_string(),
+                environment_id: String::new(),
+                message: error.to_string(),
+            });
+            return report;
+        }
+    };
+    for scoped in sessions {
         let session = scoped.session;
         match dispatch_session_work(environments, &session).await {
             Ok(true) => report.settled += 1,
@@ -456,9 +467,14 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
             let owner = self.repo.owner(session_id).await.ok_or_else(|| {
                 RunError::internal(format!("Session `{session_id}` is not durable"))
             })?;
-            let mut session = self.repo.get(session_id).await.ok_or_else(|| {
-                RunError::internal(format!("Session `{session_id}` is not durable"))
-            })?;
+            let mut session = self
+                .repo
+                .try_get(session_id)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?
+                .ok_or_else(|| {
+                    RunError::internal(format!("Session `{session_id}` is not durable"))
+                })?;
             // An exact replay has no side effect to fence. This is required when a
             // claimed Run adopts an already-durable environment after its original
             // realization owner crashed. Any attempt to change the binding still

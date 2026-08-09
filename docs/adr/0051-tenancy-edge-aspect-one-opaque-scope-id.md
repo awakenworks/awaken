@@ -58,7 +58,7 @@ A review of the tenancy integration found it half-wired and internally doubled:
   the `workspace_id`/`org_id` columns on `PersistedSession`. This is the right
   principle for *processing* but left the isolation *mechanism* unstated — as
   written, "no tenancy column" reads as "no data isolation," which cannot be the
-  intent. The always-`None` `org_id` fed to `SessionLifecycleSink::emit`
+  intent. The always-`None` `org_id` fed to `SessionLifecycleFactSink::emit`
   (`state.rs:911`) is the visible residue of that gap.
 
 The organizing insight (ADR-0043's twin): **tenancy is a cross-cutting edge aspect,

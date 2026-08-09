@@ -32,6 +32,21 @@ if [[ ${1:-} == --self-test ]]; then
     echo "sandbox image build deadline self-test: expected 124, got $timeout_status" >&2
     exit 1
   }
+  descendant_pid_file=$(mktemp "${TMPDIR:-/tmp}/awaken-deadline-descendant.XXXXXX")
+  timeout_status=0
+  AWAKEN_DEADLINE_DESCENDANT_PID_FILE="$descendant_pid_file" \
+    run_with_deadline 1 bash -c 'sleep 30 & echo $! > "$AWAKEN_DEADLINE_DESCENDANT_PID_FILE"; wait' \
+    || timeout_status=$?
+  descendant_pid=$(cat "$descendant_pid_file")
+  rm -f "$descendant_pid_file"
+  [[ $timeout_status -eq 124 ]] || {
+    echo "sandbox image build descendant deadline self-test: expected 124, got $timeout_status" >&2
+    exit 1
+  }
+  if kill -0 "$descendant_pid" 2>/dev/null; then
+    echo "sandbox image build deadline self-test left descendant $descendant_pid running" >&2
+    exit 1
+  fi
   contract=$(mktemp "${TMPDIR:-/tmp}/awaken-sandbox-contract.XXXXXX")
   chmod 0600 "$contract"
   make_public_build_input "$contract"

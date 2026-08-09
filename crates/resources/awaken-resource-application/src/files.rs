@@ -10,7 +10,7 @@ use std::sync::Arc;
 use awaken_resource_contract::{
     CreateFileRecordOutcome, FileApplicationService, FileCatalog, FileCatalogError, FileRecord,
     FileStore, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES, ResourceKind,
-    ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourceReference,
+    ResourcePurgeError, ResourcePurgeIntent, ResourceReclamationRepository, ResourceReference,
     ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 
@@ -31,7 +31,7 @@ pub struct CreateFileCommand<'a> {
 pub struct FileApplication {
     store: Arc<dyn FileStore>,
     catalog: Arc<dyn FileCatalog>,
-    lifecycle: Arc<dyn ResourceLifecycleRepository>,
+    reclamation: Arc<dyn ResourceReclamationRepository>,
 }
 
 impl FileApplication {
@@ -39,12 +39,12 @@ impl FileApplication {
     pub fn new(
         store: Arc<dyn FileStore>,
         catalog: Arc<dyn FileCatalog>,
-        lifecycle: Arc<dyn ResourceLifecycleRepository>,
+        reclamation: Arc<dyn ResourceReclamationRepository>,
     ) -> Self {
         Self {
             store,
             catalog,
-            lifecycle,
+            reclamation,
         }
     }
 
@@ -112,23 +112,26 @@ impl FileApplication {
             deleted: false,
         };
         let candidate_reference = logical_file_reference(&candidate);
-        self.lifecycle
+        self.reclamation
             .add_reference(candidate_reference.clone())
             .await?;
         let outcome = match self.catalog.create_file(candidate).await {
             Ok(outcome) => outcome,
             Err(error) => {
-                let _ = self.lifecycle.remove_reference(&candidate_reference).await;
+                let _ = self
+                    .reclamation
+                    .remove_reference(&candidate_reference)
+                    .await;
                 return Err(file_catalog_error(error));
             }
         };
         match outcome {
             CreateFileRecordOutcome::Inserted(record) => Ok(record),
             CreateFileRecordOutcome::Existing(record) => {
-                self.lifecycle
+                self.reclamation
                     .remove_reference(&candidate_reference)
                     .await?;
-                self.lifecycle
+                self.reclamation
                     .add_reference(logical_file_reference(&record))
                     .await?;
                 Ok(record)
@@ -217,14 +220,14 @@ impl FileApplication {
             requested_at_unix_ms,
             requested_at_unix_ms,
         )?;
-        self.lifecycle.put(intent).await?;
+        self.reclamation.put(intent).await?;
         let deleted = self
             .catalog
             .mark_file_deleted(workspace_id, file_id)
             .await
             .map_err(file_catalog_error)?;
         if deleted.is_some() {
-            self.lifecycle
+            self.reclamation
                 .remove_reference(&logical_file_reference(&record))
                 .await?;
         }
@@ -372,7 +375,7 @@ mod tests {
             files,
             Arc::new(
                 awaken_resource_store::SqliteResourceStore::in_memory()
-                    .expect("resource lifecycle"),
+                    .expect("resource reclamation"),
             ),
         )
     }
@@ -441,7 +444,7 @@ mod tests {
         // C2 delete command -> E2 tombstone + purge intent are durable before the
         // ownership reference is removed;
         // C3 post-delete read -> E3 ordinary reads fail closed while physical blob
-        // reclamation remains an independent, retryable lifecycle operation.
+        // reclamation remains an independent, retryable reclamation operation.
         let app = application();
         let file = app
             .create_uploaded_file("workspace-a", "input.txt".into(), "text/plain".into(), b"x")

@@ -1036,7 +1036,7 @@ mod runtime_session_store_tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            status: "idle".to_string(),
+            lifecycle: awaken_session_contract::SessionLifecycleState::Idle,
             archived_at: None,
         }
     }

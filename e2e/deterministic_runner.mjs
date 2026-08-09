@@ -140,9 +140,17 @@ export function fileDigest(file) {
   return `sha256:${hash.digest('hex')}`;
 }
 
-export function validPrebuiltManifest(manifest, fingerprint, awaken, scenarioHost, worker) {
-  return manifest?.version === 1
+export function validPrebuiltManifest(
+  manifest,
+  fingerprint,
+  dependencyLockDigest,
+  awaken,
+  scenarioHost,
+  worker,
+) {
+  return manifest?.version === 2
     && manifest.fingerprint === fingerprint
+    && manifest.dependencyLockDigest === dependencyLockDigest
     && manifest.binaries?.awaken === fileDigest(awaken)
     && manifest.binaries?.scenarioHost === fileDigest(scenarioHost)
     && manifest.binaries?.worker === fileDigest(worker);
@@ -175,6 +183,7 @@ export function preparedEnvironment(environment, explicitDirectory) {
   const workerDestination = path.join(directory, `awaken-worker${suffix}`);
   const manifestPath = path.join(directory, 'manifest.json');
   const fingerprint = prebuildFingerprint(environment);
+  const dependencyLockDigest = fileDigest(path.join(E2E_ROOT, 'package-lock.json'));
   const existingAwaken = fs.statSync(awakenDestination, { throwIfNoEntry: false })?.isFile();
   const existingScenarioHost = fs.statSync(
     scenarioHostDestination,
@@ -194,6 +203,7 @@ export function preparedEnvironment(environment, explicitDirectory) {
     if (validPrebuiltManifest(
       manifest,
       fingerprint,
+      dependencyLockDigest,
       awakenDestination,
       scenarioHostDestination,
       workerDestination,
@@ -242,8 +252,9 @@ export function preparedEnvironment(environment, explicitDirectory) {
   fs.writeFileSync(
     temporaryManifest,
     `${JSON.stringify({
-      version: 1,
+      version: 2,
       fingerprint,
+      dependencyLockDigest,
       binaries: {
         awaken: fileDigest(awakenDestination),
         scenarioHost: fileDigest(scenarioHostDestination),
@@ -271,28 +282,58 @@ export function verifyInstalledDependencies(
   lockDocument,
   installRoot = E2E_ROOT,
 ) {
+  const drift = [];
   const declared = {
     ...(packageDocument.dependencies ?? {}),
     ...(packageDocument.devDependencies ?? {}),
   };
-  const drift = [];
   for (const name of Object.keys(declared).sort()) {
-    const locked = lockDocument.packages?.[`node_modules/${name}`]?.version;
+    if (!lockDocument.packages?.[`node_modules/${name}`]?.version) {
+      drift.push(`node_modules/${name}: installed=unknown, locked=missing`);
+    }
+  }
+  const lockedPackages = Object.entries(lockDocument.packages ?? {})
+    .filter(([relative, entry]) => relative.includes('node_modules/') && entry?.version)
+    .sort(([left], [right]) => left.localeCompare(right));
+  for (const [relative, lockedEntry] of lockedPackages) {
+    const locked = lockedEntry.version;
     let installed;
     try {
       installed = JSON.parse(
-        fs.readFileSync(path.join(installRoot, 'node_modules', ...name.split('/'), 'package.json')),
+        fs.readFileSync(path.join(installRoot, relative, 'package.json')),
       ).version;
     } catch {
       installed = undefined;
     }
+    if (installed === undefined && lockedEntry.optional === true) continue;
     if (typeof locked !== 'string' || installed !== locked) {
-      drift.push(`${name}: installed=${installed ?? 'missing'}, locked=${locked ?? 'missing'}`);
+      drift.push(`${relative}: installed=${installed ?? 'missing'}, locked=${locked ?? 'missing'}`);
     }
   }
   if (drift.length > 0) {
     throw new Error(
       `E2E dependencies do not match package-lock.json (${drift.join('; ')}); run npm --prefix e2e ci`,
+    );
+  }
+}
+
+function verifyNpmDependencyTree() {
+  const result = spawnSync('npm', ['ls', '--all', '--json'], {
+    cwd: E2E_ROOT,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    let detail = result.stderr.trim();
+    try {
+      const document = JSON.parse(result.stdout);
+      if (Array.isArray(document.problems) && document.problems.length > 0) {
+        detail = document.problems.join('; ');
+      }
+    } catch {
+      // Keep npm's diagnostic when it did not emit JSON.
+    }
+    throw new Error(
+      `E2E dependency tree is invalid (${detail || `npm ls exited ${result.status}`}); run npm --prefix e2e ci`,
     );
   }
 }
@@ -310,6 +351,7 @@ export function runMain() {
     packageDocument,
     JSON.parse(fs.readFileSync(path.join(E2E_ROOT, 'package-lock.json'), 'utf8')),
   );
+  verifyNpmDependencyTree();
   const suiteNames = packageDocument.awakenTest?.deterministicSuites;
   if (!Array.isArray(suiteNames) || suiteNames.length === 0) {
     throw new Error('package.json awakenTest.deterministicSuites must be a non-empty array');

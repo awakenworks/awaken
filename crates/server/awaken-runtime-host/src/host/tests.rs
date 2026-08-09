@@ -223,8 +223,8 @@ impl awaken_resource_contract::ResourceReclamationFence for TestResourceLifecycl
     }
 }
 
-pub(super) fn test_resource_lifecycle()
--> Arc<dyn awaken_resource_contract::ResourceLifecycleRepository> {
+pub(super) fn test_resource_reclamation()
+-> Arc<dyn awaken_resource_contract::ResourceReclamationRepository> {
     Arc::new(TestResourceLifecycle::default())
 }
 
@@ -2532,7 +2532,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         .expect("committed query must not retry Sandbox provisioning");
     let page = awaken_agent_contract::RunLifecycleFeed::events_after(
         feed.as_ref(),
-        awaken_agent_contract::LifecycleCursor(0),
+        awaken_agent_contract::RunLifecycleCursor(0),
         100,
     )
     .await
@@ -3741,7 +3741,7 @@ async fn file_activation_rejects_bytes_that_do_not_match_the_file_id() {
         corrupt_store,
         raw_host.file_catalog.clone(),
         raw_host
-            .resource_lifecycle()
+            .resource_reclamation()
             .expect("test lifecycle repository"),
     ));
     raw_host = raw_host.with_file_application(

@@ -209,7 +209,7 @@ mod tests {
             mcp,
             resources,
             realization: None,
-            status: "preparing".into(),
+            lifecycle: SessionLifecycleState::Preparing,
             archived_at: None,
         }
     }
@@ -504,7 +504,7 @@ mod tests {
             .expect("Q10");
         assert_eq!(complete.action, SessionRealizationAction::Complete, "Q10");
         let after_ack = repo.get("session-phase").await.unwrap();
-        assert_eq!(after_ack.status, "idle", "Q10");
+        assert_eq!(after_ack.lifecycle, SessionLifecycleState::Idle, "Q10");
         assert!(after_ack.mcp.attachments[0].publication_acknowledged, "Q10");
 
         let ack_replay = state
@@ -682,7 +682,11 @@ mod tests {
             .await
             .expect("Q16 scoped failure");
         let after_mcp_failure = repo.get("session-phase").await.unwrap();
-        assert_eq!(after_mcp_failure.status, "idle", "Q16");
+        assert_eq!(
+            after_mcp_failure.lifecycle,
+            SessionLifecycleState::Idle,
+            "Q16"
+        );
         assert_eq!(after_mcp_failure.resources.pending, Some(desired), "Q16");
         assert!(
             after_mcp_failure
@@ -929,8 +933,8 @@ mod tests {
             .await
             .expect("F2 acknowledge");
         assert_eq!(
-            empty_repo.get("session-empty").await.unwrap().status,
-            "idle",
+            empty_repo.get("session-empty").await.unwrap().lifecycle,
+            SessionLifecycleState::Idle,
             "F2"
         );
 
@@ -955,7 +959,11 @@ mod tests {
             .await
             .expect("F3");
         let after_failure = failed_repo.get("session-failed").await.unwrap();
-        assert_eq!(after_failure.status, "activation_failed", "F3");
+        assert_eq!(
+            after_failure.lifecycle,
+            SessionLifecycleState::ActivationFailed,
+            "F3"
+        );
         assert_eq!(
             after_failure.mcp.attachments[0].state,
             McpAttachmentState::Failed,
