@@ -26,7 +26,11 @@ pub enum AgUiEvent {
         run_id: String,
     },
     #[serde(rename = "RUN_ERROR")]
-    RunError { message: String },
+    RunError {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
     #[serde(rename = "TEXT_MESSAGE_START")]
     TextMessageStart {
         #[serde(rename = "messageId")]
@@ -76,6 +80,14 @@ impl AgUiEvent {
     pub fn error(message: impl Into<String>) -> Self {
         AgUiEvent::RunError {
             message: message.into(),
+            code: None,
+        }
+    }
+
+    pub fn classified_error(code: impl Into<String>, message: impl Into<String>) -> Self {
+        AgUiEvent::RunError {
+            message: message.into(),
+            code: Some(code.into()),
         }
     }
 }
@@ -242,10 +254,19 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn run_error_wire_shape() {
+    fn run_error_optional_code_wire_shape() {
+        // Cause/effect graph and decision table:
+        // C1 the failure has a protocol-neutral classification. E1 RUN_ERROR
+        // preserves `code`; E2 message remains unchanged. R1 !C1 => code is
+        // omitted && E2; R2 C1 => E1 && E2. This follows AG-UI's optional code
+        // contract without inventing a placeholder for decode-only failures.
         assert_eq!(
             serde_json::to_value(AgUiEvent::error("boom")).unwrap(),
             json!({ "type": "RUN_ERROR", "message": "boom" })
+        );
+        assert_eq!(
+            serde_json::to_value(AgUiEvent::classified_error("overloaded", "try later")).unwrap(),
+            json!({ "type": "RUN_ERROR", "message": "try later", "code": "overloaded" })
         );
     }
 

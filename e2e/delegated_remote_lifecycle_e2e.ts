@@ -7,11 +7,38 @@
 import assert from 'node:assert/strict';
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import Anthropic from '@anthropic-ai/sdk';
-import { pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort } from './harness.mjs';
+import {
+  agentCardSecurityFingerprint,
+  pass,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
+import { closeHttpServer } from './http_server.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38214);
 const BETAS = ['managed-agents-2026-04-01'];
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+// SDK boundary decision table: operation settles before 30s -> preserve its
+// result/error; operation remains unresolved after transport/process loss ->
+// fail the owning lifecycle rule with its phase label. No test rule may retain
+// fixture listeners forever behind a handle-free Promise.
+async function within<T>(promise: Promise<T>, label: string, timeoutMs = 30_000): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 type PeerState = {
   freshMessages: number;
@@ -144,15 +171,17 @@ async function startPeer(): Promise<{ endpoint: string; state: PeerState; close:
       return;
     }
 
-    if (request.method === 'GET' && route === '/.well-known/agent-card.json') {
+    if (request.method === 'GET' && route === '/v1/a2a/agent-card') {
       json(response, 200, {
         name: 'remote-researcher',
         description: 'delegated lifecycle peer',
-        url: 'http://127.0.0.1',
+        url: `http://${request.headers.host}`,
         version: '1',
+        protocolVersion: '0.3.0',
+        preferredTransport: 'HTTP+JSON',
         capabilities: {},
-        defaultInputModes: ['text'],
-        defaultOutputModes: ['text'],
+        defaultInputModes: ['text/plain'],
+        defaultOutputModes: ['text/plain'],
         skills: [],
       });
       return;
@@ -166,25 +195,33 @@ async function startPeer(): Promise<{ endpoint: string; state: PeerState; close:
   return {
     endpoint: `http://127.0.0.1:${address.port}`,
     state,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () => closeHttpServer(server),
   };
 }
 
 async function listEvents(client: Anthropic, sessionId: string): Promise<any[]> {
-  const events: any[] = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(event);
-  return events;
+  return within((async () => {
+    const events: any[] = [];
+    for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(event);
+    return events;
+  })(), `events for ${sessionId}`);
 }
 
 async function createSession(client: Anthropic): Promise<any> {
-  return client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
+  return within(
+    client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS }),
+    'Session create',
+  );
 }
 
 async function sendText(client: Anthropic, sessionId: string, text: string): Promise<void> {
-  await client.beta.sessions.events.send(sessionId, {
-    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-    betas: BETAS,
-  });
+  await within(
+    client.beta.sessions.events.send(sessionId, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+      betas: BETAS,
+    }),
+    `turn ${text}`,
+  );
 }
 
 async function waitFor<T>(read: () => T | undefined, label: string): Promise<T> {
@@ -200,23 +237,43 @@ async function waitFor<T>(read: () => T | undefined, label: string): Promise<T> 
 async function main(): Promise<void> {
   const peer = await startPeer();
   const upstream = await startUpstream('delegating');
-  const server = spawnServer('delegate-remote', PORT, {
-    AWAKEN_REMOTE_AGENT_URL: peer.endpoint,
-    ...realServerEnv('delegating', upstream, { mode: 'delegate-remote' }),
-  });
-  await waitForPort(PORT, 180_000, server.server);
-  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+  let server;
   try {
-    // A remote child may pause for user input. The parent exposes an ordinary
-    // client-executed ticket and resumes the exact task/context, not a new child.
+    const cardResponse = await within(
+      fetch(`${peer.endpoint}/v1/a2a/agent-card`),
+      'remote Agent Card',
+    );
+    assert.equal(cardResponse.status, 200, 'remote Agent Card is discoverable before pinning');
+    const securityFingerprint = agentCardSecurityFingerprint(await cardResponse.json());
+    server = spawnServer('delegate-remote', PORT, {
+      AWAKEN_REMOTE_AGENT_URL: peer.endpoint,
+      AWAKEN_REMOTE_AGENT_SECURITY_FINGERPRINT: securityFingerprint,
+      ...realServerEnv('delegating', upstream, { mode: 'delegate-remote' }),
+    });
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+    // Ownership decision table: successful readiness -> drive lifecycle rules;
+    // startup exit/error/timeout -> enter this same finally and close every
+    // already-listening fixture. Readiness must never sit outside its resources'
+    // cleanup scope.
+    await waitForPort(PORT, 180_000, server.server);
+    // A remote child may pause for user input. Cause/effect decision table:
+    // built-in agent_run + remote input-required -> the executed agent.tool_use
+    // remains in history, while an answerable agent.custom_tool_use(agent_input)
+    // is minted at the remote pending id; its user.custom_tool_result resumes the
+    // exact task context. The executed parent call must never be mistaken for the
+    // later remote-input ticket.
     const awaiting = await createSession(client);
     await sendText(client, awaiting.id, 'delegate and wait for remote input');
     const awaitingEvents = await listEvents(client, awaiting.id);
-    const toolUse = awaitingEvents.find(
-      (event) => event.type === 'agent.custom_tool_use' && event.name === 'agent_run',
+    const idle = awaitingEvents.find(
+      (event) => event.type === 'session.status_idle' && event.stop_reason?.type === 'requires_action',
     );
-    assert.ok(toolUse, `agent_run was projected: ${awaitingEvents.map((event) => event.type)}`);
-    await client.beta.sessions.events.send(awaiting.id, {
+    const pendingId = idle?.stop_reason?.event_ids?.[0];
+    const toolUse = awaitingEvents.find(
+      (event) => event.id === pendingId && event.type === 'agent.custom_tool_use' && event.name === 'agent_input',
+    );
+    assert.ok(toolUse, `remote agent_input was projected: ${JSON.stringify(awaitingEvents)}`);
+    await within(client.beta.sessions.events.send(awaiting.id, {
       events: [
         {
           type: 'user.custom_tool_result',
@@ -226,7 +283,7 @@ async function main(): Promise<void> {
         },
       ],
       betas: BETAS,
-    });
+    }), 'remote child input resume');
     const resumedEvents = await listEvents(client, awaiting.id);
     assert.ok(JSON.stringify(resumedEvents).includes('REMOTE-CHILD-RESUMED'));
     assert.deepEqual(peer.state.resumes, [{ contextId: 'delegated-input-context', text: 'src/lib.rs' }]);
@@ -245,24 +302,23 @@ async function main(): Promise<void> {
     const cancelled = await createSession(client);
     const activeTurn = sendText(client, cancelled.id, 'delegate then interrupt remote child');
     await waitFor(() => (peer.state.polls.includes('delegated-cancel') ? true : undefined), 'remote child poll');
-    await client.beta.sessions.events.send(cancelled.id, {
+    await within(client.beta.sessions.events.send(cancelled.id, {
       events: [{ type: 'user.interrupt' }],
       betas: BETAS,
-    });
-    await activeTurn.catch(() => {});
+    }), 'parent interrupt');
+    await within(activeTurn.catch(() => {}), 'interrupted parent turn');
     await waitFor(() => peer.state.cancels.find((id) => id === 'delegated-cancel'), 'remote child cancellation');
     assert.deepEqual(peer.state.cancels, ['delegated-cancel']);
     pass('parent interrupt cancels the pinned remote child task exactly once');
 
-    // Poll transport failures and every negative terminal state remain governed
-    // error outcomes. None may be collapsed into a successful child result and
-    // fed back to the parent model.
+    // Cause/effect rule: poll/send transport 5xx and every negative terminal
+    // become an error ToolResult for the parent to observe and explain; the
+    // Managed send request itself may therefore complete normally. None may be
+    // collapsed into a fabricated successful child result.
     const pollFailed = await createSession(client);
-    await assert.rejects(
-      sendText(client, pollFailed.id, 'delegate lifecycle: poll failure'),
-      (error: any) => error?.status === 500 && String(error?.message).includes('503'),
-    );
+    await sendText(client, pollFailed.id, 'delegate lifecycle: poll failure');
     const pollFailureProjection = JSON.stringify(await listEvents(client, pollFailed.id));
+    assert.ok(pollFailureProjection.includes('503'), pollFailureProjection);
     assert.ok(!pollFailureProjection.includes('REMOTE-CHILD-'));
     assert.ok(peer.state.polls.includes('delegated-poll-failure'));
     pass('remote agent_run poll 5xx remains an explicit child tool error');
@@ -271,9 +327,9 @@ async function main(): Promise<void> {
     // The parent may observe and explain that error, but never receives a
     // fabricated successful child payload.
     for (const [prompt, marker] of [
-      ['delegate lifecycle: failed', 'remote A2A agent failed'],
-      ['delegate lifecycle: rejected', 'remote A2A task was rejected'],
-      ['delegate lifecycle: canceled', 'remote A2A task was canceled'],
+      ['delegate lifecycle: failed', 'a2a_task_failed'],
+      ['delegate lifecycle: rejected', 'a2a_task_rejected'],
+      ['delegate lifecycle: canceled', 'Cancelled'],
     ]) {
       const failed = await createSession(client);
       await sendText(client, failed.id, prompt);
@@ -284,17 +340,16 @@ async function main(): Promise<void> {
     pass('remote failed/rejected/canceled terminals remain explicit child tool errors');
 
     const sendFailed = await createSession(client);
-    await assert.rejects(
-      sendText(client, sendFailed.id, 'delegate lifecycle: unavailable'),
-      (error: any) => error?.status === 500,
-    );
-    assert.ok(!JSON.stringify(await listEvents(client, sendFailed.id)).includes('REMOTE-CHILD-'));
+    await sendText(client, sendFailed.id, 'delegate lifecycle: unavailable');
+    const sendFailureProjection = JSON.stringify(await listEvents(client, sendFailed.id));
+    assert.ok(sendFailureProjection.includes('503'), sendFailureProjection);
+    assert.ok(!sendFailureProjection.includes('REMOTE-CHILD-'));
     pass('remote agent_run send 5xx fails closed after stable-id retries');
 
     console.log('DELEGATED REMOTE LIFECYCLE TS API E2E PASS.');
   } finally {
-    await stopServer(server.server).catch(() => {});
-    upstream.close();
+    if (server) await stopServer(server.server).catch(() => {});
+    await upstream.close();
     await peer.close();
   }
 }

@@ -17,6 +17,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { FAKE_KEY, realServerEnv, spawnServer, stopServer, waitForPort } from './harness.mjs';
 // @ts-ignore -- shared JavaScript fixture intentionally serves TS scenarios.
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+// @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
+import { sqliteDatabaseForThread } from './sqlite.mjs';
 
 type DispatchRow = {
   run_id: string;
@@ -32,7 +34,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-function dispatchDbs(root: string): string[] {
+function filesUnder(root: string): string[] {
   const pending = [root];
   const found: string[] = [];
   while (pending.length > 0) {
@@ -40,24 +42,18 @@ function dispatchDbs(root: string): string[] {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const candidate = path.join(current, entry.name);
       if (entry.isDirectory()) pending.push(candidate);
-      if (entry.isFile() && entry.name.endsWith('dispatch.db')) found.push(candidate);
-    }
-  }
-  return found;
-}
-
-function allFiles(root: string): string[] {
-  const pending = [root];
-  const found: string[] = [];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const candidate = path.join(current, entry.name);
-      if (entry.isDirectory()) pending.push(candidate);
-      if (entry.isFile()) found.push(path.relative(root, candidate));
+      if (entry.isFile()) found.push(candidate);
     }
   }
   return found.sort();
+}
+
+function dispatchDbs(root: string): string[] {
+  return filesUnder(root).filter((candidate) => candidate.endsWith('dispatch.db'));
+}
+
+function allFiles(root: string): string[] {
+  return filesUnder(root).map((candidate) => path.relative(root, candidate));
 }
 
 function rows(database: string): DispatchRow[] {
@@ -264,7 +260,14 @@ async function main(): Promise<void> {
     // boundary nevertheless contains the ordinary child thread as committed
     // truth, so inspect that throwaway SQLite boundary directly and prove the
     // replacement neither duplicated its seed nor lost its terminal result.
-    const childMessages = committedMessages(path.join(storage, `${session.id}.db`), childThreadId);
+    const childMessages = committedMessages(
+      // Commit-boundary decision table: a unique runtime_message DB containing
+      // the exact child thread is authoritative; absent-table/nonmatching DBs
+      // are ignored, while zero or multiple matches fail closed. Discovery by
+      // content keeps the product's filename codec as the sole implementation.
+      sqliteDatabaseForThread(storage, childThreadId, 'runtime_message'),
+      childThreadId,
+    );
     assert.equal(
       childMessages.filter((message: any) => message.role === 'User').length,
       1,

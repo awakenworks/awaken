@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  cleanupFixtureTree,
   pass,
   realServerEnv,
   spawnServer,
@@ -129,13 +130,7 @@ async function main() {
   } finally {
     for (const server of servers) await stopServer(server);
     upstream.close();
-    try {
-      fs.rmSync(STORE_DIR, { recursive: true, force: true });
-    } catch (error) {
-      // A SIGKILL can leave a kernel/FUSE mountpoint for the OS to reap after the
-      // test process exits. Do not mask the recovery assertion with fixture cleanup.
-      if (error?.code !== 'EISDIR' && error?.code !== 'EBUSY') throw error;
-    }
+    cleanupFixtureTree(STORE_DIR);
   }
 }
 

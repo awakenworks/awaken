@@ -14,6 +14,7 @@
 // `awaken-server` model reading the neutral request.
 
 import http from 'node:http';
+import { closeHttpServer } from '../http_server.mjs';
 
 const FIXTURE_PORT_FIRST = 30_000;
 const FIXTURE_PORT_COUNT = 2_000;
@@ -566,7 +567,7 @@ export function startFakeAnthropic(apiKey, opts = {}) {
           get received() {
             return state.received;
           },
-          close: () => server.close(),
+          close: () => closeHttpServer(server),
         });
       });
     };

@@ -62,10 +62,11 @@ async function waitForCommitted(sessionId: string, marker: string, minimum = 1):
 async function waitForActiveInbox(sessionId: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() <= deadline) {
-    const response = await fetch(`${BASE}/v1/sessions/${sessionId}/live-inbox`, {
+    const response = await fetch(`${BASE}/v1/awaken/sessions/${sessionId}/live-inbox`, {
       headers: { 'anthropic-beta': BETAS[0] },
     });
-    const body = await response.json();
+    const body = await response.json().catch(() => ({}));
+    assert.equal(response.status, 200, `live-inbox snapshot failed: ${response.status}`);
     if (body.active) return;
     await sleep(25);
   }
@@ -123,8 +124,15 @@ async function main(): Promise<void> {
 
     const continued = await createAcpSession(client);
     const turn = sendText(client, continued.id, 'start a slow ACP turn');
+    // Cause/effect graph: C1 an ACP turn is active, C2 the Awaken extension
+    // receives queued text, and C3 replacement launch is deliberately failed.
+    // Effects are E1 queue acceptance, E2 exactly one original ACP turn, and E3
+    // a durable retries_exhausted terminal event containing the launch failure.
+    // Decision rule A1: C1+C2+C3 -> E1+E2+E3. The namespaced extension is the
+    // sole live-inbox contract; the Managed Agents namespace has no parallel
+    // compatibility route.
     await waitForActiveInbox(continued.id);
-    const queued = await post(`/v1/sessions/${continued.id}/live-inbox`, {
+    const queued = await post(`/v1/awaken/sessions/${continued.id}/live-inbox`, {
       content: [{ type: 'text', text: 'continue on a replacement ACP process' }],
     });
     assert.equal(queued.status, 200, JSON.stringify(queued.body));

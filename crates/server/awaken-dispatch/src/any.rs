@@ -406,6 +406,19 @@ impl DispatchQueue for AnyDispatchStore {
         )
     }
 
+    async fn claim_for_terminal_recovery(
+        &self,
+        run_id: &RunId,
+        owner: &str,
+        lease_ms: u64,
+        now_ms: u64,
+    ) -> Result<Option<Claimed>, DispatchError> {
+        delegate!(
+            self,
+            claim_for_terminal_recovery(run_id, owner, lease_ms, now_ms)
+        )
+    }
+
     async fn claim_run_compatible(
         &self,
         run_id: &RunId,

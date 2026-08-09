@@ -19,7 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
 // @ts-expect-error shared JavaScript harness intentionally has no declarations.
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { childDirectories, onlyChildDirectory, pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
 // @ts-expect-error shared JavaScript fixture intentionally has no declarations.
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { alwaysAllowMcpAgent } from './fixtures/managed_mcp_session.ts';
@@ -70,10 +70,15 @@ function ensureContainerImage(): void {
   });
 }
 
-function containerExists(sessionId: string): boolean {
-  if (!CONTAINER) return false;
-  const result = spawnSync(TIER, ['ps', '-a', '--format', '{{.Names}}'], { encoding: 'utf8' });
-  return result.status === 0 && result.stdout.split('\n').some((name) => name.includes(sessionId));
+function managedContainerIds(): Set<string> {
+  if (!CONTAINER) return new Set();
+  const result = spawnSync(
+    TIER,
+    ['ps', '-a', '--filter', 'label=awaken.sandbox=1', '--format', '{{.ID}}'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, `${TIER} lists awaken-managed containers`);
+  return new Set(result.stdout.split('\n').filter(Boolean));
 }
 
 async function events(client: Anthropic, sessionId: string): Promise<any[]> {
@@ -88,7 +93,7 @@ async function send(client: Anthropic, sessionId: string, prompt: string): Promi
   await client.beta.sessions.events.send(
     sessionId,
     { events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }], betas: BETAS },
-    { signal: AbortSignal.timeout(15_000) },
+    { signal: AbortSignal.timeout(CONTAINER ? 60_000 : 15_000) },
   );
 }
 
@@ -98,9 +103,15 @@ async function sendAndObserveDispatch(
   prompt: string,
 ): Promise<any> {
   let settled = false;
-  const request = send(client, sessionId, prompt).finally(() => { settled = true; });
+  let requestError: unknown;
+  // Attach the rejection handler before observation begins: a container cold
+  // start may outlive one poll interval, but it must not become an unhandled
+  // rejection that bypasses the dispatch/Worker diagnostics below.
+  const request = send(client, sessionId, prompt)
+    .catch((error) => { requestError = error; })
+    .finally(() => { settled = true; });
   let last: any;
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + (CONTAINER ? 75_000 : 30_000);
   while (!settled) {
     assert.ok(Date.now() < deadline, `timed out observing durable dispatch for ${sessionId}`);
     const response = await json('GET', `/v1/durable/threads/${sessionId}/dispatches`);
@@ -108,6 +119,7 @@ async function sendAndObserveDispatch(
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   await request;
+  if (requestError) throw requestError;
   assert.ok(last, `observed in-flight durable dispatch for ${sessionId}`);
   return last;
 }
@@ -192,6 +204,7 @@ async function main(): Promise<void> {
     });
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
     const calc = { name: 'calc', type: 'url' as const, url: fixture.url };
+    const initialManagedContainers = managedContainerIds();
 
     const brain = await client.beta.sessions.create({
       agent: alwaysAllowMcpAgent('assistant', [calc]),
@@ -210,7 +223,9 @@ async function main(): Promise<void> {
     );
     assert.equal(brainDispatch.sandbox_bound, false, `${RULES.brain} durable dispatch has no Sandbox binding`);
     assert.equal(
-      CONTAINER ? containerExists(brain.id) : fs.existsSync(path.join(workerStorage, 'sandboxes', brain.id)),
+      CONTAINER
+        ? [...managedContainerIds()].some((id) => !initialManagedContainers.has(id))
+        : childDirectories(path.join(workerStorage, 'sandboxes')).length > 0,
       false,
       `${RULES.brain} creates no Worker Sandbox`,
     );
@@ -237,11 +252,20 @@ async function main(): Promise<void> {
       `${RULES.hand} remote Hand placement succeeds: ${JSON.stringify(handEvents)}\n${workerOutput}`,
     );
     assert.equal(handDispatch.sandbox_bound, true, `${RULES.hand} Control persists the Worker-created Sandbox binding`);
-    assert.ok(
-      CONTAINER ? containerExists(hand.id) : fs.existsSync(path.join(workerStorage, 'sandboxes', hand.id)),
-      `${RULES.hand} Sandbox lives on remote Worker`,
+    if (CONTAINER) {
+      const created = [...managedContainerIds()].filter((id) => !initialManagedContainers.has(id));
+      assert.equal(created.length, 1, `${RULES.hand} one managed Sandbox lives on remote Worker`);
+    } else {
+      onlyChildDirectory(
+        path.join(workerStorage, 'sandboxes'),
+        `${RULES.hand} one opaque Sandbox lives on the remote Worker`,
+      );
+    }
+    assert.deepEqual(
+      childDirectories(path.join(controlStorage, 'sandboxes')),
+      [],
+      'coordinator created no Sandbox',
     );
-    assert.equal(fs.existsSync(path.join(controlStorage, 'sandboxes', hand.id)), false, 'coordinator created no Sandbox');
     pass(`${RULES.hand} first Hand tool lazily materializes the ${TIER} Sandbox on the remote Worker`);
     console.log(`E2E PASS: remote Worker Hand/Brain lazy Sandbox matrix (${TIER}).`);
   } finally {

@@ -18,7 +18,7 @@ subtle = "2"
 getrandom = "0.2"
 # Delivery: HTTPS POST of the signed payload; async port + reqwest impl.
 async-trait.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+awaken-outbound-http.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 
 [dev-dependencies]
@@ -29,7 +29,7 @@ axum = { version = "0.8", features = [] }
 default = []
 # Permissive loopback sender constructors exist only for real-HTTP integration
 # tests. Product builds expose only `ReqwestSender::guarded`.
-test-support = []
+test-support = ["awaken-outbound-http/test-support"]
 
 [[test]]
 name = "webhook_e2e"

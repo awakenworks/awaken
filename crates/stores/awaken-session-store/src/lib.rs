@@ -687,10 +687,11 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
 }
 
 /// A Postgres-backed [`ManagedSessionRepository`] — the network-DB sibling over
-/// the same `managed` migration scope. The port is async, so this is a plain sqlx
-/// adapter (no sync bridge needed).
+/// the same `managed` migration scope. The Session port is async; the retained
+/// synchronous Dream port uses the canonical store-runtime bridge on `handle`.
 pub struct PostgresManagedSessionRepository {
     pool: PgPool,
+    handle: tokio::runtime::Handle,
 }
 
 impl PostgresManagedSessionRepository {
@@ -708,7 +709,10 @@ impl PostgresManagedSessionRepository {
             .run_bundle(&bundle)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            handle: tokio::runtime::Handle::current(),
+        })
     }
 
     /// Connect to a schema migrated by an operational command without DDL.
@@ -720,7 +724,10 @@ impl PostgresManagedSessionRepository {
             .verify_bundle(&bundle)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            handle: tokio::runtime::Handle::current(),
+        })
     }
 }
 

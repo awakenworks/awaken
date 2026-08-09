@@ -180,6 +180,14 @@ pub struct PodmanRuntime {
     package_cache_ttl: Option<std::time::Duration>,
 }
 
+#[derive(serde::Deserialize)]
+struct PodmanMount {
+    #[serde(rename = "Source", alias = "source")]
+    source: PathBuf,
+    #[serde(rename = "Destination", alias = "destination")]
+    destination: String,
+}
+
 impl PodmanRuntime {
     /// Use `podman` from `PATH`.
     #[must_use]
@@ -324,6 +332,23 @@ impl PodmanRuntime {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
+    async fn live_inputs_root(&self, container_id: &str) -> Result<PathBuf, RuntimeError> {
+        let output = self
+            .run(&[
+                "inspect".into(),
+                "--format".into(),
+                "{{json .Mounts}}".into(),
+                container_id.into(),
+            ])
+            .await?;
+        serde_json::from_str::<Vec<PodmanMount>>(&output)
+            .map_err(backend)?
+            .into_iter()
+            .find(|mount| mount.destination == crate::LIVE_INPUTS_ROOT)
+            .map(|mount| mount.source)
+            .ok_or_else(|| backend("Podman container has no managed live-input root bind"))
+    }
+
     /// Probe the binary (for tests / health checks): `Ok` iff `podman` responds.
     pub async fn ping(&self) -> Result<(), RuntimeError> {
         self.run(&["info".into(), "--format".into(), "{{.Host.Arch}}".into()])
@@ -454,6 +479,25 @@ impl ContainerRuntime for PodmanRuntime {
 
     fn supports_package_provisioning(&self) -> bool {
         true
+    }
+
+    fn uses_host_live_input_bind(&self) -> bool {
+        true
+    }
+
+    async fn project_live_input(
+        &self,
+        container_id: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), RuntimeError> {
+        let root = self.live_inputs_root(container_id).await?;
+        crate::live_inputs::project_host_input(&root, path, bytes)
+    }
+
+    async fn remove_live_input(&self, container_id: &str, path: &str) -> Result<(), RuntimeError> {
+        let root = self.live_inputs_root(container_id).await?;
+        crate::live_inputs::remove_host_input(&root, path)
     }
 
     async fn prepare_package_image(

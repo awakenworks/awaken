@@ -164,6 +164,7 @@ impl ManagedState {
             workspace_id: owner_scope,
             revision: session.revision,
             baseline,
+            resource_revision: session.resources.revision,
             resources,
             toolsets: session.tools.toolsets.clone(),
             mcp: session.mcp.attachments.clone(),
@@ -494,12 +495,13 @@ mod tests {
         // -> Preparing requires input -> fingerprint is non-empty -> MCP input parses
         // and normalizes -> one root CAS freezes baseline/generation 1. A frozen
         // receipt admits only an exact replay; every rejected rule leaves the root
-        // revision and preparation state unchanged.
+        // revision and preparation state unchanged. The projection carries both
+        // the root revision and the independently-owned Resource generation.
         //
         // | Rule | Exists | State | Fingerprint | Input | MCP | Effect |
         // |---|---|---|---|---|---|---|
-        // | S1 | T | Required | new | valid | valid | commit Frozen at rev 2 |
-        // | S2 | T | Frozen | same | same | valid | replay, no new revision |
+        // | S1 | T | Required | new | valid | valid | root rev 2 + Resource gen 1 |
+        // | S2 | T | Frozen | same | same | valid | replay same root/resource revisions |
         // | S3 | T | Frozen | same | different | - | conflict, no write |
         // | S4 | T | Frozen | different | any | - | conflict, no write |
         // | S5 | T | Absent | non-empty | valid | - | not required, no write |
@@ -588,6 +590,7 @@ mod tests {
                     let receipt = result.expect("S1");
                     assert_eq!(receipt.outcome, ApplicationContributionOutcome::Committed);
                     assert_eq!(receipt.projection.revision.0, 2);
+                    assert_eq!(receipt.projection.resource_revision, 1);
                     assert_eq!(
                         receipt.projection.baseline.prompts,
                         vec!["application prompt"]
@@ -597,6 +600,7 @@ mod tests {
                     let receipt = result.expect("S2");
                     assert_eq!(receipt.outcome, ApplicationContributionOutcome::Replayed);
                     assert_eq!(receipt.projection.revision.0, 2);
+                    assert_eq!(receipt.projection.resource_revision, 1);
                 }
                 ContributionRule::SamePlanDifferentInput | ContributionRule::DifferentPlan => {
                     assert_eq!(

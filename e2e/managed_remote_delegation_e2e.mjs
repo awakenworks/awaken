@@ -9,9 +9,16 @@
 // Run: (from e2e/)  node managed_remote_delegation_e2e.mjs
 
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  agentCardSecurityFingerprint,
+  pass,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT_A = Number(process.env.E2E_PORT ?? 38184);
 const PORT_B = PORT_A + 1;
@@ -39,9 +46,7 @@ async function main() {
       return response.json();
     },
   );
-  const securityFingerprint = `sha256:${createHash('sha256')
-    .update(JSON.stringify([publishedCard.securitySchemes ?? {}, publishedCard.security ?? []]))
-    .digest('hex')}`;
+  const securityFingerprint = agentCardSecurityFingerprint(publishedCard);
   // Server A: delegates `researcher` to B over A2A.
   const a = spawnServer('delegate-remote', PORT_A, {
     AWAKEN_REMOTE_AGENT_URL: `http://127.0.0.1:${PORT_B}`,

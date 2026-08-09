@@ -118,9 +118,7 @@ fn awaiting_from_reader<R: CheckpointReader>(
 #[cfg(any(test, feature = "test-support"))]
 impl HostStore for MemoryCommitCoordinator {
     fn projected_open_wait_for_thread(&self, thread: &ThreadId) -> Option<(RunId, ResumeTicket)> {
-        let run = self.committed().latest_run?;
-        let ticket = self.resume_ticket_for(&run.id)?;
-        (&ticket.thread_id == thread).then_some((run.id, ticket))
+        awaiting_from_reader(self, thread)
     }
 }
 
@@ -484,6 +482,8 @@ pub(crate) fn durable_thread_exists_with_store(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::awaiting::AwaitReason;
+    use awaken_agent_contract::thread::commit::RunDisposition;
 
     #[test]
     fn commit_or_err_fails_closed_without_the_shared_coordinator() {
@@ -606,6 +606,62 @@ mod tests {
         assert_eq!(
             plan_commit(StoreKind::Sqlite, None, None, "t1"),
             CommitPlan::Memory
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_open_wait_is_partitioned_by_thread_not_global_latest_run() {
+        // Cause/effect graph: C1 parent commits Awaiting + ticket; C2 a child
+        // thread commits later; E1 parent lookup still returns its ticket; E2
+        // child lookup is independent. Decision table: R1 C1&&!C2 -> E1;
+        // R2 C1&&C2 -> E1+E2. R2 catches the former global-latest projection.
+        let store = MemoryCommitCoordinator::new();
+        let parent_thread = ThreadId("parent-thread".into());
+        let parent_run = RunId("parent-run".into());
+        let ticket = ResumeTicket {
+            correlation_id: "parent-wait".into(),
+            run_id: parent_run.clone(),
+            thread_id: parent_thread.clone(),
+            snapshot_id: "snapshot".into(),
+            catalog_fingerprint: "fingerprint".into(),
+            delegation_origin: None,
+            data_subject_id: None,
+            reason: AwaitReason::Delegation,
+            call_id: Some("parent-call".into()),
+            pending_tool: None,
+            deadline_ms: None,
+        };
+        store
+            .commit(ThreadCommit {
+                thread_id: parent_thread.clone(),
+                run: RunDisposition::awaiting(ticket.clone()),
+                messages: Vec::new(),
+                state: Vec::new(),
+                events: Vec::new(),
+            })
+            .await
+            .expect("parent awaits");
+        store
+            .commit(ThreadCommit {
+                thread_id: ThreadId("child-thread".into()),
+                run: RunDisposition::ended(
+                    RunId("child-run".into()),
+                    awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                ),
+                messages: Vec::new(),
+                state: Vec::new(),
+                events: Vec::new(),
+            })
+            .await
+            .expect("child commits later");
+
+        let observed = HostStore::projected_open_wait_for_thread(&store, &parent_thread)
+            .expect("R2/E1 parent wait survives child commit");
+        assert_eq!(observed, (parent_run, ticket));
+        assert!(
+            HostStore::projected_open_wait_for_thread(&store, &ThreadId("child-thread".into()))
+                .is_none(),
+            "R2/E2 ended child is not awaiting"
         );
     }
 

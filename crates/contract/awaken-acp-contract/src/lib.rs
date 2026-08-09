@@ -3,6 +3,8 @@
 //! Worker applications depend on this leaf; protocol adapters implement it.
 //! The contract owns no process, repository, discovery or JSON-RPC behavior.
 
+use std::path::Path;
+
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use serde::{Deserialize, Serialize};
@@ -61,6 +63,19 @@ pub trait AcpCapabilityHandshake: Send + Sync {
         &self,
         channel: &mut dyn AgentChannel,
         config: &AcpCapabilityProbeConfig,
+    ) -> Result<NegotiatedAcpCapabilities, String>;
+}
+
+/// Environment-neutral orchestration port for one bounded capability probe.
+/// Host-process and Session-environment adapters implement the same contract;
+/// the application service consumes it without owning either process boundary.
+#[async_trait]
+pub trait AcpCapabilityNegotiator: Send + Sync {
+    async fn negotiate(
+        &self,
+        argv: &[String],
+        cwd: &Path,
+        auth_method_id: Option<&str>,
     ) -> Result<NegotiatedAcpCapabilities, String>;
 }
 

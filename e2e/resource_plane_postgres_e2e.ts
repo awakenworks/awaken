@@ -105,10 +105,10 @@ async function upload(content: string, workspace = WORKSPACE): Promise<string> {
 async function proveSandboxPolicyPostgresAuthority(): Promise<void> {
   // Causal graph / decision table for the durable Environment policy seam:
   //
-  // | exact policy | disabled | current fence | effect |
-  // | present      | false    | matches       | bind immutable revision |
-  // | present      | false    | stale         | reject publish (409)    |
-  // | present      | true     | n/a           | reject bind (422)       |
+  // | exact policy | disabled | current fence | provisioning input | effect |
+  // | present      | false    | matches       | omitted            | bind immutable revision and project `eager` |
+  // | present      | false    | stale         | any                | reject publish (409)    |
+  // | present      | true     | n/a           | any                | reject bind (422)       |
   //
   // This runs through the served API with the production Postgres adapter. It
   // complements the same table's SQLite run instead of creating a store-local
@@ -143,7 +143,7 @@ async function proveSandboxPolicyPostgresAuthority(): Promise<void> {
       'GET',
       `http://127.0.0.1:${PORT}/v1/awaken/environments/${environmentId}/sandbox-execution-policy`,
     )).body,
-    { environment_id: environmentId, policy_id: policyId, version: 1 },
+    { environment_id: environmentId, policy_id: policyId, version: 1, provisioning: 'eager' },
   );
 
   const disabledId = `${policyId}-disabled`;
@@ -182,7 +182,7 @@ async function uploadSkillVersion(route: string, marker: string, binary?: Uint8A
 }
 
 function assertNoLocalResourceTruth(directory: string): void {
-  for (const relative of ['files.db', 'memory_fs.db', 'resource-lifecycle.db', 'skills']) {
+  for (const relative of ['files.db', 'memory_fs.db', 'resources.db', 'skills']) {
     assert.equal(
       fs.existsSync(path.join(directory, relative)),
       false,
@@ -206,7 +206,7 @@ function resourceCatalogRecord(
 ): Record<string, any> {
   const output = psql(
     container,
-    `SELECT data FROM admin_resource_catalog WHERE kind=${sqlLiteral(kind)} AND id=${sqlLiteral(id)}`,
+    `SELECT data FROM resource_catalog_entry WHERE kind=${sqlLiteral(kind)} AND id=${sqlLiteral(id)}`,
   );
   assert.notEqual(output, '', `missing ${kind} Resource Catalog row ${id}`);
   return JSON.parse(output);
@@ -220,7 +220,7 @@ function writeResourceCatalogRecord(
 ): void {
   psql(
     container,
-    `UPDATE admin_resource_catalog SET data=${sqlLiteral(JSON.stringify(record))}::jsonb ` +
+    `UPDATE resource_catalog_entry SET data=${sqlLiteral(JSON.stringify(record))}::jsonb ` +
       `WHERE kind=${sqlLiteral(kind)} AND id=${sqlLiteral(id)}`,
   );
 }
@@ -263,6 +263,15 @@ function resourceIntent(container: string, resourceId: string): Record<string, a
       `ORDER BY requested_at_unix_ms DESC LIMIT 1`,
   );
   return output ? JSON.parse(output) : undefined;
+}
+
+function fileBlobId(container: string, fileId: string): string {
+  const blobId = psql(
+    container,
+    `SELECT blob_id FROM file_store_file WHERE id=${sqlLiteral(fileId)}`,
+  );
+  assert.notEqual(blobId, '', `missing private blob identity for ${fileId}`);
+  return blobId;
 }
 
 function managedSessionResources(
@@ -413,7 +422,7 @@ function seedRepository(root: string): string {
   return remote;
 }
 
-async function publishAgent(endpoint: string): Promise<void> {
+async function publishAgent(endpoint: string, memoryStoreId: string): Promise<void> {
   const connected = await json('POST', scoped(WORKSPACE, 'config/provider-connections'), {
     idempotency_key: 'resource-postgres-provider-connection',
     workspace_id: WORKSPACE,
@@ -434,10 +443,22 @@ async function publishAgent(endpoint: string): Promise<void> {
   );
   assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}`), {
     name: AGENT, model: { id: MODEL }, system: 'Resource lifecycle test.',
-    max_steps: 2, plugins: ['memory'], plugin_config: { memory: {} },
+    max_steps: 2,
+    plugins: ['memory'],
+    plugin_config: { memory: { binding_id: 'postgres-memory' } },
   })).status, 200);
   assert.equal((await json('PUT', scoped(WORKSPACE, `config/agents/${AGENT}/resources`), {
-    agent_id: AGENT, revision: 1, inputs: [],
+    // Binding decision rule: the published plugin selects one explicit Agent
+    // binding; a Session resource at the same mount replaces its target while
+    // preserving this stable id. No runtime heuristic selects "the" memory.
+    agent_id: AGENT,
+    revision: 1,
+    inputs: [{
+      binding_id: 'postgres-memory',
+      target: { kind: 'memory_store', id: memoryStoreId },
+      mount_path: '/workspace/memory',
+      access: 'read_write',
+    }],
   })).status, 200);
   const published = await json('POST', scoped(WORKSPACE, `config/agents/${AGENT}/publish`));
   assert.equal(published.status, 200, JSON.stringify(published.body));
@@ -475,11 +496,6 @@ async function main(): Promise<void> {
     await ready();
     await proveSandboxPolicyPostgresAuthority();
     const fileId = await upload('shared postgres file bytes');
-    assert.equal(
-      await upload('shared postgres file bytes'),
-      fileId,
-      'equal immutable bytes are idempotent inside a Workspace',
-    );
     const fileMetadata = await json('GET', scoped(WORKSPACE, `files/${fileId}`));
     assert.equal(fileMetadata.status, 200);
     assert.equal(fileMetadata.body.size_bytes, 'shared postgres file bytes'.length);
@@ -578,20 +594,37 @@ async function main(): Promise<void> {
     assert.equal(skillV2.version, '2');
     const skills = await json('GET', scoped(WORKSPACE, 'skills'));
     assert.ok(skills.body.data.some((item: { id: string }) => item.id === skillId));
+    console.log('  ok: initial PostgreSQL File, MemoryStore, Skill, and policy state committed');
     await stop(server);
     assertNoLocalResourceTruth(firstDirectory);
 
-    // Exercise the Postgres v6 identity migration through process replacement:
-    // owned rows become catalog aggregates; unowned rows are quarantined; a
-    // duplicate cannot replace the already-published canonical config history.
+    // Legacy-import decision table (one migration path, never a fallback read):
+    // | legacy owner | canonical id exists | effect |
+    // | non-empty    | false               | import one v1 Catalog aggregate |
+    // | empty        | false               | quarantine; never infer ownership |
+    // | non-empty    | true                | preserve canonical aggregate |
     seedLegacyMemoryIdentities(pg.container, memoryId);
 
     server = start(secondDirectory, pg.url);
     await ready();
-    const fileResponse = await fetch(scoped(WORKSPACE, `files/${fileId}/content`));
-    assert.equal(fileResponse.status, 200);
-    assert.equal(await fileResponse.text(), 'shared postgres file bytes');
-    const memories = await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/memories`));
+    // Persistence/download decision rule: C1 an uploaded input survives process
+    // replacement -> E1 its metadata remains readable; C2 downloadable=false ->
+    // E2 the public content route stays denied. The later Managed Session mount
+    // proves the private bytes are still usable by the governed runtime path.
+    const restoredFile = await json('GET', scoped(WORKSPACE, `files/${fileId}`));
+    assert.equal(restoredFile.status, 200, 'E1');
+    assert.equal(restoredFile.body.size_bytes, 'shared postgres file bytes'.length, 'E1');
+    assert.equal(
+      (await fetch(scoped(WORKSPACE, `files/${fileId}/content`))).status,
+      400,
+      'E2',
+    );
+    // View decision rule: default/basic redacts content; explicit full is the
+    // authorized content-bearing projection used to prove restart durability.
+    const memories = await json(
+      'GET',
+      `${scoped(WORKSPACE, `memory_stores/${memoryId}/memories`)}?view=full`,
+    );
     assert.equal(memories.status, 200);
     assert.equal(memories.body.data[0].content, 'shared postgres memory v2');
     assert.equal(memories.body.data[0].path, '/renamed-fact.md');
@@ -606,6 +639,9 @@ async function main(): Promise<void> {
       pg.container,
       'memory_store',
       memoryId,
+    );
+    const memoryConfigVersion = String(
+      canonicalMemoryRecord.definition.current_config_version,
     );
     const corruptMemoryRecords = [
       {
@@ -627,12 +663,12 @@ async function main(): Promise<void> {
       })(),
       (() => {
         const value = structuredClone(canonicalMemoryRecord);
-        value.configs['2'].memory_store_id = 'forged-memory-id';
+        value.configs[memoryConfigVersion].memory_store_id = 'forged-memory-id';
         return value;
       })(),
       (() => {
         const value = structuredClone(canonicalMemoryRecord);
-        value.configs['2'].version = 99;
+        value.configs[memoryConfigVersion].version = 99;
         return value;
       })(),
     ];
@@ -711,6 +747,7 @@ async function main(): Promise<void> {
     assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`))).status, 404);
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `memory_stores/${memoryId}`))).status, 404);
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `skills/${skillId}`))).status, 404);
+    console.log('  ok: replacement process restored and isolated all PostgreSQL resource state');
 
     // Drive the production Managed Session edge so Repository configuration uses
     // this same PostgreSQL Resource Catalog rather than a scenario-host registry.
@@ -723,7 +760,7 @@ async function main(): Promise<void> {
     // | checkout omitted                     | repository default branch      |
     // | checkout={type:branch,name:main}      | exact main branch realization  |
     // | legacy top-level initial_branch       | 400 unknown-field fail-closed  |
-    await publishAgent(upstream.url);
+    await publishAgent(upstream.url, memoryId);
     const repository = seedRepository(secondDirectory);
     const session = await json('POST', scoped(WORKSPACE, 'sessions'), {
       agent: AGENT, environment_id: 'env_local',
@@ -746,6 +783,7 @@ async function main(): Promise<void> {
       session.body.resources.map((resource: { type: string }) => resource.type),
       ['memory_store', 'github_repository'],
     );
+    console.log('  ok: Managed Session bound PostgreSQL-backed MemoryStore and Repository inputs');
     const turn = await json(
       'POST',
       scoped(WORKSPACE, `sessions/${session.body.id}/events`),
@@ -760,6 +798,7 @@ async function main(): Promise<void> {
       },
     );
     assert.equal(turn.status, 200, JSON.stringify(turn.body));
+    console.log('  ok: Managed turn completed over the PostgreSQL-backed resource bindings');
     const realized = psql(
       pg.container,
       `SELECT count(*) FROM resource_lifecycle_references WHERE reference_id=${sqlLiteral(session.body.id)}`,
@@ -768,7 +807,7 @@ async function main(): Promise<void> {
     const extraction = await waitForCompletedExtraction(pg.container, session.body.id);
     assert.equal(extraction.workspace_id, WORKSPACE);
     assert.equal(extraction.memory_store_id, memoryId);
-    assert.equal(extraction.memory_config_version, 2);
+    assert.equal(extraction.memory_config_version, Number(memoryConfigVersion));
     // Cause graph / decision table for the frozen extractor candidate:
     // C1=published candidate is carried exactly; C2=terminal sub-run succeeds.
     // | Rule | C1 | C2 | result                                      |
@@ -799,13 +838,21 @@ async function main(): Promise<void> {
     // A live resource attachment creates a new Session activation generation and
     // therefore revalidates every frozen governed input, including the existing
     // Repository binding. Corrupt the shared Postgres aggregate between requests:
-    // no node may infer Repository configuration from the mutable remote, and a
-    // failed generation remains pending and contains an error receipt; the SQLite
-    // cold-start matrix above proves durable recovery. Here each corruption case is
-    // isolated by restoring the captured Postgres Session row between requests.
+    // no node may infer Repository configuration from the mutable remote. This
+    // synchronous command has not changed the live projection when validation
+    // fails, so compensation retains the prior generation and commits a Failed
+    // receipt with no pending work. The cold-start matrix separately injects a
+    // pre-existing Prepared generation and proves durable recovery. Here each
+    // corruption case is isolated by restoring the captured Postgres Session row.
+    //
+    // | Rule | Desired apply | Prior projection | Effect |
+    // |---|---|---|---|
+    // | P1 | catalog valid | retained | activate the new File generation |
+    // | P2 | catalog corrupt before mutation | retained | fail, record Failed, no pending generation |
+    // | P3 | Prepared already durable + catalog corrupt | not applied | retain Prepared for cold-start retry (covered by resource_catalog_corruption) |
     const createTimeRepositoryIds = psql(
       pg.container,
-      `SELECT id FROM admin_resource_catalog WHERE kind='repository' ` +
+      `SELECT id FROM resource_catalog_entry WHERE kind='repository' ` +
         `AND id LIKE ${sqlLiteral(`managed:${session.body.id}:repository:%`)} ORDER BY id`,
     ).split('\n').filter(Boolean);
     assert.equal(
@@ -872,8 +919,8 @@ async function main(): Promise<void> {
       assert.match(JSON.stringify(denied.body), /resource catalog storage failure/u, `${index}`);
       assert.equal(server.exitCode, null, `${index}: Repository corruption crashed the process`);
       const pending = managedSessionResources(pg.container, session.body.id);
-      assert.notEqual(pending.pending, undefined, `${index}: failed generation was not durable`);
-      assert.equal(pending.activations.at(-1).state, 'prepared', `${index}`);
+      assert.equal(pending.pending, undefined, `${index}: P2 must not retain retryable work`);
+      assert.equal(pending.activations.at(-1).state, 'failed', `${index}`);
       assert.equal(pending.activations.at(-1).attempts, 1, `${index}`);
       assert.match(pending.activations.at(-1).last_error, /resource catalog/u, `${index}`);
       writeResourceCatalogRecord(
@@ -928,15 +975,24 @@ async function main(): Promise<void> {
     assert.equal(retiredRepository.status, 200, JSON.stringify(retiredRepository.body));
     assert.equal(retiredRepository.body.type, 'session_resource_deleted');
 
-    // The immutable File blob may have more than one Workspace ownership edge.
-    // Removing one edge must deny that Workspace immediately without deleting
-    // bytes still owned by another Workspace.
-    assert.equal(await upload('shared postgres file bytes', OTHER_WORKSPACE), fileId);
-    assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`))).status, 200);
+    // PostgreSQL workspace-ownership decision table:
+    // C1 equal bytes are uploaded in another Workspace; C2 A deletes its logical
+    // File; C3 B still owns its distinct logical File. E1 public identities differ,
+    // E2 A is denied immediately, E3 B remains readable, and E4 B can revoke its
+    // own identity. Physical blob deduplication stays an internal FileStore concern.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // |---|---|---|---|---|
+    // | D1 | T | F | T | E1 + B readable |
+    // | D2 | T | T | T | E2 + E3 |
+    // | D3 | T | T | F | E4 |
+    const otherFileId = await upload('shared postgres file bytes', OTHER_WORKSPACE);
+    assert.notEqual(otherFileId, fileId, 'D1: logical File identity is workspace-owned');
+    assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `files/${otherFileId}`))).status, 200);
     assert.equal((await json('DELETE', scoped(WORKSPACE, `files/${fileId}`))).status, 200);
-    assert.equal((await fetch(scoped(WORKSPACE, `files/${fileId}/content`))).status, 404);
-    assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`))).status, 200);
-    assert.equal((await json('DELETE', scoped(OTHER_WORKSPACE, `files/${fileId}`))).status, 200);
+    assert.equal((await json('GET', scoped(WORKSPACE, `files/${fileId}`))).status, 404);
+    assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `files/${otherFileId}`))).status, 200);
+    assert.equal((await json('DELETE', scoped(OTHER_WORKSPACE, `files/${otherFileId}`))).status, 200);
 
     assert.equal(
       (await json('DELETE', scoped(WORKSPACE, `memory_stores/${memoryId}/memories/${memoryEntryId}`))).status,
@@ -959,17 +1015,30 @@ async function main(): Promise<void> {
     assert.equal((await json('DELETE', scoped(WORKSPACE, `skills/${skillId}`))).status, 200);
     assert.equal((await json('GET', scoped(WORKSPACE, `skills/${skillId}`))).status, 404);
 
-    // PostgreSQL distributed-reclaimer fault matrix. These are database-level
-    // crash/race injections against production tables, not test-only service APIs.
-    const reclamationIds = {
+    // PostgreSQL distributed-reclaimer fault matrix. Public deletion addresses a
+    // Workspace-owned logical File, while lifecycle/reclamation owns the private
+    // physical blob target. The test must keep those identities distinct just as
+    // the production application service does.
+    //
+    // | Rule | API identity | Lifecycle identity | Effect |
+    // |---|---|---|---|
+    // | L1 | logical file id | matching blob id | delete creates the exact physical purge intent |
+    // | L2 | logical file id | logical file id | forbidden test contract; no such lifecycle target |
+    const reclamationFiles = {
       contended: await upload('postgres contended reclamation'),
       late: await upload('postgres late reference'),
       release: await upload('postgres release failure'),
       physical: await upload('postgres physical failure'),
     };
+    const reclamationIds = Object.fromEntries(
+      Object.entries(reclamationFiles).map(([name, fileId]) => [
+        name,
+        fileBlobId(pg.container, fileId),
+      ]),
+    ) as typeof reclamationFiles;
     installReclamationFaults(pg.container, reclamationIds);
-    for (const id of Object.values(reclamationIds)) {
-      assert.equal((await json('DELETE', scoped(WORKSPACE, `files/${id}`))).status, 200);
+    for (const fileId of Object.values(reclamationFiles)) {
+      assert.equal((await json('DELETE', scoped(WORKSPACE, `files/${fileId}`))).status, 200);
     }
     const faulted = await waitForResourceIntents(
       pg.container,

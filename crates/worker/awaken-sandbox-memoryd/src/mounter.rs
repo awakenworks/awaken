@@ -29,10 +29,9 @@ pub struct MemoryStoreMounter {
     /// The shared invalidation bus every FUSE mount subscribes to.
     #[cfg(all(feature = "fuse", target_os = "linux"))]
     bus: Arc<LocalInvalidator>,
-    /// When false, never mount FUSE — always copy. Set for isolation tiers that
-    /// cannot splice a host FUSE mount into their namespace yet (bwrap/container;
-    /// live-FUSE-in-namespace is ADR-0053 item 2, deferred). The Workdir tier runs in
-    /// the host mount namespace, so it FUSE-mounts directly at the sandbox path.
+    /// When false, never mount FUSE — always copy. Set for container isolation
+    /// tiers that cannot bind a host FUSE mount reliably. Workdir mounts directly
+    /// in the host namespace; Namespace binds that host projection into bwrap.
     #[cfg(all(feature = "fuse", target_os = "linux"))]
     prefer_fuse: bool,
 }
@@ -46,7 +45,8 @@ impl MemoryStoreMounter {
     }
 
     /// A copy-only mounter (never FUSE) for a tier that cannot expose a host FUSE
-    /// mount inside its isolation (bwrap/container). The store is materialized to
+    /// mount inside its isolation (Docker/Podman; Kubernetes uses native sidecars).
+    /// The store is materialized to
     /// plain files that bind into the namespace, and harvested back on teardown.
     #[must_use]
     pub fn copy_only(durable: Arc<dyn MemoryRepository>) -> Self {

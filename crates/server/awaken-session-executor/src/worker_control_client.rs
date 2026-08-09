@@ -9,6 +9,14 @@ use serde_json::{Value, json};
 
 use awaken_worker_transport_security::WorkerUpstream;
 
+#[derive(Debug, thiserror::Error)]
+pub enum WorkerRegistrationError {
+    #[error("{0}")]
+    SlotOccupied(String),
+    #[error("{0}")]
+    Rejected(String),
+}
+
 #[derive(Clone)]
 pub struct WorkerControlClient {
     upstream: WorkerUpstream,
@@ -20,7 +28,11 @@ impl WorkerControlClient {
         Self { upstream }
     }
 
-    async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
+    async fn post_response(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<(reqwest::StatusCode, Value), String> {
         let request = self
             .upstream
             .client()
@@ -37,14 +49,20 @@ impl WorkerControlClient {
             .json()
             .await
             .map_err(|error| format!("worker control response decode: {error}"))?;
-        if !status.is_success() {
-            return Err(body
+        Ok((status, body))
+    }
+
+    async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
+        let (status, body) = self.post_response(path, body).await?;
+        if status.is_success() {
+            Ok(body)
+        } else {
+            Err(body
                 .get("error")
                 .and_then(Value::as_str)
                 .unwrap_or("worker control request rejected")
-                .to_string());
+                .to_string())
         }
-        Ok(body)
     }
 
     pub async fn register(
@@ -52,8 +70,21 @@ impl WorkerControlClient {
         incarnation_id: impl Into<String>,
         manifest: WorkerManifest,
     ) -> Result<RegisteredWorker, String> {
-        let body = self
-            .post(
+        self.register_classified(incarnation_id, manifest)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    /// Register once while preserving the one retryable registry conflict as a
+    /// typed result. The caller owns retry timing; all other transport and
+    /// validation failures remain terminal.
+    pub async fn register_classified(
+        &self,
+        incarnation_id: impl Into<String>,
+        manifest: WorkerManifest,
+    ) -> Result<RegisteredWorker, WorkerRegistrationError> {
+        let (status, body) = self
+            .post_response(
                 "/v1/worker/register",
                 json!({
                     "registration": WorkerRegistration {
@@ -63,9 +94,25 @@ impl WorkerControlClient {
                     }
                 }),
             )
-            .await?;
-        serde_json::from_value(body.get("worker").cloned().unwrap_or(Value::Null))
-            .map_err(|error| format!("worker registration decode: {error}"))
+            .await
+            .map_err(WorkerRegistrationError::Rejected)?;
+        if !status.is_success() {
+            let message = body
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("worker registration rejected")
+                .to_string();
+            return if status == reqwest::StatusCode::CONFLICT {
+                Err(WorkerRegistrationError::SlotOccupied(message))
+            } else {
+                Err(WorkerRegistrationError::Rejected(message))
+            };
+        }
+        serde_json::from_value(body.get("worker").cloned().unwrap_or(Value::Null)).map_err(
+            |error| {
+                WorkerRegistrationError::Rejected(format!("worker registration decode: {error}"))
+            },
+        )
     }
 
     pub async fn heartbeat(

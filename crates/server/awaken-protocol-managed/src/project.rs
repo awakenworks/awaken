@@ -12,6 +12,7 @@
 use awaken_agent_contract::event::{
     Fact, ToolDisposition, Transcoder, fold_messages as fold, terminal_awaiting,
 };
+use awaken_session_contract::Pending;
 
 use crate::state::{AgentCapabilities, CustomTool, OutcomeIteration};
 use crate::types::{OutboundKind, StopReason};
@@ -403,12 +404,17 @@ impl Transcoder for ManagedEncoder {
 
 /// Project just the agent-visible events for a batch of committed messages (no
 /// terminal `session.status_idle`). Used by both a turn and an outcome iteration.
-/// `pending` is `(tool_use_id, client_executed)` of the tool the run awaits.
+/// `pending` is the exact tool the run awaits.
 pub fn project_messages(
     messages: &[awaken_agent_contract::agent::message::Message],
-    pending: Option<(&str, bool)>,
+    pending: Option<&Pending>,
 ) -> Vec<ProjectedEvent> {
-    project_messages_with_mcp_ids(messages, pending, std::iter::empty())
+    project_messages_with_mcp_ids(
+        messages,
+        pending,
+        &std::collections::HashSet::new(),
+        std::iter::empty(),
+    )
 }
 
 /// Project a committed transcript delta while retaining MCP call identities
@@ -416,12 +422,42 @@ pub fn project_messages(
 /// this same encoder path; it does not invent a second recovery transcoder.
 pub(crate) fn project_messages_with_mcp_ids(
     messages: &[awaken_agent_contract::agent::message::Message],
-    pending: Option<(&str, bool)>,
+    pending: Option<&Pending>,
+    projected_tool_ids: &std::collections::HashSet<String>,
     mcp_ids: impl IntoIterator<Item = String>,
 ) -> Vec<ProjectedEvent> {
     let mut encoder = ManagedEncoder::default();
     encoder.mcp_ids.extend(mcp_ids);
-    encoder.transcode_facts(&fold(messages, pending))
+    encoder.transcode_facts(&fold_with_pending(messages, pending, projected_tool_ids))
+}
+
+fn fold_with_pending(
+    messages: &[awaken_agent_contract::agent::message::Message],
+    pending: Option<&Pending>,
+    projected_tool_ids: &std::collections::HashSet<String>,
+) -> Vec<Fact> {
+    let mut facts = fold(
+        messages,
+        pending.map(|pending| (pending.tool_use_id.as_str(), pending.client_executed)),
+    );
+    if let Some(pending) = pending
+        && !projected_tool_ids.contains(&pending.tool_use_id)
+        && !facts
+            .iter()
+            .any(|fact| matches!(fact, Fact::ToolCall { id, .. } if id == &pending.tool_use_id))
+    {
+        facts.push(Fact::ToolCall {
+            id: pending.tool_use_id.clone(),
+            name: pending.name.clone(),
+            input: pending.input.clone(),
+            disposition: if pending.client_executed {
+                ToolDisposition::PendingClient
+            } else {
+                ToolDisposition::PendingBuiltin
+            },
+        });
+    }
+    facts
 }
 
 /// Project the messages committed during one step, then a terminal
@@ -430,10 +466,11 @@ pub(crate) fn project_messages_with_mcp_ids(
 pub(crate) fn project_step(
     messages: &[awaken_agent_contract::agent::message::Message],
     state: &awaken_agent_contract::agent::run::RunState,
-    pending: Option<(&str, bool)>,
+    pending: Option<&Pending>,
+    projected_tool_ids: &std::collections::HashSet<String>,
     mcp_ids: impl IntoIterator<Item = String>,
 ) -> Vec<ProjectedEvent> {
-    let mut events = fold(messages, pending);
+    let mut events = fold_with_pending(messages, pending, projected_tool_ids);
     events.push(terminal_event(state, pending));
     let mut encoder = ManagedEncoder::default();
     encoder.mcp_ids.extend(mcp_ids);
@@ -443,11 +480,13 @@ pub(crate) fn project_step(
 /// Project the run's sole lifecycle authority to the Managed terminal fact.
 fn terminal_event(
     state: &awaken_agent_contract::agent::run::RunState,
-    pending: Option<(&str, bool)>,
+    pending: Option<&Pending>,
 ) -> Fact {
     use awaken_agent_contract::agent::run::{EndCause, RunState};
     match state {
-        RunState::Awaiting => terminal_awaiting(pending.map(|p| p.0)),
+        RunState::Awaiting => {
+            terminal_awaiting(pending.map(|pending| pending.tool_use_id.as_str()))
+        }
         RunState::Ended(EndCause::MaxSteps | EndCause::Error(_)) => {
             Fact::RunFinished { exhausted: true }
         }
@@ -528,6 +567,44 @@ mod tests {
                 "steered={steered} projected {} events",
                 out.len()
             );
+        }
+    }
+
+    #[test]
+    fn transcript_external_pending_tool_projects_an_answerable_event() {
+        // Cause/effect graph: C1 pending id has/has-not a transcript ToolUse;
+        // C2 pending is client/built-in executed. E1 reuse the transcript event;
+        // E2 synthesize one event with the exact pending id; E3 choose custom vs
+        // built-in wire kind; E4 requires_action references that same id.
+        // Decision rules exercised here: R1 !C1+client -> E2(custom)+E4;
+        // R2 !C1+built-in -> E2(tool_use/ask)+E4. Existing adapter projection
+        // tests own C1 -> E1 and prove the synthesis guard prevents duplication.
+        for (client_executed, expected_type) in
+            [(true, "agent.custom_tool_use"), (false, "agent.tool_use")]
+        {
+            let pending = Pending {
+                tool_use_id: "remote-input".into(),
+                name: "agent_input".into(),
+                input: serde_json::json!({ "reason": "user_input" }),
+                client_executed,
+            };
+            let projected = project_step(
+                &[],
+                &awaken_agent_contract::agent::run::RunState::Awaiting,
+                Some(&pending),
+                &std::collections::HashSet::new(),
+                std::iter::empty(),
+            );
+            assert_eq!(projected.len(), 2);
+            assert_eq!(projected[0].id.as_deref(), Some("remote-input"));
+            assert_eq!(projected[0].kind.type_str(), expected_type, "E3");
+            let OutboundKind::SessionStatusIdle {
+                stop_reason: StopReason::RequiresAction { event_ids },
+            } = &projected[1].kind
+            else {
+                panic!("E4 expected requires_action terminal")
+            };
+            assert_eq!(event_ids, &["remote-input"], "E4");
         }
     }
 }

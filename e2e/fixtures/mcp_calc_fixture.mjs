@@ -23,6 +23,7 @@
 // form body.
 
 import http from 'node:http';
+import { closeHttpServer } from '../http_server.mjs';
 
 /// Start the fixture; resolves to
 ///   { url, tokenUrl, calls, grants, tokenRequests, unauthorized, close() }.
@@ -229,7 +230,7 @@ export function startCalcFixture(token, options = {}) {
         grants,
         tokenRequests,
         get unauthorized() { return state.unauthorized; },
-        close: () => new Promise((done) => server.close(done)),
+        close: () => closeHttpServer(server),
       });
     });
   });

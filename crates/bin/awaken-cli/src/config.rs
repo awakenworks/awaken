@@ -71,6 +71,10 @@ pub struct ResolvedDeployment {
     /// Secret-free local ACP observations captured once during product startup.
     /// Empty means discovery was not run (for example in Server mode).
     pub local_acp_observations: Vec<awaken_acp_application::AcpHostObservation>,
+    /// Authored local ACP selection. `None` enables zero-configuration host
+    /// discovery, `Some(non-empty)` constrains it, and `Some(empty)` explicitly
+    /// disables discovery/acquisition without changing any other Worker feature.
+    pub configured_acp_clis: Option<Vec<String>>,
     pub control: awaken_control::ControlStoreConfig,
     pub coordinator: CoordinatorStoreConfig,
     pub resources: ResourceStoreBackend,
@@ -349,6 +353,13 @@ impl ResolvedDeployment {
             file.control_service_token_file.clone(),
         )?;
         let runtime_settings = runtime_settings::resolve(&file, &data_dir)?;
+        let configured_acp_clis = file.acp_clis.as_ref().map(|_| {
+            runtime_settings
+                .acp
+                .as_ref()
+                .map(|profile| profile.cli_ids().map(str::to_owned).collect())
+                .unwrap_or_default()
+        });
         let postgres_max_connections = file
             .postgres_max_connections
             .map(|value| {
@@ -648,6 +659,7 @@ impl ResolvedDeployment {
             runtime,
             observability,
             local_acp_observations: Vec::new(),
+            configured_acp_clis,
             control,
             coordinator,
             resources,
@@ -843,6 +855,7 @@ mod tests {
         // profile constructor alone decides whether one row becomes the default.
         //
         // Decision table:
+        // A0 explicit empty                -> discovery/acquisition disabled
         // A1 unconfigured + none detected -> no ACP Worker
         // A2 unconfigured + one detected  -> that CLI + automatic default
         // A3 unconfigured + many detected -> all CLIs + no random default
@@ -855,7 +868,18 @@ mod tests {
             awaken_acp_application::AcpDetectionState::Detected,
         );
 
+        let disabled = resolve(
+            FileConfig {
+                acp_clis: Some(Vec::new()),
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(disabled.configured_acp_clis, Some(Vec::new()), "A0");
+        assert!(disabled.runtime.acp.is_none(), "A0");
+
         let mut none = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert_eq!(none.configured_acp_clis, None, "A1");
         none.apply_local_acp_observations(vec![missing.clone()], vec![])
             .unwrap();
         assert!(none.runtime.acp.is_none(), "A1");
@@ -897,6 +921,11 @@ mod tests {
                 ..Default::default()
             },
             ConfigOverrides::default(),
+        );
+        assert_eq!(
+            explicit.configured_acp_clis.as_deref(),
+            Some(["claude".to_owned()].as_slice()),
+            "A4"
         );
         explicit
             .apply_local_acp_observations(vec![codex, claude], vec!["claude".into()])

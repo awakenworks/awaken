@@ -65,6 +65,7 @@ pub struct HostError {
 pub enum HostErrorKind {
     Internal,
     BadRequest,
+    Conflict,
 }
 
 impl HostError {
@@ -78,6 +79,12 @@ impl HostError {
         Self {
             message: message.into(),
             kind: HostErrorKind::BadRequest,
+        }
+    }
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: HostErrorKind::Conflict,
         }
     }
 }

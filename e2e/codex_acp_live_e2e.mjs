@@ -26,6 +26,7 @@
 
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { closeHttpServer } from './http_server.mjs';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -33,6 +34,7 @@ import path from 'node:path';
 import { execSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
+import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 
 if (process.env.CODEX_ACP_LIVE !== '1') {
   throw new Error('set CODEX_ACP_LIVE=1 to confirm this test may invoke the real Codex ACP adapter');
@@ -85,7 +87,7 @@ async function availablePort() {
   });
   const address = server.address();
   assert.equal(typeof address, 'object');
-  await new Promise((resolve) => server.close(resolve));
+  await closeHttpServer(server);
   return address.port;
 }
 
@@ -125,25 +127,6 @@ async function request(baseURL, method, route, body) {
   return { response, value };
 }
 
-async function waitForVerifiedCodex(baseURL) {
-  const deadline = Date.now() + 60_000;
-  let lastRuntime;
-  while (Date.now() < deadline) {
-    const capabilities = await request(baseURL, 'GET', '/v1/capabilities');
-    assert.equal(capabilities.response.status, 200, JSON.stringify(capabilities.value));
-    lastRuntime = capabilities.value.runtimes.find((row) => row.id === 'acp:codex');
-    if (
-      lastRuntime?.local?.detected === true
-      && lastRuntime.local.login_state === 'available'
-      && lastRuntime.local.negotiated !== null
-    ) {
-      return lastRuntime;
-    }
-    await sleep(200);
-  }
-  throw new Error(`Codex Worker observation did not become Available+Verified: ${JSON.stringify(lastRuntime)}`);
-}
-
 async function startHostLoginProfile() {
   const binary = awakenBin();
   const doctor = spawnSync(binary, ['doctor', 'acp', '--json'], {
@@ -171,7 +154,11 @@ async function startHostLoginProfile() {
   const baseURL = `http://127.0.0.1:${port}`;
   try {
     await waitReady(child, baseURL);
-    await waitForVerifiedCodex(baseURL);
+    await waitForVerifiedAcpCapability(baseURL, 'codex', {
+      timeoutMs: 60_000,
+      pollMs: 200,
+      requireAvailableLogin: true,
+    });
 
     const agent = process.env.AWAKEN_ACP_AGENT ?? 'codex-host-login-live';
     let result = await request(baseURL, 'PUT', `/v1/config/agents/${agent}`, {
