@@ -1,11 +1,12 @@
 //! Session lifecycle for [`ManagedState`]: create, rehydrate, get/list,
 //! update, delete, and archive.
 
-use super::application::{ManagedMcpCandidate, ManagedMcpCandidateTarget, initial_mcp_candidates};
+use super::application::initial_mcp_candidates;
 use super::*;
 
 use super::session_mcp_projection::typed_mcp_servers;
 use crate::types::AgentRef;
+use awaken_session_contract::ApplicationSessionContributionFailure;
 
 fn validate_session_skill_total(
     source: Option<&dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
@@ -158,7 +159,10 @@ impl ManagedState {
     /// Refresh the disposable HTTP projection after the one durable root CAS.
     /// Every mutation crosses this seam, so realization, update, archive, and
     /// recovery cannot each invent a second cache-synchronization path.
-    fn refresh_cached_projection(&self, persisted: &PersistedSession) -> Result<(), StateError> {
+    pub(super) fn refresh_cached_projection(
+        &self,
+        persisted: &PersistedSession,
+    ) -> Result<(), StateError> {
         let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers());
         let mut sessions = self.sessions.lock().unwrap();
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
@@ -172,127 +176,6 @@ impl ManagedState {
         record.session.agent.mcp_servers = mcp_servers;
         record.resource_state = persisted.resources.clone();
         Ok(())
-    }
-
-    /// Sole Managed anti-corruption compiler for create-time and hot MCP input.
-    /// URL identity, Vault ordering and exact credential pinning cannot be
-    /// repeated by either caller after this function returns.
-    pub(super) async fn normalize_mcp_drafts(
-        &self,
-        candidates: Vec<ManagedMcpCandidate>,
-        ordered_vault_ids: &[String],
-    ) -> Result<Vec<awaken_session_contract::McpAttachmentDraft>, StateError> {
-        let mut drafts = Vec::with_capacity(candidates.len());
-        for candidate in candidates {
-            let name = candidate.name;
-            let target = match candidate.target {
-                ManagedMcpCandidateTarget::WireUrl(url) => {
-                    awaken_session_contract::McpTarget::parse_http(&url).map_err(|_| {
-                        StateError::Run(RunError::bad_request(format!(
-                            "invalid MCP server URL for `{name}`"
-                        )))
-                    })?
-                }
-                ManagedMcpCandidateTarget::WireSandboxStdio { command, args } => {
-                    awaken_session_contract::McpTarget::sandbox_stdio(&command, args).map_err(
-                        |_| {
-                            StateError::Run(RunError::bad_request(format!(
-                                "invalid sandbox stdio MCP command for `{name}`"
-                            )))
-                        },
-                    )?
-                }
-                ManagedMcpCandidateTarget::Normalized(target) => target,
-            };
-            let credential = match candidate.published_credential {
-                Some((id, revision)) => {
-                    let source_id = awaken_credential_contract::CredentialSourceId(id.clone());
-                    let access = if let Some(vaults) = &self.application.credential_source() {
-                        let access =
-                            vaults
-                                .mcp_access_for_source(&source_id)
-                                .await
-                                .map_err(|error| {
-                                    StateError::Run(RunError::bad_request(format!(
-                                        "MCP credential could not be pinned exactly: {error}"
-                                    )))
-                                })?;
-                        if access.credential.revision != revision {
-                            return Err(StateError::Run(RunError::bad_request(
-                                "published MCP credential revision no longer matches",
-                            )));
-                        }
-                        access
-                    } else {
-                        awaken_credential_contract::CredentialAccess::new(
-                            awaken_credential_contract::CredentialRef { id, revision },
-                            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-                            awaken_credential_contract::CredentialUsage::HttpHeader {
-                                name: "authorization".into(),
-                                scheme: Some("Bearer".into()),
-                            },
-                            awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
-                        )
-                    };
-                    Some(access)
-                }
-                None => match &self.application.credential_source() {
-                    Some(vaults) => {
-                        let source_id = match target.http_url() {
-                            Some(url) => vaults
-                                .mcp_credential_source_for_url(ordered_vault_ids, url)
-                                .await
-                                .map_err(|error| {
-                                    StateError::Run(RunError::bad_request(format!(
-                                        "MCP credential selection failed: {error}"
-                                    )))
-                                })?,
-                            None => None,
-                        };
-                        match source_id {
-                            Some(source_id) => {
-                                Some(vaults.mcp_access_for_source(&source_id).await.map_err(
-                                    |error| {
-                                        StateError::Run(RunError::bad_request(format!(
-                                            "MCP credential could not be pinned exactly: {error}"
-                                        )))
-                                    },
-                                )?)
-                            }
-                            None => None,
-                        }
-                    }
-                    None => None,
-                },
-            };
-            drafts.push(awaken_session_contract::McpAttachmentDraft {
-                name,
-                target,
-                prompts_as_skills: candidate.prompts_as_skills,
-                credential,
-                origin: candidate.origin,
-            });
-        }
-        Ok(drafts)
-    }
-
-    /// Rebuild the process-local projection through the same phase driver used
-    /// by creation and hot replacement. Recovery is a trigger, not a second
-    /// realization algorithm.
-    pub(super) async fn recover_mcp_projections(
-        &self,
-        session_id: &str,
-    ) -> Result<PersistedSession, StateError> {
-        let session = self
-            .application
-            .session_repository()
-            .get(session_id)
-            .await
-            .ok_or(StateError::NotFound)?;
-        if !session.mcp.needs_reconciliation() {
-            return Ok(session);
-        }
-        self.realize_session_locally(session_id).await
     }
 
     /// Wire-cache adapter around the Session application's sole root CAS. Every
@@ -378,65 +261,17 @@ impl ManagedState {
         Ok(session)
     }
 
-    async fn tombstone_session_snapshot(
-        &self,
-        owner_scope: &str,
-        session: &PersistedSession,
-        fact: ManagedLifecycleFact,
-    ) -> Result<(), StateError> {
-        let deleted_revision =
-            awaken_session_contract::SessionRevision(
-                session.revision.0.checked_add(1).ok_or_else(|| {
-                    StateError::Run(RunError::internal("Session revision exhausted"))
-                })?,
-            );
-        let payload = awaken_session_contract::SessionMutationPayload::Delete(
-            awaken_session_contract::SessionTombstone {
-                session_id: session.session_id.clone(),
-                deleted_revision,
-                deleted_at: fact.timestamp.to_string(),
-            },
-        );
-        let payload_hash = payload.stable_hash();
-        let mutation = awaken_session_contract::SessionMutation {
-            expected_revision: session.revision,
-            idempotency: awaken_session_contract::IdempotencyRecord {
-                key: format!(
-                    "managed:delete:{}:{}:{payload_hash}",
-                    session.session_id, session.revision.0
-                ),
-                payload_hash,
-            },
-            payload,
-            lifecycle_facts: vec![fact],
-        };
-        match self
-            .application
-            .commit_mutation(owner_scope, mutation)
-            .await
-            .map_err(Self::map_application_mutation_error)?
-        {
-            awaken_session_contract::SessionMutationResult::Applied { .. }
-            | awaken_session_contract::SessionMutationResult::Replayed { .. } => Ok(()),
-            awaken_session_contract::SessionMutationResult::Conflict { .. } => {
-                Err(StateError::Conflict)
-            }
-            awaken_session_contract::SessionMutationResult::IdempotencyMismatch => Err(
-                StateError::Run(RunError::internal("Session idempotency mismatch")),
-            ),
-        }
-    }
-
     /// `POST /v1/sessions`.
     ///
     /// MCP binding (ADR-0043 Phase 3): each requested server is bound to a vault
     /// credential by exact `mcp_server_url` match across the request's
     /// `vault_ids`. The preparation intent, frozen generation-1 state, and exact
-    /// realization claim all commit before [`SessionRuntime::prepare_session`]
+    /// realization claim all commit before
+    /// [`SessionRuntime::prepare_session`](awaken_session_contract::SessionRuntime::prepare_session)
     /// performs external I/O. A failed realization leaves recoverable failed
     /// state and fails the create (the router maps the `RunError` to the error
     /// envelope). A `vault_ids` entry that names no
-    /// existing vault fails the create closed too ([`VaultState::has_vault`]):
+    /// existing vault fails the create closed too:
     /// a 404 naming the vault id, BEFORE anything is provisioned — never a
     /// silent no-binding whose 401 only surfaces at the first turn. (Without a
     /// wired vault surface there is nothing to validate against and every
@@ -667,6 +502,7 @@ impl ManagedState {
             AgentRef::Id(_) => None,
         };
         let mcp_drafts = self
+            .application
             .normalize_mcp_drafts(
                 initial_mcp_candidates(
                     &req.mcp_servers,
@@ -795,12 +631,14 @@ impl ManagedState {
                     .map_err(StateError::Run)?,
             );
         }
-        self.pin_repository_credentials(
-            &owner_scope,
-            &environment.credential_realization.resource_holder,
-            &mut resolved_resources,
-        )
-        .await?;
+        self.application
+            .pin_repository_credentials(
+                &owner_scope,
+                &environment.credential_realization.resource_holder,
+                &mut resolved_resources,
+            )
+            .await
+            .map_err(Self::map_preparation_error)?;
         // Validate the advertised tool surface before persisting an activation or
         // touching a Host. A definition error cannot strand Prepared resources.
         let caps = self.application.runtime().capabilities_for(&id);
@@ -897,8 +735,13 @@ impl ManagedState {
             .await?;
         if let Some(compiled) = compiled {
             persisted = self
+                .application
                 .commit_compiled_session_creation(&owner_scope, persisted, compiled)
-                .await?;
+                .await
+                .map_err(|error| match error {
+                    ApplicationSessionContributionFailure::Conflict => StateError::Conflict,
+                    error => StateError::Run(RunError::internal(error.to_string())),
+                })?;
             // Cause/effect decision table (the cross-product is exercised by the
             // placement test below):
             //
@@ -912,8 +755,10 @@ impl ManagedState {
             // either effect. Dispatch preparation deliberately acquires no
             // realization lease and performs no physical Runtime I/O.
             let realization = if self.application.requires_external_realization(&persisted) {
-                self.install_dispatch_projection(&owner_scope, &persisted)
+                self.application
+                    .install_dispatch_projection(&owner_scope, &persisted)
                     .await
+                    .map_err(Self::map_realization_application_error)
                     .map(|()| persisted.clone())
             } else {
                 self.realize_session_locally(&id).await
@@ -1091,263 +936,6 @@ impl ManagedState {
             .session_repository()
             .owner(session_id)
             .await
-    }
-
-    pub(super) async fn reconcile_persisted_resources(
-        &self,
-        owner_scope: &str,
-        mut session: PersistedSession,
-    ) -> Result<PersistedSession, StateError> {
-        session = self
-            .ensure_repository_credentials_pinned(owner_scope, session)
-            .await?;
-        // Exact credential pins are Control-owned durable facts, but physical
-        // input projection for frozen WorkQueue/application Sessions belongs to
-        // the claim-owning Worker.
-        if self.application.requires_external_realization(&session) {
-            return Ok(session);
-        }
-        let session_id = session.session_id.clone();
-        // Running/rescheduling are live aggregate states, not terminal Resource
-        // cleanup. A broad repository recovery scan can legitimately include them
-        // for Environment, MCP, or WorkQueue convergence; Resource reconciliation
-        // must leave their resident sandbox and active manifest untouched.
-        if session.status != "idle" && !session.is_terminal() {
-            return Ok(session);
-        }
-        if session.status == "idle" {
-            if let Some(desired) = session.resources.pending.clone() {
-                session
-                    .resources
-                    .start_attempt()
-                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                session = self
-                    .commit_session_snapshot(
-                        owner_scope,
-                        session,
-                        "resource-reconcile-attempt",
-                        Vec::new(),
-                    )
-                    .await?;
-                if let Err(error) = self
-                    .application
-                    .runtime()
-                    .apply_session_inputs(
-                        &session_id,
-                        owner_scope,
-                        session.resources.revision,
-                        &desired,
-                    )
-                    .await
-                {
-                    session
-                        .resources
-                        .note_retryable_failure(error.to_string())
-                        .map_err(|state_error| {
-                            StateError::Run(RunError::internal(state_error.to_string()))
-                        })?;
-                    self.commit_session_snapshot(
-                        owner_scope,
-                        session,
-                        "resource-reconcile-failed",
-                        Vec::new(),
-                    )
-                    .await?;
-                    return Err(StateError::Run(error));
-                }
-                session
-                    .resources
-                    .commit()
-                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                session = self
-                    .commit_session_snapshot(
-                        owner_scope,
-                        session,
-                        "resource-reconcile-active",
-                        Vec::new(),
-                    )
-                    .await?;
-                return Ok(session);
-            }
-
-            if session.resources.activations.iter().any(|activation| {
-                activation.state == awaken_session_contract::ActivationState::Releasing
-            }) {
-                return Err(StateError::Run(RunError::internal(
-                    "resource activation has Releasing records without a pending manifest",
-                )));
-            }
-            // Cause graph:
-            //   pending -> realize pending generation
-            //   no pending + active inputs -> replay/adopt the retained generation
-            //   no pending + no active inputs -> no external resource effect
-            //
-            // Decision table:
-            // | Rule | pending | active inputs | activations | Runtime apply |
-            // | R1   | yes     | any           | any         | desired       |
-            // | R2   | no      | nonempty      | empty       | active+adopt  |
-            // | R3   | no      | nonempty      | present     | active        |
-            // | R4   | no      | empty         | empty       | none          |
-            //
-            // R4 is important for retained pre-ADR-66 rows: manufacturing an
-            // empty "activation" before prepare_session is both redundant and
-            // invalid for a fresh Runtime incarnation.
-            if session.resources.active.inputs.is_empty()
-                && session.resources.activations.is_empty()
-            {
-                return Ok(session);
-            }
-            self.application
-                .runtime()
-                .apply_session_inputs(
-                    &session_id,
-                    owner_scope,
-                    session.resources.revision,
-                    &session.resources.active,
-                )
-                .await?;
-            if session.resources.activations.is_empty() {
-                session.resources.adopt_legacy_active(&session_id);
-                session = self
-                    .commit_session_snapshot(
-                        owner_scope,
-                        session,
-                        "resource-adopt-legacy",
-                        Vec::new(),
-                    )
-                    .await?;
-            }
-            return Ok(session);
-        }
-
-        // A non-live Session never resumes a Prepared generation. Persist the
-        // release intent, tear down idempotently, then terminalize every record.
-        if session.resources.pending.is_none() {
-            session
-                .resources
-                .begin_release()
-                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-        }
-        session = self
-            .commit_session_snapshot(owner_scope, session, "resource-release-intent", Vec::new())
-            .await?;
-        self.application
-            .runtime()
-            .end_session(&session_id)
-            .await
-            .map_err(StateError::Run)?;
-        if !self
-            .retire_session_repositories(owner_scope, &session_id, &session.resources)
-            .await
-        {
-            return Err(StateError::Run(RunError::internal(
-                "Session-scoped Repository cleanup remains pending",
-            )));
-        }
-        session
-            .resources
-            .complete_terminal_release("Session terminated before activation completed");
-        session = self
-            .commit_session_snapshot(
-                owner_scope,
-                session,
-                "resource-release-complete",
-                Vec::new(),
-            )
-            .await?;
-        if session.status == "deleted" {
-            self.tombstone_session_snapshot(
-                owner_scope,
-                &session,
-                lifecycle_fact(
-                    format!("session:{session_id}:deleted"),
-                    &session_id,
-                    Some(owner_scope.to_string()),
-                    lifecycle_event::SESSION_DELETED,
-                ),
-            )
-            .await?;
-        }
-        Ok(session)
-    }
-
-    async fn retire_session_repositories(
-        &self,
-        owner_scope: &str,
-        session_id: &str,
-        resources: &awaken_session_contract::SessionResourceState,
-    ) -> bool {
-        if self.application.resource_catalog().is_none() {
-            return true;
-        }
-        let prefix = format!("managed:{session_id}:repository:");
-        let mut ids = std::collections::BTreeSet::new();
-        for manifest in std::iter::once(&resources.active).chain(resources.pending.iter()) {
-            for input in &manifest.inputs {
-                if let awaken_session_contract::ResolvedInputSource::Repository {
-                    repository_id,
-                    ..
-                } = &input.source
-                    && repository_id.as_str().starts_with(&prefix)
-                {
-                    ids.insert(repository_id.to_string());
-                }
-            }
-        }
-        let mut retired = true;
-        for repository_id in ids {
-            if !self.retire_repository(owner_scope, &repository_id).await {
-                retired = false;
-                tracing::warn!(
-                    session = session_id,
-                    repository = %repository_id,
-                    "Session-scoped Repository cleanup remains pending"
-                );
-            }
-        }
-        retired
-    }
-
-    pub(crate) async fn retire_repository(&self, owner_scope: &str, repository_id: &str) -> bool {
-        let Some(catalog) = &self.application.resource_catalog() else {
-            return true;
-        };
-        let definition = match catalog.repository(owner_scope, repository_id) {
-            Ok(Some(definition)) => definition,
-            Ok(None) => return true,
-            Err(error) => {
-                tracing::warn!(repository = repository_id, error = ?error, "Repository catalog read failed");
-                return false;
-            }
-        };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as u64)
-            .unwrap_or_default();
-        if let Some(scheduler) = &self.application.resource_purge_scheduler()
-            && let Err(error) = scheduler
-                .schedule_purge(
-                    awaken_resource_contract::ResourceTarget::new(
-                        owner_scope,
-                        awaken_resource_contract::ResourceKind::Repository,
-                        repository_id,
-                    ),
-                    Some(definition.current_config_version.0),
-                    now,
-                    now,
-                )
-                .await
-        {
-            tracing::warn!(repository = repository_id, error = ?error, "Repository purge scheduling failed");
-            return false;
-        }
-        catalog
-            .set_repository_state(
-                owner_scope,
-                repository_id,
-                awaken_resource_contract::ResourceState::Deleted,
-            )
-            .is_ok()
     }
 
     /// A session object reconstructed for a rehydrated (post-restart) session.
@@ -1627,8 +1215,10 @@ impl ManagedState {
                 .get(id)
                 .await
                 .ok_or(StateError::NotFound)?;
-            self.tombstone_session_snapshot(owner_scope, &released, deleted_fact.clone())
-                .await?;
+            self.application
+                .tombstone_session_snapshot(owner_scope, &released, deleted_fact.clone())
+                .await
+                .map_err(Self::map_application_mutation_error)?;
         }
         // Project the deletion as a lifecycle fact so a webhook subscriber is
         // notified, mirroring create's `session.status_idled` and archive's
@@ -1709,6 +1299,7 @@ impl ManagedState {
         }
         if self.end_session_sandboxes(id, child_threads).await
             && self
+                .application
                 .retire_session_repositories(owner_scope, id, &persisted.resources)
                 .await
         {

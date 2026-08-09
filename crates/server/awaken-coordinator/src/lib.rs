@@ -10,7 +10,7 @@
 //! This crate is the Coordinator owner: its canonical
 //! [`build_coordinator_component`] assembles Deployment/Session scheduling and
 //! the session surface + protocol adapters
-//! ([`mount`] / [`mount_with_managed`]), exact published-model credential
+//! (`mount` / `mount_with_managed`, under `test-support`), exact published-model credential
 //! materialization, the model publication resolver, the inert no-model placeholder,
 //! workspace path addressing, and the Worker
 //! role helper (the hand is now the separate `awaken-sandbox` execution-plane
@@ -480,7 +480,7 @@ fn local_managed_state_over(
         None => managed,
     };
     let managed = Arc::new(managed);
-    let _ = managed.spawn_realization_lease_supervisor();
+    let _ = managed.session_application().spawn_lifecycle_supervisor();
     managed
 }
 
@@ -779,7 +779,7 @@ fn mount_with_managed_over_and_models(
         host.clone(),
         worker_directory,
         worker_placement::shared_worker_placement_policy(),
-        managed_state,
+        managed_state.session_application(),
         resource_catalog.clone(),
         worker_authenticator,
     )?;

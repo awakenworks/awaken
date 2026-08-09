@@ -2022,9 +2022,11 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-session-contract",
  "awaken-session-store",
+ "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

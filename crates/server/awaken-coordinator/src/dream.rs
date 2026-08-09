@@ -255,6 +255,7 @@ impl BuiltInDreamAgent {
             ..Default::default()
         };
         self.managed
+            .session_application()
             .contribute_application(ApplicationSessionContribution {
                 session_id: session_id.clone(),
                 application_fingerprint: input.fingerprint(),
@@ -263,7 +264,8 @@ impl BuiltInDreamAgent {
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         self.managed
-            .realize_application_session(&session_id)
+            .session_application()
+            .realize_session(&session_id)
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         Ok(session_id)
