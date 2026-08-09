@@ -13,7 +13,9 @@ mod postgres;
 mod schema;
 mod sqlite;
 
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -292,6 +294,7 @@ pub trait ErasureJobRepo: Send + Sync {
 }
 
 /// In-memory [`DataSubjectRepo`] (tests / ephemeral single-process).
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemoryDataSubjectRepo {
     inner: Mutex<BTreeMap<String, DataSubject>>,
@@ -299,6 +302,7 @@ pub struct InMemoryDataSubjectRepo {
     erasures: Mutex<BTreeMap<String, ErasureProgress>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InMemoryDataSubjectRepo {
     #[must_use]
     pub fn new() -> Self {
@@ -306,6 +310,7 @@ impl InMemoryDataSubjectRepo {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait]
 impl DataSubjectRepo for InMemoryDataSubjectRepo {
     async fn put(&self, subject: DataSubject) -> Result<(), DataSubjectError> {
@@ -347,6 +352,7 @@ impl DataSubjectRepo for InMemoryDataSubjectRepo {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait]
 impl ErasureJobRepo for InMemoryDataSubjectRepo {
     async fn load(&self, id: &DataSubjectId) -> Result<Option<ErasureProgress>, DataSubjectError> {

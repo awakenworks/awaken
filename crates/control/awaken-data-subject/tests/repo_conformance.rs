@@ -59,11 +59,20 @@ async fn run_all(make: impl Fn() -> Box<dyn DataSubjectRepo>) {
 
 #[tokio::test]
 async fn in_memory_repo_conforms() {
+    // Cause/effect decision table shared with the SQLite rule below:
+    // C1 backend={volatile, SQLite}; C2 row={present, absent}; C3 org={same,
+    // different}; C4 operation={put, get/list, delete}. E1 put round-trips; E2
+    // list returns only the selected Org; E3 repeated put retains consent; E4
+    // absent get fails; E5 delete is idempotent. Rule D1 selects the volatile
+    // fixture and exercises every C2-C4 outcome through `run_all`.
     run_all(|| Box::new(InMemoryDataSubjectRepo::new())).await;
 }
 
 #[tokio::test]
 async fn sqlite_repo_conforms() {
+    // Decision rule D2 selects SQLite for the same C2-C4/E1-E5 matrix as D1;
+    // keeping both rules proves that the test double and durable authority obey
+    // one repository contract rather than parallel semantics.
     run_all(|| Box::new(SqliteDataSubjectRepo::open_in_memory().unwrap())).await;
 }
 

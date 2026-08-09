@@ -19,6 +19,7 @@ impl SqliteWorkerDirectory {
         Self::from_connection(Connection::open(path).map_err(persist)?)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, RegistryError> {
         Self::from_connection(Connection::open_in_memory().map_err(persist)?)
     }

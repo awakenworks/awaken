@@ -65,7 +65,8 @@ impl AnyDispatchStore {
             .map_err(|e| e.to_string())
     }
 
-    /// Open an in-memory SQLite backend (ephemeral; tests and no-store-dir mode).
+    /// Open an in-memory SQLite backend for tests and scenario fixtures.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_sqlite_in_memory() -> Result<Self, String> {
         SqliteDispatchStore::open_in_memory()
             .map(Self::from_store)

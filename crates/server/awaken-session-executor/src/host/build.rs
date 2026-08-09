@@ -181,14 +181,23 @@ impl SharedHost {
             #[cfg(not(any(test, feature = "test-support")))]
             unreachable!("product Host construction requires an explicit Resource component")
         };
-        let extraction_repository = extraction_repository.unwrap_or_else(|| {
-            if worker_content.is_some() {
+        let extraction_repository = match extraction_repository {
+            Some(repository) => repository,
+            None if worker_content.is_some() => {
                 Arc::new(crate::unavailable_worker::UnavailableWorkerExtractions)
                     as Arc<dyn awaken_ext_memory::MemoryExtractionRepository>
-            } else {
-                local_memory_extraction_repository(store_dir.as_deref())
             }
-        });
+            None => {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    local_memory_extraction_repository(store_dir.as_deref())
+                }
+                #[cfg(not(any(test, feature = "test-support")))]
+                unreachable!(
+                    "product Host construction requires an explicit Memory extraction repository"
+                )
+            }
+        };
         let memory = Arc::new(crate::memory::MemoryRuntime::new(
             llm.clone(),
             Arc::new(LocalProvider::new(sub_base("mem"))),
@@ -1155,6 +1164,7 @@ fn resolve_local_workspace(store_dir: Option<&std::path::Path>) -> String {
     generated
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn local_memory_extraction_repository(
     storage_dir: Option<&std::path::Path>,
 ) -> Arc<dyn awaken_ext_memory::MemoryExtractionRepository> {

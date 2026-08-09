@@ -6,6 +6,8 @@ license.workspace = true
 
 [features]
 loom = []
+# Private SQLite Worker directory for unit/integration fixtures.
+test-support = []
 
 [dependencies]
 awaken-worker-contract.workspace = true

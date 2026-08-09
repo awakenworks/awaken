@@ -13,9 +13,8 @@
 use std::sync::Arc;
 
 use awaken_admin_config_api::openapi::openapi_document;
-use awaken_admin_config_api::{
-    AdminState, InMemoryAgentInputBindingRepository, InMemoryProfileStore, admin_router,
-};
+use awaken_admin_config_api::{AdminState, admin_router};
+use awaken_config_resolver::{InMemoryAgentInputBindingRepository, InMemoryProfileStore};
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_model_catalog::repo::InMemoryCatalogRepo;

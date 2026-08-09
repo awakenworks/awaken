@@ -32,8 +32,14 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 
 [features]
 default = []
+# Volatile consent/erasure authority used only by tests and scenario fixtures.
+test-support = []
 # Postgres-backed Control DataSubjectRepo (ADR-0050 D7, Org-partitioned).
 postgres = ["dep:sqlx"]
+
+[[test]]
+name = "repo_conformance"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

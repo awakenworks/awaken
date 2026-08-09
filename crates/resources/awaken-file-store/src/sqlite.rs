@@ -60,6 +60,7 @@ impl SqliteFileStore {
     }
 
     /// Open a private in-memory database (tests / ephemeral).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, FileStoreError> {
         let store = Self::over(Connection::open_in_memory().map_err(e)?);
         store.ensure_schema()?;

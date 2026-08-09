@@ -3,7 +3,10 @@
 //! separate port). Its own `credential` migration scope is what lets the whole
 //! domain be split into its own database/service (blast-radius isolation).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(any(test, feature = "test-support"))]
+use std::collections::HashMap;
+use std::collections::{BTreeMap, HashSet};
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
 use crate::{
@@ -77,7 +80,8 @@ pub trait CredentialRepo: Send + Sync {
     async fn list_pools(&self, workspace_id: &str) -> Result<Vec<CredentialPool>, CredentialError>;
 }
 
-/// In-memory [`CredentialRepo`] (dev / tests / single-machine default).
+/// In-memory [`CredentialRepo`] for tests and scenario fixtures.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 struct RepoState {
     rows: HashMap<String, CredentialSource>,
@@ -85,11 +89,13 @@ struct RepoState {
     intents: HashMap<String, CredentialMutationIntent>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemoryCredentialRepo {
     state: Mutex<RepoState>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InMemoryCredentialRepo {
     #[must_use]
     pub fn new() -> Self {
@@ -97,6 +103,7 @@ impl InMemoryCredentialRepo {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl CredentialRepo for InMemoryCredentialRepo {
     async fn put(&self, source: CredentialSource) -> Result<(), CredentialError> {

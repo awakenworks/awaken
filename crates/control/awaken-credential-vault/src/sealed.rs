@@ -10,8 +10,7 @@
 //!
 //! Where the blobs *live* is a separate axis: this decorator writes them through
 //! the [`SealedBlobStore`] port, so the same AEAD layer composes with the
-//! in-memory map ([`with_key`](SealedAeadSecretStore::with_key)) or a durable
-//! engine such as `sqlite::SqliteSealedBlobStore`
+//! test-only in-memory map or a durable engine such as `sqlite::SqliteSealedBlobStore`
 //! ([`over`](SealedAeadSecretStore::over)).
 
 use std::sync::Arc;
@@ -20,7 +19,9 @@ use awaken_agent_contract::RedactedString;
 use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
-use crate::{CredentialError, InMemorySealedBlobStore, SealedBlobStore, SecretRef, SecretStore};
+#[cfg(any(test, feature = "test-support"))]
+use crate::InMemorySealedBlobStore;
+use crate::{CredentialError, SealedBlobStore, SecretRef, SecretStore};
 
 /// The 96-bit ChaCha20-Poly1305 nonce width, in bytes.
 const NONCE_LEN: usize = 12;
@@ -34,10 +35,8 @@ pub struct SealedAeadSecretStore {
 }
 
 impl SealedAeadSecretStore {
-    /// Build a store sealing under `key` (32 bytes) over the in-memory blob map
-    /// (the sealing is the point; a restart forgets the blobs). The caller
-    /// sources the key from a keystore/KMS/env kept apart from the ciphertext
-    /// medium.
+    /// Build a test store sealing under `key` over the in-memory blob map.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_key(key: &[u8; 32]) -> Self {
         Self::over(key, Arc::new(InMemorySealedBlobStore::new()))

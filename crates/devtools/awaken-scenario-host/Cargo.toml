@@ -35,7 +35,7 @@ awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
 # The ordinary A2A Run-attempt adapter used by the remote delegation scenario.
 awaken-run-executor-a2a = { workspace = true }
-awaken-config-store = { workspace = true }
+awaken-config-store = { workspace = true, features = ["test-support"] }
 # Canonical Memory data plane used by API, mount, recall, extraction, history, and
 # redaction. The composition root selects its durable or ephemeral adapter once.
 awaken-memory-store = { workspace = true }
@@ -48,17 +48,17 @@ awaken-run-executor-acp = { workspace = true }
 # Management plane (ADR-0043): the composition root resolves a run's inference
 # (adapter_kind + base_url + already-resolved credential) and builds the host's
 # model executor from it — the runtime never sees the credential binding (D6/D9).
-awaken-config-resolver = { workspace = true }
+awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-provider-genai = { workspace = true }
 # The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
 # Managed vault/credential front door, over shared stores — in-memory by default,
 # SQLite-backed when typed data_dir selects durable persistence (`sqlite` features).
-awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres", "test-support"] }
+awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres", "test-support"] }
 # `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
 # `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
 # SQLite and secrets only as AEAD-sealed blobs under typed control_seal_key.
-awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }
+awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres", "test-support"] }
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
 awaken-data-subject = { workspace = true }
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
