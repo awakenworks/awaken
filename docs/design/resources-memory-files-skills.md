@@ -196,6 +196,7 @@ At the durable execution boundary it is wrapped, not copied into another model:
 ```rust
 struct SessionResourceManifest {
     workspace_id: String,
+    revision: u64,
     resources: ResolvedSessionResources,
 }
 ```
@@ -205,6 +206,13 @@ must prove the two Workspace coordinates are equal, install the manifest through
 its injected resource ports, and only then create or adopt the Session sandbox.
 The envelope never carries a principal, policy decision, credential value, local
 path, Memory entry revision, or Repository commit.
+
+`revision` is not a second version source: it is copied from the owning
+`SessionResourceState`. Exact replay revalidates the current generation, a
+strictly newer revision may advance the live projection, and an older or
+same-revision/different-value envelope fails closed. This fence lets recovery
+adopt current durable truth without allowing a delayed claimed Run to restore a
+stale manifest.
 
 The dispatch bounded context treats `resources` as an opaque serialized payload;
 one Runtime Host ACL performs the lossless encode/decode against

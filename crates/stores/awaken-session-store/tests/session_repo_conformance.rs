@@ -77,7 +77,8 @@ fn session(id: &str, title: &str) -> PersistedSession {
         title: Some(title.to_string()),
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
         tools: Default::default(),
-        environment_binding: None,
+        activity: Default::default(),
+        environment: Default::default(),
         mcp: awaken_session_contract::SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
                 name: "github".into(),
@@ -228,19 +229,21 @@ async fn ownership_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r:
 
 /// Binding is a narrow update: it fails closed for an unknown id and changes no
 /// other aggregate field for a known Session.
-async fn environment_binding_is_atomic_and_non_destructive<R: ManagedSessionRepository>(r: &R) {
+async fn environment_state_is_atomic_and_non_destructive<R: ManagedSessionRepository>(r: &R) {
     assert!(r.get("unknown").await.is_none());
     let want = session("sesn_bound", "unchanged");
     create_session(r, "ws_a", want.clone(), Vec::new()).await;
     let mut bound = want.clone();
-    bound.environment_binding = Some(r#"{"provider_kind":"bwrap"}"#.into());
+    bound
+        .environment
+        .set_resident(r#"{"provider_kind":"bwrap"}"#);
     replace_session(r, "ws_a", bound, "test:bind", Vec::new()).await;
     let mut got = r.get("sesn_bound").await.expect("bound Session");
     assert_eq!(
-        got.environment_binding.as_deref(),
+        got.environment.binding(),
         Some(r#"{"provider_kind":"bwrap"}"#)
     );
-    got.environment_binding = None;
+    got.environment = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
     got.revision = Default::default();
     assert_eq!(got, want, "binding update preserves every other field");
     assert_eq!(r.owner("sesn_bound").await.as_deref(), Some("ws_a"));
@@ -531,7 +534,7 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     absent_id_reads_none(&fresh()).await;
     save_is_idempotent_upsert(&fresh()).await;
     ownership_is_one_atomic_repository_fact(&fresh()).await;
-    environment_binding_is_atomic_and_non_destructive(&fresh()).await;
+    environment_state_is_atomic_and_non_destructive(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;
     let cas_repo = fresh();

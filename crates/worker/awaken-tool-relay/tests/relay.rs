@@ -470,6 +470,28 @@ async fn invoke_maps_an_indeterminate_outcome_to_a_named_execution_error() {
 }
 
 #[tokio::test]
+async fn invoke_classifies_a_closed_pre_dispatch_channel_as_safe_to_reacquire() {
+    /*
+     * Cause/effect rule RPD1: C1 the peer closes before the framed request can
+     * be written; E1 no tool effect ran and invoke returns the one typed
+     * pre-dispatch-unavailable error. This is deliberately distinct from RPD2,
+     * covered above, where the peer reads the request and drops the reply and
+     * the result remains an ordinary indeterminate Execution error.
+     */
+    let (brain_end, hand_end) = tokio::io::duplex(64 * 1024);
+    drop(hand_end);
+    let error = RemoteToolExecutor::new(brain_end)
+        .invoke(&call("c1", "echo", "x"))
+        .await
+        .expect_err("a closed channel cannot accept the request");
+    assert!(matches!(
+        error,
+        ToolError::UnavailableBeforeDispatch(ref message)
+            if message == "hand channel closed before dispatch"
+    ));
+}
+
+#[tokio::test]
 async fn a_hand_fingerprint_with_an_unstamped_request_runs_permissively() {
     // The hand fails closed only when BOTH sides carry a fingerprint and they
     // differ (`if let (Some, Some)`). A request that omits its fingerprint runs —

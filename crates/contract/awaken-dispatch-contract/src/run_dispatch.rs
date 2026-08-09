@@ -22,6 +22,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionResourceEnvelope {
     pub workspace_id: String,
+    /// Opaque Session-owned resource generation used only for ordered replay.
+    #[serde(default)]
+    pub resource_revision: u64,
     pub resolved_resources_json: String,
 }
 
@@ -33,6 +36,20 @@ impl SessionResourceEnvelope {
     ) -> Self {
         Self {
             workspace_id: workspace_id.into(),
+            resource_revision: 0,
+            resolved_resources_json: resolved_resources_json.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn at_revision(
+        workspace_id: impl Into<String>,
+        resource_revision: u64,
+        resolved_resources_json: impl Into<String>,
+    ) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            resource_revision,
             resolved_resources_json: resolved_resources_json.into(),
         }
     }
@@ -271,9 +288,13 @@ mod tests {
         assert_eq!(back.traceparent.as_deref(), Some("00-abc-01"));
     }
 
+    /// Resource-envelope compatibility causes/effects: C1 current dispatch has a
+    /// Session generation; C2 legacy dispatch omits it. E1 C1 round-trips the
+    /// exact generation; E2 C2 decodes as generation zero without dead-lettering.
     #[test]
     fn frozen_session_resources_round_trip_with_their_matching_scope() {
-        let resources = SessionResourceEnvelope::new("workspace-a", r#"{"inputs":[],"skills":[]}"#);
+        let resources =
+            SessionResourceEnvelope::at_revision("workspace-a", 4, r#"{"inputs":[],"skills":[]}"#);
         let request = RunDispatch::new(activation())
             .with_execution_scope(ExecutionScopeRef(awaken_tenancy::ScopeId::from(
                 "workspace-a",
@@ -289,6 +310,13 @@ mod tests {
                 "workspace-a"
             )))
         );
+
+        let legacy: SessionResourceEnvelope = serde_json::from_value(serde_json::json!({
+            "workspace_id": "workspace-a",
+            "resolved_resources_json": "{\"inputs\":[]}"
+        }))
+        .expect("legacy envelope");
+        assert_eq!(legacy.resource_revision, 0);
     }
 
     #[test]

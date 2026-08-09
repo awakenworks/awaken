@@ -46,6 +46,7 @@ static MANAGED_STATE_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 const MEMORY_CREATE_ONLY: &str = "memory stores can only be attached at session creation time; \
      adding or removing one from a running session is not supported";
 
+mod activity;
 mod application;
 mod deployment_sessions;
 mod environment;
@@ -55,6 +56,7 @@ mod helpers;
 pub mod lifecycle_event;
 mod mcp_attachment;
 mod realization;
+mod residency;
 mod resource;
 mod resources;
 mod sandbox_provisioning;
@@ -451,7 +453,7 @@ mod tests {
     /// A runtime that reports a non-empty committed transcript, so a session can
     /// rehydrate. Every operational method is unused by these tests.
     #[derive(Clone, Default)]
-    struct RehydrateFake {
+    pub(super) struct RehydrateFake {
         restored: Arc<
             std::sync::Mutex<
                 Vec<(
@@ -555,6 +557,7 @@ mod tests {
             &self,
             thread: &str,
             workspace_id: &str,
+            _resource_revision: u64,
             inputs: &awaken_session_contract::ResolvedSessionResources,
         ) -> Result<(), RunError> {
             self.order.lock().unwrap().push("resources");
@@ -1172,7 +1175,8 @@ mod tests {
             title: Some("My session".to_string()),
             metadata,
             tools: Default::default(),
-            environment_binding: None,
+            activity: Default::default(),
+            environment: Default::default(),
             mcp,
             resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),
             realization: None,
@@ -1196,11 +1200,11 @@ mod tests {
 
         sink.persist("binding-now", "opaque-handle").await.unwrap();
         let first = repo.get("binding-now").await.unwrap();
-        assert_eq!(first.environment_binding.as_deref(), Some("opaque-handle"));
+        assert_eq!(first.environment.binding(), Some("opaque-handle"));
         sink.persist("binding-now", "opaque-handle").await.unwrap();
         let replay = repo.get("binding-now").await.unwrap();
         assert_eq!(replay.revision, first.revision);
-        assert_eq!(replay.environment_binding, first.environment_binding);
+        assert_eq!(replay.environment, first.environment);
     }
 
     struct ConflictInjectingRepo {
@@ -1297,8 +1301,8 @@ mod tests {
                     .get(&format!("binding-{conflicts}"))
                     .await
                     .unwrap()
-                    .environment_binding
-                    .as_deref(),
+                    .environment
+                    .binding(),
                 accepted.then_some("opaque"),
                 "{case}"
             );
@@ -1499,7 +1503,7 @@ mod tests {
         // but the shared repo + committed transcript restore it faithfully.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut persisted = sample_persisted("sesn_1");
-        persisted.environment_binding = Some("opaque-runtime-binding".to_string());
+        persisted.environment.set_resident("opaque-runtime-binding");
         create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
 
         // Fresh state (empty cache) sharing the durable repo — simulates a restart.
@@ -1645,7 +1649,7 @@ mod tests {
         // snapshot before a wire adapter may execute.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut persisted = sample_persisted("external-thread");
-        persisted.environment_binding = Some("opaque-runtime-binding".to_string());
+        persisted.environment.set_resident("opaque-runtime-binding");
         create_session_fixture(repo.as_ref(), "workspace-a", persisted).await;
 
         let runtime = RehydrateFake::default();

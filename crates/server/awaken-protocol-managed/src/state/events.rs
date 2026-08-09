@@ -553,7 +553,6 @@ impl ManagedState {
                         sink.clone(),
                     )
                     .await;
-                self.persist_session_environment_binding(session_id).await?;
                 let outcome = match outcome {
                     Ok(outcome) => outcome,
                     Err(error) => {
@@ -775,6 +774,19 @@ impl ManagedState {
 
         let mut receipts = Vec::new();
         for inbound in &req.events {
+            let drives_turn = matches!(
+                inbound,
+                InboundEvent::UserMessage { .. }
+                    | InboundEvent::UserToolConfirmation { .. }
+                    | InboundEvent::UserCustomToolResult { .. }
+                    | InboundEvent::UserToolResult { .. }
+                    | InboundEvent::UserDefineOutcome { .. }
+            );
+            let activity_epoch = if drives_turn {
+                Some(self.begin_session_activity(session_id).await?)
+            } else {
+                None
+            };
             let event_id = self.append_inbound_event(session_id, inbound)?;
             receipts.push(EventReceipt {
                 id: event_id.clone(),
@@ -800,11 +812,18 @@ impl ManagedState {
             {
                 record.session.status = "idle";
             }
+            if let Some(activity_epoch) = activity_epoch {
+                let reason = if processing.is_ok()
+                    && self.runtime.pending_tool(session_id).await.is_some()
+                {
+                    awaken_session_contract::SessionIdleReason::AwaitingAction
+                } else {
+                    awaken_session_contract::SessionIdleReason::EndTurn
+                };
+                self.settle_session_activity(session_id, activity_epoch, reason)
+                    .await?;
+            }
             processing?;
-            // A first execution may have materialized the Session-owned sandbox.
-            // Commit its opaque identity before the API acknowledges this event,
-            // so a later process adopts instead of provisioning over its workspace.
-            self.persist_session_environment_binding(session_id).await?;
         }
         // Refresh the session's accumulated token usage from the runtime's committed
         // tally, so a subsequent GET /v1/sessions reflects the tokens this turn spent.
