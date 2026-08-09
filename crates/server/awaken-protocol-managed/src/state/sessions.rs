@@ -1618,6 +1618,52 @@ impl ManagedState {
         Ok(())
     }
 
+    /// Rebuild only the disposable projection needed by a terminal command.
+    /// Terminal recovery must not prepare a runtime or realize MCP again: those
+    /// effects may carry expired, Run-scoped credentials and are about to be
+    /// released rather than used.
+    async fn ensure_session_for_terminal_cleanup(&self, id: &str) -> Result<(), StateError> {
+        if self.sessions.lock().unwrap().contains_key(id) {
+            return Ok(());
+        }
+        let persisted = self
+            .sessions_repo
+            .get(id)
+            .await
+            .filter(|session| !matches!(session.status.as_str(), "deleted" | "activation_failed"))
+            .ok_or(StateError::NotFound)?;
+        let owner_scope = self
+            .sessions_repo
+            .owner(id)
+            .await
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        let delegated_runs = self
+            .runtime
+            .delegated_runs(id)
+            .await
+            .map_err(StateError::Run)?;
+        let mut record = SessionRecord {
+            agent_id: persisted.agent_id().unwrap_or("assistant").to_string(),
+            session: self.rehydrated_session(id, Some(persisted.clone()))?,
+            resource_state: persisted.resources,
+            events: Vec::new(),
+            projected_message_ids: Default::default(),
+            child_threads: Vec::new(),
+        };
+        self.append_delegation_projections(&mut record, &delegated_runs);
+        self.sessions
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_insert(record);
+        self.owners
+            .lock()
+            .unwrap()
+            .entry(id.to_string())
+            .or_insert(owner_scope);
+        Ok(())
+    }
+
     /// `GET /v1/sessions/{id}`.
     pub fn get_session(&self, id: &str) -> Result<Session, StateError> {
         let sessions = self.sessions.lock().unwrap();
@@ -1860,6 +1906,7 @@ impl ManagedState {
     /// terminal transition (not just the mutated status field). Idempotent: a
     /// re-archive returns the same terminal record without a second event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
+        self.ensure_session_for_terminal_cleanup(id).await?;
         let (mut newly_terminated, child_threads) = {
             let sessions = self.sessions.lock().unwrap();
             let record = sessions.get(id).ok_or(StateError::NotFound)?;
