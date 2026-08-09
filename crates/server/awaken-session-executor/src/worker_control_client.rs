@@ -180,6 +180,30 @@ impl WorkerControlClient {
         })
     }
 
+    pub async fn resume_application_session(
+        &self,
+        identity: &WorkerIdentity,
+        claim: &RunClaim,
+        session_id: &str,
+    ) -> Result<Option<awaken_session_contract::SessionRealizationDirective>, String> {
+        let body = self
+            .post(
+                "/v1/worker/session/application-resume",
+                json!({
+                    "identity": identity,
+                    "claim": claim,
+                    "session_id": session_id,
+                }),
+            )
+            .await?;
+        body.get("realization")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("Session resume directive decode: {error}"))
+    }
+
     pub async fn activate_session_realization(
         &self,
         identity: &WorkerIdentity,

@@ -16,6 +16,7 @@ pub(crate) enum SessionEnvironmentProvider {
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: String,
+        hand_idle_after: std::time::Duration,
     },
 }
 
@@ -74,17 +75,35 @@ impl SessionEnvironmentProvider {
         Self::Namespace(NamespaceProvider::new(base).with_agent_stderr(inherit))
     }
 
+    #[cfg(test)]
     pub(crate) fn container(
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
         extra_mounts: Vec<pc::MountRequirement>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
     ) -> Self {
+        Self::container_with_hand_idle(
+            provider,
+            extra_mounts,
+            hand_factory,
+            hand_bin,
+            std::time::Duration::ZERO,
+        )
+    }
+
+    pub(crate) fn container_with_hand_idle(
+        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        extra_mounts: Vec<pc::MountRequirement>,
+        hand_factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: impl Into<String>,
+        hand_idle_after: std::time::Duration,
+    ) -> Self {
         Self::Container {
             provider,
             extra_mounts,
             hand_factory,
             hand_bin: hand_bin.into(),
+            hand_idle_after,
         }
     }
 
@@ -103,11 +122,13 @@ impl SessionEnvironmentProvider {
                 extra_mounts,
                 hand_factory,
                 hand_bin,
+                hand_idle_after,
             } => Self::Container {
                 provider: provider.clone(),
                 extra_mounts: extra_mounts.clone(),
                 hand_factory: hand_factory.clone(),
                 hand_bin: hand_bin.clone(),
+                hand_idle_after: *hand_idle_after,
             },
         }
     }
@@ -150,6 +171,7 @@ impl SessionEnvironmentProvider {
                 extra_mounts,
                 hand_factory,
                 hand_bin,
+                hand_idle_after,
             } => {
                 let capabilities = provider.sandbox_capabilities();
                 let mut spec = spec.clone();
@@ -165,6 +187,7 @@ impl SessionEnvironmentProvider {
                     environment,
                     hand_factory.clone(),
                     hand_bin,
+                    *hand_idle_after,
                     capabilities,
                 )
                 .await
@@ -189,6 +212,7 @@ impl SessionEnvironmentProvider {
                 provider,
                 hand_factory,
                 hand_bin,
+                hand_idle_after,
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
@@ -198,6 +222,7 @@ impl SessionEnvironmentProvider {
                     environment,
                     hand_factory.clone(),
                     hand_bin,
+                    *hand_idle_after,
                     capabilities,
                 )
                 .await

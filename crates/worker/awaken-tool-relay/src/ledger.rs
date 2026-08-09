@@ -12,6 +12,8 @@ use std::{collections::HashMap, sync::Mutex};
 use crate::HandResult;
 use async_trait::async_trait;
 
+const LOSSLESS_STEM_ID_LIMIT: usize = 96;
+
 /// Result of atomically admitting one operation id.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LedgerAdmission {
@@ -84,13 +86,16 @@ impl FsOperationLedger {
         Ok(Self { root })
     }
 
-    fn stem(operation_id: &str) -> Result<String, String> {
+    fn stem(operation_id: &str) -> String {
         // A Linux filename component is commonly limited to 255 bytes. Encoding
         // at most 96 input bytes leaves ample room for the suffix while retaining
-        // the complete operation identity: unlike a hash, distinct accepted ids
-        // cannot alias the same ledger entry.
-        if operation_id.len() > 96 {
-            return Err("hand operation id exceeds the durable-ledger limit".into());
+        // the legacy lossless filename. Nested Workflow coordinates can be much
+        // longer, so those use a bounded SHA-256 stem and persist the complete
+        // identity inside the claim file for collision detection.
+        if operation_id.len() > LOSSLESS_STEM_ID_LIMIT {
+            let digest = awaken_runtime_contract::resolution::content_fingerprint(operation_id)
+                .expect("a string operation identity always serializes");
+            return format!("sha256-{digest}");
         }
 
         let mut stem = String::with_capacity(operation_id.len() * 2);
@@ -98,19 +103,17 @@ impl FsOperationLedger {
             use std::fmt::Write as _;
             write!(&mut stem, "{byte:02x}").expect("writing to a String cannot fail");
         }
-        Ok(stem)
+        stem
     }
 
-    fn claim_path(&self, operation_id: &str) -> Result<PathBuf, String> {
-        Ok(self
-            .root
-            .join(format!("{}.claim", Self::stem(operation_id)?)))
+    fn claim_path(&self, operation_id: &str) -> PathBuf {
+        self.root
+            .join(format!("{}.claim", Self::stem(operation_id)))
     }
 
-    fn result_path(&self, operation_id: &str) -> Result<PathBuf, String> {
-        Ok(self
-            .root
-            .join(format!("{}.result", Self::stem(operation_id)?)))
+    fn result_path(&self, operation_id: &str) -> PathBuf {
+        self.root
+            .join(format!("{}.result", Self::stem(operation_id)))
     }
 
     async fn read_result(path: &Path) -> Result<Option<HandResult>, String> {
@@ -122,28 +125,71 @@ impl FsOperationLedger {
             Err(error) => Err(error.to_string()),
         }
     }
+
+    async fn read_claim_identity(path: &Path) -> Result<Option<Vec<u8>>, String> {
+        match tokio::fs::read(path).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn validate_hashed_claim(operation_id: &str, identity: &[u8]) -> Result<(), String> {
+        if identity == operation_id.as_bytes() {
+            Ok(())
+        } else if identity.is_empty() {
+            Err("hand operation claim is indeterminate after an interrupted durable write".into())
+        } else {
+            Err("hand operation digest collision in durable ledger".into())
+        }
+    }
 }
 
 #[async_trait]
 impl HandOperationLedger for FsOperationLedger {
     async fn begin(&self, operation_id: &str) -> Result<LedgerAdmission, String> {
-        let result_path = self.result_path(operation_id)?;
+        let hashed = operation_id.len() > LOSSLESS_STEM_ID_LIMIT;
+        let claim_path = self.claim_path(operation_id);
+        let result_path = self.result_path(operation_id);
+        if hashed {
+            if let Some(identity) = Self::read_claim_identity(&claim_path).await? {
+                Self::validate_hashed_claim(operation_id, &identity)?;
+                return Ok(match Self::read_result(&result_path).await? {
+                    Some(result) => LedgerAdmission::Cached(result),
+                    None => LedgerAdmission::Indeterminate,
+                });
+            }
+        }
         if let Some(result) = Self::read_result(&result_path).await? {
             return Ok(LedgerAdmission::Cached(result));
         }
 
-        let claim_path = self.claim_path(operation_id)?;
         match tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&claim_path)
             .await
         {
-            Ok(file) => {
+            Ok(mut file) => {
+                if hashed {
+                    use tokio::io::AsyncWriteExt as _;
+                    file.write_all(operation_id.as_bytes())
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
                 file.sync_all().await.map_err(|error| error.to_string())?;
                 Ok(LedgerAdmission::Execute)
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if hashed {
+                    let identity =
+                        Self::read_claim_identity(&claim_path)
+                            .await?
+                            .ok_or_else(|| {
+                                "hand operation claim disappeared during admission".to_string()
+                            })?;
+                    Self::validate_hashed_claim(operation_id, &identity)?;
+                }
                 // Completion may have raced the first result read.
                 Ok(match Self::read_result(&result_path).await? {
                     Some(result) => LedgerAdmission::Cached(result),
@@ -155,7 +201,14 @@ impl HandOperationLedger for FsOperationLedger {
     }
 
     async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String> {
-        let path = self.result_path(operation_id)?;
+        if operation_id.len() > LOSSLESS_STEM_ID_LIMIT {
+            let claim_path = self.claim_path(operation_id);
+            let identity = Self::read_claim_identity(&claim_path)
+                .await?
+                .ok_or_else(|| "hand operation claim is absent during completion".to_string())?;
+            Self::validate_hashed_claim(operation_id, &identity)?;
+        }
+        let path = self.result_path(operation_id);
         let temporary = path.with_extension("result.tmp");
         let bytes = serde_json::to_vec(result).map_err(|error| error.to_string())?;
         let mut file = tokio::fs::OpenOptions::new()

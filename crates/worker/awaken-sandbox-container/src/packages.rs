@@ -9,7 +9,7 @@ use awaken_provisioning_contract as pc;
 use crate::RuntimeError;
 
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
-const PACKAGE_RECIPE_VERSION: &str = "3";
+const PACKAGE_RECIPE_VERSION: &str = "4";
 
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
 fn requirement_is_pinned(manager: &str, package: &str) -> bool {
@@ -92,7 +92,7 @@ fn package_containerfile_for_user(
                 let mut argv = vec![
                     "/bin/sh".into(),
                     "-c".into(),
-                    "set -e; apt-get update; apt-get install -y --no-install-recommends \"$@\"; rm -rf /var/lib/apt/lists/*".into(),
+                    "set -e; apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update; apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \"$@\"; rm -rf /var/lib/apt/lists/*".into(),
                     "awaken-packages".into(),
                 ];
                 argv.extend(packages.clone());
@@ -265,7 +265,7 @@ mod tests {
         let (recipe, first) =
             package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
         assert!(recipe.contains("USER 10001\n"));
-        assert!(recipe.contains("org.awaken.package-recipe=3"));
+        assert!(recipe.contains("org.awaken.package-recipe=4"));
         let (_, identical) = package_image_recipe("sha256:base-a", "10001", &requirements).unwrap();
         assert_eq!(identical, first, "identical inputs reuse one image key");
 
@@ -299,6 +299,25 @@ mod tests {
             package_image_recipe("sha256:base-a", "root\nRUN false", &requirements).is_err(),
             "an untrusted image user cannot inject another build instruction"
         );
+    }
+
+    #[test]
+    fn apt_builds_retry_transient_index_and_archive_failures() {
+        let requirements = pc::PackageRequirements {
+            managers: [("apt".into(), vec!["curl=8.14.1-2".into()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+
+        let file = package_containerfile("base:1", &requirements).unwrap();
+        assert_eq!(
+            file.matches("Acquire::Retries=5").count(),
+            2,
+            "both index refresh and archive installation must tolerate transient egress failures: {file}"
+        );
+        assert_eq!(file.matches("Acquire::http::Timeout=30").count(), 2);
+        assert_eq!(file.matches("Acquire::https::Timeout=30").count(), 2);
     }
 
     #[test]

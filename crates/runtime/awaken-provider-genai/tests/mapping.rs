@@ -83,6 +83,51 @@ fn tool_result_maps_to_a_genai_tool_message() {
 }
 
 #[test]
+fn adjacent_tool_results_coalesce_for_anthropic_turn_ordering() {
+    let request = ChatRequest {
+        model_binding: binding("deepseek-v4-pro"),
+        inference: Default::default(),
+        messages: vec![
+            ChatMessage {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::tool_use("call-1", "bash", serde_json::json!({"command":"one"})),
+                    ContentBlock::tool_use("call-2", "bash", serde_json::json!({"command":"two"})),
+                ],
+            },
+            ChatMessage {
+                role: Role::Tool,
+                content: vec![ContentBlock::tool_result(
+                    "call-1",
+                    vec![ContentBlock::text("one complete")],
+                )],
+            },
+            ChatMessage {
+                role: Role::Tool,
+                content: vec![ContentBlock::tool_result(
+                    "call-2",
+                    vec![ContentBlock::text("two complete")],
+                )],
+            },
+        ],
+        tools: Vec::new(),
+    };
+
+    let genai = to_genai_request(&request);
+    assert_eq!(genai.messages.len(), 2);
+    assert!(matches!(genai.messages[0].role, GenaiRole::Assistant));
+    assert!(matches!(genai.messages[1].role, GenaiRole::Tool));
+    assert_eq!(genai.messages[1].content.parts().len(), 2);
+    assert!(
+        genai.messages[1]
+            .content
+            .parts()
+            .iter()
+            .all(|part| matches!(part, ContentPart::ToolResponse(_)))
+    );
+}
+
+#[test]
 fn image_block_maps_to_a_binary_part() {
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),

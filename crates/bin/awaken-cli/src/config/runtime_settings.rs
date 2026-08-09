@@ -55,6 +55,9 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .container_hand_bin
             .clone()
             .unwrap_or_else(|| sandbox_defaults.container_hand_bin.clone()),
+        container_hand_idle_secs: file
+            .container_hand_idle_secs
+            .unwrap_or(sandbox_defaults.container_hand_idle_secs),
         podman_bin: file
             .podman_bin
             .clone()
@@ -67,6 +70,13 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .map(|value| value.trim_end_matches('/').to_owned()),
         package_registry_auth_file: file.package_registry_auth_file.clone(),
         package_registry_insecure: file.package_registry_insecure.unwrap_or(false),
+        k8s_buildkit_image: file
+            .k8s_buildkit_image
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&sandbox_defaults.k8s_buildkit_image)
+            .to_owned(),
         package_image_builder: file
             .package_image_builder
             .as_deref()

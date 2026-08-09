@@ -18,6 +18,23 @@ def main() -> None:
     mkdir = next(line for line in install.splitlines() if "mkdir -p" in line)
     for mount_point in ("/workspace", "/outputs"):
         assert mount_point in mkdir, f"K3D product image is missing mount point: {mount_point}"
+    # Cause/effect decision table. C5 Docker uses a non-default Buildx driver;
+    # C6 the production-image acceptance command immediately runs the tagged
+    # image. E3 the build explicitly loads its result into Docker's image store.
+    # Rule I3: C5+C6 => E3; Podman keeps its ordinary engine-owned output path.
+    sandbox_build = (
+        Path(__file__).parent.parent / "images" / "sandbox" / "build.sh"
+    ).read_text()
+    assert 'if [[ "${engine##*/}" == "docker" ]]' in sandbox_build
+    assert (
+        'run_with_deadline "$build_timeout_seconds" "$engine" build --load "$@"'
+        in sandbox_build
+    )
+    assert (
+        'run_with_deadline "$build_timeout_seconds" "$engine" build "$@"'
+        in sandbox_build
+    )
+    assert sandbox_build.count("  build_image ") == 2
     print("OK - K3D product image contains Sandbox, TLS, and Skill runtime dependencies.")
 
 

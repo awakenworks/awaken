@@ -483,14 +483,6 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Release only recreatable process capabilities while retaining the
-    /// Session environment and its durable binding. Returns whether this host
-    /// owns a capability that can be hibernated. The next turn lazily reacquires
-    /// it; this is distinct from terminal [`end_session`](Self::end_session).
-    async fn hibernate_session_environment(&self, _thread: &str) -> Result<bool, RunError> {
-        Ok(false)
-    }
-
     /// Resolve the current versions of already-authorized Skill resource ids once
     /// at Session creation. The implementation receives only a trusted Workspace
     /// and resource ids; it performs no principal/role/policy decision.

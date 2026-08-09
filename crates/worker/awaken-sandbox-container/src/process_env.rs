@@ -18,13 +18,21 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
         &self,
         mut command: pc::Command,
     ) -> Result<pc::MaterializedCommand, pc::SandboxError> {
-        // Container processes share the same stable interior paths. Bind the two
-        // runtime-owned variables at this common process boundary so native exec,
-        // the long-lived Hand, ACP agents, and adopted environments cannot diverge.
+        // Container processes share the same stable interior paths. Bind the
+        // runtime-owned workspace, outputs, and user directories at this common
+        // process boundary so native exec, the long-lived Hand, ACP agents, and
+        // adopted environments cannot diverge. HOME and the XDG roots must live
+        // under the writable workspace because hardened backends expose a
+        // read-only image root; browsers and toolchains otherwise fail while
+        // trying to initialize `/root`.
         command.env.retain(|var| {
             !matches!(
                 var.name.as_str(),
-                "AWAKEN_PROJECT_DIR" | "AWAKEN_OUTPUTS_DIR"
+                "AWAKEN_PROJECT_DIR"
+                    | "AWAKEN_OUTPUTS_DIR"
+                    | "HOME"
+                    | "XDG_CONFIG_HOME"
+                    | "XDG_CACHE_HOME"
             )
         });
         command.env.extend([
@@ -39,6 +47,27 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
                 name: "AWAKEN_OUTPUTS_DIR".into(),
                 value: pc::EnvValue::Inline {
                     value: self.outputs_path.clone(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            },
+            pc::EnvVar {
+                name: "HOME".into(),
+                value: pc::EnvValue::Inline {
+                    value: "/workspace".into(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            },
+            pc::EnvVar {
+                name: "XDG_CONFIG_HOME".into(),
+                value: pc::EnvValue::Inline {
+                    value: "/workspace/.config".into(),
+                },
+                visibility: pc::EnvVisibility::Process,
+            },
+            pc::EnvVar {
+                name: "XDG_CACHE_HOME".into(),
+                value: pc::EnvValue::Inline {
+                    value: "/workspace/.cache".into(),
                 },
                 visibility: pc::EnvVisibility::Process,
             },

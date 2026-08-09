@@ -81,6 +81,21 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
     );
     if let Some(aggregate_json) = row.aggregate_json {
         let mut value: serde_json::Value = serde_json::from_str(&aggregate_json)?;
+        // Collapse the former parallel activity state to its only independent
+        // fact: the monotonic overlapping-turn fence. Public `status` remains
+        // authoritative for logical lifecycle; physical Hand residency is local
+        // Runtime Host state.
+        if value.get("activity_epoch").is_none() {
+            let epoch = value
+                .as_object_mut()
+                .and_then(|object| object.remove("activity"))
+                .and_then(|activity| activity.get("epoch").and_then(serde_json::Value::as_u64))
+                .unwrap_or_default();
+            value
+                .as_object_mut()
+                .expect("Session aggregate is an object")
+                .insert("activity_epoch".into(), serde_json::json!(epoch));
+        }
         // One-way migration from the former nullable binding. The canonical
         // aggregate now owns a typed environment phase; retained SQL columns are
         // read only for pre-aggregate rows and never become a second write path.
@@ -233,7 +248,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         title: row.title,
         metadata: serde_json::from_str(&row.metadata_json)?,
         tools: Default::default(),
-        activity: Default::default(),
+        activity_epoch: 0,
         environment: row.environment_binding.map_or(
             awaken_session_contract::SessionEnvironmentState::Unmaterialized,
             |binding| awaken_session_contract::SessionEnvironmentState::Resident { binding },
@@ -297,12 +312,14 @@ mod tests {
 
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
 
-    /// Environment migration cause/effect decision table.
-    /// C1=typed `environment` exists; C2=legacy aggregate binding is a string.
+    /// Aggregate migration cause/effect decision table.
+    /// C1=typed `environment` exists; C2=legacy aggregate binding is a string;
+    /// C3=legacy parallel activity object exists with an epoch.
     /// E1=typed value remains authoritative; E2=legacy binding becomes Resident;
-    /// E3=missing/null legacy binding becomes Unmaterialized. Rules: M1 C1=>E1;
-    /// M2 !C1+C2=>E2; M3 !C1+!C2=>E3. This covers M2/M3; normal repository
-    /// round-trips cover M1.
+    /// E3=missing/null legacy binding becomes Unmaterialized; E4=only the epoch
+    /// migrates and the duplicate activity state disappears. Rules: M1 C1=>E1;
+    /// M2 !C1+C2=>E2; M3 !C1+!C2=>E3; M4 C3=>E4. This covers M2-M4;
+    /// normal repository round-trips cover M1.
     #[tokio::test]
     async fn legacy_aggregate_environment_binding_migrates_once_to_typed_state() {
         let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
@@ -315,6 +332,11 @@ mod tests {
             let mut legacy = serde_json::to_value(sample(id)).unwrap();
             let object = legacy.as_object_mut().unwrap();
             object.remove("environment");
+            object.remove("activity_epoch");
+            object.insert(
+                "activity".into(),
+                serde_json::json!({ "epoch": 41, "state": { "phase": "active" } }),
+            );
             object.insert("environment_binding".into(), binding);
             repo.conn
                 .lock()
@@ -328,6 +350,7 @@ mod tests {
 
         let bound = repo.get("legacy-bound").await.unwrap();
         assert_eq!(bound.environment.binding(), Some("opaque-binding"), "M2");
+        assert_eq!(bound.activity_epoch, 41, "M4");
         assert!(
             matches!(
                 repo.get("legacy-unbound").await.unwrap().environment,
