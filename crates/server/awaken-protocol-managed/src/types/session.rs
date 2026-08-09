@@ -522,6 +522,34 @@ pub struct SpanModelUsage {
 }
 
 /// `BetaManagedAgentsSession` response (minimal but SDK-parseable).
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Preparing,
+    Activating,
+    Failed,
+    Running,
+    Rescheduling,
+    #[default]
+    Idle,
+    Terminated,
+}
+
+impl SessionStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Activating => "activating",
+            Self::Failed => "failed",
+            Self::Running => "running",
+            Self::Rescheduling => "rescheduling",
+            Self::Idle => "idle",
+            Self::Terminated => "terminated",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
     pub id: String,
@@ -536,7 +564,7 @@ pub struct Session {
     pub metadata: std::collections::BTreeMap<String, String>,
     pub resources: Vec<SessionResource>,
     pub outcome_evaluations: Vec<OutcomeEvaluation>,
-    pub status: &'static str,
+    pub status: SessionStatus,
     pub stats: SessionStats,
     pub usage: Usage,
     /// The vaults the session is bound to (`vault_ids`).

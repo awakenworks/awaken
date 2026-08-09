@@ -2,7 +2,7 @@
 //!
 //! Persistence selection produces one [`ResourceComponent`]. This layer derives
 //! the application services shared by HTTP, Runtime artifact harvesting, and
-//! lifecycle cleanup exactly once, without teaching those adapters about stores.
+//! reclamation cleanup exactly once, without teaching those adapters about stores.
 
 use std::sync::Arc;
 
@@ -12,9 +12,9 @@ mod skill_ingest;
 use awaken_resource_contract::{
     ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
     MemoryStoreApplicationService, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    PutResourcePurgeOutcome, ResourceCatalog, ResourceComponent, ResourceKind,
-    ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeScheduler,
-    ResourceState, ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
+    PutResourcePurgeOutcome, ResourceCatalog, ResourceComponent, ResourceKind, ResourcePurgeError,
+    ResourcePurgeIntent, ResourcePurgeScheduler, ResourceReclamationRepository, ResourceState,
+    ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
 };
 pub use awaken_resource_contract::{MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES};
 pub use execution_sources::{
@@ -38,13 +38,13 @@ pub struct ResourcesApplication {
 impl ResourcesApplication {
     #[must_use]
     pub fn new(ports: ResourceComponent) -> Self {
-        let lifecycle = ports.lifecycle();
-        let purge = Arc::new(RepositoryPurgeScheduler::new(lifecycle.clone()));
+        let reclamation = ports.reclamation();
+        let purge = Arc::new(RepositoryPurgeScheduler::new(reclamation.clone()));
         Self {
             files: Arc::new(FileApplication::new(
                 ports.file_store(),
                 ports.file_catalog(),
-                lifecycle.clone(),
+                reclamation.clone(),
             )),
             memories: Arc::new(MemoryStoreApplication::new(
                 ports.resource_catalog(),
@@ -97,7 +97,7 @@ impl ResourcesApplication {
     }
 }
 
-/// The sole MemoryStore identity/lifecycle command path. Content mutations stay
+/// The sole MemoryStore identity/reclamation command path. Content mutations stay
 /// in the independent path-addressed MemoryRepository aggregate.
 pub struct MemoryStoreApplication {
     catalog: Arc<dyn ResourceCatalog>,
@@ -249,13 +249,13 @@ impl MemoryStoreApplicationService for MemoryStoreApplication {
 /// Persist a deterministic, idempotent cleanup intent after logical deletion.
 /// Physical reclamation remains the separately supervised state machine.
 pub struct RepositoryPurgeScheduler {
-    lifecycle: Arc<dyn ResourceLifecycleRepository>,
+    reclamation: Arc<dyn ResourceReclamationRepository>,
 }
 
 impl RepositoryPurgeScheduler {
     #[must_use]
-    pub fn new(lifecycle: Arc<dyn ResourceLifecycleRepository>) -> Self {
-        Self { lifecycle }
+    pub fn new(reclamation: Arc<dyn ResourceReclamationRepository>) -> Self {
+        Self { reclamation }
     }
 }
 
@@ -272,7 +272,7 @@ impl ResourcePurgeScheduler for RepositoryPurgeScheduler {
             "{}:{:?}:{}:{:?}",
             target.workspace_id, target.kind, target.resource_id, config_version
         );
-        self.lifecycle
+        self.reclamation
             .put(ResourcePurgeIntent::new(
                 format!("purge:{:?}:{key}", target.kind),
                 key,
@@ -303,7 +303,7 @@ mod tests {
                 file_catalog: files,
                 memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
                 skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-                lifecycle: resources,
+                reclamation: resources,
             },
         ))
     }

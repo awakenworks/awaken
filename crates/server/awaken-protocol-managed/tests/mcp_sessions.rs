@@ -10,10 +10,13 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
-use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
+use awaken_protocol_managed::{
+    ManagedState, VaultState, router, types::SessionStatus, vault_router,
+};
 use awaken_session_contract::{
     ManagedSessionRepository, OutcomeReport, PersistedSession, RunError, RunErrorKind, SessionInit,
-    SessionLifecycleSink, SessionRuntime, StepOutcome, ToolPermissionDecision,
+    SessionLifecycleFactSink, SessionLifecycleState, SessionRuntime, StepOutcome,
+    ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
@@ -1374,7 +1377,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         awaken_session_contract::McpAttachmentState::Failed,
         "R5"
     );
-    assert_eq!(failed_retry.status, "idle", "R5");
+    assert_eq!(failed_retry.lifecycle, SessionLifecycleState::Idle, "R5");
 
     let (status, _) = call(
         &h.app,
@@ -2007,15 +2010,16 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
     struct CapturingSink(Mutex<Vec<String>>);
 
     #[async_trait::async_trait]
-    impl SessionLifecycleSink for CapturingSink {
+    impl SessionLifecycleFactSink for CapturingSink {
         async fn emit(&self, _session_id: &str, _workspace_id: Option<&str>, event_type: &str) {
             self.0.lock().unwrap().push(event_type.to_string());
         }
     }
 
-    for (required, expected_status, expected_prepares, expected_facts, rule) in
-        [(false, "idle", 1, 1, "A1"), (true, "preparing", 0, 0, "A2")]
-    {
+    for (required, expected_status, expected_prepares, expected_facts, rule) in [
+        (false, SessionStatus::Idle, 1, 1, "A1"),
+        (true, SessionStatus::Preparing, 0, 0, "A2"),
+    ] {
         let prepared = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::new(CapturingSink::default());
         let state = ManagedState::new_with_mcp(PreparingFake {
@@ -2114,7 +2118,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
         )
         .await
         .expect("create preparing Session");
-    assert_eq!(session.status, "preparing");
+    assert_eq!(session.status, SessionStatus::Preparing);
     assert!(prepared.lock().unwrap().is_empty());
 
     state
@@ -2152,7 +2156,7 @@ async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
         seen: Mutex<Vec<(String, Option<String>, String)>>,
     }
     #[async_trait::async_trait]
-    impl SessionLifecycleSink for CapturingSink {
+    impl SessionLifecycleFactSink for CapturingSink {
         async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
             self.seen.lock().unwrap().push((
                 session_id.to_string(),
@@ -2213,7 +2217,7 @@ async fn archive_session_fires_the_terminated_fact_once() {
         seen: Mutex<Vec<(String, Option<String>, String)>>,
     }
     #[async_trait::async_trait]
-    impl SessionLifecycleSink for CapturingSink {
+    impl SessionLifecycleFactSink for CapturingSink {
         async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
             self.seen.lock().unwrap().push((
                 session_id.to_string(),
@@ -2284,7 +2288,7 @@ async fn delete_session_fires_the_deleted_fact_with_the_owner() {
         seen: Mutex<Vec<(String, Option<String>, String)>>,
     }
     #[async_trait::async_trait]
-    impl SessionLifecycleSink for CapturingSink {
+    impl SessionLifecycleFactSink for CapturingSink {
         async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
             self.seen.lock().unwrap().push((
                 session_id.to_string(),

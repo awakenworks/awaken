@@ -20,7 +20,7 @@ pub fn resources(skill_store: Arc<dyn SkillStore>) -> ResourcesApplication {
             file_catalog: files,
             memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
             skill_store,
-            lifecycle: catalog,
+            reclamation: catalog,
         },
     ))
 }

@@ -220,7 +220,7 @@ mod tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            status: "preparing".into(),
+            lifecycle: SessionLifecycleState::Preparing,
             archived_at: None,
         };
         let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());

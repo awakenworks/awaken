@@ -980,7 +980,7 @@ mod provisioning_registry_tests {
             raw_host.file_store(),
             catalog,
             raw_host
-                .resource_lifecycle()
+                .resource_reclamation()
                 .expect("test lifecycle repository"),
         ));
         raw_host = raw_host.with_file_application(

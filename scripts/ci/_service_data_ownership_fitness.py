@@ -135,7 +135,7 @@ VOLATILE_RUNTIME_HOST_APIS = (
     "new_with_deployment",
     "with_deployment_config",
     "new_with_resource_component",
-    "with_resource_lifecycle",
+    "with_resource_reclamation",
     "with_upstream",
     "with_skill_store",
     "with_skill_store_backend",

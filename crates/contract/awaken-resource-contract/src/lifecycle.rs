@@ -533,9 +533,10 @@ pub trait ResourceReferenceIndex: Send + Sync {
 /// Composition convenience for one adapter implementing both durable lifecycle
 /// SPIs. It adds no behavior and keeps callers dependent on the two segregated
 /// interfaces above.
-pub trait ResourceLifecycleRepository: ResourcePurgeRepository + ResourceReferenceIndex {}
+pub trait ResourceReclamationRepository: ResourcePurgeRepository + ResourceReferenceIndex {}
 
-impl<T> ResourceLifecycleRepository for T where T: ResourcePurgeRepository + ResourceReferenceIndex {}
+impl<T> ResourceReclamationRepository for T where T: ResourcePurgeRepository + ResourceReferenceIndex
+{}
 
 /// Narrow application port used by resource owners which must schedule physical
 /// cleanup without depending on the reclaimer repository or worker protocol.

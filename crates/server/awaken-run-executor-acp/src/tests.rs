@@ -26,6 +26,16 @@ use super::*;
 
 struct FakeProcess;
 
+#[test]
+fn terminal_business_outcome_is_not_rewritten_by_cleanup_failure() {
+    let outcome = preserve_terminal_outcome(
+        Ok(TerminationReason::NaturalEnd),
+        Err(AcpError::Io("cleanup failed".into())),
+        "test-process",
+    );
+    assert_eq!(outcome.unwrap(), TerminationReason::NaturalEnd);
+}
+
 struct SpillProbe {
     fail: bool,
     seen: Arc<Mutex<Vec<(String, String, String)>>>,

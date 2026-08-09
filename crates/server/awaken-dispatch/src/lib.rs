@@ -110,6 +110,7 @@ pub use worker_context::InferenceMaterializerFn;
 /// change lease ownership.
 pub const DEFAULT_LEASE_RENEWAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[cfg(feature = "durable")]
 fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
     max_epoch.checked_add(1).ok_or_else(|| {
         DispatchError::Rejected(
@@ -119,6 +120,7 @@ fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
     })
 }
 
+#[cfg(feature = "durable")]
 fn next_claim_epoch(previous_epoch: i64) -> Result<u64, DispatchError> {
     let next = previous_epoch.checked_add(1).ok_or_else(|| {
         DispatchError::Rejected(
@@ -133,6 +135,31 @@ fn next_claim_epoch(previous_epoch: i64) -> Result<u64, DispatchError> {
     })
 }
 
+/// Decode one non-negative SQL integer used as durable ordering authority.
+///
+/// SQL backends expose signed integers while the domain uses unsigned values.
+/// Treating a corrupt negative value as zero would silently mint fresh authority;
+/// this boundary therefore fails closed instead of normalizing it.
+#[cfg(feature = "durable")]
+fn durable_u64(field: &str, value: i64) -> Result<u64, DispatchError> {
+    u64::try_from(value).map_err(|_| {
+        DispatchError::Rejected(format!(
+            "persisted {field} is negative; refusing to normalize durable authority"
+        ))
+    })
+}
+
+/// Encode one unsigned domain counter for SQL without wrapping at `i64::MAX`.
+#[cfg(feature = "durable")]
+fn durable_i64(field: &str, value: u64) -> Result<i64, DispatchError> {
+    i64::try_from(value).map_err(|_| {
+        DispatchError::Rejected(format!(
+            "{field} exceeds the durable SQL integer range; refusing to wrap authority"
+        ))
+    })
+}
+
+#[cfg(any(test, feature = "test-support"))]
 fn next_memory_epoch(previous_epoch: u64, authority: &str) -> Result<u64, DispatchError> {
     previous_epoch.checked_add(1).ok_or_else(|| {
         DispatchError::Rejected(format!(
@@ -164,6 +191,20 @@ mod supersession_epoch_tests {
         ));
         assert!(matches!(
             next_claim_epoch(i64::MAX),
+            Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
+        ));
+    }
+
+    #[test]
+    fn durable_integer_boundary_rejects_negative_and_oversized_authority() {
+        assert_eq!(durable_u64("lease epoch", 7).unwrap(), 7);
+        assert!(matches!(
+            durable_u64("lease epoch", -1),
+            Err(DispatchError::Rejected(message)) if message.contains("negative")
+        ));
+        assert_eq!(durable_i64("lease epoch", 7).unwrap(), 7);
+        assert!(matches!(
+            durable_i64("lease epoch", u64::MAX),
             Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
         ));
     }

@@ -26,7 +26,7 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
-use awaken_agent_contract::{LifecycleCursor, RunLifecycleFeed, RunLifecycleKind};
+use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor;
 use sqlx::Row;
@@ -797,7 +797,7 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
         "P2 public projection reads every peer-committed message"
     );
     let first = peer
-        .events_after(LifecycleCursor::default(), 2)
+        .events_after(RunLifecycleCursor::default(), 2)
         .await
         .expect("authoritative first page");
     assert_eq!(
@@ -806,7 +806,10 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
             .iter()
             .map(|event| event.kind)
             .collect::<Vec<_>>(),
-        vec![RunLifecycleKind::Running, RunLifecycleKind::Awaiting]
+        vec![
+            RunLifecycleEventKind::Running,
+            RunLifecycleEventKind::Awaiting
+        ]
     );
     let second = peer
         .events_after(first.next_cursor, 8)
@@ -818,7 +821,10 @@ async fn peer_lifecycle_feed_reads_authoritative_postgres_without_projection_ref
             .iter()
             .map(|event| event.kind)
             .collect::<Vec<_>>(),
-        vec![RunLifecycleKind::Resumed, RunLifecycleKind::Completed]
+        vec![
+            RunLifecycleEventKind::Resumed,
+            RunLifecycleEventKind::Completed
+        ]
     );
     assert!(
         second

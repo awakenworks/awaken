@@ -364,7 +364,7 @@ pub(super) async fn assemble_runtime_process_router(
     // against this Coordinator's sole Managed Session repository; split Control
     // neither mirrors that repository nor owns a second token directory.
     let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
-    let webhook_sink: Arc<dyn awaken_session_contract::SessionLifecycleSink> =
+    let webhook_sink: Arc<dyn awaken_session_contract::SessionLifecycleFactSink> =
         match local_webhook_stores {
             Some((webhook_store, secrets)) => {
                 awaken_webhook_managed::assemble_with_session_repo(
@@ -375,15 +375,17 @@ pub(super) async fn assemble_runtime_process_router(
                 )
                 .0
             }
-            None => Arc::new(awaken_webhook_managed::WebhookLifecycleSink::with_delivery(
-                assembly
-                    .control_service
-                    .as_ref()
-                    .expect("split Coordinator requires Control webhook delivery")
-                    .webhooks
-                    .clone(),
-                sessions.clone(),
-            )),
+            None => Arc::new(
+                awaken_webhook_managed::WebhookLifecycleFactSink::with_delivery(
+                    assembly
+                        .control_service
+                        .as_ref()
+                        .expect("split Coordinator requires Control webhook delivery")
+                        .webhooks
+                        .clone(),
+                    sessions.clone(),
+                ),
+            ),
         };
     // The data plane: the host runs the server model, resolves a session's agent to
     // its installed config, and carries the management tool executables so the
@@ -465,7 +467,7 @@ pub(super) async fn assemble_runtime_process_router(
         awaken_resource_reclaimer::ResourceReclaimer::new(
             format!("awaken-resource-reclaimer:{}", std::process::id()),
             30_000,
-            host.resource_lifecycle()
+            host.resource_reclamation()
                 .expect("resource-plane composition installs lifecycle repository"),
             resource_reclamation.clone(),
         )
@@ -533,7 +535,7 @@ pub(super) async fn assemble_runtime_process_router(
         .with_resource_catalog(resource_catalog.clone())
         .with_resource_purge_scheduler(resource_application.purge_scheduler())
         .with_resource_reference_authority(
-            resource_component.lifecycle(),
+            resource_component.reclamation(),
             resource_component.file_catalog(),
         )
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a

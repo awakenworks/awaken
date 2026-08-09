@@ -123,7 +123,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // 4. A committed session lifecycle fact, owned by wrkspc_local, drives the sink
     // exactly as `create_session` does (owner resolved at ingress; the
     // create_session→sink link itself is covered in protocol-managed).
-    use awaken_session_contract::SessionLifecycleSink;
+    use awaken_session_contract::SessionLifecycleFactSink;
     sink.emit("sesn_live", Some("wrkspc_local"), "session.status_idled")
         .await;
 

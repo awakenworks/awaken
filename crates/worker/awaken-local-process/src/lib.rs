@@ -85,8 +85,26 @@ impl ProcessHandle for LocalProcess {
                 Signal::Kill => nix::sys::signal::Signal::SIGKILL,
                 Signal::Int => nix::sys::signal::Signal::SIGINT,
             };
-            return nix::sys::signal::killpg(group, signal)
-                .map_err(|error| SandboxError::new(error.to_string()));
+            return match nix::sys::signal::killpg(group, signal) {
+                Ok(()) => Ok(()),
+                Err(signal_error) => {
+                    // `poll(None) -> natural exit -> signal` is an unavoidable OS
+                    // race. macOS may report EPERM for the vanished process group
+                    // (other Unix targets commonly report ESRCH). Only suppress the
+                    // signal error after the owned child confirms it has exited; a
+                    // still-live or unobservable child continues to fail closed.
+                    match self.child.lock().await.try_wait() {
+                        Ok(Some(_)) => Ok(()),
+                        Ok(None) => Err(SandboxError::new(format!(
+                            "{signal_error}; child {} is still running",
+                            self.id
+                        ))),
+                        Err(poll_error) => Err(SandboxError::new(format!(
+                            "{signal_error}; child exit check failed: {poll_error}"
+                        ))),
+                    }
+                }
+            };
         }
         #[cfg(not(unix))]
         {
@@ -155,5 +173,38 @@ mod tests {
             .expect("leader settles")
             .expect("wait succeeds");
         wait_for_marker(&marker, "child").await;
+    }
+
+    #[tokio::test]
+    async fn signal_accepts_a_process_group_that_already_exited() {
+        // The supervisor can observe a running child, receive its terminal protocol
+        // frame, and then race its natural exit while beginning cleanup. Once the
+        // owned Child confirms the exit, a stale process-group signal is successful
+        // cleanup rather than a new business failure.
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("exit 0")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        configure_process_group(&mut command);
+        let process = LocalProcess::spawned(command.spawn().expect("spawn short-lived process"));
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if process.poll().await.expect("poll child").is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("child exits");
+
+        process
+            .signal(Signal::Term)
+            .await
+            .expect("an already-exited owned process is settled");
     }
 }

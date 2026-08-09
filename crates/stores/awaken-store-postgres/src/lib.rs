@@ -32,8 +32,8 @@ use awaken_agent_contract::thread::commit::operation::{
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::lifecycle::{
-    LifecycleCursor, LifecyclePage, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
-    classify_run_lifecycle,
+    RunLifecycleCursor, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
+    RunLifecyclePage, classify_run_lifecycle_event,
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
@@ -898,11 +898,11 @@ impl RunRecoverySource for PostgresCommitCoordinator {
 impl RunLifecycleFeed for PostgresCommitCoordinator {
     async fn events_after(
         &self,
-        cursor: LifecycleCursor,
+        cursor: RunLifecycleCursor,
         limit: usize,
-    ) -> Result<LifecyclePage, RunLifecycleFeedError> {
+    ) -> Result<RunLifecyclePage, RunLifecycleFeedError> {
         if limit == 0 {
-            return Ok(LifecyclePage {
+            return Ok(RunLifecyclePage {
                 events: Vec::new(),
                 next_cursor: cursor,
             });
@@ -958,7 +958,7 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
                 })
                 .transpose()?;
             events.push(RunLifecycleEvent {
-                cursor: LifecycleCursor(sequence),
+                cursor: RunLifecycleCursor(sequence),
                 thread_id: ThreadId(
                     row.try_get("thread_id")
                         .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?,
@@ -967,12 +967,12 @@ impl RunLifecycleFeed for PostgresCommitCoordinator {
                     row.try_get("run_id")
                         .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?,
                 ),
-                kind: classify_run_lifecycle(&state, previous.as_ref()),
+                kind: classify_run_lifecycle_event(&state, previous.as_ref()),
                 state,
             });
         }
         let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        Ok(LifecyclePage {
+        Ok(RunLifecyclePage {
             events,
             next_cursor,
         })

@@ -1687,6 +1687,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2335,6 +2336,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "tracing",
 ]
 
 [[package]]

@@ -127,6 +127,9 @@ impl pc::ProcessHandle for PodmanExecProcess {
     }
 
     async fn signal(&self, signal: pc::Signal) -> Result<(), pc::SandboxError> {
+        if self.poll().await?.is_some() {
+            return Ok(());
+        }
         let name = match signal {
             pc::Signal::Term => "TERM",
             pc::Signal::Kill => "KILL",
@@ -143,6 +146,11 @@ impl pc::ProcessHandle for PodmanExecProcess {
             .await
             .map_err(|error| pc::SandboxError::new(error.to_string()))?;
         if status.success() {
+            Ok(())
+        } else if self.poll().await?.is_some() {
+            // The process may exit naturally between the preflight poll and the
+            // container-side kill. Signalling an already-exited owned process is
+            // idempotent across every backend.
             Ok(())
         } else {
             Err(pc::SandboxError::new(format!(

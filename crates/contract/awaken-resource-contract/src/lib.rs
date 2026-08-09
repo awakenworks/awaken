@@ -47,11 +47,11 @@ pub use input::{
 };
 pub use lifecycle::{
     AcquireResourceReclamationOutcome, AgentResourceReferenceSource, PutResourcePurgeOutcome,
-    ResourceKind, ResourceLifecycleRepository, ResourcePhysicalReclaimer, ResourcePurgeError,
-    ResourcePurgeEvidence, ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt,
-    ResourcePurgeRepository, ResourcePurgeScheduler, ResourcePurgeStatus, ResourceReclamationFence,
-    ResourceReference, ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord,
-    ResourceTarget,
+    ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError, ResourcePurgeEvidence,
+    ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt, ResourcePurgeRepository,
+    ResourcePurgeScheduler, ResourcePurgeStatus, ResourceReclamationFence,
+    ResourceReclamationRepository, ResourceReference, ResourceReferenceIndex,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 pub use memory_application::{
     CreateMemoryStoreCommand, MemoryStoreApplicationError, MemoryStoreApplicationService,

@@ -43,6 +43,124 @@ pub struct VisibleMcpServer {
 #[serde(transparent)]
 pub struct SessionRevision(pub u64);
 
+/// The one durable logical state of a Managed Session aggregate.
+///
+/// Runtime handles, leases, protocol DTOs, and notification delivery are
+/// projections or effects of this value; none is a second lifecycle authority.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionLifecycleState {
+    Preparing,
+    Activating,
+    ActivationFailed,
+    Running,
+    Rescheduling,
+    #[default]
+    Idle,
+    Terminated,
+    Deleted,
+}
+
+impl SessionLifecycleState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Activating => "activating",
+            Self::ActivationFailed => "activation_failed",
+            Self::Running => "running",
+            Self::Rescheduling => "rescheduling",
+            Self::Idle => "idle",
+            Self::Terminated => "terminated",
+            Self::Deleted => "deleted",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::ActivationFailed | Self::Terminated | Self::Deleted
+        )
+    }
+
+    /// Whether the canonical Session state machine admits `next`.
+    ///
+    /// Replays are deliberately idempotent. Terminal states fail closed, and
+    /// every non-terminal transition used by fresh execution, resume, and
+    /// recovery is defined here rather than in those callers.
+    #[must_use]
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+        if self.is_terminal() {
+            return false;
+        }
+        match next {
+            Self::Terminated | Self::Deleted => true,
+            Self::ActivationFailed => !matches!(self, Self::Idle),
+            Self::Activating => {
+                matches!(self, Self::Preparing | Self::Running | Self::Rescheduling)
+            }
+            Self::Idle => matches!(
+                self,
+                Self::Preparing | Self::Activating | Self::Running | Self::Rescheduling
+            ),
+            Self::Running => matches!(self, Self::Idle),
+            Self::Rescheduling => matches!(self, Self::Idle | Self::Running),
+            Self::Preparing => false,
+        }
+    }
+}
+
+impl std::fmt::Display for SessionLifecycleState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+#[error("unknown Session lifecycle state `{0}`")]
+pub struct SessionLifecycleStateError(pub String);
+
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+#[error("invalid Session lifecycle transition from `{from}` to `{to}`")]
+pub struct SessionLifecycleTransitionError {
+    pub from: SessionLifecycleState,
+    pub to: SessionLifecycleState,
+}
+
+impl std::str::FromStr for SessionLifecycleState {
+    type Err = SessionLifecycleStateError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "preparing" => Ok(Self::Preparing),
+            "activating" => Ok(Self::Activating),
+            "activation_failed" => Ok(Self::ActivationFailed),
+            "running" => Ok(Self::Running),
+            "rescheduling" => Ok(Self::Rescheduling),
+            "idle" => Ok(Self::Idle),
+            "terminated" => Ok(Self::Terminated),
+            "deleted" => Ok(Self::Deleted),
+            other => Err(SessionLifecycleStateError(other.to_string())),
+        }
+    }
+}
+
 /// Durable owner fence for all process-local Session projections. Runtime and
 /// Worker identities are opaque to the Session domain.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -91,21 +209,39 @@ pub struct PersistedSession {
     /// Continuing Session projection ownership; no process-local slot is an
     /// authority for this lease.
     pub realization: Option<SessionRealizationLease>,
-    /// Durable lifecycle projection used when a process rehydrates the session.
-    pub status: String,
+    /// The only durable logical lifecycle authority. The retained serialized key
+    /// keeps historical aggregate JSON and database fixtures readable.
+    #[serde(rename = "status", alias = "lifecycle")]
+    pub lifecycle: SessionLifecycleState,
     pub archived_at: Option<String>,
 }
 
 impl PersistedSession {
+    /// Apply the sole durable Session lifecycle transition function.
+    ///
+    /// Returns `false` for an idempotent replay and leaves the aggregate
+    /// untouched when the transition is invalid.
+    pub fn transition_lifecycle(
+        &mut self,
+        next: SessionLifecycleState,
+    ) -> Result<bool, SessionLifecycleTransitionError> {
+        let from = self.lifecycle;
+        if !from.can_transition_to(next) {
+            return Err(SessionLifecycleTransitionError { from, to: next });
+        }
+        if from == next {
+            return Ok(false);
+        }
+        self.lifecycle = next;
+        Ok(true)
+    }
+
     /// Whether the root Session lifecycle forbids every new realization effect.
     /// Keep this classification on the aggregate so API rehydration, MCP recovery,
     /// and later reconcilers cannot grow different terminal-status lists.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self.status.as_str(),
-            "terminated" | "deleted" | "activation_failed"
-        )
+        self.lifecycle.is_terminal()
     }
 
     /// Whether the Resource convergence driver owns work for this Session.
@@ -116,7 +252,7 @@ impl PersistedSession {
     /// reconcilers from recreating lifecycle status lists with string comparisons.
     #[must_use]
     pub fn needs_resource_reconciliation(&self) -> bool {
-        self.status == "deleted"
+        self.lifecycle == SessionLifecycleState::Deleted
             || self.resources.needs_reconciliation()
             || (self.is_terminal() && self.resources.has_active())
     }
@@ -374,10 +510,26 @@ pub trait ManagedSessionRepository: Send + Sync {
 
     async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact>;
 
+    async fn try_pending_lifecycle(
+        &self,
+    ) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
+        Ok(self.pending_lifecycle().await)
+    }
+
     async fn complete_lifecycle(&self, fact_id: &str);
 
     /// The stored configuration for `session_id`, if any.
     async fn get(&self, session_id: &str) -> Option<PersistedSession>;
+
+    /// Fallible read for callers that must distinguish absence from unavailable
+    /// or corrupt durable state. Durable adapters override this; the default
+    /// preserves compatibility for simple in-memory/test implementations.
+    async fn try_get(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
+        Ok(self.get(session_id).await)
+    }
 
     /// Sessions carrying any durable Resource, MCP, environment, or WorkQueue
     /// projection reconciliation work.
@@ -385,6 +537,12 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// row scan; application coordinators filter by their owned state machine.
     /// One index avoids parallel per-feature recovery registries and scans.
     async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession>;
+
+    async fn try_reconcilable_sessions(
+        &self,
+    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError> {
+        Ok(self.reconcilable_sessions().await)
+    }
 
     /// Durable application-command receipt. This is a read of the same
     /// idempotency table written atomically by `create`/`commit_mutation`, not a
@@ -485,9 +643,86 @@ mod mutation_tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            status: "idle".into(),
+            lifecycle: SessionLifecycleState::Idle,
             archived_at: None,
         }
+    }
+
+    #[test]
+    fn lifecycle_state_preserves_the_historical_key_and_rejects_unknown_truth() {
+        let value = serde_json::to_value(session("session-1", SessionRevision(1))).unwrap();
+        assert_eq!(value.get("status"), Some(&serde_json::json!("idle")));
+        assert!(value.get("lifecycle").is_none());
+
+        let mut unknown = value.clone();
+        unknown["status"] = serde_json::json!("legacy-unknown");
+        assert!(serde_json::from_value::<PersistedSession>(unknown).is_err());
+
+        let mut aliased = value;
+        let status = aliased.as_object_mut().unwrap().remove("status").unwrap();
+        aliased["lifecycle"] = status;
+        assert_eq!(
+            serde_json::from_value::<PersistedSession>(aliased)
+                .unwrap()
+                .lifecycle,
+            SessionLifecycleState::Idle
+        );
+    }
+
+    #[test]
+    fn lifecycle_transition_decision_table_fails_closed() {
+        use SessionLifecycleState as State;
+
+        let states = [
+            State::Preparing,
+            State::Activating,
+            State::ActivationFailed,
+            State::Running,
+            State::Rescheduling,
+            State::Idle,
+            State::Terminated,
+            State::Deleted,
+        ];
+        for from in states {
+            for to in states {
+                let expected = from == to
+                    || (!from.is_terminal()
+                        && match to {
+                            State::Terminated | State::Deleted => true,
+                            State::ActivationFailed => from != State::Idle,
+                            State::Activating => matches!(
+                                from,
+                                State::Preparing | State::Running | State::Rescheduling
+                            ),
+                            State::Idle => matches!(
+                                from,
+                                State::Preparing
+                                    | State::Activating
+                                    | State::Running
+                                    | State::Rescheduling
+                            ),
+                            State::Running => from == State::Idle,
+                            State::Rescheduling => matches!(from, State::Idle | State::Running),
+                            State::Preparing => false,
+                        });
+                assert_eq!(from.can_transition_to(to), expected, "{from} -> {to}");
+            }
+        }
+
+        let mut value = session("session-1", SessionRevision(1));
+        assert_eq!(value.transition_lifecycle(State::Idle), Ok(false));
+        assert_eq!(value.transition_lifecycle(State::Running), Ok(true));
+        assert_eq!(value.lifecycle, State::Running);
+        assert_eq!(value.transition_lifecycle(State::Terminated), Ok(true));
+        let terminal = value.clone();
+        assert_eq!(
+            value.transition_lifecycle(State::Idle),
+            Err(SessionLifecycleTransitionError {
+                from: State::Terminated,
+                to: State::Idle,
+            })
+        );
+        assert_eq!(value, terminal, "rejected transition must be atomic");
     }
 
     /// Cause graph: lifecycle fact -> terminal classification -> realization and
@@ -519,7 +754,7 @@ mod mutation_tests {
             ("L9", "activation_failed", false, true, true, true),
         ] {
             let mut value = session("session-1", SessionRevision(1));
-            value.status = status.into();
+            value.lifecycle = status.parse().expect("fixture lifecycle state");
             let desired = crate::ResolvedSessionResources {
                 inputs: vec![crate::ResolvedInput {
                     binding_id: awaken_resource_contract::BindingId::from("input-1"),

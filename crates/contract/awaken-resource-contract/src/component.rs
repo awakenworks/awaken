@@ -1,6 +1,6 @@
 //! Canonical Resources application component.
 //!
-//! File, Memory, Skill, and lifecycle retain their type-specific semantics and
+//! File, Memory, Skill, and reclamation retain their type-specific semantics and
 //! repositories. This component is only their atomic process-composition value:
 //! callers cannot accidentally pair ports opened from different backend
 //! selections, and Runtime/Coordinator code receives no concrete database type.
@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use crate::{
-    FileCatalog, FileStore, MemoryRepository, ResourceCatalog, ResourceLifecycleRepository,
+    FileCatalog, FileStore, MemoryRepository, ResourceCatalog, ResourceReclamationRepository,
     SkillStore,
 };
 
@@ -22,7 +22,7 @@ pub struct ResourceDependencies {
     pub file_catalog: Arc<dyn FileCatalog>,
     pub memory_repository: Arc<dyn MemoryRepository>,
     pub skill_store: Arc<dyn SkillStore>,
-    pub lifecycle: Arc<dyn ResourceLifecycleRepository>,
+    pub reclamation: Arc<dyn ResourceReclamationRepository>,
 }
 
 /// One complete Resources component.
@@ -37,7 +37,7 @@ pub struct ResourceComponent {
     file_catalog: Arc<dyn FileCatalog>,
     memory_repository: Arc<dyn MemoryRepository>,
     skill_store: Arc<dyn SkillStore>,
-    lifecycle: Arc<dyn ResourceLifecycleRepository>,
+    reclamation: Arc<dyn ResourceReclamationRepository>,
 }
 
 #[must_use]
@@ -48,7 +48,7 @@ pub fn build_resource_component(dependencies: ResourceDependencies) -> ResourceC
         file_catalog: dependencies.file_catalog,
         memory_repository: dependencies.memory_repository,
         skill_store: dependencies.skill_store,
-        lifecycle: dependencies.lifecycle,
+        reclamation: dependencies.reclamation,
     }
 }
 
@@ -79,7 +79,7 @@ impl ResourceComponent {
     }
 
     #[must_use]
-    pub fn lifecycle(&self) -> Arc<dyn ResourceLifecycleRepository> {
-        self.lifecycle.clone()
+    pub fn reclamation(&self) -> Arc<dyn ResourceReclamationRepository> {
+        self.reclamation.clone()
     }
 }
