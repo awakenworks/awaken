@@ -797,12 +797,12 @@ mod sandbox_override_tests {
         }))
         .expect("environment contributes");
         let mut spec = base();
-        spec.extra = Some(serde_json::json!({ "image": "fallback:v1" }));
+        spec.extra = Some(serde_json::json!({ "provider_field": "preserved" }));
         let spec = over.apply(spec);
         assert_eq!(
             spec.extra,
             Some(serde_json::json!({
-                "image": "fallback:v1",
+                "provider_field": "preserved",
                 "environment": { "kind": "sandbox" }
             }))
         );

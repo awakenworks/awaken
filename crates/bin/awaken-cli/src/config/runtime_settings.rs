@@ -16,14 +16,11 @@ pub(super) struct RuntimeSettings {
 }
 
 pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSettings, String> {
-    let sandbox_tier = match file.sandbox_tier.as_deref() {
-        Some("local" | "none") => SandboxTier::Local,
-        Some("docker") => SandboxTier::Docker,
-        Some("podman") => SandboxTier::Podman,
-        Some("k8s" | "kubernetes") => SandboxTier::K8s,
-        Some("namespace") | None => SandboxTier::Namespace,
-        Some(other) => return Err(format!("invalid sandbox_tier={other:?}")),
-    };
+    let sandbox_tier = file
+        .sandbox_tier
+        .as_deref()
+        .unwrap_or("namespace")
+        .parse::<SandboxTier>()?;
     let acp_ids = file.acp_clis.clone().unwrap_or_default();
     let acp = (!acp_ids.is_empty())
         .then(|| AcpWorkerProfile::new(acp_ids, file.acp_default_cli.clone()))

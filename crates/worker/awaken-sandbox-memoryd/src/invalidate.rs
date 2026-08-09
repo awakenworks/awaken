@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use awaken_memory_store::{MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion};
+use awaken_resource_contract::{MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion};
 use tokio::sync::broadcast;
 
 /// A `(store_id, path)` invalidation — "this path changed; drop it".
@@ -160,7 +160,7 @@ impl MemoryRepository for InvalidatingMemoryRepository {
     async fn purge_store(
         &self,
         store: &str,
-    ) -> Result<awaken_memory_store::MemoryPurgeSummary, MemErr> {
+    ) -> Result<awaken_resource_contract::MemoryPurgeSummary, MemErr> {
         let summary = self.inner.purge_store(store).await?;
         self.invalidator.publish(store, "/");
         Ok(summary)

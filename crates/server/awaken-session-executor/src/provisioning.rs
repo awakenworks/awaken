@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use crate::host::SharedHost;
-use awaken_file_store::FileStore;
 use awaken_provisioning_contract as pc;
+use awaken_resource_contract::FileStore;
 use awaken_resource_contract::{
     FileCatalog, FileCatalogError, FileRecord, ResourceKind, ResourcePurgeError, ResourceReference,
     ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
@@ -676,7 +676,7 @@ impl ArtifactHarvester {
                 .read_artifact(&artifact.id)
                 .await
                 .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-            let content_id = awaken_file_store::content_id(&bytes);
+            let content_id = awaken_resource_contract::content_id(&bytes);
             if content_id != artifact.content_hash || content_id != artifact.id {
                 return Err(ResourcePurgeError::Storage(format!(
                     "artifact `{}` changed during harvest",

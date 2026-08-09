@@ -34,23 +34,7 @@ pub use sqlite::{SqliteSkillStore, StoreError};
 /// Reduce `name` to a safe single file stem: keep alphanumerics, `-`, `_`; map every
 /// other run to a single `-`; never empty; bounded length. This is an API naming
 /// helper, not repository identity normalization: stable ids are stored verbatim.
-pub fn sanitize_stem(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' {
-            out.push(c);
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.truncate(120);
-    let trimmed = out.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        "skill".to_string()
-    } else {
-        trimmed
-    }
-}
+pub use awaken_resource_contract::skill_stem as sanitize_stem;
 
 /// The stable, tagged catalog id for a skill named `name` (e.g. `skill_1a2b…`). The
 /// official SDK requires `agent.skills[].skill_id` to be a tagged catalog id, not the

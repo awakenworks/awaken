@@ -218,6 +218,74 @@ pub enum WorkerCredentialError {
     Encode,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectedWorkerCredential {
+    worker_id: String,
+    key_id: String,
+    credential_id: String,
+    secret_base64: String,
+}
+
+/// Decode the canonical projected-file representation shared by Worker clients
+/// and Coordinator enrollment. Keeping this parser at the transport-contract
+/// boundary prevents the two process roles from accepting different wire shapes.
+pub fn parse_projected_signing_credentials(
+    source: &str,
+) -> Result<Vec<WorkerSigningCredential>, String> {
+    let projected = if source.trim_start().starts_with('[') {
+        serde_json::from_str::<Vec<ProjectedWorkerCredential>>(source)
+            .map_err(|error| format!("parse projected Worker credentials: {error}"))?
+    } else {
+        vec![
+            serde_json::from_str::<ProjectedWorkerCredential>(source)
+                .map_err(|error| format!("parse projected Worker credential: {error}"))?,
+        ]
+    };
+    projected
+        .into_iter()
+        .map(|credential| {
+            let secret = base64::engine::general_purpose::STANDARD
+                .decode(credential.secret_base64.trim())
+                .map_err(|_| "Worker credential secret_base64 is invalid".to_owned())?;
+            WorkerSigningCredential::new(
+                credential.worker_id,
+                credential.key_id,
+                credential.credential_id,
+                secret,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .collect()
+}
+
+/// Build the client authorizer from exactly one projected credential bound to
+/// the configured Worker identity.
+pub fn projected_request_authorizer(
+    source: &str,
+    worker_id: &str,
+) -> Result<Arc<dyn WorkerRequestAuthorizer>, String> {
+    let mut credentials = parse_projected_signing_credentials(source)?;
+    if credentials.len() != 1 || credentials[0].worker_id() != worker_id {
+        return Err(
+            "Worker request credential must contain exactly the configured worker_id".into(),
+        );
+    }
+    Ok(Arc::new(SignedWorkerRequestAuthorizer::new(
+        credentials.remove(0),
+    )))
+}
+
+/// File-system edge for the canonical projected request-credential parser.
+pub fn load_projected_request_authorizer(
+    path: &std::path::Path,
+    worker_id: &str,
+) -> Result<Arc<dyn WorkerRequestAuthorizer>, String> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| format!("read Worker request credential {}: {error}", path.display()))?;
+    projected_request_authorizer(&source, worker_id)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorkerRequestAssertion {
     version: u32,
@@ -889,6 +957,41 @@ impl WorkerLeasePolicy for FixedWorkerLeasePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Cause/effect decision table: C1 document shape is one object or an
+    /// enrollment array, C2 base64 is valid, C3 required identity/key/secret
+    /// fields are non-empty, C4 no unknown field is present, C5 request identity
+    /// matches the sole credential. R1 all true -> exact credentials/authorizer;
+    /// R2 !C2/!C3/!C4/!C5 -> reject. Both process roles exercise this one parser
+    /// rather than maintaining separate projected-file DTOs.
+    #[test]
+    fn projected_credential_parser_decision_table() {
+        let one = r#"{"worker_id":"worker-a","key_id":"key-a","credential_id":"credential-a","secret_base64":"c2VjcmV0"}"#;
+        assert_eq!(
+            parse_projected_signing_credentials(one).unwrap().len(),
+            1,
+            "R1 object"
+        );
+        assert_eq!(
+            parse_projected_signing_credentials(&format!("[{one},{one}]"))
+                .unwrap()
+                .len(),
+            2,
+            "R1 array"
+        );
+        assert!(projected_request_authorizer(one, "worker-a").is_ok(), "R1");
+        assert!(
+            projected_request_authorizer(one, "worker-b").is_err(),
+            "R2 identity mismatch"
+        );
+        for invalid in [
+            r#"{"worker_id":"worker-a","key_id":"key-a","credential_id":"credential-a","secret_base64":"%%%"}"#,
+            r#"{"worker_id":"","key_id":"key-a","credential_id":"credential-a","secret_base64":"c2VjcmV0"}"#,
+            r#"{"worker_id":"worker-a","key_id":"key-a","credential_id":"credential-a","secret_base64":"c2VjcmV0","extra":true}"#,
+        ] {
+            assert!(parse_projected_signing_credentials(invalid).is_err(), "R2");
+        }
+    }
 
     fn credential(id: &str) -> WorkerSigningCredential {
         WorkerSigningCredential::new(

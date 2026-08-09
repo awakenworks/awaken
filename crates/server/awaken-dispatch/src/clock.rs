@@ -31,6 +31,7 @@ impl Clock for SystemClock {
 ///
 /// Keeping this edge clock here prevents each storage backend from inventing a
 /// subtly different timestamp implementation.
+#[cfg(feature = "durable")]
 pub(crate) fn system_now_ms() -> u64 {
     SystemClock.now_ms()
 }
@@ -47,12 +48,14 @@ pub(crate) fn normalize_millis(value: u64) -> u64 {
 }
 
 #[must_use]
+#[cfg(feature = "durable")]
 pub(crate) fn db_millis(value: u64) -> i64 {
     normalize_millis(value) as i64
 }
 
 /// Decode a persisted millisecond value without allowing a legacy negative
 /// integer to wrap into a far-future `u64` deadline.
+#[cfg(feature = "durable")]
 pub(crate) fn millis_from_db(value: i64) -> Result<u64, &'static str> {
     u64::try_from(value).map_err(|_| "persisted millisecond value is negative")
 }

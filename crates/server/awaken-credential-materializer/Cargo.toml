@@ -11,17 +11,23 @@ authority = "credential-materializer"
 
 [dependencies]
 awaken-agent-contract.workspace = true
-awaken-credential-vault.workspace = true
+awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-run-executor-acp.workspace = true
 awaken-runtime-contract.workspace = true
+awaken-provider-genai.workspace = true
+awaken-worker-contract.workspace = true
 async-trait.workspace = true
 base64 = "0.22"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = ["authority"]
+authority = ["dep:awaken-credential-vault"]
 
 [dev-dependencies]
 awaken-credential-vault = { workspace = true, features = ["test-support"] }

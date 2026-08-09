@@ -1,5 +1,5 @@
 // Canonical deterministic E2E executor. Suite membership stays in package.json;
-// this file expands it, snapshots the two common Rust binaries once, records
+// this file expands it, snapshots the common Rust binaries once, records
 // per-command timings, and optionally selects one duration-balanced CI shard.
 //
 //   npm run test:deterministic -- --shard 1/4
@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import {
   AWAKEN_BIN_ENV,
   SCENARIO_HOST_BIN_ENV,
+  WORKER_BIN_ENV,
   cargoExecutable,
   requirePrebuiltExecutable,
 } from './cargo_binary.mjs';
@@ -139,11 +140,12 @@ export function fileDigest(file) {
   return `sha256:${hash.digest('hex')}`;
 }
 
-export function validPrebuiltManifest(manifest, fingerprint, awaken, scenarioHost) {
+export function validPrebuiltManifest(manifest, fingerprint, awaken, scenarioHost, worker) {
   return manifest?.version === 1
     && manifest.fingerprint === fingerprint
     && manifest.binaries?.awaken === fileDigest(awaken)
-    && manifest.binaries?.scenarioHost === fileDigest(scenarioHost);
+    && manifest.binaries?.scenarioHost === fileDigest(scenarioHost)
+    && manifest.binaries?.worker === fileDigest(worker);
 }
 
 function snapshotExecutable(source, destination) {
@@ -156,9 +158,12 @@ function snapshotExecutable(source, destination) {
 export function preparedEnvironment(environment, explicitDirectory) {
   const inheritedAwaken = requirePrebuiltExecutable(AWAKEN_BIN_ENV, environment);
   const inheritedScenarioHost = requirePrebuiltExecutable(SCENARIO_HOST_BIN_ENV, environment);
-  if (inheritedAwaken && inheritedScenarioHost) return { ...environment };
-  if (inheritedAwaken || inheritedScenarioHost) {
-    throw new Error(`${AWAKEN_BIN_ENV} and ${SCENARIO_HOST_BIN_ENV} must be supplied together`);
+  const inheritedWorker = requirePrebuiltExecutable(WORKER_BIN_ENV, environment);
+  if (inheritedAwaken && inheritedScenarioHost && inheritedWorker) return { ...environment };
+  if (inheritedAwaken || inheritedScenarioHost || inheritedWorker) {
+    throw new Error(
+      `${AWAKEN_BIN_ENV}, ${SCENARIO_HOST_BIN_ENV}, and ${WORKER_BIN_ENV} must be supplied together`,
+    );
   }
 
   const suffix = process.platform === 'win32' ? '.exe' : '';
@@ -167,6 +172,7 @@ export function preparedEnvironment(environment, explicitDirectory) {
     : fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-e2e-prebuilt-'));
   const awakenDestination = path.join(directory, `awaken${suffix}`);
   const scenarioHostDestination = path.join(directory, `awaken-scenario-host${suffix}`);
+  const workerDestination = path.join(directory, `awaken-worker${suffix}`);
   const manifestPath = path.join(directory, 'manifest.json');
   const fingerprint = prebuildFingerprint(environment);
   const existingAwaken = fs.statSync(awakenDestination, { throwIfNoEntry: false })?.isFile();
@@ -174,8 +180,9 @@ export function preparedEnvironment(environment, explicitDirectory) {
     scenarioHostDestination,
     { throwIfNoEntry: false },
   )?.isFile();
-  if (existingAwaken || existingScenarioHost) {
-    if (!existingAwaken || !existingScenarioHost) {
+  const existingWorker = fs.statSync(workerDestination, { throwIfNoEntry: false })?.isFile();
+  if (existingAwaken || existingScenarioHost || existingWorker) {
+    if (!existingAwaken || !existingScenarioHost || !existingWorker) {
       throw new Error(`incomplete E2E prebuilt directory: ${directory}`);
     }
     let manifest;
@@ -189,15 +196,18 @@ export function preparedEnvironment(environment, explicitDirectory) {
       fingerprint,
       awakenDestination,
       scenarioHostDestination,
+      workerDestination,
     )) {
       return {
         ...environment,
         [AWAKEN_BIN_ENV]: awakenDestination,
         [SCENARIO_HOST_BIN_ENV]: scenarioHostDestination,
+        [WORKER_BIN_ENV]: workerDestination,
       };
     }
     fs.rmSync(awakenDestination, { force: true });
     fs.rmSync(scenarioHostDestination, { force: true });
+    fs.rmSync(workerDestination, { force: true });
     fs.rmSync(manifestPath, { force: true });
   }
   if (!explicitDirectory) {
@@ -213,6 +223,11 @@ export function preparedEnvironment(environment, explicitDirectory) {
     packageName: 'awaken-scenario-host',
     targetName: 'awaken-scenario-host',
   });
+  const worker = cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-worker',
+    targetName: 'awaken-worker',
+  });
   const prepared = {
     ...environment,
     [AWAKEN_BIN_ENV]: snapshotExecutable(awaken, awakenDestination),
@@ -220,6 +235,7 @@ export function preparedEnvironment(environment, explicitDirectory) {
       scenarioHost,
       scenarioHostDestination,
     ),
+    [WORKER_BIN_ENV]: snapshotExecutable(worker, workerDestination),
   };
   fs.mkdirSync(directory, { recursive: true });
   const temporaryManifest = `${manifestPath}.${process.pid}.tmp`;
@@ -231,6 +247,7 @@ export function preparedEnvironment(environment, explicitDirectory) {
       binaries: {
         awaken: fileDigest(awakenDestination),
         scenarioHost: fileDigest(scenarioHostDestination),
+        worker: fileDigest(workerDestination),
       },
     }, null, 2)}\n`,
   );
@@ -298,6 +315,7 @@ export function runMain() {
   report.prebuilt = {
     awaken: environment[AWAKEN_BIN_ENV],
     scenarioHost: environment[SCENARIO_HOST_BIN_ENV],
+    worker: environment[WORKER_BIN_ENV],
   };
   writeTimings(timingFile, report);
   if (process.argv.includes('--prebuild-only')) {

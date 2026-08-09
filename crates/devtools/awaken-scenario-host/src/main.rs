@@ -29,7 +29,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let request_authorizer = std::env::var("AWAKEN_WORKER_REQUEST_CREDENTIAL_FILE")
             .ok()
             .map(|path| {
-                awaken_cli::load_worker_request_authorizer(std::path::Path::new(&path), &worker_id)
+                awaken_worker_transport_security::load_projected_request_authorizer(
+                    std::path::Path::new(&path),
+                    &worker_id,
+                )
             })
             .transpose()?;
         // Test-only echo-draining worker (the worker-pool e2e). The production

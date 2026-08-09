@@ -218,7 +218,7 @@ impl SessionEnvironment {
                     files
                         .into_iter()
                         .map(|file| {
-                            let id = awaken_file_store::content_id(&file.bytes);
+                            let id = awaken_resource_contract::content_id(&file.bytes);
                             pc::Artifact {
                                 id: id.clone(),
                                 path: file.path,
@@ -240,7 +240,7 @@ impl SessionEnvironment {
                 .await?
                 .into_iter()
                 .find_map(|file| {
-                    (awaken_file_store::content_id(&file.bytes) == id).then_some(file.bytes)
+                    (awaken_resource_contract::content_id(&file.bytes) == id).then_some(file.bytes)
                 })
                 .ok_or_else(|| pc::SandboxError::new(format!("artifact `{id}` not found"))),
         }

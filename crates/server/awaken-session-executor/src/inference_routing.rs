@@ -12,83 +12,11 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::CredentialRealizationCapabilities;
 use awaken_runtime_contract::activation::RunActivation;
+use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::LlmExecutor;
-use awaken_runtime_contract::resolved::{Backend, ResolvedModelCandidate};
+#[cfg(test)]
+use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-
-/// Turns an admission-pinned, secret-free inference access descriptor into a live
-/// executor. Selecting models and routes is deliberately outside this port; the
-/// materializer may only consume the exact activation and access it is given.
-pub trait InferenceExecutorMaterializer: Send + Sync {
-    /// Access schemes this execution adapter can materialize. Worker composition
-    /// derives its immutable capability manifest from this declaration so
-    /// placement and materialization cannot be configured independently and
-    /// drift. These are execution capabilities, not authorization grants.
-    fn supported_access_schemes(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    /// Exact credential boundaries and last-mile mechanisms implemented by this
-    /// adapter. Standard Worker manifest derivation consumes this evidence; the
-    /// default advertises none, so an arbitrary model adapter cannot accidentally
-    /// claim credential custody.
-    fn credential_realization_capabilities(&self) -> CredentialRealizationCapabilities {
-        CredentialRealizationCapabilities::default()
-    }
-
-    /// Materialize one configuration-pinned model/access pair. The implementation
-    /// may inject referenced credential material, but must not resolve or select a
-    /// different model, route, scope, or credential.
-    fn materialize_pinned(
-        &self,
-        candidate: &ResolvedModelCandidate,
-        context: &RuntimeRunContext,
-    ) -> Option<Arc<dyn LlmExecutor>>;
-
-    /// Materialize exactly the pinned Native access for this activation. ACP and
-    /// remote candidates are not applicable here and are handled by their peer
-    /// attempt executors. The convenience default is valid only when the
-    /// effective model identifies one complete binding; a pool-aware adapter must
-    /// override this method and exact-match each request binding itself.
-    fn materialize(
-        &self,
-        activation: &RunActivation,
-        context: &RuntimeRunContext,
-    ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
-        let mut matching = activation
-            .snapshot
-            .resolved_spec
-            .execution_candidates(Some(activation.effective_model_ref()))
-            .into_iter();
-        let exact = matching.next().ok_or_else(|| {
-            format!(
-                "model `{}` is outside the publication-pinned candidate set",
-                activation.effective_model_ref()
-            )
-        })?;
-        if matching.next().is_some() {
-            return Err(format!(
-                "model `{}` has multiple publication-pinned bindings; this inference materializer must provide pool-aware exact-binding routing",
-                activation.effective_model_ref()
-            ));
-        }
-        if !matches!(
-            Backend::from_ref(&exact.binding.backend_ref),
-            Backend::Native
-        ) {
-            return Ok(None);
-        }
-        self.materialize_pinned(exact, context)
-            .map(Some)
-            .ok_or_else(|| {
-                format!(
-                    "snapshot `{}` pinned inference access cannot materialize model `{}`",
-                    activation.snapshot.id.0,
-                    activation.effective_model_ref()
-                )
-            })
-    }
-}
 
 /// The host's per-thread model binding: which model ref each thread runs, and how
 /// a ref becomes an executor.

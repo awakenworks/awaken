@@ -43,6 +43,7 @@ enum ImageCheckObservation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ImageCheckDisposition {
+    Available,
     Continue,
     Missing,
     Unavailable(&'static str),
@@ -73,11 +74,14 @@ fn terminal_image_pull_reason(reason: Option<&str>) -> bool {
 }
 
 fn image_check_disposition(
+    job_succeeded: bool,
     pull_failed: bool,
     job_failed: bool,
     timed_out: bool,
 ) -> ImageCheckDisposition {
-    if pull_failed {
+    if job_succeeded {
+        ImageCheckDisposition::Available
+    } else if pull_failed {
         ImageCheckDisposition::Missing
     } else if job_failed {
         ImageCheckDisposition::Unavailable("Job failed before kubelet reported image availability")
@@ -510,25 +514,6 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                     continue;
                 }
             };
-            if status.succeeded.unwrap_or_default() > 0 {
-                let listed = pods
-                    .list(&ListParams::default().labels(&format!("job-name={name}")))
-                    .await
-                    .map_err(backend)?;
-                let identity = listed.items.into_iter().find_map(|pod| {
-                    pod.status?
-                        .container_statuses?
-                        .into_iter()
-                        .find(|status| status.name == "verify")
-                        .map(|status| status.image_id)
-                });
-                let _ = jobs.delete(&name, &DeleteParams::background()).await;
-                return Ok(identity.map(|identity| {
-                    identity
-                        .split_once("://")
-                        .map_or(identity.clone(), |(_, reference)| reference.to_owned())
-                }));
-            }
             let listed = pods
                 .list(&ListParams::default().labels(&format!("job-name={name}")))
                 .await
@@ -551,10 +536,29 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                     })
             });
             match image_check_disposition(
+                status.succeeded.unwrap_or_default() > 0,
                 pull_failed,
                 status.failed.unwrap_or_default() > 0,
                 tokio::time::Instant::now() >= deadline,
             ) {
+                ImageCheckDisposition::Available => {
+                    let identity = listed.items.into_iter().find_map(|pod| {
+                        pod.status?
+                            .container_statuses?
+                            .into_iter()
+                            .find(|status| status.name == "verify")
+                            .map(|status| status.image_id)
+                    });
+                    // The Job's TTL is the cleanup owner. Retaining a successful
+                    // deterministic observation lets concurrent readiness,
+                    // warmup, and registration callers share one kubelet result
+                    // instead of deleting and recreating the same Job in a loop.
+                    return Ok(identity.map(|identity| {
+                        identity
+                            .split_once("://")
+                            .map_or(identity.clone(), |(_, reference)| reference.to_owned())
+                    }));
+                }
                 ImageCheckDisposition::Continue => {}
                 ImageCheckDisposition::Missing => {
                     let _ = jobs.delete(&name, &DeleteParams::background()).await;
@@ -573,6 +577,12 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
 #[async_trait]
 impl PackageImageProvisioner for K8sPackageImageProvisioner {
     async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
+        // An operator-supplied digest is already the immutable identity required
+        // by durable demand. Probing it again would create a second availability
+        // path beside the BuildKit pull and Session readiness checks.
+        if let Some(identity) = immutable_registry_identity(Some(reference.to_owned())) {
+            return Ok(identity);
+        }
         self.resolve_image_identity(reference)
             .await?
             .filter(|identity| identity.contains("@sha256:"))
@@ -620,54 +630,85 @@ mod tests {
     };
 
     #[test]
-    fn a_concurrently_deleted_image_check_is_recreated_instead_of_becoming_a_404() {
-        assert!(matches!(
-            image_check_observation(None),
-            ImageCheckObservation::Missing
-        ));
+    fn image_check_lifecycle_has_one_shared_success_and_bounded_retry_path() {
+        // Causes: C1 a deterministic check is absent after TTL/peer cleanup; C2
+        // its Job succeeds; C3 kubelet reports a terminal pull miss; C4 the Job
+        // fails or exceeds its deadline. Effects: E1 recreate the same named
+        // observation; E2 retain successful observation for TTL sharing; E3
+        // delete and report missing so BuildKit may run; E4 delete and report a
+        // bounded unavailable error. Rules: R1 C1=>E1; R2 C2=>E2; R3 C3=>E3;
+        // R4 C4=>E4. No rule creates a parallel cache or durable Job authority.
+        assert!(
+            matches!(
+                image_check_observation(None),
+                ImageCheckObservation::Missing
+            ),
+            "R1"
+        );
+        assert_eq!(
+            image_check_disposition(true, false, false, false),
+            ImageCheckDisposition::Available,
+            "R2"
+        );
+        assert_eq!(
+            image_check_disposition(false, true, false, false),
+            ImageCheckDisposition::Missing,
+            "R3"
+        );
+        assert!(
+            matches!(
+                image_check_disposition(false, false, true, false),
+                ImageCheckDisposition::Unavailable(_)
+            ),
+            "R4"
+        );
     }
 
     #[test]
     fn only_an_exact_registry_digest_can_short_circuit_a_package_build() {
+        // Causes: C1 an operator base or cached destination carries one exact
+        // sha256 digest; C2 it is mutable or malformed. Effects: E1 reuse that
+        // identity without a redundant kubelet probe; E2 fail closed and keep
+        // the authoritative pull/build path. Rules: R1 C1=>E1; R2 C2=>E2.
         let digest = "a".repeat(64);
         let exact = format!("registry.local/environments/awaken-packages@sha256:{digest}");
         assert_eq!(
             immutable_registry_identity(Some(exact.clone())),
             Some(exact),
-            "a kubelet-confirmed immutable digest is reusable across Coordinator restarts"
+            "R1: an immutable base/destination is reusable across Coordinator restarts"
         );
         assert_eq!(
             immutable_registry_identity(Some(
                 "registry.local/environments/awaken-packages:mutable".into()
             )),
             None,
-            "a mutable tag must still execute the BuildKit path"
+            "R2: a mutable tag must still execute the authoritative probe/build path"
         );
         assert_eq!(
             immutable_registry_identity(Some(
                 "registry.local/environments/awaken-packages@sha256:short".into()
             )),
             None,
-            "a malformed digest must fail closed"
+            "R2: a malformed digest must fail closed"
         );
     }
 
     #[test]
     fn only_a_terminal_pull_result_means_the_registry_image_is_missing() {
         assert_eq!(
-            image_check_disposition(true, false, false),
+            image_check_disposition(false, true, false, false),
             ImageCheckDisposition::Missing
         );
         assert!(matches!(
-            image_check_disposition(false, true, false),
+            image_check_disposition(false, false, true, false),
             ImageCheckDisposition::Unavailable(_)
         ));
         assert!(matches!(
-            image_check_disposition(false, false, true),
+            image_check_disposition(false, false, false, true),
             ImageCheckDisposition::Unavailable(_)
         ));
         assert_eq!(
-            image_check_disposition(false, false, false),
+            image_check_disposition(false, false, false, false),
             ImageCheckDisposition::Continue
         );
     }

@@ -10,6 +10,7 @@ pub mod credential;
 pub mod data_subject;
 pub mod delegation;
 pub mod execution;
+pub mod inference;
 pub mod live_inbox;
 pub mod llm;
 pub mod metrics;
@@ -64,6 +65,7 @@ pub use execution::{
     ExecutorCapabilities, NATIVE_RUNTIME_CAPABILITY, RunAttemptExecutor, RunExecutor, Wait,
     execution_capability,
 };
+pub use inference::InferenceExecutorMaterializer;
 pub use live_inbox::{LiveInbox, LiveInboxMessage, LiveInboxMessageId};
 pub use llm::{ChatRequest, ChatResponse, LlmExecutor};
 pub use pause::PauseSignal;

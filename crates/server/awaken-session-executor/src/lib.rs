@@ -21,6 +21,7 @@ mod agent_runner;
 mod application;
 mod background;
 mod cache_volume;
+#[cfg(feature = "authority")]
 mod commit_backend;
 mod commit_ingest;
 mod compact;
@@ -29,6 +30,7 @@ mod container_environment;
 pub use container_environment::package_image_provisioner;
 mod delegate;
 mod deployment_config;
+#[cfg(feature = "authority")]
 mod dispatch_backend;
 mod durable_operations;
 mod host;
@@ -87,10 +89,12 @@ pub use crate::worker_http::respond as respond_host_http;
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
 pub use crate::cache_volume::{CacheVolumeInitializer, CacheVolumeWarmup};
+#[cfg(feature = "authority")]
 pub use crate::commit_backend::{
     init_shared_postgres_commit, init_shared_postgres_commit_existing,
     migrate_postgres_commit_schema,
 };
+#[cfg(feature = "authority")]
 pub use crate::dispatch_backend::{
     init_shared_postgres_dispatch_existing_with_config, init_shared_postgres_dispatch_with_config,
     migrate_postgres_dispatch_schema,
@@ -127,10 +131,11 @@ pub use crate::deployment_config::{
 };
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
-pub use crate::inference_routing::InferenceExecutorMaterializer;
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.
-pub use crate::mcp::{ExtMcpProbe, VaultRefresher};
+pub use crate::mcp::ExtMcpProbe;
+#[cfg(feature = "authority")]
+pub use crate::mcp::VaultRefresher;
 // ── Managed Agents adapter over the shared host ─────────────────────────────
 
 /// Translate the runtime contract's edit refusal into the wire-facing error.
@@ -730,6 +735,7 @@ impl ManagedHost {
 
     /// Wire runtime credential injection for the already-frozen Session bindings
     /// and Repository realization.
+    #[cfg(feature = "authority")]
     #[must_use]
     pub fn with_credentials(
         self,
@@ -1646,20 +1652,31 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                     })?;
                 let refresh = match access.refresh.as_ref() {
                     Some(refresh) => {
-                        let (credentials, secrets) = injector.local_stores().ok_or_else(|| {
+                        #[cfg(feature = "authority")]
+                        {
+                            let (credentials, secrets) = injector.local_stores().ok_or_else(|| {
                             RunError::classified(
                                 "mcp_credential_refresh_unavailable",
                                 "MCP credential refresh requires a local credential authority",
                             )
                         })?;
-                        Some(Box::new(crate::mcp::McpRefreshMaterial::new(
-                            awaken_credential_contract::CredentialSourceId(
-                                access.credential.id.clone(),
-                            ),
-                            refresh.clone(),
-                            credentials,
-                            secrets,
-                        )))
+                            Some(Box::new(crate::mcp::McpRefreshMaterial::new(
+                                awaken_credential_contract::CredentialSourceId(
+                                    access.credential.id.clone(),
+                                ),
+                                refresh.clone(),
+                                credentials,
+                                secrets,
+                            )))
+                        }
+                        #[cfg(not(feature = "authority"))]
+                        {
+                            let _ = refresh;
+                            return Err(RunError::classified(
+                                "mcp_credential_refresh_unavailable",
+                                "database-less Worker cannot own MCP credential refresh state",
+                            ));
+                        }
                     }
                     None => None,
                 };

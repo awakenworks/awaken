@@ -16,12 +16,12 @@ use awaken_ext_skills::{
     RecordingGate, SkillAllowedToolsGate, SkillEnvironment, SkillFile, SkillProvenance,
     SkillRegistry, SkillSource, SkillSpec, SkillTool, SourceSkillRegistry,
 };
+use awaken_resource_contract::SkillVersion;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::permission::ToolGateHook;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
-use awaken_skill_store::SkillVersion;
 
 /// The default workspace subdir the agent authors skills under, scanned live so a
 /// skill written this run is discovered (ADR-0036 D8). A hand/agent definition can
@@ -241,7 +241,9 @@ pub(crate) async fn wire_skills(
         }
         let mut files = Vec::with_capacity(delivered.len());
         for version in delivered {
-            if awaken_skill_store::bundle_sha256(&version.files) != version.bundle_sha256 {
+            if awaken_resource_contract::skill_bundle_sha256(&version.files)
+                != version.bundle_sha256
+            {
                 return Err(format!(
                     "Skill {} version {} bundle hash mismatch",
                     version.skill_id, version.version
@@ -265,7 +267,7 @@ pub(crate) async fn wire_skills(
             let directory = requires_filesystem(&version, &content).then(|| {
                 format!(
                     "{DELIVERED_SKILLS_SUBDIR}/{}",
-                    awaken_skill_store::sanitize_stem(version.skill_id.as_str())
+                    awaken_resource_contract::skill_stem(version.skill_id.as_str())
                 )
             });
             if let Some(directory) = &directory {

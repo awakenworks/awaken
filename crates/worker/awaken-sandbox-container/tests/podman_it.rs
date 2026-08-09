@@ -201,7 +201,10 @@ async fn podman_materializes_inline_content_through_the_provider() {
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["sh", "-c", "grep -q hello-podman-inline /data/config.toml"],
-            "image": "docker.io/library/busybox:latest",
+            "environment": {
+                "kind": "image",
+                "reference": "docker.io/library/busybox:latest"
+            },
         })),
     };
 

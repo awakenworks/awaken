@@ -14,22 +14,28 @@
 //! `awaken_session_contract::McpProbe` port the `mcp_oauth_validate` route
 //! drives — a connect + `initialize` handshake as the live credential check).
 
+#[cfg(feature = "authority")]
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
+#[cfg(feature = "authority")]
 use awaken_credential_contract::CredentialSourceId;
+#[cfg(feature = "authority")]
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, rotate_credential_materials_exact,
 };
+#[cfg(feature = "authority")]
 use awaken_credential_vault::{
     CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
 use awaken_ext_skills::SkillRegistry as _;
 use awaken_runtime_contract::plugin::Plugin;
+#[cfg(feature = "authority")]
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
 use awaken_session_contract::{McpProbe, McpProbeStatus};
+#[cfg(feature = "authority")]
 use base64::Engine as _;
 
 use crate::host::HostError;
@@ -137,6 +143,7 @@ pub(crate) fn project_mcp_transport(
 /// results. Carries [`SecretRef`]s plus the [`SecretStore`] handle — never
 /// secret material.
 #[derive(Clone)]
+#[cfg(feature = "authority")]
 pub(crate) struct McpRefreshMaterial {
     credential_id: CredentialSourceId,
     /// The same exact, fingerprinted execution fact persisted on the MCP
@@ -146,6 +153,7 @@ pub(crate) struct McpRefreshMaterial {
     secrets: Arc<dyn SecretStore>,
 }
 
+#[cfg(feature = "authority")]
 impl McpRefreshMaterial {
     pub(crate) fn new(
         credential_id: CredentialSourceId,
@@ -161,6 +169,10 @@ impl McpRefreshMaterial {
         }
     }
 }
+
+#[derive(Clone)]
+#[cfg(not(feature = "authority"))]
+pub(crate) struct McpRefreshMaterial;
 
 /// The host-side [`CredentialRefresher`] of the managed vault design (ADR-0043):
 /// consulted by the ext-mcp HTTP transport once per auth challenge. It performs
@@ -181,6 +193,7 @@ impl McpRefreshMaterial {
 /// retry with. ANY failure (network, non-2xx, malformed JSON, a lifecycle error)
 /// returns `None`, so the transport surfaces the original challenge — fail
 /// closed, never a panic.
+#[cfg(feature = "authority")]
 pub struct VaultRefresher {
     credential_id: CredentialSourceId,
     access: tokio::sync::Mutex<CredentialRefreshAccess>,
@@ -192,6 +205,7 @@ pub struct VaultRefresher {
 /// The RFC 6749 §2.3.1 `client_secret_basic` header value:
 /// `Basic base64(urlencode(client_id):urlencode(client_secret))` — both halves
 /// form-urlencoded BEFORE the base64, as the RFC requires.
+#[cfg(feature = "authority")]
 fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
     let enc = |s: &str| form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
     let pair = format!("{}:{}", enc(client_id), enc(client_secret));
@@ -201,6 +215,7 @@ fn basic_client_auth(client_id: &str, client_secret: &str) -> String {
     )
 }
 
+#[cfg(feature = "authority")]
 impl VaultRefresher {
     #[must_use]
     pub fn new(
@@ -229,6 +244,7 @@ impl VaultRefresher {
     }
 }
 
+#[cfg(feature = "authority")]
 fn http_client_for(url: &str) -> reqwest::Client {
     let mut builder = reqwest::Client::builder();
     if reqwest::Url::parse(url)
@@ -246,6 +262,7 @@ fn http_client_for(url: &str) -> reqwest::Client {
     builder.build().expect("build OAuth HTTP client")
 }
 
+#[cfg(feature = "authority")]
 #[async_trait::async_trait]
 impl CredentialRefresher for VaultRefresher {
     async fn refresh(&self, _challenge: &AuthChallenge) -> Option<Credential> {
@@ -672,11 +689,19 @@ pub(crate) async fn connect_materialized(
             Some(token) => awaken_ext_mcp::Credential::Bearer(token.expose_secret().to_string()),
             None => awaken_ext_mcp::Credential::None,
         };
-        let mut builder = HttpTransportBuilder::new(url.to_string()).credential(credential);
-        if let Some(refresh) = refresh {
-            builder = builder.refresher(Arc::new(VaultRefresher::from_material(
+        let builder = HttpTransportBuilder::new(url.to_string()).credential(credential);
+        #[cfg(feature = "authority")]
+        let builder = match refresh {
+            Some(refresh) => builder.refresher(Arc::new(VaultRefresher::from_material(
                 refresh.as_ref().clone(),
-            )) as Arc<dyn CredentialRefresher>);
+            )) as Arc<dyn CredentialRefresher>),
+            None => builder,
+        };
+        #[cfg(not(feature = "authority"))]
+        if refresh.is_some() {
+            return Err(HostError::internal(
+                "database-less Worker cannot own MCP credential refresh state",
+            ));
         }
         let transport = builder.connect_streaming().await.map_err(|e| {
             HostError::internal(format!("mcp server `{}` at {}: {e}", server.name, url))

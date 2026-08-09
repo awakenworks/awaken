@@ -28,8 +28,7 @@ use awaken_runtime_contract::{
 mod capability_probe;
 mod host_discovery;
 pub use capability_probe::{
-    AcpCapabilityState, ConfiguredAcpCapabilityObservationSource, ConfiguredAcpCapabilityTarget,
-    EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator,
+    AcpCapabilityState, EffectiveAcpCapabilityProfile, HostAcpCapabilityNegotiator,
 };
 pub use host_discovery::{AcpDetectionState, AcpDiscovery, AcpHostDiscovery, AcpHostObservation};
 
