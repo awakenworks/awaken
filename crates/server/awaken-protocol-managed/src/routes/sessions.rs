@@ -827,6 +827,10 @@ async fn update_session(
         .unwrap_or_default();
     let title = body.title;
     let metadata = body.metadata;
+    // Managed wire equivalence is stable across the application-layer move so
+    // durable receipts written by a previous process version remain replayable.
+    let request_fingerprint =
+        awaken_session_contract::stable_fingerprint(&(&title, &metadata, &tools, &mcp_servers));
     let idempotency_key = parse_idempotency_key(&headers)?;
     let if_match = headers
         .get(header::IF_MATCH)
@@ -858,12 +862,23 @@ async fn update_session(
     let (session, command_revision) = state
         .update_session(
             &id,
-            crate::state::SessionUpdateCommand {
+            awaken_session_application::SessionUpdateCommand {
                 title,
                 metadata,
-                tools,
-                mcp_servers,
+                tools: tools.map(|tools| crate::project::session_tool_configuration(&tools)),
+                mcp_candidates: mcp_servers.map(|servers| {
+                    servers
+                        .into_iter()
+                        .map(|server| {
+                            crate::state::agent_mcp_candidate(
+                                server,
+                                awaken_session_contract::McpAttachmentOrigin::Session,
+                            )
+                        })
+                        .collect()
+                }),
                 idempotency_key,
+                request_fingerprint,
                 if_match,
             },
         )

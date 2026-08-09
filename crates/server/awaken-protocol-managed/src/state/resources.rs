@@ -5,369 +5,44 @@
 
 use super::*;
 
-#[derive(Clone)]
-enum ResourceSettlement {
-    Commit,
-    Rollback(String),
-    RetryableFailure(String),
-}
-
 impl ManagedState {
     /// ResourceReclaimer entry point. Composition roots call this after durable
     /// stores and the Runtime Host are wired. It scans only Session application
     /// state; authorization principals and policy objects never cross this seam.
     pub async fn reconcile_resource_activations(&self) -> usize {
-        let pending = self
-            .application
-            .session_repository()
-            .reconcilable_sessions()
-            .await;
-        let mut settled = 0;
-        for record in pending {
-            let owner_scope = record.workspace_id;
-            let session = record.session;
-            // Frozen WorkQueue/application facts fence Worker custody. This
-            // Coordinator scanner owns only
-            // local Session effects and must preserve those durable intents.
-            if self.application.requires_external_realization(&session)
-                || !session.needs_resource_reconciliation()
-            {
-                continue;
-            }
-            match self
-                .reconcile_persisted_resources(&owner_scope, session.clone())
-                .await
-            {
-                Ok(_) => settled += 1,
-                Err(error) => tracing::warn!(
+        let report = self.application.reconcile_resource_activations().await;
+        for session in &report.settled {
+            if let Err(error) = self.refresh_cached_projection(session) {
+                tracing::warn!(
                     session = %session.session_id,
                     error = ?error,
-                    "Session resource reconciliation remains pending"
-                ),
+                    "Session Resource wire projection refresh remains pending"
+                );
             }
         }
-        settled
-    }
-
-    fn resource_plaintext_holder(
-        session: &PersistedSession,
-    ) -> Result<awaken_credential_contract::PlaintextHolder, StateError> {
-        session
-            .frozen_baseline()
-            .map(|baseline| {
-                baseline
-                    .environment
-                    .credential_realization
-                    .resource_holder
-                    .clone()
-            })
-            .ok_or_else(|| {
-                StateError::Run(RunError::bad_request(
-                    "Session resource mutation requires a frozen Environment baseline",
-                ))
-            })
-    }
-
-    /// Compile or verify the exact Repository credential execution pin before
-    /// the input enters the Session aggregate. This is the sole Resource→Vault
-    /// selection seam; Runtime receives no bare credential binding.
-    pub(super) async fn pin_repository_credential(
-        &self,
-        owner_scope: &str,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        input: &mut awaken_session_contract::ResolvedInput,
-    ) -> Result<(), StateError> {
-        let awaken_session_contract::ResolvedInputSource::Repository {
-            config, credential, ..
-        } = &mut input.source
-        else {
-            return Ok(());
-        };
-        let Some(binding) = config.credential_binding.as_deref() else {
-            if credential.is_some() {
-                return Err(StateError::Run(RunError::bad_request(
-                    "Repository without a Vault binding carries a credential pin",
-                )));
-            }
-            return Ok(());
-        };
-        if let Some(existing) = credential {
-            existing
-                .validate_for_binding(binding)
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-            if &existing.selected_plaintext_holder != selected_holder {
-                return Err(StateError::Run(RunError::bad_request(
-                    "Repository credential pin selects another Environment holder",
-                )));
-            }
-            return Ok(());
+        for failure in report.failures {
+            tracing::warn!(
+                session = %failure.session_id,
+                error = %failure.message,
+                "Session resource reconciliation remains pending"
+            );
         }
-        let vaults = self.application.credential_source().ok_or_else(|| {
-            StateError::Run(RunError::bad_request(
-                "Repository credential requires a configured credential vault",
-            ))
-        })?;
-        let access = vaults
-            .credential_access_for_source(
-                &awaken_credential_contract::CredentialSourceId(binding.to_string()),
-                owner_scope,
-                awaken_session_contract::repository_transport_credential_usage(),
-                awaken_credential_contract::CredentialExecutionPolicy::exact(
-                    selected_holder.clone(),
-                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
-                ),
-            )
-            .await
-            .map_err(|error| {
-                StateError::Run(RunError::bad_request(format!(
-                    "Repository credential could not be pinned exactly: {error}"
-                )))
-            })?;
-        *credential = Some(Box::new(
-            awaken_session_contract::ResolvedRepositoryCredential {
-                access,
-                selected_plaintext_holder: selected_holder.clone(),
-            },
-        ));
-        Ok(())
+        report.settled.len()
     }
 
-    /// Apply the one per-input compiler to a complete Resource generation.
-    /// Creation, hot mutation, and retained-row migration share this traversal;
-    /// callers never grow a second binding-to-access loop.
-    pub(super) async fn pin_repository_credentials(
-        &self,
-        owner_scope: &str,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        resources: &mut awaken_session_contract::ResolvedSessionResources,
-    ) -> Result<bool, StateError> {
-        let before = resources.clone();
-        for input in &mut resources.inputs {
-            self.pin_repository_credential(owner_scope, selected_holder, input)
-                .await?;
-        }
-        Ok(*resources != before)
-    }
-
-    /// One-time, root-CAS migration for retained Session rows written before the
-    /// exact Repository pin existed. It runs before every realization entry and
-    /// commits the secret-free pin before Runtime I/O. Existing pins are verified,
-    /// never refreshed or reselected.
-    pub(super) async fn ensure_repository_credentials_pinned(
-        &self,
-        owner_scope: &str,
-        mut session: PersistedSession,
-    ) -> Result<PersistedSession, StateError> {
-        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
-            let holder = Self::resource_plaintext_holder(&session)?;
-            let mut changed = self
-                .pin_repository_credentials(owner_scope, &holder, &mut session.resources.active)
-                .await?;
-            if let Some(pending) = &mut session.resources.pending {
-                changed |= self
-                    .pin_repository_credentials(owner_scope, &holder, pending)
-                    .await?;
+    pub(super) fn map_preparation_error(
+        error: awaken_session_application::SessionPreparationError,
+    ) -> StateError {
+        match error {
+            awaken_session_application::SessionPreparationError::NotFound => StateError::NotFound,
+            awaken_session_application::SessionPreparationError::Conflict => StateError::Conflict,
+            awaken_session_application::SessionPreparationError::Rejected(error) => {
+                StateError::Run(error)
             }
-            if !changed {
-                return Ok(session);
-            }
-            let session_id = session.session_id.clone();
-            match self
-                .commit_session_snapshot(
-                    owner_scope,
-                    session,
-                    "repository-credential-pin-migration",
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(session) => return Ok(session),
-                Err(StateError::Conflict)
-                    if attempt + 1
-                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
-                {
-                    session = self
-                        .application
-                        .session_repository()
-                        .get(&session_id)
-                        .await
-                        .ok_or(StateError::NotFound)?;
-                }
-                Err(error) => return Err(error),
+            awaken_session_application::SessionPreparationError::Unavailable(message) => {
+                StateError::Run(RunError::internal(message))
             }
         }
-        Err(StateError::Conflict)
-    }
-
-    async fn prepare_resource_transition(
-        &self,
-        owner_scope: &str,
-        mut current: PersistedSession,
-        desired: &awaken_session_contract::ResolvedSessionResources,
-    ) -> Result<PersistedSession, StateError> {
-        let unchanged_resources = current.resources.clone();
-        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
-            if current.resources != unchanged_resources {
-                return Err(StateError::Conflict);
-            }
-            let mut candidate = current.clone();
-            candidate
-                .resources
-                .prepare(&candidate.session_id, desired.clone())
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-            candidate
-                .resources
-                .start_attempt()
-                .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-            match self
-                .commit_session_snapshot(owner_scope, candidate, "resource-prepare", Vec::new())
-                .await
-            {
-                Err(StateError::Conflict)
-                    if attempt + 1
-                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
-                {
-                    current = self
-                        .application
-                        .session_repository()
-                        .get(&current.session_id)
-                        .await
-                        .ok_or(StateError::NotFound)?;
-                }
-                result => return result,
-            }
-        }
-        Err(StateError::Conflict)
-    }
-
-    async fn settle_resource_transition(
-        &self,
-        owner_scope: &str,
-        session_id: &str,
-        resource_revision: u64,
-        desired: &awaken_session_contract::ResolvedSessionResources,
-        settlement: ResourceSettlement,
-    ) -> Result<PersistedSession, StateError> {
-        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
-            let mut current = self
-                .application
-                .session_repository()
-                .get(session_id)
-                .await
-                .ok_or(StateError::NotFound)?;
-            if current.resources.revision != resource_revision
-                || current.resources.pending.as_ref() != Some(desired)
-            {
-                return Err(StateError::Conflict);
-            }
-            let operation = match &settlement {
-                ResourceSettlement::Commit => {
-                    current
-                        .resources
-                        .commit()
-                        .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
-                    "resource-activate"
-                }
-                ResourceSettlement::Rollback(error) => {
-                    current
-                        .resources
-                        .rollback(error.clone())
-                        .map_err(|state_error| {
-                            StateError::Run(RunError::internal(state_error.to_string()))
-                        })?;
-                    "resource-rollback"
-                }
-                ResourceSettlement::RetryableFailure(error) => {
-                    current
-                        .resources
-                        .note_retryable_failure(error.clone())
-                        .map_err(|state_error| {
-                            StateError::Run(RunError::internal(state_error.to_string()))
-                        })?;
-                    "resource-retryable-failure"
-                }
-            };
-            match self
-                .commit_session_snapshot(owner_scope, current, operation, Vec::new())
-                .await
-            {
-                Err(StateError::Conflict)
-                    if attempt + 1
-                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
-                {
-                    continue;
-                }
-                result => return result,
-            }
-        }
-        Err(StateError::Conflict)
-    }
-
-    async fn activate_inputs(
-        &self,
-        persisted: PersistedSession,
-        owner_scope: &str,
-        desired: awaken_session_contract::ResolvedSessionResources,
-    ) -> Result<(), StateError> {
-        let session_id = persisted.session_id.clone();
-        let previous = persisted.resources.active.clone();
-        // Prepared/Releasing is durable before the first external side effect.
-        let persisted = self
-            .prepare_resource_transition(owner_scope, persisted, &desired)
-            .await?;
-        let resource_revision = persisted.resources.revision;
-
-        if let Err(error) = self
-            .application
-            .runtime()
-            .apply_session_inputs(&session_id, owner_scope, resource_revision, &desired)
-            .await
-        {
-            // Restore the prior projection before reporting synchronous failure.
-            // If rollback also fails, retain the pending transition for the
-            // ResourceReclaimer instead of pretending either generation won.
-            let settlement = match self
-                .application
-                .runtime()
-                .apply_session_inputs(
-                    &session_id,
-                    owner_scope,
-                    resource_revision.saturating_sub(1),
-                    &previous,
-                )
-                .await
-            {
-                Ok(()) => ResourceSettlement::Rollback(error.to_string()),
-                Err(rollback_error) => ResourceSettlement::RetryableFailure(format!(
-                    "activation failed: {error}; rollback failed: {rollback_error}"
-                )),
-            };
-            self.settle_resource_transition(
-                owner_scope,
-                &session_id,
-                resource_revision,
-                &desired,
-                settlement,
-            )
-            .await?;
-            return Err(StateError::Run(error));
-        }
-
-        // Active/Released is the second durable edge. A crash before it leaves
-        // Prepared/Releasing and is safe to retry idempotently.
-        let persisted = self
-            .settle_resource_transition(
-                owner_scope,
-                &session_id,
-                resource_revision,
-                &desired,
-                ResourceSettlement::Commit,
-            )
-            .await?;
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(&session_id).ok_or(StateError::NotFound)?;
-        record.resource_state = persisted.resources;
-        Ok(())
     }
 
     fn resolve_live_file_input(
@@ -460,10 +135,12 @@ impl ManagedState {
             )
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         let input = self.resolve_live_file_input(&owner_scope, binding_id, &parsed)?;
-        let next = current
-            .attach(input.clone())
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.activate_inputs(persisted, &owner_scope, next).await?;
+        let committed = self
+            .application
+            .attach_session_input(id, &owner_scope, input.clone())
+            .await
+            .map_err(Self::map_preparation_error)?;
+        self.refresh_cached_projection(&committed)?;
         Ok(resolved_resource_dto(id, &input))
     }
 
@@ -493,101 +170,25 @@ impl ManagedState {
     ) -> Result<crate::types::resource::SessionResource, StateError> {
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
-        let ingress = self
+        let persisted = self
             .application
-            .repository_credential_ingress()
-            .ok_or_else(|| {
-                StateError::Run(RunError::bad_request(
-                    "repository authorization requires a configured credential Vault",
-                ))
-            })?;
-        let mut persisted = self
-            .application
-            .session_repository()
-            .get(id)
+            .rotate_repository_credential(
+                id,
+                &owner_scope,
+                &binding_id,
+                patch.authorization_token.into_redacted(),
+            )
             .await
-            .ok_or(StateError::NotFound)?;
-        let binding = persisted
+            .map_err(Self::map_preparation_error)?;
+        self.refresh_cached_projection(&persisted)?;
+        let input = persisted
             .resources
             .active
             .inputs
             .iter()
             .find(|input| input.binding_id == binding_id)
-            .and_then(|input| match &input.source {
-                awaken_session_contract::ResolvedInputSource::Repository { config, .. } => {
-                    config.credential_binding.clone()
-                }
-                _ => None,
-            })
-            .ok_or_else(|| {
-                StateError::Run(RunError::bad_request(
-                    "repository credential update requires an authenticated Repository resource",
-                ))
-            })?;
-        ingress
-            .rotate_repository_token(
-                &awaken_credential_contract::CredentialSourceId(binding.clone()),
-                &owner_scope,
-                patch.authorization_token.into_redacted(),
-            )
-            .await
-            .map_err(|error| {
-                StateError::Run(RunError::bad_request(format!(
-                    "repository authorization could not be rotated: {error}"
-                )))
-            })?;
-
-        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
-            let holder = Self::resource_plaintext_holder(&persisted)?;
-            let input = persisted
-                .resources
-                .active
-                .inputs
-                .iter_mut()
-                .find(|input| input.binding_id == binding_id)
-                .ok_or(StateError::NotFound)?;
-            let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
-                &mut input.source
-            else {
-                return Err(StateError::NotFound);
-            };
-            *credential = None;
-            self.pin_repository_credential(&owner_scope, &holder, input)
-                .await?;
-            match self
-                .commit_session_snapshot(
-                    &owner_scope,
-                    persisted,
-                    "repository-credential-update",
-                    Vec::new(),
-                )
-                .await
-            {
-                Ok(committed) => {
-                    let input = committed
-                        .resources
-                        .active
-                        .inputs
-                        .iter()
-                        .find(|input| input.binding_id == binding_id)
-                        .ok_or(StateError::NotFound)?;
-                    return Ok(resolved_resource_dto(id, input));
-                }
-                Err(StateError::Conflict)
-                    if attempt + 1
-                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
-                {
-                    persisted = self
-                        .application
-                        .session_repository()
-                        .get(id)
-                        .await
-                        .ok_or(StateError::NotFound)?;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        Err(StateError::Conflict)
+            .ok_or(StateError::NotFound)?;
+        Ok(resolved_resource_dto(id, input))
     }
 
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
@@ -599,38 +200,26 @@ impl ManagedState {
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
-        let (current, input) = {
-            let current = persisted.resources.active.clone();
-            let input = current
-                .inputs
-                .iter()
-                .find(|input| input.binding_id == binding_id)
-                .cloned()
-                .ok_or(StateError::NotFound)?;
-            (current, input)
-        };
+        let input = persisted
+            .resources
+            .active
+            .inputs
+            .iter()
+            .find(|input| input.binding_id == binding_id)
+            .cloned()
+            .ok_or(StateError::NotFound)?;
         if matches!(
             input.source,
             awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
         ) {
             return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
         }
-        let (next, removed) = current
-            .detach(&binding_id)
-            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        self.activate_inputs(persisted, &owner_scope, next).await?;
-        if let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
-            removed.source
-            && let Some(catalog) = &self.application.resource_catalog()
-        {
-            catalog
-                .set_repository_state(
-                    &owner_scope,
-                    repository_id.as_str(),
-                    awaken_resource_contract::ResourceState::Deleted,
-                )
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        }
+        let committed = self
+            .application
+            .detach_session_input(id, &owner_scope, &binding_id)
+            .await
+            .map_err(Self::map_preparation_error)?;
+        self.refresh_cached_projection(&committed)?;
         Ok(())
     }
 }

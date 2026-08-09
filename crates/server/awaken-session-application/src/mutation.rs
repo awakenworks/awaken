@@ -28,6 +28,32 @@ impl SessionApplication {
         self.sessions_repo.owner(session_id).await
     }
 
+    /// Insert one newly compiled Session root. Exact replays return the durable
+    /// revision; a different command targeting the same identity conflicts.
+    pub async fn create_session_root(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+        idempotency: IdempotencyRecord,
+        lifecycle_facts: Vec<ManagedLifecycleFact>,
+    ) -> Result<PersistedSession, SessionMutationError> {
+        let revision = self
+            .sessions_repo
+            .create(owner_scope, session.clone(), idempotency, lifecycle_facts)
+            .await
+            .map_err(|error| match error {
+                awaken_session_contract::SessionRepositoryError::AlreadyExists => {
+                    SessionMutationError::Conflict
+                }
+                awaken_session_contract::SessionRepositoryError::IdempotencyMismatch => {
+                    SessionMutationError::IdempotencyMismatch
+                }
+                error => SessionMutationError::Unavailable(error.to_string()),
+            })?;
+        session.revision = revision;
+        Ok(session)
+    }
+
     /// Commit a complete aggregate replacement through the sole root CAS.
     pub async fn commit_session_snapshot(
         &self,
