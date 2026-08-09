@@ -68,6 +68,13 @@ pub struct SessionRealizationTarget {
     /// clock alone cannot turn unrelated realization work into a renewal.
     #[serde(default)]
     pub renew_existing_lease: bool,
+    /// Explicitly replace a live lease owned by another logical Runtime.
+    /// Only a topology edge holding the current execution claim may set this;
+    /// ordinary application callers leave it false and therefore cannot steal
+    /// a live Session projection. Renewal and reassignment are mutually
+    /// exclusive operations.
+    #[serde(default)]
+    pub reassign_existing_lease: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -111,6 +118,11 @@ pub struct BeginSessionRealization {
 pub struct ActivateSessionRealization {
     pub session_id: String,
     pub lease: SessionRealizationLease,
+    /// Exact Resource generation prepared by the Stage effect. `None` means
+    /// this was an MCP-only phase and must not settle an independently pending
+    /// Resource transition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_resource_revision: Option<u64>,
     #[serde(default)]
     pub mcp_receipts: Vec<McpRealizationReceipt>,
 }
@@ -129,6 +141,11 @@ pub struct AcknowledgeSessionRealization {
 pub struct FailSessionRealization {
     pub session_id: String,
     pub lease: SessionRealizationLease,
+    /// Exact Resource generation whose preparation failed, when this failure
+    /// crossed the Resource effect boundary. MCP-only failures leave pending
+    /// Resource work untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_resource_revision: Option<u64>,
     pub reason: String,
 }
 
@@ -231,6 +248,8 @@ pub async fn drive_session_realization(
                 .fail_session_realization(FailSessionRealization {
                     session_id: session_id.to_string(),
                     lease: directive.lease,
+                    prepared_resource_revision: prepare_session
+                        .then_some(directive.projection.resource_revision),
                     reason: error.to_string(),
                 })
                 .await;
@@ -238,7 +257,7 @@ pub async fn drive_session_realization(
         }
         match directive.action.clone() {
             SessionRealizationAction::Stage {
-                prepare_session: _,
+                prepare_session,
                 mcp_stages,
             } => {
                 let mut receipts = Vec::with_capacity(mcp_stages.len());
@@ -264,6 +283,8 @@ pub async fn drive_session_realization(
                         .fail_session_realization(FailSessionRealization {
                             session_id: session_id.to_string(),
                             lease: directive.lease,
+                            prepared_resource_revision: prepare_session
+                                .then_some(directive.projection.resource_revision),
                             reason: error.to_string(),
                         })
                         .await;
@@ -273,6 +294,8 @@ pub async fn drive_session_realization(
                     .activate_session_realization(ActivateSessionRealization {
                         session_id: session_id.to_string(),
                         lease: directive.lease,
+                        prepared_resource_revision: prepare_session
+                            .then_some(directive.projection.resource_revision),
                         mcp_receipts: receipts.clone(),
                     })
                     .await
@@ -302,6 +325,7 @@ pub async fn drive_session_realization(
                         .fail_session_realization(FailSessionRealization {
                             session_id: session_id.to_string(),
                             lease: directive.lease,
+                            prepared_resource_revision: None,
                             reason: error.to_string(),
                         })
                         .await;

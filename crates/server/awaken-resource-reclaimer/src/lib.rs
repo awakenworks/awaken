@@ -131,11 +131,26 @@ impl ResourceReclaimer {
                 continue;
             }
 
-            match self
+            let acquisition = self
                 .repository
                 .acquire_reclamation(&intent.intent_id, &intent.target)
-                .await?
-            {
+                .await;
+            let acquisition = match acquisition {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    // Acquisition is an atomic/possibly-ambiguous storage seam.
+                    // Preserve a same-intent fence if the adapter committed it
+                    // before losing its receipt: the retry observes AlreadyOwned.
+                    // Clearing the durable claim makes that retry immediately
+                    // recoverable without allowing another intent to take over.
+                    let claimed_revision = intent.revision;
+                    intent.retry(&self.owner, generation, now_unix_ms, error.to_string())?;
+                    self.repository.save(claimed_revision, intent).await?;
+                    summary.retryable_failures += 1;
+                    continue;
+                }
+            };
+            match acquisition {
                 AcquireResourceReclamationOutcome::Acquired
                 | AcquireResourceReclamationOutcome::AlreadyOwned => {}
                 AcquireResourceReclamationOutcome::Blocked(records) => {
@@ -271,7 +286,10 @@ fn combine_errors(primary: ResourcePurgeError, release: Option<ResourcePurgeErro
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
 
     use async_trait::async_trait;
     use awaken_resource_contract::{
@@ -285,6 +303,7 @@ mod tests {
     struct MemoryRepository {
         intents: Mutex<BTreeMap<String, ResourcePurgeIntent>>,
         fences: Mutex<BTreeMap<(ResourceKind, String), String>>,
+        fail_acquire: AtomicBool,
     }
 
     #[async_trait]
@@ -294,6 +313,11 @@ mod tests {
             intent_id: &str,
             target: &ResourceTarget,
         ) -> Result<AcquireResourceReclamationOutcome, ResourcePurgeError> {
+            if self.fail_acquire.load(Ordering::SeqCst) {
+                return Err(ResourcePurgeError::Storage(
+                    "injected acquisition failure".into(),
+                ));
+            }
             let mut fences = self.fences.lock().unwrap();
             let key = (target.kind, target.resource_id.clone());
             match fences.get(&key) {
@@ -581,5 +605,47 @@ mod tests {
                 .as_deref()
                 .is_some_and(|error| error.contains("injected delete failure"))
         );
+    }
+
+    /// Acquisition-fault FMECA and cause/effect decision table. C1 the intent
+    /// has a live claim; C2 the atomic fence adapter returns a storage error; C3
+    /// a later retry can read the same intent/fence. Effects are E1 persist
+    /// Pending with the claim cleared, E2 perform no physical purge, and E3 the
+    /// repaired adapter completes exactly once. An ambiguously committed fence
+    /// remains safe because only this intent can observe `AlreadyOwned`.
+    ///
+    /// | Rule | Acquire | Adapter repaired | Effect |
+    /// |---|---|---|---|
+    /// | A1 | storage error | no | E1 + E2 |
+    /// | A2 | retry | yes | E3 |
+    #[tokio::test]
+    async fn an_acquisition_error_clears_the_claim_and_remains_immediately_retryable() {
+        let repository = Arc::new(MemoryRepository::default());
+        repository.fail_acquire.store(true, Ordering::SeqCst);
+        let physical = Arc::new(Physical::default());
+        let service =
+            ResourceReclaimer::new("worker-a", 100, repository.clone(), physical.clone()).unwrap();
+        service.enqueue(intent()).await.unwrap();
+
+        assert_eq!(
+            service.reconcile(10, 1).await.unwrap(),
+            ReconcileSummary {
+                retryable_failures: 1,
+                ..Default::default()
+            },
+            "A1/E1"
+        );
+        let pending = repository.get("purge-1").await.unwrap().unwrap();
+        assert_eq!(pending.status, ResourcePurgeStatus::Pending, "A1/E1");
+        assert!(pending.claim_owner.is_none(), "A1/E1");
+        assert_eq!(*physical.0.lock().unwrap(), 0, "A1/E2");
+
+        repository.fail_acquire.store(false, Ordering::SeqCst);
+        assert_eq!(
+            service.reconcile(10, 1).await.unwrap().completed,
+            1,
+            "A2/E3"
+        );
+        assert_eq!(*physical.0.lock().unwrap(), 1, "A2/E3");
     }
 }

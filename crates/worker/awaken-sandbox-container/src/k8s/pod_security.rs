@@ -16,19 +16,6 @@ pub(super) fn egress_label(network: &crate::NetworkMode) -> &'static str {
     }
 }
 
-/// The memoryd sidecar's `securityContext` in FUSE mode: it needs `SYS_ADMIN` to
-/// mount `/dev/fuse`. Only granted when FUSE is enabled — the copy fallback needs no
-/// privilege, so a locked-down (no-FUSE) cluster runs the sidecar unprivileged.
-pub(super) fn fuse_sidecar_security_context() -> SecurityContext {
-    SecurityContext {
-        capabilities: Some(Capabilities {
-            add: Some(vec!["SYS_ADMIN".to_string()]),
-            drop: None,
-        }),
-        ..Default::default()
-    }
-}
-
 /// The hardened `securityContext` for the untrusted agent container: no privilege
 /// escalation, every Linux capability dropped.
 pub(super) fn hardened_security_context() -> SecurityContext {

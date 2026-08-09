@@ -226,6 +226,21 @@ async function main(): Promise<void> {
     });
 
     const receivedBeforeRestart = upstream.received;
+    // Recovery routing cause/effect graph: C1=Run thread equals its Session
+    // thread (root); C2=Run thread is a first-class child while
+    // session_thread_id names its parent; C3=the child carries its own immutable
+    // Agent snapshot; C4=the parent owns the durable Sandbox. E1=root resolves
+    // normally; E2=parent projection/environment is adopted; E3=child attempt
+    // executor is rebuilt from C3; C5=parent and child share the SessionCtx's
+    // single hydrated commit/read boundary. E4=child commits on its own thread
+    // and the waiting parent observes it without rebinding the parent Agent.
+    // C1/C2 are exclusive. Decision table:
+    // | Rule | C1 | C2 | C3 | C4 | C5 | Effect       |
+    // | R1   | T  | F  | -  | -  | T  | E1           |
+    // | R2   | F  | T  | T  | T  | T  | E2,E3,E4     |
+    // | R3   | F  | T  | F  | *  | *  | fail closed  |
+    // | R4   | F  | T  | T  | F  | *  | retry; never rebind |
+    // | R5   | F  | T  | T  | T  | F  | forbidden parallel projection |
     server = spawnServer('delegate', PORT, environment).server;
     console.log('[child-recovery] waiting for replacement server');
     await waitForPort(PORT);
@@ -249,8 +264,12 @@ async function main(): Promise<void> {
     try {
       reply = await waitForReply(session.id);
     } catch (error) {
+      const childMessages = committedMessages(
+        sqliteDatabaseForThread(storage, childThreadId, 'runtime_message'),
+        childThreadId,
+      );
       throw new Error(
-        `${error}; dispatch=${JSON.stringify(rows(before.database))}`,
+        `${error}; dispatch=${JSON.stringify(rows(before.database))}; child=${JSON.stringify(childMessages)}`,
       );
     }
     assert.ok(reply.includes('delegate said: researched: 42'));
@@ -305,7 +324,11 @@ async function main(): Promise<void> {
     await stopServer(server).catch(() => {});
     upstream.close();
     metricReceiver.close();
-    fs.rmSync(storage, { recursive: true, force: true });
+    if (process.env.E2E_KEEP_ARTIFACTS === '1') {
+      console.error(`[child-recovery] retained diagnostics at ${storage}`);
+    } else {
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
   }
 }
 

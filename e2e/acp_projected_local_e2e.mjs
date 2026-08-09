@@ -41,6 +41,7 @@ import { waitForVerifiedAcpCapability } from './fixtures/acp_capability.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
+import { waitForValue } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38442);
@@ -261,9 +262,6 @@ async function main() {
   const mcpToken = 'projected-codex-mcp-token'; // awaken-allow: secret (fixture)
   const fixture = await startCalcFixture(mcpToken);
   const directory = await startModelDirectory();
-  const anonymousFixture = await startCalcFixture('unused-anonymous-token', {
-    allowAnonymous: true,
-  });
   try {
     await ready(server);
     await waitForVerifiedAcpCapability(`http://127.0.0.1:${PORT}`, 'gemini');
@@ -287,7 +285,12 @@ async function main() {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise projection' }] }],
       betas: BETAS,
     });
-    const geminiTexts = await messages(client, session.id);
+    const geminiTexts = await waitForValue(
+      () => messages(client, session.id),
+      (observed) => observed.some((text) => text.includes('PROJECTED')),
+      'projected local Gemini response',
+      { timeoutMs: 60_000 },
+    );
     const reply = geminiTexts.find((text) => text.includes('PROJECTED'));
     assert.ok(reply, `the production projected ACP process returned an agent message: ${JSON.stringify(geminiTexts)}`);
     assert.match(reply, new RegExp(`base=${directory.url.replaceAll(".", "\\.")}/gemini/v1beta/`, "u"));
@@ -311,7 +314,11 @@ async function main() {
       backend: 'acp:codex',
       provider: 'openai',
       model: 'codex-upstream',
-      dialect: 'open_ai_chat',
+      // The canonical Codex ACP catalog row consumes the Responses dialect.
+      // Publication must use that same capability fact; using Chat here would
+      // correctly fail at admission and never reach this scenario's intended
+      // credential-artifact rejection boundary (P3).
+      dialect: 'open_ai_responses',
       baseUrl: `${directory.url}/openai/v1/`,
       secret: 'persisted-codex-key', // awaken-allow: secret (fixture)
     });
@@ -332,42 +339,63 @@ async function main() {
     // Cause/effect graph for MCP on the local Namespace provider:
     // C1=credential is selected; C2=provider proves substitution + no bypass.
     // C1 + !C2 -> M1 reject Worker custody before launch.
-    // !C1       -> M2 project the anonymous endpoint into the same ACP config path.
+    // !C1       -> M2 isolate MCP custody from the independently unsupported
+    //               provider/CLI launch failure; the Run reports that execution
+    //               failure while the Session remains reusable.
     //
     // | Rule | credential | provider proof | result                    |
     // | M1   | yes        | no             | fail closed               |
-    // | M2   | no         | n/a            | config mounted and launch |
-    await assert.rejects(
-      codexClient.beta.sessions.create({
-        agent: CODEX_AGENT,
-        mcp_servers: [{ name: 'calc-secure', type: 'url', url: fixture.url }],
-        vault_ids: [vault.id],
-        betas: BETAS,
-      }),
-      (error) => error?.status === 500 && String(error).includes('provider-enforced secret substitution'),
-      'M1: Namespace must not silently downgrade authenticated MCP out of Worker custody',
+    // | M2   | no         | n/a            | failed Run event; Session idle; no MCP I/O |
+    const secureSession = await codexClient.beta.sessions.create({
+      agent: CODEX_AGENT,
+      mcp_servers: [{ name: 'calc-secure', type: 'url', url: fixture.url }],
+      vault_ids: [vault.id],
+      betas: BETAS,
+    });
+    await codexClient.beta.sessions.events.send(secureSession.id, {
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'must fail before launch' }] }],
+      betas: BETAS,
+    });
+    const secureFailure = await waitForValue(
+      () => codexClient.beta.sessions.retrieve(secureSession.id, { betas: BETAS }),
+      (observed) => observed.status === 'failed',
+      'claim-fenced Namespace MCP custody failure status',
+      { timeoutMs: 60_000 },
+    );
+    assert.equal(secureFailure.status, 'failed', 'M1: realization failure is durable');
+    assert.equal(
+      fixture.calls.length,
+      0,
+      'M1: the unsupported custody boundary performs no authenticated MCP I/O',
     );
     const codexSession = await codexClient.beta.sessions.create({
       agent: CODEX_AGENT,
-      mcp_servers: [{ name: 'calc-anonymous', type: 'url', url: anonymousFixture.url }],
+      mcp_servers: [{ name: 'calc-uncredentialed', type: 'url', url: fixture.url }],
       betas: BETAS,
     });
     await codexClient.beta.sessions.events.send(codexSession.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise config mount' }] }],
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'exercise provider rejection' }] }],
       betas: BETAS,
     });
-    const codexTexts = await messages(codexClient, codexSession.id);
-    assert.ok(
-      codexTexts.some((text) => text.includes('credential_realization_kind_unsupported')),
-      `Codex rejects bearer-only publication instead of restoring its removed environment protocol: ${JSON.stringify(codexTexts)}`,
+    const codexTexts = await waitForValue(
+      () => messages(codexClient, codexSession.id),
+      (observed) => observed.some((text) => text.startsWith('ERROR:')),
+      'Codex provider/CLI failure event',
+      { timeoutMs: 60_000 },
     );
+    assert.ok(
+      codexTexts.some((text) => text.startsWith('ERROR:')),
+      `M2: failed Run is projected without terminalizing its reusable Session: ${JSON.stringify(codexTexts)}`,
+    );
+    const providerSession = await codexClient.beta.sessions.retrieve(codexSession.id, { betas: BETAS });
+    assert.equal(providerSession.status, 'idle', 'M2: execution failure does not masquerade as realization failure');
+    assert.equal(fixture.calls.length, 0, 'M2: provider rejection still performs no MCP I/O');
 
     console.log('E2E PASS: aggregated awaken projects publication-pinned Gemini access and rejects bearer-only Codex access before launch; authenticated MCP remains fail closed without a no-bypass substitution boundary.');
   } finally {
     await directory.close();
     await stop(server).catch(() => {});
     await fixture.close();
-    await anonymousFixture.close();
     fs.rmSync(TMP, { recursive: true, force: true });
   }
 }

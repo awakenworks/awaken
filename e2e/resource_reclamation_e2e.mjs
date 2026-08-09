@@ -131,6 +131,20 @@ async function waitForLifecycleSchema(directory, timeoutMs = 20_000) {
   throw new Error('resource lifecycle migration did not become visible');
 }
 
+async function waitForSessionStatus(workspace, sessionId, expected, timeoutMs = 45_000) {
+  const deadline = Date.now() + timeoutMs;
+  let observed = null;
+  while (Date.now() < deadline) {
+    const response = await json('GET', scoped(workspace, `sessions/${sessionId}`));
+    if (response.status === 200) {
+      observed = response.body?.status;
+      if (observed === expected) return response.body;
+    }
+    await sleep(200);
+  }
+  throw new Error(`Session ${sessionId} did not reach ${expected}; last status=${observed}`);
+}
+
 function seedRepository(root) {
   const work = path.join(root, 'reclamation-repository-work');
   const remote = path.join(root, 'reclamation-repository.git');
@@ -224,17 +238,42 @@ async function main() {
       }],
     });
     assert.equal(boundSession.status, 200, JSON.stringify(boundSession.body));
-    const binding = await json(
+    let binding = await json(
       'POST',
       scoped(WS_A, `sessions/${boundSession.body.id}/resources`),
       { type: 'file', file_id: boundFile, mount_path: '/workspace/bound.txt' },
     );
+    // Worker-replacement/resource-activation cause graph: C1 the replacement
+    // Worker owns its lease; C2 an initial generation is pending; C3 an external
+    // attempt/lease has observed that generation. A File mutation with !C2 starts
+    // the normal phase; C2+!C3 amends that one unattempted generation without a
+    // second revision; C2+C3 rejects until recovery settles it, then the exact
+    // retry commits once. This distinguishes durable intent from external work.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | R1   | T  | F  | n/a | normal prepare/activate |
+    // | R2   | any | T  | F | amend pending generation immediately |
+    // | R3   | F  | T  | T | reject; retain the observed generation |
+    // | R4   | T  | F  | n/a | retry after R3 commits once |
+    if (binding.status === 400) {
+      assert.match(
+        String(binding.body?.error?.message ?? ''),
+        /resource activation is already pending/,
+        'R2 fails closed only for the durable pending generation',
+      );
+      await waitForSessionStatus(WS_A, boundSession.body.id, 'idle');
+      binding = await json(
+        'POST',
+        scoped(WS_A, `sessions/${boundSession.body.id}/resources`),
+        { type: 'file', file_id: boundFile, mount_path: '/workspace/bound.txt' },
+      );
+    }
     assert.equal(binding.status, 200, JSON.stringify(binding.body));
     assert.equal((await json('DELETE', scoped(WS_A, `files/${boundFile}`))).status, 200);
     await sleep(5_500);
     assert.ok(
       !receipts(directory).some(
-        (intent) => intent.target.resource_id === boundFile && intent.status === 'completed',
+        (intent) => intent.target.resource_id === boundBlob && intent.status === 'completed',
       ),
       'live Session binding defers the physical purge',
     );

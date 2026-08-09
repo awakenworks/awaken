@@ -8,7 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
+import { WORKER_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 import {
+  REPO_ROOT,
   deploymentEnv,
   ensureProductionBuilt,
   pass,
@@ -55,14 +57,43 @@ async function rejected(bin, fields, expected) {
 async function main() {
   const bin = ensureProductionBuilt();
 
-  // Cause graph: a Worker without a server cannot drain work; a coordinator
-  // without a local pool needs one shared queue; shared runtime ownership needs
-  // one shared resource/catalog plane. Every contradiction fails before I/O.
-  const missingWorkerConfig = path.join(os.tmpdir(), 'not-read-without-server.toml');
-  const worker = await runToExit(bin, ['worker', '--config', missingWorkerConfig], {});
-  assert.notEqual(worker.code, 0);
-  assert.match(worker.output, /worker requires --server/u);
-  pass('worker role requires an exact typed worker_server');
+  // Process-boundary cause graph: C1 `awaken worker` attempts to revive the
+  // removed embedded-worker command; C2 the standalone `awaken-worker` has a
+  // typed Worker config but neither CLI nor file server authority; C3 it has an
+  // exact server (covered by the remote-Worker suites). Effects: C1 rejects and
+  // names the sole binary; C2 rejects before network I/O; C3 proceeds to normal
+  // bootstrap. This prevents the test from preserving a duplicate CLI path.
+  //
+  // | Rule | Process | Server authority | Effect |
+  // |---|---|---|---|
+  // | W1 | aggregated `awaken` | any | unknown command; direct to `awaken-worker` |
+  // | W2 | `awaken-worker` | absent | typed configuration rejection |
+  // | W3 | `awaken-worker` | exact | bootstrap (owned by remote Worker E2E) |
+  const removedWorker = await runToExit(bin, ['worker'], {});
+  assert.notEqual(removedWorker.code, 0);
+  assert.match(removedWorker.output, /separate `awaken-worker` binary/u);
+
+  const workerBin = cargoExecutable({
+    cwd: REPO_ROOT,
+    packageName: 'awaken-worker',
+    targetName: 'awaken-worker',
+    prebuiltEnvironmentName: WORKER_BIN_ENV,
+  });
+  const workerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-worker-config-'));
+  try {
+    const workerConfig = path.join(workerRoot, 'config.toml');
+    fs.writeFileSync(workerConfig, [
+      'role = "worker"',
+      'mode = "server"',
+      `data_dir = ${JSON.stringify(workerRoot)}`,
+    ].join('\n'));
+    const worker = await runToExit(workerBin, ['--config', workerConfig], {});
+    assert.notEqual(worker.code, 0);
+    assert.match(worker.output, /Worker requires --server or worker_server/u);
+  } finally {
+    fs.rmSync(workerRoot, { recursive: true, force: true });
+  }
+  pass('standalone Worker is the sole execution-process entry and requires exact server authority');
 
   await rejected(bin, { run_local_pool: false }, /run_local_pool=false requires runtime_database_url/u);
   pass('pool-less coordinator requires a typed shared dispatch store');
@@ -70,10 +101,21 @@ async function main() {
   await rejected(bin, { resource_database_url: path.join(os.tmpdir(), 'resources.sqlite') }, /must be postgres:\/\//u);
   pass('resource plane rejects a second embedded database path');
 
+  // Shared-topology cause/effect table: local dispatch + embedded Resources is
+  // valid (covered by server startup below); shared dispatch + embedded
+  // Resources is rejected before I/O; shared dispatch + shared Resources moves
+  // past topology validation (covered by Postgres suites). `admin_db` remains a
+  // Control-owned input and is never required by the Coordinator runtime.
+  //
+  // | Rule | Dispatch | Resources | Effect |
+  // |---|---|---|---|
+  // | S1 | local | embedded | accept local topology |
+  // | S2 | shared | embedded | reject before connection |
+  // | S3 | shared | shared | accept topology; connect normally |
   await rejected(
     bin,
     { runtime_database_url: 'postgres://127.0.0.1:1/never-connect' },
-    /requires resource_database_url and admin_db/u,
+    /shared runtime requires resource_database_url to use Postgres/u,
   );
   pass('shared runtime rejects split local resource ownership before connecting');
 

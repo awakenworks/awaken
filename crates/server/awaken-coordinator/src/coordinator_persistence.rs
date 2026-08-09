@@ -27,6 +27,12 @@ struct PostgresComponents {
     commit: bool,
 }
 
+impl PostgresComponents {
+    fn requires_process_pool(self) -> bool {
+        self.dispatch || self.commit
+    }
+}
+
 fn postgres_components(deployment: &DeploymentConfig) -> PostgresComponents {
     PostgresComponents {
         dispatch: deployment.dispatch_backend == DispatchBackend::Postgres,
@@ -111,32 +117,36 @@ async fn open_with(
 ) -> Result<CoordinatorPersistence, String> {
     let components = postgres_components(deployment);
     let database_url = database_url(deployment)?;
-    let runtime_authority = super::runtime_authority::DurableRuntimeAuthority::open(
-        deployment,
-        match schema {
-            SchemaAccess::Migrate => super::runtime_authority::SchemaAccess::Migrate,
-            SchemaAccess::Verify => super::runtime_authority::SchemaAccess::Verify,
-        },
-    )
-    .await?;
+    let postgres_pool = if components.requires_process_pool() {
+        let url = database_url.expect("Postgres Coordinator components require database URL");
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(deployment.postgres_max_connections.get())
+                .connect(url)
+                .await
+                .map_err(|error| {
+                    format!("connect process-owned Coordinator Postgres pool: {error}")
+                })?,
+        )
+    } else {
+        None
+    };
+    let runtime_authority =
+        super::runtime_authority::DurableRuntimeAuthority::open_with_postgres_pool(
+            deployment,
+            match schema {
+                SchemaAccess::Migrate => super::runtime_authority::SchemaAccess::Migrate,
+                SchemaAccess::Verify => super::runtime_authority::SchemaAccess::Verify,
+            },
+            postgres_pool.clone(),
+        )
+        .await?;
     let worker_directory = if components.dispatch {
-        let url = database_url.expect("Postgres dispatch requires database URL");
-        match schema {
-            SchemaAccess::Migrate => {
-                super::worker_registry::open_postgres(
-                    url,
-                    deployment.postgres_max_connections.get(),
-                )
-                .await?
-            }
-            SchemaAccess::Verify => {
-                super::worker_registry::open_existing_postgres(
-                    url,
-                    deployment.postgres_max_connections.get(),
-                )
-                .await?
-            }
-        }
+        super::worker_registry::open_postgres_pool(
+            postgres_pool.expect("Postgres dispatch opened the process pool"),
+            matches!(schema, SchemaAccess::Verify),
+        )
+        .await?
     } else {
         let storage_dir = deployment.storage_dir.as_deref().ok_or_else(|| {
             "Coordinator SQLite Worker registry requires runtime.storage_dir; refusing volatile Worker identity and generation state"
@@ -158,10 +168,18 @@ mod tests {
     #[test]
     fn backend_selection_maps_to_one_coordinator_schema_manifest() {
         // Cause/effect decision table:
-        // R1 SQLite dispatch + memory commit -> no Postgres bundle or URL.
-        // R2 Postgres dispatch -> dispatch and worker-registry bundles.
-        // R3 Postgres commit -> portable commit and PG-sequence bundles.
-        // R4 both Postgres -> the union of R2/R3, sharing one Coordinator URL.
+        // Cause/effect graph: C1 dispatch uses Postgres; C2 commit uses
+        // Postgres. Either cause requires E1 exactly one process pool; neither
+        // cause yields E0 no pool. Dispatch, commit, checkpoint/wake and Worker
+        // registry clone that handle, so failover reconnect and backpressure do
+        // not multiply by adapter count.
+        //
+        // | Rule | C1 dispatch | C2 commit | Pool effect |
+        // |---|---|---|---|
+        // | R1 | no | no | E0 none |
+        // | R2 | yes | no | E1 one |
+        // | R3 | no | yes | E1 one |
+        // | R4 | yes | yes | E1 one |
         let mut deployment = DeploymentConfig::ephemeral();
         assert_eq!(
             postgres_components(&deployment),
@@ -169,6 +187,10 @@ mod tests {
                 dispatch: false,
                 commit: false,
             },
+            "R1"
+        );
+        assert!(
+            !postgres_components(&deployment).requires_process_pool(),
             "R1"
         );
 
@@ -179,6 +201,10 @@ mod tests {
                 dispatch: true,
                 commit: false,
             },
+            "R2"
+        );
+        assert!(
+            postgres_components(&deployment).requires_process_pool(),
             "R2"
         );
 
@@ -192,6 +218,10 @@ mod tests {
             },
             "R3"
         );
+        assert!(
+            postgres_components(&deployment).requires_process_pool(),
+            "R3"
+        );
 
         deployment.dispatch_backend = DispatchBackend::Postgres;
         assert_eq!(
@@ -200,6 +230,10 @@ mod tests {
                 dispatch: true,
                 commit: true,
             },
+            "R4"
+        );
+        assert!(
+            postgres_components(&deployment).requires_process_pool(),
             "R4"
         );
     }

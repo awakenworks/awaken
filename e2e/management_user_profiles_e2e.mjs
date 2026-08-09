@@ -17,9 +17,9 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { USER_PROFILES_BETA, withScenarioServer, pass } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = [USER_PROFILES_BETA];
 
 async function drain(pagePromise) {
   const items = [];
@@ -86,7 +86,11 @@ async function main() {
 
       const enroll = await client.beta.userProfiles.createEnrollmentURL(profile.id, { betas: BETAS });
       assert.equal(enroll.type, 'enrollment_url');
-      assert.ok(enroll.url.includes(profile.id), 'enrollment URL references the profile');
+      assert.ok(enroll.url.startsWith('/enroll/'), 'enrollment URL uses the public handoff route');
+      assert.ok(
+        !enroll.url.includes(profile.id),
+        'the signed handoff keeps the profile id out of the visible URL path',
+      );
       assert.ok(enroll.expires_at, 'enrollment URL has an expiry');
       pass('beta.userProfiles.createEnrollmentURL -> BetaUserProfileEnrollmentURL');
     });

@@ -779,11 +779,18 @@ async function main(): Promise<void> {
       ],
     });
     assert.equal(session.status, 200, JSON.stringify(session.body));
-    assert.deepEqual(
-      session.body.resources.map((resource: { type: string }) => resource.type),
-      ['memory_store', 'github_repository'],
-    );
-    console.log('  ok: Managed Session bound PostgreSQL-backed MemoryStore and Repository inputs');
+    // Registered-Worker activation decision table. The public Resource list is
+    // the installed generation, never a second projection of desired state.
+    //
+    // | Frozen inputs | Worker acknowledgement | Public resources | Status |
+    // |---|---|---|---|
+    // | present | absent | empty | preparing |
+    // | present | exact | both bindings | idle/running |
+    //
+    // This process topology always uses its authenticated registered Worker, so
+    // create returns the first row and the turn below crosses the second row.
+    assert.deepEqual(session.body.resources, [], 'unacknowledged inputs are not active');
+    assert.equal(session.body.status, 'preparing');
     const turn = await json(
       'POST',
       scoped(WORKSPACE, `sessions/${session.body.id}/events`),
@@ -798,6 +805,13 @@ async function main(): Promise<void> {
       },
     );
     assert.equal(turn.status, 200, JSON.stringify(turn.body));
+    const activeSession = await json('GET', scoped(WORKSPACE, `sessions/${session.body.id}`));
+    assert.equal(activeSession.status, 200, JSON.stringify(activeSession.body));
+    assert.deepEqual(
+      activeSession.body.resources.map((resource: { type: string }) => resource.type),
+      ['memory_store', 'github_repository'],
+    );
+    console.log('  ok: registered Worker activated PostgreSQL-backed MemoryStore and Repository inputs');
     console.log('  ok: Managed turn completed over the PostgreSQL-backed resource bindings');
     const realized = psql(
       pg.container,
@@ -950,7 +964,7 @@ async function main(): Promise<void> {
     // | add after Session creation   | yes  | 400        |
     // | update existing projection   | 400  | 400        |
     // | retire existing projection   | yes  | yes        |
-    const repositoryResource = session.body.resources.find(
+    const repositoryResource = activeSession.body.resources.find(
       (resource: { type: string }) => resource.type === 'github_repository',
     );
     assert.ok(repositoryResource?.id, 'create-time Repository projection is addressable');

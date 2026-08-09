@@ -171,11 +171,12 @@ Verified state after the 2026-08-04 cut:
   it realizes snapshot-pinned access through the shared credential materializer;
   moving it into `run-executor-acp` would violate that crate's documented
   *config-free* invariant.
-- **Per-plane routers** — already resolved. `files_router` / `models_router` (public,
-  self-contained) moved to `awaken-protocol-managed-resources`; `memory_stores_router` /
-  `skills_router` deliberately **stay** in the host, because they are the HTTP face of the
-  host's private `MemoryStores` / `SkillCatalog` subsystems and moving them would leak the
-  subsystems' method surface — worse encapsulation.
+- **Managed public routers** — already resolved. `files_router`, `models_router`,
+  `memory_stores_router`, and `skills_router` are modules of the single
+  `awaken-protocol-managed` anti-corruption boundary and consume injected application
+  services. The former `awaken-protocol-managed-resources` aggregation crate and the
+  host-owned router path were deleted; no compatibility re-export preserves either
+  parallel owner.
 
 Further extraction still proceeds one port at a time. The remaining substrate fields
 (`llm`, Session slots, event hub, file/resource materialization, model/provider routing)

@@ -19,7 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { cleanupFixtureTree, spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38513);
 const BETAS = ['agent-memory-2026-07-22'];
@@ -59,7 +59,7 @@ function sqliteExec(database, sql) {
 }
 
 async function main() {
-  fs.rmSync(STORE_DIR, { recursive: true, force: true });
+  cleanupFixtureTree(STORE_DIR);
   let { server } = spawnServer('echo', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR });
   try {
     await waitForPort(PORT);
@@ -94,10 +94,12 @@ async function main() {
     assert.equal(got.content, 'first');
     pass('path-addressed memories create + retrieve via the durable store');
 
-    // Cause/effect rules for CAS projection: stale sha -> 409/no mutation;
-    // matching sha + full view -> mutation/version bump/content; replay of the
-    // same effect from either old or current sha -> the same version. Basic is
-    // intentionally not used as a content oracle because it elides content.
+    // Cause/effect graph: C1 stale sha; C2 matching sha; C3 requested view is
+    // full; C4 view is omitted (basic); C5 payload already equals the head.
+    // Effects: E1 conflict/no mutation; E2 mutation/version bump; E3 content is
+    // projected; E4 content is elided; E5 replay returns the existing version.
+    // Decision table: R1 C1=>E1; R2 C2+C3+!C5=>E2+E3; R3 C2+C4+C5=>E4+E5;
+    // R4 old or current sha + C5=>E5. The projection choice never changes CAS.
     await assert.rejects(
       () =>
         c.beta.memoryStores.memories.update(mem.id, {
@@ -116,7 +118,7 @@ async function main() {
       precondition: { type: 'content_sha256', content_sha256: mem.content_sha256 },
       betas: BETAS,
     });
-    assert.equal(up.content, null, 'update defaults to the basic projection');
+    assert.equal(up.content, 'second', 'an explicit full update projects content');
     const updatedFull = await c.beta.memoryStores.memories.retrieve(mem.id, {
       memory_store_id: store.id,
       betas: BETAS,
@@ -130,6 +132,7 @@ async function main() {
       betas: BETAS,
     });
     assert.equal(staleReplay.memory_version_id, up.memory_version_id);
+    assert.equal(staleReplay.content, null, 'an update with omitted view defaults to basic');
     const freshReplay = await c.beta.memoryStores.memories.update(mem.id, {
       memory_store_id: store.id,
       content: 'second',
@@ -413,7 +416,7 @@ async function main() {
     // Cause: SQLite retains the file handle until the child has actually exited;
     // effect: await shutdown, then tolerate short Windows scanner/FS lock delays.
     await stopServer(server);
-    fs.rmSync(STORE_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    cleanupFixtureTree(STORE_DIR);
   }
 }
 

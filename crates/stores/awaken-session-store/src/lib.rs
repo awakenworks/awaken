@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
     ScopedPersistedSession, SessionMutation, SessionMutationPayload, SessionMutationResult,
@@ -27,8 +26,10 @@ mod deployments;
 mod dream;
 mod extraction;
 mod row_codec;
+mod schema;
 use row_codec::{EncodedSessionRow, decode};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use schema::session_bundle;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
@@ -36,172 +37,6 @@ use sqlx::postgres::PgPool;
 /// `managed_session`, the ledger `managed_schema_migrations`.
 const NS: &str = "managed";
 const SQLITE_WRITE_WAIT: Duration = Duration::from_secs(30);
-
-/// The versioned schema bundle (ADR-0043 scoped migration). One migration: the
-/// `managed_session` row. All columns are portable — the JSON payloads live in
-/// `TEXT` columns as serde strings on both backends, so the two adapters read and
-/// write identical rows.
-fn session_bundle() -> Result<MigrationBundle, MigrationError> {
-    MigrationBundle::new(
-        "awaken.managed_session",
-        vec![
-            Migration::new(
-                1,
-                "managed session config: one row per session id (secret-free)",
-                "CREATE TABLE {prefix}_session (\
-                 session_id     TEXT PRIMARY KEY, \
-                 agent_id       TEXT NOT NULL, \
-                 model          TEXT NOT NULL, \
-                 title          TEXT, \
-                 metadata_json  TEXT NOT NULL, \
-                 environment_id TEXT NOT NULL, \
-                 mcp_json       TEXT NOT NULL)",
-            )?,
-            // Tenancy edge aspect (ADR-0051): the opaque owner `scope_id`, so the
-            // edge ownership guard can fence a cross-tenant request across a
-            // restart. Additive with a seeded default; the config columns stay
-            // tenancy-agnostic — this is a separate ownership fact, not part of the
-            // aggregate.
-            Migration::new(
-                2,
-                "managed session owner scope_id (ADR-0051)",
-                "ALTER TABLE {prefix}_session ADD COLUMN scope_id TEXT NOT NULL DEFAULT 'default'",
-            )?,
-            Migration::new(
-                3,
-                "session lifecycle transactional outbox",
-                "CREATE TABLE {prefix}_lifecycle_outbox (\
-                    fact_id TEXT PRIMARY KEY, \
-                    data TEXT NOT NULL, \
-                    created_at {timestamptz} NOT NULL DEFAULT {now})",
-            )?,
-            Migration::new(
-                4,
-                "managed session durable lifecycle status",
-                "ALTER TABLE {prefix}_session ADD COLUMN status TEXT NOT NULL DEFAULT 'idle'",
-            )?,
-            Migration::new(
-                5,
-                "managed session durable archive timestamp",
-                "ALTER TABLE {prefix}_session ADD COLUMN archived_at TEXT",
-            )?,
-            Migration::new(
-                6,
-                "managed session frozen effective resource inputs",
-                "ALTER TABLE {prefix}_session ADD COLUMN effective_inputs_json TEXT NOT NULL DEFAULT '{\"inputs\":[]}'",
-            )?,
-            Migration::new(
-                7,
-                "durable Memory extraction intents",
-                "CREATE TABLE {prefix}_memory_extraction (\
-                    intent_id TEXT PRIMARY KEY, \
-                    idempotency_key TEXT NOT NULL UNIQUE, \
-                    status TEXT NOT NULL, \
-                    revision BIGINT NOT NULL, \
-                    lease_expires_at_unix_ms BIGINT, \
-                    data TEXT NOT NULL, \
-                    created_at {timestamptz} NOT NULL DEFAULT {now})",
-            )?,
-            Migration::new(
-                8,
-                "managed session runtime environment binding",
-                "ALTER TABLE {prefix}_session ADD COLUMN environment_binding TEXT",
-            )?,
-            Migration::new(
-                9,
-                "managed session secret-free runtime initialization pin",
-                "ALTER TABLE {prefix}_session ADD COLUMN runtime_json TEXT NOT NULL DEFAULT '{\"mcp_servers\":[],\"runtime\":null,\"deny_egress\":false,\"sandbox\":null}'",
-            )?,
-            Migration::new(
-                10,
-                "managed session root optimistic-concurrency revision",
-                "ALTER TABLE {prefix}_session ADD COLUMN revision BIGINT NOT NULL DEFAULT 1",
-            )?,
-            Migration::new(
-                11,
-                "managed session idempotency receipts",
-                "CREATE TABLE {prefix}_session_idempotency (\
-                    session_id TEXT NOT NULL, \
-                    idempotency_key TEXT NOT NULL, \
-                    payload_hash TEXT NOT NULL, \
-                    committed_revision BIGINT NOT NULL, \
-                    PRIMARY KEY (session_id, idempotency_key))",
-            )?,
-            Migration::new(
-                12,
-                "managed session durable delete tombstones",
-                "CREATE TABLE {prefix}_session_tombstone (\
-                    session_id TEXT PRIMARY KEY, \
-                    scope_id TEXT NOT NULL, \
-                    deleted_revision BIGINT NOT NULL, \
-                    deleted_at TEXT NOT NULL)",
-            )?,
-            Migration::new(
-                13,
-                "one canonical serialized Session aggregate (ADR-0066)",
-                "ALTER TABLE {prefix}_session ADD COLUMN aggregate_json TEXT",
-            )?,
-            Migration::new(
-                14,
-                "durable Dream jobs",
-                "CREATE TABLE {prefix}_dream (\
-                    job_id TEXT PRIMARY KEY, \
-                    data TEXT NOT NULL)",
-            )?,
-            Migration::new(
-                15,
-                "Workspace Dream Agent overrides",
-                "CREATE TABLE {prefix}_dream_agent_override (\
-                    workspace_id TEXT PRIMARY KEY, \
-                    agent_id TEXT NOT NULL)",
-            )?,
-            Migration::new(
-                16,
-                "durable Managed Deployments",
-                "CREATE TABLE {prefix}_deployment (\
-                    deployment_id TEXT PRIMARY KEY, \
-                    workspace_id TEXT NOT NULL, \
-                    data TEXT NOT NULL)",
-            )?,
-            Migration::new(
-                17,
-                "durable Managed DeploymentRuns",
-                "CREATE TABLE {prefix}_deployment_run (\
-                    run_id TEXT PRIMARY KEY, \
-                    deployment_id TEXT NOT NULL, \
-                    workspace_id TEXT NOT NULL, \
-                    data TEXT NOT NULL)",
-            )?,
-            Migration::new(
-                18,
-                "exactly-once scheduled Deployment occurrence claims",
-                "CREATE TABLE {prefix}_deployment_claim (\
-                    claim_id TEXT PRIMARY KEY, \
-                    run_id TEXT NOT NULL UNIQUE, \
-                    created_at {timestamptz} NOT NULL DEFAULT {now})",
-            )?,
-            Migration::new(
-                19,
-                "Workspace Dream scheduling policies",
-                "CREATE TABLE {prefix}_dream_policy (\
-                    workspace_id TEXT NOT NULL, \
-                    memory_store_id TEXT NOT NULL, \
-                    data TEXT NOT NULL, \
-                    PRIMARY KEY (workspace_id, memory_store_id))",
-            )?,
-            Migration::new(
-                20,
-                "remove duplicate Workspace Dream Agent override authority",
-                "DROP TABLE {prefix}_dream_agent_override",
-            )?,
-            Migration::new(
-                21,
-                "Deployment aggregate compare-and-swap revision",
-                "ALTER TABLE {prefix}_deployment ADD COLUMN revision BIGINT NOT NULL DEFAULT 0",
-            )?,
-        ],
-    )
-}
 
 fn aggregate_str(session: &PersistedSession) -> String {
     serde_json::to_string(session).expect("Session aggregate serializes")
@@ -531,16 +366,25 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
 
     async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
-        let mut statement = conn
-            .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
-            .expect("prepare pending lifecycle facts");
-        statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("query pending lifecycle facts")
-            .map(|row| {
-                decode_lifecycle(&row.expect("read lifecycle fact")).expect("decode lifecycle fact")
+        let result = (|| -> Result<Vec<_>, SessionRepositoryError> {
+            let mut statement = conn
+                .prepare("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
+                .map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage)?;
+            rows.map(|row| {
+                let encoded = row.map_err(storage)?;
+                decode_lifecycle(&encoded).map_err(storage)
             })
             .collect()
+        })();
+        result.unwrap_or_else(|error| {
+            // An unavailable/corrupt outbox is not equivalent to acknowledged
+            // delivery. Preserve every row and let the periodic owner retry.
+            tracing::warn!(%error, "Session lifecycle outbox scan remains pending");
+            Vec::new()
+        })
     }
 
     async fn complete_lifecycle(&self, fact_id: &str) {
@@ -616,41 +460,48 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
 
     async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
         let conn = self.conn.lock().expect("session store mutex poisoned");
-        let mut statement = conn
-            .prepare(
+        let result = (|| -> Result<Vec<_>, SessionRepositoryError> {
+            let mut statement = conn.prepare(
                 "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
                  FROM managed_session ORDER BY session_id",
-            )
-            .expect("prepare pending Session resource activations");
-        statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    EncodedSessionRow {
-                        session_id: row.get(1)?,
-                        aggregate_json: row.get(2)?,
-                        agent_id: row.get(3)?,
-                        model: row.get(4)?,
-                        title: row.get(5)?,
-                        metadata_json: row.get(6)?,
-                        environment_id: row.get(7)?,
-                        status: row.get(8)?,
-                        archived_at: row.get(9)?,
-                        effective_inputs_json: row.get(10)?,
-                        environment_binding: row.get(11)?,
-                        runtime_json: row.get(12)?,
-                        revision: row.get(13)?,
-                    },
-                ))
-            })
-            .expect("query pending Session resource activations")
-            .map(|row| {
-                let (workspace_id, row) = row.expect("read managed session");
-                ScopedPersistedSession {
+            ).map_err(storage)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        EncodedSessionRow {
+                            session_id: row.get(1)?,
+                            aggregate_json: row.get(2)?,
+                            agent_id: row.get(3)?,
+                            model: row.get(4)?,
+                            title: row.get(5)?,
+                            metadata_json: row.get(6)?,
+                            environment_id: row.get(7)?,
+                            status: row.get(8)?,
+                            archived_at: row.get(9)?,
+                            effective_inputs_json: row.get(10)?,
+                            environment_binding: row.get(11)?,
+                            runtime_json: row.get(12)?,
+                            revision: row.get(13)?,
+                        },
+                    ))
+                })
+                .map_err(storage)?;
+            rows.map(|row| {
+                let (workspace_id, row) = row.map_err(storage)?;
+                Ok(ScopedPersistedSession {
                     workspace_id,
-                    session: decode(row).expect("decode managed session"),
-                }
+                    session: decode(row).map_err(storage)?,
+                })
             })
+            .collect::<Result<Vec<_>, SessionRepositoryError>>()
+        })();
+        result
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "Session reconciliation scan remains pending");
+                Vec::new()
+            })
+            .into_iter()
             .filter(|record| record.session.needs_reconciliation())
             .collect()
     }
@@ -988,16 +839,30 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     }
 
     async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
-        sqlx::query("SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id")
-            .fetch_all(&self.pool)
-            .await
-            .expect("read pending lifecycle facts")
+        let rows = match sqlx::query(
+            "SELECT data FROM managed_lifecycle_outbox ORDER BY created_at, fact_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(%error, "Session lifecycle outbox scan remains pending");
+                return Vec::new();
+            }
+        };
+        let decoded = rows
             .into_iter()
             .map(|row| {
-                let data: String = row.get("data");
-                decode_lifecycle(&data).expect("decode lifecycle fact")
+                row.try_get::<String, _>("data")
+                    .map_err(storage)
+                    .and_then(|data| decode_lifecycle(&data).map_err(storage))
             })
-            .collect()
+            .collect::<Result<Vec<_>, SessionRepositoryError>>();
+        decoded.unwrap_or_else(|error| {
+            tracing::warn!(%error, "Session lifecycle outbox scan remains pending");
+            Vec::new()
+        })
     }
 
     async fn complete_lifecycle(&self, fact_id: &str) {
@@ -1040,35 +905,51 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     }
 
     async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
-        sqlx::query(
+        let rows = match sqlx::query(
             "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
              FROM managed_session ORDER BY session_id",
         )
         .fetch_all(&self.pool)
         .await
-        .expect("read pending Session resource activations")
-        .into_iter()
-        .map(|row| ScopedPersistedSession {
-            workspace_id: row.get("scope_id"),
-            session: decode(EncodedSessionRow {
-                aggregate_json: row.get("aggregate_json"),
-                session_id: row.get("session_id"),
-                agent_id: row.get("agent_id"),
-                model: row.get("model"),
-                title: row.get("title"),
-                metadata_json: row.get("metadata_json"),
-                environment_id: row.get("environment_id"),
-                status: row.get("status"),
-                archived_at: row.get("archived_at"),
-                effective_inputs_json: row.get("effective_inputs_json"),
-                environment_binding: row.get("environment_binding"),
-                runtime_json: row.get("runtime_json"),
-                revision: row.get("revision"),
+        {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::warn!(%error, "Session reconciliation scan remains pending");
+                return Vec::new();
+            }
+        };
+        let decoded = rows
+            .into_iter()
+            .map(|row| {
+                let encoded = EncodedSessionRow {
+                    aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                    session_id: row.try_get("session_id").map_err(storage)?,
+                    agent_id: row.try_get("agent_id").map_err(storage)?,
+                    model: row.try_get("model").map_err(storage)?,
+                    title: row.try_get("title").map_err(storage)?,
+                    metadata_json: row.try_get("metadata_json").map_err(storage)?,
+                    environment_id: row.try_get("environment_id").map_err(storage)?,
+                    status: row.try_get("status").map_err(storage)?,
+                    archived_at: row.try_get("archived_at").map_err(storage)?,
+                    effective_inputs_json: row.try_get("effective_inputs_json").map_err(storage)?,
+                    environment_binding: row.try_get("environment_binding").map_err(storage)?,
+                    runtime_json: row.try_get("runtime_json").map_err(storage)?,
+                    revision: row.try_get("revision").map_err(storage)?,
+                };
+                Ok(ScopedPersistedSession {
+                    workspace_id: row.try_get("scope_id").map_err(storage)?,
+                    session: decode(encoded).map_err(storage)?,
+                })
             })
-            .expect("decode managed session"),
-        })
-        .filter(|record| record.session.needs_reconciliation())
-        .collect()
+            .collect::<Result<Vec<_>, SessionRepositoryError>>();
+        decoded
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, "Session reconciliation scan remains pending");
+                Vec::new()
+            })
+            .into_iter()
+            .filter(|record| record.session.needs_reconciliation())
+            .collect()
     }
 
     async fn idempotency_receipt(
@@ -1118,6 +999,59 @@ mod tests {
     };
 
     use super::*;
+
+    #[tokio::test]
+    async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
+        /* FMECA cause/effect decision table. Causes: C1 the Postgres authority
+         * is unavailable; C2 a durable lifecycle row cannot decode; C3 a
+         * durable Session aggregate cannot decode. Effects: E1 return no work
+         * for this tick; E2 preserve durable rows for a later/operator-assisted
+         * retry; E3 do not panic the periodic supervisor task. Rules: healthy
+         * scans are covered by repository conformance; R1 C1=>E1+E3; R2
+         * C2=>E1+E2+E3; R3 C3=>E1+E2+E3. Partial results are forbidden because
+         * they would make a corrupt/unavailable authority look complete. */
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(10))
+            .connect_lazy("postgres://localhost/awaken")
+            .unwrap();
+        let postgres = PostgresManagedSessionRepository {
+            pool,
+            handle: tokio::runtime::Handle::current(),
+        };
+        postgres.pool.close().await;
+        assert!(postgres.pending_lifecycle().await.is_empty(), "R1 outbox");
+        assert!(
+            postgres.reconcilable_sessions().await.is_empty(),
+            "R1 reconciliation"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let sqlite =
+            SqliteManagedSessionRepository::open(&dir.path().join("recovery.db").to_string_lossy())
+                .unwrap();
+        sqlite
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
+                params!["corrupt", "{"],
+            )
+            .unwrap();
+        assert!(sqlite.pending_lifecycle().await.is_empty(), "R2");
+
+        create_fixture(&sqlite, "workspace", sample("sesn_corrupt"), Vec::new()).await;
+        sqlite
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
+                params!["{", "sesn_corrupt"],
+            )
+            .unwrap();
+        assert!(sqlite.reconcilable_sessions().await.is_empty(), "R3");
+    }
 
     /// Shared-file write-admission causal graph:
     /// another aggregate owns the SQLite writer reservation × wait budget.

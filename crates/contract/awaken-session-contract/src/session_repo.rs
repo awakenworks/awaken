@@ -127,6 +127,7 @@ impl PersistedSession {
     #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
         self.needs_resource_reconciliation()
+            || self.resources.has_references()
             || self.mcp.needs_reconciliation()
             || !matches!(
                 self.environment,

@@ -103,8 +103,11 @@ test("Primary create flows disclose their required configuration before commit",
 
   await page.goto("/w/default/models");
   await expect(page.getByRole("heading", { name: /Provider connections/ })).toBeVisible();
+  // Topology decision table: embedded-IAM mounts Access and its token action;
+  // explicit no-login (this Playwright composition) hides the route and redirects
+  // a stale deep link to Overview. A hidden authority must not expose a parallel
+  // client-side token form.
   await page.goto("/w/default/access");
-  const mint = page.getByRole("heading", { name: /Mint token/ });
-  const gate = page.getByText(/embedded IAM|嵌入式 IAM/).first();
-  await expect(mint.or(gate)).toBeVisible();
+  await expect(page).toHaveURL(/\/w\/default\/overview$/);
+  await expect(page.locator(".sidebar").getByRole("button", { name: "Access", exact: true })).toHaveCount(0);
 });

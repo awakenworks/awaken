@@ -18,10 +18,38 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         session_id: &str,
         projection: &awaken_session_contract::FrozenSessionProjection,
         lease: &awaken_session_contract::SessionRealizationLease,
-        _prepare_session: bool,
+        prepare_session: bool,
     ) -> Result<(), awaken_session_contract::RunError> {
+        let resolved_publication;
+        let published_snapshot = match self.published_snapshot {
+            Some(snapshot) => Some(snapshot),
+            None => {
+                resolved_publication = self
+                    .host
+                    .resolve_session_publication(
+                        session_id,
+                        Some(&projection.baseline.agent_id),
+                        None,
+                    )
+                    .map_err(|error| {
+                        awaken_session_contract::RunError::internal(error.to_string())
+                    })?
+                    .2;
+                resolved_publication.as_ref()
+            }
+        };
+        // A claim authorizes live Resource revalidation. A preparation Stage
+        // authorizes local realization. Lease-only MCP renewal has neither and
+        // must reuse the already-resident Resource/Skill projection instead of
+        // opening an unclaimed remote materialization path.
+        let synchronize_resources = self.claim.is_some() || prepare_session;
         self.host
-            .install_frozen_session_projection(session_id, projection.clone(), self.claim)
+            .install_frozen_session_projection(
+                session_id,
+                projection.clone(),
+                self.claim,
+                synchronize_resources,
+            )
             .await
             .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
         self.host
@@ -37,7 +65,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             })
             .unwrap_or(false);
         if self.requires_runtime_before_effects
-            && self.published_snapshot.is_none()
+            && published_snapshot.is_none()
             && !runtime_authority_resident
         {
             return Err(awaken_session_contract::RunError::classified(
@@ -47,7 +75,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         }
         let adopted = if environment_absent && let Some(binding) = projection.environment.binding()
         {
-            let published_snapshot = self.published_snapshot.ok_or_else(|| {
+            let published_snapshot = published_snapshot.ok_or_else(|| {
                 awaken_session_contract::RunError::classified(
                     "session_environment_recovery_authority_missing",
                     "a cold Worker needs the exact claimed Agent snapshot to adopt a durable Session Environment",
@@ -70,7 +98,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         // frozen projection and MCP effects. A first-use Environment has no
         // durable binding to adopt yet, but its stage still needs the exact Run
         // publication installed before it may realize sandbox stdio.
-        if let Some(published_snapshot) = self.published_snapshot
+        if let Some(published_snapshot) = published_snapshot
             && (has_environment_binding || self.requires_runtime_before_effects)
         {
             self.host
@@ -171,7 +199,11 @@ impl HostWorkerResolver {
             directive,
         )
         .await
-        .map_err(|error| Self::execution_error(error.to_string()))
+        // The canonical driver has already delivered `fail_session_realization`
+        // before returning an error, so this is the narrow absorbing failure
+        // class that the Run claim may terminalize immediately. Environment
+        // adoption and other resolver failures remain ordinary retryable errors.
+        .map_err(|error| Self::terminal_resolution_error(error.to_string()))
     }
 }
 
@@ -497,6 +529,84 @@ mod tests {
             toolsets: Vec::new(),
             mcp: Vec::new(),
         }
+    }
+
+    /// Lease-only Resource synchronization cause/effect graph: C1 the frozen
+    /// baseline is resident; C2 a dispatch claim authorizes remote reads; C3
+    /// this Stage actually prepares the Session; C4 the projection pins a remote
+    /// custom Skill. E1 lease-only renewal reuses resident Resource/Skill bytes;
+    /// E2 cold or preparing paths fail closed without material authority; E3 a
+    /// claim keeps using the canonical revalidation path (covered by repository
+    /// claim C1/C2 in host tests).
+    ///
+    /// | Rule | C1 | C2 | C3 | C4 | Effect |
+    /// |---|---|---|---|---|---|
+    /// | M1 | yes | no | no | yes | E1; no remote read |
+    /// | M2 | no | no | no | yes | E2; no partial cold projection |
+    /// | M3 | yes | no | yes | yes | E2; material source required |
+    /// | M4 | any | yes | any | yes | E3 |
+    #[tokio::test]
+    async fn lease_only_renewal_never_cold_materializes_remote_skills() {
+        use awaken_session_contract::SessionProjectionSynchronizer as _;
+
+        let thread = "resident-renewal-resources";
+        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+        let _managed = crate::ManagedHost::new(host.clone());
+        let resident = frozen_projection();
+        host.install_frozen_session_projection(thread, resident.clone(), None, true)
+            .await
+            .expect("M1 establish resident baseline");
+        let mut remote = resident;
+        remote.resource_revision = 1;
+        remote.resources.skills = Some(vec![awaken_session_contract::ResolvedSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: "design".into(),
+            version: 36,
+            bundle_sha256: "sha256-design-v36".into(),
+        }]);
+        let lease = awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        };
+        let synchronizer = WorkerProjectionSynchronizer {
+            host: host.as_ref(),
+            claim: None,
+            published_snapshot: None,
+            rebuild_unavailable_environment: false,
+            requires_runtime_before_effects: false,
+        };
+        synchronizer
+            .synchronize_session_projection(thread, &remote, &lease, false)
+            .await
+            .expect("M1 lease-only renewal reuses resident projection");
+        assert!(host.thread_resource_manifest(thread).is_none(), "M1");
+        assert_eq!(
+            host.session_slots
+                .read(thread, |slot| slot.realization_lease.clone())
+                .flatten(),
+            Some(lease.clone()),
+            "M1 lease still advances"
+        );
+
+        let cold = WorkerProjectionSynchronizer {
+            host: host.as_ref(),
+            claim: None,
+            published_snapshot: None,
+            rebuild_unavailable_environment: false,
+            requires_runtime_before_effects: false,
+        }
+        .synchronize_session_projection("cold-renewal-resources", &remote, &lease, false)
+        .await
+        .expect_err("M2 cold renewal must fail closed");
+        assert!(cold.to_string().contains("cannot cold-materialize"), "M2");
+
+        let preparing = synchronizer
+            .synchronize_session_projection(thread, &remote, &lease, true)
+            .await
+            .expect_err("M3 preparation needs a material source");
+        assert!(preparing.to_string().contains("Skill"), "M3: {preparing}");
     }
 
     /// Concurrent-renewal cause/effect graph: C1 an initial phase driver owns

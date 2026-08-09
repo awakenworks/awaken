@@ -113,7 +113,9 @@ stringData:
     worker_admin_listen = "0.0.0.0:9090"
     worker_drain_grace_secs = 15
     worker_max_concurrent = 8
-    sandbox_tier = "namespace"
+    sandbox_tier = "k8s"
+    k8s_namespace = "awaken-adr71"
+    container_image = "awaken-sandbox:local"
     sandbox_dir = "/var/lib/awaken/sandboxes"
 ---
 apiVersion: batch/v1
@@ -187,23 +189,26 @@ spec:
         - name: control
           image: awaken-roles:latest
           imagePullPolicy: Never
-          command: ["/usr/local/bin/awaken-control", "--config", "/etc/awaken/control.toml"]
+          # The scenario binary supplies only the deterministic publication
+          # resolver; it assembles the canonical split-Control application from
+          # the same explicit deployment file used by the migration job.
+          command: ["/usr/local/bin/awaken-server"]
           env:
-            - { name: HOME, value: "/etc/awaken-home" }
+            - { name: AWAKEN_MODEL_MODE, value: distributed-control }
+            - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
+            - { name: AWAKEN_SCENARIO_CONFIG, value: /etc/awaken/control.toml }
           ports: [{ containerPort: 3000 }]
           readinessProbe:
             httpGet: { path: /readyz, port: 3000 }
             initialDelaySeconds: 2
             periodSeconds: 2
           volumeMounts:
-            - { name: home, mountPath: /etc/awaken-home/.awaken, readOnly: true }
+            - { name: config, mountPath: /etc/awaken, readOnly: true }
             - { name: auth, mountPath: /etc/awaken-auth, readOnly: true }
             - { name: workspace, mountPath: /var/lib/awaken/control/platform-workspace-id, subPath: platform-workspace-id, readOnly: true }
       volumes:
-        - name: home
-          secret:
-            secretName: adr71-role-config
-            items: [{ key: control.toml, path: config.toml }]
+        - name: config
+          secret: { secretName: adr71-role-config }
         - name: auth
           secret: { secretName: adr71-control-auth }
         - name: workspace
@@ -260,6 +265,36 @@ spec:
   selector: { app: worker }
   ports: [{ name: admin, port: 9090, targetPort: 9090 }]
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: worker-runtime }
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: worker-runtime }
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "configmaps"]
+    verbs: ["create", "get", "list", "update", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "list", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: worker-runtime }
+subjects:
+  - kind: ServiceAccount
+    name: worker-runtime
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: worker-runtime
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata: { name: worker, labels: { app: worker } }
@@ -270,6 +305,7 @@ spec:
   template:
     metadata: { labels: { app: worker } }
     spec:
+      serviceAccountName: worker-runtime
       terminationGracePeriodSeconds: 20
       affinity:
         podAntiAffinity:

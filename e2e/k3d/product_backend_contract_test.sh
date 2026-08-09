@@ -12,7 +12,8 @@ trap 'rm -f "$RENDERED"' EXIT
 # startup grace plus readiness/liveness probes are declared; C4 ingress is
 # restricted to namespaces explicitly labelled as an
 # Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base while
-# BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC are
+# BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC including
+# Pod metadata update for resourceVersion-fenced reaper-lease transfer are
 # coherent through the Registry container's internal :5000 endpoint (the host
 # publishing port is not reachable inside the cluster); C6 model/provider secret names or values
 # appear in the manifest. Effects: E1 one all-in-one backend can start from the canonical image;
@@ -46,6 +47,10 @@ grep -q 'package_registry_insecure = true' "$RENDERED"
 grep -q 'serviceAccountName: awaken-product' "$RENDERED"
 grep -q -- '- jobs' "$RENDERED"
 grep -q -- '- pods/exec' "$RENDERED"
+PRODUCT_OBJECT_RULE="$(sed -n '14,34p' "$RENDERED")"
+grep -q -- '- create' <<<"$PRODUCT_OBJECT_RULE"
+grep -q -- '- update' <<<"$PRODUCT_OBJECT_RULE"
+grep -q -- '- delete' <<<"$PRODUCT_OBJECT_RULE"
 grep -q 'persistentVolumeClaim:' "$RENDERED"
 grep -q 'startupProbe:' "$RENDERED"
 grep -q 'failureThreshold: 180' "$RENDERED"
