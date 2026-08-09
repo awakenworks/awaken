@@ -36,12 +36,17 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 
 [features]
 default = []
+test-support = []
 # TS-contract generation (ADR-0043): derive JsonSchema on wire DTOs.
 schema = ["dep:schemars"]
 # SQLite-backed CatalogRepo (`sqlite::SqliteCatalogRepo`), ADR-0043 sqlite-repos.
 sqlite = ["dep:rusqlite", "dep:serde_json", "dep:tokio"]
 # Postgres-backed CatalogRepo (`postgres::PostgresCatalogRepo`), ADR-0043.
 postgres = ["dep:sqlx"]
+
+[[test]]
+name = "repo_conformance"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

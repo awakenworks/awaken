@@ -36,6 +36,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 
 [features]
 default = []
+test-support = []
 schema = ["dep:schemars"]
 sealed-aead = ["dep:chacha20poly1305"]
 # SQLite-backed CredentialRepo + SealedBlobStore (`sqlite::*`); the durable secret
@@ -45,6 +46,18 @@ sqlite = ["dep:rusqlite", "dep:tokio"]
 # sealed-only durable secret path — compose with `sealed-aead`.
 postgres = ["dep:sqlx"]
 oauth-command = ["dep:tokio"]
+
+[[test]]
+name = "key_rotation"
+required-features = ["test-support"]
+
+[[test]]
+name = "material_set_lifecycle"
+required-features = ["test-support"]
+
+[[test]]
+name = "repo_conformance"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

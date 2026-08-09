@@ -19,11 +19,11 @@ pub(super) struct ControlStores {
     pub(super) catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     pub(super) credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     pub(super) secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    pub(super) profiles: Arc<dyn awaken_admin_config_api::InferenceProfileStore>,
+    pub(super) profiles: Arc<dyn awaken_config_resolver::InferenceProfileStore>,
     pub(super) resources: Arc<dyn awaken_config_resolver::AgentInputBindingRepository>,
     /// Authored webhook endpoints are an id-addressed config resource beside
     /// profiles/MCP: one admin store implements these distinct Control ports.
-    pub(super) webhooks: Arc<dyn awaken_admin_config_api::WebhookStore>,
+    pub(super) webhooks: Arc<dyn awaken_config_resolver::WebhookStore>,
     /// Rich Agent drafts and immutable publications, scoped per Workspace.
     pub(super) config: Arc<dyn awaken_config_store::ScopedConfigRegistry>,
     /// Control-owned subject aggregate and consent facts.

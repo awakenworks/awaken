@@ -4,12 +4,14 @@
 //! publish validates reference integrity via [`ProviderCatalog::validate`]
 //! (fail-closed, G22).
 
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::ValidCatalog;
 use crate::{
     BrokeredCatalogProjection, CatalogError, CatalogSyncResult, DiscoveredModel, ModelAttributes,
     Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog, ProviderId,
-    ValidCatalog,
 };
 
 /// A catalog write/read failure.
@@ -69,14 +71,16 @@ pub trait CatalogRepo: Send + Sync {
     async fn snapshot(&self) -> Result<ProviderCatalog, RepoError>;
 }
 
-/// In-memory [`CatalogRepo`] (dev / tests / single-machine default). Its stored
+/// In-memory [`CatalogRepo`] for tests and scenario fixtures. Its stored
 /// state is a [`ValidCatalog`], so reference integrity is an invariant of what is
 /// held — every mutation re-parses through the construction boundary and `snapshot`
 /// hands back the checked inner with no read-time re-validation.
+#[cfg(any(test, feature = "test-support"))]
 pub struct InMemoryCatalogRepo {
     inner: Mutex<ValidCatalog>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Default for InMemoryCatalogRepo {
     fn default() -> Self {
         Self {
@@ -88,6 +92,7 @@ impl Default for InMemoryCatalogRepo {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InMemoryCatalogRepo {
     #[must_use]
     pub fn new() -> Self {
@@ -95,6 +100,7 @@ impl InMemoryCatalogRepo {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl CatalogRepo for InMemoryCatalogRepo {
     async fn put_discovered_connection(

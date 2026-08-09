@@ -9,11 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use awaken_admin_assistant::{EnvironmentAuthor, ResourceInventory};
-use awaken_admin_config_api::{
-    BrokeredCatalogDiscovery, CredentialProbe, InferenceProfileStore, ModelCatalogDiscovery,
-    WebhookStore,
-};
-use awaken_config_resolver::AgentInputBindingRepository;
+use awaken_admin_config_api::{BrokeredCatalogDiscovery, CredentialProbe, ModelCatalogDiscovery};
+use awaken_config_resolver::{AgentInputBindingRepository, InferenceProfileStore, WebhookStore};
 use awaken_config_service::{
     ConfigPlane, ConfigService, ConfigServiceReconciler, ManagementAuditPlane,
     ModelPublicationResolver, PluginPublicationResolver, PublicationBindingReconciler,

@@ -1,5 +1,5 @@
 //! Coordinator SQLite captured-content store (ADR-0050): the durable counterpart of
-//! [`InMemoryCapturedContentStore`](crate::InMemoryCapturedContentStore). Rows
+//! the test-only in-memory captured-content fixture. Rows
 //! are subject-tagged so GDPR erasure is a keyed `DELETE`, and a TTL sweep
 //! enforces storage limitation. Implements both [`CaptureSink`] (write) and
 //! [`ContentEraser`] (erase) over the Coordinator-owned
@@ -53,7 +53,8 @@ impl SqliteCapturedContentStore {
         })
     }
 
-    /// Open a private in-memory database (tests / ephemeral).
+    /// Open a private in-memory database for tests and scenario fixtures.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(|e| StoreError::Open(e.to_string()))?;
         Ok(Self {

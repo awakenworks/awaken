@@ -251,6 +251,7 @@ impl SqliteManagedSessionRepository {
     }
 
     /// An in-memory database (tests).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
         Self::from_connection(conn)

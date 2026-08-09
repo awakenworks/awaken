@@ -28,4 +28,9 @@ awaken-store-sqlite = { workspace = true }
 
 [features]
 default = []
+test-support = []
 schema = ["dep:schemars", "awaken-agent-contract/schema", "awaken-runtime-contract/schema"]
+
+[[test]]
+name = "integration"
+required-features = ["test-support"]

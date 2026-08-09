@@ -35,7 +35,10 @@ pub use sealed::{SealedAeadSecretStore, generate_seal_key_hex, parse_seal_key};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+#[cfg(any(test, feature = "test-support"))]
+use std::collections::HashMap;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
 use awaken_agent_contract::RedactedString;
@@ -618,14 +621,14 @@ pub trait SealedBlobStore: Send + Sync {
     }
 }
 
-/// In-memory [`SealedBlobStore`] — the default behind
-/// `SealedAeadSecretStore::with_key` (dev / tests; a process restart forgets
-/// the blobs).
+/// In-memory [`SealedBlobStore`] for tests and scenario fixtures.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemorySealedBlobStore {
     blobs: Mutex<HashMap<String, Vec<u8>>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InMemorySealedBlobStore {
     #[must_use]
     pub fn new() -> Self {
@@ -633,6 +636,7 @@ impl InMemorySealedBlobStore {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl SealedBlobStore for InMemorySealedBlobStore {
     async fn put_blob(&self, r: &SecretRef, blob: Vec<u8>) -> Result<(), CredentialError> {
@@ -670,11 +674,13 @@ impl SealedBlobStore for InMemorySealedBlobStore {
 }
 
 /// In-memory [`SecretStore`] (dev / tests). Real backends encrypt at rest.
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemorySecretStore {
     map: Mutex<HashMap<String, String>>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InMemorySecretStore {
     #[must_use]
     pub fn new() -> Self {
@@ -682,6 +688,7 @@ impl InMemorySecretStore {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl SecretStore for InMemorySecretStore {
     async fn put(&self, r: &SecretRef, secret: RedactedString) -> Result<(), CredentialError> {

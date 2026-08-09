@@ -11,6 +11,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
 tokio.workspace = true
 
 [lints]

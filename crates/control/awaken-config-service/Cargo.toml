@@ -32,6 +32,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
+awaken-config-resolver = { workspace = true, features = ["test-support"] }
+awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-executable-agent-catalog.workspace = true
 
 [lints]

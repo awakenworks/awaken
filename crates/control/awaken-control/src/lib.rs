@@ -66,8 +66,9 @@ pub use crate::worker_stores::{
     InferenceMaterializationStores, open_inference_materialization_stores,
 };
 
-use awaken_admin_config_api::{AdminState, CredentialProbe, InferenceProfileStore, WebhookStore};
+use awaken_admin_config_api::{AdminState, CredentialProbe};
 use awaken_config_resolver::AgentInputBindingRepository;
+use awaken_config_resolver::{InferenceProfileStore, WebhookStore};
 use awaken_config_service::{ConfigPlane, ManagementAuditPlane, config_router};
 use awaken_config_store::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
 use awaken_credential_vault::SecretStore;

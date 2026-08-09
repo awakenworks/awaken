@@ -299,8 +299,8 @@ async fn open_process_stores(
 
     // The admin aggregate backs three Control ports (profiles / Agent resource
     // bindings / webhooks) off one store.
-    let mut admin_profiles: Option<Arc<dyn awaken_admin_config_api::InferenceProfileStore>> = None;
-    let mut admin_webhooks: Option<Arc<dyn awaken_admin_config_api::WebhookStore>> = None;
+    let mut admin_profiles: Option<Arc<dyn awaken_config_resolver::InferenceProfileStore>> = None;
+    let mut admin_webhooks: Option<Arc<dyn awaken_config_resolver::WebhookStore>> = None;
     let mut admin_resources: Option<Arc<dyn awaken_config_resolver::AgentInputBindingRepository>> =
         None;
     if opens_control {

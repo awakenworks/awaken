@@ -24,14 +24,6 @@ pub use postgres::PostgresAdminStore;
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteAdminStore;
 
-// The read ports + in-memory impls now live in the open resolver crate; re-export
-// them so existing `awaken_admin_config_api::…Store` paths keep resolving (same
-// type). The authoring HTTP surface writes through these ports; the SQLite backend
-// (`SqliteAdminStore`) implements them.
-pub use awaken_config_resolver::{
-    AgentInputBindingRepository, InMemoryAgentInputBindingRepository, InMemoryProfileStore,
-    InMemoryWebhookStore, InferenceProfileStore, WebhookStore,
-};
 pub use provider_connection::{
     ConnectProviderCommand, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
     ProviderConnectionAuthentication, ProviderConnectionError, ProviderConnectionResult,
