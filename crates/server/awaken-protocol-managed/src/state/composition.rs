@@ -1,7 +1,7 @@
 //! Construction and port wiring for the Managed protocol adapter.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_session_contract::{ManagedSessionRepository, SessionLifecycleSink};
@@ -108,6 +108,7 @@ impl ManagedState {
                 std::process::id(),
                 MANAGED_STATE_INCARNATION_SEQ.fetch_add(1, Ordering::Relaxed)
             ),
+            lifecycle_supervisor_started: AtomicBool::new(false),
             session_seq: AtomicU64::new(0),
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),

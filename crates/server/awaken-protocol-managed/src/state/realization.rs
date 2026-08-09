@@ -760,21 +760,60 @@ impl ManagedState {
         Ok(renewed)
     }
 
-    /// Start the local realization-lease supervisor when a Tokio runtime is
-    /// available. Composition roots call this once for the canonical
-    /// `ManagedState`; repeated MCP-specific timers are forbidden.
+    async fn reconcile_pending_session_state(&self) {
+        let reconciled_resources = self.reconcile_resource_activations().await;
+        if reconciled_resources > 0 {
+            tracing::info!(
+                reconciled_resources,
+                "reconciled durable Session resource activations"
+            );
+        }
+        let reconciled_mcp = self.reconcile_mcp_attachments().await;
+        if reconciled_mcp > 0 {
+            tracing::info!(reconciled_mcp, "reconciled durable Session MCP projections");
+        }
+    }
+
+    /// Start the one local Session lifecycle supervisor when a Tokio runtime is
+    /// available. Recovery runs immediately in a non-overlapping background task,
+    /// so a slow external sandbox cannot hold the HTTP readiness boundary. The
+    /// same timer retries completed recovery passes and drives lease/residency;
+    /// repeated MCP- or resource-specific supervisors are forbidden.
     #[must_use]
     pub fn spawn_realization_lease_supervisor(
         self: &Arc<Self>,
     ) -> Option<tokio::task::JoinHandle<()>> {
         let runtime = tokio::runtime::Handle::try_current().ok()?;
+        if self
+            .lifecycle_supervisor_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
         let state = self.clone();
         Some(runtime.spawn(async move {
+            let recovery_state = state.clone();
+            let mut recovery = tokio::spawn(async move {
+                recovery_state.reconcile_pending_session_state().await;
+            });
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             interval.tick().await;
             state.reconcile_work_dispatches().await;
             loop {
                 interval.tick().await;
+                if recovery.is_finished() {
+                    if let Err(error) = recovery.await {
+                        tracing::warn!(
+                            error = ?error,
+                            "Session state reconciliation task failed"
+                        );
+                    }
+                    let recovery_state = state.clone();
+                    recovery = tokio::spawn(async move {
+                        recovery_state.reconcile_pending_session_state().await;
+                    });
+                }
                 let now = now_unix_ms();
                 if let Err(error) = state.renew_due_session_realizations(now).await {
                     tracing::warn!(
@@ -987,6 +1026,25 @@ mod tests {
 
     async fn harness(id: &str) -> (ManagedState, Arc<dyn ManagedSessionRepository>) {
         harness_for(persisted_session(id)).await
+    }
+
+    #[tokio::test]
+    async fn lifecycle_supervisor_is_single_owner_and_starts_recovery_off_path() {
+        // Cause/effect decision table: R1 Tokio runtime + first start -> return
+        // one background supervisor immediately; R2 the same ManagedState starts
+        // again -> return None and create no overlapping recovery/timer; R3 no
+        // runtime -> existing contract returns None. Slow recovery is owned by the
+        // spawned child, so component construction never awaits sandbox I/O.
+        let state = Arc::new(ManagedState::new_with_mcp(NoopRuntime));
+        let supervisor = state
+            .spawn_realization_lease_supervisor()
+            .expect("R1 starts the sole supervisor");
+        assert!(
+            state.spawn_realization_lease_supervisor().is_none(),
+            "R2 rejects a parallel supervisor"
+        );
+        tokio::task::yield_now().await;
+        supervisor.abort();
     }
 
     fn exact_receipts(action: &SessionRealizationAction) -> Vec<McpRealizationReceipt> {
