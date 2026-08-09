@@ -53,6 +53,13 @@ Resources component builders; an optional local Worker uses the same
 | Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
 | AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
 
+Production process targets are role-named: `awaken-control`,
+`awaken-coordinator`, and `awaken-worker`. The `awaken` target remains the
+operator/AllInOne launcher and retains `awaken control` / `awaken coordinator`
+as compatibility commands. Control and Coordinator targets share the canonical
+source-level lifecycle in `awaken-cli`; neither entrypoint reconstructs a domain
+component. Worker keeps its independent authority-store-free bootstrap.
+
 Package names make the application and adapter roles explicit even though several
 live under the technical `crates/server/` workspace bucket:
 
@@ -106,6 +113,31 @@ The Runtime Core is the domain center. It runs tools in-process but must not kno
 public protocols, registry publication workflow, vault schemas, remote execution
 placement, or product-specific session names. Server and product code adapt into
 the runtime through explicit ports.
+
+### 1.2 Runtime Host, authority, protocol, and composition
+
+`awaken-runtime-host` owns execution semantics, Session environments, Worker
+transport adapters, and the `RuntimeAuthority`/`LocalCommit` injection contracts.
+Its default dependency closure contains no SQL/FS commit, dispatch, Session,
+Resource, or Credential store and it has no backend-selection feature.
+
+`awaken-coordinator::runtime_authority` is the sole durable implementation. It
+selects SQLite, filesystem, or PostgreSQL once at Coordinator startup and returns
+one capability containing commit, dispatch, wake, and stream-checkpoint access.
+The Host can therefore distinguish only local injected authority from a
+claim-fenced remote Worker projection; it cannot reopen or reselect a backend.
+
+`awaken-protocol-managed` is a driving anti-corruption layer. It translates the
+Managed HTTP contract into the existing Session application and Runtime Host
+interfaces; it is neither a Coordinator Runtime nor a persistence owner. Its
+Memory and Skill routes depend on `awaken-resource-contract` and the canonical
+Resources application ingestion path, with concrete stores supplied only by the
+Resources composition.
+
+The `awaken`/`awaken-control`/`awaken-coordinator` targets share the single
+`awaken-cli::run_service` lifecycle. `awaken-worker` remains a separate package so
+its feature-resolved dependency closure can be proven authority-store-free. The
+CLI assembles these deployables; it does not become another domain owner.
 
 Under the accepted target, config publication is a Control flow, not a runtime
 subsystem. Control persists one immutable `StoredPublication`, then invokes
@@ -325,10 +357,11 @@ or remote agent execution is added only when a future ADR introduces it.
 ## 7. Operational Convergence And Deployment Topology
 
 The four bounded contexts and their persistence authorities are complete in the
-current composition. The distributed binary exposes Control, Coordinator, and
-Worker roles; Resources is a canonical sibling component currently hosted by the
-Coordinator process. This is process co-location, not shared ownership: its
-stores, migrations, application services, and ports remain Resources-owned.
+current composition. Distributed deployment uses role-named Control,
+Coordinator, and Worker executables; Resources is a canonical sibling component
+currently hosted by the Coordinator process. This is process co-location, not
+shared ownership: its stores, migrations, application services, and contracts
+remain Resources-owned.
 
 ### 7.1 Static registration recovery
 

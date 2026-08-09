@@ -83,6 +83,13 @@ impl SharedHost {
         self
     }
 
+    /// Install the Coordinator-owned durable capability before the Host serves.
+    #[must_use]
+    pub fn with_runtime_authority(mut self, authority: Arc<dyn crate::RuntimeAuthority>) -> Self {
+        self.authority = Some(authority);
+        self
+    }
+
     /// Install a dispatch port supplied by a database-less Worker transport.
     #[must_use]
     pub fn with_dispatch_port(
@@ -97,19 +104,14 @@ impl SharedHost {
     pub fn dispatch_store(&self) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
         self.dispatch_store_override.clone().map_or_else(
             || {
-                #[cfg(feature = "authority")]
-                {
-                    crate::dispatch_backend::shared_durable_store_for(
-                        &self.deployment,
-                        self.store_dir.as_deref(),
-                    )
-                }
-                #[cfg(not(feature = "authority"))]
-                {
-                    Err(HostError::internal(
-                        "database-less Worker requires an injected dispatch transport",
-                    ))
-                }
+                self.authority
+                    .as_ref()
+                    .map(|authority| authority.dispatch_store())
+                    .ok_or_else(|| {
+                        HostError::internal(
+                            "database-less Worker requires an injected dispatch transport",
+                        )
+                    })
             },
             Ok,
         )
@@ -241,22 +243,8 @@ impl SharedHost {
         } else {
             resources.as_ref().map_or_else(
                 || match store_dir.as_ref() {
-                    #[cfg(feature = "authority")]
-                    Some(dir) => {
-                        let files = Arc::new(
-                            awaken_file_store::sqlite::SqliteFileStore::open(
-                                &dir.join("files.db").to_string_lossy(),
-                            )
-                            .expect("open durable file store"),
-                        );
-                        (
-                            files.clone() as Arc<dyn awaken_resource_contract::FileStore>,
-                            files as Arc<dyn awaken_resource_contract::FileCatalog>,
-                        )
-                    }
-                    #[cfg(not(feature = "authority"))]
                     Some(_) => unreachable!(
-                        "database-less Worker build requires injected File content adapters"
+                        "product Host construction requires an injected Resource component"
                     ),
                     None => {
                         #[cfg(any(test, feature = "test-support"))]
@@ -389,6 +377,16 @@ impl SharedHost {
             dispatch_pool: std::sync::OnceLock::new(),
             terminal_reconciliation_started: std::sync::OnceLock::new(),
             dispatch_store_override: None,
+            authority: {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    Some(Arc::new(crate::EphemeralRuntimeAuthority::new()))
+                }
+                #[cfg(not(any(test, feature = "test-support")))]
+                {
+                    None
+                }
+            },
             completion: Arc::new(CompletionRegistry::default()),
             worker_stream_publisher: None,
             environment_binding_sink: std::sync::RwLock::new(None),
@@ -1354,7 +1352,8 @@ impl SharedHost {
         }
         let Ok(store) = self.dispatch_store() else {
             // Postgres backend not yet initialised — a later `mount` after
-            // `init_shared_postgres_dispatch` will spawn the pool.
+            // Coordinator composition supplies the shared dispatch authority and
+            // this Host owns only its process-local claimer.
             return;
         };
         let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(HostWorkerResolver {
@@ -1371,10 +1370,10 @@ impl SharedHost {
         // spawn the pool with the cross-node wake so a peer's enqueue nudges this pool
         // without busy-poll; otherwise the in-process `LocalWakeSignal` suffices.
         let completion = self.completion.clone() as Arc<dyn CompletionSink>;
-        #[cfg(feature = "authority")]
-        let shared_wake = crate::dispatch_backend::shared_dispatch_wake();
-        #[cfg(not(feature = "authority"))]
-        let shared_wake = None;
+        let shared_wake = self
+            .authority
+            .as_ref()
+            .and_then(|authority| authority.dispatch_wake());
         let pool = match shared_wake {
             Some(wake) => DispatchPool::spawn_with_wake_and_completion(
                 store,

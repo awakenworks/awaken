@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    FileApplicationService, MemoryStoreApplicationService, ResourcePurgeScheduler,
+    FileApplicationService, MemoryRepository, MemoryStoreApplicationService,
+    ResourcePurgeScheduler, SkillStore,
 };
 use axum::Router;
 
@@ -17,9 +18,9 @@ mod skills;
 
 pub struct ResourcesRouterInput {
     pub files: Arc<dyn FileApplicationService>,
-    pub memories: Arc<dyn awaken_memory_store::MemoryRepository>,
+    pub memories: Arc<dyn MemoryRepository>,
     pub memory_stores: Arc<dyn MemoryStoreApplicationService>,
-    pub skills: Option<Arc<dyn awaken_skill_store::SkillStore>>,
+    pub skills: Option<Arc<dyn SkillStore>>,
     pub purge: Arc<dyn ResourcePurgeScheduler>,
 }
 

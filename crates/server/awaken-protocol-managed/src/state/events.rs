@@ -221,7 +221,7 @@ impl ManagedState {
         {
             let mut sessions = self.sessions.lock().unwrap();
             let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-            record.session.status = "running";
+            record.project_runtime_status("running");
         }
         let state = Arc::clone(self);
         let session_id = session_id.to_string();
@@ -521,7 +521,7 @@ impl ManagedState {
             });
         }
         self.append_delegation_projections(record, &delegated_runs);
-        record.session.status = "idle";
+        record.project_runtime_status("idle");
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -602,7 +602,7 @@ impl ManagedState {
                 record.session.outcome_evaluations.push(evaluation);
             }
         }
-        record.session.status = "idle";
+        record.project_runtime_status("idle");
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -942,7 +942,7 @@ impl ManagedState {
             if processing.is_err()
                 && let Some(record) = self.sessions.lock().unwrap().get_mut(session_id)
             {
-                record.session.status = "idle";
+                record.project_runtime_status("idle");
             }
             if let Some(activity_epoch) = activity_epoch {
                 let session = self
@@ -991,7 +991,7 @@ impl ManagedState {
             },
             processed_at,
         });
-        record.session.status = "idle";
+        record.project_runtime_status("idle");
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
     }
@@ -1078,9 +1078,9 @@ impl ManagedState {
                 RunLifecycleKind::Running | RunLifecycleKind::Resumed
             )
         }) {
-            record.session.status = "running";
+            record.project_runtime_status("running");
         } else if terminal.is_some() {
-            record.session.status = "idle";
+            record.project_runtime_status("idle");
         }
         let project_terminal = terminal.filter(|event| {
             !awaiting_ticket_pending && record.projected_terminal_cursors.insert(event.cursor)

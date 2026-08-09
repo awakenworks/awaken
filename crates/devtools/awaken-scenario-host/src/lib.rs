@@ -27,7 +27,7 @@ pub use acp_scenarios::{
 };
 pub use composition::build_unscoped_resource_router;
 pub use delegation::build_delegation_router;
-pub use deployment::scenario_deployment;
+pub use deployment::{install_scenario_runtime_authority, scenario_deployment};
 pub use distributed_control::build_distributed_control_router;
 pub use distributed_control::build_distributed_provider_router;
 pub use dream::{build_dream_router, build_dream_router_and_host};
@@ -69,7 +69,7 @@ pub use awaken_protocol_managed::{
 pub use awaken_run_ingress_http::durable_ops_router;
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, RunApplicationHost, SharedHost, ThreadEvent, ThreadEventHub,
-    VaultRefresher, advertised_tools,
+    advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 

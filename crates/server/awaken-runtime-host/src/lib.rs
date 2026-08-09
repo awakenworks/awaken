@@ -19,10 +19,9 @@ mod acp_tool_export;
 mod agent_catalog;
 mod agent_runner;
 mod application;
+mod authority;
 mod background;
 mod cache_volume;
-#[cfg(feature = "authority")]
-mod commit_backend;
 mod commit_ingest;
 mod compact;
 mod config;
@@ -30,8 +29,6 @@ mod container_environment;
 pub use container_environment::package_image_provisioner;
 mod delegate;
 mod deployment_config;
-#[cfg(feature = "authority")]
-mod dispatch_backend;
 mod durable_operations;
 mod host;
 mod hub;
@@ -82,6 +79,11 @@ use awaken_session_contract::{
     StepOutcome, ToolPermissionDecision,
 };
 
+#[cfg(any(test, feature = "test-support"))]
+pub use crate::authority::EphemeralRuntimeAuthority;
+pub use crate::authority::{
+    CredentialRefreshFactory, LocalCommit, ProjectedLocalCommit, RuntimeAuthority,
+};
 pub use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 pub use crate::worker_http::respond as respond_host_http;
 
@@ -89,16 +91,6 @@ pub use crate::worker_http::respond as respond_host_http;
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
 pub use crate::cache_volume::{CacheVolumeInitializer, CacheVolumeWarmup};
-#[cfg(feature = "authority")]
-pub use crate::commit_backend::{
-    init_shared_postgres_commit, init_shared_postgres_commit_existing,
-    migrate_postgres_commit_schema,
-};
-#[cfg(feature = "authority")]
-pub use crate::dispatch_backend::{
-    init_shared_postgres_dispatch_existing_with_config, init_shared_postgres_dispatch_with_config,
-    migrate_postgres_dispatch_schema,
-};
 pub use crate::host::{
     AttemptExecutorDecorator, HostResume, RemoteAttemptInstallation, SharedHost,
     remote_worker_placement, self_hosted_inference_holder,
@@ -134,8 +126,6 @@ pub use crate::deployment_config::{
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.
 pub use crate::mcp::ExtMcpProbe;
-#[cfg(feature = "authority")]
-pub use crate::mcp::VaultRefresher;
 // ── Managed Agents adapter over the shared host ─────────────────────────────
 
 /// Translate the runtime contract's edit refusal into the wire-facing error.
@@ -217,6 +207,7 @@ fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
 pub struct ManagedHost {
     host: Arc<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
+    credential_refresh_factory: Option<Arc<dyn CredentialRefreshFactory>>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
     repository_binding_verifier:
         Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
@@ -239,6 +230,7 @@ struct CompiledEffectiveInputs {
 pub(crate) struct DispatchSessionRuntime {
     host: std::sync::Weak<SharedHost>,
     credentials: Option<PinnedCredentialMaterializer>,
+    credential_refresh_factory: Option<Arc<dyn CredentialRefreshFactory>>,
     resource_validator: Option<Arc<dyn awaken_resource_contract::ResourceBindingValidator>>,
     repository_binding_verifier:
         Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
@@ -254,6 +246,7 @@ impl DispatchSessionRuntime {
         Ok(ManagedHost {
             host,
             credentials: self.credentials.clone(),
+            credential_refresh_factory: self.credential_refresh_factory.clone(),
             resource_validator: self.resource_validator.clone(),
             repository_binding_verifier: self.repository_binding_verifier.clone(),
             mcp_realizer: None,
@@ -421,6 +414,7 @@ impl ManagedHost {
         let managed = Self {
             host,
             credentials: None,
+            credential_refresh_factory: None,
             resource_validator: None,
             repository_binding_verifier: None,
             mcp_realizer: None,
@@ -437,6 +431,7 @@ impl ManagedHost {
             .expect("dispatch Session Runtime lock poisoned") = Some(DispatchSessionRuntime {
             host: Arc::downgrade(&self.host),
             credentials: self.credentials.clone(),
+            credential_refresh_factory: self.credential_refresh_factory.clone(),
             resource_validator: self.resource_validator.clone(),
             repository_binding_verifier: self.repository_binding_verifier.clone(),
             mcp_realizer: self.mcp_realizer.clone(),
@@ -735,7 +730,7 @@ impl ManagedHost {
 
     /// Wire runtime credential injection for the already-frozen Session bindings
     /// and Repository realization.
-    #[cfg(feature = "authority")]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_credentials(
         self,
@@ -753,6 +748,18 @@ impl ManagedHost {
         materializer: PinnedCredentialMaterializer,
     ) -> Self {
         self.credentials = Some(materializer);
+        self.refresh_dispatch_session_runtime();
+        self
+    }
+
+    /// Install the Coordinator-owned OAuth refresh adapter. The Host retains
+    /// only this factory and never receives Credential/Secret Store handles.
+    #[must_use]
+    pub fn with_credential_refresh_factory(
+        mut self,
+        factory: Arc<dyn CredentialRefreshFactory>,
+    ) -> Self {
+        self.credential_refresh_factory = Some(factory);
         self.refresh_dispatch_session_runtime();
         self
     }
@@ -1651,34 +1658,30 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                         )
                     })?;
                 let refresh = match access.refresh.as_ref() {
-                    Some(refresh) => {
-                        #[cfg(feature = "authority")]
-                        {
-                            let (credentials, secrets) = injector.local_stores().ok_or_else(|| {
-                            RunError::classified(
-                                "mcp_credential_refresh_unavailable",
-                                "MCP credential refresh requires a local credential authority",
-                            )
-                        })?;
-                            Some(Box::new(crate::mcp::McpRefreshMaterial::new(
+                    Some(refresh) => Some(Box::new(crate::mcp::McpRefreshMaterial(
+                        self.credential_refresh_factory
+                            .as_ref()
+                            .ok_or_else(|| {
+                                RunError::classified(
+                                    "mcp_credential_refresh_unavailable",
+                                    "MCP credential refresh requires a Coordinator refresh adapter",
+                                )
+                            })?
+                            .refresher(
                                 awaken_credential_contract::CredentialSourceId(
                                     access.credential.id.clone(),
                                 ),
                                 refresh.clone(),
-                                credentials,
-                                secrets,
-                            )))
-                        }
-                        #[cfg(not(feature = "authority"))]
-                        {
-                            let _ = refresh;
-                            return Err(RunError::classified(
-                                "mcp_credential_refresh_unavailable",
-                                "database-less Worker cannot own MCP credential refresh state",
-                            ));
-                        }
-                    }
-                    None => None,
+                            ),
+                    ))),
+                    None => self.credential_refresh_factory.as_ref().map(|factory| {
+                        Box::new(crate::mcp::McpRefreshMaterial(factory.bearer_reloader(
+                            awaken_credential_contract::CredentialSourceId(
+                                access.credential.id.clone(),
+                            ),
+                            access.credential.revision,
+                        )))
+                    }),
                 };
                 (
                     Some(bearer),

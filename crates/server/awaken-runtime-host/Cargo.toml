@@ -30,13 +30,9 @@ awaken-ext-skills = { workspace = true }
 awaken-ext-mcp = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
-# Durable memory persistence (resources plane): backs the ADR-0038 memory_store
-# family so a harvested write-back survives a process restart. The `sqlite` feature
-# provides the path-addressed store with **crash-atomic** rename/CAS (one transaction)
-# — the durable backend for the ADR-0053 `/memories` surface.
+# Resource implementations are available only to test-support fixture builders;
+# product Runtime Host consumes the contract traits injected by composition.
 awaken-memory-store = { workspace = true, optional = true }
-# Durable skill catalog (resources plane): backs the delivered-skill source so a
-# skill added via /v1/skills survives a restart; awaken-ext-skills stays store-unaware.
 awaken-skill-store = { workspace = true, optional = true }
 awaken-sandbox-local = { workspace = true }
 # The container tier (podman/docker/k8s), for realizing the session-scoped execution
@@ -49,13 +45,7 @@ awaken-file-store = { workspace = true, optional = true }
 # The neutral sandbox vocabulary the sandboxed ACP channel source speaks
 # (SandboxSpec/Command/NetworkPolicy) when realizing the namespace tier.
 awaken-provisioning-contract = { workspace = true }
-awaken-store-sqlite = { workspace = true, optional = true }
-awaken-store-fs = { workspace = true, optional = true }
-awaken-store-postgres = { workspace = true, optional = true }
-# The durable WorkQueue backend (sqlite/postgres), extracted from this host.
-awaken-work-store = { workspace = true, optional = true }
 awaken-session-store = { workspace = true, optional = true }
-awaken-env-store = { workspace = true, optional = true }
 awaken-tenancy = { workspace = true }
 awaken-run-ingress = { workspace = true, default-features = false }
 awaken-run-ingress-contract.workspace = true
@@ -63,24 +53,17 @@ awaken-worker-transport-security = { workspace = true }
 awaken-worker-runtime.workspace = true
 awaken-run-executor-acp = { workspace = true }
 awaken-acp-contract = { workspace = true }
-awaken-config-resolver = { workspace = true, optional = true }
 awaken-credential-vault = { workspace = true, optional = true }
 awaken-credential-contract.workspace = true
 awaken-credential-materializer = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
-# Durable Managed-session repository (sessions.db) — the open home for
-# the sqlite + postgres ManagedSessionRepository backends, moved here so any bin
-# (standalone/enterprise) gets restart-surviving sessions without the
-# authoring plane. Migration bundles are owned by the extracted store adapters.
-rusqlite = { workspace = true, optional = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }
-# OAuth refresh-token exchange (ADR-0043): `VaultRefresher` POSTs the RFC 6749
-# refresh grant to the credential's token endpoint.
+# Runtime MCP relay transport; OAuth repository/material refresh assembly lives
+# in Coordinator and is injected through CredentialRefreshFactory.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 base64 = "0.22"
 form_urlencoded = "1"
@@ -93,44 +76,28 @@ regex = "1"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 [features]
-default = ["authority"]
-# Store-owning Coordinator/AllInOne adapters. The Worker build disables default
-# features and retains only the injected execution ports, so database drivers
-# and Control credential authority cannot enter its artifact transitively.
-authority = [
-    "awaken-run-ingress/durable",
-    "awaken-file-store/sqlite",
-    "awaken-memory-store/sqlite",
-    "dep:awaken-skill-store",
-    "dep:awaken-store-sqlite",
-    "dep:awaken-store-fs",
-    "dep:awaken-store-postgres",
-    "dep:awaken-work-store",
-    "dep:awaken-session-store",
-    "dep:awaken-env-store",
-    "dep:awaken-config-resolver",
-    "dep:rusqlite",
-    "dep:sqlx",
-    "awaken-credential-materializer/authority",
-    "dep:awaken-credential-vault",
-]
+# The reusable Host is authority-free by default. Coordinator injects the
+# RuntimeAuthority value directly; there is no feature-selected compatibility
+# assembly that can acquire a Store implicitly.
+default = []
 # Post-construction persistence overrides are restricted to tests. Product
 # composition selects every authority before constructing SharedHost.
 test-support = [
-    "authority",
     "dep:awaken-store-inmem",
     "dep:awaken-resource-application",
+    "dep:awaken-file-store",
+    "dep:awaken-memory-store",
+    "dep:awaken-skill-store",
+    "dep:awaken-session-store",
+    "dep:awaken-credential-vault",
+    "awaken-credential-materializer/authority",
     "awaken-file-store/test-support",
     "awaken-credential-vault/test-support",
+    "awaken-memory-store/sqlite",
     "awaken-memory-store/test-support",
     "awaken-run-ingress/test-support",
     "awaken-session-store/test-support",
 ]
-# Cross-node dispatch wake over NATS: passes through to awaken-run-ingress so the
-# host's wake selector can build a `NatsWakeSignal` when AWAKEN_DISPATCH_WAKE=nats.
-# Off by default — the durable store stays Postgres either way; this only swaps the
-# best-effort wake hint channel. Separate from any NATS the bin uses for the hand relay.
-nats = ["awaken-run-ingress/nats"]
 # Container ACP tiers: enable the backend a worker is configured for
 # (AWAKEN_SANDBOX_TIER). Each forwards to the matching awaken-sandbox-container
 # runtime; off by default so the namespace-only host stays light.
@@ -141,7 +108,7 @@ container-k8s = ["awaken-sandbox-container/k8s"]
 [dev-dependencies]
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-file-store = { workspace = true, features = ["test-support"] }
-awaken-memory-store = { workspace = true, features = ["test-support"] }
+awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }
 awaken-run-ingress = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
@@ -154,6 +121,8 @@ tempfile = "3"
 # The sandboxed-channel-source integration test observes what the bwrap-confined
 # agent said through the in-memory commit boundary.
 awaken-store-inmem = { workspace = true }
+awaken-store-sqlite.workspace = true
+awaken-credential-materializer = { workspace = true, features = ["authority"] }
 # Drives Worker transport routers in-process through `ServiceExt::oneshot`.
 tower = { version = "0.5", features = ["util"] }
 

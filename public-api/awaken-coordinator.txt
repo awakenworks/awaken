@@ -2,12 +2,12 @@ pub mod awaken_coordinator
 pub use awaken_coordinator::ConfigService
 pub use awaken_coordinator::ExtMcpProbe
 pub use awaken_coordinator::HostResume
-pub use awaken_coordinator::InferenceExecutorMaterializer
 pub use awaken_coordinator::LocalAcpPreparation
 pub use awaken_coordinator::ManagedHost
 pub use awaken_coordinator::ModelDirectory
 pub use awaken_coordinator::NoModelConfiguredExecutor
 pub use awaken_coordinator::PreparedAcpCapabilities
+pub use awaken_coordinator::ResolvedExecutorError
 pub use awaken_coordinator::ResourcesRouterInput
 pub use awaken_coordinator::RunApplicationHost
 pub use awaken_coordinator::SharedHost
@@ -16,7 +16,6 @@ pub use awaken_coordinator::SkillSpec
 pub use awaken_coordinator::ThreadEvent
 pub use awaken_coordinator::ThreadEventHub
 pub use awaken_coordinator::UNCONFIGURED_MODEL_REF
-pub use awaken_coordinator::VaultRefresher
 pub use awaken_coordinator::WorkerDirectory
 pub use awaken_coordinator::WorkerObservationSource
 pub use awaken_coordinator::advertised_tools
@@ -26,6 +25,7 @@ pub use awaken_coordinator::content_fingerprint
 pub use awaken_coordinator::default_models
 pub use awaken_coordinator::durable_ops_router
 pub use awaken_coordinator::ensure_workspace_bindings
+pub use awaken_coordinator::executor_from_materialized_endpoint
 pub use awaken_coordinator::models_router
 pub use awaken_coordinator::parse_skill_md
 pub use awaken_coordinator::resources_router
@@ -151,7 +151,7 @@ pub async fn awaken_coordinator::inference_materializer::CredentialInferenceMate
 pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::new(alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
 pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::with_brokered_client(self, alloc::sync::Arc<dyn awaken_coordinator::brokered_inference::BrokeredInferenceClient>) -> Self
 pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::with_brokered_mode(self, bool) -> Self
-impl awaken_runtime_host::inference_routing::InferenceExecutorMaterializer for awaken_coordinator::inference_materializer::CredentialInferenceMaterializer
+impl awaken_runtime_contract::inference::InferenceExecutorMaterializer for awaken_coordinator::inference_materializer::CredentialInferenceMaterializer
 pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
 pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::materialize(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, alloc::string::String>
 pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::materialize_pinned(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
@@ -223,15 +223,6 @@ pub fn awaken_coordinator::workspace_path::with_workspace_path_addressing(axum::
 pub enum awaken_coordinator::CoordinatorBuildError
 pub awaken_coordinator::CoordinatorBuildError::DeploymentRestore(alloc::string::String)
 pub awaken_coordinator::CoordinatorBuildError::WorkerTransport(awaken_coordinator::WorkerTransportBuildError)
-pub enum awaken_coordinator::ResolvedExecutorError
-pub awaken_coordinator::ResolvedExecutorError::DialectAdapterMismatch
-pub awaken_coordinator::ResolvedExecutorError::DialectAdapterMismatch::adapter: alloc::string::String
-pub awaken_coordinator::ResolvedExecutorError::DialectAdapterMismatch::dialect: alloc::string::String
-pub awaken_coordinator::ResolvedExecutorError::ExecutorBuild(alloc::string::String)
-pub awaken_coordinator::ResolvedExecutorError::MissingBaseUrl(alloc::string::String)
-pub awaken_coordinator::ResolvedExecutorError::MissingCredential
-pub awaken_coordinator::ResolvedExecutorError::UnsupportedAdapter(alloc::string::String)
-pub awaken_coordinator::ResolvedExecutorError::UnsupportedDialect(alloc::string::String)
 pub enum awaken_coordinator::WorkerTransportBuildError
 pub awaken_coordinator::WorkerTransportBuildError::CheckpointOpen
 pub awaken_coordinator::WorkerTransportBuildError::CheckpointOpen::error: alloc::string::String
@@ -259,25 +250,36 @@ pub awaken_coordinator::CoordinatorDependencies::resource_management_router: axu
 pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
 pub awaken_coordinator::CoordinatorDependencies::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::CoordinatorDependencies::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub struct awaken_coordinator::CoordinatorPersistence
+pub awaken_coordinator::CoordinatorPersistence::runtime_authority: alloc::sync::Arc<dyn awaken_runtime_host::authority::RuntimeAuthority>
+pub awaken_coordinator::CoordinatorPersistence::worker_directory: awaken_coordinator::WorkerDirectoryHandle
 pub struct awaken_coordinator::ManagedRoutingExtensions
 pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: axum::routing::Router
 pub awaken_coordinator::ManagedRoutingExtensions::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub struct awaken_coordinator::VaultRefreshFactory
+impl awaken_coordinator::VaultRefreshFactory
+pub fn awaken_coordinator::VaultRefreshFactory::new(alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
+impl awaken_runtime_host::authority::CredentialRefreshFactory for awaken_coordinator::VaultRefreshFactory
+pub fn awaken_coordinator::VaultRefreshFactory::bearer_reloader(&self, awaken_credential_contract::CredentialSourceId, u64) -> alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>
+pub fn awaken_coordinator::VaultRefreshFactory::refresher(&self, awaken_credential_contract::CredentialSourceId, awaken_credential_contract::CredentialRefreshAccess) -> alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>
+pub struct awaken_coordinator::VaultRefresher
+impl awaken_coordinator::VaultRefresher
+pub fn awaken_coordinator::VaultRefresher::new(awaken_credential_contract::CredentialSourceId, awaken_credential_contract::CredentialRefreshAccess, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
+impl awaken_credential::CredentialRefresher for awaken_coordinator::VaultRefresher
+pub fn awaken_coordinator::VaultRefresher::refresh<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential::AuthChallenge) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_credential::Credential>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_coordinator::a2a_attempt_executor(core::option::Option<awaken_credential_materializer::PinnedCredentialMaterializer>) -> awaken_runtime_host::host::RemoteAttemptInstallation
 pub async fn awaken_coordinator::build_coordinator_component(awaken_coordinator::CoordinatorDependencies) -> core::result::Result<awaken_coordinator::CoordinatorComponent, awaken_coordinator::CoordinatorBuildError>
 pub fn awaken_coordinator::embedded_resource_component(&std::path::Path) -> awaken_resource_contract::component::ResourceComponent
 pub fn awaken_coordinator::embedded_resources_application(&std::path::Path) -> awaken_resource_application::ResourcesApplication
 pub fn awaken_coordinator::embedded_skill_store(&std::path::Path) -> alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>
-pub fn awaken_coordinator::executor_from_materialized_access(&str, core::option::Option<&str>, core::option::Option<&awaken_agent_contract::secret::RedactedString>) -> core::result::Result<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, awaken_coordinator::ResolvedExecutorError>
-pub fn awaken_coordinator::executor_from_materialized_endpoint(&str, &str, core::option::Option<&str>, core::option::Option<&awaken_agent_contract::secret::RedactedString>) -> core::result::Result<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, awaken_coordinator::ResolvedExecutorError>
 pub fn awaken_coordinator::install_platform_memory_data_plane(&awaken_runtime_host::host::SharedHost)
 pub fn awaken_coordinator::memory_store_application(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub async fn awaken_coordinator::migrate_postgres_coordinator_schema(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_coordinator::mount_with_managed_application_access_models_and_dreams(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>, alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_protocol_managed::control::models::ModelDirectory>, alloc::sync::Arc<dyn awaken_session_contract::dream::DreamProcessStore>, awaken_coordinator::ManagedRoutingExtensions) -> core::result::Result<(axum::routing::Router, alloc::sync::Arc<awaken_dream_application::DreamApplication>), awaken_coordinator::WorkerTransportBuildError>
-pub async fn awaken_coordinator::open_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::WorkerDirectoryHandle, alloc::string::String>
-pub async fn awaken_coordinator::open_existing_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::WorkerDirectoryHandle, alloc::string::String>
+pub async fn awaken_coordinator::open_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
+pub async fn awaken_coordinator::open_existing_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub async fn awaken_coordinator::prepare_local_acp(awaken_acp_application::LocalAcpPreparation) -> core::result::Result<awaken_acp_application::PreparedAcpCapabilities, alloc::string::String>
-pub fn awaken_coordinator::relay_hand_executor_factory() -> alloc::sync::Arc<dyn awaken_runtime_host::session_environment::HandExecutorFactory>
 pub fn awaken_coordinator::resource_purge_scheduler(alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
 pub async fn awaken_coordinator::restore_deployment_application(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>, awaken_coordinator::CoordinatorBuildError>
 pub type awaken_coordinator::WorkerDirectoryHandle = alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>

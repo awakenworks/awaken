@@ -24,6 +24,7 @@ pub(super) async fn assemble_runtime_process_router(
     let worker_directory = assembly
         .worker_directory
         .expect("runtime process requires an explicit WorkerDirectory");
+    let runtime_authority = assembly.runtime_authority;
     let worker_observation_wiring = assembly
         .worker_observations
         .expect("runtime process requires explicit Worker observation wiring");
@@ -124,6 +125,16 @@ pub(super) async fn assemble_runtime_process_router(
                     control.credentials.clone(),
                     control.secrets.clone(),
                 )
+            })
+        })
+        .flatten();
+    let credential_refresh_factory = (role == config::Role::AllInOne)
+        .then(|| {
+            stores.control.as_ref().map(|control| {
+                Arc::new(awaken_coordinator::VaultRefreshFactory::new(
+                    control.credentials.clone(),
+                    control.secrets.clone(),
+                )) as Arc<dyn awaken_runtime_host::CredentialRefreshFactory>
             })
         })
         .flatten();
@@ -401,6 +412,9 @@ pub(super) async fn assemble_runtime_process_router(
         #[cfg(not(any(test, feature = "test-support")))]
         None => unreachable!("product runtime assembly requires a resolved deployment"),
     };
+    if let Some(runtime_authority) = runtime_authority {
+        host_builder = host_builder.with_runtime_authority(runtime_authority);
+    }
     host_builder = host_builder
         .with_file_application(
             resource_application.files(),
@@ -492,6 +506,9 @@ pub(super) async fn assemble_runtime_process_router(
         ));
     if let Some(credentials) = credential_materializer {
         managed_host = managed_host.with_credential_materializer(credentials);
+    }
+    if let Some(factory) = credential_refresh_factory {
+        managed_host = managed_host.with_credential_refresh_factory(factory);
     }
     let managed_host = Arc::new(managed_host);
     let session_application =

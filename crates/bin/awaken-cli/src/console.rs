@@ -1,15 +1,15 @@
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ServiceArgs {
+pub struct ServiceArgs {
     pub config_path: Option<std::path::PathBuf>,
     pub port: Option<u16>,
     pub data_dir: Option<std::path::PathBuf>,
     pub no_browser: bool,
     pub identity_mode: Option<awaken_control::ManagementIdentityMode>,
-    pub cloud_models: Option<awaken_cli::config::CloudModelMode>,
+    pub cloud_models: Option<crate::config::CloudModelMode>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum Command {
+pub enum Command {
     AllInOne(ServiceArgs),
     Control(ServiceArgs),
     Coordinator(ServiceArgs),
@@ -30,7 +30,16 @@ pub(crate) enum Command {
     Help,
 }
 
-pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServiceBinaryCommand {
+    Serve(ServiceArgs),
+    DatabaseMigrate {
+        config_path: Option<std::path::PathBuf>,
+    },
+    Help,
+}
+
+pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
     let mut args = args.into_iter().collect::<Vec<_>>();
     if args.is_empty() {
         return Ok(Command::AllInOne(ServiceArgs::default()));
@@ -221,8 +230,8 @@ fn parse_identity_mode(
         .ok_or_else(|| "--identity-mode expects no-login, self-managed, or awaken-cloud".to_owned())
 }
 
-fn parse_cloud_models(value: Option<&str>) -> Result<awaken_cli::config::CloudModelMode, String> {
-    awaken_cli::config::CloudModelMode::parse(
+fn parse_cloud_models(value: Option<&str>) -> Result<crate::config::CloudModelMode, String> {
+    crate::config::CloudModelMode::parse(
         value.ok_or_else(|| "--cloud-models needs disabled or enabled".to_owned())?,
     )
 }
@@ -238,9 +247,35 @@ fn is_help(value: &str) -> bool {
     value == "-h" || value == "--help"
 }
 
-pub(crate) fn print_help() {
+pub fn print_help() {
     println!(
         "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Control IAM profile\n    control iam profile resources   Print the compiled Control resource IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    database migrate                Apply deployment schema migrations and exit\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open the browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nThe execution service is the separate `awaken-worker` binary."
+    );
+}
+
+/// Parse one role-specific executable. It serves by default and exposes only
+/// that role's migration command; no role-selection command is accepted.
+pub fn parse_service_binary_command(
+    args: impl IntoIterator<Item = String>,
+) -> Result<ServiceBinaryCommand, String> {
+    let args = args.into_iter().collect::<Vec<_>>();
+    if args.iter().any(|argument| is_help(argument)) {
+        return Ok(ServiceBinaryCommand::Help);
+    }
+    if args.first().is_some_and(|argument| argument == "database") {
+        return parse_database_args(&args[1..]).and_then(|command| match command {
+            Command::DatabaseMigrate { config_path } => {
+                Ok(ServiceBinaryCommand::DatabaseMigrate { config_path })
+            }
+            _ => unreachable!("database parser returns only migration"),
+        });
+    }
+    parse_service_args(&args).map(ServiceBinaryCommand::Serve)
+}
+
+pub fn print_service_help(binary: &str) {
+    println!(
+        "{binary}\n\nUSAGE:\n    {binary} [OPTIONS]\n    {binary} database migrate [--config PATH]\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled\n    -h, --help            Print this help"
     );
 }
 
@@ -338,7 +373,7 @@ mod tests {
             .unwrap(),
             Command::Control(ServiceArgs {
                 identity_mode: Some(awaken_control::ManagementIdentityMode::AwakenCloud),
-                cloud_models: Some(awaken_cli::config::CloudModelMode::Enabled),
+                cloud_models: Some(crate::config::CloudModelMode::Enabled),
                 ..Default::default()
             })
         );
@@ -348,6 +383,49 @@ mod tests {
         assert_eq!(
             parse_args(["doctor".into(), "acp".into(), "--json".into()]).unwrap(),
             Command::DoctorAcp { json: true }
+        );
+    }
+
+    #[test]
+    fn role_binary_accepts_options_but_cannot_switch_role() {
+        // Cause/effect decision table: B1 ordinary service options -> one parsed
+        // option set; B2 help -> no service start; B3 a role/command token ->
+        // reject. The executable supplies the role separately, so no argument
+        // can make awaken-control acquire Coordinator authority or vice versa.
+        assert_eq!(
+            parse_service_binary_command([
+                "--config".into(),
+                "/etc/awaken/control.toml".into(),
+                "--port=3000".into(),
+            ])
+            .unwrap(),
+            ServiceBinaryCommand::Serve(ServiceArgs {
+                config_path: Some("/etc/awaken/control.toml".into()),
+                port: Some(3000),
+                ..Default::default()
+            }),
+            "B1"
+        );
+        assert_eq!(
+            parse_service_binary_command(["--help".into()]).unwrap(),
+            ServiceBinaryCommand::Help,
+            "B2"
+        );
+        assert!(
+            parse_service_binary_command(["coordinator".into()]).is_err(),
+            "B3"
+        );
+        assert_eq!(
+            parse_service_binary_command([
+                "database".into(),
+                "migrate".into(),
+                "--config=/etc/awaken/control.toml".into(),
+            ])
+            .unwrap(),
+            ServiceBinaryCommand::DatabaseMigrate {
+                config_path: Some("/etc/awaken/control.toml".into())
+            },
+            "B4 migration remains inside the executable's fixed role"
         );
     }
 }

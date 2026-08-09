@@ -28,7 +28,7 @@
 
 ## 1. 部署轴(D 因)——配置等价类
 
-The concrete selectors are anchored in `crates/bin/awaken-cli/src/{config,main,lib}.rs`, `awaken-runtime-host/src/{deployment_config,dispatch_backend,acp_backend,sandbox_source}.rs`, `awaken-worker`, `awaken-sandbox`, and the Kustomize resources under `deploy/k3d/`.
+The concrete selectors are anchored in `crates/bin/awaken-cli/src/{config,main,lib}.rs`, `awaken-runtime-host/src/{deployment_config,authority,acp_backend,sandbox_source}.rs`, `awaken-coordinator/src/runtime_authority.rs`, `awaken-worker`, `awaken-sandbox`, and the Kustomize resources under `deploy/k3d/`.
 
 | D# | 轴 | 选择器 | 等价类(值) | 默认 |
 |---|---|---|---|---|
@@ -483,7 +483,7 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 |---|---|---|---|
 | M12/T82 acp 限流保留 `acp_failure` code | 单元 | `awaken-run-executor-acp/src/tests.rs` | ✓ 绿 |
 | M6/T44 authz `RequireApproval→Deny` fail-closed 坍缩(抽出 `collapse_session_decision` seam) | 单元 | `awaken-authz-enforce/src/lib.rs` | ✓ 绿(29/29) |
-| N6 nats 无 `--features nats` 硬错 | 单元 | `awaken-runtime-host/src/dispatch_backend.rs` | ✓ 绿 |
+| N6 nats 无 `--features nats` 硬错 | 单元 | `awaken-coordinator/src/runtime_authority.rs` | ✓ 绿 |
 | N5 durable ingress 落在易失队列→拒启 | e2e | `deployment_config_e2e.mjs` | ✓ 真二进制拒启 |
 | N4 embedded IAM 无 data dir→拒启 | e2e | `deployment_config_e2e.mjs` | ✓ 真二进制拒启 |
 | F9/F10/F98 acp+mcp+secret-nonleak 跨 fs/durable 后端参数化 | e2e 脚本 | `e2e/package.json` `test:fs`/`test:durable` | ✓ `test:fs` 全 8 文件绿 |

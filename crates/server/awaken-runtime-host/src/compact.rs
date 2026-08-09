@@ -217,9 +217,9 @@ mod tests {
         let runner = compact_runner(
             model.clone(),
             default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS),
-            Arc::new(HostCommit::Local(Arc::new(
+            Arc::new(HostCommit::Local(Arc::new(crate::ProjectedLocalCommit(
                 awaken_store_inmem::MemoryCommitCoordinator::new(),
-            ))),
+            )))),
         );
         // The plugin builds the seed (older slice + summarize prompt); here that is
         // 5 user messages.
@@ -253,9 +253,9 @@ mod tests {
         let runner = compact_runner(
             model.clone(),
             default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS),
-            Arc::new(HostCommit::Local(Arc::new(
+            Arc::new(HostCommit::Local(Arc::new(crate::ProjectedLocalCommit(
                 awaken_store_inmem::MemoryCommitCoordinator::new(),
-            ))),
+            )))),
         );
         let background = Arc::new(BackgroundRuns::new());
         let backend = compact_backend(runner, background.clone());

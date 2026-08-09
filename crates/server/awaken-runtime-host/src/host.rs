@@ -43,19 +43,11 @@ use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_runtime_contract::tool::ToolOutput;
-#[cfg(any(test, feature = "test-support"))]
-use awaken_store_inmem::MemoryCommitCoordinator;
-#[cfg(any(test, feature = "test-support"))]
-use awaken_store_inmem::MemoryStreamCheckpointStore;
 // The Workdir-tier sandbox realized through the neutral provisioning contract:
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
 // (rooted tools, repos, artifacts) the host composes into each session's runtime.
 use awaken_sandbox_local::LocalProvider;
 use awaken_session_contract::DelegatedRun;
-#[cfg(feature = "authority")]
-use awaken_store_fs::{FsCommitCoordinator, FsStreamCheckpointStore};
-#[cfg(feature = "authority")]
-use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
 
@@ -103,9 +95,6 @@ fn sub_base(kind: &str) -> PathBuf {
     };
     std::env::temp_dir().join("awaken-coordinator").join(name)
 }
-
-#[cfg(feature = "authority")]
-pub(crate) use crate::store::sanitize_thread;
 
 /// Wall-clock milliseconds since the Unix epoch — the dispatch queue's lease and
 /// recovery clock (slice D). Falls back to `0` if the clock is before the epoch.
@@ -246,6 +235,9 @@ pub struct SharedHost {
     /// transport here so no process-global compatibility slot becomes a second
     /// composition authority.
     pub(crate) dispatch_store_override: Option<Arc<awaken_run_ingress::AnyDispatchStore>>,
+    /// Coordinator-owned durable capability. Runtime and Worker builds contain
+    /// no concrete Store acquisition; a database-less Worker leaves this absent.
+    pub(crate) authority: Option<Arc<dyn crate::RuntimeAuthority>>,
     /// When set, an ACP CLI's session is harvested/restored under this durable root
     /// (keyed by thread+adapter) so it survives a move to another directory or
     /// worker. Point it at a **shared** location for cross-machine recovery; leave

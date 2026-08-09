@@ -16,6 +16,14 @@ kubectl kustomize "$REPO_ROOT/deploy/k3d/distributed-control" >"$RENDERED"
 # sole deployment source of truth.
 grep -q '/usr/local/bin/awaken-worker' "$RENDERED"
 ! grep -q '/usr/local/bin/awaken worker' "$RENDERED"
+for role in control coordinator; do
+  role_commands="$(grep -A4 "/usr/local/bin/awaken-${role}$" "$RENDERED")"
+  grep -q -- '- database' <<<"$role_commands"
+  grep -q -- '- migrate' <<<"$role_commands"
+  grep -q -- '- --config' <<<"$role_commands"
+done
+! grep -q '/usr/local/bin/awaken", "coordinator"' "$RENDERED"
+! grep -q '/usr/local/bin/awaken", "database", "migrate"' "$RENDERED"
 grep -q 'CREATE ROLE awaken_control LOGIN' "$RENDERED"
 grep -q 'CREATE ROLE awaken_coordinator LOGIN' "$RENDERED"
 ! grep -q 'postgres://postgres:' "$RENDERED"

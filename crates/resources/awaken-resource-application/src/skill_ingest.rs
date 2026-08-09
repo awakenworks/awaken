@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 
-use crate::SkillBundleFile;
+use awaken_resource_contract::SkillBundleFile;
 
 /// Maximum number of regular files in one immutable Skill bundle.
 pub const MAX_SKILL_FILES: usize = 128;
@@ -188,4 +188,118 @@ pub fn canonicalize_skill_bundle(
         source_directory,
         files: canonical.into_values().collect(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn uploaded(path: &str, content: impl Into<Vec<u8>>) -> UploadedSkillBundleFile {
+        UploadedSkillBundleFile {
+            path: path.to_owned(),
+            content: content.into(),
+            executable: false,
+        }
+    }
+
+    fn zip_file(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (path, content, mode) in entries {
+            writer
+                .start_file(
+                    *path,
+                    zip::write::SimpleFileOptions::default().unix_permissions(*mode),
+                )
+                .unwrap();
+            writer.write_all(content).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    /// Skill-ingest FMECA / cause-effect graph:
+    /// C1 input is loose files or one ZIP; C2 paths are safe and case-unique;
+    /// C3 files share zero/one root containing UTF-8 SKILL.md; C4 expanded file,
+    /// count and aggregate limits hold; C5 entry is regular. Effects are E1 one
+    /// sorted, root-relative immutable bundle, or E2 fail closed before storage.
+    /// F1 path traversal/alias (S9,O4,D2,RPN72), F2 ZIP special-file escape
+    /// (S10,O3,D3,RPN90), F3 decompression/size exhaustion (S8,O5,D2,RPN80),
+    /// and F4 ambiguous/malformed instructions (S7,O5,D2,RPN70) all map to E2.
+    ///
+    /// | Rule | form | safe/unique | root+UTF-8 | limits | regular | Effect |
+    /// |---|---|---|---|---|---|---|
+    /// | I1 | loose | yes | yes | yes | yes | E1 |
+    /// | I2 | ZIP | yes | yes | yes | yes | E1 |
+    /// | I3 | either | no | any | any | any | E2/F1 |
+    /// | I4 | ZIP | yes | yes | yes | no | E2/F2 |
+    /// | I5 | either | yes | yes | no | yes | E2/F3 |
+    /// | I6 | either | yes | no | yes | yes | E2/F4 |
+    #[test]
+    fn canonical_ingest_decision_table() {
+        let loose = canonicalize_skill_bundle(vec![
+            uploaded("demo/SKILL.md", b"---\nname: demo\n---\n".to_vec()),
+            uploaded("demo/scripts/run.sh", b"#!/bin/sh\nexit 0\n".to_vec()),
+        ])
+        .expect("I1");
+        assert_eq!(loose.source_directory.as_deref(), Some("demo"), "I1/E1");
+        assert_eq!(loose.files[0].path, "SKILL.md", "I1 sorted");
+        assert_eq!(loose.files[1].path, "scripts/run.sh", "I1 relative");
+        assert!(loose.files[1].executable, "I1 shebang capability");
+
+        let zip = zip_file(&[("pkg/SKILL.md", b"valid", 0o100644)]);
+        let zipped = canonicalize_skill_bundle(vec![uploaded("skill.zip", zip)]).expect("I2");
+        assert_eq!(zipped.source_directory.as_deref(), Some("pkg"), "I2/E1");
+
+        for files in [
+            vec![uploaded("../SKILL.md", b"bad".to_vec())],
+            vec![
+                uploaded("SKILL.md", b"ok".to_vec()),
+                uploaded("skill.md", b"alias".to_vec()),
+            ],
+            vec![
+                uploaded("SKILL.md", b"ok".to_vec()),
+                uploaded("extra.zip", b"not a zip".to_vec()),
+            ],
+        ] {
+            assert!(canonicalize_skill_bundle(files).is_err(), "I3/E2/F1");
+        }
+
+        let mut special_writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        special_writer
+            .start_file("pkg/SKILL.md", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        special_writer.write_all(b"valid").unwrap();
+        special_writer
+            .add_symlink(
+                "pkg/link",
+                "../outside",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        let special = special_writer.finish().unwrap().into_inner();
+        assert!(
+            canonicalize_skill_bundle(vec![uploaded("skill.zip", special)]).is_err(),
+            "I4/E2/F2"
+        );
+
+        assert!(
+            canonicalize_skill_bundle(vec![
+                uploaded("SKILL.md", b"ok".to_vec()),
+                uploaded("large.bin", vec![0; MAX_SKILL_FILE_BYTES + 1]),
+            ])
+            .is_err(),
+            "I5/E2/F3"
+        );
+
+        for files in [
+            vec![uploaded("other.txt", b"missing".to_vec())],
+            vec![uploaded("SKILL.md", vec![0xff])],
+            vec![
+                uploaded("one/SKILL.md", b"one".to_vec()),
+                uploaded("two/file", b"two".to_vec()),
+            ],
+        ] {
+            assert!(canonicalize_skill_bundle(files).is_err(), "I6/E2/F4");
+        }
+    }
 }

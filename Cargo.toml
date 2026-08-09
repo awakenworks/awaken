@@ -29,7 +29,8 @@ members = [
     "crates/bin/*",
     # Dev tooling / harnesses / teaching examples (publish=false): scenario e2e host,
     # runtime examples, eval. Composed like bin/ (may depend on any plane), kept out of
-    # bin/ so the deployables bucket holds only awaken-cli + the worker daemon.
+    # bin/ so the deployables bucket holds the shared CLI/Control/Coordinator
+    # source composition plus the independent Worker daemon.
     "crates/devtools/*",
 ]
 

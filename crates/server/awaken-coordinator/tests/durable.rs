@@ -29,11 +29,17 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
-fn host_over(dir: &std::path::Path) -> SharedHost {
+async fn host_over(dir: &std::path::Path) -> SharedHost {
     let client_tools = HashSet::from(["submit_answer".to_string()]);
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.storage_dir = Some(dir.to_path_buf());
+    let authority = awaken_coordinator::init_scenario_runtime(&deployment)
+        .await
+        .expect("open Coordinator-owned SQLite runtime authority");
     SharedHost::new(Arc::new(CustomToolModel), "custom")
         .with_client_tools(client_tools)
         .with_store_dir(dir.to_path_buf())
+        .with_runtime_authority(authority)
 }
 
 #[tokio::test]
@@ -42,10 +48,16 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     let _ = std::fs::remove_dir_all(&dir);
     let thread = "durable-1";
 
+    // Restart-recovery FMECA / cause-effect decision table:
+    // C1=Coordinator injects an authority, C2=the replacement opens the same
+    // durable root. R1 C1+C2 -> awaiting ticket and history recover; R2 !C1 ->
+    // fail closed/no implicit Host store; R3 C1+!C2 -> clean independent state.
+    // This case proves R1 end to end; the in-memory case below proves the R2/R3
+    // non-recovery effect without reintroducing a second Host-owned store path.
     // 1. First "process": run a turn that awaits on the client tool, then drop the
     //    host — the run's history and awaiting ticket are now only in the store.
     let pending_id = {
-        let host = host_over(&dir);
+        let host = host_over(&dir).await;
         host.run(None, thread, vec![user("u1", "hi")])
             .await
             .unwrap();
@@ -68,7 +80,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     };
 
     // 2. A brand-new host over the SAME store directory recovers the awaiting run.
-    let host = host_over(&dir);
+    let host = host_over(&dir).await;
     assert!(
         host.is_awaiting(thread).await,
         "the rebuilt host recovers the awaiting run from the durable store"

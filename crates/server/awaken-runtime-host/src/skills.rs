@@ -68,7 +68,7 @@ impl SkillSource for EnvSkillSource {
 /// the run-loop scan is synchronous, so a network-DB (async) catalog cannot be hit
 /// per query; it is read once into this snapshot instead.
 ///
-/// [`SkillStore`]: awaken_skill_store::SkillStore
+/// [`SkillStore`]: awaken_resource_contract::SkillStore
 struct SnapshotSkillSource {
     files: Vec<SkillFile>,
 }

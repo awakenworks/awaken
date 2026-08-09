@@ -352,73 +352,20 @@ impl SharedHost {
             .modify(thread, |slot| slot.runtime = None);
     }
 
-    /// Build a thread's commit boundary under the configured store directory: a
-    /// durable SQLite database (default) or the filesystem append-log backend when
-    /// `DeploymentConfig::store=Fs`. Only test-support composition may omit the
-    /// storage directory and select an in-memory coordinator.
+    /// Select the only commit boundary available to this process: a database-less
+    /// Worker's claim-fenced remote projection or the Coordinator-injected local
+    /// authority. Runtime Host never selects a Store backend.
     pub(crate) async fn build_commit(&self, thread: &str) -> Result<HostCommit, HostError> {
-        use crate::store::{CommitPlan, plan_commit};
-        // The backend-selection decision is pure config (see `plan_commit`): worker
-        // upstream wins first, then the shared Postgres backend, then the on-disk
-        // fs/sqlite layout. This match only performs the resulting I/O.
-        match plan_commit(
-            self.deployment.store,
-            self.store_dir.as_deref(),
-            self.upstream.as_ref().map(|upstream| upstream.base_url()),
-            thread,
-        ) {
-            // Database-less worker: every thread commits to the cell server's ingest.
-            CommitPlan::Remote(_) => Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new())),
-            // Shared Postgres commit backend (ADR-0022 D6): one coordinator keyed by
-            // thread, connected once at startup (the non-Send sqlx connect stays out of
-            // the run loop). Fails closed when uninitialised, independent of a store dir.
-            #[cfg(feature = "authority")]
-            CommitPlan::Postgres => crate::store::postgres_commit_or_err(),
-            #[cfg(any(test, feature = "test-support"))]
-            CommitPlan::Memory => Ok(HostCommit::Local(std::sync::Arc::new(
-                MemoryCommitCoordinator::new(),
-            ))),
-            #[cfg(not(any(test, feature = "test-support")))]
-            CommitPlan::SqliteNeedsStorageDir => Err(HostError::internal(
-                "product SQLite commit requires DeploymentConfig::storage_dir; refusing to drop committed history on restart",
-            )),
-            // Fail closed: an explicit fs backend with no storage dir would otherwise
-            // silently degrade to an ephemeral in-memory store and drop committed
-            // history on restart (the filesystem append-log has no in-memory form).
-            CommitPlan::FsNeedsStorageDir => Err(HostError::internal(
-                "DeploymentConfig::store=Fs requires DeploymentConfig::storage_dir: the filesystem append-log \
-                 backend has no in-memory form, so serving it without a storage dir would \
-                 silently use an ephemeral store and drop committed history on restart. \
-                 Refusing to serve a durable 'fs' store on a volatile backing.",
-            )),
-            #[cfg(feature = "authority")]
-            CommitPlan::Fs(thread_dir) => {
-                if let Some(parent) = thread_dir.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| HostError::internal(e.to_string()))?;
-                }
-                let fs = FsCommitCoordinator::open(&thread_dir)
-                    .await
-                    .map_err(|e| HostError::internal(e.to_string()))?;
-                Ok(HostCommit::Local(std::sync::Arc::new(fs)))
-            }
-            #[cfg(feature = "authority")]
-            CommitPlan::Sqlite(path) => {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| HostError::internal(e.to_string()))?;
-                }
-                let sqlite = SqliteCommitCoordinator::open(&path.to_string_lossy())
-                    .map_err(|e| HostError::internal(e.to_string()))?;
-                Ok(HostCommit::Local(std::sync::Arc::new(sqlite)))
-            }
-            #[cfg(not(feature = "authority"))]
-            CommitPlan::Postgres | CommitPlan::Fs(_) | CommitPlan::Sqlite(_) => {
-                Err(HostError::internal(
-                    "database-less Worker build cannot select a local commit authority",
-                ))
-            }
+        if self.upstream.is_some() {
+            return Ok(HostCommit::Remote(crate::store::RemoteHostCommit::new()));
         }
+        self.authority
+            .as_ref()
+            .ok_or_else(|| HostError::internal("local Runtime requires an injected authority"))?
+            .open_commit(thread)
+            .await
+            .map(HostCommit::Local)
+            .map_err(HostError::internal)
     }
 
     /// Open only the authoritative commit/read boundary for a query. A resident
@@ -457,38 +404,16 @@ impl SharedHost {
         if self.upstream.is_some() {
             return Ok(None);
         }
-        #[cfg(not(feature = "authority"))]
-        let _ = thread;
-        #[cfg(not(feature = "authority"))]
-        return Err(HostError::internal(
-            "database-less Worker build cannot open a local checkpoint authority",
-        ));
-        #[cfg(feature = "authority")]
-        {
-            if self.deployment.store == crate::deployment_config::StoreKind::Postgres {
-                return self
-                .dispatch_store()?
-                .stream_checkpoint_store()
-                .map(Some)
-                .ok_or_else(|| {
-                    HostError::internal(
-                        "Postgres runtime requires the checkpoint store paired with its dispatch authority",
-                    )
-                });
-            }
-            let Some(dir) = &self.store_dir else {
-                #[cfg(any(test, feature = "test-support"))]
-                return Ok(Some(Arc::new(MemoryStreamCheckpointStore::new())));
-                #[cfg(not(any(test, feature = "test-support")))]
-                return Err(HostError::internal(
-                    "product stream checkpoints require durable storage; refusing a process-local fallback",
-                ));
-            };
-            let checkpoint_dir = dir.join(sanitize_thread(thread)).join("stream-checkpoints");
-            let store = FsStreamCheckpointStore::open(&checkpoint_dir)
-                .map_err(|e| HostError::internal(e.to_string()))?;
-            Ok(Some(Arc::new(store)))
-        }
+        self.authority
+            .as_ref()
+            .ok_or_else(|| {
+                HostError::internal(
+                    "database-less Worker build cannot open a local checkpoint authority",
+                )
+            })?
+            .stream_checkpoint(thread)
+            .map(Some)
+            .map_err(HostError::internal)
     }
 
     /// Build a thread's run-delivery ingress. Default is direct in-process
@@ -525,7 +450,7 @@ impl SharedHost {
         }
         // The ONE process-shared dispatch queue (shared SQLite file, or the shared
         // Postgres pool for a fleet) plus this process's unique claim owner — both
-        // live in `dispatch_backend`, which owns backend selection (ADR-0019/0024).
+        // arrive through the Coordinator-owned RuntimeAuthority (ADR-0019/0024).
         // Every session's worker shares this queue; the process-level `DispatchPool`
         // is its sole claimer and routes each run back to its owning session.
         let store = self.dispatch_store()?;

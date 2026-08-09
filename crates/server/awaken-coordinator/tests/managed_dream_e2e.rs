@@ -64,9 +64,12 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     // tool call; C5
     // source/output separation -> E5 source stays unchanged;
     // C6 explicit `view=full` -> E6 list projections include Dream contents (the
-    // official default `basic` projection intentionally omits them). Decision rule
-    // R1 covers the successful end-to-end combination of all seven causes. Route/unit
-    // suites own invalid, default-basic, and terminal alternatives.
+    // official default `basic` projection intentionally omits them); C7 the Runtime
+    // terminal lifecycle cursor is consumed after the Session archive CAS -> E7 the
+    // delayed event projection cannot reverse `terminated` to `idle`. Decision rule
+    // R1 covers the successful end-to-end combination of all eight causes, including
+    // the late-feed ordering selected by the shared ephemeral Runtime authority.
+    // Route/unit suites own invalid, default-basic, and nonterminal alternatives.
     let app = build_dream_router();
 
     let session = ok(
