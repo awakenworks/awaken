@@ -5,15 +5,16 @@
 //   C4 bootstrap file is on POSIX   -> E4 owner-only mode 0600
 //   C5 bootstrap file is on Windows -> E5 regular file + exact persisted token
 //   C6 token crosses expires_at      -> E6 accept before, reject after expiry
+//   C7 beta route has its opt-in      -> E7 request reaches IAM instead of beta validation
 //
 // Decision table:
-//   Rule  C1  C2  C3  C4  C5  C6  Expected
-//   T1    Y   N   N   -   -   -   E1
-//   T2    N   Y   N   -   -   -   E2
-//   T3    N   -   Y   -   -   -   E3
-//   T4    -   -   -   Y   N   -   E4
-//   T5    -   -   -   N   Y   -   E5 (POSIX mode bits are not meaningful)
-//   T6    N   Y   N   -   -   Y   E6
+//   Rule  C1  C2  C3  C4  C5  C6  C7  Expected
+//   T1    Y   N   N   -   -   -   Y   E1 + E7
+//   T2    N   Y   N   -   -   -   Y   E2 + E7
+//   T3    N   -   Y   -   -   -   Y   E3 + E7
+//   T4    -   -   -   Y   N   -   -   E4
+//   T5    -   -   -   N   Y   -   -   E5 (POSIX mode bits are not meaningful)
+//   T6    N   Y   N   -   -   Y   Y   E6 + E7
 //
 // Embedded-IAM e2e for the management plane (ADR-0042/0043 P1): spawn
 // awaken-server in `management` mode with typed data_dir, control_seal_key, and
@@ -55,6 +56,9 @@ const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa998877665544332211
 
 async function req(base, method, uri, body, token) {
   const headers = {};
+  if (uri === '/v1/vaults' || uri.startsWith('/v1/vaults/')) {
+    headers['anthropic-beta'] = BETAS[0];
+  }
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (token !== undefined) headers['authorization'] = `Bearer ${token}`;
   const res = await fetch(`${base}${uri}`, {

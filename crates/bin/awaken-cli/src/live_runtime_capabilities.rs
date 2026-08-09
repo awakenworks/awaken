@@ -59,19 +59,14 @@ impl awaken_coordinator::model_directory::ExecutorModelCapabilitySource
                     capability.available = workers.iter().any(|worker| {
                         worker.snapshot.state.accepts_work()
                             && worker.snapshot.expires_at_ms > now
-                            && worker
-                                .snapshot
-                                .acp_capability_observations
-                                .iter()
-                                .any(|observation| {
+                            && worker.snapshot.acp_capability_observations.iter().any(
+                                |observation| {
                                     observation.observation.backend_ref == capability.backend_ref
                                         && observation.valid_until_ms > now
                                         && observation.observation.observed_at_ms <= now
-                                        && observation.observation.state
-                                            == awaken_acp_contract::AcpCapabilityObservationState::Verified
-                                        && observation.observation.fingerprint.is_some()
-                                        && observation.observation.negotiated.is_some()
-                                })
+                                        && observation.observation.is_coherent()
+                                },
+                            )
                     });
                 }
                 capability

@@ -3,7 +3,7 @@
 // the official Anthropic TypeScript SDK, with no model in the loop. This complements
 // the live-model `managed_resources_e2e.mjs` (which proves mount/read/write/harvest
 // with a real model) by covering the pure request/response paths — metadata, raw
-// download, empty + unknown scopes, memory create/read, and the 404s — that a model
+// input-download denial, empty + unknown scopes, memory create/read, and the 404s — that a model
 // run does not deterministically reach.
 //
 // Runs in the default (keyless) coverage arm, so it always contributes to the
@@ -36,7 +36,7 @@ async function main() {
     await withRealServer('echo', 38138, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-      // ── Files API: upload → metadata → download → idempotency ──────────────────
+      // ── Files API: upload → metadata → input-download denial → idempotency ─────
       const body = 'resource-plane-fixture-bytes';
       const up = await client.beta.files.upload({
         file: await toFile(Buffer.from(body), 'fixture.txt'),
@@ -50,20 +50,31 @@ async function main() {
       const meta = await client.get(`/v1/files/${up.id}`);
       assert.equal(meta.id, up.id);
       assert.equal(meta.size_bytes, body.length);
+      assert.equal(meta.purpose, 'input');
+      assert.equal(meta.downloadable, false);
       pass('file metadata reflects stored size');
 
-      // GET /v1/files/:id/content — raw bytes (what files.download reads).
-      const dl = await client.beta.files.download(up.id, { betas: BETAS });
-      assert.equal(await dl.text(), body, 'download returns the exact bytes');
-      pass('file content downloaded verbatim');
+      // File download decision table:
+      // R1 uploaded input (downloadable=false) -> 400, bytes stay host-private;
+      // R2 harvested artifact (downloadable=true) -> exact bytes (covered by the
+      // resource/full-chain E2E); R3 unknown/deleted id -> 404 below.
+      await assert.rejects(
+        () => client.beta.files.download(up.id, { betas: BETAS }),
+        (error) => error?.status === 400 && String(error).includes('not downloadable'),
+        'an uploaded input is not a downloadable Agent artifact',
+      );
+      pass('uploaded input download fails closed');
 
-      // Content-addressed store: re-uploading identical bytes yields the same id.
+      // Identity/dedup decision table:
+      // R4 same bytes + no idempotency key -> distinct public File records while
+      // the private immutable blob may deduplicate; R5 same command key -> one
+      // logical record (covered at the FileApplication owner).
       const up2 = await client.beta.files.upload({
         file: await toFile(Buffer.from(body), 'again.txt'),
         betas: BETAS,
       });
-      assert.equal(up2.id, up.id, 'equal bytes ⇒ identical content id (idempotent)');
-      pass('re-upload is idempotent (same content id)');
+      assert.notEqual(up2.id, up.id, 'equal bytes do not collapse distinct public File identities');
+      pass('equal uploads keep distinct public identities over private blob deduplication');
 
       // A missing id is a 404.
       await assert.rejects(
@@ -73,16 +84,22 @@ async function main() {
       );
       pass('unknown file id → 404');
 
-      // ── files.list scoping: empty without a scope, empty for an unknown scope ───
+      // ── files.list scoping: Workspace-global inputs vs Session artifacts ────────
+      // R6 omitted scope -> all active Workspace Files; R7 exact unknown Session
+      // scope -> empty. Listing is a pure catalog query and never scans a sandbox.
       const noScope = [];
       for await (const f of client.beta.files.list({ betas: BETAS })) noScope.push(f);
-      assert.equal(noScope.length, 0, 'no scope_id ⇒ empty list (files are session-scoped)');
+      assert.deepEqual(
+        new Set(noScope.map((file) => file.id)),
+        new Set([up.id, up2.id]),
+        'no scope_id lists active Workspace input Files',
+      );
       const unknownScope = [];
       for await (const f of client.beta.files.list({ scope_id: 'sesn_absent', betas: BETAS })) {
         unknownScope.push(f);
       }
       assert.equal(unknownScope.length, 0, 'unknown scope ⇒ empty list');
-      pass('files.list is empty without a scope and for an unknown scope');
+      pass('files.list separates Workspace-global inputs from exact Session scope');
 
       const deletedFile = await request(baseUrl, 'DELETE', `/v1/files/${up.id}`);
       assert.equal(deletedFile.status, 200);
@@ -93,6 +110,12 @@ async function main() {
         'logical File deletion denies reads before asynchronous reclamation',
       );
       assert.equal((await request(baseUrl, 'DELETE', `/v1/files/${up.id}`)).status, 404);
+      assert.equal(
+        (await client.get(`/v1/files/${up2.id}`)).id,
+        up2.id,
+        'deleting one logical File does not delete another identity over the same blob',
+      );
+      assert.equal((await request(baseUrl, 'DELETE', `/v1/files/${up2.id}`)).status, 200);
       pass('file deletion commits immediate logical denial and is idempotently absent');
 
       // ── MemoryStore: catalog patch + CAS heads + versions + redaction + delete ─

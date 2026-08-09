@@ -140,9 +140,13 @@ async function main() {
       assert.ok(runs.some((r) => r.id === run.id), 'the run is listed');
       pass(`beta.deploymentRuns.retrieve / list (${runs.length})`);
 
-      // Run-failure behavior, not just error DTO decoding: archiving the exact
-      // bound Environment makes Session creation fail, leaves session_id null,
-      // appends the typed run, and does not auto-pause a manual trigger.
+      // Local launch uses the Coordinator executable projection, not Control's
+      // authoring history. Cause/effect D6: archiving withdraws that projection;
+      // a later manual launch therefore reports environment_not_found, creates
+      // no Session, appends the typed run, and does not auto-pause. The distinct
+      // environment_archived outcome remains owned by launchers that receive an
+      // authoritative lifecycle fact (covered by the DeploymentState F1/F3
+      // decision-table unit test), never inferred from a withdrawn projection.
       const doomedEnvironment = await client.beta.environments.create({
         name: 'deployment-doomed', config: { type: 'cloud' }, betas: BETAS,
       });
@@ -154,8 +158,8 @@ async function main() {
       await client.beta.environments.archive(doomedEnvironment.id, { betas: BETAS });
       const failed = await client.beta.deployments.run(doomed.id, { betas: BETAS });
       assert.equal(failed.session_id, null, 'D6 failed creation has no Session');
-      assert.equal(failed.error?.type, 'environment_archived_error', JSON.stringify(failed));
-      assert.match(failed.error?.message ?? '', /archived/);
+      assert.equal(failed.error?.type, 'environment_not_found_error', JSON.stringify(failed));
+      assert.match(failed.error?.message ?? '', /no longer exists/);
       assert.equal(failed.trigger_context.type, 'manual');
       const stillActive = await client.beta.deployments.retrieve(doomed.id, { betas: BETAS });
       assert.equal(stillActive.status, 'active', 'D6 only scheduled persistent failures auto-pause');

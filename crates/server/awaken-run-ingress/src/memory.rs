@@ -1,7 +1,7 @@
 //! In-memory reference implementation of the durable-ingress store.
 //!
 //! It mirrors the Postgres store's behaviour exactly so the worker and ingress
-//! can be tested without a database (the same role [`MemoryCommitCoordinator`]
+//! can be tested without a database (the in-memory commit coordinator
 //! plays for the commit boundary). It is the executable specification of the
 //! claim/lease/wake/recovery rules; the Postgres store must match it.
 

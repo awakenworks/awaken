@@ -5,7 +5,7 @@
 //   C2 global-id aggregate belongs to A       -> E2 hide/reject from B with 404
 //   C3 profile logical id exists only in A    -> E3 B reads 404
 //   C4 B authors same profile logical id      -> E4 create independent B-owned profile
-//   C5 scoped Agent id is already owned by A  -> E5 B write is a no-op; A remains intact
+//   C5 Agent logical id exists in A           -> E5 B creates an independent scoped row; A remains intact
 //
 // Decision table:
 //   Rule  C1  C2  C3  C4  C5  Expected
@@ -13,17 +13,16 @@
 //   T2    N   Y   -   -   -   E2
 //   T3    N   N   Y   N   -   E3
 //   T4    N   N   Y   Y   -   E4; A and B may both use `shared-profile`
-//   T5    N   N   -   -   Y   E5
+//   T5    N   N   -   -   Y   E5; A and B may both use the same portable Agent id
 //
 // The config authoring plane is tenant-fenced by an opaque scope_id (ADR-0051).
 // This drives the guarantee end to end through IAM + workspace addressing + the
 // scoped store. Two fences compose:
 //   • management_guard path fence: a token may only address its OWN workspace path
 //     (`/v1/workspaces/{ws}/…`) — a cross-workspace path is 403.
-//   • scoped store owner-protection: agent ids are global (id is the PK); the scoped
-//     upsert is `ON CONFLICT(id) DO UPDATE … WHERE scope_id = excluded.scope_id`, so
-//     a SECOND tenant reusing an owner's id is a deliberate NO-OP (returns 200 but
-//     neither clobbers nor exposes the owner's row) and reads back 404 in its scope.
+//   • scoped store identity: Agent ids are portable while `(scope_id, id)` is the
+//     durable identity. A second tenant may author the same id, but reads, writes,
+//     revisions, and credential references remain independent in each scope.
 // The discriminator is `max_steps` (echoed in the GET projection; a draft's raw
 // `instructions` projects to `system` only once published).
 //
@@ -183,14 +182,23 @@ async function main() {
     assert.equal(getProfileB.status, 200, `T4 B reads its profile: ${getProfileB.text.slice(0, 200)}`);
     assert.equal(getProfileB.json.workspace_id, WS_B);
     assert.equal(getProfileB.json.primary.credential_binding.credential_source_id, credentialB.json.id);
+    const agentMcpBodyB = {
+      ...agentMcpBody,
+      mcp_servers: [{
+        ...agentMcpBody.mcp_servers[0],
+        credential: { id: credentialB.json.id, revision: credentialB.json.version },
+      }],
+    };
     assert.equal(
-      (await req(base, 'PUT', '/v1/config/agents/shared-mcp-agent', tokenB, agentMcpBody)).status,
+      (await req(base, 'PUT', '/v1/config/agents/shared-mcp-agent', tokenB, agentMcpBodyB)).status,
       200,
-      'same-id Agent write is an owner-protected no-op',
+      'T5 same portable Agent id creates an independent WS-B row',
     );
-    assert.equal(
-      (await req(base, 'GET', '/v1/config/agents/shared-mcp-agent', tokenB)).status,
-      404,
+    const getMcpAgentB = await req(base, 'GET', '/v1/config/agents/shared-mcp-agent', tokenB);
+    assert.equal(getMcpAgentB.status, 200);
+    assert.deepEqual(
+      getMcpAgentB.json.mcp_servers[0].credential,
+      { id: credentialB.json.id, revision: credentialB.json.version },
     );
     assert.equal((await req(base, 'GET', '/v1/config/credential-pools/shared-pool', tokenA)).json.workspace_id, WS_A);
     const getProfileA = await req(base, 'GET', '/v1/config/inference-profiles/shared-profile', tokenA);
@@ -200,7 +208,7 @@ async function main() {
       (await req(base, 'GET', '/v1/config/agents/shared-mcp-agent', tokenA)).json.mcp_servers[0].credential,
       { id: credentialId, revision: credentialA.json.version },
     );
-    pass('T2-T4: global aggregates reject takeovers while same-id profiles remain independently Workspace-owned');
+    pass('T2-T5: global aggregates reject takeovers while profiles and Agents have independent scoped identities');
 
     const ALPHA_STEPS = 7;
     const BETA_STEPS = 3;
@@ -238,14 +246,19 @@ async function main() {
     assert.ok(!listBIds.includes(AGENT_ID), "WS-B's list does not contain WS-A's agent");
     pass('WS-B scope is empty of WS-A agent: 404-on-miss + list omits it');
 
-    // WS-B tries to author the SAME id (owned by WS-A). Owner-protection: the write
-    // is a deliberate no-op (200), so WS-B still cannot read it and WS-A's row is
-    // untouched — a tenant can neither clobber nor hijack an owner's agent id.
+    // T5: WS-B authors the same portable id in its own scope. The composite
+    // `(scope_id, id)` identity creates an independent row and leaves A untouched.
     const putB = await req(base, 'PUT', cfgPath(WS_B, `/${AGENT_ID}`), tokenB, draft(BETA_STEPS));
-    assert.equal(putB.status, 200, `WS-B same-id write returns 200 (no-op): ${putB.text.slice(0, 200)}`);
+    assert.equal(putB.status, 200, `WS-B same-id write creates a scoped row: ${putB.text.slice(0, 200)}`);
     const getBOwn = await req(base, 'GET', cfgPath(WS_B, `/${AGENT_ID}`), tokenB);
-    assert.equal(getBOwn.status, 404, `the no-op did not create a WS-B row (still 404): ${getBOwn.text.slice(0, 120)}`);
-    pass('WS-B same-id write is a no-op (200) that creates nothing in WS-B (owner-protected)');
+    assert.equal(getBOwn.status, 200, `WS-B reads its independent row: ${getBOwn.text.slice(0, 120)}`);
+    assert.equal(getBOwn.json.max_steps, BETA_STEPS, 'WS-B sees its own max_steps=3');
+    const listBAfter = await req(base, 'GET', cfgPath(WS_B, ''), tokenB);
+    assert.ok(
+      (listBAfter.json?.data ?? []).some((agent) => agent.id === AGENT_ID),
+      "WS-B's list contains its independently authored Agent",
+    );
+    pass('T5: WS-B independently authors and reads the same portable Agent id');
 
     const getAAgain = await req(base, 'GET', cfgPath(WS_A, `/${AGENT_ID}`), tokenA);
     assert.equal(getAAgain.status, 200, 'WS-A agent still present after WS-B same-id write');

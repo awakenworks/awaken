@@ -223,7 +223,10 @@ mod tests {
             .unwrap();
 
         assert!(state.reconcile_session_residency(1_000_000).await.is_err());
-        assert_eq!(hibernated.lock().unwrap().as_slice(), &[session.id.clone()]);
+        assert_eq!(
+            hibernated.lock().unwrap().as_slice(),
+            std::slice::from_ref(&session.id)
+        );
         assert_eq!(
             state
                 .sessions_repo

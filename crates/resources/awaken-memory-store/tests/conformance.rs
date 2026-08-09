@@ -6,6 +6,7 @@ use awaken_memory_store::repository::MAX_PATH_BYTES;
 use awaken_memory_store::{
     MAX_MEMORY_BYTES, MemErr, MemoryRepository, VolatileMemoryRepository, sha256_hex,
 };
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -335,6 +336,7 @@ async fn atomic_head_update_conformance(fs: &dyn MemoryRepository) {
 //     serialize concurrent writers exactly one winner deep. ---
 
 /// 8 concurrent creates of one path → exactly one winner, the rest `PathConflict`.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn concurrent_create_one_winner<F>(fs: Arc<F>)
 where
     F: MemoryRepository + Send + Sync + 'static,
@@ -360,6 +362,7 @@ where
 
 /// 8 concurrent CAS updates on one base sha → exactly one winner, the rest `Conflict`
 /// (none clobbers).
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 async fn concurrent_cas_one_winner<F>(fs: Arc<F>)
 where
     F: MemoryRepository + Send + Sync + 'static,
@@ -536,46 +539,24 @@ mod postgres {
         conditional_delete_never_removes_a_changed_or_recreated_head(&fs).await;
     }
 
-    /// `PostgresMemoryRepository::create` reads existence with an unlocked `SELECT 1` and mints its
-    /// ordinal with `SELECT MAX(ordinal)+1` — neither `FOR UPDATE` — so two concurrent
-    /// same-path creates both pass the existence check and race the `INSERT`. The primary
-    /// key `(store_id, path)` serializes them; the loser's unique-violation is translated
-    /// to the DOMAIN `MemErr::PathConflict` the serialized in-process backends return, not
-    /// leaked as a raw `MemErr::Storage`. This pins that the wire-visible outcome of a
-    /// same-path race is the same domain error across every backend.
+    /// Shared concurrency cause/effect table for the real Postgres adapter:
+    /// C1 eight creates share one absent path; C2 eight updates share one base
+    /// hash. E1 exactly one create commits and seven return `PathConflict`; E2
+    /// exactly one update commits and seven return `Conflict`. Raw storage
+    /// errors, multiple winners, and lost heads are forbidden outcomes.
+    ///
+    /// | Rule | C1 | C2 | Effect |
+    /// | PGC1 | T | F | E1 one create winner |
+    /// | PGC2 | F | T | E2 one CAS winner |
     #[tokio::test]
-    async fn postgres_concurrent_same_path_create_surfaces_path_conflict_not_raw_storage() {
+    async fn postgres_concurrent_create_and_cas_have_one_winner() {
         let Some(pool) = schema_pool("t_memory_repo_race").await else {
             return;
         };
         let fs = Arc::new(PostgresMemoryRepository::with_pool(pool));
         fs.ensure_schema().await.unwrap();
-
-        let mut handles = Vec::new();
-        for i in 0..2u32 {
-            let fs = fs.clone();
-            handles.push(tokio::spawn(async move {
-                fs.create("s", "/race.md", &format!("v{i}")).await
-            }));
-        }
-        let mut oks = 0;
-        let mut errs = Vec::new();
-        for h in handles {
-            match h.await.unwrap() {
-                Ok(_) => oks += 1,
-                Err(e) => errs.push(e),
-            }
-        }
-        assert_eq!(oks, 1, "exactly one same-path create commits");
-        assert_eq!(errs.len(), 1, "the other loses the PK race");
-        // The losing create's unique-violation is mapped to the domain PathConflict,
-        // not leaked as a raw Storage error — parity with the in-process backends.
-        assert!(
-            matches!(errs[0], MemErr::PathConflict(ref p) if p == "/race.md"),
-            "the losing create surfaces the domain PathConflict, not a raw Storage \
-             error — got {:?}",
-            errs[0]
-        );
+        concurrent_create_one_winner(fs.clone()).await;
+        concurrent_cas_one_winner(fs).await;
     }
 
     /// The Postgres high-water row is durable and transactionally incremented, so

@@ -28,4 +28,5 @@ pub fn awaken_file_store::InMemoryFileStore::get<'life0, 'life1, 'async_trait>(&
 pub fn awaken_file_store::InMemoryFileStore::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_resource_contract::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_file_store::InMemoryFileStore::put<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_resource_contract::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_file_store::content_id(&[u8]) -> alloc::string::String
+pub fn awaken_file_store::harvest_idempotency_key(&str, &str, &str) -> alloc::string::String
 pub fn awaken_file_store::is_content_id(&std::path::Path, &str) -> bool

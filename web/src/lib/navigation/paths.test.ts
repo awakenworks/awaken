@@ -102,4 +102,5 @@ describe("console information architecture", () => {
     ]);
     expect(navPath(WORKSPACE_JOURNEY[2].destination, "workspace-a")).toBe("/w/workspace-a/sessions");
   });
+
 });

@@ -114,23 +114,34 @@ async function main() {
     );
     pass('durable skill survived a real process restart and still reaches the model');
 
-    // A server WITHOUT a durable skill store (static `skills` mode) fails a POST
-    // closed rather than pretending to persist — the store is required, not optional.
+    // Cause/effect graph / decision table for the deployment storage axis:
+    // D1 storage dir=set + create -> Skill is usable before restart and retained after it.
+    // D2 storage dir=unset + create -> Skill is visible in the current process only.
+    // D3 storage dir=unset + restart -> the volatile Skill is absent; no durable effect
+    // is claimed. The canonical ResourceComponent remains complete in both modes;
+    // only its selected persistence adapter changes.
     await stopServer(b.server);
     servers.pop();
     const noStore = spawnServer('skills', PORT, realServerEnv('skills', upstream, { mode: 'skills' }));
     servers.push(noStore.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-    await expectStatus(
-      client.post('/v1/skills', {
-        body: { id: 'greet', content: SKILL_MD }, headers: SKILLS_HEADERS,
-      }),
-      409,
-      'POST /v1/skills on a server with no durable store',
-    );
-    pass('POST /v1/skills fails closed (409) when the server has no durable skill store');
-    console.log('E2E PASS: ADR-0036 delivered-skill catalog is durable across restart.');
+    const volatileId = 'volatile-greet';
+    const volatile = await client.post('/v1/skills', {
+      body: { id: volatileId, content: SKILL_MD }, headers: SKILLS_HEADERS,
+    });
+    assert.equal(volatile.id, volatileId);
+    assert.deepEqual(await skillIds(), [volatileId], 'ephemeral Skill is visible before restart');
+
+    await stopServer(noStore.server);
+    servers.pop();
+    const freshEphemeral = spawnServer('skills', PORT, realServerEnv('skills', upstream, { mode: 'skills' }));
+    servers.push(freshEphemeral.server);
+    await waitForPort(PORT);
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+    assert.deepEqual(await skillIds(), [], 'ephemeral Skill is absent after process restart');
+    pass('ephemeral ResourceComponent accepts Skills without claiming restart durability');
+    console.log('E2E PASS: ADR-0036 Skill persistence follows the deployment storage axis.');
   } finally {
     for (const s of servers) await stopServer(s);
     upstream.close();

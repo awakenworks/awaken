@@ -364,12 +364,17 @@ async function main() {
     assert.equal(result.status, 200, JSON.stringify(result.body));
     pass('explicit Bearer/x-api-key and workspace path use the same cloud PEP');
 
+    // Cloud-PDP cause/effect table: C1 explicit principal, C2 trusted Workspace
+    // path, C3 model-supply catalog read. C1+C2+C3 must emit the product-owned
+    // `model_supply.read` action at that Workspace; ordinary resource reads keep
+    // their resource action (asserted above), and ordinary config reads use
+    // `workspace.read` (route-table unit partition).
     result = await req(base, 'GET', `/v1/workspaces/${selectedWorkspace}/config/catalog`, explicitToken);
     assert.equal(result.status, 200, JSON.stringify(result.body));
     call = iam.calls.at(-1);
-    assert.equal(call.body.action, 'awaken.runtime.management::workspace.read');
+    assert.equal(call.body.action, 'awaken.runtime.management::model_supply.read');
     assert.deepEqual(call.body.scope, { kind: 'workspace', workspace_id: selectedWorkspace });
-    pass('management PEP uses the same remote IAM protocol and trusted workspace');
+    pass('model-supply PEP uses its dedicated read action and trusted workspace');
 
     result = await req(base, 'POST', '/v1/config/brokered-models/refresh');
     assert.equal(result.status, 200, JSON.stringify(result.body));
@@ -468,16 +473,23 @@ async function main() {
     }
 
     const publicationMatrixAgent = 'publication-access-matrix-agent';
-    result = await req(base, 'PUT', `/v1/config/agents/${publicationMatrixAgent}`, cachedToken, {
-      body: {
-        id: publicationMatrixAgent,
-        name: 'Publication Access Matrix',
-        system: 'Freeze exactly the configured model access.',
-        max_steps: 2,
-        model: { mode: 'profile', profile_id: 'publication-route' },
-        tools: [],
+    const revisePublicationMatrixAgent = () => req(
+      base,
+      'PUT',
+      `/v1/config/agents/${publicationMatrixAgent}`,
+      cachedToken,
+      {
+        body: {
+          id: publicationMatrixAgent,
+          name: 'Publication Access Matrix',
+          system: 'Freeze exactly the configured model access.',
+          max_steps: 2,
+          model: { mode: 'profile', profile_id: 'publication-route' },
+          tools: [],
+        },
       },
-    });
+    );
+    result = await revisePublicationMatrixAgent();
     assert.equal(result.status, 200, JSON.stringify(result.body));
     const putDefaultProfile = async (target, credentialBinding) => {
       const saved = await req(
@@ -540,6 +552,13 @@ async function main() {
     result = await publishMatrixAgent();
     assert.equal(result.status, 200, JSON.stringify(result.body));
     await putDefaultProfile(directTarget, { type: 'none' });
+    // A changed resolved dependency produces a different fingerprint. The
+    // registration identity is (Workspace, Agent, source revision), so advance
+    // the authoring revision before exercising the next successful rule; reusing
+    // the prior revision with a new fingerprint is the conflict branch covered
+    // by the registration contract tests.
+    result = await revisePublicationMatrixAgent();
+    assert.equal(result.status, 200, JSON.stringify(result.body));
     result = await publishMatrixAgent();
     assert.equal(result.status, 200, JSON.stringify(result.body));
 
@@ -553,14 +572,17 @@ async function main() {
         endpoint_name: 'secondary',
         base_url: `${iam.url}/v1/`,
         timeout_secs: 30,
-        credential_source_id: directCredentialId,
+        // ProviderConnection credentials are exact-endpoint proofs. A second
+        // qualified endpoint therefore needs its own connection proof; reusing
+        // the primary credential is the incompatible-credential unit partition.
+        secret: 'sk-cloud-byok-publication-secondary-e2e', // awaken-allow: secret
       },
     });
     assert.equal(result.status, 201, JSON.stringify(result.body));
     await rejectedPublication(
       { model_id: directTarget.model_id, provider_id: directTarget.provider_id },
       { type: 'none' },
-      /ambiguous; select provider and endpoint/u,
+      /matches multiple offerings/u,
     );
     pass('publication access matrix freezes only compatible, unambiguous direct or brokered access');
 
@@ -872,10 +894,10 @@ async function main() {
     }];
     const invalidProjectionRows = [
       [503, { ...canonicalCloudModels[0], native_protocol: 'future_responses' }, /unsupported native protocol/u],
-      [422, { ...canonicalCloudModels[0], provider: '' }, /provider, model and positive publication revision/u],
-      [422, { ...canonicalCloudModels[0], original_model_id: '' }, /provider, model and positive publication revision/u],
-      [422, { ...canonicalCloudModels[0], route_publication_revision: 0 }, /positive publication revision/u],
-      [422, { ...canonicalCloudModels[0], route_publication_revision: 9223372036854776000 }, /exceeds the local catalog range/u],
+      [503, { ...canonicalCloudModels[0], provider: '' }, /provider, model and positive publication revision/u],
+      [503, { ...canonicalCloudModels[0], original_model_id: '' }, /provider, model and positive publication revision/u],
+      [503, { ...canonicalCloudModels[0], route_publication_revision: 0 }, /positive publication revision/u],
+      [503, { ...canonicalCloudModels[0], route_publication_revision: 9223372036854776000 }, /exceeds the local catalog range/u],
     ];
     for (const [expectedStatus, invalidModel, message] of invalidProjectionRows) {
       iam.setCloudModels([invalidModel]);
@@ -958,8 +980,10 @@ async function main() {
     assert.equal((await req(base, 'GET', '/v1/files', explicitToken)).status, 403);
     assert.equal((await req(base, 'GET', '/v1/config/catalog', explicitToken)).status, 403);
     iam.decide('require_approval');
-    assert.equal((await req(base, 'GET', '/v1/skills', explicitToken)).status, 403);
-    assert.equal((await req(base, 'GET', '/v1/config/catalog', explicitToken)).status, 403);
+    const approvalResource = await req(base, 'GET', '/v1/files', explicitToken);
+    assert.equal(approvalResource.status, 403, JSON.stringify(approvalResource.body));
+    const approvalCatalog = await req(base, 'GET', '/v1/config/catalog', explicitToken);
+    assert.equal(approvalCatalog.status, 403, JSON.stringify(approvalCatalog.body));
     pass('remote deny and approval obligations remain fail-closed at both PEPs');
 
     console.log('E2E PASS: Awaken Cloud login and remote authorization stay outside resource services.');

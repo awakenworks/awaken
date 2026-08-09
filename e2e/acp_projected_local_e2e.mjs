@@ -194,6 +194,7 @@ async function publishProviderAgent(base, definition) {
     agent, backend, provider, model, baseUrl, secret, dialect,
   } = definition;
   await request(base, 'POST', '/v1/config/provider-connections', {
+    idempotency_key: `acp-projected-local-${agent}`,
     workspace_id: WORKSPACE,
     provider_id: provider,
     display_name: provider,

@@ -239,8 +239,8 @@ async function api(method: string, route: string, body?: unknown): Promise<{ sta
   const response = await fetch(`${CONTROL}${route}`, {
     method,
     headers: {
-      'content-type': 'application/json',
       'anthropic-beta': 'managed-agents-2026-04-01',
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -462,14 +462,11 @@ async function main(): Promise<void> {
     // envelope. This Worker-recovery scenario has no resource plane, so strip
     // that unrelated fixture dimension directly from the disposable dispatch.
     removeEmptyManagedResourceEnvelope(storage, runId);
-    const capability = `a2a:${peer.endpoint}`;
-
     workerA = spawnServer('echo', 0, {
       SESSION_DEPLOYMENT_INGRESS: 'durable',
       AWAKEN_UPSTREAM_URL: proxy.url,
       AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_WORKER_ID: 'recovery-worker-a',
-      AWAKEN_WORKER_CAPABILITIES: capability,
     }).server;
     await Promise.race([
       proxy.awaitingSettle,
@@ -527,7 +524,6 @@ async function main(): Promise<void> {
       AWAKEN_UPSTREAM_URL: proxy.url,
       AWAKEN_SCENARIO_ROLE: 'worker',
       AWAKEN_WORKER_ID: 'recovery-worker-b',
-      AWAKEN_WORKER_CAPABILITIES: capability,
     }).server;
     await waitForReplacementBinding(
       proxy,

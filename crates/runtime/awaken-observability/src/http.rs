@@ -8,7 +8,7 @@
 //! rest of the stack inside the span. Since the direct request→inference path is
 //! spawn-free, all deeper `#[instrument]` spans nest under this one automatically.
 
-use axum::extract::Request;
+use axum::extract::{MatchedPath, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 use opentelemetry::propagation::Extractor;
@@ -32,7 +32,14 @@ impl Extractor for HeaderExtractor<'_> {
 /// `router.layer(axum::middleware::from_fn(trace_http))`.
 pub async fn trace_http(request: Request, next: Next) -> Response {
     let method = request.method().clone();
-    let route = request.uri().path().to_string();
+    // Cause/effect rule: a matched request records the router-owned template so
+    // opaque ids never create high-cardinality telemetry; an unmatched/fallback
+    // request has no MatchedPath and retains its literal path for diagnostics.
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| matched.as_str().to_string())
+        .unwrap_or_else(|| request.uri().path().to_string());
 
     // Extract the inbound trace context before the request is moved into the span.
     let parent_cx = opentelemetry::global::get_text_map_propagator(|propagator| {
@@ -138,6 +145,14 @@ mod tests {
         request: Request<Body>,
         status: StatusCode,
     ) -> (StatusCode, Vec<CapturedSpan>) {
+        run_through_route(request, status, "/x")
+    }
+
+    fn run_through_route(
+        request: Request<Body>,
+        status: StatusCode,
+        route: &str,
+    ) -> (StatusCode, Vec<CapturedSpan>) {
         opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
         let captured = Arc::new(Mutex::new(Vec::new()));
         let provider = SdkTracerProvider::builder()
@@ -149,7 +164,7 @@ mod tests {
 
         let handler = move || async move { status };
         let app = Router::new()
-            .route("/x", get(handler))
+            .route(route, get(handler))
             .layer(axum::middleware::from_fn(super::trace_http));
 
         // A current-thread tokio runtime drives the request synchronously on THIS
@@ -231,6 +246,30 @@ mod tests {
             span.attributes.get("http.route").map(String::as_str),
             Some("/x"),
             "the route lives in an attribute: {span:?}"
+        );
+    }
+
+    #[test]
+    fn matched_dynamic_route_records_the_template_not_the_opaque_id() {
+        // Decision table: R1 matched dynamic path -> canonical MatchedPath;
+        // R2 unmatched path -> literal fallback (covered by middleware behavior).
+        // This rule prevents Session ids containing ':' from leaking into the
+        // metric/trace cardinality and makes route aggregation exact.
+        let request = Request::builder()
+            .uri("/v1/sessions/sesn_fnv1a64:abc/events")
+            .method("GET")
+            .body(Body::empty())
+            .unwrap();
+        let (status, spans) =
+            run_through_route(request, StatusCode::OK, "/v1/sessions/{id}/events");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            http_request_span(&spans)
+                .attributes
+                .get("http.route")
+                .map(String::as_str),
+            Some("/v1/sessions/{id}/events"),
+            "R1"
         );
     }
 

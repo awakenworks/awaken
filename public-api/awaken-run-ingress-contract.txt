@@ -229,8 +229,10 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_runt
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
 pub struct awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope
 pub awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::resolved_resources_json: alloc::string::String
+pub awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::resource_revision: u64
 pub awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::workspace_id: alloc::string::String
 impl awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope
+pub fn awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::at_revision(impl core::convert::Into<alloc::string::String>, u64, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope
 pub awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope::projection_json: alloc::string::String
@@ -360,8 +362,10 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_runt
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
 pub struct awaken_run_ingress_contract::SessionResourceEnvelope
 pub awaken_run_ingress_contract::SessionResourceEnvelope::resolved_resources_json: alloc::string::String
+pub awaken_run_ingress_contract::SessionResourceEnvelope::resource_revision: u64
 pub awaken_run_ingress_contract::SessionResourceEnvelope::workspace_id: alloc::string::String
 impl awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope
+pub fn awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::at_revision(impl core::convert::Into<alloc::string::String>, u64, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_run_ingress_contract::SessionRuntimeEnvelope
 pub awaken_run_ingress_contract::SessionRuntimeEnvelope::projection_json: alloc::string::String

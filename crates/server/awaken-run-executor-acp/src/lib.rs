@@ -351,6 +351,13 @@ fn failure_cause(failure: &AcpFailure) -> EndCause {
     }
 }
 
+/// ACP fact ids are stable within one durable Run (so a replay deduplicates) and
+/// distinct across Runs in the same Thread (so a later turn is never mistaken for
+/// a replay of the first turn).
+fn acp_message_id(run_id: &RunId, suffix: impl std::fmt::Display) -> MessageId {
+    MessageId(format!("acp-{}-{suffix}", run_id.0))
+}
+
 #[async_trait]
 impl RunExecutor for AcpRunExecutor {
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -714,7 +721,7 @@ impl AcpRunExecutor {
                     ask,
                 }) => {
                     committed.extend(appender.messages);
-                    ensure_pending_tool_use(&mut committed, &ask);
+                    ensure_pending_tool_use(&run_id, &mut committed, &ask);
                     let ticket = ResumeTicket {
                         correlation_id,
                         run_id: run_id.clone(),
@@ -758,7 +765,7 @@ impl AcpRunExecutor {
                     let failure = classify_from_acp_error(&err);
                     committed.extend(appender.messages);
                     committed.push(Message::text(
-                        MessageId(format!("acp-err-{}", committed.len() + 1)),
+                        acp_message_id(&run_id, format_args!("err-{}", committed.len() + 1)),
                         Role::Assistant,
                         failure.prompt(),
                     ));
@@ -793,7 +800,7 @@ impl AcpRunExecutor {
                     &RawAcpError::message("ACP agent ended naturally without producing output"),
                 );
                 committed.push(Message::text(
-                    MessageId(format!("acp-err-{}", committed.len() + 1)),
+                    acp_message_id(&run_id, format_args!("err-{}", committed.len() + 1)),
                     Role::Assistant,
                     failure.prompt(),
                 ));
@@ -936,7 +943,7 @@ async fn finish_failure(
     let state = disposition.state();
     let mut messages = activation.input.clone();
     messages.push(Message::text(
-        MessageId("acp-err-1".to_string()),
+        acp_message_id(&activation.run_id, "err-1"),
         Role::Assistant,
         failure.prompt(),
     ));
@@ -1234,7 +1241,7 @@ impl RunFactAppender for CollectingAppender {
                 },
                 None => {
                     self.messages.push(Message::text(
-                        MessageId(format!("acp-{seq}")),
+                        acp_message_id(&self.run_id, seq),
                         Role::Assistant,
                         text.clone(),
                     ));
@@ -1244,10 +1251,10 @@ impl RunFactAppender for CollectingAppender {
             AcpProjectedEvent::ToolCall { id, name, input } => {
                 self.open_text_message = None;
                 self.messages.push(Message {
-                    id: MessageId(format!("acp-{seq}")),
+                    id: acp_message_id(&self.run_id, seq),
                     role: Role::Assistant,
                     content: vec![ContentBlock::tool_use(
-                        tool_use_id(id, seq),
+                        tool_use_id(&self.run_id, id, seq),
                         name.clone(),
                         input.clone(),
                     )],
@@ -1266,7 +1273,7 @@ impl RunFactAppender for CollectingAppender {
                 } else {
                     content.clone()
                 };
-                let result_id = tool_use_id(id, seq);
+                let result_id = tool_use_id(&self.run_id, id, seq);
                 let body = match &self.spiller {
                     Some(spiller) => spiller
                         .spill(&self.run_id, &result_id, body)
@@ -1275,7 +1282,7 @@ impl RunFactAppender for CollectingAppender {
                     None => body,
                 };
                 self.messages.push(Message {
-                    id: MessageId(format!("acp-{seq}")),
+                    id: acp_message_id(&self.run_id, seq),
                     role: Role::Tool,
                     content: vec![ContentBlock::tool_result(
                         result_id,
@@ -1305,9 +1312,9 @@ impl RunFactAppender for CollectingAppender {
 /// The neutral tool-use id for an ACP tool call: the ACP `tool_call_id` when the
 /// agent supplied one, else a per-seq fallback so a call and its result still
 /// correlate within the turn.
-fn tool_use_id(acp_id: &str, seq: u64) -> String {
+fn tool_use_id(run_id: &RunId, acp_id: &str, seq: u64) -> String {
     if acp_id.is_empty() {
-        format!("acp-tool-{seq}")
+        format!("acp-tool-{}-{seq}", run_id.0)
     } else {
         acp_id.to_string()
     }
@@ -1317,7 +1324,7 @@ fn tool_use_id(acp_id: &str, seq: u64) -> String {
 /// emit a `tool_call` update before requesting permission and some do not; append
 /// only when absent so both wire styles project to exactly one Managed tool-use
 /// event whose id matches the durable resume ticket.
-fn ensure_pending_tool_use(messages: &mut Vec<Message>, ask: &PermissionAsk) {
+fn ensure_pending_tool_use(run_id: &RunId, messages: &mut Vec<Message>, ask: &PermissionAsk) {
     let already_projected = messages.iter().any(|message| {
         message
             .content
@@ -1326,7 +1333,7 @@ fn ensure_pending_tool_use(messages: &mut Vec<Message>, ask: &PermissionAsk) {
     });
     if !already_projected {
         messages.push(Message {
-            id: MessageId(format!("acp-permission-{}", ask.call_id)),
+            id: acp_message_id(run_id, format_args!("permission-{}", ask.call_id)),
             role: Role::Assistant,
             content: vec![ContentBlock::tool_use(
                 ask.call_id.clone(),

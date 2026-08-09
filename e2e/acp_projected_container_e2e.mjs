@@ -150,6 +150,7 @@ async function request(base, method, route, body) {
 
 async function publishAgent(base, directoryUrl) {
   await request(base, 'POST', '/v1/config/provider-connections', {
+    idempotency_key: 'acp-projected-container-provider-connection',
     workspace_id: WORKSPACE,
     provider_id: 'gemini',
     display_name: 'Gemini',

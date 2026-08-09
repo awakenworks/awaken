@@ -56,7 +56,7 @@ async function main() {
         method,
         headers: {
           'anthropic-beta': BETAS[0],
-          'content-type': 'application/json',
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });

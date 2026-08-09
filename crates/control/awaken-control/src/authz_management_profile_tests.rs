@@ -2,8 +2,10 @@ use super::*;
 
 #[test]
 fn management_profile_is_one_deterministic_workspace_scoped_contract() {
-    // Product-owned vocabulary projects one deterministic Workspace-scoped
-    // release profile; deployment input cannot change its namespace or grants.
+    // Cause/effect decision table: repeated construction -> byte-identical
+    // profile; each product-owned family (workspace, apikey, model_supply) ->
+    // one registered Workspace-scoped action pattern; deployment input cannot
+    // change the namespace, vocabulary, scope, or grants.
     let first = management_authorization_profile();
     let second = management_authorization_profile();
     assert_eq!(

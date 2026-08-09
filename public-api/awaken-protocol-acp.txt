@@ -1,0 +1,190 @@
+pub mod awaken_protocol_acp
+pub mod awaken_protocol_acp::error
+pub enum awaken_protocol_acp::error::AcpFailureClass
+pub awaken_protocol_acp::error::AcpFailureClass::CredentialRejected
+pub awaken_protocol_acp::error::AcpFailureClass::CredentialRejected::kind: awaken_protocol_acp::error::CredentialKind
+pub awaken_protocol_acp::error::AcpFailureClass::Permanent
+pub awaken_protocol_acp::error::AcpFailureClass::RateLimited
+pub awaken_protocol_acp::error::AcpFailureClass::RateLimited::retry_after_secs: core::option::Option<u64>
+pub awaken_protocol_acp::error::AcpFailureClass::Refusal
+pub awaken_protocol_acp::error::AcpFailureClass::Timeout
+pub awaken_protocol_acp::error::AcpFailureClass::Transient
+pub enum awaken_protocol_acp::error::CredentialKind
+pub awaken_protocol_acp::error::CredentialKind::AuthenticationError
+pub awaken_protocol_acp::error::CredentialKind::LoginRequired
+pub awaken_protocol_acp::error::CredentialKind::SubscriptionDisabled
+impl awaken_protocol_acp::error::CredentialKind
+pub fn awaken_protocol_acp::error::CredentialKind::code(self) -> &'static str
+pub enum awaken_protocol_acp::error::Stage
+pub awaken_protocol_acp::error::Stage::Initialize
+pub awaken_protocol_acp::error::Stage::NewSession
+pub awaken_protocol_acp::error::Stage::Prompt
+pub struct awaken_protocol_acp::error::AcpFailure
+pub awaken_protocol_acp::error::AcpFailure::class: awaken_protocol_acp::error::AcpFailureClass
+pub awaken_protocol_acp::error::AcpFailure::message: alloc::string::String
+impl awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::error::AcpFailure::prompt(&self) -> alloc::string::String
+pub fn awaken_protocol_acp::error::AcpFailure::termination(&self) -> awaken_protocol_acp::TerminationReason
+pub struct awaken_protocol_acp::error::RawAcpError
+pub awaken_protocol_acp::error::RawAcpError::code: core::option::Option<i32>
+pub awaken_protocol_acp::error::RawAcpError::kind: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::error::RawAcpError::message: alloc::string::String
+pub awaken_protocol_acp::error::RawAcpError::retry_after_secs: core::option::Option<u64>
+impl awaken_protocol_acp::error::RawAcpError
+pub fn awaken_protocol_acp::error::RawAcpError::message(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_protocol_acp::error::classify_error(awaken_protocol_acp::error::Stage, &awaken_protocol_acp::error::RawAcpError) -> awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::error::deadline_exceeded(u64) -> awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::error::refusal(impl core::convert::Into<alloc::string::String>) -> awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::error::streamed_hard_limit(&str) -> core::option::Option<awaken_protocol_acp::error::AcpFailure>
+pub enum awaken_protocol_acp::AcpError
+pub awaken_protocol_acp::AcpError::Append(awaken_protocol_acp::AppendError)
+pub awaken_protocol_acp::AcpError::Frame(alloc::string::String)
+pub awaken_protocol_acp::AcpError::HardLimit(awaken_protocol_acp::error::AcpFailure)
+pub awaken_protocol_acp::AcpError::Io(alloc::string::String)
+pub awaken_protocol_acp::AcpError::PermissionAwait
+pub awaken_protocol_acp::AcpError::PermissionAwait::ask: awaken_protocol_acp::PermissionAsk
+pub awaken_protocol_acp::AcpError::PermissionAwait::correlation_id: alloc::string::String
+pub awaken_protocol_acp::AcpError::Truncated
+pub awaken_protocol_acp::AcpError::UnsupportedSessionMode(alloc::string::String)
+pub enum awaken_protocol_acp::AcpFailureClass
+pub awaken_protocol_acp::AcpFailureClass::CredentialRejected
+pub awaken_protocol_acp::AcpFailureClass::CredentialRejected::kind: awaken_protocol_acp::error::CredentialKind
+pub awaken_protocol_acp::AcpFailureClass::Permanent
+pub awaken_protocol_acp::AcpFailureClass::RateLimited
+pub awaken_protocol_acp::AcpFailureClass::RateLimited::retry_after_secs: core::option::Option<u64>
+pub awaken_protocol_acp::AcpFailureClass::Refusal
+pub awaken_protocol_acp::AcpFailureClass::Timeout
+pub awaken_protocol_acp::AcpFailureClass::Transient
+pub enum awaken_protocol_acp::AcpLaunchStage
+pub awaken_protocol_acp::AcpLaunchStage::Failed
+pub awaken_protocol_acp::AcpLaunchStage::Initializing
+pub awaken_protocol_acp::AcpLaunchStage::Launching
+pub awaken_protocol_acp::AcpLaunchStage::Ready
+pub enum awaken_protocol_acp::AcpProjectedEvent
+pub awaken_protocol_acp::AcpProjectedEvent::Message
+pub awaken_protocol_acp::AcpProjectedEvent::Message::text: alloc::string::String
+pub awaken_protocol_acp::AcpProjectedEvent::ToolCall
+pub awaken_protocol_acp::AcpProjectedEvent::ToolCall::id: alloc::string::String
+pub awaken_protocol_acp::AcpProjectedEvent::ToolCall::input: serde_json::value::Value
+pub awaken_protocol_acp::AcpProjectedEvent::ToolCall::name: alloc::string::String
+pub awaken_protocol_acp::AcpProjectedEvent::ToolResult
+pub awaken_protocol_acp::AcpProjectedEvent::ToolResult::content: alloc::string::String
+pub awaken_protocol_acp::AcpProjectedEvent::ToolResult::id: alloc::string::String
+pub awaken_protocol_acp::AcpProjectedEvent::ToolResult::is_error: bool
+pub awaken_protocol_acp::AcpProjectedEvent::TurnEnd
+pub awaken_protocol_acp::AcpProjectedEvent::TurnEnd::reason: awaken_protocol_acp::TerminationReason
+pub awaken_protocol_acp::AcpProjectedEvent::Usage
+pub awaken_protocol_acp::AcpProjectedEvent::Usage::cache_creation_tokens: u64
+pub awaken_protocol_acp::AcpProjectedEvent::Usage::cache_read_tokens: u64
+pub awaken_protocol_acp::AcpProjectedEvent::Usage::completion_tokens: u64
+pub awaken_protocol_acp::AcpProjectedEvent::Usage::prompt_tokens: u64
+pub enum awaken_protocol_acp::AppendError
+pub awaken_protocol_acp::AppendError::Append(alloc::string::String)
+pub awaken_protocol_acp::AppendError::NonMonotonic
+pub awaken_protocol_acp::AppendError::NonMonotonic::got: u64
+pub awaken_protocol_acp::AppendError::NonMonotonic::last: u64
+pub enum awaken_protocol_acp::Codec
+pub awaken_protocol_acp::Codec::Newline
+pub enum awaken_protocol_acp::CredentialKind
+pub awaken_protocol_acp::CredentialKind::AuthenticationError
+pub awaken_protocol_acp::CredentialKind::LoginRequired
+pub awaken_protocol_acp::CredentialKind::SubscriptionDisabled
+impl awaken_protocol_acp::error::CredentialKind
+pub fn awaken_protocol_acp::error::CredentialKind::code(self) -> &'static str
+pub enum awaken_protocol_acp::Injection
+pub awaken_protocol_acp::Injection::Interrupt
+pub enum awaken_protocol_acp::PermissionVerdict
+pub awaken_protocol_acp::PermissionVerdict::Allow
+pub awaken_protocol_acp::PermissionVerdict::Await
+pub awaken_protocol_acp::PermissionVerdict::Await::correlation_id: alloc::string::String
+pub awaken_protocol_acp::PermissionVerdict::Deny
+pub enum awaken_protocol_acp::Stage
+pub awaken_protocol_acp::Stage::Initialize
+pub awaken_protocol_acp::Stage::NewSession
+pub awaken_protocol_acp::Stage::Prompt
+pub enum awaken_protocol_acp::TerminationReason
+pub awaken_protocol_acp::TerminationReason::Cancelled
+pub awaken_protocol_acp::TerminationReason::Error
+pub awaken_protocol_acp::TerminationReason::NaturalEnd
+pub awaken_protocol_acp::TerminationReason::Refusal
+pub awaken_protocol_acp::TerminationReason::TimedOut
+pub struct awaken_protocol_acp::AcpBridge
+impl awaken_protocol_acp::AcpBridge
+pub async fn awaken_protocol_acp::AcpBridge::run_turn(&mut dyn awaken_agent_channel::AgentChannel, &str, &mut dyn awaken_protocol_acp::RunFactAppender, awaken_protocol_acp::Codec, core::option::Option<awaken_protocol_acp::LaunchSink<'_>>) -> core::result::Result<awaken_protocol_acp::TerminationReason, awaken_protocol_acp::AcpError>
+pub async fn awaken_protocol_acp::AcpBridge::run_turn_with_config(&mut dyn awaken_agent_channel::AgentChannel, &str, &mut dyn awaken_protocol_acp::RunFactAppender, awaken_protocol_acp::Codec, &mut awaken_protocol_acp::TurnConfig<'_>, core::option::Option<awaken_protocol_acp::LaunchSink<'_>>) -> core::result::Result<awaken_protocol_acp::TerminationReason, awaken_protocol_acp::AcpError>
+pub struct awaken_protocol_acp::AcpCapabilityExpectation
+pub awaken_protocol_acp::AcpCapabilityExpectation::adapter_id: alloc::string::String
+pub awaken_protocol_acp::AcpCapabilityExpectation::adapter_version: alloc::string::String
+pub awaken_protocol_acp::AcpCapabilityExpectation::fingerprint: alloc::string::String
+pub struct awaken_protocol_acp::AcpFailure
+pub awaken_protocol_acp::AcpFailure::class: awaken_protocol_acp::error::AcpFailureClass
+pub awaken_protocol_acp::AcpFailure::message: alloc::string::String
+impl awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::error::AcpFailure::prompt(&self) -> alloc::string::String
+pub fn awaken_protocol_acp::error::AcpFailure::termination(&self) -> awaken_protocol_acp::TerminationReason
+pub struct awaken_protocol_acp::AcpLaunchEvent
+pub awaken_protocol_acp::AcpLaunchEvent::detail: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::AcpLaunchEvent::stage: awaken_protocol_acp::AcpLaunchStage
+impl awaken_protocol_acp::AcpLaunchEvent
+pub fn awaken_protocol_acp::AcpLaunchEvent::stage(awaken_protocol_acp::AcpLaunchStage) -> Self
+pub fn awaken_protocol_acp::AcpLaunchEvent::with_detail(awaken_protocol_acp::AcpLaunchStage, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_protocol_acp::AllowAll
+impl awaken_protocol_acp::PermissionResolver for awaken_protocol_acp::AllowAll
+pub fn awaken_protocol_acp::AllowAll::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_protocol_acp::PermissionAsk) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_acp::PermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_protocol_acp::LaunchSink<'a>
+impl<'a> awaken_protocol_acp::LaunchSink<'a>
+pub fn awaken_protocol_acp::LaunchSink<'a>::emit(&self, awaken_protocol_acp::AcpLaunchEvent)
+pub fn awaken_protocol_acp::LaunchSink<'a>::new(&'a dyn awaken_protocol_acp::LaunchObserver, &'a str) -> Self
+pub struct awaken_protocol_acp::PermissionAsk
+pub awaken_protocol_acp::PermissionAsk::arguments: serde_json::value::Value
+pub awaken_protocol_acp::PermissionAsk::call_id: alloc::string::String
+pub awaken_protocol_acp::PermissionAsk::tool: alloc::string::String
+pub struct awaken_protocol_acp::RawAcpError
+pub awaken_protocol_acp::RawAcpError::code: core::option::Option<i32>
+pub awaken_protocol_acp::RawAcpError::kind: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::RawAcpError::message: alloc::string::String
+pub awaken_protocol_acp::RawAcpError::retry_after_secs: core::option::Option<u64>
+impl awaken_protocol_acp::error::RawAcpError
+pub fn awaken_protocol_acp::error::RawAcpError::message(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_protocol_acp::SessionConfigOptionSelection
+pub awaken_protocol_acp::SessionConfigOptionSelection::config_id: alloc::string::String
+pub awaken_protocol_acp::SessionConfigOptionSelection::value: alloc::string::String
+pub struct awaken_protocol_acp::SessionMcpServer
+pub awaken_protocol_acp::SessionMcpServer::args: alloc::vec::Vec<alloc::string::String>
+pub awaken_protocol_acp::SessionMcpServer::auth: core::option::Option<(alloc::string::String, alloc::string::String)>
+pub awaken_protocol_acp::SessionMcpServer::command: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::SessionMcpServer::name: alloc::string::String
+pub awaken_protocol_acp::SessionMcpServer::url: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_acp::SupervisePolicy
+pub awaken_protocol_acp::SupervisePolicy::reap_grace: core::time::Duration
+pub awaken_protocol_acp::SupervisePolicy::turn_deadline: core::option::Option<core::time::Duration>
+impl core::default::Default for awaken_protocol_acp::SupervisePolicy
+pub fn awaken_protocol_acp::SupervisePolicy::default() -> Self
+pub struct awaken_protocol_acp::Supervisor
+impl awaken_protocol_acp::Supervisor
+pub async fn awaken_protocol_acp::Supervisor::reap(&dyn awaken_provisioning_contract::sandbox::ProcessHandle, core::time::Duration) -> core::result::Result<bool, awaken_protocol_acp::AcpError>
+pub async fn awaken_protocol_acp::Supervisor::supervise(&mut dyn awaken_agent_channel::AgentChannel, &dyn awaken_provisioning_contract::sandbox::ProcessHandle, &str, &mut dyn awaken_protocol_acp::RunFactAppender, impl core::future::future::Future<Output = ()>, &mut tokio::sync::mpsc::bounded::Receiver<awaken_protocol_acp::Injection>, awaken_protocol_acp::SupervisePolicy, awaken_protocol_acp::Codec, core::option::Option<awaken_protocol_acp::LaunchSink<'_>>) -> core::result::Result<awaken_protocol_acp::TerminationReason, awaken_protocol_acp::AcpError>
+pub async fn awaken_protocol_acp::Supervisor::supervise_with_config(&mut dyn awaken_agent_channel::AgentChannel, &dyn awaken_provisioning_contract::sandbox::ProcessHandle, &str, &mut dyn awaken_protocol_acp::RunFactAppender, impl core::future::future::Future<Output = ()>, &mut tokio::sync::mpsc::bounded::Receiver<awaken_protocol_acp::Injection>, awaken_protocol_acp::SupervisePolicy, awaken_protocol_acp::Codec, &mut awaken_protocol_acp::TurnConfig<'_>, core::option::Option<awaken_protocol_acp::LaunchSink<'_>>) -> core::result::Result<awaken_protocol_acp::TerminationReason, awaken_protocol_acp::AcpError>
+pub struct awaken_protocol_acp::TurnConfig<'a>
+pub awaken_protocol_acp::TurnConfig::auth_method_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::TurnConfig::expected_capability: core::option::Option<awaken_protocol_acp::AcpCapabilityExpectation>
+pub awaken_protocol_acp::TurnConfig::mcp_servers: alloc::vec::Vec<awaken_protocol_acp::SessionMcpServer>
+pub awaken_protocol_acp::TurnConfig::resolver: &'a dyn awaken_protocol_acp::PermissionResolver
+pub awaken_protocol_acp::TurnConfig::session_config_options: alloc::vec::Vec<awaken_protocol_acp::SessionConfigOptionSelection>
+pub awaken_protocol_acp::TurnConfig::session_cwd: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::TurnConfig::session_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_acp::TurnConfig::session_mode: core::option::Option<alloc::string::String>
+impl<'a> awaken_protocol_acp::TurnConfig<'a>
+pub fn awaken_protocol_acp::TurnConfig<'a>::new(&'a dyn awaken_protocol_acp::PermissionResolver) -> Self
+pub trait awaken_protocol_acp::LaunchObserver: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_acp::LaunchObserver::on_launch(&self, &str, &awaken_protocol_acp::AcpLaunchEvent)
+pub trait awaken_protocol_acp::PermissionResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_acp::PermissionResolver::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_protocol_acp::PermissionAsk) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_acp::PermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_protocol_acp::PermissionResolver for awaken_protocol_acp::AllowAll
+pub fn awaken_protocol_acp::AllowAll::resolve<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_protocol_acp::PermissionAsk) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_protocol_acp::PermissionVerdict> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_protocol_acp::RunFactAppender: core::marker::Send
+pub fn awaken_protocol_acp::RunFactAppender::append<'life0, 'life1, 'async_trait>(&'life0 mut self, u64, &'life1 awaken_protocol_acp::AcpProjectedEvent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_protocol_acp::AppendError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_acp::classify_error(awaken_protocol_acp::error::Stage, &awaken_protocol_acp::error::RawAcpError) -> awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::deadline_exceeded(u64) -> awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::refusal(impl core::convert::Into<alloc::string::String>) -> awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::streamed_hard_limit(&str) -> core::option::Option<awaken_protocol_acp::error::AcpFailure>

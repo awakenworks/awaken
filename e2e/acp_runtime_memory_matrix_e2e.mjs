@@ -97,7 +97,9 @@ async function driveUntil(client, sessionId, text, check) {
 }
 
 async function memoryContent(client, storeId) {
-  const page = await client.get(`/v1/memory_stores/${storeId}/memories`, {
+  // Rule MC1: a content check must select the full projection; basic is a
+  // metadata-only success and cannot prove ACP extraction/recall bytes.
+  const page = await client.get(`/v1/memory_stores/${storeId}/memories?view=full`, {
     headers: MEMORY_HEADERS,
   });
   return (page?.data ?? []).map((memory) => memory.content ?? '').join('\n');

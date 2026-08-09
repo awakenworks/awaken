@@ -190,7 +190,8 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
     match error {
         EnvironmentApplicationError::NotFound => StatusCode::NOT_FOUND,
         EnvironmentApplicationError::BuiltinImmutable => StatusCode::CONFLICT,
-        EnvironmentApplicationError::Policy(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        EnvironmentApplicationError::Policy(error) => map_policy_error(error),
+        EnvironmentApplicationError::PolicyStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
         EnvironmentApplicationError::Create(_) | EnvironmentApplicationError::Registration(_) => {
             StatusCode::SERVICE_UNAVAILABLE
         }
@@ -232,6 +233,19 @@ mod tests {
         assert_eq!(
             map_policy_error(SandboxExecutionPolicyError::StoreFailed("x".into())),
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+        // Application composition must preserve the same domain cause instead
+        // of string-erasing NotFound into the generic 422 arm. C5 an absent
+        // application store is distinct infrastructure unavailability -> E5 503.
+        assert_eq!(
+            map_application_error(EnvironmentApplicationError::Policy(
+                SandboxExecutionPolicyError::NotFound
+            )),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            map_application_error(EnvironmentApplicationError::PolicyStoreUnavailable),
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 }

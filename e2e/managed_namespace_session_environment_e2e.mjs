@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { sendAndListNewEvents, spawnServer, stopServer, waitForPort } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38172);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
@@ -26,6 +26,32 @@ function bwrapAvailable() {
   return spawnSync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', '--', 'true'], {
     stdio: 'ignore',
   }).status === 0;
+}
+
+function onlySandboxRoot() {
+  // Sandbox-identity decision table:
+  // R1 exactly one opaque provider root -> retain that concrete path as evidence.
+  // R2 zero or multiple roots -> fail (environment absent or ownership ambiguous).
+  // Effects: crash must preserve that same path; terminal delete must remove it.
+  // Constraint: provider directory names are deliberately not Session wire ids.
+  const parent = `${TMP}/sandboxes`;
+  const roots = fs.existsSync(parent)
+    ? fs.readdirSync(parent, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(parent, entry.name))
+    : [];
+  assert.equal(roots.length, 1, `one Session-owned sandbox exists: ${JSON.stringify(roots)}`);
+  return roots[0];
+}
+
+function emergencyUnmount(root) {
+  const mountPath = path.join(root, 'workspace', '.mnt', 'notes');
+  // Failure-path hygiene only: the success path must prove Runtime disposal
+  // removed the root before this fallback can run.
+  for (const command of ['fusermount3', 'fusermount']) {
+    const detached = spawnSync(command, ['-uz', mountPath], { stdio: 'ignore' });
+    if (detached.status === 0) return;
+  }
 }
 
 function git(args, cwd) {
@@ -62,6 +88,7 @@ function seedAgentFixtureRepository() {
   fs.writeFileSync(
     `${work}/namespace-agent.mjs`,
     `import fs from 'node:fs';
+import readline from 'node:readline';
 const read = (path) => { try { return fs.readFileSync(path, 'utf8'); } catch { return 'ABSENT'; } };
 const readAny = (...paths) => paths.map(read).find((value) => value !== 'ABSENT') ?? 'ABSENT';
 const writable = (path) => { try { fs.accessSync(path, fs.constants.W_OK); return true; } catch { return false; } };
@@ -72,7 +99,13 @@ const mutateExisting = (path) => {
     return true;
   } catch { return false; }
 };
-process.stdin.once('data', () => {
+// Multi-turn fixture decision table:
+// R1 one input line -> one observation + one turn_end.
+// R2 N sequential input lines -> N fresh observations, each reflecting the
+//    resident workspace at that turn (never reuse the first turn's bytes).
+// R3 partial line -> no turn until the newline framing contract is complete.
+// Constraint: this newline protocol is a scenario-only fixture, not production ACP.
+readline.createInterface({ input: process.stdin }).on('line', () => {
   // The reserved path is the sole output boundary across Workdir/Namespace/
   // Container; a cwd-relative directory is ordinary workspace state.
   const outputs = process.env.AWAKEN_OUTPUTS_DIR;
@@ -102,16 +135,16 @@ process.stdin.once('data', () => {
 }
 
 async function lastReply(client, sessionId, prompt) {
-  await client.beta.sessions.events.send(sessionId, {
+  const events = await sendAndListNewEvents(client, sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }],
     betas: BETAS,
   });
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    events.push(event);
-  }
   const replies = events.filter((event) => event.type === 'agent.message');
-  assert.ok(replies.length > 0, 'the namespace agent emitted a reply');
+  const newEventTypes = events.map((event) => event.type);
+  assert.ok(
+    replies.length > 0,
+    `the namespace agent emitted a new reply for ${JSON.stringify(prompt)}; new events: ${JSON.stringify(newEventTypes)}`,
+  );
   return (replies.at(-1).content ?? []).map((item) => item.text ?? '').join('');
 }
 
@@ -149,6 +182,8 @@ async function main() {
   };
   let running = spawnServer('acp-container', PORT, serverEnv);
   let server = running.server;
+  let sandboxRoot;
+  let completed = false;
 
   try {
     await waitForPort(PORT, 180_000, server);
@@ -211,6 +246,7 @@ async function main() {
       new RegExp(`memory_writable",${TIER === 'local'}`),
       `${TIER} enforces its declared memory access capability`,
     );
+    sandboxRoot = onlySandboxRoot();
 
     const uploaded = await client.beta.files.upload({
       file: await toFile(Buffer.from('NAMESPACE-FILE-OK'), 'live.txt'),
@@ -291,7 +327,7 @@ async function main() {
       server.kill('SIGKILL');
       await crashed;
       assert.ok(
-        fs.existsSync(`${TMP}/sandboxes/${session.id}`),
+        fs.existsSync(sandboxRoot),
         'a process crash retains the namespace tree for durable adoption',
       );
       assert.ok(
@@ -331,14 +367,21 @@ async function main() {
 
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     assert.ok(
-      !fs.existsSync(`${TMP}/sandboxes/${session.id}`),
+      !fs.existsSync(sandboxRoot),
       `${TIER} terminal Session deletion disposes its retained environment`,
     );
 
     console.log(`E2E PASS: ${TIER} Session retained one sandbox across Skill/memory materialization, live resource changes${TIER === 'namespace' ? ', crash adoption' : ''}, and release.`);
+    completed = true;
   } finally {
     await stopServer(server);
-    fs.rmSync(TMP, { recursive: true, force: true });
+    try {
+      fs.rmSync(TMP, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (completed) throw cleanupError;
+      if (sandboxRoot) emergencyUnmount(sandboxRoot);
+      try { fs.rmSync(TMP, { recursive: true, force: true }); } catch {}
+    }
   }
 }
 

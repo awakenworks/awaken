@@ -49,6 +49,15 @@ pub(super) async fn assemble_runtime_process_router(
         .coordinator
         .as_ref()
         .expect("Managed Execution role requires Coordinator stores");
+    // Restore the Coordinator-owned Deployment aggregate exactly once before
+    // sibling components are assembled. AllInOne Agent lifecycle commands and
+    // the Coordinator router/scheduler receive this same instance.
+    let deployment_state =
+        awaken_coordinator::restore_deployment_state(coordinator_stores.deployments.clone())
+            .await
+            .unwrap_or_else(|error| panic!("restore Deployment state: {error}"));
+    let agent_archive_cascade =
+        deployment_state.clone() as Arc<dyn awaken_protocol_managed::AgentArchiveCascade>;
     let executable_environment_wiring =
         assembly.executable_environment_wiring.unwrap_or_else(|| {
             executable_environment_registration::ExecutableEnvironmentWiring::local(
@@ -161,6 +170,7 @@ pub(super) async fn assemble_runtime_process_router(
                 &stores,
                 &platform_workspace,
                 executable_agent_registrar,
+                Some(agent_archive_cascade),
                 model_assembly
                     .as_ref()
                     .expect("AllInOne composes model publication")
@@ -228,7 +238,7 @@ pub(super) async fn assemble_runtime_process_router(
     let CoordinatorStores {
         resource_component,
         sessions,
-        deployments,
+        deployments: _,
         dream_process_store,
         memory_extractions,
         capture_sink,
@@ -487,7 +497,7 @@ pub(super) async fn assemble_runtime_process_router(
             model_directory,
             dream_process_store,
             worker_authenticator,
-            deployment_repository: deployments,
+            deployment_state,
             executable_agents: executable_agent_catalog,
             rate_limiter: managed_rate_limiter.clone(),
             environments: environment_execution,

@@ -4,12 +4,13 @@
 //   C3 wire-only vault object is process-local     -> E3 vault wire GET returns 404
 //   C4 restored Agent uses restored MCP binding    -> E4 authenticated tool call works
 //   C5 session explicitly allows the MCP tool      -> E5 transport proof is not paused by HITL
+//   C6 bootstrap identity and platform scope persist -> E6 every durable read/write stays authorized
 //
 // Decision table:
-//   Rule  C1  C2  C3  C4  C5  Expected
-//   T1    Y   -   -   -   -   E1 (catalog/pool/normalized profile/Agent)
-//   T2    Y   Y   -   Y   Y   E2 + E4 + E5
-//   T3    -   -   Y   -   -   E3
+//   Rule  C1  C2  C3  C4  C5  C6  Expected
+//   T1    Y   -   -   -   -   Y   E1 + E6 (catalog/pool/normalized profile/Agent)
+//   T2    Y   Y   -   Y   Y   Y   E2 + E4 + E5 + E6
+//   T3    -   -   Y   -   -   Y   E3 + E6
 //
 // Restart-persistence e2e for the durable management plane (ADR-0043): spawn
 // awaken-server in `management` mode with a fixed typed data_dir + seal key,
@@ -42,10 +43,13 @@ const CALC_TOKEN = 'calc-persist-bearer-token'; // awaken-allow: secret
 // 64 hex chars = the 32-byte AEAD key typed control_seal_key requires.
 const SEAL_KEY = '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff';
 
-async function req(base, method, uri, body) {
+async function req(base, method, uri, body, token) {
+  const headers = {};
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  if (token !== undefined) headers.authorization = `Bearer ${token}`;
   const res = await fetch(`${base}${uri}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -69,7 +73,7 @@ function agentMessages(events) {
 
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-mgmt-e2e-'));
-  const env = deploymentEnv(dir, { controlSealKey: SEAL_KEY });
+  const env = deploymentEnv(dir, { identityMode: 'self-managed', controlSealKey: SEAL_KEY });
   const fixture = await startCalcFixture(CALC_TOKEN);
   const upstream = await startUpstream('mcp', { models: ['fake-haiku'] });
   let server = null;
@@ -78,11 +82,16 @@ async function main() {
     let { server: a, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) });
     server = a;
     await waitForPort(PORT);
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    const adminTokenPath = path.join(dir, 'admin-token');
+    const adminToken = fs.readFileSync(adminTokenPath, 'utf8').trim();
+    const workspace = fs.readFileSync(path.join(dir, 'platform-workspace-id'), 'utf8').trim();
+    const request = (method, uri, body) => req(base, method, uri, body, adminToken);
+    const client = new Anthropic({ apiKey: null, authToken: adminToken, baseURL: base });
 
     // The canonical connection command persists catalog and credential facts.
-    let r = await req(base, 'POST', '/v1/config/provider-connections', {
-      workspace_id: 'wrkspc_default',
+    let r = await request('POST', '/v1/config/provider-connections', {
+      idempotency_key: 'management-persistence-provider-connection',
+      workspace_id: workspace,
       provider_id: 'anthropic',
       display_name: 'Anthropic',
       dialect: 'anthropic_messages',
@@ -108,7 +117,7 @@ async function main() {
 
     // The domain row the SDK entry created. The wire vault id is only a container
     // id; the durable row is owned by the platform-resolved local workspace.
-    r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${vault.id}`);
+    r = await request('GET', `/v1/config/credentials?workspace_id=${workspace}`);
     assert.equal(r.status, 200);
     const mcpCredential = r.json.find((credential) => credential.provider_id === undefined);
     assert.ok(mcpCredential, `the MCP credential is present beside provider credentials: ${JSON.stringify(r.json)}`);
@@ -117,12 +126,12 @@ async function main() {
 
     // Admin aggregates: pool + profile + one typed Agent definition whose MCP
     // binding freezes the exact SDK-entered credential revision.
-    r = await req(base, 'PUT', '/v1/config/credential-pools/pool1', {
-      id: 'pool1', workspace_id: vault.id,
+    r = await request('PUT', '/v1/config/credential-pools/pool1', {
+      id: 'pool1', workspace_id: workspace,
       members: [{ credential_source_id: credId, ordinal: 0, enabled: true, selection_weight: 0 }],
     });
     assert.equal(r.status, 200);
-    r = await req(base, 'PUT', '/v1/config/inference-profiles/prof1', {
+    r = await request('PUT', '/v1/config/inference-profiles/prof1', {
       primary: {
         target: { model_id: 'claude-opus-4-8' },
         credential_binding: { type: 'exact', credential_source_id: credId },
@@ -130,7 +139,7 @@ async function main() {
       disabled_endpoint_ids: [],
     });
     assert.equal(r.status, 200);
-    r = await req(base, 'PUT', '/v1/config/agents/calc-agent', {
+    r = await request('PUT', '/v1/config/agents/calc-agent', {
       name: 'Calculator',
       system: 'Use the calculator tool and report its result.',
       model: {
@@ -154,7 +163,7 @@ async function main() {
       }],
     });
     assert.equal(r.status, 200);
-    r = await req(base, 'POST', '/v1/config/agents/calc-agent/publish');
+    r = await request('POST', '/v1/config/agents/calc-agent/publish');
     assert.equal(r.status, 200, JSON.stringify(r.json));
     pass('authored pool + profile + published typed Agent MCP binding');
 
@@ -163,7 +172,8 @@ async function main() {
     server = null;
     ({ server, baseUrl: base } = spawnServer('management', PORT, { ...env, ...realServerEnv('mcp', upstream, { mode: 'management' }) }));
     await waitForPort(PORT);
-    const client2 = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+    assert.equal(fs.readFileSync(adminTokenPath, 'utf8').trim(), adminToken, 'admin identity persisted');
+    const client2 = new Anthropic({ apiKey: null, authToken: adminToken, baseURL: base });
     pass('server killed and respawned on the same port with the same typed data_dir/key');
 
     // The vault WIRE object is host-ephemeral: gone after the restart (correct).
@@ -174,28 +184,28 @@ async function main() {
     pass('vault wire object 404s after restart (VaultState is host-ephemeral by design)');
 
     // The DOMAIN state persisted: every admin GET returns the authored object.
-    r = await req(base, 'GET', '/v1/config/catalog');
+    r = await request('GET', '/v1/config/catalog');
     assert.equal(r.status, 200);
     assert.ok(
       'anthropic' in r.json.providers
         && 'anthropic.anthropic_messages' in r.json.endpoints,
     );
 
-    r = await req(base, 'GET', `/v1/config/credentials?workspace_id=${vault.id}`);
+    r = await request('GET', `/v1/config/credentials?workspace_id=${workspace}`);
     assert.equal(r.status, 200);
     assert.ok(r.json.some((credential) => credential.id === credId));
     assert.ok(!JSON.stringify(r.json).includes(CALC_TOKEN), 'persisted rows stay secret-free');
 
-    r = await req(base, 'GET', '/v1/config/credential-pools/pool1');
+    r = await request('GET', '/v1/config/credential-pools/pool1');
     assert.equal(r.status, 200);
     assert.equal(r.json.members.length, 1);
 
-    r = await req(base, 'GET', '/v1/config/inference-profiles/prof1');
+    r = await request('GET', '/v1/config/inference-profiles/prof1');
     assert.equal(r.status, 200);
     assert.equal(r.json.primary.target.model_id, 'claude-opus-4-8');
     assert.equal(r.json.primary.credential_binding.credential_source_id, credId);
 
-    r = await req(base, 'GET', '/v1/config/agents/calc-agent');
+    r = await request('GET', '/v1/config/agents/calc-agent');
     assert.equal(r.status, 200);
     assert.equal(r.json.mcp_servers[0].url, fixture.url);
     assert.deepEqual(r.json.mcp_servers[0].credential, { id: credId, revision: 1 });

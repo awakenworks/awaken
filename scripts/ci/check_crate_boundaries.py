@@ -1359,6 +1359,9 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-resource-store",
         "awaken-resource-contract",
         "awaken-ext-builtin-tools",
+        # Test composition publishes the explicit Memory plugin binding that
+        # production runtime-host consumes; the id remains extension-owned.
+        "awaken-ext-memory",
         "awaken-ext-skills",
         "awaken-ext-mcp",
         "awaken-iam-contract",

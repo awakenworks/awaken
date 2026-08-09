@@ -1,0 +1,32 @@
+pub mod awaken_executable_environment_contract
+pub enum awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Conflict(alloc::string::String)
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Invalid(alloc::string::String)
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Storage(alloc::string::String)
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError::Unavailable(alloc::string::String)
+pub enum awaken_executable_environment_contract::ExecutableEnvironmentRegistrationOutcome
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistrationOutcome::AlreadyRegistered
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistrationOutcome::RegisteredHistorical
+pub enum awaken_executable_environment_contract::ExecutableEnvironmentWithdrawalOutcome
+pub awaken_executable_environment_contract::ExecutableEnvironmentWithdrawalOutcome::AlreadyWithdrawn
+pub awaken_executable_environment_contract::ExecutableEnvironmentWithdrawalOutcome::HistoricalNoop
+pub awaken_executable_environment_contract::ExecutableEnvironmentWithdrawalOutcome::WithdrawnCurrent
+pub struct awaken_executable_environment_contract::ExecutableEnvironmentRegistration
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistration::definition: awaken_environment_contract::EnvItem
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistration::fingerprint: alloc::string::String
+pub awaken_executable_environment_contract::ExecutableEnvironmentRegistration::sandbox_policy: core::option::Option<awaken_provisioning_contract::execution_policy::SandboxExecutionPolicy>
+impl awaken_executable_environment_contract::ExecutableEnvironmentRegistration
+pub fn awaken_executable_environment_contract::ExecutableEnvironmentRegistration::new(awaken_environment_contract::EnvItem, core::option::Option<awaken_provisioning_contract::execution_policy::SandboxExecutionPolicy>) -> Self
+pub fn awaken_executable_environment_contract::ExecutableEnvironmentRegistration::validate(&self) -> core::result::Result<(), awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>
+pub struct awaken_executable_environment_contract::ExecutableEnvironmentWithdrawal
+pub awaken_executable_environment_contract::ExecutableEnvironmentWithdrawal::environment_id: alloc::string::String
+pub awaken_executable_environment_contract::ExecutableEnvironmentWithdrawal::lifecycle_revision: awaken_environment_contract::EnvironmentRevision
+impl awaken_executable_environment_contract::ExecutableEnvironmentWithdrawal
+pub fn awaken_executable_environment_contract::ExecutableEnvironmentWithdrawal::validate(&self) -> core::result::Result<(), awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>
+pub trait awaken_executable_environment_contract::ExecutableEnvironmentRegistrar: core::marker::Send + core::marker::Sync
+pub fn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar::register<'life0, 'async_trait>(&'life0 self, awaken_executable_environment_contract::ExecutableEnvironmentRegistration) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_environment_contract::ExecutableEnvironmentRegistrationOutcome, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar::withdraw<'life0, 'async_trait>(&'life0 self, awaken_executable_environment_contract::ExecutableEnvironmentWithdrawal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_executable_environment_contract::ExecutableEnvironmentWithdrawalOutcome, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource: core::marker::Send + core::marker::Sync
+pub fn awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource::current_registration<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_executable_environment_contract::ExecutableEnvironmentRegistration>, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_executable_environment_contract::ExecutableEnvironmentRegistrationSource::registration_at_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_environment_contract::EnvironmentRevision) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_executable_environment_contract::ExecutableEnvironmentRegistration>, awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

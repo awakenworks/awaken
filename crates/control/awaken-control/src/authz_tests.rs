@@ -309,19 +309,20 @@ fn cloud_guard_uses_cached_login_and_explicit_bearer_override() {
 fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     // Cause-effect graph:
     // A request inside one registered Management route family is classified by
-    // method -> workspace/apikey read or write. A publication reference read is
-    // part of the config authority; an unknown sibling remains fail-closed.
+    // method -> workspace/apikey/model-supply read or write. A publication
+    // reference read is part of config authority; an unknown sibling remains
+    // fail-closed.
     //
     // Decision table:
     // | Family                         | Method | Expected action |
-    // | provider-connections           | GET    | model_supply.read    |
+    // | model-supply family            | GET    | model_supply.read    |
     // | provider-connections           | POST   | model_supply.connect |
-    // | executable-models              | GET    | model_supply.read    |
+    // | other model-supply family      | mutate | model_supply.write   |
+    // | model resolve preview          | POST   | model_supply.read    |
     // | publications/{fingerprint}     | GET    | workspace.read       |
     // | publications/{fingerprint}     | POST   | workspace.write      |
-    // | unknown config family          | any    | unmapped/deny   |
-    // The aggregate contains no credential material; secret entry remains
-    // delegated to the credential boundary inside the write command.
+    // | credential family              | read/write | apikey.read/write |
+    // | unknown config family          | any    | unmapped/deny        |
     let get = Method::GET;
     let post = Method::POST;
     let put = Method::PUT;
@@ -357,6 +358,14 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     );
     assert_eq!(
         action_for(&get, "/v1/config/executable-models"),
+        Some(MODEL_SUPPLY_READ)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/model-attributes"),
+        Some(MODEL_SUPPLY_WRITE)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/config/provider-descriptors"),
         Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(
@@ -1130,15 +1139,9 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     // remounting a handler cannot revive the parallel authoring path.
     assert_eq!(scoped(get.clone(), "/v1/config/endpoints/ep1"), None);
     assert_eq!(scoped(put.clone(), "/v1/config/endpoints/ep1"), None);
-    // -- config: inference-profiles / authoring agents --
-    assert_eq!(
-        scoped(get.clone(), "/v1/config/inference-profiles/p1"),
-        Some(MODEL_SUPPLY_READ)
-    );
-    assert_eq!(
-        scoped(put.clone(), "/v1/config/inference-profiles/p1"),
-        Some(MODEL_SUPPLY_WRITE)
-    );
+    // Model-supply route ownership is covered by the classifier decision table
+    // above; this matrix owns the distinct authoring-Agent and deployment rows.
+    // -- config: authoring agents --
     assert_eq!(
         scoped(get.clone(), "/v1/config/agents"),
         Some(WORKSPACE_READ)

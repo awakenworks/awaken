@@ -35,13 +35,13 @@ impl<'de> Deserialize<'de> for MemoryExtractorSnapshot {
         #[serde(untagged)]
         enum Stored {
             Current {
-                agent: awaken_runtime_contract::ExecutableAgentSnapshot,
+                agent: Box<awaken_runtime_contract::ExecutableAgentSnapshot>,
                 #[serde(default)]
                 extraction_prompt: Option<String>,
             },
             Legacy {
                 agent_id: String,
-                model: awaken_runtime_contract::resolved::ResolvedModelCandidate,
+                model: Box<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
                 #[serde(default)]
                 instructions: Option<String>,
                 #[serde(default)]
@@ -54,7 +54,7 @@ impl<'de> Deserialize<'de> for MemoryExtractorSnapshot {
                 agent,
                 extraction_prompt,
             } => Self {
-                agent,
+                agent: *agent,
                 extraction_prompt,
             },
             Stored::Legacy {
@@ -65,7 +65,7 @@ impl<'de> Deserialize<'de> for MemoryExtractorSnapshot {
             } => Self {
                 agent: crate::memory_agent(
                     &agent_id,
-                    model,
+                    *model,
                     instructions
                         .as_deref()
                         .filter(|value| !value.trim().is_empty())
@@ -1273,6 +1273,53 @@ mod tests {
             ),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn extractor_snapshot_decodes_current_and_legacy_storage_shapes() {
+        // Cause graph / decision table:
+        // C1=stored value has the current complete `agent`; C2=stored value has
+        // legacy `agent_id` + `model`; E1=preserve the complete snapshot;
+        // E2=migrate through the one canonical Memory Agent constructor.
+        // Constraint: exactly one of C1/C2 matches the untagged stored shape.
+        // | Rule | C1 | C2 | effect |
+        // | R1   | T  | F  | E1     |
+        // | R2   | F  | T  | E2     |
+        let current = MemoryExtractorSnapshot::host_executor(
+            "configured-memory-agent",
+            "host",
+            "model-config-2",
+            "host",
+        );
+        let current_json = serde_json::to_value(&current).unwrap();
+        let decoded_current: MemoryExtractorSnapshot =
+            serde_json::from_value(current_json).unwrap();
+        assert_eq!(decoded_current, current, "R1");
+
+        let legacy_model = awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            awaken_runtime_contract::resolved::ModelBinding::new(
+                "legacy-provider",
+                "legacy-model",
+                "host",
+            ),
+        );
+        let legacy_json = serde_json::json!({
+            "agent_id": "legacy-memory-agent",
+            "model": legacy_model,
+            "instructions": "legacy instructions",
+            "extraction_prompt": "extract durable facts"
+        });
+        let decoded_legacy: MemoryExtractorSnapshot = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(
+            decoded_legacy.agent,
+            crate::memory_agent("legacy-memory-agent", legacy_model, "legacy instructions"),
+            "R2"
+        );
+        assert_eq!(
+            decoded_legacy.extraction_prompt.as_deref(),
+            Some("extract durable facts"),
+            "R2"
+        );
     }
 
     fn credential_receipt(

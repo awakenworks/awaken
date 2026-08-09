@@ -11,31 +11,13 @@ holds the rule), and the **Validation** (the test kind that proves it).
 - Enforcer/Validation name this corpus's own roles and intended tests. This
   corpus is self-contained: it does not depend on any other repository to be
   understood (ADR-0001).
-- A guardrail whose mechanism is not yet designed is marked **Target**. The
-  current split, by whether the named enforcer exists in the workspace today:
-  - **Active** (enforcer type and a test or CI hook exist now): G1, G3, G4, G5,
-    G6, G8, G9, G13, G14, G15, G16, G18 (live-control seam only; config-publication
-    coordinator and registry compiler remain target), G20 (executor result side;
-    wait/resume channel values land with the durable channel impl), G21, G23, G26
-    (indeterminate-result side; error-mapping adapters remain target), G27, G28,
-    G29, G30, G31, G32, G33, G34, G35, G36, G37, G38, G39, G40, G45.
-  - **Target** (the rule is accepted, but its enforcer is not yet built here, so
-    it holds vacuously until the subsystem lands): G10/G19 (public protocol
-    adapters), G11 (Outcome extension boundary), G12 (committed-terminal
-    observer), G18 (config-publication coordinator and
-    registry compiler — the live-control seam of G18 is now active via
-    `LiveRunControlService`), G20 (wait/resume channel values — the executor result
-    side is now active; land wait/resume types here when the durable channel impl
-    arrives), G22 (backend-binding negotiation), G25 (observability/eval), G26
-    (error-mapping adapters and public DTO dependency checks — the
-    indeterminate-result side is now active via `EndCause::Indeterminate` and
-    `terminal()` projection tests). A Target guardrail must gain a real enforcer
-    and test in the same change that first builds its subsystem.
-  - **Accepted target**: G42 and G43 are isolated below the current
-    invariant table because their accepted designs are landing in verified
-    slices. A completed slice may be cited narrowly, but no whole guardrail moves
-    into the enforced table until all listed implementation and E2E evidence is
-    green.
+- The tables are the only status authority: a row under **Guardrails** is active;
+  a row under **Target Guardrails** is accepted but not promoted. Do not maintain
+  a second prose list of ids. `check_invariants.py` verifies that the two sets are
+  disjoint and that every row names its enforcer/evidence.
+- G42 and G43 remain target rows until their deployment-specific evidence is
+  continuously enforced. Completed slices may be cited narrowly without claiming
+  promotion of the whole guardrail.
   - **Retired**: G7 (`ExecutionBackend`/`BackendProfile`). That god-seam stays
     retired. Remote tool execution returned in ADR-0044 as the narrow `ToolExecutor`
     port with a concrete driver and tests (G33), not as `ExecutionBackend`; the

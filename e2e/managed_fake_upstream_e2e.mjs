@@ -91,6 +91,7 @@ async function main() {
     delete process.env.ANTHROPIC_MODEL;
     await withServer('management', 38195, async (base) => {
       let r = await req(base, 'POST', '/v1/config/provider-connections', {
+        idempotency_key: 'managed-fake-upstream-provider-connection',
         workspace_id: 'ws',
         provider_id: 'anthropic',
         display_name: 'Anthropic',

@@ -64,10 +64,37 @@ pub trait ManagedAgentRepository: Send + Sync {
     -> Result<Vec<Agent>, ManagedAgentError>;
 }
 
+/// Lifecycle command edge invoked after the authoritative Agent repository has
+/// archived an Agent. The protocol adapter does not know which downstream
+/// aggregate consumes the command; AllInOne binds the Coordinator-owned
+/// implementation and split Control leaves it absent.
+#[async_trait::async_trait]
+pub trait AgentArchiveCascade: Send + Sync {
+    async fn archive_agent_dependents(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+impl AgentArchiveCascade for crate::routes::deployments::DeploymentState {
+    async fn archive_agent_dependents(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<(), String> {
+        self.archive_for_agent(workspace_id, agent_id)
+            .await
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+}
+
 /// Router state containing exactly one Agent repository implementation.
 pub struct AgentRegistryState {
     repository: Arc<dyn ManagedAgentRepository>,
-    deployments: Option<Arc<crate::routes::deployments::DeploymentState>>,
+    archive_cascade: Option<Arc<dyn AgentArchiveCascade>>,
 }
 
 impl AgentRegistryState {
@@ -75,18 +102,15 @@ impl AgentRegistryState {
     pub fn from_repository(repository: Arc<dyn ManagedAgentRepository>) -> Self {
         Self {
             repository,
-            deployments: None,
+            archive_cascade: None,
         }
     }
 
-    /// Bind the existing Deployment aggregate so archiving a primary Agent can
-    /// terminally archive its deployments in the same request operation.
+    /// Bind one lifecycle command edge so archiving an Agent can synchronously
+    /// terminalize its dependents in the same request operation.
     #[must_use]
-    pub fn with_deployments(
-        mut self,
-        deployments: Arc<crate::routes::deployments::DeploymentState>,
-    ) -> Self {
-        self.deployments = Some(deployments);
+    pub fn with_archive_cascade(mut self, archive_cascade: Arc<dyn AgentArchiveCascade>) -> Self {
+        self.archive_cascade = Some(archive_cascade);
         self
     }
 }
@@ -213,14 +237,14 @@ async fn archive_agent(
         .archive(&scope, &id)
         .await
         .map_err(wire_error)?;
-    if let Some(deployments) = &state.deployments {
-        deployments
-            .archive_for_agent(&scope, &id)
+    if let Some(cascade) = &state.archive_cascade {
+        cascade
+            .archive_agent_dependents(&scope, &id)
             .await
             .map_err(|error| {
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
-                    Json(ErrorResponse::new("api_error", error.to_string())),
+                    Json(ErrorResponse::new("api_error", error)),
                 )
             })?;
     }

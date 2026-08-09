@@ -127,8 +127,7 @@ impl CatalogModelPublicationResolver {
                 capability.valid_until_ms > now_ms
                     && capability.observation.observed_at_ms <= now_ms
                     && capability.observation.backend_ref == backend_ref
-                    && capability.observation.state
-                        == awaken_acp_contract::AcpCapabilityObservationState::Verified
+                    && capability.observation.is_coherent()
             })
             .filter_map(|capability| {
                 capability.observation.fingerprint.and_then(|fingerprint| {

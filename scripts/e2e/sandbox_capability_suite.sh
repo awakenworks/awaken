@@ -28,6 +28,15 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
+require_all=0
+substrates_only=0
+case "${1:-}" in
+  "") ;;
+  --require-all) require_all=1 ;;
+  --require-substrates) require_all=1; substrates_only=1 ;;
+  *) echo "usage: scripts/e2e/sandbox_capability_suite.sh [--require-all|--require-substrates]" >&2; exit 2 ;;
+esac
+
 PASS=0; SKIP=0; FAIL=0
 step() { printf '\n=== %s ===\n' "$*"; }
 ok()   { echo "  PASS: $*"; PASS=$((PASS+1)); }
@@ -38,17 +47,25 @@ run()  { # run <label> <cmd...>
 }
 
 # ── Layer 1: host + managed-state Rust unit tests (always runnable) ───────────
-step "G2/G3 host + managed unit tests (dispose, fail-closed)"
-# cargo test takes a single substring filter, so run each crate's dispose tests apart.
-run "host end_session unit" cargo test -q -p awaken-runtime-host --lib end_session_disposes
-run "managed dispose unit" cargo test -q -p awaken-protocol-managed --lib _disposes
+if [ "$substrates_only" -eq 0 ]; then
+  step "G2/G3 host + managed unit tests (dispose, fail-closed)"
+  # cargo test takes a single substring filter, so run each crate's dispose tests apart.
+  run "host end_session unit" cargo test -q -p awaken-runtime-host --lib end_session_disposes
+  run "managed dispose unit" cargo test -q -p awaken-protocol-managed --lib _disposes
+else
+  echo "DELEGATED: host + managed unit tests are owned by check-rust --full"
+fi
 
 # ── Layer 2: external managed-protocol e2e (SDK, no isolation substrate) ──────
-step "G2 external managed-protocol dispose lifecycle (official SDK)"
-if command -v node >/dev/null && [ -d e2e/node_modules/@anthropic-ai ]; then
-  run "managed dispose e2e" bash -c 'cd e2e && node managed_session_dispose_e2e.mjs'
+if [ "$substrates_only" -eq 1 ]; then
+  echo "DELEGATED: managed dispose E2E is owned by test:deterministic"
 else
-  skip "node / @anthropic-ai sdk not installed (run: cd e2e && npm install)"
+  step "G2 external managed-protocol dispose lifecycle (official SDK)"
+  if command -v node >/dev/null && [ -d e2e/node_modules/@anthropic-ai ]; then
+    run "managed dispose e2e" bash -c 'cd e2e && node managed_session_dispose_e2e.mjs'
+  else
+    skip "node / @anthropic-ai sdk not installed (run: cd e2e && npm install)"
+  fi
 fi
 
 # ── Layer 3: real Docker daemon (G1 adapter, G5 cgroup, G2 adopt, G3) ─────────
@@ -72,7 +89,7 @@ fi
 step "G1 k8s pod tier against a real k3d cluster"
 if [ "${AWAKEN_SKIP_K8S:-0}" = 1 ]; then
   skip "AWAKEN_SKIP_K8S=1"
-elif [ -n "${KUBECONFIG:-}" ] && kubectl get nodes >/dev/null 2>&1; then
+elif command -v kubectl >/dev/null 2>&1 && kubectl get nodes >/dev/null 2>&1; then
   run "k8s:k8s_it" cargo test -q -p awaken-sandbox-container --features k8s --test k8s_it
   # Ensure the busybox `nc` fixture (awaken-bb:1) exists in the node's containerd, so
   # the process-as-container Pod can start (the node has no registry egress here).
@@ -91,7 +108,7 @@ elif [ -n "${KUBECONFIG:-}" ] && kubectl get nodes >/dev/null 2>&1; then
     skip "k8s_e2e: cannot resolve the k3d node to load the awaken-bb:1 fixture"
   fi
 else
-  skip "no reachable k8s cluster (set KUBECONFIG to a k3d cluster)"
+  skip "no reachable k8s cluster (configure kubectl for a k3d cluster)"
 fi
 
 # ── Layer 5: real FUSE (G7 memoryd write-through) ────────────────────────────
@@ -155,4 +172,8 @@ if [ "${COVERAGE:-0}" = 1 ] && command -v cargo-llvm-cov >/dev/null; then
 fi
 
 printf '\n=== SUMMARY: %d passed, %d skipped, %d failed ===\n' "$PASS" "$SKIP" "$FAIL"
+if [ "$require_all" -eq 1 ] && [ "$SKIP" -ne 0 ]; then
+  echo "  FAIL: release profile requires every sandbox substrate; $SKIP layer(s) skipped" >&2
+  exit 1
+fi
 [ "$FAIL" -eq 0 ]

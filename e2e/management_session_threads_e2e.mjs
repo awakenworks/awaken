@@ -49,7 +49,14 @@ async function main() {
       betas: BETAS,
     });
     const sessionEvents = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));
-    assert.deepEqual(sessionEvents.map((e) => e.type), ['session.status_running', 'agent.message', 'session.status_idle']);
+    // One admitted input is the cause; the durable lifecycle effects follow in
+    // order and the primary-thread projection derives from this complete ledger.
+    assert.deepEqual(sessionEvents.map((e) => e.type), [
+      'user.message',
+      'session.status_running',
+      'agent.message',
+      'session.status_idle',
+    ]);
 
     // The session's single primary thread.
     const threads = await drain(client.beta.sessions.threads.list(session.id, { betas: BETAS }));

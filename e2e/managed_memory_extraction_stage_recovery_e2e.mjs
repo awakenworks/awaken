@@ -365,7 +365,7 @@ async function main() {
     }
     persistIntent(database, validCompleted, false);
 
-    const memories = await client.get(`/v1/memory_stores/${store.id}/memories`, {
+    const memories = await client.get(`/v1/memory_stores/${store.id}/memories?view=full`, {
       headers: MEMORY_HEADERS,
     });
     const byPath = new Map(memories.data.map((memory) => [memory.path, memory]));

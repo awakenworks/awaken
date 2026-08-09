@@ -100,7 +100,8 @@ impl WorkerAcpCapabilityObservation {
         requirement: &WorkerAcpCapabilityRequirement,
         now_ms: u64,
     ) -> bool {
-        self.observation.state == AcpCapabilityObservationState::Verified
+        self.observation.is_coherent()
+            && self.observation.state == AcpCapabilityObservationState::Verified
             && self.observation.backend_ref == requirement.backend_ref
             && self.observation.fingerprint.as_deref() == Some(requirement.fingerprint.as_str())
             && self.observation.observed_at_ms <= now_ms
@@ -1165,6 +1166,7 @@ mod tests {
     // A1 exact backend+fingerprint, Verified, inside TTL -> selectable.
     // A2 wrong fingerprint/backend or negative state       -> reject.
     // A3 future observation or now >= valid_until          -> reject.
+    // A4 Verified state with incomplete/mixed evidence     -> reject.
     #[test]
     fn acp_capability_requires_the_exact_live_fingerprint() {
         let required = WorkerAcpCapabilityRequirement {
@@ -1176,21 +1178,34 @@ mod tests {
             .required_acp_capabilities
             .insert(required.clone());
         let mut worker = manifest("a", 0);
-        let observation =
-            |backend_ref: &str, fingerprint: &str, state: AcpCapabilityObservationState| {
-                WorkerAcpCapabilityObservation {
-                    observation: AcpCapabilityObservation {
-                        backend_ref: backend_ref.into(),
-                        adapter_version: "test".into(),
-                        state,
-                        observed_at_ms: 100,
-                        fingerprint: Some(fingerprint.into()),
-                        negotiated: None,
-                        reason_code: None,
-                    },
-                    valid_until_ms: 200,
-                }
-            };
+        let observation = |backend_ref: &str,
+                           fingerprint: &str,
+                           state: AcpCapabilityObservationState| {
+            let verified = state == AcpCapabilityObservationState::Verified;
+            WorkerAcpCapabilityObservation {
+                observation: AcpCapabilityObservation {
+                    backend_ref: backend_ref.into(),
+                    adapter_version: "test".into(),
+                    state,
+                    observed_at_ms: 100,
+                    fingerprint: verified.then(|| fingerprint.into()),
+                    negotiated: verified.then(|| awaken_acp_contract::NegotiatedAcpCapabilities {
+                        protocol_version: "1".into(),
+                        load_session: false,
+                        prompt_image: false,
+                        prompt_audio: false,
+                        prompt_embedded_context: false,
+                        mcp_http: false,
+                        mcp_sse: false,
+                        session_list: false,
+                        modes: Vec::new(),
+                        config_options: Vec::new(),
+                    }),
+                    reason_code: (!verified).then(|| "not_verified".into()),
+                },
+                valid_until_ms: 200,
+            }
+        };
 
         worker.acp_capability_observations = vec![observation(
             "acp:codex",
@@ -1213,6 +1228,8 @@ mod tests {
         assert!(worker.accepts(&requirements, 100), "A1");
         assert!(worker.accepts(&requirements, 199), "A1");
         assert!(!worker.accepts(&requirements, 200), "A3");
+        worker.acp_capability_observations[0].observation.negotiated = None;
+        assert!(!worker.accepts(&requirements, 150), "A4");
     }
 
     #[test]

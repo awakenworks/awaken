@@ -7,11 +7,13 @@
 //! bridge appends, it never owns the commit). The [`Supervisor`] drives one turn
 //! and reaps the process on cancel, mapping the outcome to a [`TerminationReason`].
 //!
-//! The framing here is a minimal newline-delimited JSON stand-in for ACP's
-//! `session/update`; substituting the official `agent-client-protocol` codec is a
-//! change behind this same projection + sink, so nothing downstream moves. The
-//! agent process runs OUTSIDE us on a `tool_transparent` tier — its own syscalls
-//! are OS-jailed, not routed through our tool layer.
+//! The newline-delimited framing in this module is a deterministic fixture wire.
+//! Production compositions enable `real-acp` (the ACP executor enables it by
+//! default, and the CLI requests it explicitly) and select the official
+//! `agent-client-protocol` JSON-RPC codec for projected launches. Both wires
+//! converge through the same projection + appender boundary. The agent process
+//! runs OUTSIDE us on a `tool_transparent` tier — its own syscalls are OS-jailed,
+//! not routed through our tool layer.
 
 use async_trait::async_trait;
 #[cfg(feature = "real-acp")]

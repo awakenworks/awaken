@@ -41,8 +41,12 @@ async function main() {
       resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
     });
 
-    // Session A: the first turn has nothing to recall; its natural end fires
-    // the background extractor, which saves the fixed memory.
+    // Cause-effect graph / decision table:
+    // M1 published memory plugin + matching `/memory` replacement + read-write
+    // Store -> extraction runs at terminal and later recall injects the fact;
+    // M2 the same explicit binding with >12 facts -> selector bounds the recall;
+    // M3 a plain mount without the published binding -> mount only, no automatic
+    // memory effect (covered by the Host A1 rule). This e2e drives M1/M2.
     const a = await session();
     const first = await turn(client, a.id, 'remember the sky');
     assert.ok(first.includes('echo:remember the sky'), `probe echoes the turn: ${first}`);

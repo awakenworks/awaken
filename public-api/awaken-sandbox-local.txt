@@ -9,11 +9,12 @@ pub awaken_sandbox_local::DiscoveredSkillFile::dir: alloc::string::String
 pub awaken_sandbox_local::DiscoveredSkillFile::id: alloc::string::String
 pub struct awaken_sandbox_local::EscapeError(pub alloc::string::String)
 pub struct awaken_sandbox_local::HandOutput
-pub awaken_sandbox_local::HandOutput::content: alloc::string::String
+pub awaken_sandbox_local::HandOutput::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_sandbox_local::HandOutput::is_error: bool
 impl awaken_sandbox_local::HandOutput
 pub fn awaken_sandbox_local::HandOutput::error(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_sandbox_local::HandOutput::ok(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_sandbox_local::HandOutput::text(&self) -> alloc::string::String
 pub struct awaken_sandbox_local::IsolatedRoot
 impl awaken_sandbox_local::IsolatedRoot
 pub fn awaken_sandbox_local::IsolatedRoot::new(impl core::convert::Into<std::path::PathBuf>) -> Self

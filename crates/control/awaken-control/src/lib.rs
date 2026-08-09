@@ -74,8 +74,8 @@ use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{
-    AgentRegistryState, ManagedAgentRepository, UserProfileState, VaultState, agents_router,
-    user_profiles_router, vault_router,
+    AgentArchiveCascade, AgentRegistryState, ManagedAgentRepository, UserProfileState, VaultState,
+    agents_router, user_profiles_router, vault_router,
 };
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -206,6 +206,9 @@ pub struct ControlRouterInput {
     /// consumers receive the same port from composition instead of reconstructing
     /// a second repository adapter.
     pub agent_repository: Arc<dyn ManagedAgentRepository>,
+    /// Optional local lifecycle command edge used after Agent archive. Split
+    /// Control leaves this absent; the composition root owns its implementation.
+    pub agent_archive_cascade: Option<Arc<dyn AgentArchiveCascade>>,
     /// The config authoring plane (scope edge over the config service).
     pub plane: ConfigPlane,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
@@ -247,6 +250,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         model_supply,
         vault_state,
         agent_repository,
+        agent_archive_cascade,
         plane,
         global_tools,
         plugins,
@@ -313,9 +317,12 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
     // truth (no second store), which is how the console probes the assistant.
-    let agents = agents_router(Arc::new(AgentRegistryState::from_repository(
-        agent_repository,
-    )));
+    let agent_state = AgentRegistryState::from_repository(agent_repository);
+    let agent_state = match agent_archive_cascade {
+        Some(cascade) => agent_state.with_archive_cascade(cascade),
+        None => agent_state,
+    };
+    let agents = agents_router(Arc::new(agent_state));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
     let capabilities =

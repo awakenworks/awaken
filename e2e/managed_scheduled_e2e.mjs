@@ -76,7 +76,10 @@ async function main() {
     pass(`${results.length} scheduled tool call(s) performed out of band and committed`);
 
     const done = events.filter((e) => e.type === 'agent.message');
-    assert.ok(JSON.stringify(done.map((m) => m.content)).includes('done'), 'run reached its natural end');
+    assert.ok(
+      JSON.stringify(done.map((m) => m.content)).includes('done'),
+      `run reached its natural end: ${JSON.stringify(done.map((m) => m.content))}`,
+    );
     pass('scheduled-action run reached its natural end (ADR-0020)');
 
     console.log('E2E PASS: scheduled action performed by the durable worker (ADR-0020).');

@@ -251,11 +251,17 @@ export const BEHAVIORS = {
     }
     return text(`recall:[${sys}] echo:${lastUserText(parsed)}`);
   },
-  // MemoryResourceModel: write the user's text into the mounted store, then (once a
-  // tool result is present) reply `memory persisted`.
+  // MemoryResourceModel cause/effect table (shared with the in-process scenario):
+  // R1 no tool result -> write the marker; R2 exactly one result -> read the same
+  // mounted path; R3 two results -> terminate. R2 makes the observation independent
+  // of the host's later harvest API: a successful terminal turn must have observed
+  // the exact bytes through the sandbox mount first.
   memoryResource(parsed) {
-    if (toolResults(parsed).length > 0) return text('memory persisted');
-    return tool('memres-1', 'write', { path: '.mnt/memory/note.md', content: lastUserText(parsed) });
+    switch (toolResults(parsed).length) {
+      case 0: return tool('memres-1', 'write', { path: '.mnt/memory/note.md', content: lastUserText(parsed) });
+      case 1: return tool('memres-2', 'read', { path: '.mnt/memory/note.md' });
+      default: return text('memory persisted');
+    }
   },
   // GitRepoModel: read the seed file, write a new file, then finish (sequenced off
   // the tool-result count).

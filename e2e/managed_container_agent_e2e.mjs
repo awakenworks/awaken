@@ -754,7 +754,7 @@ async function main() {
     // release edge. Read-only resource APIs must never acquire this write side effect.
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     assert.equal(testContainers({ all: true }).length, 0, 'Session release must reap its container');
-    const harvested = await client.get(`/v1/memory_stores/${memory.id}/memories`, {
+    const harvested = await client.get(`/v1/memory_stores/${memory.id}/memories?view=full`, {
       headers: MEMORY_HEADERS,
     });
     assert.equal(
