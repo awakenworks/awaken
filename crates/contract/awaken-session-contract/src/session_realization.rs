@@ -19,6 +19,42 @@ pub const fn realization_lease_is_live_at(expires_at_unix_ms: u64, now_unix_ms: 
     expires_at_unix_ms > now_unix_ms
 }
 
+/// Whether an asserted realization remains authorized by the aggregate's
+/// current lease. A same-epoch renewal is a monotonic extension of one owner
+/// incarnation, so work admitted under the shorter lease may finish while the
+/// renewed current lease is live. Owner, incarnation, or epoch replacement
+/// still fences the assertion.
+#[must_use]
+pub fn realization_lease_authorizes(
+    current: &SessionRealizationLease,
+    asserted: &SessionRealizationLease,
+    now_unix_ms: u64,
+) -> bool {
+    current.owner == asserted.owner
+        && current.runtime_incarnation == asserted.runtime_incarnation
+        && current.epoch == asserted.epoch
+        && current.expires_at_unix_ms >= asserted.expires_at_unix_ms
+        && realization_lease_is_live_at(current.expires_at_unix_ms, now_unix_ms)
+}
+
+/// Whether the current exact-generation fence is the asserted fence or a
+/// monotonic lease extension of it. Logical generation, owner incarnation, and
+/// epoch remain immutable; only expiry may advance. Control uses this relation
+/// to ask an in-flight phase driver to catch up instead of treating its already
+/// authorized predecessor receipt as a conflicting generation.
+#[must_use]
+pub fn realization_generation_authorizes(
+    current: &McpGenerationRef,
+    asserted: &McpGenerationRef,
+) -> bool {
+    current.session_id == asserted.session_id
+        && current.attachment_id == asserted.attachment_id
+        && current.generation == asserted.generation
+        && current.runtime_incarnation == asserted.runtime_incarnation
+        && current.lease_epoch == asserted.lease_epoch
+        && current.lease_expires_at_unix_ms >= asserted.lease_expires_at_unix_ms
+}
+
 /// Opaque Runtime assignment selected outside the Session domain. Worker and
 /// local-process identities are mapped to these strings at the authenticated
 /// application edge; the aggregate never imports their protocol vocabulary.
@@ -282,6 +318,12 @@ pub async fn drive_session_realization(
             }
             SessionRealizationAction::Complete => return Ok(()),
         }
+        // A Control transition may complete on the final permitted action. Do
+        // not require a redundant fifth loop iteration merely to observe the
+        // terminal directive after a same-epoch renewal catch-up.
+        if matches!(directive.action, SessionRealizationAction::Complete) {
+            return Ok(());
+        }
     }
     Err(SessionRealizationDriveError::DidNotConverge)
 }
@@ -301,7 +343,11 @@ impl<T> ApplicationSessionControl for T where
 
 #[cfg(test)]
 mod tests {
-    use super::realization_lease_is_live_at;
+    use super::{
+        realization_generation_authorizes, realization_lease_authorizes,
+        realization_lease_is_live_at,
+    };
+    use crate::{McpAttachmentId, McpGeneration, McpGenerationRef, SessionRealizationLease};
 
     /// Cause C1: expiry is strictly after observation time. Only C1 authorizes
     /// another effect; equality is already outside the half-open lease.
@@ -320,6 +366,131 @@ mod tests {
         ] {
             assert_eq!(
                 realization_lease_is_live_at(expiry, now),
+                expected,
+                "{rule}"
+            );
+        }
+    }
+
+    /// Realization-authorization cause/effect graph: C1 owner/incarnation/epoch
+    /// identity is unchanged; C2 current expiry is equal to or later than the
+    /// asserted expiry; C3 current lease is live. E1 authorizes the in-flight
+    /// phase; otherwise E2 fences it. An asserted lease may itself have elapsed
+    /// after admission because a live same-epoch extension owns continuation.
+    ///
+    /// | Rule | C1 | C2 | C3 | Effect |
+    /// |---|---|---|---|---|
+    /// | A1 | yes | yes | yes | E1 |
+    /// | A2 | no | any | yes | E2 |
+    /// | A3 | yes | no | yes | E2 |
+    /// | A4 | yes | yes | no | E2 |
+    #[test]
+    fn realization_lease_authorization_decision_table() {
+        let asserted = SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            epoch: 3,
+            expires_at_unix_ms: 10,
+        };
+        for (rule, current, now, expected) in [
+            ("A1 exact", asserted.clone(), 9, true),
+            (
+                "A1 renewed after asserted expiry",
+                SessionRealizationLease {
+                    expires_at_unix_ms: 20,
+                    ..asserted.clone()
+                },
+                11,
+                true,
+            ),
+            (
+                "A2 replaced owner",
+                SessionRealizationLease {
+                    owner: "worker-b".into(),
+                    expires_at_unix_ms: 20,
+                    ..asserted.clone()
+                },
+                11,
+                false,
+            ),
+            (
+                "A3 regressed expiry",
+                SessionRealizationLease {
+                    expires_at_unix_ms: 9,
+                    ..asserted.clone()
+                },
+                8,
+                false,
+            ),
+            (
+                "A4 current expired",
+                SessionRealizationLease {
+                    expires_at_unix_ms: 20,
+                    ..asserted.clone()
+                },
+                20,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                realization_lease_authorizes(&current, &asserted, now),
+                expected,
+                "{rule}"
+            );
+        }
+    }
+
+    /// Generation-fence cause/effect graph: C1 logical generation identity,
+    /// owner incarnation, and epoch match; C2 current expiry is equal/later.
+    /// E1 permits a phase catch-up without committing the predecessor effect;
+    /// E2 rejects replacement, regression, or cross-generation input.
+    ///
+    /// | Rule | C1 | C2 | Effect |
+    /// |---|---|---|---|
+    /// | G1 exact | yes | equal | E1 |
+    /// | G2 renewed | yes | later | E1 |
+    /// | G3 regression | yes | earlier | E2 |
+    /// | G4 replacement | no | any | E2 |
+    #[test]
+    fn realization_generation_authorization_decision_table() {
+        let asserted = McpGenerationRef {
+            session_id: "session-a".into(),
+            attachment_id: McpAttachmentId("browser".into()),
+            generation: McpGeneration(1),
+            runtime_incarnation: "worker-a/boot-1".into(),
+            lease_epoch: 3,
+            lease_expires_at_unix_ms: 10,
+        };
+        for (rule, current, expected) in [
+            ("G1", asserted.clone(), true),
+            (
+                "G2",
+                McpGenerationRef {
+                    lease_expires_at_unix_ms: 20,
+                    ..asserted.clone()
+                },
+                true,
+            ),
+            (
+                "G3",
+                McpGenerationRef {
+                    lease_expires_at_unix_ms: 9,
+                    ..asserted.clone()
+                },
+                false,
+            ),
+            (
+                "G4",
+                McpGenerationRef {
+                    lease_epoch: 4,
+                    lease_expires_at_unix_ms: 20,
+                    ..asserted.clone()
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(
+                realization_generation_authorizes(&current, &asserted),
                 expected,
                 "{rule}"
             );

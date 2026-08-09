@@ -513,9 +513,11 @@ impl crate::SharedHost {
         })
     }
 
-    /// Extend one already-active exact generation without reopening credential
-    /// material or reconnecting MCP. The immutable realization binding must be
-    /// identical and only the expiry/idempotency attempt may advance.
+    /// Extend one already-staged or active exact generation without reopening
+    /// credential material or reconnecting MCP. The immutable realization
+    /// binding must be identical and only the expiry/idempotency attempt may
+    /// advance. Supporting Staged closes the race where Control renews while the
+    /// first stage effect is in flight and republishes its longer exact fence.
     pub(crate) fn renew_mcp_projection(
         &self,
         request: &awaken_session_contract::StageMcpAttachment,
@@ -535,14 +537,17 @@ impl crate::SharedHost {
                 }) else {
                     return Ok(None);
                 };
-                if projection.state != crate::session_slot::McpProjectionState::Active
-                    || projection.request.realization_id != request.realization_id
+                if !matches!(
+                    projection.state,
+                    crate::session_slot::McpProjectionState::Staged
+                        | crate::session_slot::McpProjectionState::Active
+                ) || projection.request.realization_id != request.realization_id
                     || projection.request.renewal_binding_fingerprint() != binding
                     || request.generation.lease_expires_at_unix_ms
                         <= projection.request.generation.lease_expires_at_unix_ms
                 {
                     return Err(HostError::internal(
-                        "MCP lease renewal conflicts with the active realization",
+                        "MCP lease renewal conflicts with the staged realization",
                     ));
                 }
                 let receipt = awaken_session_contract::McpRealizationReceipt {
