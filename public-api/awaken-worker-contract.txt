@@ -139,7 +139,7 @@ pub awaken_worker_contract::WorkerHeartbeat::credential_observations: alloc::col
 pub awaken_worker_contract::WorkerHeartbeat::in_flight: u32
 pub awaken_worker_contract::WorkerHeartbeat::ready: bool
 pub awaken_worker_contract::WorkerHeartbeat::sequence: u64
-pub awaken_worker_contract::WorkerHeartbeat::warm_environment_shapes: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_worker_contract::WorkerHeartbeat::warm_environment_shapes: alloc::collections::btree::set::BTreeSet<awaken_provisioning_contract::spec::SandboxCapacityShapeId>
 pub struct awaken_worker_contract::WorkerIdentity
 pub awaken_worker_contract::WorkerIdentity::generation: u64
 pub awaken_worker_contract::WorkerIdentity::incarnation_id: alloc::string::String
@@ -176,7 +176,7 @@ pub awaken_worker_contract::WorkerSnapshot::identity: awaken_worker_contract::Wo
 pub awaken_worker_contract::WorkerSnapshot::in_flight: u32
 pub awaken_worker_contract::WorkerSnapshot::manifest: awaken_worker_contract::WorkerManifest
 pub awaken_worker_contract::WorkerSnapshot::state: awaken_worker_contract::WorkerState
-pub awaken_worker_contract::WorkerSnapshot::warm_environment_shapes: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_worker_contract::WorkerSnapshot::warm_environment_shapes: alloc::collections::btree::set::BTreeSet<awaken_provisioning_contract::spec::SandboxCapacityShapeId>
 impl awaken_worker_contract::WorkerSnapshot
 pub fn awaken_worker_contract::WorkerSnapshot::accepts(&self, &awaken_worker_contract::PlacementRequirements, u64) -> bool
 impl core::convert::From<&awaken_worker_contract::WorkerSnapshot> for awaken_worker_contract::WorkerAssignment

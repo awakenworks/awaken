@@ -12,7 +12,6 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-mod bundle;
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -20,10 +19,6 @@ mod schema;
 #[cfg(feature = "sqlite")]
 mod sqlite;
 
-pub use bundle::{
-    CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_BUNDLE_BYTES, MAX_SKILL_FILE_BYTES,
-    MAX_SKILL_FILES, UploadedSkillBundleFile, canonicalize_skill_bundle, normalize_bundle_path,
-};
 #[cfg(feature = "postgres")]
 pub use postgres::{PgSkillStore, PgStoreError};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
@@ -34,25 +29,7 @@ pub use sqlite::{SqliteSkillStore, StoreError};
 /// Reduce `name` to a safe single file stem: keep alphanumerics, `-`, `_`; map every
 /// other run to a single `-`; never empty; bounded length. This is an API naming
 /// helper, not repository identity normalization: stable ids are stored verbatim.
-pub use awaken_resource_contract::skill_stem as sanitize_stem;
-
-/// The stable, tagged catalog id for a skill named `name` (e.g. `skill_1a2b…`). The
-/// official SDK requires `agent.skills[].skill_id` to be a tagged catalog id, not the
-/// skill's name — so both the advertisement (derived from the durable catalog's stems)
-/// and the `/v1/skills` registry compute this same id independently from the name, and
-/// they line up without a shared map. Deterministic (FNV-1a over the safe stem) so it
-/// survives a restart and matches across nodes; taking the stem makes it agree whether
-/// fed the raw frontmatter name or the durable key.
-#[must_use]
-pub fn catalog_id(name: &str) -> String {
-    let stem = sanitize_stem(name);
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in stem.bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("skill_{h:016x}")
-}
+pub use awaken_resource_contract::{skill_catalog_id as catalog_id, skill_stem as sanitize_stem};
 
 // The aggregate port + values live in the port-only contract crate.
 pub use awaken_resource_contract::{

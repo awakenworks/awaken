@@ -17,8 +17,9 @@ RUN apt-get update \
 COPY awaken-server /usr/local/bin/awaken-server
 # Scenario-specific auxiliary executable. Callers that override the default
 # must provide a same-named host-built file in the build context.
-ARG AUXILIARY_EXECUTABLE=awaken-sandbox
+ARG AUXILIARY_EXECUTABLE=awaken-control
 COPY ${AUXILIARY_EXECUTABLE} /usr/local/bin/${AUXILIARY_EXECUTABLE}
+COPY awaken-coordinator /usr/local/bin/awaken-coordinator
 COPY awaken-worker /usr/local/bin/awaken-worker
 
 ENTRYPOINT ["/usr/local/bin/awaken-server"]

@@ -454,9 +454,15 @@ fn validate_sandbox_provisioning_runtime(
     provisioning: SandboxProvisioning,
     runtime: Option<&str>,
 ) -> Result<(), RunError> {
-    if provisioning == SandboxProvisioning::OnToolUse && !matches!(runtime, None | Some("awaken")) {
+    let native = runtime.is_none_or(|backend_ref| {
+        matches!(
+            awaken_runtime_contract::resolved::Backend::from_ref(backend_ref),
+            awaken_runtime_contract::resolved::Backend::Native
+        )
+    });
+    if provisioning == SandboxProvisioning::OnToolUse && !native {
         return Err(RunError::bad_request(format!(
-            "sandbox_provisioning_unsupported: `on_tool_use` requires the native awaken runtime, got `{}`",
+            "sandbox_provisioning_unsupported: `on_tool_use` requires a native backend, got `{}`",
             runtime.unwrap_or_default()
         )));
     }
@@ -1781,22 +1787,34 @@ mod tests {
 
     #[test]
     fn native_only_lazy_provisioning_decision_table() {
-        // Causes: C1 eager policy; C2 lazy policy; C3 implicit/native runtime;
-        // C4 ACP/unknown runtime. Effects: E1 accept; E2 reject before Session
+        // Causes: C1 eager policy; C2 lazy policy; C3 implicit/native backend;
+        // C4 ACP/A2A backend. Effects: E1 accept; E2 reject before Session
         // realization. Environment policy tests own disabled/exact-version rules.
         //
         // | Rule | policy | runtime | effect |
         // | R1 | eager | any | accept |
         // | R2 | lazy | implicit/native | accept |
-        // | R3 | lazy | ACP/unknown | reject |
+        // | R3 | lazy | ACP/A2A | reject |
         use SandboxProvisioning::{Eager, OnToolUse};
         for (case, provisioning, runtime, accepted) in [
             ("R1 eager native", Eager, None, true),
             ("R1 eager ACP", Eager, Some("acp:claude"), true),
             ("R2 lazy implicit native", OnToolUse, None, true),
             ("R2 lazy explicit native", OnToolUse, Some("awaken"), true),
+            ("R2 lazy genai native", OnToolUse, Some("genai"), true),
+            (
+                "R2 lazy custom native",
+                OnToolUse,
+                Some("provider-native"),
+                true,
+            ),
             ("R3 lazy ACP", OnToolUse, Some("acp:claude"), false),
-            ("R3 lazy unknown runtime", OnToolUse, Some("remote"), false),
+            (
+                "R3 lazy A2A",
+                OnToolUse,
+                Some("a2a:https://agent.example"),
+                false,
+            ),
         ] {
             assert_eq!(
                 validate_sandbox_provisioning_runtime(provisioning, runtime).is_ok(),

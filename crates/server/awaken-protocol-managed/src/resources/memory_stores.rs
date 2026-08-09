@@ -6,7 +6,7 @@
 //! (retrieve / list / redact).
 //!
 //! Each **memory** is a path-addressed file with a `content_sha256` + CAS update in
-//! the durable [`awaken_memory_store::MemoryRepository`] (ADR-0053). The same aggregate
+//! the durable [`awaken_resource_contract::MemoryRepository`] (ADR-0053). The same aggregate
 //! repository serves API heads, write-through mounts, recall/extraction, and the
 //! `/memory_versions` history: every mutation and its version row commit together.
 //! There is no API-side history registry or Host-global memory directory. The
@@ -14,10 +14,10 @@
 
 use std::sync::Arc;
 
-use awaken_memory_store::{MemErr, MemoryVersion, MemoryVersionOperation};
 use awaken_resource_contract::{
-    CreateMemoryStoreCommand, MemoryStoreApplicationError, MemoryStoreApplicationService,
-    MemoryStoreDefinition, ResourceCatalogError, ResourceState, UpdateMemoryStoreCommand,
+    CreateMemoryStoreCommand, MemErr, Memory, MemoryRepository, MemoryStoreApplicationError,
+    MemoryStoreApplicationService, MemoryStoreDefinition, MemoryVersion, MemoryVersionOperation,
+    ResourceCatalogError, ResourceState, UpdateMemoryStoreCommand, memory_sha256_hex,
 };
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -61,10 +61,7 @@ impl MemoryView {
 
 fn project_version(version: &MemoryVersion, store_id: &str, view: MemoryView) -> Value {
     let (sha, size) = match &version.content {
-        Some(content) => (
-            Some(awaken_memory_store::sha256_hex(content)),
-            Some(content.len()),
-        ),
+        Some(content) => (Some(memory_sha256_hex(content)), Some(content.len())),
         None => (None, None),
     };
     let operation = match version.operation {
@@ -87,10 +84,10 @@ fn project_version(version: &MemoryVersion, store_id: &str, view: MemoryView) ->
     })
 }
 
-/// Project a durable [`awaken_memory_store::Memory`] (the path-addressed head, the
+/// Project a durable [`Memory`] (the path-addressed head, the
 /// source of truth) onto the SDK memory object.
 fn project_memory(
-    mem: &awaken_memory_store::Memory,
+    mem: &Memory,
     store_id: &str,
     memory_version_id: &str,
     view: MemoryView,
@@ -122,7 +119,7 @@ fn current_version_id<'a>(versions: &'a [MemoryVersion], memory_id: &str) -> Opt
 
 async fn project_current_memory(
     state: &MemoryStoreApi,
-    memory: &awaken_memory_store::Memory,
+    memory: &Memory,
     store_id: &str,
     view: MemoryView,
 ) -> Result<Value, MemErr> {
@@ -156,7 +153,7 @@ fn project_def(def: &MemoryStoreDefinition) -> Value {
 }
 
 struct MemoryStoreApi {
-    memories: Arc<dyn awaken_memory_store::MemoryRepository>,
+    memories: Arc<dyn MemoryRepository>,
     stores: Arc<dyn MemoryStoreApplicationService>,
 }
 
@@ -164,7 +161,7 @@ struct MemoryStoreApi {
 /// resolution. Composition roots that manage resources must use this variant so
 /// create/archive/delete and activation share one lifecycle truth.
 pub fn memory_stores_router(
-    memories: Arc<dyn awaken_memory_store::MemoryRepository>,
+    memories: Arc<dyn MemoryRepository>,
     stores: Arc<dyn MemoryStoreApplicationService>,
 ) -> Router {
     let state = Arc::new(MemoryStoreApi { memories, stores });

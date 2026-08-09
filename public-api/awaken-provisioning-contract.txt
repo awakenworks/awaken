@@ -12,6 +12,11 @@ pub awaken_provisioning_contract::ApprovalDecision::RequireApproval
 pub enum awaken_provisioning_contract::ApprovalPolicy
 pub awaken_provisioning_contract::ApprovalPolicy::Autonomous
 pub awaken_provisioning_contract::ApprovalPolicy::HumanApproval
+pub enum awaken_provisioning_contract::CacheVolumeLocation
+pub awaken_provisioning_contract::CacheVolumeLocation::HostPath
+pub awaken_provisioning_contract::CacheVolumeLocation::HostPath::path: alloc::string::String
+pub awaken_provisioning_contract::CacheVolumeLocation::PersistentVolumeClaim
+pub awaken_provisioning_contract::CacheVolumeLocation::PersistentVolumeClaim::claim_name: alloc::string::String
 pub enum awaken_provisioning_contract::EnvValue
 pub awaken_provisioning_contract::EnvValue::Inline
 pub awaken_provisioning_contract::EnvValue::Inline::value: alloc::string::String
@@ -60,9 +65,8 @@ pub awaken_provisioning_contract::MountLifetime::PerRun
 pub awaken_provisioning_contract::MountLifetime::Session
 pub enum awaken_provisioning_contract::MountSource
 pub awaken_provisioning_contract::MountSource::CacheVolume
-pub awaken_provisioning_contract::MountSource::CacheVolume::host_path: alloc::string::String
 pub awaken_provisioning_contract::MountSource::CacheVolume::key: alloc::string::String
-pub awaken_provisioning_contract::MountSource::CacheVolume::persistent_volume_claim: core::option::Option<alloc::string::String>
+pub awaken_provisioning_contract::MountSource::CacheVolume::location: awaken_provisioning_contract::CacheVolumeLocation
 pub awaken_provisioning_contract::MountSource::File
 pub awaken_provisioning_contract::MountSource::File::content_hash: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::MountSource::File::file_id: alloc::string::String
@@ -270,6 +274,18 @@ impl awaken_provisioning_contract::SandboxCapabilities
 pub fn awaken_provisioning_contract::SandboxCapabilities::satisfies(&self, &awaken_provisioning_contract::SandboxSpec) -> bool
 pub fn awaken_provisioning_contract::SandboxCapabilities::satisfies_requirements(&self, &awaken_provisioning_contract::SandboxRequirements) -> bool
 pub const fn awaken_provisioning_contract::SandboxCapabilities::supports_secret_egress_without_bypass(&self) -> bool
+pub struct awaken_provisioning_contract::SandboxCapacityShapeId(_)
+impl awaken_provisioning_contract::SandboxCapacityShapeId
+pub fn awaken_provisioning_contract::SandboxCapacityShapeId::as_str(&self) -> &str
+pub fn awaken_provisioning_contract::SandboxCapacityShapeId::from_spec(&awaken_provisioning_contract::SandboxSpec) -> core::option::Option<Self>
+impl core::borrow::Borrow<str> for awaken_provisioning_contract::SandboxCapacityShapeId
+pub fn awaken_provisioning_contract::SandboxCapacityShapeId::borrow(&self) -> &str
+impl core::convert::From<&str> for awaken_provisioning_contract::SandboxCapacityShapeId
+pub fn awaken_provisioning_contract::SandboxCapacityShapeId::from(&str) -> Self
+impl core::convert::From<alloc::string::String> for awaken_provisioning_contract::SandboxCapacityShapeId
+pub fn awaken_provisioning_contract::SandboxCapacityShapeId::from(alloc::string::String) -> Self
+impl core::fmt::Display for awaken_provisioning_contract::SandboxCapacityShapeId
+pub fn awaken_provisioning_contract::SandboxCapacityShapeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct awaken_provisioning_contract::SandboxError(pub alloc::string::String)
 impl awaken_provisioning_contract::SandboxError
 pub fn awaken_provisioning_contract::SandboxError::new(impl core::convert::Into<alloc::string::String>) -> Self

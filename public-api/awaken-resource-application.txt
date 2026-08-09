@@ -1,6 +1,24 @@
 pub mod awaken_resource_application
 pub use awaken_resource_application::MAX_MANAGED_FILE_SIZE_BYTES
 pub use awaken_resource_application::MAX_WORKSPACE_FILE_BYTES
+pub struct awaken_resource_application::ApplicationArtifactPublisher
+impl awaken_resource_application::ApplicationArtifactPublisher
+pub fn awaken_resource_application::ApplicationArtifactPublisher::new(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> Self
+impl<C: core::marker::Send + core::marker::Sync + 'static> awaken_resource_contract::execution::ArtifactPublisher<C> for awaken_resource_application::ApplicationArtifactPublisher
+pub fn awaken_resource_application::ApplicationArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::FileRecord, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_resource_application::ApplicationFileContentSource
+impl awaken_resource_application::ApplicationFileContentSource
+pub fn awaken_resource_application::ApplicationFileContentSource::new(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> Self
+impl<C: core::marker::Sync> awaken_resource_contract::execution::FileContentSource<C> for awaken_resource_application::ApplicationFileContentSource
+pub fn awaken_resource_application::ApplicationFileContentSource::read<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(alloc::string::String, alloc::vec::Vec<u8>)>, awaken_resource_contract::execution::FileContentSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub struct awaken_resource_application::CanonicalSkillBundle
+pub awaken_resource_application::CanonicalSkillBundle::files: alloc::vec::Vec<awaken_resource_contract::SkillBundleFile>
+pub awaken_resource_application::CanonicalSkillBundle::source_directory: core::option::Option<alloc::string::String>
+pub struct awaken_resource_application::CatalogRepositoryBindingVerifier
+impl awaken_resource_application::CatalogRepositoryBindingVerifier
+pub fn awaken_resource_application::CatalogRepositoryBindingVerifier::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>) -> Self
+impl<C: core::marker::Sync> awaken_resource_contract::execution::RepositoryBindingVerifier<C> for awaken_resource_application::CatalogRepositoryBindingVerifier
+pub fn awaken_resource_application::CatalogRepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::catalog::ConfigVersion, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::execution::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub struct awaken_resource_application::CreateFileCommand<'a>
 pub awaken_resource_application::CreateFileCommand::bytes: &'a [u8]
 pub awaken_resource_application::CreateFileCommand::downloadable: bool
@@ -45,8 +63,26 @@ impl awaken_resource_contract::lifecycle::ResourcePurgeScheduler for awaken_reso
 pub fn awaken_resource_application::RepositoryPurgeScheduler::schedule_purge<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::lifecycle::ResourceTarget, core::option::Option<u64>, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::lifecycle::PutResourcePurgeOutcome, awaken_resource_contract::lifecycle::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_resource_application::ResourcesApplication
 impl awaken_resource_application::ResourcesApplication
+pub fn awaken_resource_application::ResourcesApplication::artifact_publisher<C: core::marker::Send + core::marker::Sync + 'static>(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<C>>
+pub fn awaken_resource_application::ResourcesApplication::file_content_source<C: core::marker::Sync + 'static>(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::execution::FileContentSource<C>>
 pub fn awaken_resource_application::ResourcesApplication::files(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
 pub fn awaken_resource_application::ResourcesApplication::memory_stores(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub fn awaken_resource_application::ResourcesApplication::new(awaken_resource_contract::component::ResourceComponent) -> Self
 pub fn awaken_resource_application::ResourcesApplication::ports(&self) -> awaken_resource_contract::component::ResourceComponent
 pub fn awaken_resource_application::ResourcesApplication::purge_scheduler(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
+pub fn awaken_resource_application::ResourcesApplication::skill_bundle_source<C: core::marker::Sync + 'static>(&self) -> alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<C>>
+pub struct awaken_resource_application::StoreSkillBundleSource
+impl awaken_resource_application::StoreSkillBundleSource
+pub fn awaken_resource_application::StoreSkillBundleSource::new(alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>) -> Self
+impl<C: core::marker::Sync> awaken_session_contract::skill_execution::SkillBundleSource<C> for awaken_resource_application::StoreSkillBundleSource
+pub fn awaken_resource_application::StoreSkillBundleSource::load<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_session_contract::resource::ResolvedSkillBinding, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_resource_contract::SkillVersion>, awaken_session_contract::skill_execution::SkillBundleSourceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub struct awaken_resource_application::UploadedSkillBundleFile
+pub awaken_resource_application::UploadedSkillBundleFile::content: alloc::vec::Vec<u8>
+pub awaken_resource_application::UploadedSkillBundleFile::executable: bool
+pub awaken_resource_application::UploadedSkillBundleFile::path: alloc::string::String
+pub const awaken_resource_application::MAX_SKILL_ARCHIVE_BYTES: usize
+pub const awaken_resource_application::MAX_SKILL_BUNDLE_BYTES: usize
+pub const awaken_resource_application::MAX_SKILL_FILES: usize
+pub const awaken_resource_application::MAX_SKILL_FILE_BYTES: usize
+pub fn awaken_resource_application::canonicalize_skill_bundle(alloc::vec::Vec<awaken_resource_application::UploadedSkillBundleFile>) -> core::result::Result<awaken_resource_application::CanonicalSkillBundle, alloc::string::String>
+pub fn awaken_resource_application::normalize_bundle_path(&str) -> core::result::Result<alloc::string::String, alloc::string::String>

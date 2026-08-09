@@ -32,7 +32,7 @@ cleanup() {
   [ -z "$API_PF" ] || kill "$API_PF" 2>/dev/null || true
   log "teardown: deleting k3d cluster $CLUSTER"
   k3d_delete_cluster "$CLUSTER"
-  rm -f "$DEPLOY_DIR/awaken" "$DEPLOY_DIR/awaken-server" "$DEPLOY_DIR/awaken-worker"
+  rm -f "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordinator" "$DEPLOY_DIR/awaken-server" "$DEPLOY_DIR/awaken-worker"
 }
 trap cleanup EXIT
 
@@ -78,18 +78,20 @@ wait_roles() {
 
 log "1/10 build production roles and the protocol-only Provider fixture"
 if [ "${ADR71_REUSE_IMAGE:-0}" != "1" ]; then
-  AWAKEN_BIN=$(resolve_cargo_executable awaken-cli awaken)
+  CONTROL_BIN=$(resolve_cargo_executable awaken-cli awaken-control)
+  COORDINATOR_BIN=$(resolve_cargo_executable awaken-cli awaken-coordinator)
   WORKER_BIN=$(resolve_cargo_executable awaken-worker awaken-worker)
   SCENARIO_BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
-  [ -n "$AWAKEN_BIN" ] && [ -n "$WORKER_BIN" ] && [ -n "$SCENARIO_BIN" ] \
+  [ -n "$CONTROL_BIN" ] && [ -n "$COORDINATOR_BIN" ] && [ -n "$WORKER_BIN" ] && [ -n "$SCENARIO_BIN" ] \
     || { err "could not resolve executables"; exit 1; }
-  cp "$AWAKEN_BIN" "$DEPLOY_DIR/awaken"
+  cp "$CONTROL_BIN" "$DEPLOY_DIR/awaken-control"
+  cp "$COORDINATOR_BIN" "$DEPLOY_DIR/awaken-coordinator"
   cp "$WORKER_BIN" "$DEPLOY_DIR/awaken-worker"
   cp "$SCENARIO_BIN" "$DEPLOY_DIR/awaken-server"
   # Cargo's debug executables retain hundreds of MiB of symbols that are not
   # exercised inside the black-box cluster. Strip only the disposable image
   # copies so K3D does not need a second multi-GiB tar while importing the image.
-  strip --strip-unneeded "$DEPLOY_DIR/awaken" "$DEPLOY_DIR/awaken-worker" "$DEPLOY_DIR/awaken-server"
+  strip --strip-unneeded "$DEPLOY_DIR/awaken-control" "$DEPLOY_DIR/awaken-coordinator" "$DEPLOY_DIR/awaken-worker" "$DEPLOY_DIR/awaken-server"
 fi
 
 log "2/10 create three K3S worker nodes and import immutable test images"
@@ -98,7 +100,7 @@ if [ "${ADR71_REUSE_IMAGE:-0}" = "1" ]; then
     || { err "ADR71_REUSE_IMAGE requires an existing $IMAGE"; exit 1; }
 else
   docker build --load -q -t "$IMAGE" \
-    --build-arg AUXILIARY_EXECUTABLE=awaken \
+    --build-arg AUXILIARY_EXECUTABLE=awaken-control \
     -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
 fi
 IMAGE_ID=$(docker image inspect "$IMAGE" --format '{{.Id}}')

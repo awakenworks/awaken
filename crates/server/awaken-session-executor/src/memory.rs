@@ -1185,7 +1185,7 @@ mod tests {
             true,
         );
         bound.bind_execution(Arc::new(HostCommit::Local(Arc::new(
-            awaken_store_inmem::MemoryCommitCoordinator::new(),
+            crate::ProjectedLocalCommit(awaken_store_inmem::MemoryCommitCoordinator::new()),
         ))));
         (runtime, bound, repository, extractions)
     }
@@ -1334,9 +1334,9 @@ mod tests {
         // -> E1 auxiliary Run commits through that authority + E2 parsed selection
         // is returned. The forbidden complement (!C2 -> process-local fallback) is
         // unrepresentable because `AgentSelector::new` requires the authority.
-        let commit = Arc::new(HostCommit::Local(Arc::new(
+        let commit = Arc::new(HostCommit::Local(Arc::new(crate::ProjectedLocalCommit(
             awaken_store_inmem::MemoryCommitCoordinator::new(),
-        )));
+        ))));
         let selector = AgentSelector::new(
             Arc::new(IndexModel),
             awaken_ext_memory::default_selector_agent(

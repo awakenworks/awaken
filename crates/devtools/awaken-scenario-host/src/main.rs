@@ -58,7 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // their Managed composition. Initialize only the selected shared runtime
     // backends here; the production AllInOne modes below open their own durable
     // WorkerDirectory through awaken-cli's canonical composition root.
-    awaken_coordinator::init_scenario_runtime(&deployment).await?;
+    let runtime_authority = awaken_coordinator::init_scenario_runtime(&deployment).await?;
+    awaken_scenario_host::install_scenario_runtime_authority(runtime_authority)?;
     let app = match std::env::var("AWAKEN_MODEL_MODE").as_deref() {
         Ok("probe") => {
             awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")

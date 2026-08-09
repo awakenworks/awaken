@@ -26,6 +26,16 @@ pub(super) struct SessionRecord {
 }
 
 impl SessionRecord {
+    /// Project a Runtime lifecycle hint without allowing the disposable event
+    /// view to reverse the Session application's terminal transition. Runtime
+    /// feeds may be consumed after an archive CAS, but they are not a second
+    /// authority for Session lifecycle state.
+    pub(super) fn project_runtime_status(&mut self, status: &'static str) {
+        if self.session.status != "terminated" {
+            self.session.status = status;
+        }
+    }
+
     /// IDs already lowered into tool-use events, plus the MCP subset needed to
     /// classify later results. One scan owns both projections so refresh and
     /// local completion cannot grow separate deduplication rules.
