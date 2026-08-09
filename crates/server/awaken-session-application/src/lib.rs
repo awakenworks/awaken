@@ -35,6 +35,12 @@ pub use mcp::{McpAttachmentCandidate, McpAttachmentCandidateTarget};
 pub use realization::{
     SessionRealizationError, SessionReconciliation, SessionReconciliationFailure,
 };
+mod update;
+pub use update::{
+    SessionUpdateChanges, SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
+};
+mod terminal;
+pub use terminal::SessionTerminalTransition;
 
 /// Secret-free credential selection used while compiling a Session.
 #[async_trait::async_trait]
@@ -1027,6 +1033,162 @@ mod tests {
         );
     }
 
+    /// Session-root insertion graph. C1 identity is unused; C2 key/hash/payload
+    /// exactly replay; C3 an existing key carries another hash; C4 another key
+    /// targets an existing identity. Effects are E1 one insert/revision advance,
+    /// E2 replay of the same revision, E3 idempotency mismatch, and E4 identity
+    /// conflict. The application is the only repository-result classifier.
+    ///
+    /// | Rule | Identity | Key/hash | Payload | Effect |
+    /// |---|---|---|---|---|
+    /// | C1 | unused | new | original | E1 |
+    /// | C2 | existing | exact | exact | E2 |
+    /// | C3 | existing | same key/different hash | changed | E3 |
+    /// | C4 | existing | another key | any | E4 |
+    #[tokio::test]
+    async fn create_session_root_classifies_insert_replay_and_conflicts() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let original = persisted("create-root", false, false, "preparing");
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(original.clone());
+        let record = awaken_session_contract::IdempotencyRecord {
+            key: "create-root:one".into(),
+            payload_hash: payload.stable_hash(),
+        };
+
+        let inserted = app
+            .create_session_root("workspace", original.clone(), record.clone(), Vec::new())
+            .await
+            .expect("C1");
+        assert_eq!(
+            inserted.revision,
+            awaken_session_contract::SessionRevision(1),
+            "C1"
+        );
+        let replayed = app
+            .create_session_root("workspace", original.clone(), record.clone(), Vec::new())
+            .await
+            .expect("C2");
+        assert_eq!(replayed.revision, inserted.revision, "C2");
+
+        let mut changed = original.clone();
+        changed.title = Some("changed".into());
+        assert_eq!(
+            app.create_session_root(
+                "workspace",
+                changed,
+                awaken_session_contract::IdempotencyRecord {
+                    key: record.key,
+                    payload_hash: "changed-hash".into(),
+                },
+                Vec::new(),
+            )
+            .await,
+            Err(SessionMutationError::IdempotencyMismatch),
+            "C3"
+        );
+        assert_eq!(
+            app.create_session_root(
+                "workspace",
+                original,
+                awaken_session_contract::IdempotencyRecord {
+                    key: "create-root:another".into(),
+                    payload_hash: "another-hash".into(),
+                },
+                Vec::new(),
+            )
+            .await,
+            Err(SessionMutationError::Conflict),
+            "C4"
+        );
+    }
+
+    /// Terminal-transition cause/effect graph. C1 the durable Session is live;
+    /// C2 two archive commands race; C3 the same archive is replayed; C4 delete
+    /// targets a live Session; C5 delete targets another terminal state. Effects:
+    /// E1 exactly one archive CAS/fact and one idempotent observation; E2 replay
+    /// does not advance revision; E3 delete atomically records hidden terminal
+    /// status plus recoverable cleanup classification; E4 terminal-to-terminal mutation is rejected.
+    ///
+    /// | Rule | Durable state | Command | Race/replay | Effect |
+    /// |---|---|---|---|---|
+    /// | L1 | idle | archive | race | E1 |
+    /// | L2 | terminated | archive | replay | E2 |
+    /// | L3 | idle | delete | none | E3 |
+    /// | L4 | terminated | delete | none | E4 |
+    #[tokio::test]
+    async fn terminal_transition_decision_table_is_durable_and_idempotent() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        create(
+            repo.as_ref(),
+            persisted("archive-race", false, false, "idle"),
+        )
+        .await;
+        create(
+            repo.as_ref(),
+            persisted("delete-live", false, false, "idle"),
+        )
+        .await;
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let fact = |id: &str, event_type: &str| awaken_session_contract::ManagedLifecycleFact {
+            id: format!("{id}:{event_type}"),
+            object_id: id.into(),
+            workspace_id: Some("workspace".into()),
+            event_type: event_type.into(),
+            timestamp: 1,
+        };
+
+        let archive_fact = fact("archive-race", "session.terminated");
+        let (first, second) = tokio::join!(
+            app.begin_archive("archive-race", "2026-08-06T00:00:00Z", archive_fact.clone()),
+            app.begin_archive("archive-race", "2026-08-06T00:00:00Z", archive_fact)
+        );
+        let first = first.expect("L1 first");
+        let second = second.expect("L1 second");
+        assert_ne!(first.transitioned, second.transitioned, "L1");
+        let archived = repo.get("archive-race").await.expect("L1 durable");
+        assert_eq!(archived.status, "terminated", "L1");
+        let revision = archived.revision;
+        let replay = app
+            .begin_archive(
+                "archive-race",
+                "another-timestamp",
+                fact("archive-race", "session.terminated"),
+            )
+            .await
+            .expect("L2");
+        assert!(!replay.transitioned, "L2");
+        assert_eq!(replay.session.revision, revision, "L2");
+
+        let deleted = app
+            .begin_delete("delete-live", fact("delete-live", "session.deleted"))
+            .await
+            .expect("L3");
+        assert!(deleted.transitioned, "L3");
+        assert_eq!(deleted.session.status, "deleted", "L3");
+        assert!(deleted.session.needs_resource_reconciliation(), "L3");
+        assert!(
+            matches!(
+                app.begin_delete("archive-race", fact("archive-race", "session.deleted"))
+                    .await,
+                Err(SessionPreparationError::NotFound)
+            ),
+            "L4"
+        );
+    }
+
     /// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists;
     /// C2 it is nonterminal; C3 the epoch can advance; C4 settlement presents
     /// the current epoch; C5 a later admission or terminal transition has
@@ -1131,6 +1293,71 @@ mod tests {
             Err(SessionActivityError::NotFound),
             "A7"
         );
+    }
+
+    /// Update-admission authority graph. C1 durable status is idle; C2 durable
+    /// status is running/terminal; C3 an interface cache is absent or stale.
+    /// Only C1 permits mutation (E1); C2 always rejects without a root revision
+    /// change (E2), independently of C3. This prevents another process's wire
+    /// projection from becoming a parallel lifecycle authority.
+    ///
+    /// | Rule | Durable status | Wire cache | Effect |
+    /// |---|---|---|---|
+    /// | U1 | idle | any/absent | apply through root CAS |
+    /// | U2 | running | any/absent | reject, no mutation |
+    /// | U3 | terminal | any/absent | reject, no mutation |
+    #[tokio::test]
+    async fn update_admission_uses_only_durable_session_status() {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        create(
+            repo.as_ref(),
+            persisted("update-idle", false, false, "idle"),
+        )
+        .await;
+        create(
+            repo.as_ref(),
+            persisted("update-running", false, false, "running"),
+        )
+        .await;
+        create(
+            repo.as_ref(),
+            persisted("update-terminal", false, false, "terminated"),
+        )
+        .await;
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let command = |title: &str| SessionUpdateCommand {
+            title: Some(Some(title.into())),
+            metadata: None,
+            tools: None,
+            mcp_candidates: None,
+            idempotency_key: None,
+            request_fingerprint: awaken_session_contract::stable_fingerprint(&title),
+            if_match: None,
+        };
+
+        let updated = app
+            .update_session("update-idle", command("accepted"))
+            .await
+            .expect("U1");
+        assert_eq!(updated.session.title.as_deref(), Some("accepted"), "U1");
+
+        for (rule, id) in [("U2", "update-running"), ("U3", "update-terminal")] {
+            let before = repo.get(id).await.expect(rule);
+            assert!(
+                matches!(
+                    app.update_session(id, command("rejected")).await,
+                    Err(SessionUpdateError::NotIdle)
+                ),
+                "{rule}"
+            );
+            assert_eq!(repo.get(id).await.expect(rule), before, "{rule}");
+        }
     }
 
     /// Cause/effect graph: C1 the Runtime presents the exact durable realization

@@ -155,6 +155,7 @@ struct HotRuntimeState {
     mode: HotStageMode,
     fail_publish_next: bool,
     fail_drain_next: bool,
+    fail_replace_toolsets_next: bool,
     replaced_toolsets: Vec<(String, Vec<awaken_agent_contract::ToolsetPolicy>)>,
 }
 
@@ -202,11 +203,11 @@ impl SessionRuntime for HotRuntime {
         thread: &str,
         toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
     ) -> Result<(), RunError> {
-        self.state
-            .lock()
-            .unwrap()
-            .replaced_toolsets
-            .push((thread.to_string(), toolsets));
+        let mut state = self.state.lock().unwrap();
+        state.replaced_toolsets.push((thread.to_string(), toolsets));
+        if std::mem::take(&mut state.fail_replace_toolsets_next) {
+            return Err(RunError::internal("hot toolset replacement failed"));
+        }
         Ok(())
     }
     async fn define_outcome(
@@ -1506,6 +1507,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
 /// | I1 | new | same | exact | apply once + ETag + operation id |
 /// | I2 | same | same | omitted | replay; revision/effects unchanged |
 /// | I2b | same | same | later root revision | replay original command revision |
+/// | I2c | pre-upgrade namespace/hash | same | omitted | replay remains compatible |
 /// | I3 | same | different | omitted | 409; no effect |
 /// | I4 | absent | - | stale | 409 before Runtime effect |
 /// | I5 | absent | - | malformed | 400 before Runtime effect |
@@ -1554,6 +1556,31 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     );
     assert!(applied_headers.contains_key("etag"), "I1");
     assert!(applied_headers.contains_key("x-awaken-operation-id"), "I1");
+    let legacy_title: Option<Option<String>> = None;
+    let legacy_metadata: Option<Option<std::collections::BTreeMap<String, Option<String>>>> = None;
+    let legacy_tools: Option<Vec<awaken_session_contract::AgentTool>> = None;
+    let legacy_mcp = Some(vec![
+        serde_json::from_value::<awaken_protocol_managed::types::agent::AgentMcpServer>(
+            desired.clone(),
+        )
+        .unwrap(),
+    ]);
+    let legacy_hash = awaken_session_contract::stable_fingerprint(&(
+        &legacy_title,
+        &legacy_metadata,
+        &legacy_tools,
+        &legacy_mcp,
+    ));
+    let legacy_key = format!(
+        "managed:update-command:{id}:{}",
+        awaken_session_contract::stable_fingerprint(&(id, "command-1"))
+    );
+    let legacy_receipt = h
+        .repo
+        .idempotency_receipt(id, &legacy_key)
+        .await
+        .expect("I2c stable pre-upgrade receipt namespace");
+    assert_eq!(legacy_receipt.payload_hash, legacy_hash, "I2c");
     let applied_etag = applied_headers["etag"].clone();
     let effects = {
         let state = h.state.lock().unwrap();
@@ -1676,6 +1703,95 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     assert_eq!(state.replaced_toolsets[0].0, id, "I6 exact Session");
     let write = state.replaced_toolsets[0].1[0].policy_for("write");
     assert!(!write.enabled, "I6 exact disabled policy reaches runtime");
+}
+
+/// Post-commit Runtime projection FMECA. C1 durable tool policy commits; C2 the
+/// first disposable Runtime replacement fails; C3 the client retries the exact
+/// idempotency key/hash; C4 the key is reused with another payload. Effects:
+/// E1 durable truth and one wire update fact survive C2; E2 C3 reprojects the
+/// current durable policy without a second root mutation/event; E3 C4 remains a
+/// conflict and cannot project another policy.
+///
+/// | Rule | Durable commit | Runtime effect | Retry | Payload | Effect |
+/// |---|---|---|---|---|---|
+/// | T1 | yes | fails | none | original | E1 + retryable error |
+/// | T2 | already | succeeds | same key | same | E2 + success |
+/// | T3 | already | n/a | same key | different | E3 |
+#[tokio::test]
+async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
+    let h = hot_harness();
+    let (status, _, created) = call_with_headers(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({"agent": "tool-repair-agent"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = created["id"].as_str().unwrap();
+    let tools = json!([{
+        "type": "agent_toolset_20260401",
+        "configs": [],
+        "default_config": {
+            "enabled": true,
+            "permission_policy": { "type": "always_ask" }
+        }
+    }]);
+    h.state.lock().unwrap().fail_replace_toolsets_next = true;
+
+    let (failed_status, _, _) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"tools": tools.clone()}})),
+        &[("idempotency-key", "tool-repair")],
+    )
+    .await;
+    assert_eq!(failed_status, StatusCode::INTERNAL_SERVER_ERROR, "T1");
+    assert_eq!(h.state.lock().unwrap().replaced_toolsets.len(), 1, "T1");
+    assert_eq!(
+        awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
+        serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(tools.clone()).unwrap(),
+        "T1 durable truth"
+    );
+
+    let (retry_status, _, retry) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"tools": tools.clone()}})),
+        &[("idempotency-key", "tool-repair")],
+    )
+    .await;
+    assert_eq!(retry_status, StatusCode::OK, "T2");
+    assert_eq!(retry["agent"]["tools"], tools, "T2");
+    assert_eq!(h.state.lock().unwrap().replaced_toolsets.len(), 2, "T2");
+
+    let (events_status, events) =
+        call(&h.app, "GET", &format!("/v1/sessions/{id}/events"), None).await;
+    assert_eq!(events_status, StatusCode::OK);
+    assert_eq!(
+        events["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["type"] == "session.updated")
+            .count(),
+        1,
+        "T1/T2 project exactly one committed fact"
+    );
+
+    let (mismatch_status, _, _) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"title": "different-payload"})),
+        &[("idempotency-key", "tool-repair")],
+    )
+    .await;
+    assert_eq!(mismatch_status, StatusCode::CONFLICT, "T3");
+    assert_eq!(h.state.lock().unwrap().replaced_toolsets.len(), 2, "T3");
 }
 
 /// CAS retry decisions are generated from `conflict × explicit precondition`:
