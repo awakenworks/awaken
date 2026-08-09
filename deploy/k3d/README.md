@@ -44,6 +44,28 @@ the cluster's exact Pause and CoreDNS images. Scenario scripts may add
 dependencies such as Postgres or NATS, but they must not reimplement import,
 cluster creation, executable discovery, port selection, or cleanup.
 
+The product backend uses the Kubernetes sandbox tier and Coordinator's durable
+Environment build jobs. Create and attach the fixture Registry before applying
+that overlay, then push the production sandbox base to the exact configured
+coordinate:
+
+```bash
+k3d registry create awaken-registry.localhost --port 5111
+# The shared harness accepts the fourth registry coordinate and passes it once
+# to `k3d cluster create --registry-use`.
+. e2e/k3d/harness.sh
+k3d_create_cluster awaken-product 1 2 k3d-awaken-registry.localhost:5111
+deploy/images/sandbox/build.sh \
+  k3d-awaken-registry.localhost:5111/awaken-sandbox:latest
+docker push k3d-awaken-registry.localhost:5111/awaken-sandbox:latest
+```
+
+The all-in-one Pod never runs or mounts a Docker daemon. It submits bounded,
+rootless BuildKit Jobs through namespace-scoped RBAC; those Jobs push immutable
+derived Environment images to the same Registry. Session creation waits inside
+Awaken for the exact digest, and Session Pods receive that digest instead of
+installing packages at startup.
+
 ## Verification Rules
 
 | Rule | Cause | Required effect |

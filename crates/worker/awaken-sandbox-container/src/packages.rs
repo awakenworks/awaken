@@ -8,10 +8,10 @@ use awaken_provisioning_contract as pc;
 
 use crate::RuntimeError;
 
-#[cfg(any(feature = "docker", feature = "podman", test))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
 const PACKAGE_RECIPE_VERSION: &str = "3";
 
-#[cfg(any(feature = "docker", feature = "podman", test))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
 fn requirement_is_pinned(manager: &str, package: &str) -> bool {
     match manager {
         "apt" => package.contains('='),
@@ -29,7 +29,7 @@ fn requirement_is_pinned(manager: &str, package: &str) -> bool {
     }
 }
 
-#[cfg(any(feature = "docker", feature = "podman", test))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
 fn has_unpinned_requirement(requirements: &pc::PackageRequirements) -> bool {
     requirements.managers.iter().any(|(manager, packages)| {
         packages
@@ -166,7 +166,7 @@ fn package_containerfile_for_user(
 /// Return the immutable build recipe and its content address. The exact local
 /// base-image identity is part of the recipe, so moving a mutable tag invalidates
 /// the cache even when the Environment package lists stay unchanged.
-#[cfg(any(feature = "docker", feature = "podman", test))]
+#[cfg(any(feature = "docker", feature = "podman", feature = "k8s", test))]
 pub(crate) fn package_image_recipe(
     base_identity: &str,
     base_user: &str,

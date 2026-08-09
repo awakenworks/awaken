@@ -587,7 +587,7 @@ mod tests {
         assert_eq!(log.commands.lock().unwrap().len(), 1, "P3");
 
         let mut conflict = registration();
-        conflict.declared_hand = Some("other-hand".into());
+        conflict.session_profile.system = Some("conflicting projection".into());
         assert!(
             matches!(
                 registrar.register(conflict).await,
@@ -597,11 +597,8 @@ mod tests {
         );
         assert_eq!(log.commands.lock().unwrap().len(), 1, "P4");
         assert_eq!(
-            catalog
-                .current("workspace-a", "agent-a")
-                .unwrap()
-                .declared_hand,
-            Some("hand-a".into()),
+            catalog.current("workspace-a", "agent-a").unwrap(),
+            registration(),
             "P4"
         );
     }

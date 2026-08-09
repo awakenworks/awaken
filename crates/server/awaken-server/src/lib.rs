@@ -28,15 +28,14 @@ pub mod control_service_boundary;
 mod coordinator_component;
 mod coordinator_persistence;
 pub mod data_subject_boundary;
-pub mod dynamic_placement;
 pub mod inference_materializer;
 pub mod mcp_export;
 pub mod model_directory;
 pub mod model_discovery;
 pub mod model_resolver;
-pub mod placement;
 mod relay_hand;
 pub mod webhooks;
+pub mod worker_placement;
 mod worker_registry;
 pub mod workspace_path;
 
@@ -619,7 +618,7 @@ fn mount_with_managed_over_and_models(
     let worker_transport = awaken_runtime_host::registered_worker_transport_router(
         host.clone(),
         worker_registry::shared(),
-        dynamic_placement::shared_worker_placement_policy(),
+        worker_placement::shared_worker_placement_policy(),
         managed_state,
         resource_catalog.clone(),
         worker_authenticator,

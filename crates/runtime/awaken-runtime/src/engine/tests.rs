@@ -296,6 +296,155 @@ fn keep_last_preserves_a_system_message_regardless_of_position() {
     );
 }
 
+fn assistant_with_tools(message_id: &str, calls: &[(&str, &str)]) -> Message {
+    Message {
+        id: MessageId(message_id.to_string()),
+        role: Role::Assistant,
+        content: calls
+            .iter()
+            .map(|(id, name)| ContentBlock::tool_use(*id, *name, serde_json::json!({})))
+            .collect(),
+    }
+}
+
+fn results(message_id: &str, call_ids: &[&str]) -> Message {
+    Message {
+        id: MessageId(message_id.to_string()),
+        role: Role::Tool,
+        content: call_ids
+            .iter()
+            .map(|id| ContentBlock::tool_result(*id, vec![ContentBlock::text("ok")]))
+            .collect(),
+    }
+}
+
+fn request_tool_ids(request: &ChatRequest) -> (Vec<String>, Vec<String>) {
+    let uses = request
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect();
+    let results = request
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.clone()),
+            _ => None,
+        })
+        .collect();
+    (uses, results)
+}
+
+#[test]
+fn keep_last_never_exposes_half_of_a_tool_round() {
+    // CE-CP5/CP6 decision table:
+    // N=2 retains the complete use/result round; N=1 cuts before the use and
+    // therefore drops the orphan result instead of exceeding the hard limit.
+    let transcript = vec![
+        numbered(0),
+        assistant_with_tools("a1", &[("c1", "tool-a")]),
+        results("t1", &["c1"]),
+    ];
+    let pair = build_chat_request(
+        &spec_with(ContextPolicy::KeepLast { keep_last: 2 }),
+        &[],
+        &transcript,
+        &[],
+        &Default::default(),
+    );
+    assert_eq!(
+        request_tool_ids(&pair),
+        (vec!["c1".into()], vec!["c1".into()])
+    );
+
+    let split = build_chat_request(
+        &spec_with(ContextPolicy::KeepLast { keep_last: 1 }),
+        &[],
+        &transcript,
+        &[],
+        &Default::default(),
+    );
+    assert_eq!(request_tool_ids(&split), (Vec::new(), Vec::new()));
+    assert_eq!(
+        split
+            .messages
+            .iter()
+            .filter(|message| message.role != Role::System)
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn request_pairing_is_local_for_multiple_partial_and_reused_calls() {
+    // CE-CP7/CP8/CP9: c2 has no local result and the second occurrence of c1
+    // cannot borrow the first round's result. Orphan/duplicate results are
+    // removed; the first complete occurrence stays paired.
+    let transcript = vec![
+        assistant_with_tools("a1", &[("c1", "tool-a"), ("c2", "tool-b")]),
+        results("t1", &["c1", "ghost", "c1"]),
+        assistant_with_tools("a2", &[("c1", "read-again")]),
+    ];
+    let request = build_chat_request(
+        &spec_with(ContextPolicy::KeepAll),
+        &[],
+        &transcript,
+        &[],
+        &Default::default(),
+    );
+    assert_eq!(
+        request_tool_ids(&request),
+        (vec!["c1".into()], vec!["c1".into()])
+    );
+}
+
+#[test]
+fn every_keep_last_cut_preserves_systems_hard_limit_and_tool_pairing() {
+    // CE-CP1..CP10 exhaustive bounded expansion: for every cut of a transcript
+    // containing a two-call round, all system messages survive, conversational
+    // count stays <= N, and uses/results remain occurrence-paired.
+    let transcript = vec![
+        numbered(0),
+        Message::text(MessageId("s-mid".into()), Role::System, "pinned"),
+        assistant_with_tools("a1", &[("c1", "tool-a"), ("c2", "tool-b")]),
+        results("t1", &["c1"]),
+        results("t2", &["c2"]),
+        numbered(1),
+    ];
+    for keep_last in 0..=6 {
+        let request = build_chat_request(
+            &spec_with(ContextPolicy::KeepLast { keep_last }),
+            &[],
+            &transcript,
+            &[],
+            &Default::default(),
+        );
+        assert!(
+            request
+                .messages
+                .iter()
+                .filter(|message| message.role != Role::System)
+                .count()
+                <= keep_last
+        );
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .filter(|message| message.role == Role::System)
+                .count(),
+            2
+        );
+        let (uses, results) = request_tool_ids(&request);
+        assert_eq!(uses, results, "keep_last={keep_last}: {request:?}");
+    }
+}
+
 #[test]
 fn prelude_is_injected_after_instructions_before_the_transcript() {
     let prelude = vec![Message::text(

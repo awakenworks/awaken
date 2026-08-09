@@ -72,7 +72,6 @@ pub use awaken_runtime_host::{
 pub use awaken_sandbox_local::content_fingerprint;
 
 use awaken_server::mount_with_managed;
-use awaken_server::placement;
 
 /// A minimal ACP agent (shell): read the prompt line, emit a message + turn_end —
 /// stands in for `claude --acp` so the ACP-runtime path runs without a real CLI.
@@ -702,130 +701,6 @@ pub fn build_custom_router() -> Router {
     mount(Arc::new(host))
 }
 
-/// A router whose runs execute their tools on a REMOTE HAND (ADR-0044) instead of
-/// the in-process registry. A hand task serving the built-in hand tools is spawned
-/// over an in-process framed channel; the host routes every run's tool calls to it
-/// via `with_remote_hand`. The driving model calls `bash` to echo a marker, so the
-/// e2e proves the whole brain→(framed channel)→hand→brain path through the served
-/// binary. `AWAKEN_MODEL_MODE=remote-hand`.
-pub fn build_remote_hand_router() -> Router {
-    use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
-
-    let (model, model_ref) =
-        scenario_model(Arc::new(crate::models::RemoteHandModel), "remote-hand");
-
-    // Where the hand runs is a topology choice (ADR-0045):
-    //   - AWAKEN_REMOTE_HAND=host:port (or tcp://host:port) → Direct-over-network:
-    //     dial a hand serving the executor channel on TCP (e.g. a k8s Service in
-    //     another pod). The tool calls leave the brain pod entirely.
-    //   - AWAKEN_REMOTE_HAND_UNIX=/path/hand.sock → Co-located (C5): the hand runs in
-    //     this run's `--network none` sandbox container; dial the unix socket it bound
-    //     in the shared rendezvous — the transport that crosses a network-denied edge.
-    //   - unset → the degenerate in-process hand: a framed duplex to a serve_hand
-    //     task in this same process.
-    let executor: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> = if let Some(nats_url) =
-        std::env::var("AWAKEN_REMOTE_HAND_NATS")
-            .ok()
-            .filter(|v| !v.is_empty())
-    {
-        // Relay topology (ADR-0045): neither end reaches the other directly;
-        // both meet at a NATS broker. The brain publishes each HandRequest on
-        // the shared subject and awaits the reply (NATS request/reply).
-        let subject =
-            std::env::var("AWAKEN_HAND_SUBJECT").unwrap_or_else(|_| "awaken.hand.exec".to_string());
-        Arc::new(connect_nats_executor_blocking(&nats_url, subject))
-    } else if let Some(listen) = std::env::var("AWAKEN_REMOTE_HAND_LISTEN")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        // Reverse topology (ADR-0045): the hand has no inbound reachability
-        // (NAT / outbound-only), so it dials US. Bind a rendezvous through the
-        // one ChannelFactory and use the accepted channel as the executor
-        // channel — the brain stays the requester; only the dial direction flips.
-        let plan = awaken_connection_plan::ConnectionPlan::tcp_listen(&listen);
-        let channel = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let listener = awaken_connection_plan::bind_tcp(&plan)
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!("brain failed to bind reverse rendezvous {listen}: {e}")
-                    });
-                eprintln!("awaken brain: awaiting a reverse-dial hand on tcp://{listen}");
-                listener
-                    .accept()
-                    .await
-                    .unwrap_or_else(|e| panic!("brain rendezvous accept failed: {e}"))
-            })
-        });
-        Arc::new(RemoteToolExecutor::new(channel))
-    } else if let Some(sock) = std::env::var("AWAKEN_REMOTE_HAND_UNIX")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        // Co-located topology (C5, ADR-0044/0045): the hand runs INSIDE this run's
-        // sandbox container and the container's network is DENIED (`--network none`),
-        // so no TCP port can be published. The brain dials the unix socket the hand
-        // bound in the shared host<->container rendezvous (a CacheVolume bind-mount) —
-        // the one transport that crosses a network-denied boundary. Same requester
-        // role and ChannelFactory as the TCP branch; only DialAddr flips to Unix.
-        let plan = awaken_connection_plan::ConnectionPlan::unix_dial(&sock);
-        let channel = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                awaken_connection_plan::connect_with_retry(
-                    &awaken_connection_plan::TokioChannelFactory,
-                    &plan,
-                    240,
-                    std::time::Duration::from_millis(500),
-                )
-                .await
-                .unwrap_or_else(|e| panic!("could not reach co-located hand at unix://{sock}: {e}"))
-            })
-        });
-        Arc::new(RemoteToolExecutor::new(channel))
-    } else if let Some(remote) = std::env::var("AWAKEN_REMOTE_HAND")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        // Direct topology (ADR-0045): the brain dials the hand's host:port (a k8s
-        // Service) through the one ChannelFactory, retrying while the hand pod /
-        // cluster DNS warms up.
-        let addr = remote.strip_prefix("tcp://").unwrap_or(&remote).to_string();
-        let plan = awaken_connection_plan::ConnectionPlan::tcp_dial(&addr);
-        let channel = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                awaken_connection_plan::connect_with_retry(
-                    &awaken_connection_plan::TokioChannelFactory,
-                    &plan,
-                    240,
-                    std::time::Duration::from_millis(500),
-                )
-                .await
-                .unwrap_or_else(|e| panic!("could not reach remote hand at {addr}: {e}"))
-            })
-        });
-        Arc::new(RemoteToolExecutor::new(channel))
-    } else {
-        // InProcess degenerate: a framed duplex to a serve_hand task in-process.
-        let (brain_end, hand_end) = awaken_connection_plan::in_process_pair();
-        let session = HandSession::new(awaken_ext_builtin_tools::executable_hand_tools());
-        tokio::spawn(serve_hand(hand_end, session));
-        Arc::new(RemoteToolExecutor::new(brain_end))
-    };
-
-    // ADR-0046: place this run's hand through the `ToolExecutorProvider` seam
-    // rather than the session-wide `with_remote_hand`. The served single-agent
-    // mode is the degenerate one-entry policy — a catch-all that places every run
-    // on the hand established above — so this e2e also exercises the placement
-    // seam end to end, not just ADR-0044's executor.
-    let provider = Arc::new(placement::ConfigToolExecutorProvider::new(vec![
-        placement::PlacementEntry::any(executor),
-    ]));
-    let host = resource_host(model, model_ref)
-        .with_gate_override(Arc::new(AllowAllGate))
-        .with_tool_executor_provider(provider);
-    mount(Arc::new(host))
-}
-
 /// A router whose agent activates the tool state machine (the state-machine e2e).
 /// The machine defines `glob` as a single transition out of the initial state, so
 /// the driving model's first `glob` advances it (emitting a context message) and
@@ -1284,6 +1159,7 @@ pub async fn build_config_router() -> Router {
     let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_server::workspace_path::with_workspace_path_addressing(flat)
 }
+
 struct AllowAllGate;
 
 #[async_trait::async_trait]
@@ -1294,76 +1170,6 @@ impl awaken_runtime_contract::permission::ToolGateHook for AllowAllGate {
         _state: &awaken_agent_contract::agent::state::Store,
     ) -> awaken_runtime_contract::permission::GateOutcome {
         awaken_runtime_contract::permission::GateOutcome::Allow
-    }
-}
-
-/// A `ToolExecutor` that relays each call to a hand through a NATS broker (ADR-0045
-/// Relay topology): publish the `HandRequest` on the shared subject, await the
-/// `HandReply`. Reuses tool-relay's wire types + result mapping.
-struct NatsToolExecutor {
-    client: async_nats::Client,
-    subject: String,
-    next_id: std::sync::atomic::AtomicU64,
-}
-
-#[async_trait::async_trait]
-impl awaken_runtime_contract::tool::ToolExecutor for NatsToolExecutor {
-    async fn invoke(
-        &self,
-        call: &awaken_runtime_contract::llm::ToolCall,
-    ) -> Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>
-    {
-        use awaken_runtime_contract::tool::ToolError;
-        use awaken_tool_relay::wire::{HandErrorKind, HandReply, HandRequest, HandResult};
-
-        let id = self
-            .next_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let req = HandRequest::new(id, call.clone());
-        let bytes = serde_json::to_vec(&req)
-            .map_err(|e| ToolError::Execution(format!("encode hand request: {e}")))?;
-        let msg = self
-            .client
-            .request(self.subject.clone(), bytes.into())
-            .await
-            .map_err(|e| {
-                // The request may have run on a hand but the reply was lost.
-                ToolError::Execution(format!("indeterminate: nats relay request failed: {e}"))
-            })?;
-        let reply: HandReply = serde_json::from_slice(&msg.payload)
-            .map_err(|e| ToolError::Execution(format!("decode hand reply: {e}")))?;
-        match reply.result {
-            HandResult::Ok { output } => Ok(output),
-            HandResult::Err { error } => match error.kind {
-                HandErrorKind::UnknownTool => Err(ToolError::Unknown(call.tool_id.clone())),
-                _ => Err(ToolError::Execution(error.message)),
-            },
-            HandResult::Indeterminate => Err(ToolError::Execution(
-                "indeterminate: hand connection lost".to_string(),
-            )),
-        }
-    }
-}
-
-/// Connect the brain to the NATS broker at startup (retrying while the broker pod
-/// comes up), returning a relay executor. Blocking, before serving.
-fn connect_nats_executor_blocking(url: &str, subject: String) -> NatsToolExecutor {
-    let url = url.to_string();
-    let client = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(async {
-            for _ in 0..120 {
-                match async_nats::connect(&url).await {
-                    Ok(c) => return c,
-                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
-                }
-            }
-            panic!("could not reach NATS broker at {url}");
-        })
-    });
-    NatsToolExecutor {
-        client,
-        subject,
-        next_id: std::sync::atomic::AtomicU64::new(1),
     }
 }
 

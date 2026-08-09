@@ -914,7 +914,6 @@ mod tests {
                 source_revision: version,
                 snapshot: ExecutableAgentSnapshot::builder(agent_id).build(),
                 session_profile: ExecutableAgentSessionProfile::default(),
-                declared_hand: None,
             }
         }
 

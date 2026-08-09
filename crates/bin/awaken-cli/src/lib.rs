@@ -50,8 +50,9 @@ pub use crate::brain_admin::{
     with_connection_metric,
 };
 pub use acp_local_credentials::{
-    AcpLocalCredentialResolver, PreparedLocalAcp, build_configured_worker, local_acp_diagnostics,
-    prepare_local_acp, registered_memory_mounter_factory,
+    AcpLocalCredentialResolver, PreparedLocalAcp, PreparedLocalWorker, build_configured_worker,
+    local_acp_diagnostics, prepare_local_acp, prepare_local_worker,
+    registered_memory_mounter_factory,
 };
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;
@@ -678,10 +679,6 @@ async fn build_all_in_one_router_with_composition(
     })
     .await
     .unwrap_or_else(|error| panic!("open deployment stores: {error}"));
-    let hand_executors =
-        awaken_server::placement::connect_declared_hands(&deployment.hand_connections)
-            .await
-            .unwrap_or_else(|error| panic!("declared Hand topology: {error}"));
     let content_capture_ceiling = deployment.runtime.content_capture.level;
     assemble_runtime_process_router(
         stores,
@@ -699,7 +696,6 @@ async fn build_all_in_one_router_with_composition(
             model_supply: local_model_supply(deployment.cloud_models.is_enabled()),
             brokered_catalog: None,
             local_acp_observations: deployment.local_acp_observations,
-            hand_executors,
             web_search_providers: None,
             web_search_publication_resolver: None,
             executable_agent_wiring: None,
@@ -979,6 +975,7 @@ mod runtime_session_store_tests {
                     sandbox: serde_json::json!({}),
                     sandbox_provisioning: Default::default(),
                     packages: Default::default(),
+                    prepared_image: None,
                     network: SessionNetworkPolicy::Unrestricted,
                     credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
                         inference_holder: awaken_runtime_contract::PlaintextHolder::new(

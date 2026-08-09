@@ -919,6 +919,90 @@ pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::Dispatch>(store: 
     assert_eq!(store.relay().await.unwrap(), 0, "the outbox was drained");
 }
 
+/// Cause/effect decision table CE-SM4..SM7 for every dispatch backend.
+///
+/// | rule | aggregate | same id | payload | effect |
+/// | SM4  | outbox    | yes     | same    | idempotent false |
+/// | SM7  | outbox    | yes     | changed | explicit conflict |
+/// | SM4  | inbox     | yes     | same    | idempotent false |
+/// | SM7  | inbox     | yes     | changed | explicit conflict |
+/// | SM4  | deliver+claim | yes  | same    | idempotent pending append |
+/// | SM7  | deliver+claim | yes  | changed | explicit conflict |
+/// | TM5  | inbox     | yes     | u64::MAX schedule | normalize, then retry false |
+pub async fn assert_message_idempotency_conflicts<S: awaken_run_ingress::Dispatch>(store: &S) {
+    use awaken_run_ingress::PendingInput;
+
+    let input = |message_id: &str, content: &str| PendingInput {
+        message_id: message_id.to_string(),
+        run_id: RunId("run-idempotency".to_string()),
+        thread_id: ThreadId("thread-idempotency".to_string()),
+        correlation_id: "correlation-idempotency".to_string(),
+        available_at_ms: None,
+        result: ResumeResult::Input(content.to_string()),
+    };
+
+    let outbox = input("outbox-key", "one");
+    assert!(store.stage(outbox.clone()).await.unwrap());
+    assert!(!store.stage(outbox).await.unwrap());
+    let outbox_conflict = store
+        .stage(input("outbox-key", "changed"))
+        .await
+        .expect_err("same outbox key with changed payload must conflict");
+    assert!(outbox_conflict.to_string().contains("idempotency key"));
+
+    let inbox = input("inbox-key", "one");
+    assert!(store.append(inbox.clone()).await.unwrap());
+    assert!(!store.append(inbox).await.unwrap());
+    let inbox_conflict = store
+        .append(input("inbox-key", "changed"))
+        .await
+        .expect_err("same inbox key with changed payload must conflict");
+    assert!(inbox_conflict.to_string().contains("idempotency key"));
+
+    let direct = input("direct-key", "one");
+    assert!(
+        store
+            .deliver_and_claim(direct.clone(), "owner", 10, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .deliver_and_claim(direct, "owner", 10, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let direct_conflict = store
+        .deliver_and_claim(
+            input("direct-key", "changed"),
+            "owner",
+            10,
+            0,
+            &Default::default(),
+        )
+        .await
+        .expect_err("direct delivery must share pending idempotency validation");
+    assert!(direct_conflict.to_string().contains("idempotency key"));
+
+    let mut boundary = input("boundary-key", "future");
+    boundary.available_at_ms = Some(u64::MAX);
+    assert!(store.append(boundary.clone()).await.unwrap());
+    assert!(
+        !store.append(boundary).await.unwrap(),
+        "retry compares the normalized payload rather than the raw u64"
+    );
+    let boundary = store
+        .list(&ThreadId("thread-idempotency".to_string()))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.input.message_id == "boundary-key")
+        .expect("boundary row");
+    assert_eq!(boundary.input.available_at_ms, Some(i64::MAX as u64));
+}
+
 /// Shared spec for scheduled delivery (M4): a future-dated pending input is not
 /// claimable until its time has come; every backend must gate the wake the same.
 pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
@@ -972,6 +1056,106 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
         .expect("a due delivery is claimable");
     assert_eq!(claimed.pending.len(), 1);
     assert_eq!(claimed.pending[0].message_id, "sched");
+}
+
+/// Cause/effect rules CE-TM4..TM8/TM11/TM12. The public clock is `u64`, while
+/// SQL stores signed BIGINT; all backends must saturate at `i64::MAX`, never
+/// panic/wrap, never run a far-future delivery early, and keep a huge lease live.
+pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(store: &S) {
+    use awaken_run_ingress::{DispatchOutcome, PendingInput, RunDispatch};
+
+    let max_signed = i64::MAX as u64;
+    for (nth, available_at) in [max_signed, max_signed + 1, u64::MAX]
+        .into_iter()
+        .enumerate()
+    {
+        let run_name = format!("millis-schedule-{nth}");
+        let run = RunId(run_name.clone());
+        store
+            .enqueue(RunDispatch::new(activation(&run_name)))
+            .await
+            .unwrap();
+        let claimed = store
+            .claim("owner", 100, 0, &Default::default())
+            .await
+            .unwrap()
+            .expect("fresh run");
+        store
+            .settle(&run, claimed.lease.epoch, DispatchOutcome::Awaiting, &[])
+            .await
+            .unwrap();
+        store
+            .append(PendingInput {
+                message_id: format!("millis-message-{nth}"),
+                run_id: run.clone(),
+                thread_id: ThreadId(THREAD.to_string()),
+                correlation_id: TICKET.to_string(),
+                available_at_ms: Some(available_at),
+                result: ResumeResult::Input("future".to_string()),
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            store
+                .claim("too-early", 100, 1_000, &Default::default())
+                .await
+                .unwrap()
+                .is_none(),
+            "TM4..TM6: {available_at} must remain in the future"
+        );
+        let due = store
+            .claim("at-boundary", 100, u64::MAX, &Default::default())
+            .await
+            .unwrap()
+            .expect("normalized signed maximum is inclusively due");
+        assert_eq!(due.pending.len(), 1);
+        store
+            .settle(
+                &run,
+                due.lease.epoch,
+                DispatchOutcome::Done,
+                &[format!("millis-message-{nth}")],
+            )
+            .await
+            .unwrap();
+    }
+
+    let lease_run = RunId("millis-lease".to_string());
+    store
+        .enqueue(RunDispatch::new(activation("millis-lease")))
+        .await
+        .unwrap();
+    let lease = store
+        .claim("lease-owner", u64::MAX, 1_000, &Default::default())
+        .await
+        .unwrap()
+        .expect("huge lease claim");
+    assert_eq!(lease.request.run_id(), &lease_run);
+    assert_eq!(lease.lease.expires_ms, max_signed);
+    assert!(
+        store
+            .claim("thief", 100, 2_000, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "TM7: a saturated huge lease cannot be stolen early"
+    );
+    assert!(
+        store
+            .renew_lease(&lease_run, "lease-owner", u64::MAX, max_signed - 1)
+            .await
+            .unwrap(),
+        "TM12: huge renewal succeeds without overflow"
+    );
+    assert!(
+        store
+            .claim("thief", 100, max_signed, &Default::default())
+            .await
+            .unwrap()
+            .is_none(),
+        "lease expiry remains exclusive at the exact deadline"
+    );
 }
 
 /// Shared spec for the crash-retry budget and dead-letter (M5): a run reclaimed

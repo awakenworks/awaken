@@ -6,19 +6,19 @@ use super::*;
 
 pub(super) fn typed_mcp_servers(
     values: Vec<awaken_session_contract::VisibleMcpServer>,
-) -> Vec<crate::types::agent::McpServerView> {
+) -> Vec<crate::types::agent::AgentMcpServer> {
     values
         .into_iter()
         .map(|server| match server.target {
             awaken_session_contract::McpTarget::Http(target) => {
-                crate::types::agent::McpServerView::Url {
+                crate::types::agent::AgentMcpServer::Url {
                     name: server.name,
                     url: target.url,
                     prompts_as_skills: server.prompts_as_skills,
                 }
             }
             awaken_session_contract::McpTarget::SandboxStdio(target) => {
-                crate::types::agent::McpServerView::SandboxStdio {
+                crate::types::agent::AgentMcpServer::SandboxStdio {
                     name: server.name,
                     command: target.command,
                     args: target.args,
@@ -243,6 +243,15 @@ impl ManagedState {
                             "invalid MCP server URL for `{name}`"
                         )))
                     })?
+                }
+                ManagedMcpCandidateTarget::WireSandboxStdio { command, args } => {
+                    awaken_session_contract::McpTarget::sandbox_stdio(&command, args).map_err(
+                        |_| {
+                            StateError::Run(RunError::bad_request(format!(
+                                "invalid sandbox stdio MCP command for `{name}`"
+                            )))
+                        },
+                    )?
                 }
                 ManagedMcpCandidateTarget::Normalized(target) => target,
             };
@@ -696,7 +705,7 @@ impl ManagedState {
         {
             let declared = mcp_servers
                 .iter()
-                .map(|server| server.name.as_str())
+                .map(crate::types::agent::AgentMcpServer::name)
                 .collect::<std::collections::BTreeSet<_>>();
             let toolset_names = tools
                 .iter()
@@ -714,18 +723,10 @@ impl ManagedState {
             }
         }
         let agent_mcp_override = match &req.agent {
-            AgentRef::Object(override_ref) => override_ref.mcp_servers.as_ref().map(|servers| {
-                servers
-                    .as_deref()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|server| crate::types::McpServer {
-                        name: server.name.clone(),
-                        url: server.url.clone(),
-                        prompts_as_skills: server.prompts_as_skills,
-                    })
-                    .collect::<Vec<_>>()
-            }),
+            AgentRef::Object(override_ref) => override_ref
+                .mcp_servers
+                .as_ref()
+                .map(|servers| servers.as_deref().unwrap_or_default().to_vec()),
             AgentRef::Id(_) => None,
         };
         let mcp_drafts = self

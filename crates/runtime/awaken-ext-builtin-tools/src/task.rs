@@ -12,7 +12,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_runtime_contract::tool::{RawTool, Tool, ToolError};
+use awaken_runtime_contract::tool::{
+    RawTool, Tool, ToolError, ToolRecoveryCapability, current_tool_operation_context,
+};
 use serde::Deserialize;
 
 use crate::erase;
@@ -23,7 +25,19 @@ use crate::erase;
 /// thread's pending boundary and staging a durable delivery.
 #[async_trait]
 pub trait MessageSender: Send + Sync {
-    async fn send(&self, target_thread: &str, content: &str) -> Result<(), ToolError>;
+    async fn send(&self, request: MessageSendRequest) -> Result<(), ToolError>;
+}
+
+/// One durable cross-thread send intent. The runtime-owned operation identity is
+/// always present in production; an optional caller key lets separate tool calls
+/// in the same Run intentionally name the same logical message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageSendRequest {
+    pub target_thread: String,
+    pub content: String,
+    pub idempotency_key: Option<String>,
+    pub source_run_id: String,
+    pub operation_id: String,
 }
 
 /// Cancel a task (run) by id. The host backs this with the runtime's live
@@ -54,6 +68,8 @@ impl SendMessageTool {
 pub struct SendMessageArgs {
     pub target_thread: String,
     pub content: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 #[async_trait]
@@ -63,8 +79,31 @@ impl Tool for SendMessageTool {
     fn id(&self) -> &str {
         "send_message"
     }
+    fn recovery_capability(&self) -> ToolRecoveryCapability {
+        ToolRecoveryCapability::DurableRequest
+    }
     async fn call(&self, args: SendMessageArgs) -> Result<String, ToolError> {
-        self.0.send(&args.target_thread, &args.content).await?;
+        let context = current_tool_operation_context().ok_or_else(|| {
+            ToolError::Execution(
+                "send_message requires runtime-owned durable operation context".to_string(),
+            )
+        })?;
+        let source_run_id = context.run_id.ok_or_else(|| {
+            ToolError::Execution("send_message requires a runtime-owned source run".to_string())
+        })?;
+        let idempotency_key = args
+            .idempotency_key
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty());
+        self.0
+            .send(MessageSendRequest {
+                target_thread: args.target_thread.clone(),
+                content: args.content,
+                idempotency_key,
+                source_run_id: source_run_id.0,
+                operation_id: context.operation_id,
+            })
+            .await?;
         Ok(format!("message sent to {}", args.target_thread))
     }
 }

@@ -34,8 +34,6 @@ pub(super) async fn build_runtime_process_assembly(
         postgres_schema,
     })
     .await?;
-    let hand_executors =
-        awaken_server::placement::connect_declared_hands(&deployment.hand_connections).await?;
     let executable_environment_wiring = executable_environment_registration::for_runtime_role(
         role,
         deployment,
@@ -85,7 +83,6 @@ pub(super) async fn build_runtime_process_assembly(
             model_supply: local_model_supply(deployment.cloud_models.is_enabled()),
             brokered_catalog: None,
             local_acp_observations: deployment.local_acp_observations.clone(),
-            hand_executors,
             web_search_providers: None,
             web_search_publication_resolver: None,
             executable_agent_wiring: Some(executable_agent_wiring),

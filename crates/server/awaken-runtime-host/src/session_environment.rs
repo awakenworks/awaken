@@ -188,26 +188,20 @@ impl SessionEnvironment {
         Ok(())
     }
 
-    pub(crate) fn bound_tool_executor(&self) -> Option<Arc<dyn ToolExecutor>> {
-        match self {
-            Self::Container { hand, .. } => Some(hand.clone()),
-            Self::Workdir(_) | Self::Namespace(_) => None,
-        }
-    }
-
     /// Executable Hand for this realized environment. Container environments
     /// already own a channel-backed executor; local/namespace environments use
     /// their rooted tool implementations behind the same neutral port.
     pub(crate) fn tool_executor(&self) -> Arc<dyn ToolExecutor> {
-        self.bound_tool_executor().unwrap_or_else(|| {
-            Arc::new(EnvironmentToolExecutor {
+        match self {
+            Self::Container { hand, .. } => hand.clone(),
+            Self::Workdir(_) | Self::Namespace(_) => Arc::new(EnvironmentToolExecutor {
                 tools: self
                     .rooted_tools()
                     .into_iter()
                     .map(|tool| (tool.id().to_string(), tool))
                     .collect(),
-            })
-        })
+            }),
+        }
     }
 
     pub(crate) fn rooted_tools(&self) -> Vec<Arc<dyn RawTool>> {
@@ -852,6 +846,10 @@ mod tests {
 
     #[tokio::test]
     async fn native_process_and_agent_channel_share_one_live_environment() {
+        // Cause/effect graph: C1=Workdir environment; C2=Native Hand tool;
+        // C3=ACP child process. Effects: E1/E2 both observe state written inside
+        // the same Session owner. Decision rule W1=C1+C2+C3 -> one marker value;
+        // a host-global or provider-selected Hand would fail E1.
         let base = tempfile::tempdir().unwrap();
         let local = LocalProvider::new(base.path())
             .create_sandbox(&spec())
@@ -872,6 +870,20 @@ mod tests {
             .unwrap();
         assert_eq!(native.wait().await.unwrap().code, Some(0));
 
+        let hand_output = environment
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "workdir-hand".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"path": "marker"}),
+            })
+            .await
+            .unwrap();
+        assert!(
+            hand_output.text().contains("shared-state"),
+            "W1 Native Hand"
+        );
+
         let (agent, mut channel) = environment
             .spawn_agent(pc::Command::new(["/bin/sh", "-c", "cat marker"]))
             .await
@@ -886,6 +898,8 @@ mod tests {
 
     #[tokio::test]
     async fn namespace_native_process_and_agent_channel_share_one_live_environment() {
+        // Decision rule N1 mirrors W1 at the Namespace tier: opaque ACP paths and
+        // cooperative Native Hand calls must converge on one transparent workspace.
         let base = tempfile::tempdir().unwrap();
         let mut namespace_spec = spec();
         namespace_spec.scope = "session-namespace".into();
@@ -905,6 +919,17 @@ mod tests {
         native_command.cwd = "/workspace".into();
         let native = environment.sandbox().spawn(native_command).await.unwrap();
         assert_eq!(native.wait().await.unwrap().code, Some(0));
+
+        let hand_output = environment
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "namespace-hand".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({"path": "marker"}),
+            })
+            .await
+            .unwrap();
+        assert!(hand_output.text().contains("namespace-state"), "N1");
 
         let mut agent_command = pc::Command::new(["/bin/sh", "-c", "cat marker"]);
         agent_command.cwd = "/workspace".into();
@@ -982,7 +1007,7 @@ mod tests {
         assert_eq!(agent.wait().await.unwrap().code, Some(0));
         assert_eq!(output, "shared-container-state");
 
-        let hand = environment.bound_tool_executor().expect("container hand");
+        let hand = environment.tool_executor();
         environment.register_skill_dir("skills");
         provider.shared.lock().unwrap().insert(
             "authored/SKILL.md".into(),

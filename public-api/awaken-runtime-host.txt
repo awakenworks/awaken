@@ -335,7 +335,6 @@ pub fn awaken_runtime_host::SharedHost::with_judge_snapshot(self, awaken_runtime
 pub fn awaken_runtime_host::SharedHost::with_local_workspace(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_memory_repository(self, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_remote_attempt_executor(self, awaken_runtime_host::RemoteAttemptInstallation) -> Self
-pub fn awaken_runtime_host::SharedHost::with_remote_hand(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_resource_lifecycle(self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceLifecycleRepository>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_blob_root(self, impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_container_provider(self, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>) -> Self
@@ -347,7 +346,6 @@ pub fn awaken_runtime_host::SharedHost::with_skill_store_backend(self, alloc::sy
 pub fn awaken_runtime_host::SharedHost::with_skills(self, alloc::vec::Vec<awaken_ext_skills::spec::SkillSpec>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_state_machine(self, serde_json::value::Value) -> Self
 pub fn awaken_runtime_host::SharedHost::with_store_dir(self, impl core::convert::Into<std::path::PathBuf>) -> Self
-pub fn awaken_runtime_host::SharedHost::with_tool_executor_provider(self, alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutorProvider>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_upstream(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_web_search_provider(self, alloc::sync::Arc<dyn awaken_ext_builtin_tools::web::WebSearchProvider>) -> core::result::Result<Self, awaken_ext_builtin_tools::web::WebSearchRegistryError>
 pub fn awaken_runtime_host::SharedHost::with_web_search_provider_registry(self, awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> Self
@@ -512,7 +510,7 @@ pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<aw
 pub fn awaken_runtime_host::platform_plugin_capabilities_with_web_search(&awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::registered_worker_transport_router(alloc::sync::Arc<awaken_runtime_host::SharedHost>, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>, alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> axum::routing::Router
 pub fn awaken_runtime_host::registered_worker_transport_router_with_services(axum::routing::Router, alloc::sync::Arc<awaken_runtime_host::ClaimedCommitService>) -> axum::routing::Router
-pub fn awaken_runtime_host::remote_worker_placement(&awaken_runtime_contract::resolved::ResolvedSpec, core::option::Option<&awaken_session_contract::resource::SessionResourceManifest>, bool) -> awaken_worker_contract::PlacementRequirements
+pub fn awaken_runtime_host::remote_worker_placement(&awaken_runtime_contract::resolved::ResolvedSpec, core::option::Option<&awaken_session_contract::baseline::EnvironmentSnapshot>, core::option::Option<&awaken_session_contract::resource::SessionResourceManifest>, bool) -> awaken_worker_contract::PlacementRequirements
 pub async fn awaken_runtime_host::resolve_sandbox_tier(awaken_runtime_host::SandboxTier, bool, &std::path::Path) -> core::result::Result<awaken_runtime_host::SandboxTier, alloc::string::String>
 pub fn awaken_runtime_host::self_hosted_inference_holder(&awaken_runtime_contract::activation::RunActivation) -> core::result::Result<core::option::Option<awaken_credential_contract::PlaintextHolder>, awaken_runtime_host::host::types::HostError>
 pub fn awaken_runtime_host::worker_dispatch_store_with_upstream(&awaken_worker_transport_security::WorkerUpstream, awaken_worker_contract::WorkerIdentity) -> alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>

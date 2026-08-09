@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::types::McpServer;
+use crate::types::agent::AgentMcpServer;
 use awaken_session_contract::{
     ApplicationContributionError, ApplicationSessionContribution,
     ApplicationSessionContributionApi, ApplicationSessionContributionFailure,
@@ -68,7 +69,39 @@ pub(super) struct ManagedMcpCandidate {
 #[derive(Clone, Debug)]
 pub(super) enum ManagedMcpCandidateTarget {
     WireUrl(String),
+    WireSandboxStdio { command: String, args: Vec<String> },
     Normalized(awaken_session_contract::McpTarget),
+}
+
+pub(super) fn agent_mcp_candidate(
+    server: AgentMcpServer,
+    origin: awaken_session_contract::McpAttachmentOrigin,
+) -> ManagedMcpCandidate {
+    match server {
+        AgentMcpServer::Url {
+            name,
+            url,
+            prompts_as_skills,
+        } => ManagedMcpCandidate {
+            name,
+            target: ManagedMcpCandidateTarget::WireUrl(url),
+            prompts_as_skills,
+            published_credential: None,
+            origin,
+        },
+        AgentMcpServer::SandboxStdio {
+            name,
+            command,
+            args,
+            prompts_as_skills,
+        } => ManagedMcpCandidate {
+            name,
+            target: ManagedMcpCandidateTarget::WireSandboxStdio { command, args },
+            prompts_as_skills,
+            published_credential: None,
+            origin,
+        },
+    }
 }
 
 /// Preserve every create-time authoring candidate and its actual source. The
@@ -77,11 +110,11 @@ pub(super) enum ManagedMcpCandidateTarget {
 pub(super) fn initial_mcp_candidates(
     session: &[McpServer],
     agent: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
-    agent_override: Option<&[McpServer]>,
+    agent_override: Option<&[AgentMcpServer]>,
 ) -> Vec<ManagedMcpCandidate> {
     let agent_len = agent_override.map_or_else(
         || agent.map_or(0, |view| view.mcp_servers.len()),
-        <[McpServer]>::len,
+        <[AgentMcpServer]>::len,
     );
     let mut candidates = Vec::with_capacity(session.len() + agent_len);
     candidates.extend(session.iter().cloned().map(|server| ManagedMcpCandidate {
@@ -92,18 +125,9 @@ pub(super) fn initial_mcp_candidates(
         origin: awaken_session_contract::McpAttachmentOrigin::Session,
     }));
     if let Some(agent_override) = agent_override {
-        candidates.extend(
-            agent_override
-                .iter()
-                .cloned()
-                .map(|server| ManagedMcpCandidate {
-                    name: server.name,
-                    target: ManagedMcpCandidateTarget::WireUrl(server.url),
-                    prompts_as_skills: server.prompts_as_skills,
-                    published_credential: None,
-                    origin: awaken_session_contract::McpAttachmentOrigin::Agent,
-                }),
-        );
+        candidates.extend(agent_override.iter().cloned().map(|server| {
+            agent_mcp_candidate(server, awaken_session_contract::McpAttachmentOrigin::Agent)
+        }));
     } else if let Some(agent) = agent {
         candidates.extend(agent.mcp_servers.iter().map(|server| {
             ManagedMcpCandidate {
@@ -387,6 +411,7 @@ mod tests {
                     sandbox: serde_json::json!({"isolation": "namespace"}),
                     sandbox_provisioning: Default::default(),
                     packages: Default::default(),
+                    prepared_image: None,
                     network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
                     credential_realization: CredentialRealizationProfile {
                         inference_holder: holder.clone(),
@@ -725,6 +750,7 @@ mod tests {
                 .filter(|candidate| {
                     match &candidate.target {
                         ManagedMcpCandidateTarget::WireUrl(url) => url == "https://same.example",
+                        ManagedMcpCandidateTarget::WireSandboxStdio { .. } => false,
                         ManagedMcpCandidateTarget::Normalized(target) => {
                             target.http_url() == Some("https://same.example")
                         }
@@ -743,7 +769,11 @@ mod tests {
         // |---|---|---|---|
         // | C6 | one replacement server | present       | Session + replacement Agent candidate |
         // | C7 | empty                  | present       | Session candidate only |
-        let replacement = [server("replacement", "https://replacement.example")];
+        let replacement = [AgentMcpServer::Url {
+            name: "replacement".into(),
+            url: "https://replacement.example".into(),
+            prompts_as_skills: false,
+        }];
         let replaced = initial_mcp_candidates(
             &[server("inline", "https://inline.example")],
             Some(&view),

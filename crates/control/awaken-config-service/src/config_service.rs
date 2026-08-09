@@ -8,7 +8,7 @@
 //! Runtime consumes compiled configuration and never edits authoring records.
 use std::sync::Arc;
 
-use awaken_config_resolver::{AgentInputBindingRepository, AgentInputConfig};
+use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, ConfigRegistry, ConfigWrite, StoredPublication,
 };
@@ -20,9 +20,7 @@ use crate::agent_projection::registered_session_profile;
 use crate::binding_resolver::ModelPublicationResolver;
 use crate::credential_reference::{CredentialReferenceValidator, validate_credential_references};
 use crate::plugin_validation::{PluginPublicationResolver, resolve_plugin_configuration};
-use crate::publication::{
-    PublishError, ValidationIssue, prepare_agent_publication, snapshot_metadata,
-};
+use crate::publication::{PublishError, prepare_agent_publication, snapshot_metadata};
 
 #[cfg(test)]
 use crate::ConfigPlane;
@@ -70,152 +68,6 @@ pub struct ConfigService {
 }
 
 impl ConfigService {
-    /// A scope-free config service with one mandatory model-publication policy.
-    /// Validate a config by compiling it against the caller-supplied tool `catalog`
-    /// (a dry run of publish); no store write. Mirrors publish: an `Auto` model is
-    /// resolved first (D5) so a draft with the default binding validates, and a config
-    /// naming a tool absent from that catalog fails closed with `UnknownTool` (D3 —
-    /// the edge resolves the catalog for the request scope).
-    pub async fn validate(
-        &self,
-        workspace: &ScopeId,
-        config: &AgentConfig,
-        catalog: &[ToolDescriptor],
-    ) -> Result<(), ValidationIssue> {
-        // The config domain owns validation truth; it also owns *which field* failed
-        // (`CompileError::field_path`), so the UI projects the issue to the right section
-        // instead of parsing a free-text string. An auto-model that can't resolve is a
-        // `model` issue; a compile failure carries its own field.
-        let mut resolved = prepare_agent_publication(
-            self.model_publication_resolver.as_ref(),
-            workspace,
-            AgentConfigRevision {
-                config: config.clone(),
-                revision: 0,
-            },
-        )
-        .await
-        .map_err(|e| ValidationIssue {
-            path: "model".to_string(),
-            message: e.to_string(),
-        })?;
-        resolve_plugin_configuration(
-            &self.plugin_publication_resolvers,
-            workspace,
-            &mut resolved.config,
-        )
-        .await?;
-        validate_credential_references(
-            self.credential_reference_validator.as_ref(),
-            workspace,
-            &resolved.config,
-        )
-        .await
-        .map_err(|error| ValidationIssue {
-            path: error.path,
-            message: error.message,
-        })?;
-        awaken_config_store::compile_published(
-            &resolved.config,
-            catalog,
-            snapshot_metadata(&resolved),
-            resolved.models.primary,
-            resolved.models.candidates,
-        )
-        .map(|_| ())
-        .map_err(|e| ValidationIssue {
-            path: e.field_path().to_string(),
-            message: e.to_string(),
-        })
-    }
-
-    /// Compile an unsaved draft and register it through the canonical
-    /// Control-to-Coordinator boundary without creating authoring or publication
-    /// records. Preview ids are immutable: a refreshed draft receives a new id.
-    pub async fn preview(
-        &self,
-        workspace: &ScopeId,
-        preview_id: &str,
-        config: &AgentConfig,
-        inputs: AgentInputConfig,
-        catalog: &[ToolDescriptor],
-    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, PublishError> {
-        if config.id != preview_id || inputs.agent_id != preview_id {
-            return Err(PublishError::Unresolvable(
-                "preview config and resources must use the requested preview id".into(),
-            ));
-        }
-        let source_revision = 1;
-        let mut resolved = prepare_agent_publication(
-            self.model_publication_resolver.as_ref(),
-            workspace,
-            AgentConfigRevision {
-                config: config.clone(),
-                revision: source_revision,
-            },
-        )
-        .await?;
-        resolve_plugin_configuration(
-            &self.plugin_publication_resolvers,
-            workspace,
-            &mut resolved.config,
-        )
-        .await
-        .map_err(|error| {
-            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
-        })?;
-        validate_credential_references(
-            self.credential_reference_validator.as_ref(),
-            workspace,
-            &resolved.config,
-        )
-        .await
-        .map_err(|error| {
-            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
-        })?;
-        let mut metadata = snapshot_metadata(&resolved);
-        let mut resolved_inputs = std::mem::take(&mut metadata.resolution.inputs);
-        resolved_inputs.push(awaken_runtime_contract::ResolvedInputRef {
-            kind: "agent_session_defaults".into(),
-            id: preview_id.to_owned(),
-            version: awaken_runtime_contract::ResolvedInputVersion::Revision(
-                inputs.revision as u64,
-            ),
-        });
-        metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(resolved_inputs)
-            .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
-        let snapshot = awaken_config_store::compile_published(
-            &resolved.config,
-            catalog,
-            metadata,
-            resolved.models.primary,
-            resolved.models.candidates,
-        )
-        .map_err(|error| PublishError::Compile(error.to_string()))?;
-        let session_profile =
-            registered_session_profile(&snapshot, &resolved.authored_model_selection, Some(inputs))
-                .ok_or_else(|| {
-                    PublishError::Registration(
-                        awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
-                            "preview Session defaults changed while the snapshot was compiled"
-                                .into(),
-                        ),
-                    )
-                })?;
-        self.registrar
-            .register(ExecutableAgentRegistration {
-                workspace_id: workspace.as_str().to_owned(),
-                agent_id: preview_id.to_owned(),
-                source_revision,
-                snapshot: snapshot.clone(),
-                session_profile,
-                declared_hand: resolved.config.hand.clone(),
-            })
-            .await
-            .map_err(PublishError::Registration)?;
-        Ok(snapshot)
-    }
-
     /// Store a config draft (upsert by id) in the caller-supplied scope-bound
     /// `registry` (a [`awaken_config_store::ScopedConfig`] the edge bound to the
     /// request scope).
@@ -429,7 +281,6 @@ impl ConfigService {
                 source_revision,
                 snapshot,
                 session_profile,
-                declared_hand: resolved.config.hand.clone(),
             })
             .await
             .map_err(PublishError::Registration)?;

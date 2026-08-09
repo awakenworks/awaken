@@ -17,8 +17,9 @@ pub use hand::{
     GrepTool, MoveArgs, MoveTool, ReadArgs, ReadTool, WriteArgs, WriteTool, executable_hand_tools,
 };
 pub use task::{
-    CancelTaskArgs, CancelTaskTool, MessageRecovery, MessageSender, RecoverFailedMessagesArgs,
-    RecoverFailedMessagesTool, SendMessageArgs, SendMessageTool, TaskCanceller, task_tools,
+    CancelTaskArgs, CancelTaskTool, MessageRecovery, MessageSendRequest, MessageSender,
+    RecoverFailedMessagesArgs, RecoverFailedMessagesTool, SendMessageArgs, SendMessageTool,
+    TaskCanceller, task_tools,
 };
 pub use web::{
     BRAVE_PROVIDER_ID, BraveSearchProvider, DUCKDUCKGO_PROVIDER_ID, DuckDuckGoProvider,
@@ -84,7 +85,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
             path_arg("pattern", "regular expression"),
         ),
         hand_tool("web_fetch", "Fetch a URL", path_arg("url", "URL to fetch")),
-        task_tool(
+        task_tool_with_recovery(
             "send_message",
             "Send a message to another thread",
             serde_json::json!({
@@ -92,9 +93,11 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
                 "properties": {
                     "target_thread": { "type": "string", "description": "id of the thread to message" },
                     "content": { "type": "string", "description": "message body" },
+                    "idempotency_key": { "type": "string", "description": "optional caller key, scoped to the sending run" },
                 },
                 "required": ["target_thread", "content"],
             }),
+            ToolRecoveryPolicy::durable_request(),
         ),
         task_tool(
             "cancel_task",
@@ -132,6 +135,17 @@ fn task_tool(id: &str, description: &str, parameters: serde_json::Value) -> Buil
         toolset: Toolset::Task,
         descriptor: ToolDescriptor::pinned("builtin:task", id, description, parameters),
     }
+}
+
+fn task_tool_with_recovery(
+    id: &str,
+    description: &str,
+    parameters: serde_json::Value,
+    recovery: ToolRecoveryPolicy,
+) -> BuiltinTool {
+    let mut tool = task_tool(id, description, parameters);
+    tool.descriptor = tool.descriptor.with_recovery(recovery);
+    tool
 }
 
 /// A one-required-string-parameter JSON Schema.

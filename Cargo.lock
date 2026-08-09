@@ -381,6 +381,8 @@ dependencies = [
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
+ "awaken-environment-image-build",
+ "awaken-environment-package-image-builder",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
@@ -694,6 +696,47 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+]
+
+[[package]]
+name = "awaken-environment-image-build"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-environment-contract",
+ "awaken-environment-realization-contract",
+ "awaken-executable-environment-catalog",
+ "awaken-executable-environment-contract",
+ "awaken-scoped-migration 0.1.0-dev (git+https://github.com/awakenworks/awaken-foundation?rev=8a0037c012fe63f496dad1772cdcbc89bbc03c5a)",
+ "awaken-scoped-migration-sqlite",
+ "rusqlite",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-environment-package-image-builder"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-environment-contract",
+ "awaken-environment-realization-contract",
+ "awaken-provisioning-contract",
+ "awaken-sandbox-container",
+ "tokio",
+]
+
+[[package]]
+name = "awaken-environment-realization-contract"
+version = "1.0.0-dev"
+dependencies = [
+ "async-trait",
+ "awaken-environment-contract",
+ "awaken-executable-environment-contract",
+ "serde",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1236,6 +1279,7 @@ dependencies = [
  "awaken-env-store",
  "awaken-environment-application",
  "awaken-environment-contract",
+ "awaken-environment-realization-contract",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",

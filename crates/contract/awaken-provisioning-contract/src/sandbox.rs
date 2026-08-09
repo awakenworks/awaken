@@ -221,6 +221,72 @@ pub enum IsolationClass {
     Container,
 }
 
+impl Default for IsolationClass {
+    fn default() -> Self {
+        Self::Workdir
+    }
+}
+
+/// Minimum enforceable Sandbox properties required before a workload may be
+/// placed on a Worker. This is the one requirement vocabulary shared by
+/// provider admission and distributed Worker placement; it deliberately omits
+/// live handles, paths, mounts, credentials, and provider implementation names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxRequirements {
+    #[serde(default)]
+    pub isolation: IsolationClass,
+    #[serde(default)]
+    pub tool_transparent: bool,
+    #[serde(default)]
+    pub path_fidelity: bool,
+    #[serde(default)]
+    pub enforced_readonly: bool,
+    #[serde(default)]
+    pub network_isolation: bool,
+    #[serde(default)]
+    pub enforced_network_allowlist: bool,
+    #[serde(default)]
+    pub resource_limits: bool,
+    #[serde(default)]
+    pub custom_rootfs: bool,
+    #[serde(default)]
+    pub package_provisioning: bool,
+}
+
+impl SandboxRequirements {
+    /// Derive placement requirements from the exact neutral realization spec.
+    /// `opaque_process` is true for ACP and for Native Hand execution because
+    /// both must remain correct without cooperative lexical path rewriting.
+    #[must_use]
+    pub fn from_spec(spec: &SandboxSpec, opaque_process: bool) -> Self {
+        use crate::vocab::NetworkPolicy;
+
+        let custom_rootfs = spec
+            .extra
+            .as_ref()
+            .and_then(|extra| extra.get("environment"))
+            .is_some();
+        Self {
+            isolation: if opaque_process {
+                spec.isolation.max(IsolationClass::Namespace)
+            } else {
+                spec.isolation
+            },
+            tool_transparent: opaque_process,
+            path_fidelity: opaque_process,
+            enforced_readonly: spec
+                .mounts
+                .iter()
+                .any(|mount| mount.access == MountAccess::ReadOnly),
+            network_isolation: spec.network.is_restricted(),
+            enforced_network_allowlist: matches!(spec.network, NetworkPolicy::Allowlist { .. }),
+            resource_limits: spec.limits.is_set(),
+            custom_rootfs,
+            package_provisioning: !spec.packages.is_empty(),
+        }
+    }
+}
+
 /// What a backend can actually enforce — the host probes this to pick a provider
 /// and to fail closed when a spec asks for more than a backend can give.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +321,25 @@ pub struct SandboxCapabilities {
 }
 
 impl SandboxCapabilities {
+    /// One monotonic compatibility predicate used by local provider selection
+    /// and remote Worker admission. Ranking policy runs only after this succeeds.
+    #[must_use]
+    pub fn satisfies_requirements(&self, required: &SandboxRequirements) -> bool {
+        capability_requirements_satisfied(
+            self.isolation,
+            required.isolation,
+            self.network_isolation,
+            required.network_isolation,
+            self.resource_limits,
+            required.resource_limits,
+        ) && (!required.tool_transparent || self.tool_transparent)
+            && (!required.path_fidelity || self.path_fidelity)
+            && (!required.enforced_readonly || self.enforced_readonly)
+            && (!required.enforced_network_allowlist || self.enforced_network_allowlist)
+            && (!required.custom_rootfs || self.custom_rootfs)
+            && (!required.package_provisioning || self.package_provisioning)
+    }
+
     /// Whether this provider can keep a real secret outside an arbitrary
     /// workload while forcing traffic through the substitution boundary.
     /// Neither substitution nor an allowlist alone is custody evidence.
@@ -274,16 +359,7 @@ impl SandboxCapabilities {
     /// [`NetworkPolicy::Unrestricted`](crate::vocab::NetworkPolicy::Unrestricted)).
     #[must_use]
     pub fn satisfies(&self, spec: &crate::spec::SandboxSpec) -> bool {
-        use crate::vocab::NetworkPolicy;
-        capability_requirements_satisfied(
-            self.isolation,
-            spec.isolation,
-            self.network_isolation,
-            !matches!(spec.network, NetworkPolicy::Unrestricted),
-            self.resource_limits,
-            spec.limits.is_set(),
-        ) && (!matches!(spec.network, NetworkPolicy::Allowlist { .. })
-            || self.enforced_network_allowlist)
+        self.satisfies_requirements(&SandboxRequirements::from_spec(spec, false))
     }
 }
 
@@ -789,6 +865,97 @@ mod tests {
             resource_limits: true,
             custom_rootfs: false,
             package_provisioning: false,
+        }
+    }
+
+    #[test]
+    fn sandbox_requirement_derivation_and_admission_decision_table() {
+        // Cause/effect graph:
+        // C1=opaque child; C2=requested isolation; C3=read-only mount;
+        // C4=restricted/allowlisted network; C5=limits; C6=custom rootfs;
+        // C7=packages. Effects: E1=minimum monotonic requirement vector;
+        // E2=one capability predicate accepts every axis; E3=missing any required
+        // axis rejects. Constraints: opaque raises isolation to Namespace and
+        // requires transparent paths; Allowlist implies network isolation.
+        //
+        // Decision table:
+        // R1 !C1&&!C2..C7 -> Workdir requirement, basic provider accepts.
+        // R2 C1 -> Namespace+transparent+path-fidelity.
+        // R3 C2..C7 -> every declared enforcement bit is required.
+        // R4 R3 and one missing capability -> reject; full vector -> accept.
+        let bare = spec();
+        let r1 = SandboxRequirements::from_spec(&bare, false);
+        assert_eq!(r1, SandboxRequirements::default(), "R1");
+
+        let r2 = SandboxRequirements::from_spec(&bare, true);
+        assert_eq!(r2.isolation, IsolationClass::Namespace, "R2 isolation");
+        assert!(r2.tool_transparent && r2.path_fidelity, "R2 paths");
+
+        let mut demanding = bare;
+        demanding.isolation = IsolationClass::Container;
+        demanding.mounts.push(crate::vocab::MountRequirement {
+            mount_id: "input".into(),
+            source: crate::vocab::MountSource::File {
+                file_id: "file".into(),
+                content_hash: None,
+            },
+            mount_path: "/workspace/input".into(),
+            access: crate::vocab::MountAccess::ReadOnly,
+            lifetime: crate::vocab::MountLifetime::Session,
+            required: true,
+        });
+        demanding.network = NetworkPolicy::Allowlist {
+            hosts: vec!["api.example.test".into()],
+        };
+        demanding.limits.memory_bytes = Some(64 * 1024 * 1024);
+        demanding
+            .packages
+            .managers
+            .insert("npm".into(), vec!["tsx@4".into()]);
+        demanding.extra = Some(serde_json::json!({
+            "environment": {"kind": "image", "reference": "image@sha256:1"}
+        }));
+        let r3 = SandboxRequirements::from_spec(&demanding, true);
+        assert_eq!(r3.isolation, IsolationClass::Container, "R3 isolation");
+        assert!(
+            r3.tool_transparent
+                && r3.path_fidelity
+                && r3.enforced_readonly
+                && r3.network_isolation
+                && r3.enforced_network_allowlist
+                && r3.resource_limits
+                && r3.custom_rootfs
+                && r3.package_provisioning,
+            "R3 vector: {r3:?}"
+        );
+
+        let mut full = caps(IsolationClass::Container, true);
+        full.custom_rootfs = true;
+        full.package_provisioning = true;
+        assert!(full.satisfies_requirements(&r3), "R4 full");
+        for missing in [
+            "tool_transparent",
+            "path_fidelity",
+            "enforced_readonly",
+            "network_isolation",
+            "enforced_network_allowlist",
+            "resource_limits",
+            "custom_rootfs",
+            "package_provisioning",
+        ] {
+            let mut weak = full.clone();
+            match missing {
+                "tool_transparent" => weak.tool_transparent = false,
+                "path_fidelity" => weak.path_fidelity = false,
+                "enforced_readonly" => weak.enforced_readonly = false,
+                "network_isolation" => weak.network_isolation = false,
+                "enforced_network_allowlist" => weak.enforced_network_allowlist = false,
+                "resource_limits" => weak.resource_limits = false,
+                "custom_rootfs" => weak.custom_rootfs = false,
+                "package_provisioning" => weak.package_provisioning = false,
+                _ => unreachable!(),
+            }
+            assert!(!weak.satisfies_requirements(&r3), "R4 missing {missing}");
         }
     }
 

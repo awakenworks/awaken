@@ -254,10 +254,7 @@ impl SharedHost {
         ctx: &Arc<SessionCtx>,
         activation: &RunActivation,
     ) -> Result<RuntimeRunContext, HostError> {
-        let mut context = ctx
-            .context_for(activation)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?;
+        let mut context = ctx.context_for(activation).await;
         let candidates = activation
             .snapshot
             .resolved_spec

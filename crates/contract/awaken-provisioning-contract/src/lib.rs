@@ -35,7 +35,6 @@ mod execution_policy;
 mod lease;
 mod prepare;
 mod sandbox;
-mod shape;
 mod spec;
 mod vocab;
 
@@ -56,10 +55,9 @@ pub use sandbox::{
     BlobSource, ExitStatus, IsolationClass, IsolationPolicy, MemoryMount, MemoryMounter, OnUnmet,
     PolicySelection, ProcessHandle, RepositoryHttpBasicCredential, RepositoryRealizationPlan,
     RepositoryRealizer, Sandbox, SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider,
-    SandboxStatus, SecretBroker, SelectionError, Signal, capability_requirements_satisfied,
-    select_provider, select_provider_with_policy,
+    SandboxRequirements, SandboxStatus, SecretBroker, SelectionError, Signal,
+    capability_requirements_satisfied, select_provider, select_provider_with_policy,
 };
-pub use shape::{ExecutionShape, plan_shape};
 pub use spec::{
     Command, EnvironmentKind, MaterializedCommand, MaterializedEnvValue, MaterializedEnvVar,
     RootfsSource, SandboxOverride, SandboxSpec, Stdio, materialize_process_command,

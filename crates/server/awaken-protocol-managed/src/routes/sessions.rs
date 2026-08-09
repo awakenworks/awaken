@@ -570,6 +570,7 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
                 (StatusCode::BAD_REQUEST, "invalid_request_error", e.message)
             }
             RunErrorKind::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "api_error", e.message),
+            RunErrorKind::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, "api_error", e.message),
         },
         // The live-inbox edit contract maps 1:1 onto HTTP: an id that no longer
         // exists is 404; a stale reorder is 409 (re-GET and retry); an inactive
@@ -1235,7 +1236,8 @@ async fn stream_events(
 
 #[cfg(test)]
 mod managed_json_tests {
-    use super::managed_json_message;
+    use super::{error_response, managed_json_message};
+    use crate::state::{RunError, StateError};
 
     #[test]
     fn resource_decode_errors_have_a_stable_category_and_keep_the_path() {
@@ -1247,5 +1249,17 @@ mod managed_json_tests {
             managed_json_message("model: missing field".into()),
             "model: missing field"
         );
+    }
+
+    #[test]
+    fn temporary_session_dependency_failure_is_retryable() {
+        // Cause/effect decision table: R1 image/readiness dependency failure is
+        // Unavailable; R2 the Managed adapter returns 503 + api_error so SDK
+        // callers can retry the unchanged Session create command.
+        let (status, body) = error_response(StateError::Run(RunError::unavailable(
+            "Environment image is not ready",
+        )));
+        assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE, "R1");
+        assert_eq!(body.0.error.kind, "api_error", "R2");
     }
 }

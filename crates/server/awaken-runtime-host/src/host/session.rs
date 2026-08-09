@@ -38,6 +38,31 @@ fn merge_acp_mcp_servers(
 }
 
 impl SharedHost {
+    fn session_has_local_environment_inputs(&self, thread: &str) -> bool {
+        let slot_requires = self
+            .session_slots
+            .read(thread, |slot| {
+                !slot.delegates.is_empty()
+                    || slot.memory.is_some()
+                    || !slot.resources.mounts.is_empty()
+                    || !slot.resources.repositories.is_empty()
+                    || slot.baseline.as_ref().is_some_and(|baseline| {
+                        !baseline.mounts.is_empty() || !baseline.env.is_empty()
+                    })
+                    || slot.skills.as_ref().is_some_and(|versions| {
+                        versions
+                            .iter()
+                            .any(crate::skills::version_requires_environment)
+                    })
+            })
+            .unwrap_or(false);
+        slot_requires
+            || self.skills.specs().iter().any(|skill| {
+                skill.environment != awaken_ext_skills::SkillEnvironment::InstructionOnly
+                    || skill.context != awaken_ext_skills::SkillContext::Inline
+            })
+    }
+
     pub(crate) fn session_environment_provider(
         &self,
         provisioning: &awaken_runtime_contract::resolved::ModelProvisioning,
@@ -75,18 +100,6 @@ impl SharedHost {
                             projection.provisioning
                                 == awaken_session_contract::SandboxProvisioning::OnToolUse
                         })
-                    && slot.delegates.is_empty()
-                    && slot.memory.is_none()
-                    && slot.resources.mounts.is_empty()
-                    && slot.resources.repositories.is_empty()
-                    && slot.baseline.as_ref().is_none_or(|baseline| {
-                        baseline.mounts.is_empty() && baseline.env.is_empty()
-                    })
-                    && slot.skills.as_ref().is_none_or(|versions| {
-                        versions
-                            .iter()
-                            .all(|version| !crate::skills::version_requires_environment(version))
-                    })
             })
             .unwrap_or(false);
         let workspace = self.thread_workspace(thread);
@@ -116,12 +129,9 @@ impl SharedHost {
                 awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
             });
         slot_allows
+            && !self.session_has_local_environment_inputs(thread)
             && !published_backend_is_acp
             && !selected_backend_is_acp
-            && self.skills.specs().iter().all(|skill| {
-                skill.environment == awaken_ext_skills::SkillEnvironment::InstructionOnly
-                    && skill.context == awaken_ext_skills::SkillContext::Inline
-            })
     }
 
     async fn persist_environment_before_publish(
@@ -526,11 +536,28 @@ impl SharedHost {
             .as_ref()
             .map(|snapshot| &snapshot.resolved_spec.model_binding.provisioning)
             .unwrap_or(&awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor);
+        let execution_backend = published_backend_ref
+            .as_deref()
+            .map(awaken_runtime_contract::resolved::Backend::from_ref)
+            .unwrap_or(awaken_runtime_contract::resolved::Backend::Native);
+        let a2a_only = installed.as_ref().is_some_and(|snapshot| {
+            !crate::host::completion::requires_local_environment(&snapshot.resolved_spec)
+        });
+        if a2a_only && self.session_has_local_environment_inputs(thread) {
+            return Err(HostError::bad_request(
+                "remote A2A execution cannot consume local Session Environment inputs",
+            ));
+        }
         let environment_provider = self.session_environment_provider(provisioning)?;
         let retained = self
             .session_slots
             .read(thread, |slot| slot.environment.clone())
             .flatten();
+        if a2a_only && (retained.is_some() || adopted.is_some()) {
+            return Err(HostError::bad_request(
+                "remote A2A execution cannot bind a local Session Environment",
+            ));
+        }
         let deferred = retained.is_none()
             && adopted.is_none()
             && self.can_defer_session_environment(thread, Some(selected_agent), installed.as_ref());
@@ -548,7 +575,7 @@ impl SharedHost {
             // The adopted environment already contains its Session workspace and
             // repositories. Re-cloning would both fail and destroy continuity.
             (None, Some(adopted)) => (Some(Arc::new(adopted)), false, true),
-            (None, None) if deferred => (None, false, false),
+            (None, None) if a2a_only || deferred => (None, false, false),
             (None, None) => (
                 Some(Arc::new(
                     environment_provider
@@ -597,10 +624,6 @@ impl SharedHost {
         // connects staged servers as in-process McpPlugins; ACP hands the same
         // typed server set to the CLI's own MCP client and must not open a second
         // competing host-side connection.
-        let execution_backend = published_backend_ref
-            .as_deref()
-            .map(awaken_runtime_contract::resolved::Backend::from_ref)
-            .unwrap_or(awaken_runtime_contract::resolved::Backend::Native);
         let is_acp = execution_backend.is_acp();
         // This thread's staged MCP servers (ADR-0043 Phase 3), registered by the
         // managed adapter's `prepare_session` before the first turn; the wire
@@ -1034,17 +1057,18 @@ impl SharedHost {
             .await
             .into_iter()
             .collect();
-        let mut hand_placement = self.hand_placement.clone();
-        if let Some(hand) = env.as_ref().and_then(|env| env.bound_tool_executor()) {
-            hand_placement.bind_environment_hand(hand);
-        } else if let Some(hand) = self
-            .session_slots
-            .read(thread, |slot| slot.deferred_executor.clone())
-            .flatten()
-        {
-            hand_placement.bind_environment_hand(hand);
-        }
-        let session_hand = hand_placement.session_hand().cloned();
+        let tool_executor = if a2a_only {
+            None
+        } else if let Some(environment) = env.as_ref() {
+            // Every realized tier owns the Hand for its Session. Container uses
+            // the channel-backed process; Workdir/Namespace use their rooted
+            // implementations behind the same ToolExecutor port.
+            Some(environment.tool_executor())
+        } else {
+            self.session_slots
+                .read(thread, |slot| slot.deferred_executor.clone())
+                .flatten()
+        };
         // Cause/effect composition rules: terminal observers and Session plugins
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
@@ -1056,8 +1080,8 @@ impl SharedHost {
             run_context,
             awaken_runtime_contract::RuntimeRunContext::with_session_plugin,
         );
-        let run_context = match session_hand {
-            Some(hand) => run_context.with_tool_executor(hand),
+        let run_context = match tool_executor.as_ref() {
+            Some(executor) => run_context.with_tool_executor(executor.clone()),
             None => run_context,
         };
         let (ingress, durable_ingress) = self
@@ -1084,7 +1108,7 @@ impl SharedHost {
             stream_checkpoint,
             session_plugins: mcp.plugins,
             _web_search_mcp: web_search_mcp,
-            hand_placement,
+            tool_executor,
             capture_sink: self
                 .capture_sink
                 .read()

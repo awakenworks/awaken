@@ -1,0 +1,22 @@
+[package]
+name = "awaken-environment-package-image-builder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+package-class = "server"
+authority = "coordinator"
+
+[dependencies]
+async-trait.workspace = true
+awaken-environment-contract.workspace = true
+awaken-environment-realization-contract.workspace = true
+awaken-provisioning-contract.workspace = true
+awaken-sandbox-container.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true
