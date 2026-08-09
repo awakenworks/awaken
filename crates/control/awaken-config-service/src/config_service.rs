@@ -8,7 +8,7 @@
 //! Runtime consumes compiled configuration and never edits authoring records.
 use std::sync::Arc;
 
-use awaken_config_resolver::AgentInputBindingRepository;
+use awaken_config_resolver::{AgentInputBindingRepository, AgentInputConfig};
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, ConfigRegistry, ConfigWrite, StoredPublication,
 };
@@ -129,6 +129,93 @@ impl ConfigService {
         })
     }
 
+    /// Compile an unsaved draft and register it through the canonical
+    /// Control-to-Coordinator boundary without creating authoring or publication
+    /// records. Preview ids are immutable: a refreshed draft receives a new id.
+    pub async fn preview(
+        &self,
+        workspace: &ScopeId,
+        preview_id: &str,
+        config: &AgentConfig,
+        inputs: AgentInputConfig,
+        catalog: &[ToolDescriptor],
+    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, PublishError> {
+        if config.id != preview_id || inputs.agent_id != preview_id {
+            return Err(PublishError::Unresolvable(
+                "preview config and resources must use the requested preview id".into(),
+            ));
+        }
+        let source_revision = 1;
+        let mut resolved = prepare_agent_publication(
+            self.model_publication_resolver.as_ref(),
+            workspace,
+            AgentConfigRevision {
+                config: config.clone(),
+                revision: source_revision,
+            },
+        )
+        .await?;
+        resolve_plugin_configuration(
+            &self.plugin_publication_resolvers,
+            workspace,
+            &mut resolved.config,
+        )
+        .await
+        .map_err(|error| {
+            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
+        })?;
+        validate_credential_references(
+            self.credential_reference_validator.as_ref(),
+            workspace,
+            &resolved.config,
+        )
+        .await
+        .map_err(|error| {
+            PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
+        })?;
+        let mut metadata = snapshot_metadata(&resolved);
+        let mut resolved_inputs = std::mem::take(&mut metadata.resolution.inputs);
+        resolved_inputs.push(awaken_runtime_contract::ResolvedInputRef {
+            kind: "agent_session_defaults".into(),
+            id: preview_id.to_owned(),
+            version: awaken_runtime_contract::ResolvedInputVersion::Revision(
+                inputs.revision as u64,
+            ),
+        });
+        metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(resolved_inputs)
+            .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+        let snapshot = awaken_config_store::compile_published(
+            &resolved.config,
+            catalog,
+            metadata,
+            resolved.models.primary,
+            resolved.models.candidates,
+        )
+        .map_err(|error| PublishError::Compile(error.to_string()))?;
+        let session_profile =
+            registered_session_profile(&snapshot, &resolved.authored_model_selection, Some(inputs))
+                .ok_or_else(|| {
+                    PublishError::Registration(
+                        awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
+                            "preview Session defaults changed while the snapshot was compiled"
+                                .into(),
+                        ),
+                    )
+                })?;
+        self.registrar
+            .register(ExecutableAgentRegistration {
+                workspace_id: workspace.as_str().to_owned(),
+                agent_id: preview_id.to_owned(),
+                source_revision,
+                snapshot: snapshot.clone(),
+                session_profile,
+                declared_hand: resolved.config.hand.clone(),
+            })
+            .await
+            .map_err(PublishError::Registration)?;
+        Ok(snapshot)
+    }
+
     /// Store a config draft (upsert by id) in the caller-supplied scope-bound
     /// `registry` (a [`awaken_config_store::ScopedConfig`] the edge bound to the
     /// request scope).
@@ -224,11 +311,30 @@ impl ConfigService {
         id: &str,
         catalog: &[ToolDescriptor],
     ) -> Result<StoredPublication, PublishError> {
+        self.publish_at_revisions(workspace, registry, id, catalog, None, None)
+            .await
+    }
+
+    /// Publish one reviewed Agent aggregate only when both mutable sources still
+    /// have the revisions observed by the caller, then freeze the exact Resource
+    /// defaults into the durable publication and Coordinator registration.
+    pub async fn publish_at_revisions(
+        &self,
+        workspace: &ScopeId,
+        registry: &dyn ConfigRegistry,
+        id: &str,
+        catalog: &[ToolDescriptor],
+        expected_source_revision: Option<u64>,
+        expected_resource_revision: Option<i64>,
+    ) -> Result<StoredPublication, PublishError> {
         let versioned = registry
             .get_config_revision(id)
             .await
             .map_err(|e| PublishError::Store(e.to_string()))?
             .ok_or_else(|| PublishError::NotStored(id.to_string()))?;
+        if expected_source_revision.is_some_and(|expected| expected != versioned.revision) {
+            return Err(PublishError::StaleRevision(Some(versioned.revision)));
+        }
         if versioned.config.lifecycle() != awaken_config_store::AgentLifecycle::Published {
             return Err(PublishError::Unavailable(id.to_string()));
         }
@@ -258,12 +364,19 @@ impl ConfigService {
             PublishError::Unresolvable(format!("{}: {}", error.path, error.message))
         })?;
         let mut metadata = snapshot_metadata(&resolved);
-        let defaults = self.resources.as_ref().and_then(|store| {
-            store
+        let defaults = match self.resources.as_ref() {
+            Some(store) => store
                 .get_agent_inputs(workspace.as_str(), id)
-                .ok()
-                .flatten()
-        });
+                .map_err(|error| PublishError::Store(error.to_string()))?,
+            None => None,
+        };
+        let current_resource_revision = defaults.as_ref().map_or(0, |inputs| inputs.revision);
+        if expected_resource_revision.is_some_and(|expected| expected != current_resource_revision)
+        {
+            return Err(PublishError::StaleResourceRevision(
+                current_resource_revision,
+            ));
+        }
         if let Some(defaults) = &defaults {
             let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
             inputs.push(awaken_runtime_contract::ResolvedInputRef {
@@ -284,8 +397,14 @@ impl ConfigService {
             resolved.models.candidates,
         )
         .map_err(|e| PublishError::Compile(e.to_string()))?;
+        let stored_inputs = defaults
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|error| PublishError::Store(error.to_string()))?;
         let publication =
-            StoredPublication::published_at_revision(snapshot.clone(), id, source_revision);
+            StoredPublication::published_at_revision(snapshot.clone(), id, source_revision)
+                .with_agent_inputs(stored_inputs);
         let write = registry
             .put_publication_if_config_revision(&publication, source_revision)
             .await
@@ -564,6 +683,59 @@ pub(crate) mod resource_prompt_tests {
         assert_eq!(scope_id.as_str(), "workspace-a");
         assert_eq!(credential.credential.id, "credential-workspace-a");
         assert_eq!(publication.fingerprint, publication.snapshot.fingerprint.0);
+    }
+
+    #[tokio::test]
+    async fn preview_registers_inline_inputs_without_authoring_persistence() {
+        // Preview cause/effect decision table:
+        // P1 exact preview/config/input id + valid draft -> one Coordinator
+        // registration carrying the exact inline resources; P2 no ConfigRegistry
+        // is supplied -> no authoring draft or StoredPublication can be written;
+        // P3 the monotonic successor withdrawal -> current resolution disappears.
+        let (service, catalog) = test_service_and_catalog();
+        let workspace = scope("workspace-preview");
+        let preview_id = "preview-causal-1";
+        let inputs = AgentInputConfig {
+            agent_id: preview_id.into(),
+            environment: None,
+            inputs: vec![InputBinding {
+                binding_id: BindingId::from("memory"),
+                target: InputResourceId::MemoryStore(MemoryStoreId::from("memstore-7")),
+                mount_path: "/mnt/memory".into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: Some("prefer current project decisions".into()),
+            }],
+            revision: 1,
+        };
+
+        service
+            .preview(
+                &workspace,
+                preview_id,
+                &agent_config(preview_id),
+                inputs.clone(),
+                &[],
+            )
+            .await
+            .unwrap();
+        let registration = catalog
+            .current(workspace.as_str(), preview_id)
+            .expect("P1 preview registration");
+        assert_eq!(registration.session_profile.resources, inputs.inputs, "P1");
+
+        service
+            .registrar
+            .withdraw(ExecutableAgentWithdrawal {
+                workspace_id: workspace.as_str().into(),
+                agent_id: preview_id.into(),
+                lifecycle_revision: 2,
+            })
+            .await
+            .unwrap();
+        assert!(
+            catalog.current(workspace.as_str(), preview_id).is_none(),
+            "P3"
+        );
     }
 
     #[tokio::test]
@@ -1086,6 +1258,53 @@ pub(crate) mod resource_prompt_tests {
                 .is_some(),
             "registered Coordinator view remains frozen when Control defaults later change"
         );
+        assert_eq!(
+            publication.agent_inputs.as_ref().unwrap()["revision"],
+            1,
+            "the publication owns the exact Resource defaults used at compile time"
+        );
+    }
+
+    #[tokio::test]
+    async fn reviewed_publish_fences_config_and_resource_revisions() {
+        // Reviewed-publish cause/effect table: R1 stale config + exact resources
+        // -> StaleRevision; R2 exact config + stale resources ->
+        // StaleResourceRevision; R3 both exact -> one self-contained publication.
+        let resources =
+            Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
+        resources
+            .put_agent_inputs(
+                DEFAULT_SCOPE,
+                AgentInputConfig {
+                    agent_id: "reviewed".into(),
+                    environment: None,
+                    inputs: vec![],
+                    revision: 1,
+                },
+            )
+            .unwrap();
+        let plane = plane_with(
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+            None,
+            Some(resources),
+        );
+        let scope = ScopeId::from(DEFAULT_SCOPE);
+        plane.put(&scope, &agent_config("reviewed")).await.unwrap();
+
+        assert!(matches!(
+            plane.publish_at_revisions(&scope, "reviewed", 99, 1).await,
+            Err(PublishError::StaleRevision(Some(1)))
+        ));
+        assert!(matches!(
+            plane.publish_at_revisions(&scope, "reviewed", 1, 99).await,
+            Err(PublishError::StaleResourceRevision(1))
+        ));
+        let publication = plane
+            .publish_at_revisions(&scope, "reviewed", 1, 1)
+            .await
+            .expect("R3 matching reviewed aggregate publishes");
+        assert_eq!(publication.source_revision, 1);
+        assert_eq!(publication.agent_inputs.unwrap()["revision"], 1);
     }
 
     #[tokio::test]
@@ -1504,7 +1723,7 @@ pub(crate) mod resource_prompt_tests {
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &agent_config("mgmt")).await.unwrap();
         let (status, Json(body)) =
-            super::publish(State(plane), None, None, Path("mgmt".to_string())).await;
+            super::publish(State(plane), None, None, Path("mgmt".to_string()), None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["installed"], json!(true));
     }
@@ -1516,7 +1735,7 @@ pub(crate) mod resource_prompt_tests {
         let scope = ScopeId::from(DEFAULT_SCOPE);
         plane.put(&scope, &auto_config("mgmt")).await.unwrap();
         let (status, _body) =
-            super::publish(State(plane), None, None, Path("mgmt".to_string())).await;
+            super::publish(State(plane), None, None, Path("mgmt".to_string()), None).await;
         assert_eq!(status, StatusCode::CONFLICT);
     }
 
@@ -1525,7 +1744,7 @@ pub(crate) mod resource_prompt_tests {
         // F23c: any other publish failure (here NotStored) stays a 400.
         let plane = static_plane(None);
         let (status, _body) =
-            super::publish(State(plane), None, None, Path("ghost".to_string())).await;
+            super::publish(State(plane), None, None, Path("ghost".to_string()), None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
@@ -1723,6 +1942,57 @@ pub(crate) mod resource_prompt_tests {
     }
 
     #[tokio::test]
+    async fn startup_reconciliation_uses_frozen_publication_inputs() {
+        // Recovery cause/effect table: F1 publication freezes Resource rev1;
+        // F2 mutable draft advances to rev2; F3 a fresh Coordinator reconciles
+        // -> the current Session profile still carries rev1's mount, with no
+        // fallback read from the mutable Resource repository.
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let resources =
+            Arc::new(awaken_config_resolver::InMemoryAgentInputBindingRepository::new());
+        let scope = ScopeId::from("wrkspc_frozen_inputs");
+        let inputs = |revision, mount_path: &str| AgentInputConfig {
+            agent_id: "frozen-agent".into(),
+            environment: None,
+            inputs: vec![InputBinding {
+                binding_id: BindingId::from("memory"),
+                target: InputResourceId::MemoryStore(MemoryStoreId::from("memory-a")),
+                mount_path: mount_path.into(),
+                access: ResourceAccess::ReadWrite,
+                instructions: None,
+            }],
+            revision,
+        };
+        resources
+            .put_agent_inputs(scope.as_str(), inputs(1, "/published"))
+            .unwrap();
+        let author_service = test_service().with_resources(resources.clone());
+        let author = ConfigPlane::new(
+            Arc::new(author_service),
+            store.clone(),
+            Arc::new(crate::tool_catalog::StaticToolCatalog(vec![])),
+        );
+        author
+            .put(&scope, &agent_config("frozen-agent"))
+            .await
+            .unwrap();
+        author.publish(&scope, "frozen-agent").await.unwrap();
+        resources
+            .put_agent_inputs(scope.as_str(), inputs(2, "/draft-v2"))
+            .unwrap();
+
+        let (cold, catalog) = test_service_and_catalog();
+        cold.reconcile_registrations(store.as_ref(), &scope)
+            .await
+            .unwrap();
+        use awaken_executable_agent_contract::ExecutableAgentProfileSource as _;
+        let view = catalog
+            .session_profile_in(scope.as_str(), "frozen-agent")
+            .expect("F3 frozen publication survives restart");
+        assert_eq!(view.resources[0].mount_path, "/published");
+    }
+
+    #[tokio::test]
     async fn registration_reconciliation_keeps_archived_publications_unavailable() {
         // Lifecycle decision table: R1 current Published + durable publication ->
         // register; R2 current Disabled/Archived + old publication -> withdraw and
@@ -1806,6 +2076,7 @@ pub(crate) mod resource_prompt_tests {
             Some(Extension(WorkspaceScope(scope.as_str().into()))),
             None,
             Path("retry-agent".into()),
+            None,
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R1/E2");

@@ -132,7 +132,9 @@ mod tests {
         AgentConfig {
             mcp_servers: vec![AgentMcpServerBinding {
                 name: "docs".into(),
-                url: "https://mcp.example.test".into(),
+                transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+                    "https://mcp.example.test",
+                ),
                 credential: Some(CredentialRef {
                     id: "cred:workspace-a:docs".into(),
                     revision: 3,

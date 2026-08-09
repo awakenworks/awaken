@@ -155,9 +155,9 @@ impl EnvironmentNetworking {
                 let mut hosts = allowed_hosts.clone();
                 if *allow_mcp_servers {
                     hosts.extend(mcp_targets.iter().filter_map(|target| {
-                        McpTarget::identity(&target.url)
-                            .ok()
-                            .map(|identity| identity.host)
+                        target.http_url().and_then(|url| {
+                            McpTarget::identity(url).ok().map(|identity| identity.host)
+                        })
                     }));
                 }
                 if *allow_package_managers {

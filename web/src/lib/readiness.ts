@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { api, ws } from "./api/client";
+import { api, workspaceQuery, ws } from "./api/client";
 import type {
   AgentConfigList,
   Capabilities,
@@ -91,14 +91,14 @@ export function useWorkspaceReadiness() {
     queryKey: ["provider-connections", workspace],
     queryFn: () =>
       api.get<ProviderConnectionSummary[]>(
-        ws(`/v1/config/provider-connections?workspace_id=${workspace}`),
+        ws(workspaceQuery("/v1/config/provider-connections", workspace)),
       ),
     enabled: byokEnabled,
   });
   const credentials = useQuery({
     queryKey: ["credentials", workspace],
     queryFn: () =>
-      api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
+      api.get<CredentialSource[]>(ws(workspaceQuery("/v1/config/credentials", workspace))),
     enabled: byokEnabled,
   });
   const capabilities = useQuery({

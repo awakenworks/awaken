@@ -33,6 +33,10 @@ pub(crate) struct McpGenerationProjection {
     pub receipt: awaken_session_contract::McpRealizationReceipt,
     pub server: Option<crate::mcp::McpTransportMaterial>,
     pub native_wiring: Option<crate::mcp::McpWiring>,
+    /// Session-owned process for a Native sandbox-stdio MCP generation. ACP
+    /// starts its stdio child itself and HTTP generations have no sandbox
+    /// process, so both leave this empty.
+    pub mcp_process: Option<Arc<dyn awaken_provisioning_contract::ProcessHandle>>,
     pub state: McpProjectionState,
 }
 
@@ -41,6 +45,10 @@ pub(crate) struct McpGenerationProjection {
 #[derive(Clone)]
 pub(crate) struct FrozenBaselineRuntimeProjection {
     pub fingerprint: awaken_session_contract::SessionBaselineFingerprint,
+    /// Exact published Agent identity that owns this Session. Runtime effects
+    /// that must materialize before the first turn (for example sandbox stdio
+    /// MCP) use it to resolve the same immutable publication.
+    pub agent_id: String,
     pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
     pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,

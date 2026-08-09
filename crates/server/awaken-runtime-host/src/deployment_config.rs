@@ -168,6 +168,13 @@ pub enum SandboxTier {
     K8s,
 }
 
+/// Runtime used only to build and publish immutable package images.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageImageBuilder {
+    Docker,
+    Podman,
+}
+
 impl SandboxTier {
     /// Whether this tier runs the agent inside a container image (vs. the local or
     /// namespace tiers on the worker host) — the composition root builds a container
@@ -193,10 +200,33 @@ pub struct SandboxSettings {
     pub container_forward_proxy: Option<String>,
     /// Kubernetes namespace used by the K8s container adapter.
     pub k8s_namespace: String,
+    /// Existing namespace-local Secrets used by kubelet for private image pulls.
+    pub k8s_image_pull_secrets: Vec<String>,
     /// Executable path for the Awaken Hand inside a container image.
     pub container_hand_bin: String,
     /// Podman executable used by the rootless container adapter.
     pub podman_bin: String,
+    /// Shared OCI repository prefix for package images. When absent, Docker and
+    /// Podman use their local engine cache; Kubernetes package provisioning is
+    /// unavailable because Pods cannot consume a node-local image reliably.
+    pub package_image_registry: Option<String>,
+    /// Docker/Podman-compatible registry authentication file read only by the
+    /// Worker-side image builder. Its secret material is never projected into a
+    /// Session or Agent process.
+    pub package_registry_auth_file: Option<PathBuf>,
+    /// Optional builder independent from the Session execution backend.
+    pub package_image_builder: Option<PackageImageBuilder>,
+    /// Durable build journal and atomic lease directory. It may be a shared
+    /// filesystem when several Workers coordinate the same OCI registry.
+    pub package_artifact_dir: Option<PathBuf>,
+    pub package_build_lease_secs: u64,
+    pub package_build_wait_secs: u64,
+    pub package_failure_retry_secs: u64,
+    pub package_state_ttl_secs: u64,
+    /// Age after which unused, Awaken-labeled derived images may be pruned from
+    /// the builder's local engine cache. Registry retention remains an operator
+    /// policy because the registry is shared infrastructure.
+    pub package_local_cache_ttl_secs: u64,
     /// Whether locally launched ACP agents inherit the Worker process stderr.
     pub inherit_agent_stderr: bool,
     /// Whether Docker/Podman orphan reconciliation is active.
@@ -214,8 +244,18 @@ impl Default for SandboxSettings {
             warm_pool_size: 0,
             container_forward_proxy: None,
             k8s_namespace: "default".to_owned(),
+            k8s_image_pull_secrets: Vec::new(),
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
             podman_bin: "podman".to_owned(),
+            package_image_registry: None,
+            package_registry_auth_file: None,
+            package_image_builder: None,
+            package_artifact_dir: None,
+            package_build_lease_secs: 15 * 60,
+            package_build_wait_secs: 20 * 60,
+            package_failure_retry_secs: 15,
+            package_state_ttl_secs: 30 * 24 * 60 * 60,
+            package_local_cache_ttl_secs: 7 * 24 * 60 * 60,
             inherit_agent_stderr: false,
             reaper_enabled: true,
             reaper_interval_secs: awaken_sandbox_container::DEFAULT_REAPER_INTERVAL_SECS,
@@ -334,7 +374,16 @@ impl DeploymentConfig {
                     secret_egress_substitution: false,
                     resource_limits: true,
                     custom_rootfs: true,
-                    package_provisioning: matches!(self.sandbox_tier, SandboxTier::Podman),
+                    // Docker and Podman can build a content-addressed derived
+                    // image before the Session container starts. Kubernetes may
+                    // advertise this only when an external builder and shared
+                    // registry are both configured.
+                    package_provisioning: matches!(
+                        self.sandbox_tier,
+                        SandboxTier::Docker | SandboxTier::Podman
+                    ) || (self.sandbox_tier == SandboxTier::K8s
+                        && self.sandbox.package_image_registry.is_some()
+                        && self.sandbox.package_image_builder.is_some()),
                 },
                 match self.sandbox_tier {
                     SandboxTier::Docker => "docker",
@@ -469,7 +518,7 @@ mod tests {
         for (tier, deny_all, package_provisioning, backend) in [
             (SandboxTier::Local, false, false, "local"),
             (SandboxTier::Namespace, true, false, "namespace"),
-            (SandboxTier::Docker, true, false, "docker"),
+            (SandboxTier::Docker, true, true, "docker"),
             (SandboxTier::Podman, true, true, "podman"),
             (SandboxTier::K8s, false, false, "k8s"),
         ] {
@@ -487,6 +536,15 @@ mod tests {
                 "{tier:?} must not claim a no-bypass allowlist"
             );
         }
+
+        let mut k8s_with_builder = base();
+        k8s_with_builder.sandbox_tier = SandboxTier::K8s;
+        k8s_with_builder.sandbox.package_image_registry = Some("registry.internal/agents".into());
+        k8s_with_builder.sandbox.package_image_builder = Some(PackageImageBuilder::Docker);
+        assert!(
+            k8s_with_builder.sandbox_support().0.package_provisioning,
+            "Kubernetes may advertise packages only with an independent builder and shared registry"
+        );
     }
 
     #[test]

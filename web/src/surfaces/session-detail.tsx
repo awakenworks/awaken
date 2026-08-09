@@ -9,7 +9,8 @@ import { Link, useParams } from "react-router";
 import Transcript from "../components/session/Transcript";
 import TraceView from "../components/session/TraceView";
 import SessionFiles from "../components/session/SessionFiles";
-import { Button, Card, Pill, Segmented } from "../components/ui";
+import SessionIntegrations from "../components/session/SessionIntegrations";
+import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { InboundEvent, SendEventsResponse, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -25,11 +26,15 @@ export default function SessionDetailSurface() {
   const app = useApp();
   const { ws: wsId = "default", sid = "" } = useParams();
   const qc = useQueryClient();
+  const confirm = useConfirm();
+  const toast = useToast();
   // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
-  const [view, setView] = useState<"chat" | "trace" | "files">("chat");
+  const [view, setView] = useState<"chat" | "inputs" | "artifacts" | "integrations" | "trace">("chat");
   const [controlResult, setControlResult] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
 
   const session = useQuery({
     queryKey: ["session", wsId, sid],
@@ -52,15 +57,28 @@ export default function SessionDetailSurface() {
     onSuccess: (s) => {
       qc.setQueryData(["session", wsId, sid], s);
       void qc.invalidateQueries({ queryKey: ["sessions", wsId] });
+      setRenaming(false);
+      toast.ok(app.t("Session renamed.", "会话已重命名。"));
     },
+    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
   const archive = useMutation({
     mutationFn: () => api.post<Session>(`${base}/archive`),
     onSuccess: (s) => {
       qc.setQueryData(["session", wsId, sid], s);
       void qc.invalidateQueries({ queryKey: ["sessions", wsId] });
+      toast.ok(app.t("Session archived.", "会话已归档。"));
     },
+    onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
+  const archiveSession = async () => {
+    const approved = await confirm({
+      title: app.t("Archive this session?", "归档该会话？"),
+      body: app.t("It remains readable, but no new work should be sent to it.", "它仍可读取，但不应再向其发送新任务。"),
+      confirmLabel: app.t("Archive", "归档"),
+    });
+    if (approved) archive.mutate();
+  };
 
   return (
     <>
@@ -79,15 +97,15 @@ export default function SessionDetailSurface() {
           <Button
             variant="ghost"
             onClick={() => {
-              const next = prompt(app.t("Session title", "会话标题"), session.data?.title ?? "");
-              if (next !== null) rename.mutate(next);
+              setTitleDraft(session.data?.title ?? "");
+              setRenaming(true);
             }}
           >
             ✎ {app.t("rename", "重命名")}
           </Button>
           {!session.data?.archived_at && (
-            <Button variant="ghost" onClick={() => archive.mutate()}>
-              ⌫ {app.t("archive", "归档")}
+            <Button variant="ghost" disabled={archive.isPending} onClick={() => void archiveSession()}>
+              ⌫ {archive.isPending ? app.t("archiving…", "正在归档…") : app.t("archive", "归档")}
             </Button>
           )}
           <Button variant="danger" onClick={() => control.mutate([{ type: "user.interrupt" }])}>
@@ -95,6 +113,19 @@ export default function SessionDetailSurface() {
           </Button>
         </span>
       </div>
+
+      {renaming && (
+        <Modal title={app.t("Rename session", "重命名会话")} onClose={() => setRenaming(false)}>
+          <TextField label={app.t("Title", "标题")} value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} />
+          {rename.error instanceof Error && <div className="err">{rename.error.message}</div>}
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            <Button onClick={() => setRenaming(false)}>{app.t("Cancel", "取消")}</Button>
+            <Button variant="primary" disabled={rename.isPending} onClick={() => rename.mutate(titleDraft)}>
+              {rename.isPending ? app.t("Saving…", "正在保存…") : app.t("Save", "保存")}
+            </Button>
+          </div>
+        </Modal>
+      )}
 
       {controlResult && <div className={`banner ${control.isError ? "err" : "info"}`}>{controlResult}</div>}
 
@@ -105,15 +136,19 @@ export default function SessionDetailSurface() {
             className="segmented"
             options={[
               { value: "chat", label: app.t("Chat", "对话") },
+              { value: "inputs", label: app.t("Inputs", "输入") },
+              { value: "artifacts", label: app.t("Artifacts", "产物") },
+              { value: "integrations", label: app.t("Integrations", "集成") },
               { value: "trace", label: app.t("Trace", "追踪") },
-              { value: "files", label: app.t("Files", "文件") },
             ]}
             value={view}
             onChange={setView}
           />
           {view === "chat" && <Transcript base={base} queryKey={eventsKey} modelOverride />}
+          {view === "inputs" && <SessionFiles base={base} sid={sid} view="inputs" />}
+          {view === "artifacts" && <SessionFiles base={base} sid={sid} view="artifacts" />}
+          {view === "integrations" && <SessionIntegrations session={session.data} />}
           {view === "trace" && <TraceView base={base} queryKey={eventsKey} />}
-          {view === "files" && <SessionFiles base={base} sid={sid} />}
         </div>
 
         <aside style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>

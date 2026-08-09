@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useEffect, useRef, useState } from "react";
 import Transcript from "../components/session/Transcript";
 import { Button, Card, Modal, Pill, Skeleton, UsageBadges } from "../components/ui";
-import { api, ws } from "../lib/api/client";
+import { api, workspaceQuery, ws } from "../lib/api/client";
 import type {
   CatalogSyncResult,
   CredentialSource,
@@ -134,13 +134,13 @@ export default function ModelsSurface() {
     queryKey: ["provider-connections", workspace],
     queryFn: () =>
       api.get<ProviderConnectionSummary[]>(
-        ws(`/v1/config/provider-connections?workspace_id=${workspace}`),
+        ws(workspaceQuery("/v1/config/provider-connections", workspace)),
       ),
     enabled: capabilities.data?.models.byok_enabled === true,
   });
   const credentials = useQuery({
     queryKey: ["credentials", workspace],
-    queryFn: () => api.get<CredentialSource[]>(ws(`/v1/config/credentials?workspace_id=${workspace}`)),
+    queryFn: () => api.get<CredentialSource[]>(ws(workspaceQuery("/v1/config/credentials", workspace))),
     enabled: capabilities.data?.models.byok_enabled === true,
   });
   const [testModel, setTestModel] = useState<string | null>(null);

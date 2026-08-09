@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use awaken_config_resolver::AgentInputConfig;
 use awaken_config_store::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
     ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfig,
@@ -85,6 +86,25 @@ impl ConfigPlane {
                 &ScopeId::from(execution_workspace),
                 config,
                 &self.catalog_for(scope),
+            )
+            .await
+    }
+
+    pub async fn preview_for_execution_workspace(
+        &self,
+        configuration_scope: &ScopeId,
+        execution_workspace: &str,
+        preview_id: &str,
+        config: &AgentConfig,
+        inputs: AgentInputConfig,
+    ) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, PublishError> {
+        self.service
+            .preview(
+                &ScopeId::from(execution_workspace),
+                preview_id,
+                config,
+                inputs,
+                &self.catalog_for(configuration_scope),
             )
             .await
     }
@@ -295,6 +315,28 @@ impl ConfigPlane {
             .await
     }
 
+    /// Publish only if the reviewed config and Resource defaults still have the
+    /// exact revisions supplied by the caller.
+    pub async fn publish_at_revisions(
+        &self,
+        scope: &ScopeId,
+        id: &str,
+        expected_source_revision: u64,
+        expected_resource_revision: i64,
+    ) -> Result<StoredPublication, PublishError> {
+        if scope.as_str() == RESERVED_ADMIN_SCOPE {
+            return Err(PublishError::ExecutionWorkspaceRequired);
+        }
+        self.publish_for_execution_workspace_at_revisions(
+            scope,
+            scope.as_str(),
+            id,
+            Some(expected_source_revision),
+            Some(expected_resource_revision),
+        )
+        .await
+    }
+
     /// Publish from an authoring namespace into an explicit execution Workspace.
     pub async fn publish_for_execution_workspace(
         &self,
@@ -302,12 +344,32 @@ impl ConfigPlane {
         execution_workspace: &str,
         id: &str,
     ) -> Result<StoredPublication, PublishError> {
+        self.publish_for_execution_workspace_at_revisions(
+            configuration_scope,
+            execution_workspace,
+            id,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub async fn publish_for_execution_workspace_at_revisions(
+        &self,
+        configuration_scope: &ScopeId,
+        execution_workspace: &str,
+        id: &str,
+        expected_source_revision: Option<u64>,
+        expected_resource_revision: Option<i64>,
+    ) -> Result<StoredPublication, PublishError> {
         self.service
-            .publish(
+            .publish_at_revisions(
                 &ScopeId::from(execution_workspace),
                 &self.registry_for(configuration_scope),
                 id,
                 &self.catalog_for(configuration_scope),
+                expected_source_revision,
+                expected_resource_revision,
             )
             .await
     }
@@ -330,6 +392,13 @@ impl ConfigPlane {
             .await
             .map(|_| ())
             .map_err(|error| error.to_string())
+    }
+
+    /// Remove one immutable draft preview from current Session resolution.
+    /// Revision two is the monotonic successor to the preview registration's
+    /// fixed source revision one.
+    pub async fn remove_preview(&self, execution_workspace: &str, id: &str) -> Result<(), String> {
+        self.withdraw(execution_workspace, id, 2).await
     }
 
     /// The scope-free authoring/publication service.

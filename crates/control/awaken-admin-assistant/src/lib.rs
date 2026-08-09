@@ -452,6 +452,10 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                               "properties": {
                                   "name": { "type": "string" },
                                   "url": { "type": "string" },
+                                  "type": { "type": "string", "enum": ["sandbox_stdio"] },
+                                  "command": { "type": "string" },
+                                  "args": { "type": "array", "items": { "type": "string" } },
+                                  "prompts_as_skills": { "type": "boolean" },
                                   "credential": {
                                       "type": "object",
                                       "properties": {
@@ -461,9 +465,13 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                                       "required": ["id", "revision"]
                                   }
                               },
-                              "required": ["name", "url"]
+                              "required": ["name"],
+                              "oneOf": [
+                                  { "required": ["url"] },
+                                  { "required": ["type", "command"] }
+                              ]
                           },
-                          "description": "Typed MCP server bindings. `id` is accepted as an alias for `name`."
+                          "description": "Typed MCP bindings: HTTP uses `url`; Session sandbox stdio uses `type: sandbox_stdio`, `command`, and optional `args`. `id` aliases `name`."
                     },
                     "skills": {
                         "type": "array",

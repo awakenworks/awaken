@@ -36,8 +36,21 @@ const IMAGE = process.env.AWAKEN_TEST_SESSION_IMAGE ?? 'awaken-sandbox:session-e
 const PACKAGE_BASE_IMAGE = `${IMAGE}-package-base`;
 const ENGINE_TIMEOUT_MS = 30_000;
 const TMP = path.join(os.tmpdir(), `awaken-container-agent-${ENGINE}-e2e-${process.pid}`);
-const ACP_FIXTURE = `process.stdin.once('data',()=>{fs=require('fs');p='/usr/local/share/awaken-package-proof';pkg=fs.existsSync(p)?'-'+fs.readFileSync(p,'utf8'):'';console.log(JSON.stringify({type:'message',text:'${MARKER}'+pkg}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
+const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const PACKAGE_CASES = [
+  { manager: 'apt', requirements: ['jq'], proof: 'jq --version' },
+  { manager: 'cargo', requirements: ['minigrep@0.1.0'], proof: 'test -x /usr/local/bin/minigrep' },
+  { manager: 'gem', requirements: ['rake:13.4.2'], proof: 'rake --version' },
+  { manager: 'go', requirements: ['github.com/rakyll/hey@v0.1.4'], proof: 'test -x /usr/local/bin/hey' },
+  { manager: 'npm', requirements: ['cowsay@1.6.0'], proof: 'cowsay AWAKEN | grep AWAKEN' },
+  {
+    manager: 'pip',
+    requirements: ['cowsay==6.1'],
+    proof: '/opt/awaken-python/bin/python -c \'import cowsay; print(cowsay.get_output_string("cow", "AWAKEN"))\' | grep AWAKEN',
+  },
+];
 
 function execFileSync(file, args, options = {}) {
   return rawExecFileSync(file, args, file === ENGINE
@@ -61,7 +74,13 @@ async function afterPendingActivation(operation) {
 
 async function exerciseContainerEnvironment(
   client, name, sandbox, expectSuccess,
-  { packages, expectedMarker = MARKER, expectedError } = {},
+  {
+    packages,
+    expectedMarker = MARKER,
+    expectedError,
+    proveImageReuse = false,
+    proofCommands = [],
+  } = {},
 ) {
   const network = sandbox.network;
   const environment = await client.beta.environments.create({
@@ -92,48 +111,124 @@ async function exerciseContainerEnvironment(
     },
   );
   assert.equal(response.status, 200, await response.text());
-  const session = await client.beta.sessions.create({
-    agent: 'namespace-agent',
-    environment_id: environment.id,
-    betas: BETAS,
-  });
-  let sendFailure;
-  try {
-    await client.beta.sessions.events.send(session.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: `exercise ${name}` }] }],
+  const realizedImages = [];
+  const realizedContainers = [];
+  const attempts = proveImageReuse ? 2 : 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const session = await client.beta.sessions.create({
+      agent: 'namespace-agent',
+      environment_id: environment.id,
       betas: BETAS,
     });
-  } catch (error) {
-    sendFailure = error;
-  }
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-    events.push(event);
-  }
-  if (expectSuccess) {
-    assert.equal(sendFailure, undefined, `${name} should realize: ${sendFailure}`);
-    assert.ok(
-      events.some(
-        (event) => event.type === 'agent.message'
-          && (event.content ?? []).some((content) => String(content.text ?? '').includes(expectedMarker)),
-      ),
-      `${name} must run the containerized agent: ${JSON.stringify(events)}`,
-    );
-  } else {
-    assert.ok(
-      sendFailure || events.some((event) => event.type === 'session.error'),
-      `${name} must fail closed instead of falling back to the default image: ${JSON.stringify(events)}`,
-    );
-    if (expectedError) {
-      assert.match(
-        `${sendFailure ?? ''} ${JSON.stringify(events)}`,
-        expectedError,
-        `${name} must expose the stable capability failure`,
-      );
+    let sendFailure;
+    try {
+      await client.beta.sessions.events.send(session.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: `exercise ${name}` }] }],
+        betas: BETAS,
+      });
+    } catch (error) {
+      sendFailure = error;
     }
+    const events = [];
+    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+      events.push(event);
+    }
+    if (expectSuccess) {
+      assert.equal(sendFailure, undefined, `${name} should realize: ${sendFailure}`);
+      assert.ok(
+        events.some(
+          (event) => event.type === 'agent.message'
+            && (event.content ?? []).some((content) => String(content.text ?? '').includes(expectedMarker)),
+        ),
+        `${name} must run the containerized agent: ${JSON.stringify(events)}`,
+      );
+      if (proveImageReuse || proofCommands.length > 0) {
+        const names = testContainerNames()
+          .filter((candidate) => candidate.endsWith(`-${session.id}`));
+        assert.equal(names.length, 1, `${name} session must own one fresh container: ${names}`);
+        for (const command of proofCommands) {
+          execFileSync(ENGINE, ['exec', names[0], 'sh', '-lc', command], { encoding: 'utf8' });
+        }
+        if (proveImageReuse) {
+          realizedContainers.push(names[0]);
+          realizedImages.push(
+            execFileSync(ENGINE, ['inspect', '--format', '{{.Config.Image}}|{{.Image}}|{{.Config.User}}', names[0]], {
+              encoding: 'utf8',
+            }).trim(),
+          );
+          assert.match(
+            realizedImages.at(-1),
+            /\|10001$/,
+            `${name} package build must restore the base image's non-root runtime user`,
+          );
+          if (process.env.AWAKEN_PACKAGE_IMAGE_REGISTRY) {
+            assert.match(
+              realizedImages.at(-1).split('|')[0],
+              new RegExp(`^${process.env.AWAKEN_PACKAGE_IMAGE_REGISTRY
+                .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/awaken-packages@sha256:`),
+              `${name} must run the registry-published immutable digest`,
+            );
+          }
+          if (process.env.AWAKEN_PACKAGE_REGISTRY_AUTH_FILE) {
+            const inspect = execFileSync(
+              ENGINE,
+              ['inspect', '--format', '{{json .Config.Env}}|{{json .Mounts}}', names[0]],
+              { encoding: 'utf8' },
+            );
+            assert.ok(
+              !inspect.includes(process.env.AWAKEN_PACKAGE_REGISTRY_AUTH_FILE)
+                && !inspect.includes('test-secret')
+                && !inspect.includes('YXdha2VuOnRlc3Qtc2VjcmV0'),
+              `${name} registry credentials must remain in the Worker-side builder`,
+            );
+          }
+        }
+      }
+    } else {
+      assert.ok(
+        sendFailure || events.some((event) => event.type === 'session.error'),
+        `${name} must fail closed instead of falling back to the default image: ${JSON.stringify(events)}`,
+      );
+      if (expectedError) {
+        assert.match(
+          `${sendFailure ?? ''} ${JSON.stringify(events)}`,
+          expectedError,
+          `${name} must expose the stable capability failure`,
+        );
+      }
+    }
+    await client.beta.sessions.delete(session.id, { betas: BETAS });
   }
-  await client.beta.sessions.delete(session.id, { betas: BETAS });
+  if (proveImageReuse) {
+    assert.equal(realizedImages.length, 2);
+    assert.notEqual(
+      realizedContainers[1],
+      realizedContainers[0],
+      `${name} sessions must remain isolated in distinct containers`,
+    );
+    assert.equal(
+      realizedImages[1],
+      realizedImages[0],
+      `${name} must reuse the exact content-addressed image while keeping sessions isolated`,
+    );
+  }
   await client.beta.environments.delete(environment.id, { betas: BETAS });
+}
+
+async function exercisePackageManagerMatrix(client, { registryOnly = false } = {}) {
+  const cases = registryOnly
+    ? PACKAGE_CASES.filter(({ manager }) => manager === 'npm')
+    : PACKAGE_CASES;
+  for (const testCase of cases) {
+    await exerciseContainerEnvironment(client, `${ENGINE}-package-${testCase.manager}`, {
+      environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
+    }, true, {
+      packages: { [testCase.manager]: testCase.requirements },
+      proveImageReuse: registryOnly,
+      proofCommands: [testCase.proof],
+    });
+    console.log(`  ok: ${testCase.manager} installed ${testCase.requirements.join(', ')}`);
+  }
 }
 
 async function exercisePodmanRootfsMatrix(client) {
@@ -160,14 +255,14 @@ async function exercisePodmanRootfsMatrix(client) {
   // (covered by the Rust provider decision table).
   //
   // | Rule | provider capability | requirements | observable behavior |
-  // | P1   | Podman: present      | exact pip pin | ACP workload reads installed marker |
-  // | P2   | Docker: absent       | exact pip pin | stable error; no default-image fallback |
+  // | P1   | Podman/Docker: present | exact npm pin | workload observes installed binary |
   // | P3   | either               | absent        | ordinary selected-image execution |
   await exerciseContainerEnvironment(client, 'package-image', {
     environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
   }, true, {
-    packages: { pip: ['awaken-proof==1'] },
-    expectedMarker: 'PACKAGE-PROVISIONED',
+    packages: { npm: ['cowsay@1.6.0'] },
+    proveImageReuse: true,
+    proofCommands: ['cowsay AWAKEN | grep AWAKEN'],
   });
   await exerciseContainerEnvironment(client, 'scope-fallback', {
     environment: { kind: 'scope' },
@@ -229,23 +324,40 @@ function containerAvailable() {
   // A CLI can be installed while its daemon is unreachable. Bound the probe so
   // this optional E2E reaches its documented skip/fail-closed branch instead of
   // hanging the complete causal suite indefinitely.
-  return spawnSync(ENGINE, ['version'], { stdio: 'ignore', timeout: 10_000 }).status === 0;
+  return spawnSync(ENGINE, ['version'], {
+    stdio: 'ignore',
+    timeout: ENGINE_TIMEOUT_MS,
+  }).status === 0;
 }
 
 function testContainers({ all = false } = {}) {
   const args = ['ps'];
   if (all) args.push('-a');
-  args.push('-q', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`);
+  args.push('--format', '{{.ID}}|{{.Image}}|{{.Names}}', '--filter', 'label=awaken.sandbox=1');
   return execFileSync(ENGINE, args, { encoding: 'utf8', timeout: ENGINE_TIMEOUT_MS })
-    .trim().split(/\s+/).filter(Boolean);
+    .trim().split('\n').filter(Boolean)
+    .filter((row) => testContainerImage(row.split('|')[1]))
+    .map((row) => row.split('|')[0]);
 }
 
 function testContainerNames({ all = false } = {}) {
   const args = ['ps'];
   if (all) args.push('-a');
-  args.push('--format', '{{.Names}}', '--filter', 'label=awaken.sandbox=1', '--filter', `ancestor=${IMAGE}`);
+  args.push('--format', '{{.ID}}|{{.Image}}|{{.Names}}', '--filter', 'label=awaken.sandbox=1');
   return execFileSync(ENGINE, args, { encoding: 'utf8', timeout: ENGINE_TIMEOUT_MS })
-    .trim().split(/\s+/).filter(Boolean);
+    .trim().split('\n').filter(Boolean)
+    .filter((row) => testContainerImage(row.split('|')[1]))
+    .map((row) => row.split('|')[2]);
+}
+
+function testContainerImage(image) {
+  return image === IMAGE
+    || image === PACKAGE_BASE_IMAGE
+    || image.startsWith('awaken-packages:')
+    // Docker's `ps --format {{.Image}}` drops the digest for containers created
+    // from a registry digest even though inspect retains the immutable reference.
+    || image.endsWith('/awaken-packages')
+    || image.includes('/awaken-packages@sha256:');
 }
 
 function cleanupTestContainers() {
@@ -260,9 +372,10 @@ function cleanupTestContainers() {
 // fixed launch input (read from AWAKEN_ACP_ARGV only by the scenario host).
 // The image still contains the real `awaken-sandbox hand --stdio` binary.
 function ensureSessionImage() {
-  if (spawnSync(ENGINE, ['image', 'inspect', IMAGE], {
-    stdio: 'ignore', timeout: ENGINE_TIMEOUT_MS,
-  }).status === 0) return;
+  const existing = spawnSync(ENGINE, [
+    'image', 'inspect', '--format', '{{index .Config.Labels "org.awaken.environment-packages"}}', IMAGE,
+  ], { encoding: 'utf8', timeout: ENGINE_TIMEOUT_MS });
+  if (existing.status === 0 && existing.stdout.trim() === '1') return;
   execFileSync('bash', ['deploy/images/sandbox/build.sh', IMAGE, ''], {
     cwd: REPO_ROOT,
     env: { ...process.env, CONTAINER_ENGINE: ENGINE },
@@ -271,23 +384,31 @@ function ensureSessionImage() {
 }
 
 function ensurePackageFixtureImage() {
-  if (ENGINE !== 'podman') return;
-  if (spawnSync(ENGINE, ['image', 'inspect', PACKAGE_BASE_IMAGE], {
-    stdio: 'ignore', timeout: ENGINE_TIMEOUT_MS,
-  }).status === 0) return;
-  const installer = [
-    '#!/bin/sh',
-    'mkdir -p /usr/local/share',
-    'printf %s PACKAGE-PROVISIONED > /usr/local/share/awaken-package-proof',
-  ].join('\\n');
+  const existing = spawnSync(
+    ENGINE,
+    [
+      'image', 'inspect', '--format',
+      '{{.Config.User}}|{{index .Config.Labels "org.awaken.playwright-mcp-fixture"}}',
+      PACKAGE_BASE_IMAGE,
+    ],
+    { encoding: 'utf8', timeout: ENGINE_TIMEOUT_MS },
+  );
+  if (existing.status === 0 && existing.stdout.trim() === '10001|1') return;
   const containerfile = [
     `FROM ${IMAGE}`,
     'USER root',
-    `RUN ["sh","-c",${JSON.stringify(`printf '%b\\n' ${JSON.stringify(installer)} > /usr/local/bin/pip && chmod 0755 /usr/local/bin/pip`)}]`,
+    'COPY playwright_acp_mcp_fixture.mjs /usr/local/bin/awaken-playwright-acp-fixture',
+    'RUN ["chmod","0755","/usr/local/bin/awaken-playwright-acp-fixture"]',
+    'LABEL org.awaken.playwright-mcp-fixture="1"',
+    'USER 10001',
     '',
   ].join('\n');
   const context = `${TMP}/package-base`;
   fs.mkdirSync(context, { recursive: true });
+  fs.copyFileSync(
+    path.join(REPO_ROOT, 'e2e/fixtures/playwright_acp_mcp_fixture.mjs'),
+    path.join(context, 'playwright_acp_mcp_fixture.mjs'),
+  );
   const containerfilePath = `${context}/Containerfile`;
   fs.writeFileSync(containerfilePath, containerfile);
   const result = spawnSync(ENGINE, ['build', '--tag', PACKAGE_BASE_IMAGE, '--file', containerfilePath, context], {
@@ -371,8 +492,8 @@ async function main() {
     AWAKEN_SANDBOX_REAP_INTERVAL: '3600',
     AWAKEN_CONTAINER_FORWARD_PROXY: 'http://127.0.0.1:9',
   };
-  const spawnBrain = () => spawn(bin, {
-    env: brainEnv,
+  const spawnBrain = (overrides = {}) => spawn(bin, {
+    env: { ...brainEnv, ...overrides },
     stdio: ['ignore', 'inherit', 'inherit'],
   });
   let brain = spawnBrain();
@@ -380,6 +501,66 @@ async function main() {
   try {
     await waitForPort(PORT);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
+    if (process.env.AWAKEN_E2E_PACKAGE_ONLY === '1') {
+      await client.post('/v1/skills', {
+        headers: SKILL_HEADERS,
+        body: {
+          id: 'delivered-container',
+          content: '---\ndescription: package e2e skill\nenvironment: filesystem\n---\nPACKAGE-E2E-SKILL',
+        },
+      });
+      const registryOnly = process.env.AWAKEN_E2E_PACKAGE_REGISTRY_ONLY === '1';
+      await exercisePackageManagerMatrix(client, { registryOnly });
+      if (!registryOnly) {
+        const stopped = new Promise((resolve) => brain.once('exit', resolve));
+        brain.kill('SIGINT');
+        await stopped;
+        brain = spawnBrain({ AWAKEN_SCENARIO_PLAYWRIGHT_MCP: '1' });
+        await waitForPort(PORT);
+        client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
+        await exerciseContainerEnvironment(client, `${ENGINE}-playwright-mcp`, {
+          environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
+        }, true, {
+          packages: {
+            apt: ['chromium'],
+            npm: ['@playwright/mcp@0.0.78'],
+          },
+          expectedMarker: 'AWAKEN-PLAYWRIGHT-MCP-OK',
+          proofCommands: [
+            'test -x /usr/bin/chromium',
+            'test -x /usr/local/bin/playwright-mcp',
+          ],
+        });
+        console.log('  ok: Environment-installed Chromium served a browser through local stdio Playwright MCP');
+
+        const nativeStopped = new Promise((resolve) => brain.once('exit', resolve));
+        brain.kill('SIGINT');
+        await nativeStopped;
+        brain = spawnBrain({ AWAKEN_SCENARIO_NATIVE_PLAYWRIGHT_MCP: '1' });
+        await waitForPort(PORT);
+        client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
+        await exerciseContainerEnvironment(client, `${ENGINE}-native-playwright-mcp`, {
+          environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
+        }, true, {
+          packages: {
+            apt: ['chromium'],
+            npm: ['@playwright/mcp@0.0.78'],
+          },
+          expectedMarker: 'AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK',
+          proofCommands: [
+            'test -x /usr/bin/chromium',
+            'test -x /usr/local/bin/playwright-mcp',
+          ],
+        });
+        console.log('  ok: Native Runtime drove the sandbox Playwright MCP over its attached stdio channel');
+      }
+      console.log(
+        registryOnly
+          ? `E2E PASS: identical Managed Environment packages reuse one registry-backed immutable ${ENGINE} image across isolated Sessions.`
+          : `E2E PASS: all six package managers plus local stdio Playwright MCP work in the ${ENGINE} sandbox.`,
+      );
+      return;
+    }
     const file = await client.beta.files.upload({
       file: await toFile(Buffer.from('CONTAINER-FILE-OK'), 'input.txt'),
       betas: BETAS,
@@ -586,15 +767,17 @@ async function main() {
       await exercisePodmanRootfsMatrix(client);
       console.log('  ok: Managed environments drive Podman package/image/private-root/network/limit behavior');
     } else {
-      // Same TS/Managed input, orthogonal provider verdict: Docker currently has
-      // no immutable package-image builder and must reject before workload launch.
-      await exerciseContainerEnvironment(client, 'docker-package-unsupported', {
-        environment: { kind: 'image', reference: IMAGE },
-      }, false, {
-        packages: { pip: ['awaken-proof==1'] },
-        expectedError: /package requirements requested but backend cannot provision packages/,
+      // Docker and Podman share the exact neutral package contract and immutable
+      // content-addressed image behavior. Docker does not implement Podman's
+      // private-root variants, so only the portable OCI-image package row runs here.
+      await exerciseContainerEnvironment(client, 'docker-package-image', {
+        environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
+      }, true, {
+        packages: { npm: ['cowsay@1.6.0'] },
+        proveImageReuse: true,
+        proofCommands: ['cowsay AWAKEN | grep AWAKEN'],
       });
-      console.log('  ok: Docker package requirements fail closed without a capability fallback');
+      console.log('  ok: Managed environments drive Docker immutable package-image behavior');
     }
 
     console.log(

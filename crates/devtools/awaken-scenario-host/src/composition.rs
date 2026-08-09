@@ -83,6 +83,15 @@ impl FixedAgentPublication {
         backend_ref: &str,
         skills: Vec<awaken_agent_contract::AgentSkillBinding>,
     ) -> Self {
+        Self::host_backend_with_acp_mcp(id, backend_ref, skills, Vec::new())
+    }
+
+    fn host_backend_with_acp_mcp(
+        id: &str,
+        backend_ref: &str,
+        skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+        mcp_servers: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
+    ) -> Self {
         // Cause graph: deterministic scenario launch -> host-installed executor ->
         // HostExecutor placement. BackendOwned instead implies a discovered,
         // revision-pinned WorkerLocal identity, which these fake CLIs do not own.
@@ -90,6 +99,11 @@ impl FixedAgentPublication {
         // Decision table:
         // S1 fixed scenario launch -> HostExecutor, no credential observation
         // S2 product local CLI     -> BackendOwned + exact WorkerLocal observation
+        let plugin_config = awaken_runtime_contract::resolved::AcpSpec {
+            compact_window: None,
+            mcp_servers,
+        }
+        .into_plugin_config(Default::default());
         let snapshot = ExecutableAgentSnapshot::builder(id)
             .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
                 "",
@@ -100,12 +114,76 @@ impl FixedAgentPublication {
                 skills,
                 ..Default::default()
             })
+            .plugin_config(plugin_config)
             .build();
         Self {
             snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
                 .expect("valid fixed scenario Agent publication"),
         }
     }
+
+    fn host_backend_with_mcp(
+        id: &str,
+        backend_ref: &str,
+        skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+        mcp_servers: Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>,
+    ) -> Self {
+        let toolsets = mcp_servers
+            .iter()
+            .map(|server| awaken_agent_contract::ToolsetPolicy {
+                source: awaken_agent_contract::ToolsetSource::Mcp {
+                    server_name: server.name.clone(),
+                },
+                default: awaken_agent_contract::ToolExecutionPolicy::default(),
+                overrides: Vec::new(),
+            })
+            .collect();
+        let snapshot = ExecutableAgentSnapshot::builder(id)
+            .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
+                "",
+                "",
+                backend_ref,
+            )))
+            .agent_bindings(AgentBindings {
+                skills,
+                mcp_servers,
+                toolsets,
+                ..Default::default()
+            })
+            .build();
+        Self {
+            snapshots: StaticPublishedAgentSnapshots::try_new([snapshot])
+                .expect("valid fixed scenario Agent publication"),
+        }
+    }
+}
+
+pub(super) fn fixed_host_backend_publication_with_mcp(
+    id: &str,
+    backend_ref: &str,
+    skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+    mcp_servers: Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>,
+) -> Arc<FixedAgentPublication> {
+    Arc::new(FixedAgentPublication::host_backend_with_mcp(
+        id,
+        backend_ref,
+        skills,
+        mcp_servers,
+    ))
+}
+
+pub(super) fn fixed_host_backend_publication_with_acp_mcp(
+    id: &str,
+    backend_ref: &str,
+    skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+    mcp_servers: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
+) -> Arc<FixedAgentPublication> {
+    Arc::new(FixedAgentPublication::host_backend_with_acp_mcp(
+        id,
+        backend_ref,
+        skills,
+        mcp_servers,
+    ))
 }
 
 pub(super) fn fixed_host_backend_publication(
@@ -150,16 +228,37 @@ impl awaken_protocol_managed::ExecutableAgentProfileSource for FixedAgentPublica
         agent_id: &str,
     ) -> Option<awaken_protocol_managed::ExecutableAgentSessionProfile> {
         let snapshot = self.current(workspace_id, &AgentId(agent_id.to_string()))?;
+        let bindings = &snapshot.resolved_spec.plugin_config.agent;
+        let mcp_servers = bindings
+            .mcp_servers
+            .iter()
+            .map(|server| {
+                Ok(awaken_protocol_managed::ExecutableAgentMcpServer {
+                    name: server.name.clone(),
+                    target: server.transport.normalize()?,
+                    prompts_as_skills: server.prompts_as_skills,
+                    credential_source_id: server
+                        .credential
+                        .as_ref()
+                        .map(|credential| credential.id.clone()),
+                    credential_revision: server
+                        .credential
+                        .as_ref()
+                        .map(|credential| credential.revision),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .ok()?;
         Some(awaken_protocol_managed::ExecutableAgentSessionProfile {
             model: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
             execution_model_ref: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
             backend_ref: snapshot.resolved_spec.model_binding.backend_ref.clone(),
             system: None,
             tool_ids: Vec::new(),
-            toolsets: Vec::new(),
+            toolsets: bindings.toolsets.clone(),
             client_tools: Vec::new(),
-            mcp_servers: Vec::new(),
-            skills: snapshot.resolved_spec.plugin_config.agent.skills.clone(),
+            mcp_servers,
+            skills: bindings.skills.clone(),
             delegate_ids: Vec::new(),
             resources: Vec::new(),
             environment: None,
@@ -189,7 +288,9 @@ pub fn build_unscoped_resource_router() -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_runtime_contract::resolved::ModelProvisioning;
+    use awaken_runtime_contract::resolved::{
+        AcpMcpServer, AcpMcpTransport, AcpSpec, ModelProvisioning,
+    };
 
     #[test]
     fn fixed_scenario_backend_uses_the_installed_host_executor() {
@@ -204,6 +305,69 @@ mod tests {
         assert_eq!(
             snapshot.resolved_spec.model_binding.binding.backend_ref,
             "acp:claude"
+        );
+    }
+
+    #[test]
+    fn fixed_publication_preserves_a_secret_free_stdio_mcp_route() {
+        let publication = fixed_host_backend_publication_with_acp_mcp(
+            "acp-agent",
+            "acp:fixture",
+            Vec::new(),
+            vec![AcpMcpServer {
+                name: "playwright".into(),
+                transport: AcpMcpTransport::Stdio {
+                    command: "playwright-mcp".into(),
+                    args: vec!["--headless".into()],
+                },
+            }],
+        );
+        let snapshot = publication
+            .current("workspace", &AgentId("acp-agent".into()))
+            .expect("fixed publication");
+        let servers =
+            AcpSpec::from_plugin_config(snapshot.resolved_spec.plugin_config.plugins()).mcp_servers;
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "playwright");
+        assert!(matches!(
+            &servers[0].transport,
+            AcpMcpTransport::Stdio { command, args }
+                if command == "playwright-mcp" && args == &["--headless"]
+        ));
+    }
+
+    #[test]
+    fn fixed_native_mcp_publication_projects_server_and_permission_toolset() {
+        // Decision rule N1: a fixed Native publication with one sandbox-stdio
+        // binding exposes that server through the canonical executable profile
+        // and grants the matching MCP toolset; no legacy Agent view participates.
+        let publication = fixed_host_backend_publication_with_mcp(
+            "native-agent",
+            "native",
+            Vec::new(),
+            vec![
+                awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+                    name: "playwright".into(),
+                    transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(
+                        "playwright-mcp",
+                        vec!["--headless".into()],
+                    ),
+                    credential: None,
+                    prompts_as_skills: false,
+                },
+            ],
+        );
+        let view = awaken_protocol_managed::ExecutableAgentProfileSource::session_profile_in(
+            publication.as_ref(),
+            "workspace",
+            "native-agent",
+        )
+        .expect("fixed publication view");
+        assert_eq!(view.mcp_servers.len(), 1);
+        assert_eq!(view.toolsets.len(), 1);
+        assert_eq!(
+            view.toolsets[0].default.permission,
+            awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow
         );
     }
 }

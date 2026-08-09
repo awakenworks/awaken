@@ -26,7 +26,8 @@ pub use worker::run_echo_worker;
 
 mod scenario_shell;
 use composition::{
-    fixed_host_backend_publication, mount, mount_with_environments,
+    fixed_host_backend_publication, fixed_host_backend_publication_with_acp_mcp,
+    fixed_host_backend_publication_with_mcp, mount, mount_with_environments,
     mount_with_environments_and_agent_source, mount_with_host_backend_publication,
 };
 use deployment::{resource_host, resource_host_with_deployment, scenario_storage_dir};
@@ -627,6 +628,41 @@ const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_ac
     env: &[],
 };
 
+/// Container-only ACP fixture used by the Environment package E2E. The image
+/// supplies this executable; its prompt handler opens the publication-pinned
+/// Playwright stdio MCP server and proves a real browser tool round trip.
+const PLAYWRIGHT_MCP_FIXTURE_CLI: awaken_run_executor_acp::AcpCli =
+    awaken_run_executor_acp::AcpCli {
+        id: "playwright-fixture",
+        display_name: "Playwright MCP fixture",
+        description: "Deterministic container ACP client for Playwright MCP.",
+        acquisition: awaken_run_executor_acp::AcpAcquisition::Direct {
+            executable: "/usr/local/bin/awaken-playwright-acp-fixture",
+            args: &[],
+        },
+        discovery: FAKE_ACP_DISCOVERY,
+        container_argv: &["/usr/local/bin/awaken-playwright-acp-fixture"],
+        model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
+            base_url: "ANTHROPIC_BASE_URL",
+            model: "ANTHROPIC_MODEL",
+            credential_env: &["ANTHROPIC_API_KEY"],
+            aliases: &[],
+        }),
+        model_api_dialects: &["anthropic_messages"],
+        backend_model_interface: awaken_run_executor_acp::BackendModelInterface::Unsupported,
+        managed_credential_delivery:
+            awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret,
+        auth_method_id: None,
+        mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
+        config_home_env: Some("AWAKEN_PLAYWRIGHT_CONFIG_HOME"),
+        config_home_aliases: &[],
+        memory_entrypoint: "AGENTS.md",
+        session_export_excludes: &[],
+        session_persistence: awaken_run_executor_acp::SessionPersistence::None,
+        context_window_env: None,
+        env: &[],
+    };
+
 /// A launch resolver with a fixed (dummy) model: the fake CLI ignores the model env, so
 /// this keeps the scenario off the "model config via env" path — no ANTHROPIC_* need be
 /// exported for the resolver to succeed. Only the MCP/`session/new` wire is under test.
@@ -788,32 +824,98 @@ pub async fn build_acp_container_router() -> Router {
     deployment.container_image = std::env::var("AWAKEN_CONTAINER_IMAGE")
         .ok()
         .filter(|value| !value.trim().is_empty());
+    deployment.sandbox.package_artifact_dir = Some(storage_dir.join("package-images"));
+    deployment.sandbox.package_image_registry = std::env::var("AWAKEN_PACKAGE_IMAGE_REGISTRY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    deployment.sandbox.package_registry_auth_file =
+        std::env::var_os("AWAKEN_PACKAGE_REGISTRY_AUTH_FILE").map(std::path::PathBuf::from);
+    deployment.sandbox.package_image_builder =
+        match std::env::var("AWAKEN_PACKAGE_IMAGE_BUILDER").as_deref() {
+            Ok("docker") => Some(awaken_runtime_host::PackageImageBuilder::Docker),
+            Ok("podman") => Some(awaken_runtime_host::PackageImageBuilder::Podman),
+            Ok(other) => panic!("unsupported scenario package image builder: {other}"),
+            Err(_) => None,
+        };
     let delivered_skill = match deployment.sandbox_tier {
         awaken_runtime_host::SandboxTier::Docker
         | awaken_runtime_host::SandboxTier::Podman
         | awaken_runtime_host::SandboxTier::K8s => "delivered-container",
         _ => "delivered-namespace",
     };
-    let publication = fixed_host_backend_publication(
-        "namespace-agent",
-        "acp:custom",
-        vec![awaken_agent_contract::AgentSkillBinding::custom(
-            delivered_skill,
-        )],
-    );
-    let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
+    let skills = vec![awaken_agent_contract::AgentSkillBinding::custom(
+        delivered_skill,
+    )];
+    let playwright_mcp = std::env::var("AWAKEN_SCENARIO_PLAYWRIGHT_MCP").as_deref() == Ok("1");
+    let native_playwright_mcp =
+        std::env::var("AWAKEN_SCENARIO_NATIVE_PLAYWRIGHT_MCP").as_deref() == Ok("1");
+    let (publication, launch, model): (_, _, Arc<dyn LlmExecutor>) = if native_playwright_mcp {
+        let publication = fixed_host_backend_publication_with_mcp(
+            "namespace-agent",
+            "native",
+            skills.clone(),
+            vec![
+                awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+                    name: "playwright".into(),
+                    transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(
+                        "playwright-mcp",
+                        vec![
+                            "--headless".into(),
+                            "--no-sandbox".into(),
+                            "--isolated".into(),
+                            "--executable-path".into(),
+                            "/usr/bin/chromium".into(),
+                        ],
+                    ),
+                    credential: None,
+                    prompts_as_skills: false,
+                },
+            ],
+        );
+        let launch = awaken_runtime_host::LaunchSource::Fixed(
+            awaken_run_executor_acp::AcpLaunch::custom(vec!["/bin/false".into()], vec![]),
+        );
+        (publication, launch, Arc::new(NativePlaywrightMcpModel))
+    } else if playwright_mcp {
+        let publication = fixed_host_backend_publication_with_acp_mcp(
+            "namespace-agent",
+            "acp:playwright-fixture",
+            skills.clone(),
+            vec![awaken_runtime_contract::resolved::AcpMcpServer {
+                name: "playwright".into(),
+                transport: awaken_runtime_contract::resolved::AcpMcpTransport::Stdio {
+                    command: "playwright-mcp".into(),
+                    args: vec![
+                        "--headless".into(),
+                        "--no-sandbox".into(),
+                        "--isolated".into(),
+                        "--executable-path".into(),
+                        "/usr/bin/chromium".into(),
+                    ],
+                },
+            }],
+        );
+        let launch = awaken_runtime_host::LaunchSource::Projected(
+            awaken_runtime_host::AcpLaunchRegistry::single(
+                PLAYWRIGHT_MCP_FIXTURE_CLI,
+                Arc::new(FixedAcpModel),
+            ),
+        );
+        (publication, launch, Arc::new(EchoModel))
+    } else {
+        let publication = fixed_host_backend_publication("namespace-agent", "acp:custom", skills);
+        let argv = scenario_argv(
+            &std::env::var("AWAKEN_ACP_ARGV").expect("container scenario requires AWAKEN_ACP_ARGV"),
+        );
+        let launch = awaken_runtime_host::LaunchSource::Fixed(
+            awaken_run_executor_acp::AcpLaunch::custom(argv, vec![]),
+        );
+        (publication, launch, Arc::new(EchoModel))
+    };
+    let host = resource_host_with_deployment(model, "awaken", deployment)
         .with_agent_publications(publication.clone());
-    let argv = scenario_argv(
-        &std::env::var("AWAKEN_ACP_ARGV").expect("container scenario requires AWAKEN_ACP_ARGV"),
-    );
     let host = host
-        .with_acp_launch_source(
-            awaken_server::relay_hand_executor_factory(),
-            awaken_runtime_host::LaunchSource::Fixed(awaken_run_executor_acp::AcpLaunch::custom(
-                argv,
-                vec![],
-            )),
-        )
+        .with_acp_launch_source(awaken_server::relay_hand_executor_factory(), launch)
         .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
     // scenario, with the exact EnvironmentState mounted by the environment API.
@@ -1613,6 +1715,43 @@ pub fn build_remote_delegation_router() -> Router {
 /// `greet` skill via the `Skill` tool; given the activation instructions it replies
 /// with them — so an e2e can assert discover → activate → use end to end. Stateless.
 pub struct SkillDrivingModel;
+
+/// Deterministic Native model used to prove that a Session Environment-installed
+/// Playwright MCP process is attached to the in-process Runtime rather than
+/// spawned on the host.
+pub struct NativePlaywrightMcpModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for NativePlaywrightMcpModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last = request.messages.last().expect("a message");
+        let last_text = extract_text(&last.content);
+        let output = match last.role {
+            Role::User => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "playwright-native".into(),
+                tool_id: "mcp__playwright__browser_navigate".into(),
+                arguments: serde_json::json!({
+                    "url": "data:text/html,<title>AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK</title><h1>AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK</h1>"
+                }),
+            }]),
+            Role::Tool if last_text.contains("AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK") => {
+                AssistantOutput::text("AWAKEN-NATIVE-PLAYWRIGHT-MCP-OK")
+            }
+            Role::Tool => {
+                AssistantOutput::text(format!("NATIVE-PLAYWRIGHT-MCP-FAILED: {last_text}"))
+            }
+            _ => AssistantOutput::text("NATIVE-PLAYWRIGHT-MCP-FAILED"),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
 
 #[async_trait::async_trait]
 impl LlmExecutor for SkillDrivingModel {

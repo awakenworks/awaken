@@ -86,6 +86,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
   const [adding, setAdding] = useState(false);
   const [type, setType] = useState("static_bearer");
   const [body, setBody] = useState(CRED_TEMPLATES.static_bearer);
+  const [parseError, setParseError] = useState("");
   const create = useMutation({
     mutationFn: (payload: unknown) => api.post(ws(`/v1/vaults/${id}/credentials`), payload),
     onSuccess: () => {
@@ -148,6 +149,7 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
                   onClick={() => {
                     setType(t);
                     setBody(CRED_TEMPLATES[t] ?? body);
+                    setParseError("");
                   }}
                 >
                   {t}
@@ -159,21 +161,25 @@ function VaultCard({ id, name }: { id: string; name?: string }) {
               mono
               rows={8}
               value={body}
-              onChange={(e) => setBody(e.target.value)}
+              onChange={(e) => { setBody(e.target.value); setParseError(""); }}
             />
+            {parseError && <div className="err">{parseError}</div>}
             {create.error instanceof Error && <div className="err">{create.error.message}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>
               <Button
                 variant="primary"
+                disabled={create.isPending}
                 onClick={() => {
                   try {
-                    create.mutate({ type, ...(JSON.parse(body) as object) });
+                    const parsed = JSON.parse(body) as unknown;
+                    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+                    create.mutate({ type, ...(parsed as object) });
                   } catch {
-                    create.mutate({ type });
+                    setParseError(app.t("Enter a valid JSON object before saving.", "保存前请输入有效的 JSON 对象。"));
                   }
                 }}
               >
-                {app.t("Save", "保存")}
+                {create.isPending ? app.t("Saving…", "正在保存…") : app.t("Save", "保存")}
               </Button>
             </div>
         </Modal>

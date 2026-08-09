@@ -28,6 +28,26 @@ async function ensureSyntheticDirectory() {
 export const LIVE_MODEL_ID = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 export const LIVE_MODEL_LABEL = "Vertex Gemini";
 
+async function recordingWorkspace(page) {
+  const response = await page.request.get(`${BACKEND}/v1/config/workspace-context`);
+  if (!response.ok()) {
+    throw new Error(`recording Workspace context failed: ${response.status()} ${await response.text()}`);
+  }
+  return (await response.json()).workspace_id;
+}
+
+async function activeCredentials(page, workspaceId) {
+  const response = await page.request.get(
+    `${BACKEND}/v1/config/credentials?workspace_id=${encodeURIComponent(workspaceId)}`,
+  );
+  if (!response.ok()) {
+    throw new Error(`recording credential catalog failed: ${response.status()} ${await response.text()}`);
+  }
+  const body = await response.json();
+  if (!Array.isArray(body)) throw new Error("recording credential catalog did not return a list");
+  return body;
+}
+
 /** Configure the real model through the same single Provider Connection command
  * the UI uses. Repeated stories reuse the exact active credential instead of
  * creating parallel gcloud sources. */
@@ -36,8 +56,9 @@ export async function configureLiveModel(page) {
   const location = process.env.GEMINI_LOCATION ?? "global";
   if (!project) throw new Error("this runtime-effect story requires GEMINI_PROJECT");
   const provider = "vertex";
+  const workspaceId = await recordingWorkspace(page);
 
-  const credentials = await (await page.request.get(`${BACKEND}/v1/config/credentials?workspace_id=wrkspc_default`)).json();
+  const credentials = await activeCredentials(page, workspaceId);
   const existing = credentials.find(
     (source) =>
       source.provider_id === provider &&
@@ -48,7 +69,7 @@ export async function configureLiveModel(page) {
   const connected = await page.request.post(`${BACKEND}/v1/config/provider-connections`, {
     data: {
       idempotency_key: "record-live-vertex",
-      workspace_id: "wrkspc_default",
+      workspace_id: workspaceId,
       provider_id: provider,
       display_name: "Vertex AI",
       dialect: "vertex_gemini",
@@ -76,16 +97,15 @@ export async function configureSyntheticModel(page, id) {
   syntheticModel = id;
   const provider = "anthropic";
   const directory = await ensureSyntheticDirectory();
-  const credentials = await (await page.request.get(
-    `${BACKEND}/v1/config/credentials?workspace_id=wrkspc_default`,
-  )).json();
+  const workspaceId = await recordingWorkspace(page);
+  const credentials = await activeCredentials(page, workspaceId);
   const existing = credentials.find(
     (source) => source.provider_id === provider && source.status === "active",
   );
   const response = await page.request.post(`${BACKEND}/v1/config/provider-connections`, {
     data: {
       idempotency_key: `record-synthetic-${id}`,
-      workspace_id: "wrkspc_default",
+      workspace_id: workspaceId,
       provider_id: provider,
       display_name: "Recording fixture",
       dialect: "anthropic_messages",

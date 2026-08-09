@@ -65,7 +65,7 @@ describe("state-machine presets", () => {
         to: "written",
         when: "success",
         on_violation: { action: "ask" },
-        emit: { target: "conversation", content: "note" },
+        emit: { target: "conversation", content: "note", role: "assistant", cooldown_steps: 2 },
       },
       "event",
     );
@@ -73,6 +73,34 @@ describe("state-machine presets", () => {
     expect(transition.when).toBeUndefined();
     expect(transition.on_violation).toBeUndefined();
     expect(transition.emit?.target).toBe("context");
+    expect(transition.emit?.role).toBe("assistant");
+    expect(transition.emit?.cooldown_steps).toBe(2);
+  });
+
+  it("keeps advanced unmatched and reminder-role policy losslessly editable", () => {
+    // Causal edge: exposing an advanced field is only useful if a neighboring
+    // visual edit preserves it. This guards JSON -> visual -> JSON fidelity.
+    const machine = {
+      ...PRESETS[0].machine,
+      on_unmatched: "blocked",
+      transitions: [
+        {
+          ...PRESETS[0].machine.transitions[0],
+          emit: {
+            target: "suffix_system" as const,
+            content: "Read before writing.",
+            role: "user" as const,
+          },
+        },
+      ],
+    };
+
+    const edited = {
+      ...machine,
+      transitions: [withTriggerKind(machine.transitions[0], "tool")],
+    };
+    expect(edited.on_unmatched).toBe("blocked");
+    expect(edited.transitions[0].emit?.role).toBe("user");
   });
 
   it("machineStates collects initial, terminal, from and to", () => {

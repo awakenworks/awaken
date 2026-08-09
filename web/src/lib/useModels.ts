@@ -3,7 +3,7 @@
 // provider compatibility rules in the browser.
 
 import { useQuery } from "@tanstack/react-query";
-import { api, ws } from "./api/client";
+import { api, workspaceQuery, ws } from "./api/client";
 import type { ExecutableModelOption } from "./api/types";
 import { useApp } from "./app-state";
 
@@ -21,7 +21,7 @@ export function useModels(): Models {
   const models = useQuery({
     queryKey: ["executable-models", workspace],
     queryFn: () => api.get<ExecutableModelOption[]>(
-      ws(`/v1/config/executable-models?workspace_id=${workspace}`),
+      ws(workspaceQuery("/v1/config/executable-models", workspace)),
     ),
   });
   const options = models.data ?? [];

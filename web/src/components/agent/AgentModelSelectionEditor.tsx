@@ -63,6 +63,7 @@ export default function AgentModelSelectionEditor({
       {providerModels.length > 0 || availableAcp.length > 0 ? (
         <select
           className="input mono"
+          aria-label={app.t("Model (references workspace catalog)", "模型(引用工作区 catalog)")}
           value={selectionValue(model)}
           onChange={(event) => onChange(JSON.parse(event.target.value) as AgentConfig["model"])}
         >

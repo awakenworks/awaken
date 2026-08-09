@@ -48,7 +48,8 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ru
     "Let users state only the outcome while reusable expertise supplies the procedure.",
     "Deliver a versioned Skill to the Agent, mount it in every Session, and verify its effect with the real model.",
   );
-  await click(page.getByRole("tab", { name: /Integrations|集成/, exact: true }));
+  await click(page.getByRole("tab", { name: /Build|构建/, exact: true }));
+  await click(page.getByRole("tab", { name: /Skills & MCP|Skills 与 MCP/, exact: true }));
   await say("The Agent references a versioned Skill id; the procedure is discovered and activated only when the goal matches.", 4000);
   await checkpoint("the published Agent carries the delivered Skill binding", async () => {
     await expect(page.getByLabel("Skill id")).toHaveValue(skill.id);
@@ -58,8 +59,8 @@ export async function run({ page, goto, intro, say, clearCaption, checkpoint, ru
   });
 
   await say("Now give the Agent only the goal. The Skill owns the procedural detail.", 3400);
-  await click(page.getByRole("button", { name: /Try it|试运行/ }));
-  await click(page.getByRole("button", { name: /Start session|开始会话/ }));
+  await click(page.getByRole("button", { name: /Try draft|试运行草稿/ }));
+  await click(page.getByRole("button", { name: /Start preview|开始预览/ }));
   const sessionId = (await page.locator("code").filter({ hasText: /^sesn_/ }).last().innerText()).trim();
   const composer = page.getByPlaceholder(/Ask the agent|问问这个 agent/);
   await type(composer, "Release signal", { delay: 18 });

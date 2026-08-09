@@ -41,13 +41,48 @@ mod prompt_skills;
 #[derive(Clone)]
 pub(crate) struct McpTransportMaterial {
     pub name: String,
-    pub url: String,
     pub prompts_as_skills: bool,
-    pub bearer: Option<awaken_agent_contract::RedactedString>,
-    /// The vault credential's refresh configuration, when it has one: the
-    /// connect then registers a [`VaultRefresher`] so an expired access token
-    /// is exchanged mid-request instead of failing the turn.
-    pub refresh: Option<McpRefreshMaterial>,
+    pub transport: McpTransportMaterialKind,
+}
+
+#[derive(Clone)]
+pub(crate) enum McpTransportMaterialKind {
+    Http {
+        url: String,
+        bearer: Option<awaken_agent_contract::RedactedString>,
+        refresh: Option<McpRefreshMaterial>,
+    },
+    SandboxStdio {
+        command: String,
+        args: Vec<String>,
+    },
+}
+
+impl McpTransportMaterial {
+    fn http(
+        &self,
+    ) -> Option<(
+        &str,
+        &Option<awaken_agent_contract::RedactedString>,
+        &Option<McpRefreshMaterial>,
+    )> {
+        match &self.transport {
+            McpTransportMaterialKind::Http {
+                url,
+                bearer,
+                refresh,
+            } => Some((url, bearer, refresh)),
+            McpTransportMaterialKind::SandboxStdio { .. } => None,
+        }
+    }
+
+    pub(crate) fn bearer(&self) -> Option<&awaken_agent_contract::RedactedString> {
+        self.http().and_then(|(_, bearer, _)| bearer.as_ref())
+    }
+
+    pub(crate) fn http_url(&self) -> Option<&str> {
+        self.http().map(|(url, _, _)| url)
+    }
 }
 
 /// Project private Worker material to ACP configuration. A real bearer is never
@@ -59,7 +94,17 @@ pub(crate) fn project_mcp_transport(
     relay: Option<&crate::mcp_relay::McpRelay>,
 ) -> Result<awaken_run_executor_acp::McpServerConfig, HostError> {
     use awaken_run_executor_acp::{McpServerConfig, McpTransport};
-    let url = match (&prepared.bearer, relay) {
+    if let McpTransportMaterialKind::SandboxStdio { command, args } = &prepared.transport {
+        return Ok(McpServerConfig {
+            name: prepared.name.clone(),
+            transport: McpTransport::Stdio {
+                command: command.clone(),
+                args: args.clone(),
+            },
+        });
+    }
+    let (original_url, bearer, _) = prepared.http().expect("HTTP material checked above");
+    let url = match (bearer, relay) {
         // A sandboxed run dials the host's loopback relay, which injects the real
         // bearer out of the sandbox's address space — the sandbox itself holds no credential.
         (Some(_), Some(relay)) => relay.route_url(generation).ok_or_else(|| {
@@ -78,7 +123,7 @@ pub(crate) fn project_mcp_transport(
                 generation.attachment_id.0, generation.generation.0
             )));
         }
-        (None, _) => prepared.url.clone(),
+        (None, _) => original_url.to_string(),
     };
     Ok(McpServerConfig {
         name: prepared.name.clone(),
@@ -381,6 +426,24 @@ pub(crate) struct McpWiring {
 }
 
 impl crate::SharedHost {
+    pub(crate) async fn stop_session_mcp_processes(&self, thread: &str) {
+        let processes = self
+            .session_slots
+            .modify(thread, |slot| {
+                slot.mcp
+                    .iter_mut()
+                    .filter_map(|projection| projection.mcp_process.take())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for process in processes {
+            let _ = process
+                .signal(awaken_provisioning_contract::Signal::Term)
+                .await;
+            let _ = process.wait().await;
+        }
+    }
+
     pub(crate) fn active_mcp_projections(
         &self,
         thread: &str,
@@ -492,7 +555,7 @@ impl crate::SharedHost {
                 ));
             }
             if let Some(server) = &projection.server
-                && server.bearer.is_some()
+                && server.bearer().is_some()
                 && projection.native_wiring.is_none()
             {
                 let relay = self.mcp_relay.get().ok_or_else(|| {
@@ -555,18 +618,25 @@ impl crate::SharedHost {
                 // Cleanup is an idempotent exact-generation command. A fresh
                 // Runtime incarnation legitimately has no process-local copy of
                 // an already fenced durable Draining generation.
-                return Ok(());
+                return Ok(None);
             };
             projection.state = crate::session_slot::McpProjectionState::Removed;
             projection.server = None;
             projection.native_wiring = None;
+            let process = projection.mcp_process.take();
             slot.runtime = None;
-            Ok(())
+            Ok(process)
         });
+        if let Some(Ok(Some(process))) = &result {
+            let _ = process
+                .signal(awaken_provisioning_contract::Signal::Term)
+                .await;
+            let _ = process.wait().await;
+        }
         if let Some(relay) = self.mcp_relay.get() {
             relay.remove_route(generation);
         }
-        result.unwrap_or(Ok(()))
+        result.map(|result| result.map(|_| ())).unwrap_or(Ok(()))
     }
 }
 
@@ -591,54 +661,97 @@ pub(crate) async fn connect_materialized(
 ) -> Result<McpWiring, HostError> {
     let mut wiring = McpWiring::empty();
     for server in staged {
-        let credential = match &server.bearer {
+        let Some((url, bearer, refresh)) = server.http() else {
+            return Err(HostError::internal(format!(
+                "sandbox stdio MCP server `{}` requires an attached sandbox stream",
+                server.name
+            )));
+        };
+        let credential = match bearer {
             Some(token) => awaken_ext_mcp::Credential::Bearer(token.expose_secret().to_string()),
             None => awaken_ext_mcp::Credential::None,
         };
-        let mut builder = HttpTransportBuilder::new(server.url.clone()).credential(credential);
-        if let Some(refresh) = &server.refresh {
+        let mut builder = HttpTransportBuilder::new(url.to_string()).credential(credential);
+        if let Some(refresh) = refresh {
             builder = builder.refresher(Arc::new(VaultRefresher::from_material(refresh.clone()))
                 as Arc<dyn CredentialRefresher>);
         }
         let transport = builder.connect_streaming().await.map_err(|e| {
-            HostError::internal(format!(
-                "mcp server `{}` at {}: {e}",
-                server.name, server.url
-            ))
+            HostError::internal(format!("mcp server `{}` at {}: {e}", server.name, url))
         })?;
         let list_changed = transport.subscribe_list_changed();
         let transport: Arc<dyn awaken_ext_mcp::transport::McpToolTransport> = Arc::new(transport);
-        let connected =
-            awaken_ext_mcp::McpServer::start(&server.name, Arc::clone(&transport), list_changed)
-                .await
-                .map_err(|e| HostError::internal(format!("mcp server `{}`: {e}", server.name)))?;
-        if server.prompts_as_skills {
-            match prompt_skills::McpPromptSkillRegistry::discover(
-                &server.name,
-                Arc::clone(&transport),
-            )
-            .await
-            {
-                Ok(registry) if !registry.list().is_empty() => {
-                    wiring.skill_registries.push(Arc::new(registry));
-                }
-                Ok(_) => {}
-                // Opting in requires a prompt-capable server. Do not silently
-                // degrade to tools-only when the requested guarantee is absent.
-                Err(error) => return Err(HostError::internal(error)),
-            }
-        }
-        let plugin = connected.plugin();
-        let contributions = plugin.resolve();
-        wiring.tool_ids.extend(
-            contributions
-                .dynamic_tools
-                .iter()
-                .map(|tool| tool.tool.id().to_string()),
-        );
-        wiring.plugins.push(Arc::new(plugin));
+        append_connected(&mut wiring, server, transport, list_changed).await?;
     }
     Ok(wiring)
+}
+
+/// Bind a sandbox-attached MCP process to the Native Runtime. Process ownership
+/// remains with the Session projection; this function owns only the MCP client
+/// protocol layered over its duplex channel.
+pub(crate) async fn connect_sandbox_stdio(
+    server: &McpTransportMaterial,
+    channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+) -> Result<McpWiring, HostError> {
+    if !matches!(
+        server.transport,
+        McpTransportMaterialKind::SandboxStdio { .. }
+    ) {
+        return Err(HostError::internal(
+            "attached MCP stream requires sandbox stdio material",
+        ));
+    }
+    let transport = awaken_ext_mcp::StdioTransport::connect_stream(
+        channel,
+        None,
+        awaken_ext_mcp::DEFAULT_TIMEOUT,
+        None,
+    )
+    .await
+    .map_err(|error| {
+        HostError::internal(format!(
+            "sandbox stdio mcp server `{}`: {error}",
+            server.name
+        ))
+    })?;
+    let list_changed = transport.subscribe_list_changed();
+    let transport: Arc<dyn awaken_ext_mcp::transport::McpToolTransport> = Arc::new(transport);
+    let mut wiring = McpWiring::empty();
+    append_connected(&mut wiring, server, transport, list_changed).await?;
+    Ok(wiring)
+}
+
+async fn append_connected(
+    wiring: &mut McpWiring,
+    server: &McpTransportMaterial,
+    transport: Arc<dyn awaken_ext_mcp::transport::McpToolTransport>,
+    list_changed: tokio::sync::broadcast::Receiver<awaken_ext_mcp::ListChangedKind>,
+) -> Result<(), HostError> {
+    let connected =
+        awaken_ext_mcp::McpServer::start(&server.name, Arc::clone(&transport), list_changed)
+            .await
+            .map_err(|e| HostError::internal(format!("mcp server `{}`: {e}", server.name)))?;
+    if server.prompts_as_skills {
+        match prompt_skills::McpPromptSkillRegistry::discover(&server.name, Arc::clone(&transport))
+            .await
+        {
+            Ok(registry) if !registry.list().is_empty() => {
+                wiring.skill_registries.push(Arc::new(registry));
+            }
+            Ok(_) => {}
+            Err(error) => return Err(HostError::internal(error)),
+        }
+    }
+    let plugin = connected.plugin();
+    let contributions = plugin.resolve();
+    wiring.tool_ids.extend(
+        contributions
+            .dynamic_tools
+            .iter()
+            .map(|tool| tool.tool.id().to_string()),
+    );
+    wiring.plugins.push(Arc::new(plugin));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -649,10 +762,12 @@ mod acp_projection_tests {
     fn prepared(bearer: Option<&str>) -> McpTransportMaterial {
         McpTransportMaterial {
             name: "gh".into(),
-            url: "https://mcp.gh".into(),
             prompts_as_skills: false,
-            bearer: bearer.map(RedactedString::new),
-            refresh: None,
+            transport: McpTransportMaterialKind::Http {
+                url: "https://mcp.gh".into(),
+                bearer: bearer.map(RedactedString::new),
+                refresh: None,
+            },
         }
     }
 
@@ -676,6 +791,24 @@ mod acp_projection_tests {
         assert!(project_mcp_transport(&p, &generation, None).is_err());
         // Anonymous access remains a direct secret-free route.
         assert!(project_mcp_transport(&prepared(None), &generation, None).is_ok());
+    }
+
+    #[test]
+    fn sandbox_stdio_projection_preserves_command_without_an_http_bridge() {
+        let prepared = McpTransportMaterial {
+            name: "playwright".into(),
+            prompts_as_skills: false,
+            transport: McpTransportMaterialKind::SandboxStdio {
+                command: "playwright-mcp".into(),
+                args: vec!["--headless".into()],
+            },
+        };
+        let projected = project_mcp_transport(&prepared, &generation(), None).unwrap();
+        assert!(matches!(
+            projected.transport,
+            awaken_run_executor_acp::McpTransport::Stdio { command, args }
+                if command == "playwright-mcp" && args == ["--headless"]
+        ));
     }
 
     #[tokio::test]
@@ -759,10 +892,12 @@ mod prompt_skill_projection_tests {
     fn material(url: String, prompts_as_skills: bool) -> McpTransportMaterial {
         McpTransportMaterial {
             name: "docs".into(),
-            url,
             prompts_as_skills,
-            bearer: None,
-            refresh: None,
+            transport: McpTransportMaterialKind::Http {
+                url,
+                bearer: None,
+                refresh: None,
+            },
         }
     }
 

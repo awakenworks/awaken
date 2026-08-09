@@ -56,12 +56,70 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
-/// One direct HTTP MCP server inherited by Sessions of the published Agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentHttpMcpTransport {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSandboxStdioMcpTransport {
+    #[serde(rename = "type")]
+    pub kind: AgentSandboxStdioMcpTransportKind,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentSandboxStdioMcpTransportKind {
+    #[serde(rename = "sandbox_stdio")]
+    SandboxStdio,
+}
+
+/// Authoring transport for an Agent-owned MCP binding. HTTP retains its legacy
+/// `{url}` shape; `sandbox_stdio` is explicit and can only be realized inside a
+/// Session Environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AgentMcpTransportBinding {
+    SandboxStdio(AgentSandboxStdioMcpTransport),
+    Http(AgentHttpMcpTransport),
+}
+
+impl AgentMcpTransportBinding {
+    #[must_use]
+    pub fn http(url: impl Into<String>) -> Self {
+        Self::Http(AgentHttpMcpTransport { url: url.into() })
+    }
+
+    #[must_use]
+    pub fn sandbox_stdio(command: impl Into<String>, args: Vec<String>) -> Self {
+        Self::SandboxStdio(AgentSandboxStdioMcpTransport {
+            kind: AgentSandboxStdioMcpTransportKind::SandboxStdio,
+            command: command.into(),
+            args,
+        })
+    }
+
+    pub fn normalize(&self) -> Result<awaken_agent_contract::McpTarget, String> {
+        match self {
+            Self::Http(transport) => awaken_agent_contract::McpTarget::parse_http(&transport.url),
+            Self::SandboxStdio(transport) => awaken_agent_contract::McpTarget::sandbox_stdio(
+                &transport.command,
+                transport.args.clone(),
+            ),
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
+/// One MCP server inherited by Sessions of the published Agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentMcpServerBinding {
     #[serde(alias = "id")]
     pub name: String,
-    pub url: String,
+    #[serde(flatten)]
+    pub transport: AgentMcpTransportBinding,
     /// Exact secret-free credential revision frozen into the publication.
     ///
     /// Runtime may materialize this revision but must never select a different
@@ -230,5 +288,34 @@ impl Deref for ResolvedConfiguration {
 impl DerefMut for ResolvedConfiguration {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.plugins
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentMcpServerBinding, AgentMcpTransportBinding};
+
+    #[test]
+    fn flattened_mcp_transport_accepts_binding_metadata_for_both_variants() {
+        let http: AgentMcpServerBinding = serde_json::from_value(serde_json::json!({
+            "name": "issues",
+            "url": "https://mcp.example.test/issues",
+            "prompts_as_skills": true
+        }))
+        .expect("HTTP MCP binding should deserialize");
+        assert!(matches!(http.transport, AgentMcpTransportBinding::Http(_)));
+
+        let stdio: AgentMcpServerBinding = serde_json::from_value(serde_json::json!({
+            "type": "sandbox_stdio",
+            "name": "browser",
+            "command": "playwright-mcp",
+            "args": ["--headless", "--isolated"],
+            "prompts_as_skills": false
+        }))
+        .expect("sandbox stdio MCP binding should deserialize");
+        assert!(matches!(
+            stdio.transport,
+            AgentMcpTransportBinding::SandboxStdio(_)
+        ));
     }
 }

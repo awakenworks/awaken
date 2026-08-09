@@ -260,6 +260,9 @@ async fn upload_download_metadata_and_delete_roundtrip() {
     assert_eq!(meta["size_bytes"], 11);
     assert_eq!(meta["mime_type"], "application/octet-stream");
     assert_eq!(meta["downloadable"], false);
+    assert_eq!(meta["purpose"], "input");
+    assert!(meta["session_id"].is_null());
+    assert!(meta["logical_path"].is_null());
     assert!(id.starts_with("file_"), "{id}");
     assert_ne!(meta["created_at"], "1970-01-01T00:00:00Z");
 
@@ -406,6 +409,21 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
     let list: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(list["data"][0]["id"], "file_output");
     assert_eq!(list["data"][0]["downloadable"], true);
+    assert_eq!(list["data"][0]["purpose"], "artifact");
+    assert_eq!(list["data"][0]["session_id"], "deleted-session");
+    assert_eq!(list["data"][0]["logical_path"], "report.txt");
+    let (status, body) = get(&router, "/v1/files?purpose=artifact").await;
+    assert_eq!(status, StatusCode::OK);
+    let artifacts: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(artifacts["data"].as_array().unwrap().len(), 1);
+    let (status, body) = get(&router, "/v1/files?purpose=input").await;
+    assert_eq!(status, StatusCode::OK);
+    let inputs: Value = serde_json::from_slice(&body).unwrap();
+    assert!(inputs["data"].as_array().unwrap().is_empty());
+    assert_eq!(
+        get(&router, "/v1/files?purpose=unknown").await.0,
+        StatusCode::BAD_REQUEST
+    );
     let (status, bytes) = get(&router, "/v1/files/file_output/content").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bytes, b"finished report");

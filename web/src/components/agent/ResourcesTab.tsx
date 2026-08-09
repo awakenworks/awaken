@@ -1,14 +1,14 @@
 // Agent default inputs (ADR-0063): typed File/Memory/Repository identities composed
-// with temporary Session attachments. Skills are configured in Integrations and
+// with temporary Session attachments. Skills are configured under Build / Skills & MCP and
 // outputs belong to the Environment, so neither appears in this input editor.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
-import { Button, EmptyState, SelectField, TextField } from "../ui";
+import { useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import { Button, EmptyState, SelectField, TextAreaField, TextField } from "../ui";
 import { useToast } from "../ui/Toast";
 import { api, ws } from "../../lib/api/client";
 import type {
-  AgentInputConfig,
   InputBinding,
   InputResourceKind,
   MemoryStore,
@@ -27,9 +27,9 @@ const DEFAULT_MOUNT: Record<InputResourceKind, string> = {
   repository: "/mnt/repo",
 };
 
-export default function ResourcesTab({ agentId }: { agentId: string }) {
+export default function ResourcesTab({ inputs, onChange }: { inputs: InputBinding[]; onChange: (inputs: InputBinding[]) => void }) {
   const app = useApp();
-  const qc = useQueryClient();
+  const navigate = useNavigate();
   const toast = useToast();
   const fileInput = useRef<HTMLInputElement>(null);
   const uploadingRow = useRef<number | null>(null);
@@ -38,28 +38,15 @@ export default function ResourcesTab({ agentId }: { agentId: string }) {
     queryKey: ["memory-stores"],
     queryFn: () => api.get<Page<MemoryStore>>(ws("/v1/memory_stores")),
   });
-  const existing = useQuery({
-    queryKey: ["agent-resources", agentId],
-    queryFn: () => api.get<AgentInputConfig>(ws(`/v1/config/agents/${agentId}/resources`)),
-    retry: false,
-  });
-
-  const [rows, setRows] = useState<Row[]>([]);
-  const [version, setVersion] = useState(0);
-  useEffect(() => {
-    if (existing.data) {
-      setRows(existing.data.inputs);
-      setVersion(existing.data.revision);
-    }
-  }, [existing.data]);
-
   const storeList = stores.data?.data ?? [];
+  const rows = inputs as Row[];
+  const [fileLabels, setFileLabels] = useState<Record<string, string>>({});
   const setRow = (i: number, patch: Partial<Row>) =>
-    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const removeRow = (i: number) => setRows((rs) => rs.filter((_, j) => j !== i));
+    onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)).map(({ label: _label, ...binding }) => binding));
+  const removeRow = (i: number) => onChange(rows.filter((_, j) => j !== i));
   const addRow = (kind: InputResourceKind) =>
-    setRows((rs) => [
-      ...rs,
+    onChange([
+      ...rows,
       {
         binding_id: `input-${crypto.randomUUID()}`,
         target: {
@@ -84,28 +71,14 @@ export default function ResourcesTab({ agentId }: { agentId: string }) {
     if (!file || i == null) return;
     try {
       const meta = await api.upload<{ id: string; filename?: string }>(ws("/v1/files"), file, { purpose: "agent" });
-      setRow(i, { target: { kind: "file", id: meta.id }, label: file.name, mount_path: `/mnt/files/${file.name}` });
+      const bindingId = rows[i]?.binding_id;
+      if (bindingId) setFileLabels((current) => ({ ...current, [bindingId]: file.name }));
+      setRow(i, { target: { kind: "file", id: meta.id }, mount_path: `/mnt/files/${file.name}` });
       toast.ok(app.t("File uploaded.", "文件已上传。"));
     } catch (err) {
       toast.err(err instanceof Error ? err.message : "upload failed");
     }
   };
-
-  const save = useMutation({
-    mutationFn: () =>
-      api.put<AgentInputConfig>(ws(`/v1/config/agents/${agentId}/resources`), {
-        agent_id: agentId,
-        // Strip the client-only `label` before persisting.
-        inputs: rows.map(({ label: _label, ...b }) => b),
-        revision: version + 1,
-      }),
-    onSuccess: (r) => {
-      setVersion(r.revision);
-      toast.ok(app.t("Resources saved.", "资源已保存。"));
-      void qc.invalidateQueries({ queryKey: ["agent-resources", agentId] });
-    },
-    onError: (e) => toast.err(e instanceof Error ? e.message : "error"),
-  });
 
   return (
     <>
@@ -114,8 +87,8 @@ export default function ResourcesTab({ agentId }: { agentId: string }) {
         <label>{app.t("Resources mounted for this agent", "本 agent 挂载的资源")}</label>
         <span className="mut">
           {app.t(
-            "Bind memory stores, immutable files, and managed repositories as Agent defaults. Add Skills under Integrations; outputs are configured by the Environment.",
-            "把记忆库、不可变文件和平台管理的代码仓绑定为 Agent 默认输入。技能在集成中配置；输出由环境配置。",
+            "Bind memory stores, immutable files, and managed repositories as Agent defaults. Add Skills under Build / Skills & MCP; outputs are configured by the Environment.",
+            "把记忆库、不可变文件和平台管理的代码仓绑定为 Agent 默认输入。技能在构建 / Skills 与 MCP 中配置；输出由 Environment 配置。",
           )}
         </span>
       </div>
@@ -128,7 +101,8 @@ export default function ResourcesTab({ agentId }: { agentId: string }) {
       )}
 
       {rows.map((r, i) => (
-        <div className="row" key={i} style={{ alignItems: "flex-end", gap: 8 }}>
+        <div key={r.binding_id} className="stack" style={{ gap: 6, padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+        <div className="row" style={{ alignItems: "flex-end", gap: 8 }}>
           <SelectField
             label={app.t("Kind", "类型")}
             value={r.target.kind}
@@ -155,7 +129,7 @@ export default function ResourcesTab({ agentId }: { agentId: string }) {
             <div className="field">
               <label>{app.t("File", "文件")}</label>
               <Button style={{ height: 26 }} onClick={() => pickFile(i)}>
-                {r.label || r.target.id ? (r.label ?? r.target.id) : app.t("Upload…", "上传…")}
+                {fileLabels[r.binding_id] || r.target.id || app.t("Upload…", "上传…")}
               </Button>
             </div>
           )}
@@ -178,16 +152,37 @@ export default function ResourcesTab({ agentId }: { agentId: string }) {
             ✕
           </Button>
         </div>
+        <TextAreaField
+          label={app.t("Instructions for this resource (optional)", "该资源的注入提示词（可选）")}
+          hint={app.t("Tell the Agent what this resource contains and how to use it. This text is injected with the mounted resource at session preparation.", "说明该资源包含什么、应如何使用；会话准备时会随挂载资源一起注入。")}
+          rows={2}
+          value={r.instructions ?? ""}
+          onChange={(event) => setRow(i, { instructions: event.target.value || undefined })}
+        />
+        </div>
       ))}
 
       <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-        <Button onClick={() => addRow("memory_store")}>+ {app.t("bind a store", "绑定记忆库")}</Button>
+        <Button
+          disabled={stores.isLoading || storeList.length === 0}
+          title={storeList.length === 0 ? app.t("Create a Memory Store first", "请先创建记忆库") : undefined}
+          onClick={() => addRow("memory_store")}
+        >+ {app.t("bind a store", "绑定记忆库")}</Button>
         <Button onClick={() => addRow("file")}>+ {app.t("attach a file", "附加文件")}</Button>
         <Button onClick={() => addRow("repository")}>+ {app.t("connect a repo", "连接仓库")}</Button>
-        <Button variant="primary" disabled={save.isPending} onClick={() => save.mutate()}>
-          {app.t("Save resources", "保存资源")}
-        </Button>
+        {!stores.isLoading && storeList.length === 0 && !stores.error && (
+          <Button variant="ghost" onClick={() => navigate(`/w/${app.workspaceId}/memory`)}>
+            {app.t("Create a Memory Store →", "创建记忆库 →")}
+          </Button>
+        )}
+        <span className="mut">{app.t("Resource changes are part of this Agent draft and are used by Try immediately.", "资源改动属于当前 Agent 草稿，试运行会立即使用。")}</span>
       </div>
+      {stores.error instanceof Error && (
+        <div className="err">
+          {stores.error.message}{" "}
+          <Button variant="ghost" onClick={() => void stores.refetch()}>{app.t("Try again", "重试")}</Button>
+        </div>
+      )}
     </>
   );
 }

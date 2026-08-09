@@ -22,6 +22,8 @@ pub enum PublishError {
     Unresolvable(String),
     #[error("config changed while it was being published (current revision: {0:?})")]
     StaleRevision(Option<u64>),
+    #[error("resource bindings changed before publication (current revision: {0})")]
+    StaleResourceRevision(i64),
     #[error("{0}")]
     Compile(String),
     #[error("{0}")]

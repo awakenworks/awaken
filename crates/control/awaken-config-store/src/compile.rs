@@ -402,13 +402,22 @@ fn normalize_agent_bindings(
         let name = (!server.name.trim().is_empty())
             .then_some(server.name.trim())
             .ok_or_else(|| invalid("mcp_servers", format!("entry {index} requires `name`")))?;
-        let url = (!server.url.trim().is_empty())
-            .then_some(server.url.trim())
-            .ok_or_else(|| invalid("mcp_servers", format!("entry {index} requires `url`")))?;
-        if !url.starts_with("http://") && !url.starts_with("https://") {
+        server.transport.normalize().map_err(|reason| {
+            invalid(
+                "mcp_servers",
+                format!("entry {index} has an invalid transport: {reason}"),
+            )
+        })?;
+        if matches!(
+            &server.transport,
+            awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::SandboxStdio(_)
+        ) && server.credential.is_some()
+        {
             return Err(invalid(
                 "mcp_servers",
-                format!("entry {index} URL must use http or https"),
+                format!(
+                    "entry {index} sandbox stdio credentials require a secret-environment binding"
+                ),
             ));
         }
         if !mcp_names.insert(name.to_string()) {
@@ -695,10 +704,39 @@ mod tests {
     ) -> awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
         awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
             name: name.to_string(),
-            url: url.to_string(),
+            transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(url),
             credential: None,
             prompts_as_skills: false,
         }
+    }
+
+    #[test]
+    fn sandbox_stdio_mcp_compiles_as_an_explicit_agent_binding() {
+        let mut cfg = config(&[]);
+        cfg.mcp_servers = vec![
+            awaken_runtime_contract::agent_bindings::AgentMcpServerBinding {
+                name: "playwright".into(),
+                transport:
+                    awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(
+                        "playwright-mcp",
+                        vec!["--headless".into()],
+                    ),
+                credential: None,
+                prompts_as_skills: false,
+            },
+        ];
+        let snapshot = compile(&cfg, &[]).expect("sandbox stdio binding compiles");
+        let binding = &snapshot.resolved_spec.plugin_config.agent.mcp_servers[0];
+        assert_eq!(
+            binding
+                .transport
+                .normalize()
+                .unwrap()
+                .sandbox_stdio_target()
+                .unwrap()
+                .command,
+            "playwright-mcp"
+        );
     }
 
     #[test]

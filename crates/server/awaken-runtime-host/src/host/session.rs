@@ -19,6 +19,24 @@ fn pre_authorized_tool_ids(
     }
 }
 
+fn merge_acp_mcp_servers(
+    publication: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
+    staged: impl IntoIterator<Item = awaken_runtime_contract::resolved::AcpMcpServer>,
+) -> Result<Vec<awaken_runtime_contract::resolved::AcpMcpServer>, HostError> {
+    let mut names = std::collections::BTreeSet::new();
+    let mut merged = Vec::new();
+    for server in publication.into_iter().chain(staged) {
+        if !names.insert(server.name.clone()) {
+            return Err(HostError::bad_request(format!(
+                "duplicate ACP MCP server name `{}`",
+                server.name
+            )));
+        }
+        merged.push(server);
+    }
+    Ok(merged)
+}
+
 impl SharedHost {
     pub(crate) fn session_environment_provider(
         &self,
@@ -904,9 +922,12 @@ impl SharedHost {
         } else {
             None
         };
-        // D6: for an ACP run, hand the session's staged MCP servers to the CLI's own MCP
-        // client via `plugin_config.acp.mcp_servers`. The immutable publication's
-        // `backend_ref` is the routing authority. The credential form is the host's
+        // D6: for an ACP run, merge publication-pinned secret-free stdio routes with
+        // the Session's staged URL routes, then hand the exact set to the CLI's own MCP
+        // client. The immutable publication's `backend_ref` is the routing authority.
+        // Environment provisioning may install a stdio command, but it never owns the
+        // route: the Agent publication declares it and the Session receives it here.
+        // The credential form is the host's
         // isolation decision: the raw bearer never reaches the CLI; every authenticated
         // ACP server uses the Worker-held exact-generation relay. A native run is untouched
         // (its MCP servers are already the in-process tools connected above).
@@ -915,7 +936,11 @@ impl SharedHost {
         // after restart, durable rehydration stages and publishes them first.
         let relay = self.mcp_relay.get();
         let mut acp_mcp_servers = if is_acp {
-            active_mcp
+            let publication = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
+                config.resolved_spec.plugin_config.plugins(),
+            )
+            .mcp_servers;
+            let staged = active_mcp
                 .iter()
                 .filter_map(|projection| {
                     projection
@@ -926,7 +951,8 @@ impl SharedHost {
                 .map(|(projection, server)| {
                     crate::mcp::project_mcp_transport(server, &projection.generation, relay)
                 })
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<Result<Vec<_>, _>>()?;
+            merge_acp_mcp_servers(publication, staged)?
         } else {
             Vec::new()
         };
@@ -944,7 +970,8 @@ impl SharedHost {
                         .export("awaken_web_search", descriptor, tool)
                         .await
                         .map_err(HostError::internal)?;
-                    acp_mcp_servers.push(export.server.clone());
+                    acp_mcp_servers =
+                        merge_acp_mcp_servers(acp_mcp_servers, [export.server.clone()])?;
                     Some(export)
                 }
                 None => None,
@@ -1255,6 +1282,7 @@ impl SharedHost {
     /// persistence run at the caller's release boundary before this method; Memory
     /// copy reconciliation is owned by `Sandbox::dispose` through its mount guard.
     pub(crate) async fn end_session(&self, thread: &str) -> Result<(), HostError> {
+        self.stop_session_mcp_processes(thread).await;
         let (ctx, env) = self.session_slots.update(thread, |slot| {
             (slot.runtime.take(), slot.environment.take())
         });
@@ -1312,7 +1340,18 @@ impl SharedHost {
 
 #[cfg(test)]
 mod permission_projection_tests {
-    use super::pre_authorized_tool_ids;
+    use super::{merge_acp_mcp_servers, pre_authorized_tool_ids};
+    use awaken_runtime_contract::resolved::{AcpMcpServer, AcpMcpTransport};
+
+    fn stdio(name: &str) -> AcpMcpServer {
+        AcpMcpServer {
+            name: name.into(),
+            transport: AcpMcpTransport::Stdio {
+                command: "playwright-mcp".into(),
+                args: vec!["--headless".into()],
+            },
+        }
+    }
 
     #[test]
     fn authored_permission_is_the_only_mcp_confirmation_authority() {
@@ -1326,6 +1365,27 @@ mod permission_projection_tests {
         assert_eq!(
             pre_authorized_tool_ids(&mcp, &admin, true),
             vec!["awaken_admin_get"]
+        );
+    }
+
+    #[test]
+    fn publication_stdio_and_session_mcp_routes_merge_without_shadowing() {
+        let merged = merge_acp_mcp_servers(vec![stdio("playwright")], [stdio("session")])
+            .expect("distinct routes");
+        assert_eq!(
+            merged
+                .iter()
+                .map(|server| server.name.as_str())
+                .collect::<Vec<_>>(),
+            ["playwright", "session"]
+        );
+
+        let error = merge_acp_mcp_servers(vec![stdio("playwright")], [stdio("playwright")])
+            .expect_err("duplicate names must not silently shadow a publication route");
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate ACP MCP server name `playwright`")
         );
     }
 }

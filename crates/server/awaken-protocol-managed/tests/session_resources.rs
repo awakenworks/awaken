@@ -208,14 +208,20 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
             mcp_servers: vec![
                 awaken_protocol_managed::ExecutableAgentMcpServer {
                     name: "docs".into(),
-                    url: "https://mcp.example.test".into(),
+                    target: awaken_protocol_managed::McpTarget::parse_http(
+                        "https://mcp.example.test",
+                    )
+                    .unwrap(),
                     credential_source_id: Some("cred:workspace:docs".into()),
                     credential_revision: Some(7),
                     prompts_as_skills: false,
                 },
                 awaken_protocol_managed::ExecutableAgentMcpServer {
                     name: "public-docs".into(),
-                    url: "https://public.example.test".into(),
+                    target: awaken_protocol_managed::McpTarget::parse_http(
+                        "https://public.example.test",
+                    )
+                    .unwrap(),
                     credential_source_id: None,
                     credential_revision: None,
                     prompts_as_skills: false,

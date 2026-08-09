@@ -22,6 +22,8 @@ interface DraftReviewOptions {
   setDirty: Dispatch<SetStateAction<boolean>>;
   onIssues: (issues: ValidationIssue[]) => void;
   onOpenPublish: () => void;
+  saveConfig: () => Promise<void>;
+  saveResources: () => Promise<void>;
   onError: (error: unknown) => void;
 }
 
@@ -94,11 +96,12 @@ export function useAgentDraftReview(options: DraftReviewOptions) {
     try {
       if (dirtyRef.current) {
         setStatus("saving");
-        await api.put(ws(`/v1/config/agents/${current.agentId}`), body);
+        await current.saveConfig();
         current.setDirty(false);
         dirtyRef.current = false;
         void qc.invalidateQueries({ queryKey: ["config-agents"] });
       }
+      await current.saveResources();
       setStatus("validating");
       const result = await api.post<ValidationResult>(ws(`/v1/config/agents/${current.agentId}/validate`), body);
       current.onIssues(result.issues ?? []);

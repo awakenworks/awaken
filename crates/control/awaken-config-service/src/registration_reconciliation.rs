@@ -87,7 +87,30 @@ impl ConfigService {
                     )
                 })?;
             let is_current = first_for_agent.insert(publication.agent_id.clone());
-            let session_profile = if is_current {
+            let frozen_defaults = publication
+                .agent_inputs
+                .clone()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|error| {
+                    format!(
+                        "publication `{}` has invalid frozen Agent inputs: {error}",
+                        publication.fingerprint
+                    )
+                })?;
+            let session_profile = if let Some(defaults) = frozen_defaults {
+                registered_session_profile(
+                    &publication.snapshot,
+                    &source.config.model_binding,
+                    Some(defaults),
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "publication `{}` frozen Agent inputs do not match its snapshot",
+                        publication.fingerprint
+                    )
+                })?
+            } else if is_current {
                 let defaults = self.resources.as_ref().and_then(|store| {
                     store
                         .get_agent_inputs(execution_workspace, &publication.agent_id)
