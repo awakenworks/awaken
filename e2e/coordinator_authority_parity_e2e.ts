@@ -3,20 +3,24 @@
 // Cause graph:
 //   C1 = the Coordinator co-locates an execution pool
 //   C2 = the Coordinator disables its pool and a registered Worker claims remotely
-//   C3 = the Session root mutation reaches idle
-//   C4 = the operation commit produces exactly one assistant fact
-//   C5 = dispatch settlement removes the live delivery row
-//   C6 = the authority process restarts over the same durable roots
+//   C3 = the Run ingress thread identity is the Managed Session identity
+//   C4 = the Session root mutation reaches idle
+//   C5 = the operation commit produces exactly one assistant fact
+//   C6 = dispatch settlement removes the live delivery row
+//   C7 = the authority process restarts over the same durable roots
 //
 // Decision table:
-//   Rule  C1 C2 C3 C4 C5 C6 | effect
-//   R1     1  0  1  1  1  1 | all-in-one facts survive restart
-//   R2     0  1  1  1  1  1 | distributed facts survive restart
-//   R3     *  *  0  *  *  * | no successful terminal projection
-//   R4     *  *  1  0  *  * | no fabricated assistant result
-//   R5     *  *  1  1  0  * | delivery remains live and the test fails
-//   R6     *  *  1  1  1  0 | durability is not claimed
-// R1/R2 are exercised here; Rust claim/CAS conformance owns the fail-closed R3-R6
+//   Rule  C1 C2 C3 C4 C5 C6 C7 | effect
+//   R1     1  0  1  1  1  1  1 | all-in-one facts survive restart
+//   R2     0  1  1  1  1  1  1 | distributed facts survive restart
+//   R3     *  *  0  *  *  *  * | unrelated durable thread cannot prove Session completion
+//   R4     *  *  1  0  *  *  * | no successful terminal projection
+//   R5     *  *  1  1  0  *  * | no fabricated assistant result
+//   R6     *  *  1  1  1  0  * | delivery remains live and the test fails
+//   R7     *  *  1  1  1  1  0 | durability is not claimed
+// R1/R2 are exercised here; identity wiring is explicit so the test cannot use
+// an unrelated durable thread as evidence for a Managed Session. Rust claim/CAS
+// conformance owns the fail-closed R3-R7
 // causes. The two successful rows must normalize to the same terminal facts.
 
 import assert from 'node:assert/strict';
@@ -77,7 +81,6 @@ async function waitForSettled(base: string, sessionId: string): Promise<void> {
 async function runTopology(remoteWorker: boolean, preferredPort: number): Promise<TerminalFacts> {
   const label = remoteWorker ? 'distributed' : 'all-in-one';
   const storage = mkdtempSync(path.join(tmpdir(), `awaken-coordinator-${label}-`));
-  const threadId = `authority-parity-${label}-${process.pid}`;
   const port = await availablePort(preferredPort);
   const base = `http://127.0.0.1:${port}`;
   let coordinator: ChildProcessWithoutNullStreams | undefined;
@@ -105,6 +108,7 @@ async function runTopology(remoteWorker: boolean, preferredPort: number): Promis
       environment_id: 'env_local',
       betas: BETAS,
     });
+    const threadId = session.id;
     const submitted = await fetch(`${base}/v1/durable/threads/${threadId}/submit_background`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

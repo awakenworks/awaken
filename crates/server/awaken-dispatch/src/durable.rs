@@ -463,7 +463,7 @@ fn state_of(processed: &[(RunId, RunState)], run_id: &RunId) -> Option<RunState>
 
 fn exec_error(err: Error) -> ExecError {
     match err {
-        Error::Execution(err) => err,
+        Error::Execution(err) | Error::TerminalResolution(err) => err,
         Error::Dispatch(err) => ExecError::Execution(err.to_string()),
     }
 }

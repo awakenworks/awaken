@@ -84,6 +84,63 @@ impl AnyDispatchStore {
             .map_err(|e| e.to_string())
     }
 
+    /// Build the migrated Postgres dispatch authority from the process-owned
+    /// pool. Composition roots use this to share one reconnect/backpressure
+    /// budget with commit and Worker-registry adapters for the same database.
+    #[cfg(feature = "durable")]
+    pub async fn with_postgres_pool(pool: sqlx::PgPool) -> Result<Self, String> {
+        PostgresDispatchStore::with_pool(pool)
+            .await
+            .map(Self::from_postgres_store)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Verify an externally migrated dispatch schema over a process-owned pool.
+    #[cfg(feature = "durable")]
+    pub async fn with_existing_postgres_pool(pool: sqlx::PgPool) -> Result<Self, String> {
+        PostgresDispatchStore::with_existing_pool(pool)
+            .await
+            .map(Self::from_postgres_store)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Pair a process-owned dispatch pool with its PG-NOTIFY hint. The listener
+    /// clones the pool handle; it does not create a second connection pool.
+    #[cfg(feature = "durable")]
+    pub async fn with_postgres_pool_and_wake(
+        pool: sqlx::PgPool,
+        channel: &str,
+    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
+        Self::with_postgres_pool_and_wake_access(pool, channel, false).await
+    }
+
+    /// Pair an externally migrated process-owned dispatch pool with its
+    /// PG-NOTIFY hint without executing DDL.
+    #[cfg(feature = "durable")]
+    pub async fn with_existing_postgres_pool_and_wake(
+        pool: sqlx::PgPool,
+        channel: &str,
+    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
+        Self::with_postgres_pool_and_wake_access(pool, channel, true).await
+    }
+
+    #[cfg(feature = "durable")]
+    async fn with_postgres_pool_and_wake_access(
+        pool: sqlx::PgPool,
+        channel: &str,
+        verify_only: bool,
+    ) -> Result<(Self, Arc<dyn crate::wake::WakeSignal>), String> {
+        let store = if verify_only {
+            PostgresDispatchStore::with_existing_pool(pool).await
+        } else {
+            PostgresDispatchStore::with_pool(pool).await
+        }
+        .map_err(|error| error.to_string())?;
+        let wake: Arc<dyn crate::wake::WakeSignal> =
+            Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
+        Ok((Self::from_postgres_store(store), wake))
+    }
+
     /// Connect the Postgres backend and, sharing its pool, a `PgNotifyWake` over
     /// `channel`: the served pool's wake fires `pg_notify` on the same database it
     /// enqueues into, so a peer node's `LISTEN` is nudged with no extra

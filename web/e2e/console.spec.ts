@@ -132,6 +132,12 @@ test("Tools tab renders the Permissions editor (data-driven from capabilities.po
 });
 
 test("Quickstart publishes the reviewed draft and starts a durable Session in the chosen Environment", async ({ page, request }) => {
+  // Quickstart placement cause/effect table: C1=the Agent has a recursive/self
+  // delegate, C2=the selected Environment is self-hosted, C3=a Worker is live.
+  // R1 C1+!C2 rejects before pretending a deferred cloud Sandbox can delegate;
+  // R2 C1+C2+C3 publishes, realizes the Sandbox, accepts the first message, and
+  // navigates to the exact durable Session. This browser scenario owns R2; the
+  // runtime-host FMECA tests own the fail-closed R1 edge.
   const stamp = Date.now();
   const id = `quickstart-${stamp}`;
   const model = `quickstart-model-${stamp}`;
@@ -140,7 +146,7 @@ test("Quickstart publishes the reviewed draft and starts a durable Session in th
     headers: MANAGED_HEADERS,
     data: {
       name: `quickstart-env-${stamp}`,
-      config: { type: "cloud", networking: { type: "unrestricted" } },
+      config: { type: "self_hosted" },
     },
   });
   const environmentBody = await environmentResponse.text();

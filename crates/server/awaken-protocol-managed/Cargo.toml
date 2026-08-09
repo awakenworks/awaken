@@ -16,6 +16,7 @@ test-support = [
     "dep:awaken-executable-environment-catalog",
     "dep:awaken-work-store",
     "dep:awaken-sandbox-policy-store",
+    "awaken-sandbox-policy-store/test-support",
     "dep:awaken-env-store",
     "awaken-env-store/test-support",
     "dep:awaken-session-store",

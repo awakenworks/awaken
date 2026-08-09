@@ -7,15 +7,27 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use awaken_agent_contract::agent::{content::ContentBlock, message::Role};
 use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, Result as LlmResult, ToolCall,
 };
 use awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier;
 
 const APPLICATION_PROMPT: &str = "application-session-e2e-prompt";
 
 struct ProjectionExecutor;
+
+fn content_text(blocks: &[ContentBlock]) -> String {
+    blocks
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Text { text } => text.clone(),
+            ContentBlock::ToolResult { content, .. } => content_text(content),
+            _ => String::new(),
+        })
+        .collect()
+}
 
 #[async_trait]
 impl LlmExecutor for ProjectionExecutor {
@@ -29,15 +41,37 @@ impl LlmExecutor for ProjectionExecutor {
                 )
             })
         });
-        Ok(ChatResponse {
-            output: AssistantOutput::text(format!(
+        let last_is_tool_result = request
+            .messages
+            .last()
+            .is_some_and(|message| message.role == Role::Tool);
+        let renewed_mcp_requested = request.messages.iter().any(|message| {
+            message.role == Role::User
+                && content_text(&message.content).contains("exercise renewed application MCP")
+        });
+        let output = if last_is_tool_result {
+            AssistantOutput::text(format!(
+                "application-session-renewed-mcp:{}",
+                content_text(&request.messages.last().expect("checked above").content)
+            ))
+        } else if renewed_mcp_requested {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: format!("application-renewed-mcp-{}", request.messages.len()),
+                tool_id: "mcp__application_only__add".into(),
+                arguments: serde_json::json!({"a": 20, "b": 22}),
+            }])
+        } else {
+            AssistantOutput::text(format!(
                 "application-session-projection:{}",
                 if prompt_is_visible {
                     "visible"
                 } else {
                     "missing"
                 }
-            )),
+            ))
+        };
+        Ok(ChatResponse {
+            output,
             usage: None,
             stop_reason: None,
         })

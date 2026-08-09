@@ -449,7 +449,7 @@ fn local_managed_state_over(
     // Keep the Session aggregate and its extraction intents in the same concrete
     // repository. The two application SPIs remain separate, while their local
     // durability boundary is shared at this composition root.
-    let session_repo = host.storage_dir().map(|root| {
+    let durable_session_repo = host.storage_dir().map(|root| {
         std::fs::create_dir_all(root).expect("create durable session repository directory");
         Arc::new(
             awaken_session_store::SqliteManagedSessionRepository::open(
@@ -458,10 +458,31 @@ fn local_managed_state_over(
             .expect("open durable managed session repository"),
         )
     });
-    if let Some(repo) = &session_repo {
+    if let Some(repo) = &durable_session_repo {
         host.install_memory_extraction_repository(repo.clone());
     }
-    let managed = ManagedState::new_with_mcp(
+    let session_repo: Arc<dyn awaken_session_contract::ManagedSessionRepository> =
+        match durable_session_repo {
+            Some(repo) => repo,
+            None => Arc::new(
+                awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                    .expect("open ephemeral managed Session repository"),
+            ),
+        };
+
+    // Test/scenario composition must freeze the same topology fact as product
+    // composition. Deriving placement from the canonical Host value eliminates
+    // the former second path where ManagedState always selected LocalWorker even
+    // when this process deliberately had no local dispatch pool.
+    let execution_placement = if host.runs_local_dispatch_pool() {
+        awaken_session_application::SessionExecutionPlacement::LocalWorker
+    } else {
+        awaken_session_application::SessionExecutionPlacement::RegisteredWorker
+    };
+    let local_realization_owner = host.dispatch_owner().to_string();
+    let environments = environments
+        .unwrap_or_else(|| awaken_protocol_managed::test_support::environment_components().1);
+    let runtime = Arc::new(
         ManagedHost::new(host)
             .with_resource_validator(catalog.clone())
             .with_repository_binding_verifier(Arc::new(
@@ -469,15 +490,18 @@ fn local_managed_state_over(
             ))
             .with_credentials(credentials, secrets),
     );
-    let managed = match session_repo {
-        Some(repo) => managed.with_session_repo(repo),
-        None => managed,
-    };
+    let application = awaken_session_application::SessionApplication::new_with_configuration(
+        runtime.clone(),
+        runtime,
+        session_repo,
+        environments,
+        awaken_session_application::SessionApplicationConfiguration {
+            execution_placement,
+            local_realization_owner,
+        },
+    );
+    let managed = ManagedState::from_application(application);
     let managed = managed.with_vaults(vaults).with_resource_catalog(catalog);
-    let managed = match environments {
-        Some(environments) => managed.with_environments(environments),
-        None => managed,
-    };
     let managed = match agent_source {
         Some(source) => managed.with_config_source(source),
         None => managed,

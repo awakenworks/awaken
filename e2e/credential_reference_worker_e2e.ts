@@ -5,15 +5,17 @@
 // the returned model, commits through the claimed epoch, and settles the queue.
 //
 // Cause graph:
-//   C1 opaque reference is authorized -> E1 worker materializes without a raw key
-//   C2 epoch/owner are current         -> E2 one committed provider result
-//   C3 stdin reaches EOF in E2E mode   -> E3 graceful drain + coverage flush
+//   C0 request is an ordinary Run      -> E0 no Session realization control call
+//   C1 opaque reference is authorized  -> E1 worker materializes without a raw key
+//   C2 epoch/owner are current          -> E2 one committed provider result
+//   C3 stdin reaches EOF in E2E mode    -> E3 graceful drain + coverage flush
 //
 // Decision table:
-//   Rule  C1  C2  C3  Expected
-//   T1    Y   Y   N   E1 + E2; worker remains live
-//   T2    Y   Y   Y   E1 + E2 + E3
-//   T3    N   -   Y   fail closed; E3
+//   Rule  C0  C1  C2  C3  Expected
+//   T1    Y   Y   Y   N   E0 + E1 + E2; worker remains live
+//   T2    Y   Y   Y   Y   E0 + E1 + E2 + E3
+//   T3    Y   N   -   Y   fail closed; E3
+//   T4    N   any any any claimed Session control is mandatory and fail-closed
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -179,7 +181,10 @@ async function main(): Promise<void> {
     const gatewayRunId = `${seed.request.activation.run_id}-gateway`;
     request.activation.run_id = gatewayRunId;
     request.activation.thread_id = THREAD;
-    request.session_thread_id = THREAD;
+    // This hand-built dispatch is deliberately an ordinary Run. A non-null
+    // session_thread_id is a claimed Session-control contract, not a history
+    // grouping alias; activation.thread_id already owns committed history.
+    request.session_thread_id = null;
     request.activation.snapshot.resolved_spec.model_binding = {
       ...structuredClone(request.activation.snapshot.resolved_spec.model_binding),
       provisioning: {
@@ -271,7 +276,7 @@ async function main(): Promise<void> {
     const rejected = structuredClone(request);
     rejected.activation.run_id = `${request.activation.run_id}-revalidation`;
     rejected.activation.thread_id = REVALIDATION_THREAD;
-    rejected.session_thread_id = REVALIDATION_THREAD;
+    rejected.session_thread_id = null;
     await post('/v1/worker/dispatch/enqueue', { request: rejected }, 'seed-worker');
     await waitForOutput(
       () => workerOutput,

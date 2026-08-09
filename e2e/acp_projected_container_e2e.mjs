@@ -19,6 +19,7 @@ import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import { closeHttpServer } from './http_server.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
+import { waitForValue } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38513);
@@ -34,6 +35,16 @@ const AGENT = 'projected-container-agent';
 
 function dockerAvailable() {
   return spawnSync('docker', ['version'], { stdio: 'ignore' }).status === 0;
+}
+
+function fixtureContainerIds() {
+  const result = spawnSync(
+    'docker',
+    ['ps', '--all', '--quiet', '--filter', `ancestor=${IMAGE}`],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim().split(/\s+/u).filter(Boolean).sort();
 }
 
 function buildFixtureImage() {
@@ -218,6 +229,7 @@ async function main() {
   });
   let client;
   let session;
+  let secureSession;
 
   try {
     await ready(server);
@@ -266,16 +278,37 @@ async function main() {
     // | Rule | credential | substitution + no-bypass | result             |
     // | D1   | yes        | no                       | fail closed         |
     // | D2   | no         | n/a                      | launch + MCP config |
-    await assert.rejects(
-      client.beta.sessions.create({
-        agent: AGENT,
-        environment_id: environmentResource.id,
-        mcp_servers: [{ name: 'container-fixture-secure', type: 'url', url: fixture.url }],
-        vault_ids: [vault.id],
-        betas: BETAS,
-      }),
-      (error) => error?.status === 500 && String(error).includes('provider-enforced secret substitution'),
-      'D1: Docker must not claim Worker custody without substitution and no-bypass evidence',
+    secureSession = await client.beta.sessions.create({
+      agent: AGENT,
+      environment_id: environmentResource.id,
+      mcp_servers: [{ name: 'container-fixture-secure', type: 'url', url: fixture.url }],
+      vault_ids: [vault.id],
+      betas: BETAS,
+    });
+    const beforeRejectedRealization = fixtureContainerIds();
+    await client.beta.sessions.events.send(secureSession.id, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: 'must fail before container launch' }],
+      }],
+      betas: BETAS,
+    });
+    const rejected = await waitForValue(
+      () => client.beta.sessions.retrieve(secureSession.id, { betas: BETAS }),
+      (observed) => observed.status === 'failed',
+      'claim-fenced MCP custody failure status',
+      { timeoutMs: 60_000 },
+    );
+    assert.equal(rejected.status, 'failed', 'D1: realization failure is durable');
+    assert.deepEqual(
+      fixtureContainerIds(),
+      beforeRejectedRealization,
+      'D1: failed realization never creates a Docker container or reaches inference',
+    );
+    assert.equal(
+      fixture.calls.length,
+      0,
+      'D1: Docker performs no authenticated MCP I/O without substitution/no-bypass proof',
     );
     session = await client.beta.sessions.create({
       agent: AGENT,
@@ -299,7 +332,12 @@ async function main() {
       }],
       betas: BETAS,
     });
-    const observed = await messages(client, session.id);
+    const observed = await waitForValue(
+      () => messages(client, session.id),
+      (candidate) => candidate.texts.some((text) => text.includes('CONTAINER_PROJECTED')),
+      'projected container ACP response',
+      { timeoutMs: 60_000 },
+    );
     const reply = observed.texts.find((text) => text.includes('CONTAINER_PROJECTED'));
     assert.ok(
       reply,
@@ -328,6 +366,9 @@ async function main() {
     // success or an assertion failure.
     if (client && session && server.exitCode === null && server.signalCode === null) {
       await client.beta.sessions.delete(session.id, { betas: BETAS }).catch(() => {});
+    }
+    if (client && secureSession && server.exitCode === null && server.signalCode === null) {
+      await client.beta.sessions.delete(secureSession.id, { betas: BETAS }).catch(() => {});
     }
     await stop(server).catch(() => {});
     await fixture.close();

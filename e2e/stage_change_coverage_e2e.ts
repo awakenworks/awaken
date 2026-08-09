@@ -123,7 +123,7 @@ const obligations: Obligation[] = [
   { id: 'D4-07', stage: '4 credential injection', behavior: 'worker-local logout after placement fails exact use-time revalidation before Agent launch', scenario: 'credential_reference_worker' },
   { id: 'D4-08', stage: '4 credential injection', behavior: 'database-less production Worker consumes a typed recipient-bound projection and calls the pinned endpoint', scenario: 'credential_materialization_worker' },
   { id: 'D4-09', stage: '4 credential injection', behavior: 'the production composition projects endpoint and credential use once into the per-thread ACP sandbox', scenario: 'acp_projected_local' },
-  { id: 'D4-10', stage: '4 credential injection', behavior: 'config-file ACP adapters receive a per-run materialized config home through the same local projection', scenario: 'acp_projected_local' },
+  { id: 'D4-10', stage: '4 credential injection', behavior: 'Codex rejects an incompatible bearer-only publication without restoring its removed environment credential path', scenario: 'acp_projected_local' },
   { id: 'D4-11', stage: '4 credential injection', behavior: 'the production container projection carries model access, MCP metadata, and a File input into one frozen run', scenario: 'acp_projected_container' },
   { id: 'D4-E01', stage: '4 credential injection', behavior: 'a recipient-bound envelope with a mismatched payload fingerprint fails before provider I/O', scenario: 'credential_materialization_worker' },
   { id: 'D4-E02', stage: '4 credential injection', behavior: 'an exact envelope cannot be replayed for a different endpoint binding', scenario: 'credential_materialization_worker' },
@@ -140,6 +140,8 @@ const obligations: Obligation[] = [
   { id: 'D4-A07', stage: '4 application Session contribution', behavior: 'a due Worker Session lease restages and republishes its exact MCP generation through the common phase driver', scenario: 'application_session_worker' },
   { id: 'D4-A08', stage: '4 application Session contribution', behavior: 'application-authored non-secret environment values cross the frozen baseline into the Worker projection', scenario: 'application_session_worker' },
   { id: 'D4-A09', stage: '4 application Session contribution', behavior: 'Session MCP overrides a same-name Application input while unrelated Application MCP remains in the one attachment set', scenario: 'application_session_worker' },
+  { id: 'D4-A10', stage: '4 application Session contribution', behavior: 'an actual MCP effect remains authorized exactly once after lease-only renewal of the installed generation', scenario: 'application_session_worker' },
+  { id: 'D4-A11', stage: '4 application Session contribution', behavior: 'post-renewal MCP remains permission-gated and performs no tools/call before explicit approval', scenario: 'application_session_worker' },
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash occurs while child inference is in flight', scenario: 'child_recovery' },
@@ -255,13 +257,14 @@ const obligations: Obligation[] = [
   // substitution and no-bypass networking.
   //
   // | Rule | exact generation/source | live claim/holder | provider proof | Effect |
-  // | G42-P01..P05 | yes | yes | n/a | freeze/realize/recover one generation |
+  // | G42-P01..P06 | yes | yes | n/a | freeze/realize/recover one generation |
   // | G43-P01..P06 | yes | yes | n/a | materialize exact binding or reject |
   // | G43-P07 | yes | yes | no | reject before launch; never downgrade |
   { id: 'G42-P01', stage: '9 guardrail promotion evidence', behavior: 'preparing Session remains invisible until the claim-fenced application contribution freezes one root revision', scenario: 'application_session_worker' },
   { id: 'G42-P02', stage: '9 guardrail promotion evidence', behavior: 'application and Session MCP inputs converge into one normalized attachment authority', scenario: 'application_session_worker' },
   { id: 'G42-P03', stage: '9 guardrail promotion evidence', behavior: 'lease renewal republishes only the exact current MCP generation', scenario: 'application_session_worker' },
   { id: 'G42-P04', stage: '9 guardrail promotion evidence', behavior: 'ownership loss revokes process-local realization without changing durable Session truth', scenario: 'application_session_worker' },
+  { id: 'G42-P06', stage: '9 guardrail promotion evidence', behavior: 'post-renewal MCP tools/call proves the exact admitted projection remains usable rather than merely present', scenario: 'application_session_worker' },
   { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'legacy Session rows establish one canonical root and ignore stale retained columns after restart', scenario: 'managed_session_legacy_upgrade' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
   { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope', scenario: 'credential_materialization_worker' },

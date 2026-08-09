@@ -759,7 +759,7 @@ async function main() {
       container,
       'sh',
       '-c',
-      'printf %s CONTAINER-ARTIFACT-OK > /outputs/result.txt',
+      'printf %s CONTAINER-ARTIFACT-OK > /mnt/session/outputs/result.txt',
     ]);
 
     execFileSync(ENGINE, [

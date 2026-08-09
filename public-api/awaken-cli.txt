@@ -27,7 +27,6 @@ pub awaken_cli::config::ResourceStoreBackend::Embedded(std::path::PathBuf)
 pub awaken_cli::config::ResourceStoreBackend::Postgres(alloc::string::String)
 impl awaken_cli::config::ResourceStoreBackend
 pub fn awaken_cli::config::ResourceStoreBackend::is_shared(&self) -> bool
-pub fn awaken_cli::config::ResourceStoreBackend::validate_runtime_shape(&self, bool, bool) -> core::result::Result<(), &'static str>
 pub enum awaken_cli::config::Role
 pub awaken_cli::config::Role::AllInOne
 pub awaken_cli::config::Role::Control

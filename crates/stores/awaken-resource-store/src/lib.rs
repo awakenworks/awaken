@@ -135,6 +135,26 @@ impl ResourceReclamationFence for SqliteResourceStore {
                 params![kind_name(target.kind), target.resource_id, intent_id],
             )
             .map_err(|error| storage(error.to_string()))?;
+        // A trigger, migration hook, or corrupted same-transaction writer can
+        // add a reference after the pre-insert scan. Ordinary concurrent writers
+        // are already serialized by the transaction/fence, but this second read
+        // closes the storage-local interval without recreating an application
+        // guard. Commit the late reference while removing only our fence.
+        let blockers =
+            sqlite_references_for_identity(&transaction, target.kind, &target.resource_id)?;
+        if !blockers.is_empty() {
+            transaction
+                .execute(
+                    "DELETE FROM resource_lifecycle_reclamation_fences
+                     WHERE resource_kind = ?1 AND resource_id = ?2 AND intent_id = ?3",
+                    params![kind_name(target.kind), target.resource_id, intent_id],
+                )
+                .map_err(|error| storage(error.to_string()))?;
+            transaction
+                .commit()
+                .map_err(|error| storage(error.to_string()))?;
+            return Ok(AcquireResourceReclamationOutcome::Blocked(blockers));
+        }
         transaction
             .commit()
             .map_err(|error| storage(error.to_string()))?;
@@ -847,6 +867,99 @@ mod tests {
     #[tokio::test]
     async fn sqlite_in_memory_conforms() {
         repository_spec(&SqliteResourceStore::in_memory().unwrap()).await;
+    }
+
+    /// Storage-local fence FMECA and cause/effect decision table. C1 the first
+    /// reference scan is empty; C2 inserting the fence fires a storage-local
+    /// hook that adds a reference; C3 the late row is valid or corrupt. Effects
+    /// are E1 remove this intent's fence and return Blocked with the durable row,
+    /// or E2 roll back the fence and fail closed on corrupt reference data.
+    ///
+    /// | Rule | Pre-scan | Post-insert row | Effect |
+    /// |---|---|---|---|
+    /// | S1 | empty | valid | E1 Blocked, reference retained |
+    /// | S2 | empty | corrupt | E2 error, no fence committed |
+    #[tokio::test]
+    async fn sqlite_acquire_rechecks_references_added_by_the_fence_transaction() {
+        let store = SqliteResourceStore::in_memory().unwrap();
+        let target = ResourceTarget::new("workspace-a", ResourceKind::File, "late-hash");
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER inject_late_reference
+                 AFTER INSERT ON resource_lifecycle_reclamation_fences
+                 WHEN NEW.resource_id = 'late-hash'
+                 BEGIN
+                   INSERT INTO resource_lifecycle_references(
+                     workspace_id, resource_kind, resource_id, reference_kind, reference_id
+                   ) VALUES (
+                     'workspace-a', 'file', 'late-hash', 'session_binding', 'session-late'
+                   );
+                 END;",
+            )
+            .unwrap();
+
+        let outcome = store
+            .acquire_reclamation("intent-late", &target)
+            .await
+            .expect("S1 storage transaction");
+        assert!(
+            matches!(
+                &outcome,
+                AcquireResourceReclamationOutcome::Blocked(rows)
+                    if rows.len() == 1
+                        && rows[0].reference.reference_id == "session-late"
+            ),
+            "S1/E1: {outcome:?}"
+        );
+        let fence_count: i64 = store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM resource_lifecycle_reclamation_fences
+                 WHERE resource_kind = 'file' AND resource_id = 'late-hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fence_count, 0, "S1/E1");
+
+        let corrupt_target = ResourceTarget::new("workspace-a", ResourceKind::File, "corrupt-hash");
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER inject_corrupt_late_reference
+                 AFTER INSERT ON resource_lifecycle_reclamation_fences
+                 WHEN NEW.resource_id = 'corrupt-hash'
+                 BEGIN
+                   INSERT INTO resource_lifecycle_references(
+                     workspace_id, resource_kind, resource_id, reference_kind, reference_id
+                   ) VALUES (
+                     'workspace-a', 'file', 'corrupt-hash', 'unknown_kind', 'session-corrupt'
+                   );
+                 END;",
+            )
+            .unwrap();
+        let error = store
+            .acquire_reclamation("intent-corrupt", &corrupt_target)
+            .await
+            .expect_err("S2 corrupt storage-local row must fail closed");
+        assert!(
+            matches!(error, ResourcePurgeError::Storage(_)),
+            "S2/E2: {error:?}"
+        );
+        let (fence_count, reference_count): (i64, i64) = store
+            .connection()
+            .query_row(
+                "SELECT
+                   (SELECT count(*) FROM resource_lifecycle_reclamation_fences
+                    WHERE resource_kind = 'file' AND resource_id = 'corrupt-hash'),
+                   (SELECT count(*) FROM resource_lifecycle_references
+                    WHERE resource_kind = 'file' AND resource_id = 'corrupt-hash')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((fence_count, reference_count), (0, 0), "S2/E2");
     }
 
     /*

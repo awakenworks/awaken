@@ -78,7 +78,9 @@ Management-plane crates author, version, tenant, and **resolve**:
 `awaken-agent-contract` (specs), **`awaken-management-contract`** (provider
 catalog / endpoints / offerings / inference routing — its own config API, ADR-0088,
 orthogonal to execution, **execution never depends on it, I4**), `awaken-credential-vault`
-(vault/credential), `awaken-managed-bridge` (Managed wire ACL). The runtime links
+(vault/credential), and `awaken-protocol-managed::control::vault_acl` (Managed wire
+ACL). The former `awaken-managed-bridge` was consolidated into the sole Managed
+protocol anti-corruption boundary; no compatibility crate remains. The runtime links
 **none** of them. It receives a compiled `ExecutableAgentSnapshot`/`RunnableConfig`
 in which every credential is an **already-resolved value** (a `RedactedString`), or
 absent (host-native / egress proxy). Dependency direction is management plane →
@@ -329,7 +331,7 @@ earlier "inference domain" was really a resolver mislabeled; `InferenceProfile`
 | read all config → `ExecutableAgentSnapshot` (`InferenceTriple` + `MaterializedCredential`) | `awaken-config-resolver` *(was the misnamed `awaken-inference`)* | resolver **service** — no aggregate, no execution |
 | run the model | `awaken-provider-genai` | execution |
 | Managed Agents wire | `awaken-protocol-managed` | front door |
-| Managed wire ⇄ domain ACL | `awaken-managed-bridge` | ACL |
+| Managed wire ⇄ domain ACL | `awaken-protocol-managed::control::vault_acl` | protocol ACL |
 | admin config API (provider/endpoint/inference-profile) | `awaken-admin-config-api` | API assembly |
 | the one service | `awaken-coordinator-local` | assembly |
 
@@ -354,8 +356,9 @@ model/inference-profile, which the Anthropic wire does not define) ships a
 
 Scope: **we generate TS only for our own surfaces** (admin config API + any
 non-Anthropic front doors). The **Managed Agents wire is NOT generated** — its TS
-contract is the **official `@anthropic-ai/sdk`**; `awaken-protocol-managed` +
-`awaken-managed-bridge` conform to it (never regenerate Anthropic's SDK).
+contract is the **official `@anthropic-ai/sdk`**; the single
+`awaken-protocol-managed` anti-corruption boundary conforms to it (never regenerate
+Anthropic's SDK).
 
 ### Layer map (resolves the G7 naming debt — no rename of existing code)
 

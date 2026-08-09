@@ -32,6 +32,7 @@ mod podman_plan;
 mod process_env;
 use process_env::environment_keepalive_command;
 mod recovery;
+mod runtime;
 mod secret;
 mod writable;
 pub use cgroup::CgroupCaps;
@@ -40,6 +41,9 @@ pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
+pub use runtime::{
+    ContainerRuntime, ContainerState, PackageImageProvisioner, RuntimeAgentProcess, RuntimeError,
+};
 pub use secret::SecretBytes;
 pub use writable::writable_dirs;
 
@@ -92,16 +96,21 @@ pub struct BindPlan {
     pub credential_file_path: Option<String>,
 }
 
-/// A memory-store mount realized as a **memoryd sidecar** sharing an `emptyDir` with
-/// the agent container (the k8s/container form of ADR-0038 MemoryStore). A memory
-/// store is a keyed store, not a host byte path — binding `store_id` as a path (the
-/// prior behavior) was a meaningless no-op; the sidecar FUSE-serves it into a
-/// pod-scoped volume the agent reads, and harvests writes back on teardown.
+/// A memory-store mount carried into a remote container runtime. The authoritative
+/// [`pc::MemoryMounter`] resolves the exact (possibly claim-fenced) store before the
+/// runtime starts; Kubernetes seeds these bytes into a pod-scoped writable volume
+/// and the provider harvests that same volume through the mounter on disposal.
+/// This avoids a second pod-local Memory database and does not grant the untrusted
+/// Pod network access to the Resource authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryMount {
     pub store_id: String,
     /// Sandbox-absolute path the agent sees the store at (the shared volume mount).
     pub mount_path: String,
+    pub access: pc::MountAccess,
+    /// A bounded tar archive rooted at the Memory mount. It is produced by the
+    /// canonical mounter, never by a Kubernetes-side Resource client.
+    pub snapshot_tar: Vec<u8>,
 }
 
 /// A neutral container plan rendered from a [`pc::SandboxSpec`] — the input a
@@ -119,7 +128,7 @@ pub struct ContainerPlan {
     pub outputs_volume: String,
     pub network: NetworkMode,
     pub limits: pc::ResourceLimits,
-    /// Memory-store mounts, realized as memoryd sidecars + shared volumes (NOT binds).
+    /// Memory-store mounts, realized as runtime-native writable volumes (NOT binds).
     pub memory_mounts: Vec<MemoryMount>,
     /// The rootfs the agent runs on (Image / private IsolatedRoot). Honored by the
     /// rootless-podman adapter; the docker/k8s adapters run `image` directly.
@@ -398,7 +407,16 @@ struct SecretWriteback {
 struct StagedMounts {
     guard: Option<StagingGuard>,
     secret_writebacks: Vec<SecretWriteback>,
-    memory: Vec<Box<dyn pc::MemoryMount>>,
+    memory: Vec<StagedMemoryMount>,
+}
+
+struct StagedMemoryMount {
+    handle: Box<dyn pc::MemoryMount>,
+    host_path: std::path::PathBuf,
+    mount_path: String,
+    access: pc::MountAccess,
+    native_runtime_volume: bool,
+    writeback_prepared: bool,
 }
 
 impl std::fmt::Debug for StagedMounts {
@@ -416,6 +434,7 @@ async fn stage_memory_binds(
     plan: &mut ContainerPlan,
     staged: &mut StagedMounts,
     mounter: Option<Arc<dyn pc::MemoryMounter>>,
+    native_runtime_volume: bool,
 ) -> Result<(), pc::SandboxError> {
     let memory: Vec<_> = spec
         .mounts
@@ -457,19 +476,155 @@ async fn stage_memory_binds(
                 "MemoryStore mount requires write-through FUSE realization",
             ));
         }
+        if native_runtime_volume && handle.realization() != pc::Realization::Copy {
+            handle.teardown().await;
+            return Err(pc::SandboxError::new(
+                "remote container Memory volume requires a copy-capable MemoryMounter",
+            ));
+        }
         #[cfg(unix)]
-        make_memory_tree_accessible(&host_path, mount.access)?;
-        plan.binds.push(BindPlan {
-            source_ref: host_path.to_string_lossy().into_owned(),
+        if let Err(error) = make_memory_tree_accessible(&host_path, mount.access) {
+            handle.teardown().await;
+            return Err(error);
+        }
+        if native_runtime_volume {
+            let snapshot_tar = match memory_snapshot_tar(&host_path) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    handle.teardown().await;
+                    return Err(error);
+                }
+            };
+            let planned = plan
+                .memory_mounts
+                .iter_mut()
+                .find(|planned| planned.mount_path == mount.mount_path)
+                .ok_or_else(|| pc::SandboxError::new("Memory mount disappeared from plan"));
+            let planned = match planned {
+                Ok(planned) => planned,
+                Err(error) => {
+                    handle.teardown().await;
+                    return Err(error);
+                }
+            };
+            planned.snapshot_tar = snapshot_tar;
+            planned.access = mount.access;
+        } else {
+            plan.binds.push(BindPlan {
+                source_ref: host_path.to_string_lossy().into_owned(),
+                mount_path: mount.mount_path.clone(),
+                read_only: mount.access == pc::MountAccess::ReadOnly,
+                content: None,
+                content_bytes: None,
+                secret_content: None,
+                secret_writeback: false,
+                credential_file_path: None,
+            });
+        }
+        staged.memory.push(StagedMemoryMount {
+            handle,
+            host_path,
             mount_path: mount.mount_path.clone(),
-            read_only: mount.access == pc::MountAccess::ReadOnly,
-            content: None,
-            content_bytes: None,
-            secret_content: None,
-            secret_writeback: false,
-            credential_file_path: None,
+            access: mount.access,
+            native_runtime_volume,
+            writeback_prepared: false,
         });
-        staged.memory.push(handle);
+    }
+    Ok(())
+}
+
+const MAX_MEMORY_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MEMORY_SNAPSHOT_FILES: usize = 10_000;
+
+fn memory_snapshot_tar(root: &std::path::Path) -> Result<Vec<u8>, pc::SandboxError> {
+    fn append(
+        archive: &mut tar::Builder<Vec<u8>>,
+        root: &std::path::Path,
+        directory: &std::path::Path,
+        files: &mut usize,
+        bytes: &mut u64,
+    ) -> Result<(), pc::SandboxError> {
+        let entries = std::fs::read_dir(directory)
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            let path = entry.path();
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            if metadata.file_type().is_symlink() {
+                return Err(pc::SandboxError::new(
+                    "Memory snapshot must not contain symbolic links",
+                ));
+            }
+            if metadata.is_dir() {
+                append(archive, root, &path, files, bytes)?;
+                continue;
+            }
+            if !metadata.is_file() {
+                return Err(pc::SandboxError::new(
+                    "Memory snapshot contains a non-regular file",
+                ));
+            }
+            *files = files.saturating_add(1);
+            *bytes = bytes.saturating_add(metadata.len());
+            if *files > MAX_MEMORY_SNAPSHOT_FILES || *bytes > MAX_MEMORY_SNAPSHOT_BYTES {
+                return Err(pc::SandboxError::new(
+                    "Memory snapshot exceeds the remote-container projection limit",
+                ));
+            }
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+            archive
+                .append_path_with_name(&path, relative)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    let mut archive = tar::Builder::new(Vec::new());
+    let mut files = 0;
+    let mut bytes = 0;
+    append(&mut archive, root, root, &mut files, &mut bytes)?;
+    archive
+        .into_inner()
+        .map_err(|error| pc::SandboxError::new(error.to_string()))
+}
+
+fn replace_memory_snapshot(
+    root: &std::path::Path,
+    files: &[EnvironmentFile],
+) -> Result<(), pc::SandboxError> {
+    if root.exists() {
+        std::fs::remove_dir_all(root).map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    }
+    std::fs::create_dir_all(root).map_err(|error| pc::SandboxError::new(error.to_string()))?;
+    let mut total = 0_u64;
+    for file in files {
+        let relative = std::path::Path::new(&file.path);
+        if relative.is_absolute()
+            || file.path.is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(pc::SandboxError::new(
+                "unsafe path in harvested Memory snapshot",
+            ));
+        }
+        total = total.saturating_add(file.bytes.len() as u64);
+        if total > MAX_MEMORY_SNAPSHOT_BYTES || files.len() > MAX_MEMORY_SNAPSHOT_FILES {
+            return Err(pc::SandboxError::new(
+                "harvested Memory snapshot exceeds the projection limit",
+            ));
+        }
+        let destination = root.join(relative);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        }
+        std::fs::write(destination, &file.bytes)
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
     }
     Ok(())
 }
@@ -695,7 +850,7 @@ async fn resolve_and_stage(
                         None => continue,
                     }
                 }
-                // MemoryStore is realized as a sidecar, not a byte bind; nothing to stage.
+                // MemoryStore is realized through its mounter, not this byte-bind loop.
                 _ => continue,
             }
         };
@@ -794,7 +949,7 @@ async fn resolve_and_stage(
 fn binds_of(spec: &pc::SandboxSpec) -> Vec<BindPlan> {
     spec.mounts
         .iter()
-        // MemoryStore is not a host byte path — it is realized as a sidecar, not a bind.
+        // MemoryStore is not a host byte path; its authoritative mounter realizes it.
         .filter(|m| !matches!(m.source, pc::MountSource::MemoryStore { .. }))
         .map(|m| BindPlan {
             source_ref: mount_ref(&m.source),
@@ -825,7 +980,8 @@ fn inline_content_of(source: &pc::MountSource) -> Option<String> {
 }
 
 /// The memory-store mounts a spec requests, pulled out of the byte-bind set so the
-/// container tier realizes each as a memoryd sidecar + shared volume.
+/// container tier realizes each through the canonical MemoryMounter and either a
+/// host bind or a runtime-native seeded volume.
 fn memory_mounts_of(spec: &pc::SandboxSpec) -> Vec<MemoryMount> {
     spec.mounts
         .iter()
@@ -833,6 +989,8 @@ fn memory_mounts_of(spec: &pc::SandboxSpec) -> Vec<MemoryMount> {
             pc::MountSource::MemoryStore { store_id, .. } => Some(MemoryMount {
                 store_id: store_id.clone(),
                 mount_path: m.mount_path.clone(),
+                access: m.access,
+                snapshot_tar: Vec::new(),
             }),
             _ => None,
         })
@@ -909,217 +1067,6 @@ pub fn container_plan(
         memory_mounts: memory_mounts_of(spec),
         rootfs: rootfs_of(spec, default_image),
     })
-}
-
-// ── Runtime port (dependency inversion) ─────────────────────────────────────────
-
-/// A container/pod runtime failure.
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeError {
-    #[error("container {0:?} not found")]
-    NotFound(String),
-    #[error("container runtime failed: {0}")]
-    Backend(String),
-}
-
-/// Whether a container is still alive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContainerState {
-    Provisioning,
-    Running,
-    Gone,
-}
-
-/// One opaque agent process started *inside* an already-running container
-/// environment.  The environment and process deliberately have independent
-/// lifecycles: dropping or terminating this process must not dispose the Session's
-/// container.
-pub struct RuntimeAgentProcess {
-    pub process: Box<dyn pc::ProcessHandle>,
-    pub channel: Box<dyn AgentChannel>,
-}
-
-/// Independent package-image build/publish port.
-///
-/// A Session runtime consumes only the returned immutable image reference. The
-/// provisioner may be the same local Docker/Podman engine, a remote builder, or
-/// a registry-backed service shared by Kubernetes workers.
-#[async_trait]
-pub trait PackageImageProvisioner: Send + Sync {
-    /// Resolve an operator reference before Coordinator creates its durable
-    /// demand key. Local engines return an image id; remote runtimes return a
-    /// Registry digest.
-    async fn package_base_image_identity(&self, reference: &str) -> Result<String, RuntimeError> {
-        Ok(reference.to_owned())
-    }
-
-    async fn prepare_package_image(
-        &self,
-        base_image: &str,
-        packages: &pc::PackageRequirements,
-        network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError>;
-
-    /// Verify that a previously persisted immutable reference remains
-    /// available after local cache pruning or a registry outage.
-    async fn package_image_available(&self, _image: &str) -> Result<bool, RuntimeError> {
-        Ok(false)
-    }
-}
-
-/// The seam the provider drives — implemented by a bollard adapter (Docker) or a
-/// kube adapter (K8s), and by an in-memory fake in tests. Names no neutral-contract
-/// type beyond the value objects it must move.
-#[async_trait]
-pub trait ContainerRuntime: Send + Sync {
-    /// Whether this runtime structurally enforces `NetworkPolicy::None` for an
-    /// arbitrary workload. Labels, annotations, and proxy env are not evidence.
-    fn enforces_network_none(&self) -> bool {
-        false
-    }
-
-    /// Whether this runtime can build an immutable derived image containing the
-    /// exact package requirements before the untrusted workload starts.
-    fn supports_package_provisioning(&self) -> bool {
-        false
-    }
-
-    async fn prepare_package_image(
-        &self,
-        base_image: &str,
-        packages: &pc::PackageRequirements,
-        _network: &pc::NetworkPolicy,
-    ) -> Result<String, RuntimeError> {
-        if packages.is_empty() {
-            Ok(base_image.to_string())
-        } else {
-            Err(RuntimeError::Backend(
-                "container runtime cannot provision package requirements".into(),
-            ))
-        }
-    }
-
-    /// Kubernetes realizes MemoryStore mounts with its native sidecar/volume
-    /// topology. Local container engines need the provider's portable host-copy
-    /// bind instead.
-    fn has_native_memory_mounts(&self) -> bool {
-        false
-    }
-
-    fn uses_persistent_volume_claims(&self) -> bool {
-        false
-    }
-
-    /// Whether a host-staged writable Secret remains readable after the process exits,
-    /// allowing the provider to commit a CLI-refreshed credential back to its broker.
-    /// Docker/Podman do; the Kubernetes ConfigMap projection does not.
-    fn supports_secret_writeback(&self) -> bool {
-        true
-    }
-    /// Whether the runtime exposes [`LIVE_INPUTS_ROOT`] read-only to the Agent and
-    /// can atomically update it through a runtime-owned channel.
-    fn uses_host_live_input_bind(&self) -> bool {
-        false
-    }
-    fn supports_live_input_projection(&self) -> bool {
-        self.uses_host_live_input_bind()
-    }
-    async fn project_live_input(
-        &self,
-        _container_id: &str,
-        _path: &str,
-        _bytes: &[u8],
-    ) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Backend(
-            "container runtime does not support live input projection".into(),
-        ))
-    }
-    async fn remove_live_input(
-        &self,
-        _container_id: &str,
-        _path: &str,
-    ) -> Result<(), RuntimeError> {
-        Err(RuntimeError::Backend(
-            "container runtime does not support live input projection".into(),
-        ))
-    }
-    /// Read a file while the container is still alive. Remote runtimes use this to
-    /// harvest a writable credential before termination; bind runtimes return `None`
-    /// and the provider reads their secured host staging file.
-    async fn read_live_file(
-        &self,
-        _container_id: &str,
-        _path: &str,
-    ) -> Result<Option<Vec<u8>>, RuntimeError> {
-        Ok(None)
-    }
-    /// Create + start the container/pod running `plan.command` as its main process.
-    async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError>;
-
-    /// Launch an ordinary process inside a live container environment.  Unlike the
-    /// historical process-as-container implementation, this MUST execute `command`;
-    /// returning a handle to PID 1 would violate tool transparency.
-    async fn spawn(
-        &self,
-        _container_id: &str,
-        _command: pc::MaterializedCommand,
-    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
-        Err(RuntimeError::Backend(
-            "container runtime does not implement exec".into(),
-        ))
-    }
-
-    /// Launch an opaque stdio agent inside a live container and return the exact
-    /// process plus its duplex stdin/stdout channel.
-    async fn spawn_agent(
-        &self,
-        _container_id: &str,
-        _command: pc::MaterializedCommand,
-    ) -> Result<RuntimeAgentProcess, RuntimeError> {
-        Err(RuntimeError::Backend(
-            "container runtime does not implement attached exec".into(),
-        ))
-    }
-
-    /// Reconnect to a previously launched exec process.  Backends unable to recover
-    /// an ephemeral exec session fail closed; the host may then apply its declared
-    /// rebuild policy instead of silently re-running the command.
-    async fn process(
-        &self,
-        _container_id: &str,
-        _process_id: &str,
-    ) -> Result<Box<dyn pc::ProcessHandle>, RuntimeError> {
-        Err(RuntimeError::Backend(
-            "container runtime cannot reconnect to exec process".into(),
-        ))
-    }
-    /// Open a duplex channel to a runtime-managed network agent. Session-owned ACP
-    /// execution uses [`Self::spawn_agent`]; this lower-level capability remains for
-    /// adapters that explicitly host a network-speaking process.
-    async fn open_channel(&self, container_id: &str)
-    -> Result<Box<dyn AgentChannel>, RuntimeError>;
-    async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError>;
-    /// Wait for the container's main process (the agent) to exit.
-    async fn wait(&self, container_id: &str) -> Result<pc::ExitStatus, RuntimeError>;
-    /// Poll the main process; `None` while it is still running.
-    async fn poll(&self, container_id: &str) -> Result<Option<pc::ExitStatus>, RuntimeError>;
-    /// Signal (reap) the container's main process.
-    async fn signal(&self, container_id: &str, signal: pc::Signal) -> Result<(), RuntimeError>;
-    async fn artifacts(&self, container_id: &str) -> Result<Vec<pc::Artifact>, RuntimeError>;
-    async fn read_artifact(
-        &self,
-        container_id: &str,
-        artifact_id: &str,
-    ) -> Result<Vec<u8>, RuntimeError>;
-    async fn touch_lease(&self, container_id: &str) -> Result<(), RuntimeError>;
-    async fn remove(&self, container_id: &str) -> Result<(), RuntimeError>;
-    /// Discover the awaken-managed containers this runtime currently holds, with the
-    /// ownership, liveness, and age signals judged by [`crate::reaper`].
-    /// The default returns none. Backends without a guaranteed native GC owner
-    /// implement it so leaked containers of a *crashed* worker are swept.
-    async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
-        Ok(Vec::new())
-    }
 }
 
 /// The label every awaken-created container/pod carries, so the cross-restart reaper
@@ -1352,26 +1299,25 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
         if self.runtime.uses_host_live_input_bind() {
             live_inputs::stage_host_projection(&spec.scope, &mut plan.binds, &mut staging.guard)?;
         }
-        if !self.runtime.has_native_memory_mounts() {
-            let mounter = self
-                .memory_mounter
-                .read()
-                .expect("container memory mounter lock poisoned")
-                .clone();
-            stage_memory_binds(spec, &mut plan, &mut staging, mounter).await?;
-        }
+        let native_memory = self.runtime.has_native_memory_mounts();
+        let mounter = self
+            .memory_mounter
+            .read()
+            .expect("container memory mounter lock poisoned")
+            .clone();
+        stage_memory_binds(spec, &mut plan, &mut staging, mounter, native_memory).await?;
         let container_id = match self.runtime.create(&spec.scope, &plan).await {
             Ok(id) => id,
             Err(error) => {
                 for mount in staging.memory.drain(..) {
-                    mount.teardown().await;
+                    mount.handle.teardown().await;
                 }
                 return Err(err(error));
             }
         };
-        // Report each mount's realization: a byte mount is a Bind, a memory store is
-        // a sidecar-FUSE. Built from spec.mounts directly (binds no longer align 1:1
-        // now that memory stores are pulled out into sidecars).
+        // Report each mount's realization: a byte mount is a Bind and a Memory
+        // store is the canonical mounter's copy projection. Built from spec.mounts
+        // directly because native volumes do not align with the byte-bind list.
         let realized = spec
             .mounts
             .iter()
@@ -1380,9 +1326,8 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 mount_path: m.mount_path.clone(),
                 access: m.access,
                 realization: match m.source {
-                    // The container tier's memoryd sidecar defaults to the portable
-                    // copy realization; a FUSE sidecar is an opt-in node optimization
-                    // the runtime-agnostic provider does not observe here.
+                    // Remote container memory is seeded and harvested as a bounded
+                    // copy through the canonical MemoryMounter.
                     pc::MountSource::MemoryStore { .. } => pc::Realization::Copy,
                     _ => pc::Realization::Bind,
                 },
@@ -1765,7 +1710,7 @@ struct ContainerLifecycle {
     staging: std::sync::Mutex<Option<StagingGuard>>,
     secret_writebacks: Vec<SecretWriteback>,
     secret_broker: Option<Arc<dyn pc::SecretBroker>>,
-    memory: tokio::sync::Mutex<Option<Vec<Box<dyn pc::MemoryMount>>>>,
+    memory: tokio::sync::Mutex<Option<Vec<StagedMemoryMount>>>,
     writeback_done: tokio::sync::Mutex<bool>,
     remove_done: tokio::sync::Mutex<bool>,
 }
@@ -1823,7 +1768,7 @@ impl ContainerLifecycle {
             runtime.remove(container_id).await.map_err(err)?;
             if let Some(memory) = self.memory.lock().await.take() {
                 for mount in memory {
-                    mount.teardown().await;
+                    mount.handle.teardown().await;
                 }
             }
             self.staging.lock().expect("staging mutex poisoned").take();
@@ -1923,6 +1868,25 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
         self.lifecycle
             .write_back_secrets(self.runtime.as_ref(), &self.container_id)
             .await?;
+        // Native remote volumes are snapshots from the same canonical
+        // MemoryMounter used by Docker/Podman. Copy the live Pod tree back into
+        // that staging mount before teardown; the retained mount handle then
+        // performs the existing CAS harvest. A read failure leaves the Pod and
+        // handle live so disposal can be retried without claiming success.
+        {
+            let mut memory = self.lifecycle.memory.lock().await;
+            if let Some(memory) = memory.as_mut() {
+                for mount in memory.iter_mut().filter(|mount| {
+                    mount.native_runtime_volume
+                        && mount.access == pc::MountAccess::ReadWrite
+                        && !mount.writeback_prepared
+                }) {
+                    let files = files::read_files(self, &mount.mount_path).await?;
+                    replace_memory_snapshot(&mount.host_path, &files)?;
+                    mount.writeback_prepared = true;
+                }
+            }
+        }
         self.lifecycle
             .dispose_once(self.runtime.as_ref(), &self.container_id)
             .await

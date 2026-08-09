@@ -24,22 +24,16 @@ pub fn open_sqlite(storage_dir: &Path) -> Result<WorkerDirectoryHandle, String> 
         .map_err(|error| format!("open Worker registry {}: {error}", path.display()))
 }
 
-pub async fn open_postgres(
-    url: &str,
-    max_connections: u32,
+pub async fn open_postgres_pool(
+    pool: sqlx::PgPool,
+    verify_only: bool,
 ) -> Result<WorkerDirectoryHandle, String> {
-    PostgresWorkerDirectory::connect(url, max_connections)
-        .await
-        .map(|directory| Arc::new(directory) as WorkerDirectoryHandle)
-        .map_err(|error| error.to_string())
-}
-
-pub async fn open_existing_postgres(
-    url: &str,
-    max_connections: u32,
-) -> Result<WorkerDirectoryHandle, String> {
-    PostgresWorkerDirectory::connect_existing(url, max_connections)
-        .await
+    let directory = if verify_only {
+        PostgresWorkerDirectory::with_existing_pool(pool).await
+    } else {
+        PostgresWorkerDirectory::with_pool(pool).await
+    };
+    directory
         .map(|directory| Arc::new(directory) as WorkerDirectoryHandle)
         .map_err(|error| error.to_string())
 }

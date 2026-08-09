@@ -124,9 +124,11 @@ SQL access are used exclusively for fault injection and ownership evidence.
 Its ten stages cover build/deploy, the complete configuration-to-application
 path, the complete request-to-response path, Worker process isolation,
 Coordinator-total-outage recovery, Pod and in-flight Worker failure, K3D node
-loss, PostgreSQL standby promotion, and concurrent pressure. Model inference is
-the only deterministic edge fixture; all application roles are shipped
-composition roots and both Workers run the production `awaken-worker` artifact.
+loss, PostgreSQL standby promotion, and concurrent pressure. Model inference
+and its publication fact are the only deterministic edge fixture. The Control
+Pod uses the existing scenario adapter to inject that fact into the production
+Control assembly; Coordinator and both Workers run the shipped production
+artifacts, and no scenario router replaces a business authority.
 Replicated stateless roles and Workers use a 15-second `not-ready`/`unreachable`
 `NoExecute` tolerance in this overlay. A dead node is therefore removed from
 Service routing and its workloads become replaceable within the test's bounded

@@ -264,7 +264,18 @@ function runRequest(
   const request = structuredClone(seed);
   request.activation.run_id = `${seed.activation.run_id}-${suffix}`;
   request.activation.thread_id = thread;
-  request.session_thread_id = thread;
+  // This fixture exercises the ordinary Run resource envelope, not the
+  // SessionApplication realization protocol. `session_thread_id` is the sole
+  // contract discriminator for the latter: setting it would correctly require
+  // a durable Managed Session with this id and make the handcrafted queue item
+  // an invalid parallel Session-creation path.
+  //
+  // | session_thread_id | Durable Session exists | Effect |
+  // |---|---|---|
+  // | absent | n/a | ordinary manifest realization |
+  // | present | yes | canonical Session control realization |
+  // | present | no | fail closed before sandbox/model use |
+  delete request.session_thread_id;
   request.activation.snapshot.resolved_spec.model_binding = {
     ...structuredClone(request.activation.snapshot.resolved_spec.model_binding),
     provisioning: {
@@ -399,6 +410,16 @@ async function main(): Promise<void> {
         // and could not prove the cross-process projection contract.
         fields: { run_local_pool: false, acp_clis: [] },
       }),
+      // The scenario host owns its execution topology through the typed
+      // SESSION_DEPLOYMENT_* fixture boundary, while deploymentEnv above owns
+      // the product resource/control configuration. Both must name the same
+      // Postgres cell; otherwise the Coordinator correctly refuses an
+      // unrooted volatile SQLite dispatch authority before listening.
+      SESSION_DEPLOYMENT_INGRESS: 'durable',
+      SESSION_DEPLOYMENT_STORAGE_DIR: configStorage,
+      SESSION_DEPLOYMENT_DATABASE_URL: database.url,
+      SESSION_DEPLOYMENT_DISPATCH_BACKEND: 'postgres',
+      SESSION_DEPLOYMENT_STORE: 'postgres',
       AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
     },
   ).server;

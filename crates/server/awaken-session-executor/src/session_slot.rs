@@ -115,6 +115,11 @@ pub(crate) struct SessionRuntimeSlot {
     /// attachment. This supports lease supervision when effects live behind an
     /// injected realizer and therefore are not stored in `mcp` locally.
     pub has_mcp_projection: bool,
+    /// The thread entered through the Session application API and its durable
+    /// dispatch must therefore cross the claimed Session realization boundary.
+    /// This identity exists before an Application contribution can freeze the
+    /// Environment; it carries no desired-state data of its own.
+    pub session_dispatch: bool,
     /// Exact Control-frozen baseline projected for realization. It is never
     /// authored or mutated locally.
     pub baseline: Option<FrozenBaselineRuntimeProjection>,
@@ -133,6 +138,21 @@ pub(crate) struct SessionRuntimeSlot {
 pub(crate) struct SessionRuntimeSlots(Arc<Mutex<HashMap<String, SessionRuntimeSlot>>>);
 
 impl SessionRuntimeSlots {
+    /// Read the one current process-local projection of all frozen prompt
+    /// inputs. The durable baseline/resource aggregates remain authoritative;
+    /// executors call this at attempt time so late realization cannot leave a
+    /// construction-time prompt snapshot behind.
+    pub fn prompts(&self, session: &str) -> Vec<String> {
+        self.read(session, |slot| {
+            let mut prompts = slot.resources.prompts.clone();
+            if let Some(baseline) = &slot.baseline {
+                prompts.extend(baseline.prompts.clone());
+            }
+            prompts
+        })
+        .unwrap_or_default()
+    }
+
     pub fn realization_lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.update(session, |slot| slot.realization.clone())
     }

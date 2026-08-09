@@ -88,6 +88,7 @@ pub async fn awaken_session_application::SessionApplication::deployment_environm
 pub fn awaken_session_application::SessionApplication::deployment_unavailable_delegate(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub async fn awaken_session_application::SessionApplication::dispatch_session_work(&self, &awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<bool, awaken_session_contract::work_queue::WorkQueueError>
 pub fn awaken_session_application::SessionApplication::lifecycle_sink(&self) -> core::option::Option<&dyn awaken_session_contract::lifecycle::SessionLifecycleSink>
+pub fn awaken_session_application::SessionApplication::local_realization_owner(&self) -> &str
 pub fn awaken_session_application::SessionApplication::mcp_realizer(&self) -> &dyn awaken_session_contract::session::McpAttachmentRealizer
 pub fn awaken_session_application::SessionApplication::new(alloc::sync::Arc<dyn awaken_session_contract::session::SessionRuntime>, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::sync::Arc<dyn awaken_session_application::SessionEnvironmentSource>) -> Self
 pub fn awaken_session_application::SessionApplication::new_with_configuration(alloc::sync::Arc<dyn awaken_session_contract::session::SessionRuntime>, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::sync::Arc<dyn awaken_session_application::SessionEnvironmentSource>, awaken_session_application::SessionApplicationConfiguration) -> Self
@@ -109,6 +110,7 @@ pub fn awaken_session_application::SessionApplication::set_lifecycle_sink(&mut s
 pub fn awaken_session_application::SessionApplication::set_repository_credential_ingress(&mut self, alloc::sync::Arc<dyn awaken_session_application::RepositoryCredentialIngress>)
 pub fn awaken_session_application::SessionApplication::set_resource_catalog(&mut self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>)
 pub fn awaken_session_application::SessionApplication::set_resource_purge_scheduler(&mut self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>)
+pub fn awaken_session_application::SessionApplication::set_resource_reference_authority(&mut self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReferenceIndex>, alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>)
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::commit_compiled_session_creation(&self, &str, awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::baseline::CompiledSessionCreation) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::application_contribution::ApplicationSessionContributionFailure>
 impl awaken_session_application::SessionApplication
@@ -144,12 +146,20 @@ pub fn awaken_session_application::SessionApplication::begin_session_realization
 pub fn awaken_session_application::SessionApplication::fail_session_realization<'life0, 'async_trait>(&'life0 self, awaken_session_contract::session_realization::FailSessionRealization) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::session_realization::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_session_application::SessionApplicationConfiguration
 pub awaken_session_application::SessionApplicationConfiguration::execution_placement: awaken_session_application::SessionExecutionPlacement
+pub awaken_session_application::SessionApplicationConfiguration::local_realization_owner: alloc::string::String
+impl core::default::Default for awaken_session_application::SessionApplicationConfiguration
+pub fn awaken_session_application::SessionApplicationConfiguration::default() -> Self
 pub struct awaken_session_application::SessionReconciliation
 pub awaken_session_application::SessionReconciliation::failures: alloc::vec::Vec<awaken_session_application::SessionReconciliationFailure>
 pub awaken_session_application::SessionReconciliation::settled: alloc::vec::Vec<awaken_session_contract::session_repo::PersistedSession>
 pub struct awaken_session_application::SessionReconciliationFailure
 pub awaken_session_application::SessionReconciliationFailure::message: alloc::string::String
 pub awaken_session_application::SessionReconciliationFailure::session_id: alloc::string::String
+pub struct awaken_session_application::SessionResourcePurgeGuard
+impl awaken_session_application::SessionResourcePurgeGuard
+pub fn awaken_session_application::SessionResourcePurgeGuard::new(alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>) -> Self
+impl awaken_resource_contract::lifecycle::ResourcePurgeGuard for awaken_session_application::SessionResourcePurgeGuard
+pub fn awaken_session_application::SessionResourcePurgeGuard::blockers<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_resource_contract::lifecycle::ResourceTarget, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::lifecycle::ResourceReference>, awaken_resource_contract::lifecycle::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_session_application::SessionTerminalTransition
 pub awaken_session_application::SessionTerminalTransition::owner_scope: alloc::string::String
 pub awaken_session_application::SessionTerminalTransition::session: awaken_session_contract::session_repo::PersistedSession

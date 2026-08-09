@@ -20,7 +20,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { deploymentEnv, withScenarioServer, pass } from './harness.mjs';
+import {
+  USER_PROFILES_BETA,
+  deploymentEnv,
+  withScenarioServer,
+  pass,
+} from './harness.mjs';
+
+const PROFILE_HEADERS = { 'anthropic-beta': USER_PROFILES_BETA };
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-capture-decision-'));
@@ -40,6 +47,7 @@ async function main() {
       // so a `full` request lands `structured` with reason `no_consent`.
       let res = await fetch(
         `${baseUrl}/v1/user_profiles/${id}/capture-decision?requested=full`,
+        { headers: PROFILE_HEADERS },
       );
       assert.equal(res.status, 200, `status ${res.status}`);
       let body = await res.json();
@@ -52,7 +60,7 @@ async function main() {
       // Grant telemetry_content consent.
       const g = await fetch(`${baseUrl}/v1/user_profiles/${id}/consent`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { ...PROFILE_HEADERS, 'content-type': 'application/json' },
         body: JSON.stringify({ purpose: 'telemetry_content', version: 'v1' }),
       });
       assert.equal(g.status, 200);
@@ -60,6 +68,7 @@ async function main() {
       // Now ceiling × requested × consent all permit full → effective full, ok.
       res = await fetch(
         `${baseUrl}/v1/user_profiles/${id}/capture-decision?requested=full`,
+        { headers: PROFILE_HEADERS },
       );
       body = await res.json();
       assert.equal(body.consent, 'full', 'consent now permits full');
@@ -70,6 +79,7 @@ async function main() {
       // A caller requesting only `structured` gets exactly that (ok), never more.
       res = await fetch(
         `${baseUrl}/v1/user_profiles/${id}/capture-decision?requested=structured`,
+        { headers: PROFILE_HEADERS },
       );
       body = await res.json();
       assert.equal(body.effective, 'structured');

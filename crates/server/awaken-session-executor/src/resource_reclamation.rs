@@ -70,26 +70,11 @@ impl ResourcePurgeGuard for HostResourceReclamation {
                 Some(Ok(None)) | None => None,
             },
         };
-        let records = if target.kind == ResourceKind::File {
-            self.host
-                .required_resource_lifecycle()?
-                .references_for_resource(target.kind, &target.resource_id)
-                .await?
-        } else {
-            self.host
-                .required_resource_lifecycle()?
-                .references(target)
-                .await?
-                .into_iter()
-                .map(
-                    |reference| awaken_resource_contract::ResourceReferenceRecord {
-                        target: target.clone(),
-                        reference,
-                    },
-                )
-                .collect()
-        };
-        let mut blockers: Vec<_> = records.into_iter().map(|record| record.reference).collect();
+        // Intrinsic ResourceReferenceIndex rows are checked atomically by
+        // ResourceReclaimer::acquire_reclamation. This guard owns only the
+        // independent catalog/Agent/extraction facts that cannot participate in
+        // that transaction.
+        let mut blockers = Vec::new();
         if let Some(reference_id) = lifecycle_blocker {
             blockers.push(ResourceReference {
                 kind: ResourceReferenceKind::LogicalLifecycle,

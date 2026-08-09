@@ -11,7 +11,7 @@
 // Decision table:
 // | Rule | aggregate | legacy valid | root mutation | later legacy drift | authority/result |
 // | L1   | absent    | yes          | no            | -                  | legacy is decoded |
-// | L2   | absent    | yes          | yes           | -                  | aggregate is written |
+// | L2   | absent    | yes          | yes           | -                  | aggregate is written once |
 // | L3   | present   | irrelevant   | -             | yes                | aggregate wins |
 // | L4   | absent    | terminal     | no            | -                  | not found/no effect |
 //
@@ -205,6 +205,17 @@ async function main() {
     assert.equal(restored.metadata?.source, 'legacy');
     pass('L1 retained Session columns compile into one frozen aggregate view');
 
+    // Environment realization is an independent canonical root mutation and
+    // may race this compatibility read. The update contract is therefore
+    // measured from the latest durable revision, never from the synthetic
+    // legacy fixture's revision 7.
+    const beforeUpdateRows = sqliteJson(
+      database,
+      `SELECT revision FROM managed_session WHERE session_id = ${sqlQuote(sessionId)}`,
+    );
+    assert.equal(beforeUpdateRows.length, 1);
+    const revisionBeforeUpdate = beforeUpdateRows[0].revision;
+
     await assert.rejects(
       () => c.beta.sessions.retrieve('sesn_legacy_terminal', { betas: BETAS }),
       (error) => error?.status === 404,
@@ -229,7 +240,11 @@ async function main() {
       `SELECT revision, aggregate_json, title, model FROM managed_session WHERE session_id = ${sqlQuote(sessionId)}`,
     );
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].revision, 8, 'one title + metadata command advances one canonical revision');
+    assert.equal(
+      rows[0].revision,
+      revisionBeforeUpdate + 1,
+      'one title + metadata command advances exactly one canonical revision',
+    );
     assert.ok(rows[0].aggregate_json, 'root mutation persisted the canonical aggregate');
     assert.equal(rows[0].title, 'Legacy title', 'legacy title column is no longer synchronized');
     pass('L2 root mutations write aggregate_json without a parallel legacy write');
@@ -239,9 +254,13 @@ async function main() {
     // process legitimately realized its local environment; clear that orthogonal
     // ephemeral binding while offline so L3 tests only aggregate-vs-column
     // authority and does not ask strict Managed restoration to recreate a
-    // sandbox that graceful shutdown just disposed.
+    // sandbox that graceful shutdown just disposed. The realization lease fences
+    // that same physical effect, so the offline fixture must clear both values;
+    // clearing only the binding creates an impossible half-state (new effect
+    // requested while the old owner is still asserted current).
     const canonicalAggregate = JSON.parse(rows[0].aggregate_json);
     canonicalAggregate.environment = { phase: 'unmaterialized' };
+    canonicalAggregate.realization = null;
     sqlite(
       database,
       `UPDATE managed_session

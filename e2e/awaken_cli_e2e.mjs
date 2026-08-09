@@ -452,6 +452,55 @@ async function main() {
     );
     console.log('ok: production Admin Assistant exposes management tools through the approval gate');
 
+    // Exercise the production embedded Resource Catalog adapter through the same
+    // Managed Session edge used by cloud mode. Only the persistence adapter differs.
+    // Resource-realization cause graph: C1 the repository definition resolves;
+    // C2 a Worker owns the exact Session realization lease; C3 the pinned Agent
+    // credential is current; C4 a later credential revocation occurs only after
+    // this activation has settled. Effects: C1+C2+C3 activates one projected
+    // repository; !C2 remains pending; !C3 fails closed without manufacturing an
+    // active Resource; C4 cannot retroactively invalidate the completed proof.
+    //
+    // | Rule | Repository | Worker lease | Current credential | Effect |
+    // |---|---|---|---|---|
+    // | RC1 | valid | current | yes | one active Resource, then retire |
+    // | RC2 | valid | absent/stale | yes | pending, never projected active |
+    // | RC3 | valid | current | no | realization fails closed |
+    const repository = seedRepository(mgmtDir);
+    const repositorySession = await client.beta.sessions.create({
+      agent: AGENT,
+      environment_id: 'env_local',
+      resources: [{
+        type: 'github_repository',
+        url: repository,
+        mount_path: '/workspace/repository',
+      }],
+      betas: BETAS,
+    });
+    await client.beta.sessions.events.send(repositorySession.id, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: 'activate the repository projection' }],
+      }],
+      betas: BETAS,
+    });
+    const repositoryDeadline = Date.now() + 30_000;
+    let repositoryResource;
+    do {
+      const projection = await client.beta.sessions.retrieve(repositorySession.id, { betas: BETAS });
+      repositoryResource = projection.resources.find((resource) =>
+        resource.type === 'github_repository');
+      if (repositoryResource) break;
+      await sleep(100);
+    } while (Date.now() < repositoryDeadline);
+    assert.ok(repositoryResource?.id);
+    const retiredRepository = await client.beta.sessions.resources.delete(repositoryResource.id, {
+      session_id: repositorySession.id,
+      betas: BETAS,
+    });
+    assert.equal(retiredRepository.type, 'session_resource_deleted');
+    console.log('ok: create-time repository configuration publishes and retires through SQLite');
+
     const callsBeforeRevocation = upstream.requests.length;
     r = await req(base, 'POST', `/v1/config/credentials/${credentialId}/archive`, undefined);
     assert.equal(r.status, 200, `archive credential: ${JSON.stringify(r.json)}`);
@@ -638,28 +687,6 @@ async function main() {
     assert.equal((await fetch(`${base}/v1/workspaces/${WS_B}/files/${fileId}`)).status, 404);
     console.log('ok: config resources and files enforce intrinsic workspace ownership without IAM');
 
-    // Exercise the production embedded Resource Catalog adapter through the same
-    // Managed Session edge used by cloud mode. Only the persistence adapter differs.
-    const repository = seedRepository(mgmtDir);
-    const repositorySession = await client.beta.sessions.create({
-      agent: AGENT,
-      environment_id: 'env_local',
-      resources: [{
-        type: 'github_repository',
-        url: repository,
-        mount_path: '/workspace/repository',
-      }],
-      betas: BETAS,
-    });
-    const repositoryResource = repositorySession.resources.find((resource) =>
-      resource.type === 'github_repository');
-    assert.ok(repositoryResource?.id);
-    const retiredRepository = await client.beta.sessions.resources.delete(repositoryResource.id, {
-      session_id: repositorySession.id,
-      betas: BETAS,
-    });
-    assert.equal(retiredRepository.type, 'session_resource_deleted');
-    console.log('ok: create-time repository configuration publishes and retires through SQLite');
   } finally {
     await h.stop();
     upstream.close();

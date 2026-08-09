@@ -19,6 +19,14 @@ impl HostWorkerResolver {
         ))
     }
 
+    pub(in crate::host) fn terminal_resolution_error(
+        message: impl Into<String>,
+    ) -> awaken_dispatch::Error {
+        awaken_dispatch::Error::TerminalResolution(
+            awaken_runtime_contract::execution::Error::Execution(message.into()),
+        )
+    }
+
     pub(in crate::host) fn host(&self) -> Result<Arc<SharedHost>, awaken_dispatch::Error> {
         self.host
             .upgrade()

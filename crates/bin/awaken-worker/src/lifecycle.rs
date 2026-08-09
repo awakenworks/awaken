@@ -11,7 +11,7 @@ use crate::credential_liveness::WorkerObservationCache;
 
 #[derive(Clone)]
 enum WarmCapacityDemand {
-    Environment(awaken_session_contract::EnvironmentSnapshot),
+    Environment(Box<awaken_session_contract::EnvironmentSnapshot>),
     Default,
 }
 
@@ -56,7 +56,7 @@ impl WarmCapacityPlan {
             targets.push(WarmCapacityTarget {
                 shape,
                 target,
-                demand: WarmCapacityDemand::Environment(snapshot),
+                demand: WarmCapacityDemand::Environment(Box::new(snapshot)),
             });
         }
         if remaining > 0 {
@@ -205,7 +205,7 @@ impl WorkerLifecycle {
             };
             match (result, &target.demand) {
                 (Ok(ready), WarmCapacityDemand::Environment(snapshot)) if ready > 0 => {
-                    next.insert(target.shape.clone(), snapshot.clone());
+                    next.insert(target.shape.clone(), snapshot.as_ref().clone());
                 }
                 (Ok(_), WarmCapacityDemand::Environment(_)) => {
                     next.remove(&target.shape);

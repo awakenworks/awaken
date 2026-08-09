@@ -448,6 +448,19 @@ async function waitForTerminalMessage(thread: string, timeoutMs = 30_000): Promi
 }
 
 async function main(): Promise<void> {
+  // Topology/recovery cause-effect graph: C1 disables the Coordinator's local
+  // pool; C2 admits a Managed Session through the same process; C3 Worker A
+  // owns the current claim; C4 its applied commit receipt is lost; C5 A dies;
+  // C6 Worker B reclaims at a higher epoch. C1 must freeze Worker placement in
+  // the Session application (not merely suppress the Host pool), so C2 creates
+  // no competing local realization lease. C3+C4 retries one operation id;
+  // C5+C6 resumes the committed snapshot, fences A, and emits one terminal fact.
+  //
+  // | Rule | C1 remote topology | C3 current | C4 lost receipt | C5 crash/C6 reclaim | Effect |
+  // | T1   | yes                | yes        | yes             | yes                 | remote-only lease; idempotent retry; fenced recovery |
+  // | T2   | no                 | n/a        | n/a             | n/a                 | local phase driver owns realization (Rust placement tests) |
+  // | T3   | yes                | stale      | any             | after reclaim       | old commit rejected |
+  // | T4   | yes                | yes        | no              | no                  | ordinary single-worker completion (worker transport E2E) |
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-remote-worker-recovery-'));
   const peer = await startA2aPeer();
   const proxy = await startFaultProxy();
