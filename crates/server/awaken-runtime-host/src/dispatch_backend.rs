@@ -235,9 +235,9 @@ pub(crate) fn shared_dispatch_wake() -> Option<Arc<dyn WakeSignal>> {
 /// `postgres` shares one queue across processes too: `FOR UPDATE SKIP LOCKED`
 /// gives distinct-claim, so N hosts against one `DeploymentConfig::database_url` drain the
 /// same queue (ADR-0019) — the pool is the one connected at startup. `sqlite` is a
-/// single queue file `store_dir/dispatch.db` (survives a restart), or a private
-/// in-memory queue when no store dir is set. Either way the concrete type is
-/// `AnyDispatchStore`, so the ingress keeps its operational verbs reachable.
+/// single queue file `store_dir/dispatch.db` (survives a restart). A product
+/// deployment without that durability coordinate fails closed; only explicit
+/// test-support composition may select a private in-memory queue.
 pub(crate) fn shared_durable_store_for(
     deployment: &crate::DeploymentConfig,
     store_dir: Option<&Path>,
@@ -262,7 +262,16 @@ pub(crate) fn shared_durable_store_for(
                     AnyDispatchStore::open_sqlite(&path.to_string_lossy())
                         .map_err(HostError::internal)?
                 }
-                None => AnyDispatchStore::open_sqlite_in_memory().map_err(HostError::internal)?,
+                None => {
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        AnyDispatchStore::open_sqlite_in_memory().map_err(HostError::internal)?
+                    }
+                    #[cfg(not(any(test, feature = "test-support")))]
+                    return Err(HostError::internal(
+                        "product SQLite dispatch requires a durable storage_dir",
+                    ));
+                }
             });
             // First writer wins; a racing opener re-reads the winner and drops its own.
             let _ = SHARED_SQLITE_DISPATCH.set(store);

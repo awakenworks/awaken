@@ -36,6 +36,28 @@ ENV_STORE_SQLITE_SOURCE = "crates/stores/awaken-env-store/src/lib.rs"
 SANDBOX_POLICY_STORE_SOURCE = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
 ENV_IMAGE_BUILD_SOURCE = "crates/server/awaken-environment-image-build/src/lib.rs"
 ENV_IMAGE_BUILD_SQLITE_SOURCE = "crates/server/awaken-environment-image-build/src/sqlite.rs"
+SESSION_STORE_SOURCE = "crates/stores/awaken-session-store/src/lib.rs"
+WORK_STORE_SOURCE = "crates/stores/awaken-work-store/src/lib.rs"
+COMMIT_SQLITE_SOURCE = "crates/stores/awaken-store-sqlite/src/lib.rs"
+FILE_SQLITE_SOURCE = "crates/resources/awaken-file-store/src/sqlite.rs"
+WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite.rs"
+RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-run-ingress/src/any.rs"
+RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
+DISPATCH_BACKEND_SOURCE = "crates/server/awaken-runtime-host/src/dispatch_backend.rs"
+CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
+CAPTURE_SQLITE_SOURCE = "crates/stores/awaken-captured-content-store/src/sqlite.rs"
+DATA_SUBJECT_SOURCE = "crates/control/awaken-data-subject/src/lib.rs"
+DATA_SUBJECT_SQLITE_SOURCE = "crates/control/awaken-data-subject/src/sqlite.rs"
+CONFIG_STORE_SQLITE_SOURCE = "crates/control/awaken-config-store/src/sqlite.rs"
+ADMIN_CONFIG_SOURCE = "crates/control/awaken-admin-config-api/src/lib.rs"
+ADMIN_CONFIG_SQLITE_SOURCE = "crates/control/awaken-admin-config-api/src/sqlite.rs"
+MODEL_CATALOG_REPO_SOURCE = "crates/control/awaken-model-catalog/src/repo.rs"
+MODEL_CATALOG_SQLITE_SOURCE = "crates/control/awaken-model-catalog/src/sqlite.rs"
+CONFIG_RESOLVER_SOURCE = "crates/control/awaken-config-resolver/src/lib.rs"
+CREDENTIAL_REPO_SOURCE = "crates/control/awaken-credential-vault/src/repo.rs"
+CREDENTIAL_VAULT_SOURCE = "crates/control/awaken-credential-vault/src/lib.rs"
+CREDENTIAL_SQLITE_SOURCE = "crates/control/awaken-credential-vault/src/sqlite.rs"
+CREDENTIAL_SEALED_SOURCE = "crates/control/awaken-credential-vault/src/sealed.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -77,6 +99,15 @@ FORBIDDEN_CONTROL_EXECUTION_SOURCE = re.compile(
 FORBIDDEN_RETIRED_LAUNCH_SOURCE = re.compile(
     r"\b(?:HttpDeploymentSessionLauncher|DEPLOYMENT_SESSION_LAUNCH_PATH|"
     r"deployment_session_launch_router|DeploymentSessionLaunchConfig)\b"
+)
+
+REDUNDANT_ADMIN_STORE_REEXPORT = re.compile(
+    r"\bpub\s+use\s+awaken_config_resolver::(?:"
+    r"\{[^}]*\b(?:AgentInputBindingRepository|InferenceProfileStore|WebhookStore|"
+    r"InMemoryAgentInputBindingRepository|InMemoryProfileStore|InMemoryWebhookStore)\b[^}]*\}|"
+    r"(?:AgentInputBindingRepository|InferenceProfileStore|WebhookStore|"
+    r"InMemoryAgentInputBindingRepository|InMemoryProfileStore|InMemoryWebhookStore)\b)",
+    re.DOTALL,
 )
 
 VOLATILE_RUNTIME_HOST_APIS = (
@@ -180,6 +211,140 @@ NON_PRODUCT_APIS = (
         r"\bpub\s+fn\s+open_in_memory_environment_image_build_store\b",
         TEST_SUPPORT_GATE,
     ),
+    (
+        "SqliteManagedSessionRepository::open_in_memory",
+        SESSION_STORE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryWorkQueue",
+        WORK_STORE_SOURCE,
+        r"\bpub\s+use\s+inmem::InMemoryWorkQueue\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteWorkQueue::open_in_memory",
+        WORK_STORE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteCommitCoordinator::open_in_memory",
+        COMMIT_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteFileStore::open_in_memory",
+        FILE_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteWorkerDirectory::open_in_memory",
+        WORKER_REGISTRY_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "AnyDispatchStore::open_sqlite_in_memory",
+        RUN_INGRESS_ANY_SOURCE,
+        r"\bpub\s+fn\s+open_sqlite_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteDispatchStore::open_in_memory",
+        RUN_INGRESS_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryCapturedContentStore",
+        CAPTURE_STORE_SOURCE,
+        r"\bpub\s+use\s+capture_store::\{CapturedRecord,\s*InMemoryCapturedContentStore\}",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteCapturedContentStore::open_in_memory",
+        CAPTURE_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryDataSubjectRepo",
+        DATA_SUBJECT_SOURCE,
+        r"\bpub\s+struct\s+InMemoryDataSubjectRepo\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteDataSubjectRepo::open_in_memory",
+        DATA_SUBJECT_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteConfigStore::open_in_memory",
+        CONFIG_STORE_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteAdminStore::open_in_memory",
+        ADMIN_CONFIG_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryCatalogRepo",
+        MODEL_CATALOG_REPO_SOURCE,
+        r"\bpub\s+struct\s+InMemoryCatalogRepo\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SqliteCatalogRepo::open_in_memory",
+        MODEL_CATALOG_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "Config Resolver in-memory reference stores",
+        CONFIG_RESOLVER_SOURCE,
+        r"\bpub\s+use\s+reference_stores::\{\s*"
+        r"InMemoryAgentInputBindingRepository,\s*InMemoryProfileStore,\s*"
+        r"InMemoryWebhookStore,?\s*\}",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryCredentialRepo",
+        CREDENTIAL_REPO_SOURCE,
+        r"\bpub\s+struct\s+InMemoryCredentialRepo\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemorySealedBlobStore",
+        CREDENTIAL_VAULT_SOURCE,
+        r"\bpub\s+struct\s+InMemorySealedBlobStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemorySecretStore",
+        CREDENTIAL_VAULT_SOURCE,
+        r"\bpub\s+struct\s+InMemorySecretStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SQLite credential open_in_memory methods",
+        CREDENTIAL_SQLITE_SOURCE,
+        r"\bpub\s+fn\s+open_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "SealedAeadSecretStore::with_key",
+        CREDENTIAL_SEALED_SOURCE,
+        r"\bpub\s+fn\s+with_key\b",
+        TEST_SUPPORT_GATE,
+    ),
 )
 
 PRODUCT_MANIFESTS = (
@@ -221,18 +386,27 @@ def _declaration_is_gated(
 ) -> bool | None:
     """Whether the declaration exists and its own attribute prefix has the gate."""
 
-    declaration = re.search(declaration_pattern, source)
-    if declaration is None:
+    declarations = list(re.finditer(declaration_pattern, source))
+    if not declarations:
         return None
-    previous_start = max(
-        (
-            item.start()
-            for item in re.finditer(PUBLIC_DECLARATION, source)
-            if item.start() < declaration.start()
-        ),
-        default=0,
+    public_declarations = list(re.finditer(PUBLIC_DECLARATION, source))
+    return all(
+        re.search(
+            gate_pattern,
+            source[
+                max(
+                    (
+                        item.start()
+                        for item in public_declarations
+                        if item.start() < declaration.start()
+                    ),
+                    default=0,
+                ) : declaration.start()
+            ],
+        )
+        is not None
+        for declaration in declarations
     )
-    return re.search(gate_pattern, source[previous_start : declaration.start()]) is not None
 
 
 def volatile_runtime_host_surface_violations(source: str) -> list[str]:
@@ -429,6 +603,30 @@ def product_test_support_violations(manifest: dict) -> list[str]:
     return sorted(errors)
 
 
+def product_dispatch_fallback_violations(source: str) -> list[str]:
+    """Require missing SQLite durability to fail closed outside test support."""
+
+    guarded = re.search(
+        rf"None\s*=>\s*\{{.*?{TEST_SUPPORT_GATE}.*?"
+        rf"AnyDispatchStore::open_sqlite_in_memory\(\).*?"
+        rf"#\s*\[\s*cfg\s*\(\s*not\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*\"test-support\"\s*\)\s*\)\s*\)\s*\].*?"
+        r"return\s+Err\(.*?product SQLite dispatch requires a durable storage_dir",
+        source,
+        re.DOTALL,
+    )
+    return [] if guarded else ["SQLite dispatch missing-storage path does not fail closed"]
+
+
+def redundant_admin_store_reexport_violations(source: str) -> list[str]:
+    """Keep resolver store contracts on their one authoritative public path."""
+
+    return (
+        ["Admin API re-exports Config Resolver store contracts or fixtures"]
+        if REDUNDANT_ADMIN_STORE_REEXPORT.search(source)
+        else []
+    )
+
+
 def selftest() -> None:
     """Cause/effect decision table.
 
@@ -448,9 +646,13 @@ def selftest() -> None:
     Resources assembler are test-support gated -> accepted; O18 any one gate missing ->
     rejected; O19 product defaults/normal edges do not enable test-support ->
     accepted; O20 a product default or normal edge enables it -> rejected while
-    dev-dependencies and opt-in features remain accepted. Together the rules cover
-    compile-time acquisition, production call paths, component ownership, and
-    schema acquisition.
+    dev-dependencies and opt-in features remain accepted; O21 missing SQLite
+    dispatch durability fails closed in product and selects memory only with test
+    support -> accepted; O22 an unconditional in-memory fallback -> rejected;
+    O23 one authoritative Config Resolver store path -> accepted; O24 an Admin
+    compatibility re-export of that path -> rejected.
+    Together the rules cover compile-time acquisition, production call paths,
+    component ownership, and schema acquisition.
     """
 
     assert dependency_violations({"awaken-runtime-host", "awaken-runtime-contract"}) == []  # O1
@@ -569,6 +771,38 @@ def selftest() -> None:
         + "pub use in_memory::InMemoryEnvironmentImageBuildStore;",
         ENV_IMAGE_BUILD_SQLITE_SOURCE: any_gate
         + "pub fn open_in_memory_environment_image_build_store() {}",
+        SESSION_STORE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        WORK_STORE_SOURCE: any_gate
+        + "pub use inmem::InMemoryWorkQueue;\n"
+        + any_gate
+        + "pub fn open_in_memory() {}",
+        COMMIT_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        FILE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        WORKER_REGISTRY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        RUN_INGRESS_ANY_SOURCE: any_gate + "pub fn open_sqlite_in_memory() {}",
+        RUN_INGRESS_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        CAPTURE_STORE_SOURCE: any_gate
+        + "pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};",
+        CAPTURE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        DATA_SUBJECT_SOURCE: any_gate + "pub struct InMemoryDataSubjectRepo {}",
+        DATA_SUBJECT_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        CONFIG_STORE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        ADMIN_CONFIG_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        MODEL_CATALOG_REPO_SOURCE: any_gate + "pub struct InMemoryCatalogRepo {}",
+        MODEL_CATALOG_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        CONFIG_RESOLVER_SOURCE: any_gate
+        + "pub use reference_stores::{InMemoryAgentInputBindingRepository, "
+        + "InMemoryProfileStore, InMemoryWebhookStore};",
+        CREDENTIAL_REPO_SOURCE: any_gate + "pub struct InMemoryCredentialRepo {}",
+        CREDENTIAL_VAULT_SOURCE: any_gate
+        + "pub struct InMemorySealedBlobStore {}\n"
+        + any_gate
+        + "pub struct InMemorySecretStore {}",
+        CREDENTIAL_SQLITE_SOURCE: any_gate
+        + "pub fn open_in_memory() {}\n"
+        + any_gate
+        + "pub fn open_in_memory() {}",
+        CREDENTIAL_SEALED_SOURCE: any_gate + "pub fn with_key() {}",
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:
@@ -592,6 +826,20 @@ def selftest() -> None:
     assert product_test_support_violations(
         {"features": {"default": ["store/test-support"]}}
     ) == ["default feature enables `store/test-support`"]  # O20 default edge
+    guarded_dispatch = (
+        'None => { #[cfg(any(test, feature = "test-support"))] '
+        "AnyDispatchStore::open_sqlite_in_memory()?; "
+        '#[cfg(not(any(test, feature = "test-support")))] '
+        'return Err(internal("product SQLite dispatch requires a durable storage_dir")); }'
+    )
+    assert product_dispatch_fallback_violations(guarded_dispatch) == []  # O21
+    assert product_dispatch_fallback_violations(
+        "None => AnyDispatchStore::open_sqlite_in_memory()?"
+    ) == ["SQLite dispatch missing-storage path does not fail closed"]  # O22
+    assert redundant_admin_store_reexport_violations("pub struct AdminState;") == []  # O23
+    assert redundant_admin_store_reexport_violations(
+        "pub use awaken_config_resolver::{InferenceProfileStore, InMemoryProfileStore};"
+    ) == ["Admin API re-exports Config Resolver store contracts or fixtures"]  # O24
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -682,4 +930,12 @@ def check_all(repo_root: Path) -> list[str]:
     }
     for error in non_product_surface_violations(non_product_sources):
         errors.append(f"Non-product surface: {error}")
+    for error in product_dispatch_fallback_violations(
+        (repo_root / DISPATCH_BACKEND_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{DISPATCH_BACKEND_SOURCE}: {error}")
+    for error in redundant_admin_store_reexport_violations(
+        (repo_root / ADMIN_CONFIG_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{ADMIN_CONFIG_SOURCE}: {error}")
     return errors

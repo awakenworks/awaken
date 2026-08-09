@@ -20,7 +20,13 @@ tempfile = "3"
 
 [features]
 default = []
+# Volatile privacy-state authority used only by tests and scenario fixtures.
+test-support = []
 postgres = ["dep:sqlx"]
+
+[[test]]
+name = "repo_conformance"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

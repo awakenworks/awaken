@@ -84,7 +84,8 @@ impl SqliteWorkQueue {
         Self::from_connection(Connection::open(path).map_err(|e| e.to_string())?)
     }
 
-    /// An in-memory database (tests).
+    /// A private in-memory database for tests and scenario fixtures.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, String> {
         Self::from_connection(Connection::open_in_memory().map_err(|e| e.to_string())?)
     }

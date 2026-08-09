@@ -32,6 +32,8 @@ async-nats = { version = "0.38", optional = true }
 futures-lite = { version = "2", optional = true }
 
 [features]
+# Private SQLite dispatch authority for unit/integration/scenario fixtures.
+test-support = []
 # Optional cross-node wake signal over NATS. Off by default — the default build
 # and test suite stay free of the NATS driver; enable for a multi-node fleet.
 nats = ["dep:async-nats", "dep:futures-lite"]
@@ -39,12 +41,40 @@ nats = ["dep:async-nats", "dep:futures-lite"]
 [dev-dependencies]
 awaken-run-ingress-testkit = { workspace = true }
 awaken-store-postgres = { workspace = true }
-awaken-store-sqlite = { workspace = true }
+awaken-store-sqlite = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
 # dev-only: the transport_client e2e stands up a real axum server mirroring a cell
 # Control Node Worker routes on an ephemeral port, so the `HttpDispatchQueue`
 # client's claim/settle cross a real socket (no mock transport).
 axum = { workspace = true }
+
+[[test]]
+name = "any_store"
+required-features = ["test-support"]
+
+[[test]]
+name = "crash_before_settle"
+required-features = ["test-support"]
+
+[[test]]
+name = "dispatch_conformance"
+required-features = ["test-support"]
+
+[[test]]
+name = "lease_semantics"
+required-features = ["test-support"]
+
+[[test]]
+name = "sandbox_binding"
+required-features = ["test-support"]
+
+[[test]]
+name = "sqlite_dispatch"
+required-features = ["test-support"]
+
+[[test]]
+name = "worker_edge_cases"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

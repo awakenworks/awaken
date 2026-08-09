@@ -45,7 +45,8 @@ impl SqliteAdminStore {
         Self::over(conn)
     }
 
-    /// Open a private in-memory database (tests / ephemeral).
+    /// Open a private in-memory database for tests and scenario fixtures.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
         Self::over(conn)

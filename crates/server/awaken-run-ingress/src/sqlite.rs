@@ -63,7 +63,8 @@ impl SqliteDispatchStore {
         Self::from_connection(conn)
     }
 
-    /// Open a private in-memory database.
+    /// Open a private in-memory database for tests and scenario fixtures.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
         Self::from_connection(conn)

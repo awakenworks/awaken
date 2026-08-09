@@ -59,7 +59,8 @@ impl SqliteDataSubjectRepo {
         Ok(store)
     }
 
-    /// Open a private in-memory database (tests / ephemeral).
+    /// Open a private in-memory database for tests and scenario fixtures.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let store = Self::over(
             Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?,

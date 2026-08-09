@@ -26,6 +26,7 @@ pub use awaken_resource_contract::{
 
 mod credential_selection;
 mod executable_models;
+#[cfg(any(test, feature = "test-support"))]
 mod reference_stores;
 pub use credential_selection::{
     CredentialCandidateSet, CredentialSelectionContext, can_consume, credential_can_supply,
@@ -40,6 +41,7 @@ pub use executable_models::{
 pub mod stores;
 /// Telemetry ceiling composition (ADR-0050 D3): Org baseline tightened by lower layers.
 pub mod telemetry;
+#[cfg(any(test, feature = "test-support"))]
 pub use reference_stores::{
     InMemoryAgentInputBindingRepository, InMemoryProfileStore, InMemoryWebhookStore,
 };

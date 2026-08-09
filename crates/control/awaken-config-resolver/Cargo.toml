@@ -16,16 +16,33 @@ schemars = { version = "1", optional = true }
 
 [features]
 default = []
+test-support = [
+    "awaken-credential-vault/test-support",
+    "awaken-model-catalog/test-support",
+]
 # Emit JSON Schema for the authored DTOs (e.g. `InferenceProfile`) so the admin
 # API can include them in the generated TS contract.
 schema = ["dep:schemars", "awaken-agent-contract/schema", "awaken-credential-vault/schema"]
 
 [dev-dependencies]
+awaken-credential-vault = { workspace = true, features = ["test-support"] }
 tokio.workspace = true
 serde_json.workspace = true
 # P0/E2E acceptance: catalog + credential + resolve → provider seam. Managed
 # model-id ACL coverage lives with awaken-config-service, its sole owner.
 awaken-provider-genai.workspace = true
+
+[[test]]
+name = "full_chain"
+required-features = ["test-support"]
+
+[[test]]
+name = "managed_e2e"
+required-features = ["test-support"]
+
+[[test]]
+name = "pool_failover"
+required-features = ["test-support"]
 
 [lints]
 workspace = true
