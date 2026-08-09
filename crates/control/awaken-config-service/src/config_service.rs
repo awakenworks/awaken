@@ -67,6 +67,11 @@ pub struct ConfigService {
     pub(crate) plugin_publication_resolvers: Vec<Arc<dyn PluginPublicationResolver>>,
 }
 
+struct PreparedPublication {
+    publication: StoredPublication,
+    registration: ExecutableAgentRegistration,
+}
+
 impl ConfigService {
     /// Store a config draft (upsert by id) in the caller-supplied scope-bound
     /// `registry` (a [`awaken_config_store::ScopedConfig`] the edge bound to the
@@ -151,26 +156,7 @@ impl ConfigService {
         registry.list_configs().await.map_err(|e| e.to_string())
     }
 
-    /// Publish: resolve an `Auto` model to a concrete binding (D5), compile the stored
-    /// config against the caller-supplied `catalog`, persist the publication
-    /// (idempotent by fingerprint) into the scope-bound `registry`, and register it
-    /// for future Coordinator Session resolution. The stored source config is left untouched —
-    /// its `Auto` selection persists so the reconciler can re-resolve it later.
-    pub async fn publish(
-        &self,
-        workspace: &ScopeId,
-        registry: &dyn ConfigRegistry,
-        id: &str,
-        catalog: &[ToolDescriptor],
-    ) -> Result<StoredPublication, PublishError> {
-        self.publish_at_revisions(workspace, registry, id, catalog, None, None)
-            .await
-    }
-
-    /// Publish one reviewed Agent aggregate only when both mutable sources still
-    /// have the revisions observed by the caller, then freeze the exact Resource
-    /// defaults into the durable publication and Coordinator registration.
-    pub async fn publish_at_revisions(
+    async fn prepare_publication(
         &self,
         workspace: &ScopeId,
         registry: &dyn ConfigRegistry,
@@ -178,7 +164,7 @@ impl ConfigService {
         catalog: &[ToolDescriptor],
         expected_source_revision: Option<u64>,
         expected_resource_revision: Option<i64>,
-    ) -> Result<StoredPublication, PublishError> {
+    ) -> Result<PreparedPublication, PublishError> {
         let versioned = registry
             .get_config_revision(id)
             .await
@@ -257,13 +243,6 @@ impl ConfigService {
         let publication =
             StoredPublication::published_at_revision(snapshot.clone(), id, source_revision)
                 .with_agent_inputs(stored_inputs);
-        let write = registry
-            .put_publication_if_config_revision(&publication, source_revision)
-            .await
-            .map_err(|e| PublishError::Store(e.to_string()))?;
-        if let ConfigWrite::Conflict { current_revision } = write {
-            return Err(PublishError::StaleRevision(current_revision));
-        }
         let session_profile =
             registered_session_profile(&snapshot, &resolved.authored_model_selection, defaults)
                 .ok_or_else(|| {
@@ -274,17 +253,90 @@ impl ConfigService {
                         ),
                     )
                 })?;
-        self.registrar
-            .register(ExecutableAgentRegistration {
+        Ok(PreparedPublication {
+            publication,
+            registration: ExecutableAgentRegistration {
                 workspace_id: workspace.as_str().to_owned(),
                 agent_id: id.to_owned(),
                 source_revision,
                 snapshot,
                 session_profile,
-            })
+            },
+        })
+    }
+
+    /// Compile the exact publication that a subsequent [`Self::publish`] would
+    /// persist, without changing Control or Coordinator state.
+    ///
+    /// Composition adapters use this to distinguish a byte-identical retry from
+    /// a dependency re-resolution (for example, an exact credential rotation)
+    /// that requires a new authoring revision before registration.
+    pub async fn preview_publication(
+        &self,
+        workspace: &ScopeId,
+        registry: &dyn ConfigRegistry,
+        id: &str,
+        catalog: &[ToolDescriptor],
+    ) -> Result<StoredPublication, PublishError> {
+        Ok(self
+            .prepare_publication(workspace, registry, id, catalog, None, None)
+            .await?
+            .publication)
+    }
+
+    /// Publish: resolve an `Auto` model to a concrete binding (D5), compile the stored
+    /// config against the caller-supplied `catalog`, persist the publication
+    /// (idempotent by fingerprint) into the scope-bound `registry`, and register it
+    /// for future Coordinator Session resolution. The stored source config is left untouched —
+    /// its `Auto` selection persists so the reconciler can re-resolve it later.
+    pub async fn publish(
+        &self,
+        workspace: &ScopeId,
+        registry: &dyn ConfigRegistry,
+        id: &str,
+        catalog: &[ToolDescriptor],
+    ) -> Result<StoredPublication, PublishError> {
+        self.publish_at_revisions(workspace, registry, id, catalog, None, None)
+            .await
+    }
+
+    /// Publish one reviewed Agent aggregate only when both mutable sources still
+    /// have the revisions observed by the caller, then freeze the exact Resource
+    /// defaults into the durable publication and Coordinator registration.
+    pub async fn publish_at_revisions(
+        &self,
+        workspace: &ScopeId,
+        registry: &dyn ConfigRegistry,
+        id: &str,
+        catalog: &[ToolDescriptor],
+        expected_source_revision: Option<u64>,
+        expected_resource_revision: Option<i64>,
+    ) -> Result<StoredPublication, PublishError> {
+        let prepared = self
+            .prepare_publication(
+                workspace,
+                registry,
+                id,
+                catalog,
+                expected_source_revision,
+                expected_resource_revision,
+            )
+            .await?;
+        let write = registry
+            .put_publication_if_config_revision(
+                &prepared.publication,
+                prepared.publication.source_revision,
+            )
+            .await
+            .map_err(|e| PublishError::Store(e.to_string()))?;
+        if let ConfigWrite::Conflict { current_revision } = write {
+            return Err(PublishError::StaleRevision(current_revision));
+        }
+        self.registrar
+            .register(prepared.registration)
             .await
             .map_err(PublishError::Registration)?;
-        Ok(publication)
+        Ok(prepared.publication)
     }
 
     /// Re-resolve and re-publish a policy-bound agent (ADR-0052 D5), reading and
@@ -1867,6 +1919,41 @@ pub(crate) mod resource_prompt_tests {
         );
         assert!(catalog.current(scope.as_str(), &config.id).is_none(), "R2");
         assert!(catalog.is_unavailable(scope.as_str(), &config.id), "R2");
+    }
+
+    #[tokio::test]
+    async fn publication_preview_is_write_free_and_matches_publish() {
+        let store = SqliteConfigStore::open_in_memory().unwrap();
+        let workspace = scope("wrkspc_preview");
+        let (service, catalog) = test_service_and_catalog();
+        ConfigRegistry::put_config(&store, &agent_config("preview-agent"))
+            .await
+            .unwrap();
+
+        let preview = service
+            .preview_publication(&workspace, &store, "preview-agent", &[])
+            .await
+            .unwrap();
+        assert!(
+            ConfigRegistry::get_publication(&store, &preview.fingerprint)
+                .await
+                .unwrap()
+                .is_none(),
+            "preview must not persist Control publication truth"
+        );
+        assert!(
+            catalog
+                .current(workspace.as_str(), "preview-agent")
+                .is_none(),
+            "preview must not mutate Coordinator registration"
+        );
+
+        let published = service
+            .publish(&workspace, &store, "preview-agent", &[])
+            .await
+            .unwrap();
+        assert_eq!(preview.fingerprint, published.fingerprint);
+        assert_eq!(preview.source_revision, published.source_revision);
     }
 
     #[tokio::test]

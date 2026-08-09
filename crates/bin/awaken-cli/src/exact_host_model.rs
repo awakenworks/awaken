@@ -3,6 +3,15 @@
 //! Provider-backed and hosted compositions use their own injected resolvers.
 //! This adapter exists only for the one-host-executor scenario path.
 
+pub(super) fn local_test_process_options() -> super::ProcessAssemblyOptions {
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+    super::ProcessAssemblyOptions {
+        deployment: Some(deployment),
+        ..Default::default()
+    }
+}
+
 pub(super) struct ExactHostModelPublicationResolver {
     pub(super) binding: awaken_runtime_contract::resolved::ModelBinding,
 }

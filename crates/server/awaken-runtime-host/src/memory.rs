@@ -612,6 +612,11 @@ impl MemoryRuntime {
 }
 
 impl BoundMemory {
+    #[cfg(test)]
+    pub(crate) fn memory_store_id(&self) -> &str {
+        &self.memory_store_id
+    }
+
     pub(crate) fn recall_enabled(&self) -> bool {
         self.recall_enabled
     }
@@ -872,8 +877,45 @@ impl crate::host::SharedHost {
     }
 
     pub(crate) fn register_thread_memory(&self, thread: &str, memory: Option<Arc<BoundMemory>>) {
-        self.session_slots
-            .update(thread, |slot| slot.memory = memory);
+        self.session_slots.update(thread, |slot| {
+            slot.memory_bindings.clear();
+            slot.memory = memory;
+        });
+    }
+
+    /// Replace the complete set of standard mounted MemoryStore bindings. No
+    /// automatic recall/extraction binding is inferred from collection order.
+    pub(crate) fn register_thread_memory_bindings(
+        &self,
+        thread: &str,
+        bindings: std::collections::HashMap<String, Arc<BoundMemory>>,
+    ) {
+        self.session_slots.update(thread, |slot| {
+            slot.memory_bindings = bindings;
+            slot.memory = None;
+        });
+    }
+
+    /// Select the exact Awaken extension binding authored by the published
+    /// Agent. A missing binding clears any prior selection before failing, so a
+    /// rebuilt context cannot retain stale automatic-memory authority.
+    pub(crate) fn select_thread_memory_binding(
+        &self,
+        thread: &str,
+        binding_id: Option<&str>,
+    ) -> Result<Option<Arc<BoundMemory>>, String> {
+        let selected = self.session_slots.update(thread, |slot| {
+            let selected = binding_id.and_then(|id| slot.memory_bindings.get(id).cloned());
+            slot.memory = selected.clone();
+            selected
+        });
+        match (binding_id, selected) {
+            (_, Some(selected)) => Ok(Some(selected)),
+            (None, None) => Ok(None),
+            (Some(binding_id), None) => Err(format!(
+                "automatic memory binding `{binding_id}` is not mounted for this Session"
+            )),
+        }
     }
 
     pub(crate) fn memory_for_thread(&self, thread: &str) -> Option<Arc<BoundMemory>> {

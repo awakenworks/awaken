@@ -847,13 +847,35 @@ impl SharedHost {
             })
             .and_then(|value| awaken_ext_memory::MemoryConfig::from_value(Some(value)).ok())
             .unwrap_or_default();
-        let memory_selected = installed.as_ref().is_none_or(|snapshot| {
+        let published_memory_selected = installed.as_ref().is_some_and(|snapshot| {
             snapshot
                 .resolved_spec
                 .plugin_ids
                 .iter()
                 .any(|id| id == awaken_ext_memory::MEMORY_PLUGIN_ID)
         });
+        let memory_selected = if installed.is_some() {
+            let binding_id = if published_memory_selected {
+                Some(authored_memory.binding_id.as_deref().ok_or_else(|| {
+                    HostError::bad_request(
+                        "the Awaken memory extension requires an explicit `memory.binding_id`",
+                    )
+                })?)
+            } else {
+                None
+            };
+            let selected = self
+                .select_thread_memory_binding(thread, binding_id)
+                .map_err(HostError::bad_request)?;
+            if let Some(memory) = &selected {
+                memory.reconcile(thread).await;
+            }
+            selected.is_some()
+        } else {
+            // Direct embedders opt in through `bind_resolved_memory`; Managed
+            // compatibility Sessions merely register standard mount bindings.
+            self.memory_for_thread(thread).is_some()
+        };
         let recalled_memory = self.memory_for_thread(thread).filter(|memory| {
             memory.recall_enabled() && memory_selected && authored_memory.recall_enabled
         });

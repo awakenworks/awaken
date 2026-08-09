@@ -243,6 +243,14 @@ pub struct ManagedHost {
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
+/// One compiled projection from the frozen Session manifest. Standard mounts
+/// and optional automatic-memory candidates travel together so installation
+/// cannot publish one generation with bindings from another.
+struct CompiledEffectiveInputs {
+    staged: crate::provisioning::StagedResources,
+    memory_bindings: std::collections::HashMap<String, Arc<crate::memory::BoundMemory>>,
+}
+
 /// Weak, cloneable Worker-side adapter over the same configured Managed
 /// `SessionRuntime`. Durable dispatch carries only secret-free projections; this
 /// object reuses the installed Resource validator and credential SPIs for
@@ -503,36 +511,22 @@ impl ManagedHost {
         workspace: &str,
         inputs: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_run_ingress::RunClaim>,
-    ) -> Result<
-        (
-            crate::provisioning::StagedResources,
-            Option<Arc<crate::memory::BoundMemory>>,
-        ),
-        RunError,
-    > {
+    ) -> Result<CompiledEffectiveInputs, RunError> {
         let mut all = crate::provisioning::StagedResources::default();
-        let mut bound_memory = None;
-        let mut memory_seen = false;
+        let mut memory_bindings = std::collections::HashMap::new();
         for input in &inputs.inputs {
             let one = self.stage_resolved_input(workspace, input, claim).await?;
-            all.mounts.extend(one.mounts);
-            all.prompts.extend(one.prompts);
-            all.binding_checks.extend(one.binding_checks);
-            all.repositories.extend(one.repositories);
             if let awaken_session_contract::ResolvedInputSource::MemoryStore {
                 memory_store_id,
                 config,
             } = &input.source
             {
-                if memory_seen {
-                    return Err(RunError::bad_request(
-                        "automatic recall/extraction supports one MemoryStore binding per Session",
-                    ));
-                }
-                memory_seen = true;
                 let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
+                // Read this exact projection before merging it. Two bindings may
+                // legally reference the same store with different access, and a
+                // prior mount must never become the authority for the later one.
                 let materialization_reference =
-                    all.mounts.iter().find_map(|mount| match &mount.source {
+                    one.mounts.iter().find_map(|mount| match &mount.source {
                         awaken_provisioning_contract::MountSource::MemoryStore {
                             store_id,
                             materialization_reference,
@@ -557,18 +551,28 @@ impl ManagedHost {
                         )
                     })?.clone())
                 };
-                bound_memory = Some(Arc::new(self.host.memory.bind(
-                    thread,
-                    workspace,
-                    handle,
-                    resource_validator,
-                    config,
-                    writable,
-                )));
+                memory_bindings.insert(
+                    input.binding_id.to_string(),
+                    Arc::new(self.host.memory.bind(
+                        thread,
+                        workspace,
+                        handle,
+                        resource_validator,
+                        config,
+                        writable,
+                    )),
+                );
             }
+            all.mounts.extend(one.mounts);
+            all.prompts.extend(one.prompts);
+            all.binding_checks.extend(one.binding_checks);
+            all.repositories.extend(one.repositories);
         }
 
-        Ok((all, bound_memory))
+        Ok(CompiledEffectiveInputs {
+            staged: all,
+            memory_bindings,
+        })
     }
 
     async fn install_effective_inputs(
@@ -577,8 +581,7 @@ impl ManagedHost {
         workspace: &str,
         resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
-        staged: crate::provisioning::StagedResources,
-        bound_memory: Option<Arc<crate::memory::BoundMemory>>,
+        compiled: CompiledEffectiveInputs,
         update_authority_references: bool,
     ) -> Result<(), RunError> {
         // The complete manifest replaces the prior projection. Register an empty
@@ -589,7 +592,7 @@ impl ManagedHost {
                 .await
                 .map_err(|error| RunError::internal(error.to_string()))?;
         }
-        self.host.register_thread_resources(thread, staged);
+        self.host.register_thread_resources(thread, compiled.staged);
         self.host.register_thread_resource_manifest(
             thread,
             awaken_session_contract::SessionResourceManifest::at_revision(
@@ -598,12 +601,10 @@ impl ManagedHost {
                 inputs.clone(),
             ),
         );
-        // Every Session records an explicit selection (including none). There is
-        // no Host-global or directory fallback.
-        self.host.register_thread_memory(thread, bound_memory);
-        if let Some(memory) = self.host.memory_for_thread(thread) {
-            memory.reconcile(thread).await;
-        }
+        // Standard mounts and the optional automatic-memory selection are
+        // separate facts. Installing a manifest never picks a "first" store.
+        self.host
+            .register_thread_memory_bindings(thread, compiled.memory_bindings);
         Ok(())
     }
 
@@ -616,7 +617,7 @@ impl ManagedHost {
         claim: Option<&awaken_run_ingress::RunClaim>,
         update_authority_references: bool,
     ) -> Result<(), RunError> {
-        let (staged, bound_memory) = self
+        let compiled = self
             .compile_effective_inputs(thread, workspace, inputs, claim)
             .await?;
         self.install_effective_inputs(
@@ -624,8 +625,7 @@ impl ManagedHost {
             workspace,
             resource_revision,
             inputs,
-            staged,
-            bound_memory,
+            compiled,
             update_authority_references,
         )
         .await
@@ -1184,9 +1184,10 @@ impl SessionRuntime for ManagedHost {
             ),
             None => None,
         };
-        let (new, bound_memory) = self
+        let compiled = self
             .compile_effective_inputs(thread, workspace_id, inputs, None)
             .await?;
+        let new = &compiled.staged;
         if let Some(environment) = &live_environment {
             environment
                 .validate_live_mount_replacement(&old.mounts, &new.mounts)
@@ -1260,8 +1261,7 @@ impl SessionRuntime for ManagedHost {
             workspace_id,
             resource_revision,
             inputs,
-            new,
-            bound_memory,
+            compiled,
             true,
         )
         .await?;

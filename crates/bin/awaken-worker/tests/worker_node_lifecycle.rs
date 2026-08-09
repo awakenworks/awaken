@@ -21,6 +21,13 @@ fn manifest() -> WorkerManifest {
     }
 }
 
+fn local_coordinator_deployment() -> awaken_runtime_host::DeploymentConfig {
+    let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+    deployment.disable_local_pool = true;
+    deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+    deployment
+}
+
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind an ephemeral admin port")
@@ -222,8 +229,7 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     ));
     let registered_identity = Arc::new(Mutex::new(None));
     let observed = registered_identity.clone();
-    let mut coordinator_defaults = awaken_runtime_host::DeploymentConfig::ephemeral();
-    coordinator_defaults.disable_local_pool = true;
+    let coordinator_defaults = local_coordinator_deployment();
     WorkerNodeBuilder::new(
         WorkerUpstream::new(upstream.url())
             .with_request_authorizer(request_authorizer)
@@ -350,8 +356,7 @@ async fn authority_loss_terminates_the_incarnation_for_supervisor_restart() {
 async fn drain_closes_local_admission_before_control_acknowledges() {
     let (upstream, drain_release) = FakeWorkerUpstream::start_with_blocked_drain();
     let admin_addr = format!("127.0.0.1:{}", free_port());
-    let mut coordinator_defaults = awaken_runtime_host::DeploymentConfig::ephemeral();
-    coordinator_defaults.disable_local_pool = true;
+    let coordinator_defaults = local_coordinator_deployment();
 
     WorkerNodeBuilder::new(
         WorkerUpstream::new(upstream.url()).with_worker_id("worker-drain-order-test"),

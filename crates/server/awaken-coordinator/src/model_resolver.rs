@@ -32,12 +32,14 @@ mod acp_configuration;
 mod acp_publication;
 mod composition;
 mod credential_publication;
+mod offering_resolution;
 pub use a2a_remote::A2aCardDiscovery;
 use a2a_remote::HttpA2aCardDiscovery;
 use acp_configuration::validate_acp_session_configuration;
 use acp_publication::wall_clock_ms;
 use composition::CatalogSource;
 use credential_publication::PublicationCredentialLookup;
+use offering_resolution::{offering_for, offering_for_target};
 
 /// Configuration-plane adapter that freezes model, route and credential facts
 /// into a publication. Every candidate must exist in the catalog; explicit
@@ -239,42 +241,6 @@ impl CatalogModelPublicationResolver {
         Ok(profile)
     }
 
-    fn offering_for<'a>(
-        catalog: &'a ProviderCatalog,
-        binding: &ModelBinding,
-    ) -> Result<&'a Offering, PublicationResolutionError> {
-        let target = ModelTarget {
-            model_id: binding.model_ref.clone(),
-            provider_id: (!binding.provider_identity_ref.is_empty())
-                .then(|| binding.provider_identity_ref.clone()),
-            protocol_endpoint_id: None,
-            endpoint_name: None,
-        };
-        select_offering(catalog, &target, &[]).map_err(|error| {
-            PublicationResolutionError::CandidateUnavailable {
-                binding: binding.clone(),
-                reason: error.to_string(),
-            }
-        })
-    }
-
-    fn offering_for_target<'a>(
-        catalog: &'a ProviderCatalog,
-        target: &ModelTarget,
-        disabled_endpoints: &[String],
-    ) -> Result<&'a Offering, PublicationResolutionError> {
-        select_offering(catalog, target, disabled_endpoints).map_err(|error| {
-            PublicationResolutionError::CandidateUnavailable {
-                binding: ModelBinding::new(
-                    target.provider_id.as_deref().unwrap_or_default(),
-                    &target.model_id,
-                    "genai",
-                ),
-                reason: error.to_string(),
-            }
-        })
-    }
-
     async fn candidate(
         &self,
         catalog: &ProviderCatalog,
@@ -282,11 +248,15 @@ impl CatalogModelPublicationResolver {
         workspace: &ScopeId,
         binding: ModelBinding,
         session_configuration: Option<&awaken_runtime_contract::resolved::AcpSessionConfiguration>,
+        exact_target: Option<&ModelTarget>,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
         if matches!(Backend::from_ref(&binding.backend_ref), Backend::Native)
             || !binding.provider_identity_ref.is_empty()
         {
-            let offering = Self::offering_for(catalog, &binding)?;
+            let offering = match exact_target {
+                Some(target) => offering_for_target(catalog, target, &[])?,
+                None => offering_for(catalog, &binding)?,
+            };
             validate_executor_offering(
                 &self.executor_capabilities,
                 &binding.backend_ref,
@@ -387,11 +357,7 @@ impl CatalogModelPublicationResolver {
         let offerings = authored
             .iter()
             .map(|candidate| {
-                Self::offering_for_target(
-                    catalog,
-                    &candidate.target,
-                    &profile.disabled_endpoint_ids,
-                )
+                offering_for_target(catalog, &candidate.target, &profile.disabled_endpoint_ids)
             })
             .collect::<Result<Vec<_>, _>>()?;
         let needs_inventory = authored.iter().any(|candidate| {
@@ -425,7 +391,7 @@ impl CatalogModelPublicationResolver {
             {
                 Some(
                     self.credentials
-                        .get_pool(credential_pool_id)
+                        .get_pool(&credential_pool_id)
                         .await
                         .map_err(|error| {
                             PublicationResolutionError::CredentialInventoryUnavailable(
@@ -504,13 +470,17 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
         let all_bindings = std::iter::once(&primary_binding)
             .chain(fallback_bindings.iter())
             .collect::<Vec<_>>();
-        let needs_credentials = all_bindings.iter().any(|binding| {
-            Self::offering_for(&catalog, binding).is_ok()
-                || matches!(
-                    Backend::from_ref(&binding.backend_ref),
-                    Backend::Acp { .. } | Backend::Remote { .. }
-                )
-        });
+        let exact_target_has_offering = selection
+            .target()
+            .is_some_and(|(target, _)| offering_for_target(&catalog, target, &[]).is_ok());
+        let needs_credentials = exact_target_has_offering
+            || all_bindings.iter().any(|binding| {
+                offering_for(&catalog, binding).is_ok()
+                    || matches!(
+                        Backend::from_ref(&binding.backend_ref),
+                        Backend::Acp { .. } | Backend::Remote { .. }
+                    )
+            });
         let sources = if needs_credentials {
             self.credentials
                 .list(workspace.as_str())
@@ -557,13 +527,14 @@ impl ModelPublicationResolver for CatalogModelPublicationResolver {
                 workspace,
                 primary_binding.clone(),
                 selection.acp_configuration(),
+                selection.target().map(|(target, _)| target),
             )
             .await?
         };
         let mut candidates = Vec::with_capacity(fallback_bindings.len());
         for binding in fallback_bindings {
             candidates.push(
-                self.candidate(&catalog, &sources, workspace, binding, None)
+                self.candidate(&catalog, &sources, workspace, binding, None, None)
                     .await?,
             );
         }
@@ -601,11 +572,11 @@ mod tests {
     use awaken_agent_contract::RedactedString;
     use awaken_config_resolver::{InMemoryProfileStore, ProfileCandidate};
     use awaken_credential_vault::repo::{
-        InMemoryCredentialRepo, ensure_worker_local, enter_credential,
+        InMemoryCredentialRepo, ensure_worker_local, enter_credential, enter_credential_idempotent,
     };
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialPool, CredentialPoolId, CredentialPoolMember,
-        InMemorySecretStore, SelectionPolicy, WorkerLocalBinding,
+        CredentialSourceId, InMemorySecretStore, SelectionPolicy, WorkerLocalBinding,
     };
     use awaken_model_catalog::{
         ApiDialect, ModelAttributes, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
@@ -761,6 +732,71 @@ mod tests {
         .await
         .unwrap();
         CatalogModelPublicationResolver::new(catalog(models), credentials)
+    }
+
+    #[tokio::test]
+    async fn exact_target_keeps_its_protocol_endpoint_through_publication() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        enter_credential_idempotent(
+            CredentialSourceId("credential-ep2".into()),
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("openai".into()),
+                env_key: Some("OPENAI_API_KEY".into()),
+                secret: Some(RedactedString::new("test-secret")),
+                oauth_command: None,
+            },
+            Some("ep2".into()),
+            &InMemorySecretStore::new(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        let mut catalog = catalog(&["shared-model"]);
+        catalog.endpoints.insert(
+            "ep2".into(),
+            ProtocolEndpoint {
+                id: ProtocolEndpointId::new("ep2"),
+                provider_id: ProviderId::new("openai"),
+                dialect: ApiDialect::OpenAiChat,
+                base_url: Some("https://messages.openai.invalid/v1".into()),
+                timeout_secs: 30,
+                display_name: "OpenAI messages".into(),
+                version: 9,
+            },
+        );
+        catalog
+            .offerings
+            .push(offering("shared-model", "openai", "ep2"));
+        let sources = credentials.list("workspace-a").await.unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(
+            derive_vendor_pool("workspace-a", "openai", Some("ep2"), "genai", &sources)
+                .members
+                .len(),
+            1
+        );
+        let resolver = CatalogModelPublicationResolver::new(catalog, credentials);
+        let selection = ModelSelection::Target {
+            target: ModelTarget {
+                model_id: "shared-model".into(),
+                provider_id: Some("openai".into()),
+                protocol_endpoint_id: Some("ep2".into()),
+                endpoint_name: None,
+            },
+            backend_ref: "genai".into(),
+            configuration: Default::default(),
+        };
+
+        let resolved = resolver
+            .resolve_models(&ScopeId::from("workspace-a"), &selection, &[])
+            .await
+            .unwrap();
+        let ModelProvisioning::Provider { route_ref, .. } = resolved.primary.provisioning else {
+            panic!("exact provider target must produce provider provisioning")
+        };
+        assert_eq!(route_ref, "ep2@9");
     }
 
     fn explicit_profile() -> ModelSelection {

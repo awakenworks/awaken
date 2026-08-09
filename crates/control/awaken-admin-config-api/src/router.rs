@@ -19,7 +19,9 @@ use awaken_config_resolver::{
     cooldown_deadline, get_workspace_profile, put_workspace_profile, resolve_inference,
     resolve_inference_target, resolve_profile, resolve_profile_candidates,
 };
-use awaken_credential_vault::repo::{CredentialRepo, enter_credential};
+use awaken_credential_vault::repo::{
+    CredentialMaterialPatch, CredentialRepo, enter_credential, rotate_credential_materials_exact,
+};
 use awaken_credential_vault::{
     AvailabilityLedger, AvailabilityState, CredentialBinding, CredentialCreateParams,
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialSource,
@@ -224,6 +226,10 @@ pub fn admin_router_with_capabilities(
             post(post_credential).get(list_credentials),
         )
         .route("/v1/config/credentials/{id}", get(get_credential))
+        .route(
+            "/v1/config/credentials/{id}/rotate",
+            post(rotate_credential),
+        )
         .route(
             "/v1/config/credential-pools/{id}",
             put(put_pool).get(get_pool),
@@ -445,6 +451,7 @@ fn cred_problem(error: &CredentialError, rid: &str) -> Problem {
         | CredentialError::PoolNotFound(_) => (404, "not_found"),
         CredentialError::NoCredential => (422, "no_credential"),
         CredentialError::NotActive(_) => (409, "credential_inactive"),
+        CredentialError::MutationConflict(_) => (409, "credential_version_conflict"),
         _ => (422, "credential_invalid"),
     };
     Problem(ApiError::new(
@@ -1330,6 +1337,15 @@ pub struct EnterCredentialRequest {
     oauth_helper: Option<OAuthHelper>,
 }
 
+/// Rotate the primary material of one exact active Vault credential revision.
+/// The secret is write-only and the response remains a secret-free source view.
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct RotateCredentialRequest {
+    expected_version: i64,
+    secret: String,
+}
+
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 struct CredentialMaterialInput {
@@ -1452,6 +1468,43 @@ async fn post_credential(
         .await
         .map_err(|e| cred_problem(&e, &rid))?;
     Ok((StatusCode::CREATED, Json(source.into())))
+}
+
+async fn rotate_credential(
+    State(state): State<AdminState>,
+    scope: Option<Extension<ResourceWorkspace>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<RotateCredentialRequest>,
+) -> Result<Json<CredentialSourceView>, Problem> {
+    let rid = req_id(&headers);
+    if body.expected_version < 1 {
+        return Err(cred_problem(
+            &CredentialError::InvalidSource("expected_version must be greater than zero".into()),
+            &rid,
+        ));
+    }
+    if body.secret.trim().is_empty() {
+        return Err(cred_problem(
+            &CredentialError::InvalidSource("rotation secret is required".into()),
+            &rid,
+        ));
+    }
+    let id = CredentialSourceId(id);
+    credential_in_scope(&state, &id, scope.as_ref(), &rid).await?;
+    let source = rotate_credential_materials_exact(
+        &id,
+        body.expected_version,
+        CredentialMaterialPatch {
+            primary: Some(RedactedString::new(body.secret)),
+            auxiliary: Default::default(),
+        },
+        state.secrets.as_ref(),
+        state.credentials.as_ref(),
+    )
+    .await
+    .map_err(|error| cred_problem(&error, &rid))?;
+    Ok(Json(source.into()))
 }
 
 async fn get_credential(
