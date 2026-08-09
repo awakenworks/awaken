@@ -62,7 +62,7 @@ k3d registry create awaken-registry.localhost --port 5111
 # The shared harness accepts the fourth registry coordinate and passes it once
 # to `k3d cluster create --registry-use`.
 . e2e/k3d/harness.sh
-k3d_create_cluster awaken-product 1 2 k3d-awaken-registry.localhost:5111
+k3d_create_cluster awaken-product 1 2 k3d-awaken-registry.localhost:5000
 
 # Mirror the rootless builder as well as derived Environment images. This keeps
 # package materialization independent of Docker Hub availability on every node.
@@ -70,6 +70,11 @@ docker tag moby/buildkit:v0.30.0-rootless \
   localhost:5111/system/buildkit:v0.30.0-rootless
 docker push localhost:5111/system/buildkit:v0.30.0-rootless
 ```
+
+`5111` is only the host-published port used by Docker push. Kubernetes Pods and
+BuildKit use the Registry container's internal `:5000` endpoint; putting the
+host port in `package_image_registry` makes in-cluster pushes fail with
+`connection refused`.
 
 The all-in-one Pod never runs or mounts a Docker daemon. It submits bounded,
 rootless BuildKit Jobs through namespace-scoped RBAC; those Jobs push immutable
@@ -121,7 +126,7 @@ path, the complete request-to-response path, Worker process isolation,
 Coordinator-total-outage recovery, Pod and in-flight Worker failure, K3D node
 loss, PostgreSQL standby promotion, and concurrent pressure. Model inference is
 the only deterministic edge fixture; all application roles are shipped
-composition roots and both Workers are the production `awaken worker` CLI.
+composition roots and both Workers run the production `awaken-worker` artifact.
 Replicated stateless roles and Workers use a 15-second `not-ready`/`unreachable`
 `NoExecute` tolerance in this overlay. A dead node is therefore removed from
 Service routing and its workloads become replaceable within the test's bounded

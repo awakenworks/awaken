@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use awaken_memory_store::{MAX_MEMORY_BYTES, MemErr, MemoryEntry};
+use awaken_resource_contract::{MAX_MEMORY_BYTES, MemErr, MemoryEntry};
 
 pub mod coordinator;
 pub mod copy;

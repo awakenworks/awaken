@@ -12,6 +12,7 @@
 /// FUSE mount projects.
 pub mod repository;
 
+pub use awaken_resource_contract::memory_store_stem as sanitize_stem;
 #[cfg(any(test, feature = "test-support"))]
 pub use repository::VolatileMemoryRepository;
 pub use repository::{
@@ -32,24 +33,3 @@ pub use postgres::{PgStoreError, PostgresMemoryRepository};
 pub use schema::{BUNDLE_ID, memory_store_bundle};
 #[cfg(feature = "sqlite")]
 pub use sqlite::{SqliteMemoryRepository, StoreError};
-
-/// Reduce `name` to a safe single stem: keep alphanumerics, `-`, `_`; map every other
-/// run to a single `-`; never empty. So a crafted store/workspace id can name neither
-/// a file that escapes a store root nor a FUSE mountpoint that escapes its parent.
-pub fn sanitize_stem(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            out.push(c);
-        } else if !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    out.truncate(120); // bound the stem so a crafted long id can't exceed NAME_MAX
-    let trimmed = out.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        "memstore".to_string()
-    } else {
-        trimmed
-    }
-}

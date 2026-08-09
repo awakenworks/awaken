@@ -430,7 +430,7 @@ pub(super) async fn assemble_runtime_process_router(
     // Production ACP wiring (`acp:*` threads): the environment advertises only the
     // installed CLI/sandbox capability. Provider coordinates and credentials are
     // realized from the same publication-pinned DB facts as native inference.
-    let hand_factory = awaken_coordinator::relay_hand_executor_factory();
+    let hand_factory = awaken_worker::relay_hand_executor_factory();
     let host_builder = host_builder
         .with_session_environment_from_deployment(Some(hand_factory))
         .await

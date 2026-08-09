@@ -2,6 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - database-ha.yaml
+  - network-policies.yaml
   - resources.yaml
 patches:
   # Bound the black-hole window for replicated stateless roles and Workers.
@@ -22,3 +23,116 @@ patches:
             operator: Exists
             effect: NoExecute
             tolerationSeconds: 15
+  - target:
+      kind: Deployment
+      name: control|coordinator|provider
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/startupProbe
+        value:
+          httpGet: { path: /readyz, port: 3000 }
+          periodSeconds: 2
+          timeoutSeconds: 2
+          failureThreshold: 90
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          httpGet: { path: /readyz, port: 3000 }
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 6
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: 100m, memory: 192Mi }
+          limits: { cpu: "2", memory: 2Gi }
+  - target:
+      kind: StatefulSet
+      name: worker
+    patch: |-
+      - op: add
+        path: /spec/template/spec/securityContext
+        value:
+          fsGroup: 10001
+          fsGroupChangePolicy: OnRootMismatch
+      - op: replace
+        path: /spec/template/spec/containers/0/securityContext
+        value:
+          allowPrivilegeEscalation: false
+          capabilities: { drop: ["ALL"] }
+          runAsNonRoot: true
+          runAsUser: 10001
+          runAsGroup: 10001
+          seccompProfile: { type: RuntimeDefault }
+      - op: add
+        path: /spec/template/spec/containers/0/startupProbe
+        value:
+          httpGet: { path: /readyz, port: 9090 }
+          periodSeconds: 2
+          timeoutSeconds: 2
+          failureThreshold: 90
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          httpGet: { path: /livez, port: 9090 }
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 6
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: 250m, memory: 256Mi }
+          limits: { cpu: "2", memory: 2Gi }
+  - target:
+      kind: Deployment
+      name: awaken-api
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/startupProbe
+        value:
+          tcpSocket: { port: 8080 }
+          periodSeconds: 2
+          failureThreshold: 30
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          tcpSocket: { port: 8080 }
+          periodSeconds: 10
+          failureThreshold: 6
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: 50m, memory: 64Mi }
+          limits: { cpu: 500m, memory: 256Mi }
+  - target:
+      kind: Job
+      name: control-migrate|coordinator-migrate
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: 100m, memory: 128Mi }
+          limits: { cpu: "1", memory: 1Gi }
+  - target:
+      kind: StatefulSet
+      name: postgres-primary|postgres-standby
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/startupProbe
+        value:
+          exec: { command: ["pg_isready", "-U", "postgres", "-d", "awaken"] }
+          periodSeconds: 2
+          timeoutSeconds: 2
+          failureThreshold: 90
+      - op: add
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          exec: { command: ["pg_isready", "-U", "postgres", "-d", "awaken"] }
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 6
+      - op: add
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: "2", memory: 2Gi }

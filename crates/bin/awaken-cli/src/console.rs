@@ -19,10 +19,6 @@ pub(crate) enum Command {
     DatabaseMigrate {
         config_path: Option<std::path::PathBuf>,
     },
-    Worker {
-        server: String,
-        config_path: Option<std::path::PathBuf>,
-    },
     Config {
         json: bool,
         config_path: Option<std::path::PathBuf>,
@@ -47,7 +43,6 @@ pub(crate) fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Comma
         "coordinator" if args.iter().any(|arg| is_help(arg)) => Ok(Command::Help),
         "coordinator" => parse_service_args(&args).map(Command::Coordinator),
         "database" => parse_database_args(&args),
-        "worker" => parse_worker_args(&args),
         "config" => parse_config_args(&args),
         "doctor" => parse_doctor_args(&args),
         "version" | "-V" | "--version" if args.is_empty() => Ok(Command::Version),
@@ -154,41 +149,6 @@ fn parse_service_args(args: &[String]) -> Result<ServiceArgs, String> {
     Ok(parsed)
 }
 
-fn parse_worker_args(args: &[String]) -> Result<Command, String> {
-    if args.iter().any(|arg| is_help(arg)) {
-        return Ok(Command::Help);
-    }
-    let mut server = None;
-    let mut config_path = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--server" => {
-                index += 1;
-                server = args.get(index).cloned();
-            }
-            value if value.starts_with("--server=") => server = Some(value[9..].to_owned()),
-            "--config" => {
-                index += 1;
-                config_path = Some(parse_path(args.get(index).map(String::as_str), "--config")?);
-            }
-            value if value.starts_with("--config=") => {
-                config_path = Some(parse_path(Some(&value[9..]), "--config")?);
-            }
-            other => return Err(format!("unexpected argument {other:?}")),
-        }
-        index += 1;
-    }
-    let server = server.ok_or_else(|| "worker requires --server <URL>".to_owned())?;
-    if !(server.starts_with("http://") || server.starts_with("https://")) {
-        return Err("--server must be an http:// or https:// URL".to_owned());
-    }
-    Ok(Command::Worker {
-        server,
-        config_path,
-    })
-}
-
 fn parse_config_args(args: &[String]) -> Result<Command, String> {
     if args.iter().any(|arg| is_help(arg)) {
         return Ok(Command::Help);
@@ -280,7 +240,7 @@ fn is_help(value: &str) -> bool {
 
 pub(crate) fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Control IAM profile\n    control iam profile resources   Print the compiled Control resource IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    database migrate                Apply deployment schema migrations and exit\n    worker --server URL             Join a Coordinator as a Worker\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open the browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nConfiguration sources: --config PATH or ~/.awaken/config.toml, then defaults."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Control IAM profile\n    control iam profile resources   Print the compiled Control resource IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    database migrate                Apply deployment schema migrations and exit\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open the browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nThe execution service is the separate `awaken-worker` binary."
     );
 }
 
@@ -382,10 +342,9 @@ mod tests {
                 ..Default::default()
             })
         );
-        for retired in ["start", "serve", "management"] {
+        for retired in ["start", "serve", "management", "worker"] {
             assert!(parse_args([retired.to_owned()]).is_err(), "R4 {retired}");
         }
-        assert!(parse_args(["worker".into()]).is_err());
         assert_eq!(
             parse_args(["doctor".into(), "acp".into(), "--json".into()]).unwrap(),
             Command::DoctorAcp { json: true }

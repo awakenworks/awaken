@@ -39,6 +39,7 @@ pub use egress::{EgressError, EgressRealization, ForwardProxy, NetworkMode, egre
 pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
+use podman_plan::{image_of, rootfs_of};
 pub use secret::SecretBytes;
 pub use writable::writable_dirs;
 
@@ -361,15 +362,6 @@ mod planner_tests {
         let argv = podman_run_argv("r", &plan, &RootfsPlan::HostUserland);
         assert_eq!(arg_after(&argv, "--storage-opt"), Some("size=1073741824"));
     }
-}
-
-fn image_of(spec: &pc::SandboxSpec, default_image: &str) -> String {
-    spec.extra
-        .as_ref()
-        .and_then(|v| v.get("image"))
-        .and_then(|v| v.as_str())
-        .unwrap_or(default_image)
-        .to_string()
 }
 
 /// A host staging directory holding the bytes of inline mounts (codex `config.toml`,
@@ -917,20 +909,6 @@ pub fn container_plan(
         memory_mounts: memory_mounts_of(spec),
         rootfs: rootfs_of(spec, default_image),
     })
-}
-
-/// Resolve the rootfs from a declared `spec.extra.environment` (a serialized
-/// [`pc::EnvironmentKind`]) via [`rootfs_plan`]; absent (or a non-container kind)
-/// falls back to running the resolved image. So a plain spec runs its image, and an
-/// `IsolatedRoot`/`Image` environment declaration is honored by the podman adapter.
-fn rootfs_of(spec: &pc::SandboxSpec, default_image: &str) -> RootfsPlan {
-    let declared = spec
-        .extra
-        .as_ref()
-        .and_then(|v| v.get("environment"))
-        .and_then(|v| serde_json::from_value::<pc::EnvironmentKind>(v.clone()).ok())
-        .and_then(|kind| rootfs_plan(&kind).ok());
-    declared.unwrap_or_else(|| RootfsPlan::Image(image_of(spec, default_image)))
 }
 
 // ── Runtime port (dependency inversion) ─────────────────────────────────────────
