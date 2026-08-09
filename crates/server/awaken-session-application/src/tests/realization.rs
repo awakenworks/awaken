@@ -423,6 +423,124 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
         intents[0].effect_id, intents[1].effect_id,
         "R1/R2 stable intent"
     );
+    assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1, "R1/R2");
+}
+
+/// Complete durable terminal-cleanup crash matrix. Causes are the process stop
+/// location relative to C1=fence CAS, C2=quiesce, C3=target-intent CAS,
+/// C4=idempotent external effect, C5=exact receipt, and C6=completion CAS.
+/// Effects are E1 no pre-intent I/O, E2 recover from the last committed phase,
+/// E3 reuse one effect identity, E4 keep Environment authority until completion,
+/// and E5 replay Completed without another effect.
+///
+/// | Rule | Crash point | Durable phase | Recovery effect |
+/// |---|---|---|---|
+/// | F0 | before C1 | NotRequested | E1; normal fence begins later |
+/// | F1 | after C1/before C2 | Fenced | E2 quiesces before targets |
+/// | F2 | after C2/before C3 | Fenced | E2 repeats quiesce, freezes once |
+/// | F3 | after C3/before C4 | Requested | E2 executes exact frozen targets |
+/// | F4 | after C4/before C5 | Requested | E3 idempotent effect replay |
+/// | F5 | after C5/before C6 | Requested | E3 receipt replay, E4 retained |
+/// | F6 | after C6/before response | Completed | E5 no second effect |
+#[tokio::test]
+async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
+    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    let repo = Arc::new(FaultingSessionRepository::new(durable));
+    let mut session = persisted("cleanup-f0-f6", false, false, "terminated");
+    session.environment.set_resident("opaque-environment");
+    create(repo.as_ref(), session).await;
+
+    let runtime = Arc::new(RecordingCleanupRuntime::default());
+    let application = SessionApplication::new_with_configuration(
+        runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration::default(),
+    );
+
+    let f0 = repo.get("cleanup-f0-f6").await.expect("F0 truth");
+    assert!(!f0.terminal_cleanup.needs_reconciliation(), "F0/E1");
+    assert!(runtime.intents.lock().unwrap().is_empty(), "F0/E1");
+
+    runtime.fail_quiesce_once.store(true, Ordering::SeqCst);
+    application
+        .release_terminal_resources("workspace", "cleanup-f0-f6")
+        .await
+        .expect_err("F1 crash before quiescence");
+    let f1 = repo.get("cleanup-f0-f6").await.expect("F1 truth");
+    assert!(f1.terminal_cleanup.is_fenced(), "F1/E2");
+    assert!(runtime.intents.lock().unwrap().is_empty(), "F1/E1");
+
+    repo.fail_once("resource-release-intent");
+    application
+        .release_terminal_resources("workspace", "cleanup-f0-f6")
+        .await
+        .expect_err("F2 target-intent CAS outage after quiescence");
+    let f2 = repo.get("cleanup-f0-f6").await.expect("F2 truth");
+    assert!(f2.terminal_cleanup.is_fenced(), "F2/E2");
+    assert!(runtime.intents.lock().unwrap().is_empty(), "F2/E1");
+
+    runtime
+        .fail_before_effect_once
+        .store(true, Ordering::SeqCst);
+    application
+        .release_terminal_resources("workspace", "cleanup-f0-f6")
+        .await
+        .expect_err("F3 crash after target freeze before effect");
+    let f3 = repo.get("cleanup-f0-f6").await.expect("F3 truth");
+    assert!(f3.terminal_cleanup.is_requested(), "F3/E2");
+    assert!(runtime.intents.lock().unwrap().is_empty(), "F3/E1");
+    assert!(runtime.effective_ids.lock().unwrap().is_empty(), "F3/E1");
+
+    runtime.fail_once.store(true, Ordering::SeqCst);
+    application
+        .release_terminal_resources("workspace", "cleanup-f0-f6")
+        .await
+        .expect_err("F4 lost effect receipt");
+    let f4 = repo.get("cleanup-f0-f6").await.expect("F4 truth");
+    assert!(f4.terminal_cleanup.is_requested(), "F4/E2");
+    assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1, "F4/E3");
+    assert_eq!(
+        f4.environment.binding(),
+        Some("opaque-environment"),
+        "F4/E4"
+    );
+
+    repo.fail_once("resource-release-complete");
+    application
+        .release_terminal_resources("workspace", "cleanup-f0-f6")
+        .await
+        .expect_err("F5 completion CAS outage");
+    let f5 = repo.get("cleanup-f0-f6").await.expect("F5 truth");
+    assert!(f5.terminal_cleanup.is_requested(), "F5/E2");
+    assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1, "F5/E3");
+    assert_eq!(
+        f5.environment.binding(),
+        Some("opaque-environment"),
+        "F5/E4"
+    );
+
+    let f6 = application
+        .release_terminal_resources("workspace", "cleanup-f0-f6")
+        .await
+        .expect("F6 recovery")
+        .expect("archived Session retained");
+    assert!(f6.terminal_cleanup.is_completed(), "F6/E5");
+    assert!(matches!(
+        f6.environment,
+        awaken_session_contract::SessionEnvironmentState::Unmaterialized
+    ));
+    let attempts = runtime.intents.lock().unwrap().len();
+    application
+        .release_terminal_resources("workspace", "cleanup-f0-f6")
+        .await
+        .expect("F6 response-loss replay");
+    assert_eq!(runtime.intents.lock().unwrap().len(), attempts, "F6/E5");
+    assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1, "F6/E5");
 }
 
 /// Deterministic archive/delegation race: the cleanup worker is paused after
@@ -505,6 +623,90 @@ async fn terminal_fence_quiesces_before_freezing_concurrent_child() {
         .map(|intent| intent.thread_id.clone())
         .collect::<BTreeSet<_>>();
     assert_eq!(cleaned, thread_ids);
+}
+
+#[tokio::test]
+async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity() {
+    /* Soak cause/effect model. For each of 64 independent Sessions: C1 a
+     * delegated child exists in durable Runtime truth; C2 terminal cleanup
+     * completes; C3 the Coordinator/Store is reopened and the command is
+     * replayed. Effects: E1 root+child are frozen exactly once; E2 one stable
+     * effective cleanup per thread; E3 restart replay performs no new I/O; E4
+     * no pending/quarantined Session authority leaks across iterations. The
+     * separate blocked-quiescence test owns the concurrent interleaving oracle;
+     * this loop owns repetition and restart leakage. */
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cleanup-soak.db");
+    let path = path.to_string_lossy().to_string();
+    for iteration in 0..64 {
+        let session_id = format!("cleanup-soak-{iteration}");
+        let child_id = format!("cleanup-soak-child-{iteration}");
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path)
+                .expect("open Session authority"),
+        );
+        create(
+            repo.as_ref(),
+            persisted(&session_id, false, false, "terminated"),
+        )
+        .await;
+        let runtime = Arc::new(RecordingCleanupRuntime::default());
+        *runtime.delegated_snapshot.lock().unwrap() =
+            awaken_session_contract::DelegatedRunSnapshot {
+                delegated_runs: vec![awaken_session_contract::DelegatedRun {
+                    run_id: awaken_agent_contract::agent::run::Id(child_id.clone()),
+                    parent_call_id: format!("delegate-{iteration}"),
+                    agent_id: "child-agent".into(),
+                    status: awaken_agent_contract::agent::delegation::DelegationStatus::Open,
+                }],
+                watermark: iteration + 1,
+            };
+        let application = SessionApplication::new_with_configuration(
+            runtime.clone(),
+            Arc::new(NoopMcpRealizer),
+            repo,
+            Arc::new(RecordingEnvironmentSource::default()),
+            SessionApplicationConfiguration::default(),
+        );
+        let completed = application
+            .release_terminal_resources("workspace", &session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            completed.terminal_cleanup.thread_ids().unwrap(),
+            &BTreeSet::from([session_id.clone(), child_id]),
+            "E1 iteration {iteration}",
+        );
+        assert_eq!(runtime.effective_ids.lock().unwrap().len(), 2, "E2");
+
+        drop(application);
+        let reopened = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path)
+                .expect("restart Session authority"),
+        );
+        let replay_runtime = Arc::new(RecordingCleanupRuntime::default());
+        let replay_application = SessionApplication::new_with_configuration(
+            replay_runtime.clone(),
+            Arc::new(NoopMcpRealizer),
+            reopened.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+            SessionApplicationConfiguration::default(),
+        );
+        replay_application
+            .release_terminal_resources("workspace", &session_id)
+            .await
+            .unwrap();
+        assert!(replay_runtime.intents.lock().unwrap().is_empty(), "E3");
+        let scan = reopened.reconcilable_sessions().await.unwrap();
+        assert!(scan.quarantined.is_empty(), "E4");
+        assert!(
+            scan.sessions
+                .iter()
+                .all(|row| row.session.session_id != session_id),
+            "E4",
+        );
+    }
 }
 
 /// Cause/effect graph: C1 a baseline is frozen; C2 its explicit Runtime

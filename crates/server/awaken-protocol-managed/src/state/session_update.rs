@@ -11,8 +11,8 @@ impl ManagedState {
     /// MCP projection recovery entry point. It consumes the same canonical
     /// repository recovery index as Resource activation, then drives only the
     /// MCP aggregate state machine through the application owner.
-    pub async fn reconcile_mcp_attachments(&self) -> usize {
-        let report = self.application.reconcile_mcp_attachments().await;
+    pub async fn reconcile_session_realizations(&self) -> usize {
+        let report = self.application.reconcile_session_realizations().await;
         for session in &report.settled {
             if let Err(error) = self.refresh_cached_projection(session) {
                 tracing::warn!(

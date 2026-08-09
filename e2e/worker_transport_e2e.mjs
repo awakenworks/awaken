@@ -96,6 +96,15 @@ async function postArtifact(claim, logicalPath) {
   // The empty-input BLAKE3 vector is pinned by awaken-resource-contract. Using
   // it here avoids introducing a second JavaScript digest implementation while
   // still proving that the real HTTP adapter verifies the canonical content id.
+  // These effect ids are golden outputs of the authoritative Rust
+  // `harvest_idempotency_key(thread, path, content_id)` codec; keeping only its
+  // outputs here avoids a parallel JavaScript implementation of that protocol.
+  const effectIds = {
+    'reports/worker-result.bin': 'ee88fe25e1e8813bec179b2037aeb40f0c9958db2faa664501e558cd911a234d',
+    'reports/late-result.bin': '5e5503f53755eade26e8bb686ad23165bcdcea9b2c97e4094f5befbe755e13b3',
+  };
+  assert.equal(claim.request.session_thread_id, 'worker-dispatch-auth-1-grant');
+  assert.ok(effectIds[logicalPath], `missing canonical artifact effect fixture for ${logicalPath}`);
   const metadata = {
     claim: {
       run_id: claim.lease.run_id,
@@ -108,6 +117,7 @@ async function postArtifact(claim, logicalPath) {
     logical_path: logicalPath,
     mime_type: 'application/octet-stream',
     content_id: 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262',
+    effect_id: effectIds[logicalPath],
   };
   const response = await fetch(`${BASE}/v1/worker/resources/files/artifacts`, {
     method: 'POST',
@@ -404,12 +414,17 @@ async function main() {
     // the live/final claim transition over the real server binary.
     const artifact = await postArtifact(grant, 'reports/worker-result.bin');
     assert.equal(artifact.status, 200, `live claim publishes an artifact: ${artifact.text}`);
-    assert.equal(artifact.json?.scope_id, grant.request.session_thread_id);
-    assert.equal(artifact.json?.logical_path, 'reports/worker-result.bin');
-    assert.equal(artifact.json?.downloadable, true);
+    assert.equal(artifact.json?.record?.scope_id, grant.request.session_thread_id);
+    assert.equal(artifact.json?.record?.logical_path, 'reports/worker-result.bin');
+    assert.equal(artifact.json?.record?.downloadable, true);
+    assert.equal(artifact.json?.effect_id, 'ee88fe25e1e8813bec179b2037aeb40f0c9958db2faa664501e558cd911a234d');
     const artifactReplay = await postArtifact(grant, 'reports/worker-result.bin');
     assert.equal(artifactReplay.status, 200, `artifact replay is accepted: ${artifactReplay.text}`);
-    assert.equal(artifactReplay.json?.id, artifact.json?.id, 'same claim/path/bytes has one File effect');
+    assert.equal(
+      artifactReplay.json?.record?.id,
+      artifact.json?.record?.id,
+      'same claim/path/bytes has one File effect',
+    );
     pass('live remote claim publishes one idempotent claim-fenced File');
 
     // A different authenticated worker cannot commit the claim. The owner-bound

@@ -1,7 +1,7 @@
 //! Managed wire-cache coordination around the Session application realization owner.
 
 use super::*;
-use awaken_session_contract::{PersistedSession, RunError, SessionRealizationControlFailure};
+use awaken_session_contract::{RunError, SessionRealizationControlFailure};
 
 impl ManagedState {
     fn map_realization_failure(error: SessionRealizationControlFailure) -> StateError {
@@ -29,19 +29,6 @@ impl ManagedState {
                 StateError::Run(RunError::internal("Session realization did not converge"))
             }
         }
-    }
-
-    pub(super) async fn realize_session_locally(
-        &self,
-        session_id: &str,
-    ) -> Result<PersistedSession, StateError> {
-        let session = self
-            .application
-            .realize_session(session_id)
-            .await
-            .map_err(Self::map_realization_application_error)?;
-        self.refresh_cached_projection(&session)?;
-        Ok(session)
     }
 }
 
@@ -713,7 +700,8 @@ mod tests {
         // | S2 | yes | exact local | no | no mutation |
         let (state, repo) = harness("session-supervised").await;
         state
-            .realize_session_locally("session-supervised")
+            .application
+            .realize_session("session-supervised")
             .await
             .expect("S1 setup");
         let before = repo.get("session-supervised").await.unwrap();

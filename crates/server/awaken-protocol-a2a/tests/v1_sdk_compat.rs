@@ -38,11 +38,11 @@ impl RunApplication for Runtime {
     ) -> Result<StepOutcome, RunApplicationError> {
         unreachable!()
     }
-    async fn pending(&self, _: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
-    async fn history(&self, _: &str) -> Vec<Message> {
-        Vec::new()
+    async fn history(&self, _: &str) -> Result<Vec<Message>, RunApplicationError> {
+        Ok(Vec::new())
     }
     fn model(&self) -> String {
         "v1-compat".into()

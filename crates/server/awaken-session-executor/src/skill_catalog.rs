@@ -12,9 +12,24 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::{AgentSkillBinding, AgentSkillKind};
 use awaken_ext_skills::SkillSpec;
 use awaken_resource_contract::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
-use awaken_session_contract::ResolvedSkillBinding;
+use awaken_session_contract::{ResolvedSkillBinding, RunError};
 
 use awaken_session_contract::SkillBundleSource;
+
+/// Keep repository failure classification beside the one durable Skill owner so
+/// every create, restore, and live-apply path shares the same closed algebra.
+pub(crate) fn skill_store_run_error(error: SkillStoreError) -> RunError {
+    let message = error.to_string();
+    match error {
+        SkillStoreError::NotFound(_) | SkillStoreError::Invalid(_) => {
+            RunError::bad_request(message)
+        }
+        SkillStoreError::Io(_) => RunError::unavailable(message),
+        SkillStoreError::AlreadyExists(_)
+        | SkillStoreError::VersionConflict(_)
+        | SkillStoreError::Storage(_) => RunError::internal(message),
+    }
+}
 
 fn anthropic_skill(id: &str) -> Option<SkillVersion> {
     let description = match id {
@@ -418,6 +433,7 @@ impl SkillCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_session_contract::RunErrorKind;
     use awaken_skill_store::{InMemorySkillStore, SkillBundleFile, bundle_sha256};
 
     fn version(id: &str, ordinal: u64, body: &str) -> SkillVersion {
@@ -436,6 +452,38 @@ mod tests {
             bundle_sha256: bundle_sha256(&files),
             files,
             created_unix_nanos: ordinal,
+        }
+    }
+
+    #[test]
+    fn session_skill_repository_failures_follow_the_closed_error_table() {
+        // Cause/effect decision table: caller-controlled missing/invalid
+        // selectors => 400; temporary filesystem I/O => 503; impossible write
+        // conflicts or durable storage/corruption => 500. Every runtime Skill
+        // entry point uses this one adapter so create, restore, and live apply
+        // cannot classify the same repository cause differently.
+        let rules = [
+            (
+                SkillStoreError::NotFound("x".into()),
+                RunErrorKind::BadRequest,
+            ),
+            (
+                SkillStoreError::Invalid("x".into()),
+                RunErrorKind::BadRequest,
+            ),
+            (SkillStoreError::Io("x".into()), RunErrorKind::Unavailable),
+            (
+                SkillStoreError::AlreadyExists("x".into()),
+                RunErrorKind::Internal,
+            ),
+            (
+                SkillStoreError::VersionConflict("x".into()),
+                RunErrorKind::Internal,
+            ),
+            (SkillStoreError::Storage("x".into()), RunErrorKind::Internal),
+        ];
+        for (cause, effect) in rules {
+            assert_eq!(skill_store_run_error(cause).kind, effect);
         }
     }
 

@@ -2,6 +2,36 @@
 
 use super::*;
 
+fn application_provisioning_error(
+    run_id: &str,
+    error: awaken_session_contract::ApplicationSessionProvisionError,
+) -> awaken_dispatch::Error {
+    let detail = format!("run {run_id} application provisioning failed: {error}");
+    if error.is_terminal() {
+        HostWorkerResolver::terminal_resolution_error(detail)
+    } else {
+        HostWorkerResolver::execution_error(detail)
+    }
+}
+
+async fn refresh_frozen_application_material(
+    claimed: &awaken_dispatch::Claimed,
+    thread_id: &awaken_agent_contract::agent::thread::Id,
+    provisioner: &dyn awaken_session_contract::ApplicationSessionProvisioner,
+    ownership: Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
+) -> Result<(), awaken_dispatch::Error> {
+    provisioner
+        .refresh_frozen(&claimed.request.activation, &thread_id.0, ownership.clone())
+        .await
+        .map_err(|error| application_provisioning_error(&claimed.lease.run_id.0, error))?;
+    ownership.verify_current().await.map_err(|error| {
+        HostWorkerResolver::execution_error(format!(
+            "run {} lost ownership during frozen application material refresh: {error}",
+            claimed.lease.run_id.0
+        ))
+    })
+}
+
 /// Install the frozen Session projection under the authenticated Run claim.
 /// Application contribution is one optional branch; ordinary registered-Worker
 /// Sessions use this same realization owner and phase driver.
@@ -88,7 +118,8 @@ pub(super) async fn install_claimed_session_projection(
                 "Control resume projection conflicts with the claimed resource snapshot",
             ));
         }
-        if directive.projection.baseline.application.is_some() {
+        let has_application_material = directive.projection.baseline.application.is_some();
+        if has_application_material {
             let provisioner = host
                 .application_session_provisioner
                 .as_ref()
@@ -97,21 +128,13 @@ pub(super) async fn install_claimed_session_projection(
                         "application Session resume has no application provisioner",
                     )
                 })?;
-            provisioner
-                .refresh_frozen(&claimed.request.activation, &thread_id.0, ownership.clone())
-                .await
-                .map_err(|error| {
-                    HostWorkerResolver::execution_error(format!(
-                        "run {} frozen application material refresh failed: {error}",
-                        claimed.lease.run_id.0
-                    ))
-                })?;
-            ownership.verify_current().await.map_err(|error| {
-                HostWorkerResolver::execution_error(format!(
-                    "run {} lost ownership during frozen application material refresh: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
+            refresh_frozen_application_material(
+                claimed,
+                thread_id,
+                provisioner.as_ref(),
+                ownership.clone(),
+            )
+            .await?;
         }
         HostWorkerResolver::realize_application_session(
             host,
@@ -124,6 +147,22 @@ pub(super) async fn install_claimed_session_projection(
                 == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await?;
+        // Environment adoption or reconstruction can outlive attempt-scoped
+        // application credentials. Reissue them after realization and before
+        // the claimed Run can execute against the frozen Session.
+        if has_application_material {
+            let provisioner = host
+                .application_session_provisioner
+                .as_ref()
+                .expect("application material was already checked above");
+            refresh_frozen_application_material(
+                claimed,
+                thread_id,
+                provisioner.as_ref(),
+                ownership.clone(),
+            )
+            .await?;
+        }
     } else {
         let provisioner = host
             .application_session_provisioner
@@ -136,12 +175,7 @@ pub(super) async fn install_claimed_session_projection(
         let contribution = provisioner
             .prepare(&claimed.request.activation, &thread_id.0, ownership.clone())
             .await
-            .map_err(|error| {
-                HostWorkerResolver::execution_error(format!(
-                    "run {} application provisioning failed: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
+            .map_err(|error| application_provisioning_error(&claimed.lease.run_id.0, error))?;
         ownership.verify_current().await.map_err(|error| {
             HostWorkerResolver::execution_error(format!(
                 "run {} lost ownership during application provisioning: {error}",
@@ -171,6 +205,12 @@ pub(super) async fn install_claimed_session_projection(
                 "Control contribution projection conflicts with the claimed resource snapshot",
             ));
         }
+        let has_application_material = receipt
+            .contribution
+            .projection
+            .baseline
+            .application
+            .is_some();
         HostWorkerResolver::realize_application_session(
             host,
             control.as_ref(),
@@ -182,6 +222,42 @@ pub(super) async fn install_claimed_session_projection(
                 == awaken_dispatch::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
         .await?;
+        // Initial Environment construction is allowed to be slow. Refresh the
+        // already-frozen application material only after it completes so the
+        // Run never starts with credentials aged during image realization.
+        if has_application_material {
+            refresh_frozen_application_material(
+                claimed,
+                thread_id,
+                provisioner.as_ref(),
+                ownership.clone(),
+            )
+            .await?;
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_absorbing_application_provisioning_failures_terminalize_the_claim() {
+        let retryable = application_provisioning_error(
+            "run-retryable",
+            awaken_session_contract::ApplicationSessionProvisionError::retryable(
+                "transport unavailable",
+            ),
+        );
+        let terminal = application_provisioning_error(
+            "run-terminal",
+            awaken_session_contract::ApplicationSessionProvisionError::terminal(
+                "frozen request rejected",
+            ),
+        );
+
+        assert!(!retryable.is_terminal_resolution());
+        assert!(terminal.is_terminal_resolution());
+    }
 }

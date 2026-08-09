@@ -383,7 +383,7 @@ impl SharedHost {
             memory_mounter: std::sync::RwLock::new(None),
             gate_override: None,
             dispatch_pool: std::sync::OnceLock::new(),
-            terminal_reconciliation_started: std::sync::OnceLock::new(),
+            dispatch_maintenance: std::sync::OnceLock::new(),
             dispatch_store_override: None,
             authority: {
                 #[cfg(any(test, feature = "test-support"))]
@@ -618,13 +618,17 @@ impl SharedHost {
             .update(thread, |slot| slot.agent_id = Some(agent_id.to_string()));
     }
 
-    pub(crate) fn thread_agent_projection(&self, thread: &str) -> Option<String> {
+    /// Rebuildable Agent projection used only as input to Session admission.
+    /// Runtime never treats this cache as an executable publication authority.
+    pub fn thread_agent_projection(&self, thread: &str) -> Option<String> {
         self.session_slots
             .read(thread, |slot| slot.agent_id.clone())
             .flatten()
     }
 
-    pub(crate) fn thread_workspace(&self, thread: &str) -> String {
+    /// Workspace context supplied to the Session application admission boundary.
+    /// Unknown flat-protocol threads use the process's persisted local workspace.
+    pub fn thread_workspace(&self, thread: &str) -> String {
         self.session_slots
             .read(thread, |slot| slot.workspace.clone())
             .flatten()

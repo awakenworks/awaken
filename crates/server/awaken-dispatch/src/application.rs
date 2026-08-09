@@ -13,6 +13,7 @@ pub enum ApplicationErrorKind {
     InvalidRequest,
     Conflict,
     Internal,
+    Unavailable,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -48,6 +49,14 @@ impl ApplicationError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             kind: ApplicationErrorKind::Internal,
+            message: message.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            kind: ApplicationErrorKind::Unavailable,
             message: message.into(),
         }
     }
@@ -183,13 +192,15 @@ mod tests {
     #[test]
     fn application_error_kinds_preserve_http_mapping_causes() {
         // Cause/effect graph: C1 caller input/claim is invalid -> E1 4xx;
-        // C2 state conflicts -> E2 409; C3 dependency fails -> E3 retryable 5xx.
+        // C2 state conflicts -> E2 409; C3 permanent internal failure -> E3 500;
+        // C4 temporary dependency failure -> E4 retryable 503.
         // The application port preserves these causes without importing HTTP.
         //
         // | Rule | cause            | effect kind     |
         // | R1   | invalid request  | InvalidRequest  |
         // | R2   | state conflict   | Conflict        |
-        // | R3   | dependency fault | Internal        |
+        // | R3   | internal fault   | Internal        |
+        // | R4   | dependency down  | Unavailable     |
         assert_eq!(
             ApplicationError::invalid("x").kind,
             ApplicationErrorKind::InvalidRequest
@@ -201,6 +212,10 @@ mod tests {
         assert_eq!(
             ApplicationError::internal("x").kind,
             ApplicationErrorKind::Internal
+        );
+        assert_eq!(
+            ApplicationError::unavailable("x").kind,
+            ApplicationErrorKind::Unavailable
         );
     }
 }

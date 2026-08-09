@@ -3246,6 +3246,7 @@ struct BindingOrderSink {
     calls: AtomicUsize,
     observed_before_publish: std::sync::atomic::AtomicBool,
     fail: bool,
+    require_realization: bool,
 }
 
 #[async_trait::async_trait]
@@ -3262,7 +3263,12 @@ impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink
                 .is_none(),
             Ordering::SeqCst,
         );
-        if self.fail {
+        if self.require_realization && receipt.realization.is_none() {
+            Err(awaken_session_contract::RunError::classified(
+                "session_realization_stale",
+                "replacement realization is not installed",
+            ))
+        } else if self.fail {
             Err(awaken_session_contract::RunError::internal(
                 "binding store unavailable",
             ))
@@ -3286,6 +3292,7 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
         calls: AtomicUsize::new(0),
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: false,
+        require_realization: false,
     });
     crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
 
@@ -3300,6 +3307,66 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
     assert!(host.session_environment("binding-order").await.is_some());
 }
 
+/// Restart synchronization cause/effect graph: C1 a recovered claim adopts the
+/// Session environment before Control's replacement lease is projected; C2 the
+/// first exact receipt is rejected as stale; C3 Control installs the new lease.
+/// R1 C1+C2 blocks publication, R2 C1+C2+C3 retries with the exact new lease and
+/// publishes once. The no-C3 timeout/fail-closed rule is owned by the adjacent
+/// binding-failure test and the bounded wait in `persist_environment_before_publish`.
+#[tokio::test]
+async fn recovered_environment_waits_for_replacement_realization_before_publish() {
+    use awaken_session_contract::SessionRuntime;
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(BindingOrderSink {
+        host: Arc::downgrade(&host),
+        calls: AtomicUsize::new(0),
+        observed_before_publish: std::sync::atomic::AtomicBool::new(false),
+        fail: false,
+        require_realization: true,
+    });
+    crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
+
+    let opening = {
+        let host = host.clone();
+        tokio::spawn(async move { host.ctx_for("binding-restart", None).await })
+    };
+    while sink.calls.load(Ordering::SeqCst) == 0 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        host.session_environment("binding-restart").await.is_none(),
+        "R1"
+    );
+    host.install_session_realization_lease(
+        "binding-restart",
+        awaken_session_contract::SessionRealizationLease {
+            owner: "local-worker".into(),
+            runtime_incarnation: "replacement".into(),
+            epoch: 2,
+            expires_at_unix_ms: u64::MAX,
+        },
+    );
+    opening.await.expect("join").expect("R2");
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 2, "R2");
+    assert!(host.session_environment("binding-restart").await.is_some());
+}
+
+/// Durable-binding decision table: no binding + no resident Environment permits
+/// first creation; exact binding + adopted/resident permits reuse (covered by the
+/// recovery E2E); exact binding + neither must fail before provider creation.
+#[tokio::test]
+async fn missing_durable_environment_adoption_never_creates_a_substitute() {
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    host.install_expected_environment_binding("binding-corrupt", Some("opaque".into()))
+        .expect("project durable expectation");
+    let error = match host.ctx_for("binding-corrupt", None).await {
+        Ok(_) => panic!("missing adoption must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("was not adopted"));
+    assert!(host.session_environment("binding-corrupt").await.is_none());
+}
+
 #[tokio::test]
 async fn binding_commit_failure_disposes_and_never_publishes_the_environment() {
     use awaken_session_contract::SessionRuntime;
@@ -3309,6 +3376,7 @@ async fn binding_commit_failure_disposes_and_never_publishes_the_environment() {
         calls: AtomicUsize::new(0),
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: true,
+        require_realization: false,
     });
     crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
 
@@ -3332,6 +3400,7 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
         calls: AtomicUsize::new(0),
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: false,
+        require_realization: false,
     });
     let managed = crate::ManagedHost::new(host.clone());
     managed.install_environment_binding_sink(sink.clone());
@@ -3387,6 +3456,7 @@ async fn on_tool_use_binding_failure_never_publishes_the_environment() {
         calls: AtomicUsize::new(0),
         observed_before_publish: std::sync::atomic::AtomicBool::new(false),
         fail: true,
+        require_realization: false,
     });
     let managed = crate::ManagedHost::new(host.clone());
     managed.install_environment_binding_sink(sink.clone());

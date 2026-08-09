@@ -102,7 +102,12 @@ impl ResourcePurgeGuard for SessionResourcePurgeGuard {
             .reconcilable_sessions()
             .await
             .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-        for scoped in sessions {
+        if !sessions.quarantined.is_empty() {
+            return Err(ResourcePurgeError::Storage(
+                "Session recovery quarantine blocks physical Resource purge".to_string(),
+            ));
+        }
+        for scoped in sessions.sessions {
             let workspace = scoped.workspace_id;
             let session = scoped.session;
             let candidates = resource_targets(
@@ -654,7 +659,9 @@ impl SessionApplication {
                 return report;
             }
         };
-        for scoped in sessions {
+        report.pending = sessions.sessions.len();
+        report.quarantined.clone_from(&sessions.quarantined);
+        for scoped in sessions.sessions {
             let owner_scope = scoped.workspace_id;
             let session = scoped.session;
             let session_id = session.session_id.clone();

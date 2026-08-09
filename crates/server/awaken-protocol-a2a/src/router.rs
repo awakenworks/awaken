@@ -331,7 +331,21 @@ async fn stream_send(
                 false,
             ),
         };
-        let history = rt.runtime.history(&thread).await;
+        let (history, outcome) = match rt.runtime.history(&thread).await {
+            Ok(history) => (history, outcome),
+            Err(error) => (
+                Vec::new(),
+                StepOutcome::ended(
+                    Vec::new(),
+                    EndCause::Error(Failure::Inference {
+                        code: error.code,
+                        message: error.message,
+                    }),
+                    false,
+                    false,
+                ),
+            ),
+        };
         let mut task = encode_task(&thread, &history, &outcome);
         task.id = task_id.clone();
         truncate_history(&mut task, history_length);
@@ -846,7 +860,21 @@ async fn run_send(
                         false,
                     )
                 });
-            let history = rt.runtime.history(&thread).await;
+            let (history, step) = match rt.runtime.history(&thread).await {
+                Ok(history) => (history, step),
+                Err(error) => (
+                    Vec::new(),
+                    StepOutcome::ended(
+                        Vec::new(),
+                        EndCause::Error(Failure::Inference {
+                            code: error.code,
+                            message: error.message,
+                        }),
+                        false,
+                        false,
+                    ),
+                ),
+            };
             let mut task = encode_task(&thread, &history, &step);
             task.id = task_id;
             truncate_history(&mut task, history_length);
@@ -857,7 +885,7 @@ async fn run_send(
 
     let step = drive_processed(rt, processed).await?;
 
-    let history = rt.runtime.history(&thread).await;
+    let history = rt.runtime.history(&thread).await?;
     let mut task = encode_task(&thread, &history, &step);
     task.id = task_id;
     truncate_history(&mut task, history_length);
@@ -883,7 +911,7 @@ async fn drive_processed_runtime(
     agent_id: Option<String>,
     thread: &str,
 ) -> Result<StepOutcome, RunApplicationError> {
-    match runtime.pending(thread).await {
+    match runtime.pending(thread).await? {
         // A awaiting run on this context → the message is the awaited input.
         Some(pending) => {
             let resume =
@@ -1146,7 +1174,12 @@ async fn cancel_task(
             "task is not cancelable".into(),
         ));
     }
-    if let Some(pending) = rt.runtime.pending(&task.context_id).await {
+    if let Some(pending) = rt
+        .runtime
+        .pending(&task.context_id)
+        .await
+        .map_err(cancel_driver_error)?
+    {
         let _ = rt
             .runtime
             .resume(
@@ -1783,6 +1816,16 @@ fn rpc_fault(err: RunApplicationError) -> (i32, String) {
         (RunErrorKind::BadRequest, message) => (-32602, message),
         (RunErrorKind::Internal | RunErrorKind::Unavailable, message) => (-32603, message),
     }
+}
+
+fn cancel_driver_error(error: RunApplicationError) -> (StatusCode, i32, String) {
+    use awaken_session_contract::RunErrorKind;
+    let status = match error.kind {
+        RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+        RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    (status, -32603, error.message)
 }
 
 /// Map a driver error to `(status, A2A error envelope)`.

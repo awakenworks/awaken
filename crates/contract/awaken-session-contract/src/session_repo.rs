@@ -263,6 +263,35 @@ pub struct PersistedSession {
 }
 
 impl PersistedSession {
+    /// Create the sole durable preparation aggregate before any realization I/O.
+    /// Protocol adapters lower wire input into the typed intent and metadata;
+    /// aggregate shape and defaults remain owned here.
+    #[must_use]
+    pub fn preparing(
+        session_id: impl Into<String>,
+        intent: crate::SessionCreationIntent,
+        title: Option<String>,
+        metadata: BTreeMap<String, String>,
+        tools: crate::SessionToolConfiguration,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            revision: SessionRevision::default(),
+            baseline: crate::SessionBaselineState::Preparing(intent),
+            title,
+            metadata,
+            tools,
+            activity_epoch: 0,
+            environment: Default::default(),
+            mcp: Default::default(),
+            resources: Default::default(),
+            realization: None,
+            execution: SessionExecutionState::Preparing,
+            disposition: Default::default(),
+            terminal_cleanup: Default::default(),
+        }
+    }
+
     /// Apply the sole durable Session execution transition function.
     ///
     /// Returns `false` for an idempotent replay and leaves the aggregate
@@ -571,6 +600,24 @@ pub enum SessionRepositoryRecoveryAction {
     Reject,
 }
 
+/// One corrupt durable Session row isolated by the authoritative store scan.
+/// The raw aggregate is deliberately absent so recovery reporting cannot leak
+/// persisted configuration or credentials.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRecoveryQuarantine {
+    pub session_id: String,
+    pub reason: String,
+}
+
+/// Complete result of one recovery scan. Store adapters own row decoding and
+/// durable quarantine, so callers receive healthy work and isolation evidence
+/// from one authority instead of maintaining a parallel recovery registry.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionRecoveryScan {
+    pub sessions: Vec<ScopedPersistedSession>,
+    pub quarantined: Vec<SessionRecoveryQuarantine>,
+}
+
 impl SessionRepositoryError {
     #[must_use]
     pub const fn recovery_action(&self) -> SessionRepositoryRecoveryAction {
@@ -667,9 +714,7 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// Implementations preserve the intrinsic Workspace partition in the same
     /// row scan; application coordinators filter by their owned state machine.
     /// One index avoids parallel per-feature recovery registries and scans.
-    async fn reconcilable_sessions(
-        &self,
-    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError>;
+    async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError>;
 
     /// Durable application-command receipt. This is a read of the same
     /// idempotency table written atomically by `create`/`commit_mutation`, not a
@@ -774,6 +819,52 @@ mod mutation_tests {
             disposition: SessionDisposition::Active,
             terminal_cleanup: Default::default(),
         }
+    }
+
+    #[test]
+    fn preparing_constructor_owns_the_initial_aggregate_shape() {
+        // Cause/effect graph: C1 the adapter supplies typed creation intent and
+        // secret-free presentation fields; C2 no durable mutation has occurred.
+        // Effects: E1 every caller gets the same Preparing/Active state, zero
+        // revision/activity, empty effect aggregates, and exact supplied data;
+        // E2 no protocol can invent a different initial lifecycle shape.
+        //
+        // | Rule | typed input | prior mutation | Effect |
+        // | C1 | present | no | E1 canonical aggregate |
+        // | C2 | wire-specific defaults | no | E2 impossible at constructor |
+        let fixture = session("constructor-source", SessionRevision(0));
+        let crate::SessionBaselineState::Preparing(intent) = fixture.baseline else {
+            panic!("fixture carries a creation intent");
+        };
+        let metadata = BTreeMap::from([("key".to_string(), "value".to_string())]);
+        let prepared = PersistedSession::preparing(
+            "constructor",
+            intent,
+            Some("title".into()),
+            metadata.clone(),
+            Default::default(),
+        );
+        assert_eq!(prepared.session_id, "constructor", "C1/E1");
+        assert_eq!(prepared.revision, SessionRevision(0), "C1/E1");
+        assert_eq!(
+            prepared.execution,
+            SessionExecutionState::Preparing,
+            "C1/E1"
+        );
+        assert_eq!(prepared.disposition, SessionDisposition::Active, "C1/E1");
+        assert_eq!(prepared.activity_epoch, 0, "C1/E1");
+        assert_eq!(prepared.title.as_deref(), Some("title"), "C1/E1");
+        assert_eq!(prepared.metadata, metadata, "C1/E1");
+        assert!(prepared.mcp.attachments.is_empty(), "C1/E1");
+        assert!(prepared.resources.active.inputs.is_empty(), "C1/E1");
+        assert!(prepared.realization.is_none(), "C1/E1");
+        assert!(
+            matches!(
+                prepared.terminal_cleanup,
+                crate::SessionTerminalCleanupState::NotRequested
+            ),
+            "C1/E1"
+        );
     }
 
     #[test]

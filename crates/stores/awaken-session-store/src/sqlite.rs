@@ -383,14 +383,34 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .map_err(corrupt)
     }
 
-    async fn reconcilable_sessions(
-        &self,
-    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError> {
+    async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
         let conn = self.conn.lock().map_err(storage)?;
-        (|| -> Result<Vec<_>, SessionRepositoryError> {
+        (|| -> Result<SessionRecoveryScan, SessionRepositoryError> {
+            let mut scan = SessionRecoveryScan::default();
+            {
+                let mut quarantined = conn
+                    .prepare(
+                        "SELECT session_id, reason FROM managed_session_quarantine ORDER BY session_id",
+                    )
+                    .map_err(storage)?;
+                let rows = quarantined
+                    .query_map([], |row| {
+                        Ok(SessionRecoveryQuarantine {
+                            session_id: row.get(0)?,
+                            reason: row.get(1)?,
+                        })
+                    })
+                    .map_err(storage)?;
+                scan.quarantined = rows
+                    .collect::<Result<Vec<_>, rusqlite::Error>>()
+                    .map_err(storage)?;
+            }
             let mut statement = conn.prepare(
                 "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision
-                 FROM managed_session ORDER BY session_id",
+                 FROM managed_session session
+                 WHERE NOT EXISTS (SELECT 1 FROM managed_session_quarantine quarantine
+                                   WHERE quarantine.session_id = session.session_id)
+                 ORDER BY session_id",
             ).map_err(storage)?;
             let rows = statement
                 .query_map([], |row| {
@@ -414,21 +434,32 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     ))
                 })
                 .map_err(storage)?;
-            rows.map(|row| {
+            for row in rows {
                 let (workspace_id, row) = row.map_err(storage)?;
-                Ok(ScopedPersistedSession {
-                    workspace_id,
-                    session: decode(row).map_err(corrupt)?,
-                })
-            })
-            .collect::<Result<Vec<_>, SessionRepositoryError>>()
+                let session_id = row.session_id.clone();
+                match decode(row) {
+                    Ok(session) if session.needs_reconciliation() => {
+                        scan.sessions.push(ScopedPersistedSession {
+                            workspace_id,
+                            session,
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        let reason = error.to_string();
+                        conn.execute(
+                            "INSERT OR IGNORE INTO managed_session_quarantine (session_id, reason) \
+                             VALUES (?1, ?2)",
+                            params![session_id, reason],
+                        )
+                        .map_err(storage)?;
+                        scan.quarantined
+                            .push(SessionRecoveryQuarantine { session_id, reason });
+                    }
+                }
+            }
+            Ok(scan)
         })()
-        .map(|records| {
-            records
-                .into_iter()
-                .filter(|record| record.session.needs_reconciliation())
-                .collect()
-        })
     }
 
     async fn idempotency_receipt(

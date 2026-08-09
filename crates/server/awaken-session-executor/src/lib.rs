@@ -56,6 +56,7 @@ mod session_slot;
 pub use session_environment::HandExecutorFactory;
 mod skill_catalog;
 mod skills;
+mod step_projection;
 mod store;
 #[cfg(test)]
 mod test_mcp;
@@ -71,7 +72,6 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::RunState;
 use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
 use awaken_session_contract::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
@@ -83,6 +83,7 @@ use awaken_session_contract::{
 pub use crate::authority::EphemeralRuntimeAuthority;
 pub use crate::authority::{
     CredentialRefreshFactory, LocalCommit, ProjectedLocalCommit, RuntimeAuthority,
+    RuntimeAuthorityError,
 };
 pub use crate::host::{HostError, HostErrorKind, PendingTool, RunResult};
 pub use crate::worker_http::respond as respond_host_http;
@@ -96,15 +97,14 @@ pub use crate::host::{
     remote_worker_placement, self_hosted_inference_holder,
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
-pub use crate::run_application_host::{
-    RunApplicationHost, SessionDefaultsPreparationError, SessionDefaultsPreparer,
-};
+pub use crate::run_application_host::RunApplicationHost;
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox_tier};
+use crate::skill_catalog::skill_store_run_error;
 pub use crate::skills::SkillForkPlacement;
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
@@ -150,56 +150,19 @@ fn user_message(content: Vec<ContentBlock>) -> Message {
 }
 
 fn to_run_error(err: HostError) -> RunError {
-    let message = err.message;
-    if message.contains("401") || message.to_ascii_lowercase().contains("auth") {
-        return RunError::classified("mcp_authentication_failed", message);
-    }
-    if message.to_ascii_lowercase().contains("mcp server") {
-        return RunError::classified("mcp_connection_failed", message);
-    }
     match err.kind {
-        HostErrorKind::BadRequest | HostErrorKind::Conflict => RunError::bad_request(message),
-        HostErrorKind::Internal => RunError::internal(message),
+        HostErrorKind::BadRequest | HostErrorKind::Conflict => RunError::bad_request(err.message),
+        HostErrorKind::Unavailable if err.code == "unavailable" => {
+            RunError::unavailable(err.message)
+        }
+        HostErrorKind::Unavailable => RunError::unavailable_classified(err.code, err.message),
+        HostErrorKind::Internal if err.code == "internal" => RunError::internal(err.message),
+        HostErrorKind::Internal => RunError::classified(err.code, err.message),
     }
 }
 
 /// Map a neutral terminal state to the Managed idle `stop_reason`. `RequiresAction`
 /// carries no event ids here; the projection refills them from the pending tool.
-fn to_pending(pending: Option<PendingTool>) -> Option<Pending> {
-    pending.map(|p| Pending {
-        tool_use_id: p.tool_use_id,
-        name: p.name,
-        input: p.input,
-        client_executed: p.client_executed,
-    })
-}
-
-fn to_step_outcome(result: RunResult) -> Result<StepOutcome, RunError> {
-    let delegated_runs = result.delegated_runs;
-    let run_id = result.run_id;
-    match result.state {
-        RunState::Awaiting => Ok(StepOutcome::awaiting(
-            result.new_messages,
-            to_pending(result.pending),
-            result.compacted,
-            result.rescheduled,
-        )
-        .with_delegated_runs(delegated_runs)
-        .with_run_id(run_id)),
-        RunState::Ended(cause) => Ok(StepOutcome::ended(
-            result.new_messages,
-            cause,
-            result.compacted,
-            result.rescheduled,
-        )
-        .with_delegated_runs(delegated_runs)
-        .with_run_id(run_id)),
-        RunState::Running => Err(RunError::internal(
-            "runtime returned an unsettled Running state at the session boundary",
-        )),
-    }
-}
-
 /// The Managed Agents `SessionRuntime` port implemented over the shared host.
 /// Holds only an `Arc<SharedHost>` plus runtime-side materialization SPIs, so it
 /// composes with any other adapter bound to the same host.
@@ -444,7 +407,9 @@ impl ManagedHost {
         _thread: &str,
         result: Result<RunResult, HostError>,
     ) -> Result<StepOutcome, RunError> {
-        result.map_err(to_run_error).and_then(to_step_outcome)
+        result
+            .map_err(to_run_error)
+            .and_then(crate::step_projection::settled_step)
     }
 
     /// Wire the live resource-invariant port used at activation and Memory use.
@@ -634,7 +599,7 @@ impl ManagedHost {
                     .skills
                     .load_pinned(workspace, bindings, claim)
                     .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                    .map_err(skill_store_run_error)?;
                 self.host
                     .session_slots
                     .update(thread, |slot| slot.skills = Some(versions));
@@ -646,7 +611,7 @@ impl ManagedHost {
                     .skills
                     .reload_cache_in(workspace)
                     .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                    .map_err(skill_store_run_error)?;
                 self.host
                     .session_slots
                     .update(thread, |slot| slot.skills = None);
@@ -859,7 +824,7 @@ impl ManagedHost {
                     .skills
                     .load_pinned(workspace_id, bindings, claim)
                     .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+                    .map_err(skill_store_run_error)?,
             ),
             None => None,
         };
@@ -969,6 +934,16 @@ impl SessionRuntime for ManagedHost {
             .install_session_realization_lease(session_id, lease);
     }
 
+    fn install_expected_environment_binding(
+        &self,
+        session_id: &str,
+        binding: Option<String>,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        self.host
+            .install_expected_environment_binding(session_id, binding)
+            .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))
+    }
+
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
         self.host.delegated_runs(thread).await.map_err(to_run_error)
     }
@@ -983,8 +958,11 @@ impl SessionRuntime for ManagedHost {
             .map_err(to_run_error)
     }
 
-    async fn owns_thread(&self, thread: &str) -> bool {
-        self.host.has_durable_thread(thread)
+    async fn owns_thread(&self, thread: &str) -> Result<bool, RunError> {
+        self.host
+            .has_durable_thread(thread)
+            .await
+            .map_err(to_run_error)
     }
 
     async fn end_session(&self, thread: &str) -> Result<(), RunError> {
@@ -1244,7 +1222,7 @@ impl SessionRuntime for ManagedHost {
         self.host
             .pending_tool(thread)
             .await
-            .map(to_pending)
+            .map(crate::step_projection::pending)
             .map_err(to_run_error)
     }
 
@@ -1303,7 +1281,7 @@ impl SessionRuntime for ManagedHost {
             .skills
             .resolve(workspace_id, skills)
             .await
-            .map_err(|error| RunError::bad_request(error.to_string()))
+            .map_err(skill_store_run_error)
     }
 
     async fn apply_session_inputs(
@@ -1442,8 +1420,14 @@ impl SessionRuntime for ManagedHost {
 
     /// Committed transcript from durable truth, so the adapter can rehydrate a
     /// session lost to a process restart and resume its awaiting run (ADR-0039).
-    async fn committed_messages(&self, thread: &str) -> Vec<awaken_agent_contract::Message> {
-        self.host.committed_messages(thread).await
+    async fn committed_messages(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<awaken_agent_contract::Message>, RunError> {
+        self.host
+            .committed_messages(thread)
+            .await
+            .map_err(to_run_error)
     }
 
     async fn committed_run_lifecycle(
@@ -1462,16 +1446,19 @@ impl SessionRuntime for ManagedHost {
             .map_err(|error| RunError::internal(error.to_string()))
     }
 
-    async fn session_usage(&self, thread: &str) -> awaken_session_contract::SessionUsage {
+    async fn session_usage(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         // Map the runtime's per-model tally onto the managed wire's session-level total
         // (the host is the context boundary; the managed crate never sees TokenUsage).
         let total = self.host.thread_usage(thread).await.total();
-        awaken_session_contract::SessionUsage {
+        Ok(awaken_session_contract::SessionUsage {
             input_tokens: total.prompt_tokens,
             output_tokens: total.completion_tokens,
             cache_read_tokens: total.cache_read_tokens,
             cache_creation_tokens: total.cache_creation_tokens,
-        }
+        })
     }
 
     fn model(&self) -> String {

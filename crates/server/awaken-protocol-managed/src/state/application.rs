@@ -227,8 +227,7 @@ mod tests {
         let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
         state
             .application
-            .session_repository()
-            .create(
+            .create_session_root(
                 "workspace",
                 session,
                 IdempotencyRecord {
@@ -403,12 +402,7 @@ mod tests {
             }
 
             if !matches!(rule, ContributionRule::MissingSession) {
-                let persisted = state
-                    .application
-                    .session_repository()
-                    .get(&id)
-                    .await
-                    .unwrap();
+                let persisted = state.application.session(&id).await.unwrap();
                 let expected_revision = if matches!(
                     rule,
                     ContributionRule::Commit

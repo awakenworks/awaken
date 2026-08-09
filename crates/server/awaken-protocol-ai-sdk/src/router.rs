@@ -117,12 +117,10 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
     let known_ids: HashSet<String> = match &peek {
-        Some(thread) => rt
-            .history(thread)
-            .await
-            .into_iter()
-            .map(|m| m.id.0)
-            .collect(),
+        Some(thread) => match rt.history(thread).await {
+            Ok(history) => history.into_iter().map(|message| message.id.0).collect(),
+            Err(error) => return sse_error(error),
+        },
         None => HashSet::new(),
     };
 
@@ -135,7 +133,11 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
         match resume_step(&rt, &thread, &processed.decisions).await {
             Ok(outcome) => {
                 let mut events = encode_step(&outcome);
-                attach_usage(&mut events, rt.usage(&thread).await);
+                let usage = match rt.usage(&thread).await {
+                    Ok(usage) => usage,
+                    Err(error) => return sse_error(error),
+                };
+                attach_usage(&mut events, usage);
                 sse_response(events)
             }
             Err(response) => response,
@@ -217,6 +219,26 @@ fn stream_turn_with_keep_alive(
                 },
                 result = &mut turn, if turn_result.is_none() => {
                     turn_result = Some(result);
+                    // Completion of the Run future is the production boundary:
+                    // every live event it emitted is already queued before this
+                    // result becomes observable. Drain that finite queue, then
+                    // stop waiting even if another runtime component retained a
+                    // clone of the best-effort sink. The committed outcome below
+                    // is authoritative and must always close the client stream.
+                    while let Ok(event) = live_rx.try_recv() {
+                        let wires = match &event {
+                            AgentEvent::Delta(delta) => transcoder.delta(delta),
+                            AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
+                            AgentEvent::Fact(_) => Vec::new(),
+                        };
+                        for wire in wires {
+                            if out_tx.send(sse_line(&wire)).is_err() {
+                                disconnected = true;
+                                break 'live;
+                            }
+                        }
+                    }
+                    live_closed = true;
                 },
                 _ = keep_alive.tick() => {
                     if out_tx.send(": keep-alive\n\n".to_string()).is_err() {
@@ -239,7 +261,10 @@ fn stream_turn_with_keep_alive(
             Err(_) => transcoder.fail("turn task cancelled"),
         };
         // The AI SDK `finish` part carries the run's token accounting.
-        attach_usage(&mut close, rt_usage.usage(&thread_usage).await);
+        match rt_usage.usage(&thread_usage).await {
+            Ok(usage) => attach_usage(&mut close, usage),
+            Err(error) => close = transcoder.fail(driver_error_message(error)),
+        }
         for event in close {
             if out_tx.send(sse_line(&event)).is_err() {
                 return;
@@ -257,7 +282,7 @@ async fn resume_step(
     thread: &str,
     decisions: &[crate::request::Decision],
 ) -> Result<StepOutcome, Response> {
-    let Some(pending) = rt.pending(thread).await else {
+    let Some(pending) = rt.pending(thread).await.map_err(sse_error)? else {
         return Err(sse_error(RunApplicationError::bad_request(
             "no awaiting run to resume",
         )));
@@ -326,8 +351,14 @@ async fn thread_messages(
     let thread_id = resolved
         .map(|Extension(thread)| thread.0)
         .unwrap_or(thread_id);
-    let history = rt.history(&thread_id).await;
-    let pending = rt.pending(&thread_id).await;
+    let history = match rt.history(&thread_id).await {
+        Ok(history) => history,
+        Err(error) => return query_error(error),
+    };
+    let pending = match rt.pending(&thread_id).await {
+        Ok(pending) => pending,
+        Err(error) => return query_error(error),
+    };
     match paginate_history(&history, params.cursor.as_deref(), params.limit()) {
         // The house cursor-page envelope (`awaken-api-contract`): `{ items, cursor }`,
         // where `cursor` is the continuation (`null` on the last page).
@@ -402,6 +433,17 @@ fn sse_error(err: RunApplicationError) -> Response {
     sse_response(error_events(err))
 }
 
+fn query_error(error: RunApplicationError) -> Response {
+    use awaken_session_contract::RunErrorKind;
+
+    let status = match error.kind {
+        RunErrorKind::BadRequest => StatusCode::BAD_REQUEST,
+        RunErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+        RunErrorKind::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    (status, error.message).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,12 +499,12 @@ mod tests {
                 unreachable!()
             }
 
-            async fn pending(&self, _thread: &str) -> Option<Pending> {
-                None
+            async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+                Ok(None)
             }
 
-            async fn history(&self, _thread: &str) -> Vec<Message> {
-                Vec::new()
+            async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+                Ok(Vec::new())
             }
 
             fn model(&self) -> String {

@@ -82,6 +82,9 @@ fn map_host_error(error: HostError) -> awaken_dispatch::ApplicationError {
         crate::HostErrorKind::Internal => {
             awaken_dispatch::ApplicationError::internal(error.message)
         }
+        crate::HostErrorKind::Unavailable => {
+            awaken_dispatch::ApplicationError::unavailable(error.message)
+        }
     }
 }
 

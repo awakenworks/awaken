@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
-    ScopedPersistedSession, SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload,
-    SessionMutationResult, SessionRepositoryError, SessionRevision,
+    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionRepositoryError, SessionRevision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -222,7 +222,7 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
 
     async fn reconcilable_sessions(
         &self,
-    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError> {
+    ) -> Result<awaken_session_contract::SessionRecoveryScan, SessionRepositoryError> {
         self.inner.reconcilable_sessions().await
     }
 

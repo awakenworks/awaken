@@ -276,9 +276,11 @@ async function main() {
     }
     pass('all durable Skill aggregate corruption is rejected at the repository boundary');
 
-    // A cold process must not trust a stale in-memory catalog. Damage the immutable
-    // bytes, restart, and prove both a retained Session pin and a fresh resolution
-    // fail before model execution instead of drifting to another version.
+    // A cold process must not trust a stale in-memory catalog. Cause/effect table:
+    // C1 immutable stored bytes are corrupt; C2 request uses a retained exact pin
+    // or performs a fresh resolution. C1+C2 => E1 fail before model execution,
+    // E2 preserve the storage-corruption 500 taxonomy, and E3 never drift to
+    // another version. Invalid client input would be 400; this is durable damage.
     await stopServer(second.server);
     server = null;
     const damaged = structuredClone(cleanAggregate);
@@ -292,7 +294,7 @@ async function main() {
     await assert.rejects(
       runAndReadLastReply(client, pinned.id, 'do not run a corrupted retained Skill'),
       (error) => {
-        assert.equal(error.status, 400, `retained Session corruption is a client-visible rejection: ${error}`);
+        assert.equal(error.status, 500, `retained Session corruption is a client-visible rejection: ${error}`);
         assert.match(error.message, /invalid persisted Skill aggregate/u);
         return true;
       },
@@ -300,7 +302,7 @@ async function main() {
     await assert.rejects(
       createSession(client),
       (error) => {
-        assert.equal(error.status, 400, `fresh resolution corruption is rejected: ${error}`);
+        assert.equal(error.status, 500, `fresh resolution corruption is rejected: ${error}`);
         assert.match(error.message, /invalid persisted Skill aggregate/u);
         return true;
       },

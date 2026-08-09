@@ -21,6 +21,7 @@ use tower::ServiceExt;
 struct PersistedRuntime {
     thread: String,
     messages: Vec<Message>,
+    unavailable: bool,
 }
 
 #[async_trait::async_trait]
@@ -43,16 +44,19 @@ impl RunApplication for PersistedRuntime {
         unreachable!("history tests never resume")
     }
 
-    async fn pending(&self, _thread: &str) -> Option<Pending> {
-        None
+    async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
+        Ok(None)
     }
 
-    async fn history(&self, thread: &str) -> Vec<Message> {
-        if thread == self.thread {
+    async fn history(&self, thread: &str) -> Result<Vec<Message>, RunApplicationError> {
+        if self.unavailable {
+            return Err(RunApplicationError::unavailable("history store offline"));
+        }
+        Ok(if thread == self.thread {
             self.messages.clone()
         } else {
             Vec::new()
-        }
+        })
     }
 
     fn model(&self) -> String {
@@ -99,6 +103,7 @@ fn runtime(messages: Vec<Message>) -> Arc<PersistedRuntime> {
     Arc::new(PersistedRuntime {
         thread: "t-hist".into(),
         messages,
+        unavailable: false,
     })
 }
 
@@ -206,4 +211,19 @@ async fn a_fabricated_cursor_is_a_400() {
     let rt = runtime(transcript(1));
     let (status, _) = get(rt, "/v1/ag-ui/threads/t-hist/messages?cursor=nope").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn an_unavailable_history_store_is_not_projected_as_an_empty_thread() {
+    // Cause/effect table: R1 successful empty durable read => 200 empty page;
+    // R2 unavailable durable read => 503; R3 corrupt/internal read => 500 (the
+    // same exhaustive router mapping). This pins R2 against the former false
+    // empty-history behavior; R1 is covered by the unknown-thread test.
+    let rt = Arc::new(PersistedRuntime {
+        thread: "t-hist".into(),
+        messages: Vec::new(),
+        unavailable: true,
+    });
+    let (status, _) = get(rt, "/v1/ag-ui/threads/t-hist/messages").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "R2");
 }

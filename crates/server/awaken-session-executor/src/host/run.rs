@@ -65,29 +65,22 @@ impl SharedHost {
     /// True when the durable store already holds `thread` — WITHOUT building a
     /// session context (the layout probe lives with the commit boundary in
     /// [`crate::store`]).
-    pub fn has_durable_thread(&self, thread: &str) -> bool {
-        self.authority
-            .as_ref()
-            .is_some_and(|authority| authority.durable_thread_exists(thread))
+    pub async fn has_durable_thread(&self, thread: &str) -> Result<bool, HostError> {
+        match self.authority.as_ref() {
+            Some(authority) => authority
+                .durable_thread_exists(thread)
+                .await
+                .map_err(HostError::from),
+            None => Ok(false),
+        }
     }
 
-    pub async fn committed_messages(&self, thread: &str) -> Vec<Message> {
-        match self.commit_for_read(thread).await {
-            Ok(commit) => match commit
-                .authoritative_committed_messages(&ThreadId(thread.to_string()))
-                .await
-            {
-                Ok(messages) => messages,
-                Err(error) => {
-                    tracing::warn!(thread, %error, "failed to read authoritative thread history");
-                    Vec::new()
-                }
-            },
-            Err(error) => {
-                tracing::warn!(thread, error = %error, "failed to open committed thread history");
-                Vec::new()
-            }
-        }
+    pub async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, HostError> {
+        let commit = self.commit_for_read(thread).await?;
+        commit
+            .authoritative_committed_messages(&ThreadId(thread.to_string()))
+            .await
+            .map_err(HostError::internal)
     }
 
     /// Rebuild the neutral child-Run projection from the one durable owner:
@@ -587,7 +580,8 @@ impl SharedHost {
     /// The run ids currently dead-lettered on `thread` (ADR-0015, slice E).
     pub async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let rows = self
-            .dispatch_store()?
+            .durable_ingress(thread)
+            .await?
             .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
@@ -604,8 +598,8 @@ impl SharedHost {
     /// Return one dead-lettered run to the durable queue with a fresh retry
     /// budget after the operator has repaired the external failure.
     pub async fn requeue_dead_letter(&self, thread: &str, run_id: &str) -> Result<bool, HostError> {
-        let store = self.dispatch_store()?;
-        let belongs_to_thread = store
+        let ingress = self.durable_ingress(thread).await?;
+        let belongs_to_thread = ingress
             .list_dispatches()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
@@ -618,7 +612,7 @@ impl SharedHost {
         if !belongs_to_thread {
             return Ok(false);
         }
-        store
+        ingress
             .requeue(&RunId(run_id.to_owned()))
             .await
             .map_err(|error| HostError::internal(error.to_string()))
@@ -641,7 +635,8 @@ impl SharedHost {
         thread: &str,
     ) -> Result<Vec<(String, String, u64, bool)>, HostError> {
         let rows = self
-            .dispatch_store()?
+            .durable_ingress(thread)
+            .await?
             .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
@@ -663,7 +658,8 @@ impl SharedHost {
     /// slice E).
     pub async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let rows = self
-            .dispatch_store()?
+            .durable_ingress(thread)
+            .await?
             .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
