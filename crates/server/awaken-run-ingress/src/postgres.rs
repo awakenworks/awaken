@@ -7,7 +7,7 @@
 //! `FOR UPDATE SKIP LOCKED`, so concurrent workers each take a distinct run
 //! (single owner per run) without a global lock. The claim policy — recover an
 //! expired lease, then wake an awaiting run with pending input, then a fresh run —
-//! matches [`MemoryDispatchStore`](crate::MemoryDispatchStore) exactly.
+//! matches the test-support `MemoryDispatchStore` reference backend exactly.
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
@@ -130,6 +130,15 @@ impl PostgresDispatchStore {
     /// `PgPool` clones the handle, not the connections.
     pub fn wake_pool(&self) -> PgPool {
         self.pool.clone()
+    }
+
+    /// A checkpoint adapter over this exact dispatch pool. The dispatch store and
+    /// interrupted-stream state therefore share one migrated runtime schema and
+    /// cannot drift onto a process-local fallback.
+    pub(crate) fn checkpoint_store(&self) -> PostgresStreamCheckpointStore {
+        PostgresStreamCheckpointStore {
+            pool: self.pool.clone(),
+        }
     }
 
     /// Run ids in a terminal-ish dispatch status (dead_letter, superseded), in

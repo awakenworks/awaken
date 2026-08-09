@@ -13,7 +13,6 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::data_subject::{CaptureSink, DataSubjectId, Purpose};
 use awaken_runtime_contract::execution::RunExecutor;
@@ -28,6 +27,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::{CaptureDecision, ContentCapture, ContentKind, ContentRedactor};
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 /// Records every content item the engine persists.
 #[derive(Default)]

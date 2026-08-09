@@ -19,6 +19,10 @@ use awaken_sandbox_container::{
 
 const AGENT_PORT: u16 = 8080;
 
+fn live_prerequisite(info_responds: bool, oci_starts: bool) -> bool {
+    info_responds && oci_starts
+}
+
 struct CredentialBroker(Mutex<Vec<u8>>);
 
 #[async_trait]
@@ -57,11 +61,68 @@ fn plan(cmd: &[&str], rootfs: RootfsPlan) -> ContainerPlan {
 
 async fn runtime() -> Option<PodmanRuntime> {
     let rt = PodmanRuntime::new(AGENT_PORT);
-    if rt.ping().await.is_err() {
-        eprintln!("skipping: no working `podman` binary");
+    static PODMAN_READY: tokio::sync::OnceCell<bool> = tokio::sync::OnceCell::const_new();
+    // Cause/effect graph: C1 `podman info` works; C2 the OCI runtime can start a
+    // minimal container. Decision table: R1 C1,C2 -> run the live suite; R2
+    // !C1|!C2 -> external prerequisite unavailable, skip without converting a
+    // host D-Bus/runc outage into a product failure. The raw probe intentionally
+    // bypasses `PodmanRuntime::create`, so a regression in our argv/adapter still
+    // reaches the actual tests and fails instead of being hidden by this gate.
+    let ready = PODMAN_READY
+        .get_or_init(|| async {
+            let info_responds = match rt.ping().await {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("skipping Podman integration: info probe failed: {error}");
+                    false
+                }
+            };
+            if !info_responds {
+                return false;
+            }
+            let oci_starts = match tokio::process::Command::new("podman")
+                .args([
+                    "run",
+                    "--rm",
+                    "--network=none",
+                    "docker.io/library/busybox:latest",
+                    "true",
+                ])
+                .output()
+                .await
+            {
+                Ok(output) if output.status.success() => true,
+                Ok(output) => {
+                    eprintln!(
+                        "skipping Podman integration: OCI probe failed: {}",
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    );
+                    false
+                }
+                Err(error) => {
+                    eprintln!("skipping Podman integration: OCI probe failed: {error}");
+                    false
+                }
+            };
+            live_prerequisite(info_responds, oci_starts)
+        })
+        .await;
+    if !*ready {
         return None;
     }
     Some(rt)
+}
+
+#[test]
+fn live_prerequisite_requires_both_info_and_oci_execution() {
+    // Cause/effect decision table for the external test gate: R1 !info,!oci;
+    // R2 !info,oci; R3 info,!oci all skip; only R4 info,oci runs live tests.
+    // `oci=true` with `info=false` is logically unreachable in the dynamic probe
+    // but retained here to make the conjunction total and regression-resistant.
+    assert!(!live_prerequisite(false, false), "R1");
+    assert!(!live_prerequisite(false, true), "R2");
+    assert!(!live_prerequisite(true, false), "R3");
+    assert!(live_prerequisite(true, true), "R4");
 }
 
 #[tokio::test]

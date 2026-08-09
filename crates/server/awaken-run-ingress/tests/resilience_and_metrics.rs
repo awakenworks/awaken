@@ -17,7 +17,7 @@ use awaken_run_ingress::{
     DispatchQueue, DispatchService, DispatchServiceConfig, DispatchWorker, MemoryDispatchStore,
     RunDispatch, SystemClock,
 };
-use awaken_runtime::memory::MemoryCommitCoordinator;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
     FlakyDispatchStore, RecordingMetrics, activation, text_runtime, text_runtime_with_metrics,

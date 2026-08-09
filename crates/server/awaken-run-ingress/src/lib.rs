@@ -24,6 +24,7 @@ mod dispatch_schema;
 mod durable;
 mod fenced_checkpoint;
 mod live_control;
+#[cfg(any(test, feature = "test-support"))]
 pub mod memory;
 mod pool;
 mod postgres;
@@ -54,9 +55,9 @@ pub use awaken_run_ingress_contract::{
     SessionRuntimeEnvelope, WORKER_LOCAL_CREDENTIALS_CAPABILITY, WorkerAcpCapabilityObservation,
     WorkerAcpCapabilityRequirement, WorkerAssignment, WorkerCredentialObservation,
     WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory, WorkerHeartbeat,
-    WorkerIdentity, WorkerManifest, WorkerRecoveryMode, WorkerRegistration, WorkerSnapshot,
-    WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
-    worker_credential_realization_capabilities,
+    WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
+    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
+    place_assignment, worker_credential_realization_capabilities,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
@@ -71,6 +72,7 @@ pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;
 pub use fenced_checkpoint::FencedStreamCheckpointStore;
 pub use live_control::{Error as LiveRunControlError, LiveRunControlService};
+#[cfg(any(test, feature = "test-support"))]
 pub use memory::MemoryDispatchStore;
 pub use pool::{CompletionSink, DispatchPool, WorkerResolver};
 pub use postgres::{

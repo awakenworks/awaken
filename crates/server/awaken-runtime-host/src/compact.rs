@@ -12,7 +12,6 @@
 //! no raw turn is hidden before the summary covers it. Durable truth is never erased.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -50,8 +49,7 @@ pub(crate) fn compact_runner(
         llm,
         provider: LocalProvider::new(base),
         catalog,
-        seq: AtomicU64::new(0),
-        execution: Some(commit),
+        execution: commit,
     })
 }
 
@@ -162,6 +160,7 @@ mod tests {
     use awaken_runtime_contract::llm::{
         AssistantOutput, ChatRequest, ChatResponse, Result as LlmResult,
     };
+    use std::sync::atomic::AtomicU64;
 
     /// A stub compactor: replies with a fixed summary that names how many messages
     /// it was asked to fold (proving it received the seed the plugin built).
@@ -219,7 +218,7 @@ mod tests {
             model.clone(),
             default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS),
             Arc::new(HostCommit::Local(Arc::new(
-                awaken_runtime::memory::MemoryCommitCoordinator::new(),
+                awaken_store_inmem::MemoryCommitCoordinator::new(),
             ))),
         );
         // The plugin builds the seed (older slice + summarize prompt); here that is
@@ -255,7 +254,7 @@ mod tests {
             model.clone(),
             default_compact_agent("stub", DEFAULT_COMPACT_INSTRUCTIONS),
             Arc::new(HostCommit::Local(Arc::new(
-                awaken_runtime::memory::MemoryCommitCoordinator::new(),
+                awaken_store_inmem::MemoryCommitCoordinator::new(),
             ))),
         );
         let background = Arc::new(BackgroundRuns::new());

@@ -37,6 +37,9 @@ pub struct CoordinatorDependencies {
     pub model_directory: Arc<dyn ModelDirectory>,
     pub dream_process_store: Arc<dyn DreamProcessStore>,
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    /// Coordinator-owned Worker identity/incarnation authority. The process
+    /// composition opens one durable adapter and injects that exact instance.
+    pub worker_directory: Arc<dyn crate::WorkerDirectory>,
     /// The one restored Deployment aggregate. The process composition creates
     /// it before sibling components so an AllInOne Control Agent archive can
     /// invoke the exact same state mounted and scheduled by Coordinator.
@@ -64,6 +67,8 @@ pub struct CoordinatorComponent {
 pub enum CoordinatorBuildError {
     #[error("restore Deployment state: {0}")]
     DeploymentRestore(String),
+    #[error("build registered Worker transport: {0}")]
+    WorkerTransport(#[from] awaken_runtime_host::RegisteredWorkerTransportBuildError),
 }
 
 pub async fn restore_deployment_state(
@@ -88,6 +93,7 @@ pub async fn build_coordinator_component(
         model_directory,
         dream_process_store,
         worker_authenticator,
+        worker_directory,
         deployment_state,
         executable_agents,
         rate_limiter,
@@ -129,8 +135,9 @@ pub async fn build_coordinator_component(
         crate::ManagedRoutingExtensions {
             resource_management_router,
             worker_authenticator,
+            worker_directory,
         },
-    );
+    )?;
     let data = data.merge(registration_router);
     let management_router = awaken_protocol_managed::deployments_router(deployment_state.clone())
         .merge(awaken_protocol_managed::environment_work_router(

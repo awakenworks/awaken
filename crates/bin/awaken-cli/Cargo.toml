@@ -147,6 +147,7 @@ awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 # build_all_in_one_router* over this composition root).
 awaken-scenario-host = { workspace = true }
 awaken-runtime = { workspace = true }
+awaken-store-inmem.workspace = true
 awaken-worker-contract = { workspace = true }
 # mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
 awaken-ext-mcp = { workspace = true }
@@ -164,6 +165,18 @@ required-features = ["test-support"]
 
 [[test]]
 name = "management_surface"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_authz"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_persistence"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_tokens"
 required-features = ["test-support"]
 
 [[test]]

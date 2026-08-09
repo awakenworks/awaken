@@ -7,6 +7,8 @@
 
 use awaken_runtime_host::{DeploymentConfig, DispatchBackend, StoreKind};
 
+use super::worker_registry::WorkerDirectoryHandle;
+
 #[derive(Clone, Copy)]
 enum SchemaAccess {
     Migrate,
@@ -63,43 +65,50 @@ pub async fn migrate_postgres_schema(deployment: &DeploymentConfig) -> Result<()
     Ok(())
 }
 
-/// Connect configured Coordinator-owned Postgres stores, applying their schema
-/// first. This is the Local-mode path.
-pub async fn init_postgres(deployment: &DeploymentConfig) -> Result<(), String> {
-    init_postgres_with(deployment, SchemaAccess::Migrate).await
+/// Open every Coordinator-owned runtime authority, applying schemas first.
+/// This Local-mode path returns the one WorkerDirectory instance that must be
+/// injected into every Worker-facing and observation-facing consumer.
+pub async fn open(deployment: &DeploymentConfig) -> Result<WorkerDirectoryHandle, String> {
+    open_with(deployment, SchemaAccess::Migrate).await
 }
 
-/// Connect configured Coordinator-owned Postgres stores after verifying their
-/// externally-applied ledgers. This is the Server-mode path and executes no DDL.
-pub async fn init_existing_postgres(deployment: &DeploymentConfig) -> Result<(), String> {
-    init_postgres_with(deployment, SchemaAccess::Verify).await
+/// Open Coordinator-owned authorities after verifying externally-applied
+/// PostgreSQL ledgers. SQLite remains an explicitly durable single-node store.
+pub async fn open_existing(deployment: &DeploymentConfig) -> Result<WorkerDirectoryHandle, String> {
+    open_with(deployment, SchemaAccess::Verify).await
 }
 
-async fn init_postgres_with(
+async fn open_with(
     deployment: &DeploymentConfig,
     schema: SchemaAccess,
-) -> Result<(), String> {
+) -> Result<WorkerDirectoryHandle, String> {
     let components = postgres_components(deployment);
-    let Some(url) = database_url(deployment)? else {
-        return Ok(());
-    };
-    if components.dispatch {
+    let database_url = database_url(deployment)?;
+    let worker_directory = if components.dispatch {
+        let url = database_url.expect("Postgres dispatch requires database URL");
         match schema {
             SchemaAccess::Migrate => {
                 awaken_runtime_host::init_shared_postgres_dispatch_with_config(url, deployment)
                     .await?;
-                super::worker_registry::init_postgres(url).await?;
+                super::worker_registry::open_postgres(url).await?
             }
             SchemaAccess::Verify => {
                 awaken_runtime_host::init_shared_postgres_dispatch_existing_with_config(
                     url, deployment,
                 )
                 .await?;
-                super::worker_registry::init_existing_postgres(url).await?;
+                super::worker_registry::open_existing_postgres(url).await?
             }
         }
-    }
+    } else {
+        let storage_dir = deployment.storage_dir.as_deref().ok_or_else(|| {
+            "Coordinator SQLite Worker registry requires runtime.storage_dir; refusing volatile Worker identity and generation state"
+                .to_owned()
+        })?;
+        super::worker_registry::open_sqlite(storage_dir)?
+    };
     if components.commit {
+        let url = database_url.expect("Postgres commit requires database URL");
         match schema {
             SchemaAccess::Migrate => {
                 awaken_runtime_host::init_shared_postgres_commit(
@@ -117,12 +126,13 @@ async fn init_postgres_with(
             }
         }
     }
-    Ok(())
+    Ok(worker_directory)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_worker_registry::{WorkerManifest, WorkerRegistration};
 
     #[test]
     fn backend_selection_maps_to_one_coordinator_schema_manifest() {
@@ -170,6 +180,47 @@ mod tests {
                 commit: true,
             },
             "R4"
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_worker_authority_is_durable_and_missing_storage_fails_closed() {
+        // Cause/effect graph: dispatch backend + storage coordinate + schema
+        // mode -> one WorkerDirectory adapter -> persisted incarnation truth.
+        // Decision table: R1 SQLite + no storage_dir -> startup error; R2 SQLite
+        // + writable storage_dir -> durable registry; R3 reopen same directory ->
+        // exact identity/generation survives. Postgres migrate/verify rules are
+        // covered by worker-registry conformance and migration-ledger tests.
+        let missing = DeploymentConfig::ephemeral();
+        let missing_error = match open(&missing).await {
+            Ok(_) => panic!("R1 must reject volatile authority"),
+            Err(error) => error,
+        };
+        assert!(missing_error.contains("runtime.storage_dir"), "R1");
+
+        let root = tempfile::tempdir().unwrap();
+        let mut durable = DeploymentConfig::ephemeral();
+        durable.storage_dir = Some(root.path().to_path_buf());
+        let directory = open(&durable).await.expect("R2 durable registry");
+        let registered = directory
+            .register(
+                WorkerRegistration {
+                    worker_id: "worker-a".into(),
+                    incarnation_id: "boot-a".into(),
+                    manifest: WorkerManifest::default(),
+                },
+                10,
+                100,
+            )
+            .await
+            .unwrap();
+        drop(directory);
+
+        let reopened = open_existing(&durable).await.expect("R3 reopen registry");
+        assert_eq!(
+            reopened.current("worker-a").await.unwrap(),
+            Some(registered),
+            "R3"
         );
     }
 }

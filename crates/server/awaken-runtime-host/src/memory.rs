@@ -59,6 +59,7 @@ impl AgentSelector {
     pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
         snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
+        execution: Arc<HostCommit>,
     ) -> Self {
         let agent_id = snapshot.root_agent_id.0.clone();
         let catalog = Arc::new(AgentCatalog::new().with_agent(snapshot));
@@ -70,8 +71,7 @@ impl AgentSelector {
                 llm,
                 provider: LocalProvider::new(base),
                 catalog,
-                seq: AtomicU64::new(0),
-                execution: None,
+                execution,
             }),
             agent_id,
         }
@@ -1185,7 +1185,7 @@ mod tests {
             true,
         );
         bound.bind_execution(Arc::new(HostCommit::Local(Arc::new(
-            awaken_runtime::memory::MemoryCommitCoordinator::new(),
+            awaken_store_inmem::MemoryCommitCoordinator::new(),
         ))));
         (runtime, bound, repository, extractions)
     }
@@ -1329,12 +1329,21 @@ mod tests {
 
     #[tokio::test]
     async fn agent_selector_runs_the_subagent_and_parses_its_reply() {
+        // Cause/effect graph and decision-table rule S1:
+        // C1 selector snapshot valid + C2 explicit commit/history authority present
+        // -> E1 auxiliary Run commits through that authority + E2 parsed selection
+        // is returned. The forbidden complement (!C2 -> process-local fallback) is
+        // unrepresentable because `AgentSelector::new` requires the authority.
+        let commit = Arc::new(HostCommit::Local(Arc::new(
+            awaken_store_inmem::MemoryCommitCoordinator::new(),
+        )));
         let selector = AgentSelector::new(
             Arc::new(IndexModel),
             awaken_ext_memory::default_selector_agent(
                 "stub",
                 awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS,
             ),
+            commit,
         );
         let manifest = vec![
             (0usize, "alpha".to_string()),

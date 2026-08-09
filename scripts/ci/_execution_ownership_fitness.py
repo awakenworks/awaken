@@ -63,6 +63,16 @@ PUBLIC_ROUTE_ROOTS = (
 ROUTE_START = re.compile(r'\.route\(\s*"(?P<path>[^"]+)"\s*,', re.MULTILINE)
 METHOD = re.compile(r"\b(get|post|put|patch|delete|head|options)\s*\(")
 PARAMETER = re.compile(r"\{[^}]+\}")
+PARALLEL_RAW_TOOL_REGISTRY = re.compile(
+    r"HashMap\s*<\s*String\s*,\s*(?:std::sync::)?Arc\s*<\s*dyn\s+RawTool\s*>\s*>"
+)
+
+RAW_TOOL_REGISTRY_OWNER = "crates/runtime/awaken-runtime-contract/src/tool.rs"
+RAW_TOOL_REGISTRY_CONSUMERS = (
+    "crates/runtime/awaken-runtime/src/runtime.rs",
+    "crates/server/awaken-runtime-host/src/session_environment.rs",
+    "crates/worker/awaken-tool-relay/src/serve.rs",
+)
 
 
 def _production(text: str) -> str:
@@ -140,15 +150,35 @@ def duplicate_route_owner_violations(
     return errors
 
 
+def duplicate_tool_registry_violations(sources: dict[str, str]) -> list[str]:
+    """Every execution location reuses the contract-owned RawToolRegistry."""
+    errors: list[str] = []
+    owner = sources.get(RAW_TOOL_REGISTRY_OWNER, "")
+    if "pub struct RawToolRegistry" not in owner:
+        errors.append(f"{RAW_TOOL_REGISTRY_OWNER}: missing authoritative RawToolRegistry")
+    for relative, text in sources.items():
+        if PARALLEL_RAW_TOOL_REGISTRY.search(_production(text)):
+            errors.append(
+                f"{relative}: parallel RawTool HashMap; reuse RawToolRegistry"
+            )
+    for relative in RAW_TOOL_REGISTRY_CONSUMERS:
+        if "RawToolRegistry" not in sources.get(relative, ""):
+            errors.append(f"{relative}: execution owner bypasses RawToolRegistry")
+    return errors
+
+
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
+    rust_sources: dict[str, str] = {}
     for path in sorted((repo_root / "crates").glob("**/src/**/*.rs")):
         text = path.read_text(encoding="utf-8")
+        rust_sources[str(path.relative_to(repo_root))] = text
         for symbol, owner in RETIRED_EXECUTION_PATHS.items():
             if re.search(rf"\b{re.escape(symbol)}\b", text):
                 errors.append(
                     f"{path.relative_to(repo_root)}: retired execution path {symbol!r}; {owner}"
                 )
+    errors.extend(duplicate_tool_registry_violations(rust_sources))
 
     registered = set(ROUTE_OWNER_FILES)
     discovered: set[str] = set()
@@ -197,3 +227,16 @@ def selftest() -> None:
     assert duplicate_route_owner_violations(
         [("GET", "/x", "a.rs"), ("GET", "/x", "b.rs")]
     ), "E4 distinct owners"
+
+    # Registry decision table: C5 authoritative owner exists; C6 every execution
+    # consumer imports it; C7 a consumer declares its own RawTool HashMap.
+    # R1 C5,C6,!C7 -> no violation. R2 C5,C6,C7 -> parallel registry rejected.
+    sources = {
+        RAW_TOOL_REGISTRY_OWNER: "pub struct RawToolRegistry;",
+        **{relative: "use x::RawToolRegistry;" for relative in RAW_TOOL_REGISTRY_CONSUMERS},
+    }
+    assert duplicate_tool_registry_violations(sources) == [], "registry R1"
+    sources[RAW_TOOL_REGISTRY_CONSUMERS[0]] += (
+        "\nlet x: HashMap<String, Arc<dyn RawTool>>;"
+    )
+    assert duplicate_tool_registry_violations(sources), "registry R2"

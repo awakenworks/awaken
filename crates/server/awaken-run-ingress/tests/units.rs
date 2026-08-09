@@ -12,10 +12,10 @@ use awaken_run_ingress::{
     Clock, DispatchQueue, DispatchWorker, DurableRunIngress, ManualClock, MemoryDispatchStore,
     RunDispatch, SystemClock,
 };
-use awaken_runtime::memory::{MemoryCommitCoordinator, MemoryStreamSink};
 use awaken_runtime::{RunService, Runtime};
 use awaken_runtime_contract::control::Error as ControlError;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink};
 
 use harness::{THREAD, activation, text_runtime};
 
@@ -117,7 +117,7 @@ async fn worker_builders_attach_a_stream_sink_and_lease() {
 #[tokio::test]
 async fn worker_resumes_a_durable_run_from_a_pre_seeded_checkpoint() {
     use awaken_agent_contract::stream::checkpoint::{StreamCheckpoint, StreamCheckpointStore};
-    use awaken_runtime::memory::MemoryStreamCheckpointStore;
+    use awaken_store_inmem::MemoryStreamCheckpointStore;
 
     let runtime = text_runtime(); // answers "done"
     let store = Arc::new(MemoryDispatchStore::new());

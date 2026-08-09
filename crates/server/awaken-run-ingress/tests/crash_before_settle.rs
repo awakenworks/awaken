@@ -40,12 +40,12 @@ use awaken_run_ingress::{
     Dispatch, DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore,
     RunDispatch, SqliteDispatchStore,
 };
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::terminal::{
     CommittedTerminalRun, RunTerminalObserver, RunTerminalObserverError,
 };
+use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_store_sqlite::SqliteCommitCoordinator;
 
 use harness::{THREAD, TICKET, activation, input_echo_runtime, pending, tool_runtime};

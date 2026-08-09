@@ -202,18 +202,6 @@ async fn serve_resolved(
     role: Role,
     prepared_worker: Option<awaken_cli::PreparedLocalWorker>,
 ) -> Result<(), String> {
-    let runs_coordinator = matches!(role, Role::AllInOne | Role::Coordinator);
-    if runs_coordinator {
-        match deployment.mode {
-            awaken_cli::config::OperatingMode::Local => {
-                awaken_coordinator::init_postgres_coordinator(&deployment.runtime).await?
-            }
-            awaken_cli::config::OperatingMode::Server => {
-                awaken_coordinator::init_existing_postgres_coordinator(&deployment.runtime).await?
-            }
-        }
-    }
-
     let assembly = match role {
         Role::AllInOne => {
             awaken_cli::build_all_in_one_assembly(

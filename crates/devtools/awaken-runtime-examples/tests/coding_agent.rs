@@ -15,6 +15,12 @@ use awaken_runtime_examples::coding_agent::{
 
 #[tokio::test]
 async fn agent_reads_then_edits_a_file_after_approval() {
+    // Cause/effect graph: C1 the scripted turn requests one Sandbox-target edit,
+    // C2 the Session owns an explicit Hand executor, C3 approval is Allow.
+    // Effects: E1 read runs without a prompt, E2 edit prompts once and mutates,
+    // E3 both tool results and the terminal reply commit. Decision-table R1:
+    // C1,C2,C3 -> E1,E2,E3. (Missing C2 is covered by the runtime's
+    // Sandbox-without-executor fail-closed rule; CodingSession guarantees C2.)
     // A real file in a temp dir, containing the text the agent will replace.
     let dir = std::env::temp_dir().join(format!("awaken_coding_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -68,6 +74,9 @@ async fn agent_reads_then_edits_a_file_after_approval() {
 
 #[tokio::test]
 async fn a_denied_edit_does_not_mutate_the_file() {
+    // Same graph as R1 above; decision-table R2: C1,C2,!C3 -> the read may run,
+    // exactly one permission decision is committed, and the edit has zero file
+    // side effects. This distinguishes denial from an unavailable Hand.
     let dir = std::env::temp_dir().join(format!("awaken_coding_deny_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("notes.txt");
@@ -78,12 +87,18 @@ async fn a_denied_edit_does_not_mutate_the_file() {
     let runtime = build_runtime(llm);
     let session = CodingSession::new(runtime, coding_config("scripted-model"));
 
+    let asked = Arc::new(AtomicUsize::new(0));
+    let asked_for = asked.clone();
     session
-        .turn("Mark the status done.", |_ticket| Approval::Deny)
+        .turn("Mark the status done.", move |_ticket| {
+            asked_for.fetch_add(1, Ordering::SeqCst);
+            Approval::Deny
+        })
         .await
         .expect("turn runs");
 
     // Denied: the file is untouched.
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "only the edit was asked");
     let after = std::fs::read_to_string(&file).unwrap();
     assert_eq!(
         after, "status: TODO\n",

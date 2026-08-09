@@ -714,6 +714,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
         "awaken-agent-contract",
         "awaken-runtime-contract",
         "awaken-runtime",
+        "awaken-store-inmem",
         "awaken-ext-permission",
         # dev-dep: `hello_agent` borrows the config domain's pure `compile()`.
         "awaken-config-store",
@@ -1215,7 +1216,7 @@ ALLOWED_DEPS: dict[str, set[str]] = {
     "awaken-eval": {
         "awaken-agent-contract",
         "awaken-runtime-contract",
-        "awaken-runtime", "awaken-ext-goal", "awaken-ext-compact", "awaken-ext-memory", "awaken-run-executor-acp",
+        "awaken-runtime", "awaken-store-inmem", "awaken-ext-goal", "awaken-ext-compact", "awaken-ext-memory", "awaken-run-executor-acp",
         # Full-server Admin Assistant evaluation drives the public HTTP boundary;
         # request/response lifecycle stays in the eval adapter, not the runtime.
         "async-trait", "reqwest", "rusqlite", "thiserror",

@@ -35,7 +35,6 @@ pub fn awaken_session_store::PostgresManagedSessionRepository::reconcilable_sess
 pub struct awaken_session_store::SqliteManagedSessionRepository
 impl awaken_session_store::SqliteManagedSessionRepository
 pub fn awaken_session_store::SqliteManagedSessionRepository::open(&str) -> core::result::Result<Self, alloc::string::String>
-pub fn awaken_session_store::SqliteManagedSessionRepository::open_in_memory() -> core::result::Result<Self, alloc::string::String>
 impl awaken_deployment_contract::DeploymentRepository for awaken_session_store::SqliteManagedSessionRepository
 pub fn awaken_session_store::SqliteManagedSessionRepository::claim_scheduled_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_deployment_contract::DeploymentRecord, awaken_deployment_contract::DeploymentRunRecord, awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_store::SqliteManagedSessionRepository::deployment_runs<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_deployment_contract::DeploymentRunRecord>, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

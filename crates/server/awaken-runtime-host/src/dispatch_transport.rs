@@ -5,6 +5,7 @@
 //! `DispatchQueue` is called.
 
 use std::sync::Arc;
+use std::{path::Path, path::PathBuf};
 
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -37,6 +38,22 @@ use awaken_worker_transport_security::{
     WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, WorkerUpstream,
     authenticate_worker_request, verify_current_worker_identity, verify_worker_identity,
 };
+
+/// Startup failure while assembling the one registered-Worker transport.
+///
+/// These are configuration/authority acquisition failures, not request errors:
+/// the Coordinator must propagate them and refuse to publish a partial Router.
+#[derive(Debug, thiserror::Error)]
+pub enum RegisteredWorkerTransportBuildError {
+    #[error("resolve durable Worker dispatch authority: {0}")]
+    Dispatch(String),
+    #[error("open durable Worker checkpoint authority at {path}: {error}")]
+    CheckpointOpen { path: PathBuf, error: String },
+    #[error(
+        "registered Worker transport requires durable stream checkpoints from Postgres or storage_dir"
+    )]
+    MissingCheckpointAuthority,
+}
 
 /// Build the database-less worker's dispatch store from the same authenticated
 /// upstream configuration used by its commit clients.
@@ -204,24 +221,37 @@ async fn claim_authority(
     })
 }
 
+fn registered_checkpoint_store(
+    dispatch: &AnyDispatchStore,
+    store_dir: Option<&Path>,
+    volatile_test_fallback: Option<Arc<dyn StreamCheckpointStore>>,
+) -> Result<Arc<dyn StreamCheckpointStore>, RegisteredWorkerTransportBuildError> {
+    if let Some(checkpoint) = dispatch.stream_checkpoint_store() {
+        return Ok(checkpoint);
+    }
+    if let Some(root) = store_dir {
+        let path = root.join("worker-stream-checkpoints");
+        return awaken_store_fs::FsStreamCheckpointStore::open(&path)
+            .map(|store| Arc::new(store) as Arc<dyn StreamCheckpointStore>)
+            .map_err(
+                |error| RegisteredWorkerTransportBuildError::CheckpointOpen {
+                    path,
+                    error: error.to_string(),
+                },
+            );
+    }
+    volatile_test_fallback.ok_or(RegisteredWorkerTransportBuildError::MissingCheckpointAuthority)
+}
+
 fn registered_dispatch_router(
     host: Arc<SharedHost>,
+    dispatch: Arc<AnyDispatchStore>,
+    checkpoint: Arc<dyn StreamCheckpointStore>,
     directory: Arc<dyn WorkerDirectory>,
     policy: Arc<dyn PlacementPolicy>,
     application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
 ) -> Router {
-    let dispatch = host
-        .dispatch_store()
-        .expect("worker dispatch router requires the durable backend initialized at startup");
-    let checkpoint: Arc<dyn StreamCheckpointStore> = if let Some(root) = &host.store_dir {
-        Arc::new(
-            awaken_store_fs::FsStreamCheckpointStore::open(root.join("worker-stream-checkpoints"))
-                .expect("worker checkpoint store must open"),
-        )
-    } else {
-        Arc::new(awaken_runtime::memory::MemoryStreamCheckpointStore::new())
-    };
     let completion = host.completion.clone() as Arc<dyn CompletionSink>;
     let recovery: Arc<dyn RunRecoverySource> = Arc::new(HostRunRecoverySource(host));
     dispatch_transport_router_with_service(Arc::new(
@@ -251,12 +281,25 @@ pub fn registered_worker_transport_router(
     application_session_control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
     resource_validator: Arc<dyn awaken_resource_contract::ResourceBindingValidator>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
-) -> Router {
+) -> Result<Router, RegisteredWorkerTransportBuildError> {
     let dispatch = host
         .dispatch_store()
-        .expect("registered worker transport requires the durable backend at startup");
+        .map_err(|error| RegisteredWorkerTransportBuildError::Dispatch(error.to_string()))?;
+    #[cfg(any(test, feature = "test-support"))]
+    let volatile_test_fallback = Some(Arc::new(
+        awaken_store_inmem::MemoryStreamCheckpointStore::new(),
+    ) as Arc<dyn StreamCheckpointStore>);
+    #[cfg(not(any(test, feature = "test-support")))]
+    let volatile_test_fallback = None;
+    let checkpoint = registered_checkpoint_store(
+        dispatch.as_ref(),
+        host.storage_dir(),
+        volatile_test_fallback,
+    )?;
     let dispatch_router = registered_dispatch_router(
         host.clone(),
+        dispatch.clone(),
+        checkpoint,
         directory.clone(),
         policy,
         application_session_control,
@@ -309,7 +352,10 @@ pub fn registered_worker_transport_router(
         Some(skills) => worker_resources.merge(skills),
         None => worker_resources,
     };
-    registered_worker_transport_router_with_services(worker_resources, commit_service)
+    Ok(registered_worker_transport_router_with_services(
+        worker_resources,
+        commit_service,
+    ))
 }
 
 /// Compose the complete registered-Worker transport from already-configured
@@ -1229,4 +1275,71 @@ async fn settle(
     }
     .await;
     respond(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_run_ingress::MemoryDispatchStore;
+    use awaken_store_inmem::MemoryStreamCheckpointStore;
+
+    #[test]
+    fn registered_checkpoint_authority_selection_is_fail_closed() {
+        // Cause/effect graph:
+        // C1 dispatch owns a paired checkpoint -> E1 reuse that exact authority;
+        // otherwise C2 storage_dir exists -> C3 FS store opens -> E2 use durable FS,
+        // while C3 false -> E3 return a startup error. If C1/C2 are false, C4 an
+        // explicitly injected test fallback -> E4 use it; otherwise E5 return the
+        // missing-authority startup error. Product code cannot inject C4.
+        //
+        // Decision table:
+        // | Rule | C1 paired | C2 dir | C3 opens | C4 test fallback | Effect |
+        // | R1   | T         | -      | -        | -                | E1     |
+        // | R2   | F         | T      | T        | -                | E2     |
+        // | R3   | F         | T      | F        | -                | E3     |
+        // | R4   | F         | F      | -        | T                | E4     |
+        // | R5   | F         | F      | -        | F                | E5     |
+        // R1 is exercised with a real paired Postgres store by
+        // `any_postgres_connect_and_claim`; this pure selector covers R2-R5.
+        let dispatch = AnyDispatchStore::from_dispatch(
+            Arc::new(MemoryDispatchStore::new()) as Arc<dyn Dispatch>
+        );
+
+        let durable_root = tempfile::tempdir().expect("R2 durable root");
+        assert!(
+            registered_checkpoint_store(&dispatch, Some(durable_root.path()), None).is_ok(),
+            "R2 opens the durable filesystem authority"
+        );
+
+        let invalid_root = tempfile::NamedTempFile::new().expect("R3 invalid root");
+        let error = registered_checkpoint_store(&dispatch, Some(invalid_root.path()), None)
+            .err()
+            .expect("R3 must return the filesystem acquisition error");
+        assert!(
+            matches!(
+                error,
+                RegisteredWorkerTransportBuildError::CheckpointOpen { .. }
+            ),
+            "R3"
+        );
+
+        let fallback: Arc<dyn StreamCheckpointStore> = Arc::new(MemoryStreamCheckpointStore::new());
+        let selected = registered_checkpoint_store(&dispatch, None, Some(fallback.clone()))
+            .expect("R4 explicit test fallback");
+        assert!(
+            Arc::ptr_eq(&selected, &fallback),
+            "R4 exact injected fallback"
+        );
+
+        let error = registered_checkpoint_store(&dispatch, None, None)
+            .err()
+            .expect("R5 product selection must fail closed");
+        assert!(
+            matches!(
+                error,
+                RegisteredWorkerTransportBuildError::MissingCheckpointAuthority
+            ),
+            "R5"
+        );
+    }
 }

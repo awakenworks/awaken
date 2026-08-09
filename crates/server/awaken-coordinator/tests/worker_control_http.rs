@@ -8,7 +8,6 @@ use awaken_run_ingress::{
     DispatchQueue, HttpDispatchQueue, MemoryDispatchStore, PlacementRequirements, RunDispatch,
     WORKER_LOCAL_CREDENTIALS_CAPABILITY,
 };
-use awaken_runtime::memory::MemoryStreamCheckpointStore;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
 use awaken_runtime_contract::snapshot::{
@@ -17,6 +16,7 @@ use awaken_runtime_contract::snapshot::{
 use awaken_runtime_host::{
     WorkerControlClient, WorkerDispatchService, dispatch_transport_router_with_service,
 };
+use awaken_store_inmem::MemoryStreamCheckpointStore;
 use awaken_worker_registry::{
     MemoryWorkerDirectory, RegistryMutation, WorkerCredentialObservation, WorkerCredentialRevision,
     WorkerDirectory, WorkerHeartbeat, WorkerManifest, WorkerState,

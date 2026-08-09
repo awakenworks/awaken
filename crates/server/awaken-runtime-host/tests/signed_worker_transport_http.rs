@@ -9,7 +9,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress::{
     DispatchQueue, MemoryDispatchStore, RegisteredWorker, RegistryError, RegistryMutation,
     RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerRegistration, WorkerSnapshot, WorkerState,
+    WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 use awaken_runtime_contract::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -191,6 +191,13 @@ impl awaken_session_contract::SessionRealizationControl for RecordingApplication
 struct TestWorkerDirectory(Mutex<Option<RegisteredWorker>>);
 
 #[async_trait::async_trait]
+impl WorkerObservationSource for TestWorkerDirectory {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        Ok(self.0.lock().unwrap().clone().into_iter().collect())
+    }
+}
+
+#[async_trait::async_trait]
 impl WorkerDirectory for TestWorkerDirectory {
     async fn register(
         &self,
@@ -278,10 +285,6 @@ impl WorkerDirectory for TestWorkerDirectory {
             .unwrap()
             .clone()
             .filter(|record| record.snapshot.identity.worker_id == worker_id))
-    }
-
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        Ok(self.0.lock().unwrap().clone().into_iter().collect())
     }
 
     async fn expire(&self, _now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {

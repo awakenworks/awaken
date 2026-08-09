@@ -6,6 +6,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64_URL;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
@@ -15,6 +16,9 @@ type HmacSha256 = Hmac<Sha256>;
 /// The `whsec_` prefix on a subscription secret. The bytes after it are the
 /// base64-encoded HMAC key.
 pub const SECRET_PREFIX: &str = "whsec_";
+/// Prefix for an opaque vault reference token. This token carries no signing
+/// material and is safe to persist on a secret-free subscription row.
+pub(crate) const SECRET_REFERENCE_PREFIX: &str = "whref_";
 
 /// Signing / verification failure.
 #[derive(Debug, PartialEq, Eq)]
@@ -39,6 +43,16 @@ pub fn generate_secret() -> String {
     let mut key = [0u8; 24];
     getrandom::getrandom(&mut key).expect("OS entropy for a webhook secret");
     format!("{SECRET_PREFIX}{}", B64.encode(key))
+}
+
+/// Mint an opaque, non-secret identifier for one signing-key revision. Create
+/// uses a fresh reference rather than an id-derived key, so a concurrent or
+/// ambiguous attempt can be compensated without deleting another subscription's
+/// material.
+pub fn generate_secret_reference() -> String {
+    let mut token = [0u8; 18];
+    getrandom::getrandom(&mut token).expect("OS entropy for a webhook secret reference");
+    format!("{SECRET_REFERENCE_PREFIX}{}", B64_URL.encode(token))
 }
 
 fn key_bytes(secret: &str) -> Result<Vec<u8>, SignError> {
@@ -186,6 +200,20 @@ mod tests {
         // The minted secret signs and verifies end-to-end.
         let header = signature_header(&secret, "m", 1, "{}").unwrap();
         assert!(verify(&secret, "m", 1, "{}", &header).unwrap());
+    }
+
+    #[test]
+    fn generated_secret_references_are_opaque_and_distinct_from_material() {
+        // Cause/effect decision table: R1 fresh reference generation -> URL-safe
+        // opaque token with the reference prefix; R2 independently generated
+        // signing material -> neither value contains the other. This prevents a
+        // secret-free config row from becoming an alternate material disclosure.
+        let reference = generate_secret_reference();
+        let secret = generate_secret();
+        assert!(reference.starts_with(SECRET_REFERENCE_PREFIX), "R1");
+        assert!(!reference.contains(['+', '/', '=']), "R1");
+        assert!(!reference.contains(&secret), "R2");
+        assert!(!secret.contains(&reference), "R2");
     }
 
     #[test]

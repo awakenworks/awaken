@@ -21,7 +21,6 @@ use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory
 use awaken_provisioning_contract as pc;
 use awaken_provisioning_contract::SandboxProvider;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -36,6 +35,7 @@ use awaken_runtime_contract::snapshot::{
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 use awaken_sandbox_local::LocalProvider;
+use awaken_store_inmem::MemoryCommitCoordinator;
 use awaken_tool_relay::{HandSession, RemoteToolExecutor, serve_hand};
 
 /// First inference asks for `echo`; the second ends with text.

@@ -18,7 +18,7 @@ use awaken_ext_memory::{
     write_memory_descriptor,
 };
 use awaken_ext_skills::{
-    InMemorySkillRegistry, ListSkillsTool, PathActivations, RecordingGate, SKILL_LIST_TOOL_ID,
+    FixedSkillRegistry, ListSkillsTool, PathActivations, RecordingGate, SKILL_LIST_TOOL_ID,
     SKILL_TOOL_ID, SkillContext, SkillSpec, SkillTool, list_skills_tool_descriptor,
     skill_tool_descriptor,
 };
@@ -113,8 +113,8 @@ impl RawTool for EchoFork {
     }
 }
 
-fn skill_registry() -> std::sync::Arc<InMemorySkillRegistry> {
-    std::sync::Arc::new(InMemorySkillRegistry::from_specs([
+fn skill_registry() -> std::sync::Arc<FixedSkillRegistry> {
+    std::sync::Arc::new(FixedSkillRegistry::from_specs([
         SkillSpec::new(
             "commit",
             "Commit",

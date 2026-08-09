@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
+use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
@@ -39,6 +40,7 @@ pub struct AnyDispatchStore {
     inner: Arc<dyn Dispatch>,
     operational: Option<Arc<dyn DispatchOperationalFeed>>,
     enqueue: Option<Arc<dyn DispatchEnqueue>>,
+    stream_checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
 }
 
 /// Optional outer admission edge for durable enqueue.
@@ -78,7 +80,7 @@ impl AnyDispatchStore {
     pub async fn connect_postgres(url: &str, max_connections: u32) -> Result<Self, String> {
         PostgresDispatchStore::connect(url, max_connections)
             .await
-            .map(Self::from_store)
+            .map(Self::from_postgres_store)
             .map_err(|e| e.to_string())
     }
 
@@ -90,7 +92,7 @@ impl AnyDispatchStore {
     ) -> Result<Self, String> {
         PostgresDispatchStore::connect_existing(url, max_connections)
             .await
-            .map(Self::from_store)
+            .map(Self::from_postgres_store)
             .map_err(|e| e.to_string())
     }
 
@@ -110,7 +112,7 @@ impl AnyDispatchStore {
             .map_err(|e| e.to_string())?;
         let wake: Arc<dyn crate::wake::WakeSignal> =
             Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
-        Ok((Self::from_store(store), wake))
+        Ok((Self::from_postgres_store(store), wake))
     }
 
     /// Verify and connect an already-migrated Postgres queue with a shared
@@ -125,7 +127,7 @@ impl AnyDispatchStore {
             .map_err(|e| e.to_string())?;
         let wake: Arc<dyn crate::wake::WakeSignal> =
             Arc::new(crate::wake::PgNotifyWake::new(store.wake_pool(), channel));
-        Ok((Self::from_store(store), wake))
+        Ok((Self::from_postgres_store(store), wake))
     }
 
     /// Connect the Postgres durable backend but pair it with a [`NatsWakeSignal`]
@@ -150,7 +152,7 @@ impl AnyDispatchStore {
                 .await
                 .map_err(|e| e.to_string())?,
         );
-        Ok((Self::from_store(store), wake))
+        Ok((Self::from_postgres_store(store), wake))
     }
 
     /// Verify and connect an already-migrated Postgres queue with a NATS wake
@@ -170,7 +172,7 @@ impl AnyDispatchStore {
                 .await
                 .map_err(|e| e.to_string())?,
         );
-        Ok((Self::from_store(store), wake))
+        Ok((Self::from_postgres_store(store), wake))
     }
 
     fn from_store(store: impl Dispatch + DispatchOperationalFeed + 'static) -> Self {
@@ -179,6 +181,18 @@ impl AnyDispatchStore {
             inner: store.clone(),
             operational: Some(store),
             enqueue: None,
+            stream_checkpoint: None,
+        }
+    }
+
+    fn from_postgres_store(store: PostgresDispatchStore) -> Self {
+        let stream_checkpoint: Arc<dyn StreamCheckpointStore> = Arc::new(store.checkpoint_store());
+        let store = Arc::new(store);
+        Self {
+            inner: store.clone(),
+            operational: Some(store),
+            enqueue: None,
+            stream_checkpoint: Some(stream_checkpoint),
         }
     }
 
@@ -192,7 +206,15 @@ impl AnyDispatchStore {
             inner,
             operational: None,
             enqueue: None,
+            stream_checkpoint: None,
         }
+    }
+
+    /// Durable interrupted-stream storage paired with this dispatch authority.
+    /// Present for Postgres; SQLite compositions use the host's durable FS adapter,
+    /// and remote transports persist through their claim-bound HTTP operations.
+    pub fn stream_checkpoint_store(&self) -> Option<Arc<dyn StreamCheckpointStore>> {
+        self.stream_checkpoint.clone()
     }
 
     /// Decorate only new-dispatch admission while preserving the one inner

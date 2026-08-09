@@ -17,6 +17,7 @@ WORKER_MANIFEST = "crates/bin/awaken-worker/Cargo.toml"
 WORKER_SOURCE = "crates/bin/awaken-worker/src"
 CONTROL_SOURCE = "crates/control/awaken-control/src"
 CLI_SOURCE = "crates/bin/awaken-cli/src"
+CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
 COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
 RESOURCE_COMPONENT = "crates/contract/awaken-resource-contract/src/component.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
@@ -41,9 +42,16 @@ WORK_STORE_SOURCE = "crates/stores/awaken-work-store/src/lib.rs"
 COMMIT_SQLITE_SOURCE = "crates/stores/awaken-store-sqlite/src/lib.rs"
 FILE_SQLITE_SOURCE = "crates/resources/awaken-file-store/src/sqlite.rs"
 WORKER_REGISTRY_SQLITE_SOURCE = "crates/server/awaken-worker-registry/src/sqlite.rs"
+WORKER_REGISTRY_LIB_SOURCE = "crates/server/awaken-worker-registry/src/lib.rs"
+DREAM_APPLICATION_SOURCE = "crates/server/awaken-dream-application/src/lib.rs"
+TOOL_RELAY_SOURCE = "crates/worker/awaken-tool-relay/src/lib.rs"
 RUN_INGRESS_ANY_SOURCE = "crates/server/awaken-run-ingress/src/any.rs"
+RUN_INGRESS_LIB_SOURCE = "crates/server/awaken-run-ingress/src/lib.rs"
 RUN_INGRESS_SQLITE_SOURCE = "crates/server/awaken-run-ingress/src/sqlite.rs"
 DISPATCH_BACKEND_SOURCE = "crates/server/awaken-runtime-host/src/dispatch_backend.rs"
+RUNTIME_STORE_SOURCE = "crates/server/awaken-runtime-host/src/store.rs"
+RUNTIME_LIB_SOURCE = "crates/runtime/awaken-runtime/src/lib.rs"
+STORE_FS_MANIFEST = "crates/stores/awaken-store-fs/Cargo.toml"
 CAPTURE_STORE_SOURCE = "crates/stores/awaken-captured-content-store/src/lib.rs"
 CAPTURE_SQLITE_SOURCE = "crates/stores/awaken-captured-content-store/src/sqlite.rs"
 DATA_SUBJECT_SOURCE = "crates/control/awaken-data-subject/src/lib.rs"
@@ -54,10 +62,13 @@ ADMIN_CONFIG_SQLITE_SOURCE = "crates/control/awaken-admin-config-api/src/sqlite.
 MODEL_CATALOG_REPO_SOURCE = "crates/control/awaken-model-catalog/src/repo.rs"
 MODEL_CATALOG_SQLITE_SOURCE = "crates/control/awaken-model-catalog/src/sqlite.rs"
 CONFIG_RESOLVER_SOURCE = "crates/control/awaken-config-resolver/src/lib.rs"
+CONFIG_RESOLVER_STORES_SOURCE = "crates/control/awaken-config-resolver/src/stores.rs"
 CREDENTIAL_REPO_SOURCE = "crates/control/awaken-credential-vault/src/repo.rs"
 CREDENTIAL_VAULT_SOURCE = "crates/control/awaken-credential-vault/src/lib.rs"
 CREDENTIAL_SQLITE_SOURCE = "crates/control/awaken-credential-vault/src/sqlite.rs"
 CREDENTIAL_SEALED_SOURCE = "crates/control/awaken-credential-vault/src/sealed.rs"
+WEBHOOK_DISPATCH_SOURCE = "crates/server/awaken-webhook/src/dispatch.rs"
+WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -130,9 +141,36 @@ TEST_SUPPORT_GATE = (
 FEATURE_TEST_SUPPORT_GATE = (
     r'#\s*\[\s*cfg\s*\(\s*feature\s*=\s*"test-support"\s*\)\s*\]'
 )
-PUBLIC_DECLARATION = r"\bpub(?:\s*\(\s*crate\s*\))?\s+(?:async\s+)?(?:struct|fn|use)\s+"
-
 NON_PRODUCT_APIS = (
+    (
+        "awaken_cli::exact_host_model",
+        CLI_LIB_SOURCE,
+        r"\bmod\s+exact_host_model\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "awaken_cli::local_process_stores",
+        CLI_LIB_SOURCE,
+        r"\bmod\s+local_process_stores\b",
+        TEST_SUPPORT_GATE,
+    ),
+    *(
+        (
+            f"awaken_cli::{name}",
+            CLI_LIB_SOURCE,
+            rf"\bpub\s+async\s+fn\s+{name}\b",
+            TEST_SUPPORT_GATE,
+        )
+        for name in (
+            "build_ephemeral_all_in_one_router",
+            "build_all_in_one_router_with_scenario_model",
+            "build_all_in_one_router_with_host_customizer",
+            "build_durable_all_in_one_router_with_host_customizer",
+            "build_all_in_one_router_with_model",
+            "build_durable_all_in_one_router",
+            "build_secured_all_in_one_router",
+        )
+    ),
     (
         "InMemoryFileStore",
         FILE_STORE_SOURCE,
@@ -180,6 +218,12 @@ NON_PRODUCT_APIS = (
         COORDINATOR_SOURCE,
         r"\bpub\s+fn\s+ephemeral_resources_application\b",
         FEATURE_TEST_SUPPORT_GATE,
+    ),
+    (
+        "awaken_coordinator::test_worker_directory",
+        COORDINATOR_SOURCE,
+        r"\bpub\s+use\s+worker_registry::test_directory\s+as\s+test_worker_directory\b",
+        TEST_SUPPORT_GATE,
     ),
     (
         "InMemoryEnvRegistry",
@@ -248,9 +292,45 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
     (
+        "awaken_worker_registry::memory",
+        WORKER_REGISTRY_LIB_SOURCE,
+        r"\bmod\s+memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "MemoryWorkerDirectory",
+        WORKER_REGISTRY_LIB_SOURCE,
+        r"\bpub\s+use\s+memory::MemoryWorkerDirectory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryDreamProcessStore",
+        DREAM_APPLICATION_SOURCE,
+        r"\bpub\s+struct\s+InMemoryDreamProcessStore\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "InMemoryOperationLedger",
+        TOOL_RELAY_SOURCE,
+        r"\bpub\s+use\s+ledger::InMemoryOperationLedger\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
         "AnyDispatchStore::open_sqlite_in_memory",
         RUN_INGRESS_ANY_SOURCE,
         r"\bpub\s+fn\s+open_sqlite_in_memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "awaken_run_ingress::memory",
+        RUN_INGRESS_LIB_SOURCE,
+        r"\bpub\s+mod\s+memory\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "MemoryDispatchStore",
+        RUN_INGRESS_LIB_SOURCE,
+        r"\bpub\s+use\s+memory::MemoryDispatchStore\b",
         TEST_SUPPORT_GATE,
     ),
     (
@@ -322,6 +402,24 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
     (
+        "ReqwestSender::Default permissive transport",
+        WEBHOOK_DISPATCH_SOURCE,
+        r"\bimpl\s+Default\s+for\s+ReqwestSender\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "ReqwestSender::with_timeout permissive transport",
+        WEBHOOK_DISPATCH_SOURCE,
+        r"\bpub\s+fn\s+with_timeout\b",
+        TEST_SUPPORT_GATE,
+    ),
+    (
+        "webhook assemble_loopback",
+        WEBHOOK_MANAGED_SOURCE,
+        r"\bpub\s+fn\s+assemble_loopback\b",
+        FEATURE_TEST_SUPPORT_GATE,
+    ),
+    (
         "InMemorySealedBlobStore",
         CREDENTIAL_VAULT_SOURCE,
         r"\bpub\s+struct\s+InMemorySealedBlobStore\b",
@@ -346,14 +444,6 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
 )
-
-PRODUCT_MANIFESTS = (
-    WORKER_MANIFEST,
-    RUNTIME_HOST_MANIFEST,
-    COORDINATOR_MANIFEST,
-    CLI_MANIFEST,
-)
-
 
 def dependency_violations(dependencies: set[str]) -> list[str]:
     """Return the durable-authority packages accidentally linked by Worker."""
@@ -389,20 +479,10 @@ def _declaration_is_gated(
     declarations = list(re.finditer(declaration_pattern, source))
     if not declarations:
         return None
-    public_declarations = list(re.finditer(PUBLIC_DECLARATION, source))
     return all(
         re.search(
-            gate_pattern,
-            source[
-                max(
-                    (
-                        item.start()
-                        for item in public_declarations
-                        if item.start() < declaration.start()
-                    ),
-                    default=0,
-                ) : declaration.start()
-            ],
+            rf"{gate_pattern}(?:\s*(?:#\s*\[[^]]*\]|//[^\n]*))*\s*$",
+            source[: declaration.start()],
         )
         is not None
         for declaration in declarations
@@ -578,10 +658,20 @@ def process_store_ownership_violations(
     return errors
 
 
+def _normal_dependency_tables(manifest: dict):
+    """Yield every non-dev Cargo edge, including target-conditioned tables."""
+
+    for section in ("dependencies", "build-dependencies"):
+        yield section, manifest.get(section, {})
+    for target, target_manifest in manifest.get("target", {}).items():
+        for section in ("dependencies", "build-dependencies"):
+            yield f"target.{target}.{section}", target_manifest.get(section, {})
+
+
 def _normal_dependencies(manifest: dict) -> set[str]:
     dependencies: set[str] = set()
-    for section in ("dependencies", "build-dependencies"):
-        for name, value in manifest.get(section, {}).items():
+    for _, table in _normal_dependency_tables(manifest):
+        for name, value in table.items():
             dependencies.add(name)
             if isinstance(value, dict) and isinstance(value.get("package"), str):
                 dependencies.add(value["package"])
@@ -596,11 +686,73 @@ def product_test_support_violations(manifest: dict) -> list[str]:
     for feature in defaults:
         if feature == "test-support" or feature.endswith("/test-support"):
             errors.append(f"default feature enables `{feature}`")
-    for section in ("dependencies", "build-dependencies"):
-        for name, value in manifest.get(section, {}).items():
+    for section, table in _normal_dependency_tables(manifest):
+        for name, value in table.items():
             if isinstance(value, dict) and "test-support" in value.get("features", []):
                 errors.append(f"{section} dependency `{name}` enables test-support")
     return sorted(errors)
+
+
+def product_inmem_dependency_violations(manifest_path: str, manifest: dict) -> list[str]:
+    """Keep the volatile backend off normal product edges.
+
+    The sole non-optional exception is `awaken-store-fs`: it uses the coordinator
+    as a deterministic projection rebuilt from its fsync append log, never as the
+    selected persistence authority. Optional dependencies remain legal only when
+    an explicit non-default test-support feature enables them.
+    """
+
+    if manifest_path == STORE_FS_MANIFEST:
+        return []
+    test_feature = set(manifest.get("features", {}).get("test-support", []))
+    errors: list[str] = []
+    for section, table in _normal_dependency_tables(manifest):
+        for name, value in table.items():
+            package = value.get("package") if isinstance(value, dict) else None
+            if name != "awaken-store-inmem" and package != "awaken-store-inmem":
+                continue
+            explicitly_test_only = (
+                isinstance(value, dict)
+                and value.get("optional") is True
+                and (f"dep:{name}" in test_feature or name in test_feature)
+            )
+            if not explicitly_test_only:
+                errors.append(
+                    f"{section} dependency `{name}` links the selectable in-memory backend"
+                )
+    return sorted(errors)
+
+
+def redundant_runtime_memory_reexport_violations(source: str) -> list[str]:
+    """The reference backend has one public owner: `awaken-store-inmem`."""
+
+    if re.search(r"\bpub\s+mod\s+memory\b|\bawaken_store_inmem\b", source):
+        return ["Runtime recreates the awaken-store-inmem public API path"]
+    return []
+
+
+def coordinator_persistence_composition_violations(cli_source: str) -> list[str]:
+    """Keep backend initialization on the one runtime-process assembly path."""
+
+    errors: list[str] = []
+    for call in (
+        "awaken_coordinator::open_coordinator_persistence(",
+        "awaken_coordinator::open_existing_coordinator_persistence(",
+    ):
+        count = cli_source.count(call)
+        if count != 1:
+            errors.append(
+                f"awaken-cli must contain exactly one `{call}` call (found {count})"
+            )
+    for retired in (
+        "init_postgres_coordinator",
+        "init_existing_postgres_coordinator",
+        "init_worker_registry",
+        "worker_directory",
+    ):
+        if re.search(rf"\b{re.escape(retired)}\s*\(", cli_source):
+            errors.append(f"awaken-cli retains retired Worker authority path `{retired}`")
+    return errors
 
 
 def product_dispatch_fallback_violations(source: str) -> list[str]:
@@ -617,6 +769,19 @@ def product_dispatch_fallback_violations(source: str) -> list[str]:
     return [] if guarded else ["SQLite dispatch missing-storage path does not fail closed"]
 
 
+def product_commit_fallback_violations(source: str) -> list[str]:
+    """Require SQLite commit without durable storage to be test-only."""
+
+    guarded = re.search(
+        rf"{TEST_SUPPORT_GATE}\s*return\s+CommitPlan::Memory\s*;.*?"
+        rf"#\s*\[\s*cfg\s*\(\s*not\s*\(\s*any\s*\(\s*test\s*,\s*feature\s*=\s*\"test-support\"\s*\)\s*\)\s*\)\s*\].*?"
+        r"return\s+CommitPlan::SqliteNeedsStorageDir",
+        source,
+        re.DOTALL,
+    )
+    return [] if guarded else ["SQLite commit missing-storage path does not fail closed"]
+
+
 def redundant_admin_store_reexport_violations(source: str) -> list[str]:
     """Keep resolver store contracts on their one authoritative public path."""
 
@@ -625,6 +790,29 @@ def redundant_admin_store_reexport_violations(source: str) -> list[str]:
         if REDUNDANT_ADMIN_STORE_REEXPORT.search(source)
         else []
     )
+
+
+def webhook_mutation_authority_violations(source: str) -> list[str]:
+    """Keep one recoverable Webhook aggregate mutation path."""
+
+    errors: list[str] = []
+    for retired in (
+        r"fn\s+put\s*\(\s*&self\s*,\s*def\s*:\s*WebhookEndpointDef",
+        r"fn\s+delete\s*\(\s*&self\s*,\s*id\s*:\s*&str",
+    ):
+        if re.search(retired, source):
+            errors.append("WebhookStore exposes a retired direct put/delete mutation")
+    for required in (
+        "fn update_authored",
+        "fn begin_mutation",
+        "fn apply_mutation",
+        "fn pending_mutations",
+        "fn complete_mutation",
+        "fn material_refs",
+    ):
+        if required not in source:
+            errors.append(f"WebhookStore is missing recoverable authority `{required}`")
+    return errors
 
 
 def selftest() -> None:
@@ -642,15 +830,29 @@ def selftest() -> None:
     Resources catalog -> accepted; O14 a cross-domain store field or unconditional
     migration acquisition -> rejected; O15 every volatile Host API is test-support
     gated -> accepted; O16 one missing Host gate -> rejected; O17 all canonical
-    File/Memory/Skill/Resource/Environment volatile entrypoints and the ephemeral
-    Resources assembler are test-support gated -> accepted; O18 any one gate missing ->
-    rejected; O19 product defaults/normal edges do not enable test-support ->
-    accepted; O20 a product default or normal edge enables it -> rejected while
-    dev-dependencies and opt-in features remain accepted; O21 missing SQLite
+    CLI scenario/restart helpers, File/Memory/Skill/Resource/Environment volatile
+    entrypoints, the ephemeral Resources assembler, and permissive webhook
+    loopback transport are test-support gated ->
+    accepted; O18 any one gate missing -> rejected; O19 product defaults/normal
+    edges do not enable test-support ->
+    accepted; O20 a product default, top-level normal edge, or target-conditioned
+    normal edge enables it -> rejected while dev-dependencies and opt-in features
+    remain accepted; O21 missing SQLite
     dispatch durability fails closed in product and selects memory only with test
     support -> accepted; O22 an unconditional in-memory fallback -> rejected;
     O23 one authoritative Config Resolver store path -> accepted; O24 an Admin
-    compatibility re-export of that path -> rejected.
+    compatibility re-export of that path -> rejected; O25 missing SQLite commit
+    durability selects memory only for test-support and fails closed in product ->
+    accepted; O26 an unconditional Memory commit fallback -> rejected; O27 the
+    FS log's rebuild projection and an optional test-support feature may depend on
+    inmem -> accepted; O28 an ordinary, aliased, or target-conditioned product
+    dependency on the selectable backend -> rejected; O29 Runtime has no
+    compatibility re-export -> accepted; O30 a second Runtime public path for the
+    backend -> rejected; O31 Coordinator persistence is initialized exactly once
+    per schema mode in the canonical Runtime assembly -> accepted; O32 a duplicate
+    initializer or retired global Worker authority path -> rejected; O33 one
+    journaled Webhook mutation authority -> accepted; O34 direct put/delete or a
+    missing recovery edge -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -752,6 +954,22 @@ def selftest() -> None:
     any_gate = '#[cfg(any(test, feature = "test-support"))]\n'
     feature_gate = '#[cfg(feature = "test-support")]\n'
     volatile_surfaces = {
+        CLI_LIB_SOURCE: any_gate
+        + "mod exact_host_model;\n"
+        + any_gate
+        + "mod local_process_stores;\n"
+        + "\n".join(
+            any_gate + f"pub async fn {name}() {{}}"
+            for name in (
+                "build_ephemeral_all_in_one_router",
+                "build_all_in_one_router_with_scenario_model",
+                "build_all_in_one_router_with_host_customizer",
+                "build_durable_all_in_one_router_with_host_customizer",
+                "build_all_in_one_router_with_model",
+                "build_durable_all_in_one_router",
+                "build_secured_all_in_one_router",
+            )
+        ),
         FILE_STORE_SOURCE: any_gate + "pub struct InMemoryFileStore {}",
         MEMORY_STORE_SOURCE: any_gate + "pub struct VolatileMemoryRepository {}",
         MEMORY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
@@ -760,7 +978,9 @@ def selftest() -> None:
         RESOURCE_STORE_SOURCE: any_gate + "pub fn in_memory() {}",
         RUNTIME_MEMORY_STORES: any_gate + "pub(crate) fn open() {}",
         COORDINATOR_SOURCE: feature_gate
-        + "pub fn ephemeral_resources_application() {}",
+        + "pub fn ephemeral_resources_application() {}\n"
+        + any_gate
+        + "pub use worker_registry::test_directory as test_worker_directory;",
         ENV_STORE_SQLITE_SOURCE: any_gate
         + "pub use inmem::InMemoryEnvRegistry;\n"
         + any_gate
@@ -779,7 +999,19 @@ def selftest() -> None:
         COMMIT_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         FILE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         WORKER_REGISTRY_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        WORKER_REGISTRY_LIB_SOURCE: any_gate
+        + "mod memory;\n"
+        + any_gate
+        + "pub use memory::MemoryWorkerDirectory;",
+        DREAM_APPLICATION_SOURCE: any_gate
+        + "pub struct InMemoryDreamProcessStore;",
+        TOOL_RELAY_SOURCE: any_gate
+        + "pub use ledger::InMemoryOperationLedger;",
         RUN_INGRESS_ANY_SOURCE: any_gate + "pub fn open_sqlite_in_memory() {}",
+        RUN_INGRESS_LIB_SOURCE: any_gate
+        + "pub mod memory;\n"
+        + any_gate
+        + "pub use memory::MemoryDispatchStore;",
         RUN_INGRESS_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         CAPTURE_STORE_SOURCE: any_gate
         + "pub use capture_store::{CapturedRecord, InMemoryCapturedContentStore};",
@@ -803,6 +1035,11 @@ def selftest() -> None:
         + any_gate
         + "pub fn open_in_memory() {}",
         CREDENTIAL_SEALED_SOURCE: any_gate + "pub fn with_key() {}",
+        WEBHOOK_DISPATCH_SOURCE: any_gate
+        + "impl Default for ReqwestSender {}\n"
+        + any_gate
+        + "pub fn with_timeout() {}",
+        WEBHOOK_MANAGED_SOURCE: feature_gate + "pub fn assemble_loopback() {}",
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:
@@ -826,6 +1063,17 @@ def selftest() -> None:
     assert product_test_support_violations(
         {"features": {"default": ["store/test-support"]}}
     ) == ["default feature enables `store/test-support`"]  # O20 default edge
+    assert product_test_support_violations(
+        {
+            "target": {
+                "cfg(unix)": {
+                    "dependencies": {"store": {"features": ["test-support"]}}
+                }
+            }
+        }
+    ) == [
+        "target.cfg(unix).dependencies dependency `store` enables test-support"
+    ]  # O20 target-conditioned normal edge
     guarded_dispatch = (
         'None => { #[cfg(any(test, feature = "test-support"))] '
         "AnyDispatchStore::open_sqlite_in_memory()?; "
@@ -840,15 +1088,92 @@ def selftest() -> None:
     assert redundant_admin_store_reexport_violations(
         "pub use awaken_config_resolver::{InferenceProfileStore, InMemoryProfileStore};"
     ) == ["Admin API re-exports Config Resolver store contracts or fixtures"]  # O24
+    guarded_commit = (
+        '#[cfg(any(test, feature = "test-support"))] return CommitPlan::Memory; '
+        '#[cfg(not(any(test, feature = "test-support")))] '
+        "return CommitPlan::SqliteNeedsStorageDir;"
+    )
+    assert product_commit_fallback_violations(guarded_commit) == []  # O25
+    assert product_commit_fallback_violations("return CommitPlan::Memory;") == [
+        "SQLite commit missing-storage path does not fail closed"
+    ]  # O26
+    assert product_inmem_dependency_violations(
+        STORE_FS_MANIFEST, {"dependencies": {"awaken-store-inmem": {}}}
+    ) == []  # O27 rebuild projection
+    assert product_inmem_dependency_violations(
+        RUNTIME_HOST_MANIFEST,
+        {
+            "dependencies": {"awaken-store-inmem": {"optional": True}},
+            "features": {"test-support": ["dep:awaken-store-inmem"]},
+        },
+    ) == []  # O27 explicit test feature
+    assert product_inmem_dependency_violations(
+        "crates/runtime/product/Cargo.toml",
+        {"dependencies": {"awaken-store-inmem": {}}},
+    ) == [
+        "dependencies dependency `awaken-store-inmem` links the selectable in-memory backend"
+    ]  # O28
+    assert product_inmem_dependency_violations(
+        "crates/runtime/product/Cargo.toml",
+        {
+            "target": {
+                "cfg(unix)": {
+                    "dependencies": {
+                        "reference_store": {"package": "awaken-store-inmem"}
+                    }
+                }
+            }
+        },
+    ) == [
+        "target.cfg(unix).dependencies dependency `reference_store` links the selectable in-memory backend"
+    ]  # O28 target-conditioned alias
+    assert redundant_runtime_memory_reexport_violations("pub mod engine;") == []  # O29
+    assert redundant_runtime_memory_reexport_violations(
+        "pub mod memory; pub use awaken_store_inmem::*;"
+    ) == ["Runtime recreates the awaken-store-inmem public API path"]  # O30
+    canonical_persistence = (
+        "awaken_coordinator::open_coordinator_persistence(\n"
+        "awaken_coordinator::open_existing_coordinator_persistence("
+    )
+    assert coordinator_persistence_composition_violations(canonical_persistence) == []  # O31
+    assert coordinator_persistence_composition_violations(
+        canonical_persistence
+        + " awaken_coordinator::open_coordinator_persistence( worker_directory("
+    )  # O32
+    webhook_store = " ".join(
+        (
+            "fn update_authored",
+            "fn begin_mutation",
+            "fn apply_mutation",
+            "fn pending_mutations",
+            "fn complete_mutation",
+            "fn material_refs",
+        )
+    )
+    assert webhook_mutation_authority_violations(webhook_store) == []  # O33
+    assert webhook_mutation_authority_violations(
+        webhook_store.replace("fn material_refs", "")
+        + " fn put(&self, def: WebhookEndpointDef"
+    )  # O34
 
 
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     product_manifests: dict[str, dict] = {}
-    for product_manifest in PRODUCT_MANIFESTS:
+    product_manifest_paths = sorted(
+        path
+        for path in (repo_root / "crates").rglob("Cargo.toml")
+        if "devtools" not in path.relative_to(repo_root / "crates").parts
+    )
+    for manifest_path in product_manifest_paths:
+        product_manifest = manifest_path.relative_to(repo_root).as_posix()
         with (repo_root / product_manifest).open("rb") as handle:
             product_manifests[product_manifest] = tomllib.load(handle)
         for error in product_test_support_violations(product_manifests[product_manifest]):
+            errors.append(f"{product_manifest}: {error}")
+        for error in product_inmem_dependency_violations(
+            product_manifest, product_manifests[product_manifest]
+        ):
             errors.append(f"{product_manifest}: {error}")
     dependencies = _normal_dependencies(product_manifests[WORKER_MANIFEST])
     for package in dependency_violations(dependencies):
@@ -934,8 +1259,22 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / DISPATCH_BACKEND_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{DISPATCH_BACKEND_SOURCE}: {error}")
+    for error in product_commit_fallback_violations(
+        (repo_root / RUNTIME_STORE_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{RUNTIME_STORE_SOURCE}: {error}")
     for error in redundant_admin_store_reexport_violations(
         (repo_root / ADMIN_CONFIG_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{ADMIN_CONFIG_SOURCE}: {error}")
+    for error in webhook_mutation_authority_violations(
+        (repo_root / CONFIG_RESOLVER_STORES_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{CONFIG_RESOLVER_STORES_SOURCE}: {error}")
+    for error in redundant_runtime_memory_reexport_violations(
+        (repo_root / RUNTIME_LIB_SOURCE).read_text(encoding="utf-8")
+    ):
+        errors.append(f"{RUNTIME_LIB_SOURCE}: {error}")
+    for error in coordinator_persistence_composition_violations("\n".join(cli_sources)):
+        errors.append(f"awaken-cli persistence composition: {error}")
     return errors

@@ -22,8 +22,9 @@ pub use awaken_worker_contract::{
     RegistryMutation, SESSION_RESOURCES_CAPABILITY, WORKER_LOCAL_CREDENTIALS_CAPABILITY,
     WorkerAcpCapabilityObservation, WorkerAcpCapabilityRequirement, WorkerAssignment,
     WorkerCredentialObservation, WorkerCredentialRevision, WorkerCredentialState, WorkerDirectory,
-    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerRecoveryMode, WorkerRegistration,
-    WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally, place_assignment,
+    WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRecoveryMode,
+    WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
+    place_assignment,
 };
 pub use dispatch::{
     AttemptCredentialBindingError, CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard,

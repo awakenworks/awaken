@@ -368,13 +368,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 }),
             ));
         }
-        if let Some(checkpoint) = ctx.stream_checkpoint.clone() {
-            ctx = ctx.with_stream_checkpoint(Arc::new(crate::FencedStreamCheckpointStore::new(
-                checkpoint,
-                dispatch,
-                claim.clone(),
-            )));
-        }
+        // Always install the claim-fenced adapter. A database-less Worker has no
+        // local checkpoint authority (`inner=None`); the adapter then delegates
+        // through the authenticated dispatch transport. Local SQLite/Postgres
+        // workers retain their explicitly paired durable inner store.
+        let inner_checkpoint = ctx.stream_checkpoint.clone();
+        ctx = ctx.with_stream_checkpoint(Arc::new(crate::FencedStreamCheckpointStore::new(
+            inner_checkpoint,
+            dispatch,
+            claim.clone(),
+        )));
         match model_executor {
             Some(exec) => ctx.with_model_executor(exec.clone()),
             None => ctx,

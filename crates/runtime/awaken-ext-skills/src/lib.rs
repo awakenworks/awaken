@@ -17,7 +17,7 @@
 //!
 //! References/scripts (tier 3) and authoring are done with the built-in
 //! `read`/`bash`/`write` tools over materialized skill files — no dedicated tool.
-//! The registry ([`SkillRegistry`] / [`InMemorySkillRegistry`]) is the source of
+//! The registry ([`SkillRegistry`] / [`FixedSkillRegistry`]) is the source of
 //! the catalog and activation body. `allowed_tools` is enforced as a
 //! session-local, monotonic restriction after the platform gate; it never grants
 //! a capability. The Runtime Host composition layer materializes the exact
@@ -29,7 +29,7 @@ mod spec;
 mod tool;
 
 pub use registry::{
-    CompositeSkillRegistry, InMemorySkillRegistry, SkillFile, SkillRegistry, SkillSource,
+    CompositeSkillRegistry, FixedSkillRegistry, SkillFile, SkillRegistry, SkillSource,
     SourceSkillRegistry,
 };
 pub use spec::{SkillContext, SkillEnvironment, SkillProvenance, SkillSpec, parse_skill_md};

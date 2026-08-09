@@ -21,7 +21,7 @@ use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, DispatchQueue, HttpDispatchQueue,
     PostgresDispatchStore, RegisteredWorker, RegistryError, RegistryMutation, RunClaim,
     RunDispatch, SettleOutcome, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerRegistration, WorkerSnapshot, WorkerState, commit_payload_hash,
+    WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState, commit_payload_hash,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -49,6 +49,13 @@ const WORKER_ID: &str = "active-active-worker";
 const WORKER_INCARNATION_ID: &str = "active-active-incarnation";
 
 struct ConfiguredWorkerDirectory(RegisteredWorker);
+
+#[async_trait::async_trait]
+impl WorkerObservationSource for ConfiguredWorkerDirectory {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
+        Ok(vec![self.0.clone()])
+    }
+}
 
 #[async_trait::async_trait]
 impl WorkerDirectory for ConfiguredWorkerDirectory {
@@ -95,10 +102,6 @@ impl WorkerDirectory for ConfiguredWorkerDirectory {
 
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
         Ok((worker_id == self.0.snapshot.identity.worker_id).then(|| self.0.clone()))
-    }
-
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        Ok(vec![self.0.clone()])
     }
 
     async fn expire(&self, _now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {

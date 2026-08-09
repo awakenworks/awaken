@@ -28,10 +28,10 @@ use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, MemoryDispatchStore, PendingInput, RunDispatch,
     SqliteDispatchStore,
 };
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
     activation, activation_on, blocking_tool_runtime, counting_text_runtime, text_runtime,

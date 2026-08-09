@@ -642,10 +642,20 @@ pub enum RegistryError {
     Persistence(String),
 }
 
+/// Secret-free read projection of the current Worker authority.
+///
+/// Control-plane readers depend on this narrow port instead of receiving the
+/// mutation-capable directory. A split Control process can therefore use an
+/// authenticated HTTP adapter while AllInOne projects the exact local authority.
+#[async_trait]
+pub trait WorkerObservationSource: Send + Sync {
+    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError>;
+}
+
 /// Worker-directory authority. Implementations must make every mutation atomic;
 /// expired/dead records remain tombstones so late messages cannot resurrect them.
 #[async_trait]
-pub trait WorkerDirectory: Send + Sync {
+pub trait WorkerDirectory: WorkerObservationSource {
     async fn register(
         &self,
         registration: WorkerRegistration,
@@ -678,8 +688,6 @@ pub trait WorkerDirectory: Send + Sync {
     ) -> Result<RegistryMutation, RegistryError>;
 
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError>;
-
-    async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError>;
 
     async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError>;
 }

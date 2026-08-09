@@ -601,11 +601,11 @@ impl RawTool for SkillTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::InMemorySkillRegistry;
+    use crate::registry::FixedSkillRegistry;
     use crate::spec::SkillProvenance;
 
-    fn registry() -> Arc<InMemorySkillRegistry> {
-        Arc::new(InMemorySkillRegistry::from_specs([
+    fn registry() -> Arc<FixedSkillRegistry> {
+        Arc::new(FixedSkillRegistry::from_specs([
             SkillSpec::new(
                 "commit",
                 "Commit",
@@ -665,7 +665,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_catalog_entries_are_length_bounded() {
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "big",
             "Big",
             "z".repeat(1000),
@@ -686,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn conditional_skill_surfaces_only_after_a_matching_path_is_touched() {
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([
+        let registry = Arc::new(FixedSkillRegistry::from_specs([
             SkillSpec::new("always", "Always", "unconditional", "b"),
             SkillSpec::new("rusty", "Rusty", "for rust files", "b")
                 .with_paths(vec!["src/**/*.rs".into()]),
@@ -723,7 +723,7 @@ mod tests {
 
     #[tokio::test]
     async fn conditional_skill_stays_hidden_without_activations_wired() {
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "rusty", "Rusty", "d", "b",
         )
         .with_paths(vec!["*.rs".into()])]));
@@ -758,7 +758,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_skills_reports_agent_created_provenance() {
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "draft",
             "Draft",
             "authored this run",
@@ -816,7 +816,7 @@ mod tests {
 
     #[tokio::test]
     async fn substitutes_positional_and_all_arguments() {
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "run",
             "Run",
             "d",
@@ -844,7 +844,7 @@ mod tests {
         // The substituter treats ONLY `$1`..`$9` and `$ARGUMENTS` as tokens. `$0`
         // (excluded by `bytes[i+1] != b'0'`) and `$<non-digit>` fall through
         // untouched — and since no real token fired, the raw args are echoed.
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "cost",
             "Cost",
             "d",
@@ -891,7 +891,7 @@ mod tests {
     async fn an_invalid_path_glob_never_panics_and_stays_hidden() {
         // A skill whose `paths` glob fails to compile must be swallowed (unwrap_or
         // false) — it stays hidden rather than panicking or fail-open surfacing.
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "broken", "Broken", "bad glob", "b",
         )
         .with_paths(vec!["[".into()])]));
@@ -921,7 +921,7 @@ mod tests {
                 "run ${SKILL_DIR}/x.sh in ${SESSION_ID}",
             )
         };
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([spec]));
+        let registry = Arc::new(FixedSkillRegistry::from_specs([spec]));
         let out = SkillTool::new(registry)
             .with_session_id("sess-1")
             .invoke(call(
@@ -940,7 +940,7 @@ mod tests {
     #[tokio::test]
     async fn unresolved_template_token_is_left_in_place() {
         // No dir and no session id: tokens survive so the author can spot them.
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "d",
             "D",
             "x",
@@ -989,7 +989,7 @@ mod tests {
 
     #[tokio::test]
     async fn fork_skill_runs_through_the_runner() {
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "review",
             "Review",
             "d",
@@ -1024,7 +1024,7 @@ mod tests {
             }
         }
 
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "review",
             "Review",
             "d",
@@ -1054,7 +1054,7 @@ mod tests {
         // split stays explicit: to bar activation, make the skill non-model-invocable.
         let skill = SkillSpec::new("deploy", "Deploy", "d", "the deploy steps")
             .with_paths(vec!["**/Dockerfile".to_string()]);
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([skill]));
+        let registry = Arc::new(FixedSkillRegistry::from_specs([skill]));
 
         // Discovery hides it (no matching path touched, no activations wired).
         let listed = ListSkillsTool::new(registry.clone())
@@ -1080,7 +1080,7 @@ mod tests {
 
     #[tokio::test]
     async fn fork_skill_without_a_runner_falls_back_to_inline() {
-        let registry = Arc::new(InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = Arc::new(FixedSkillRegistry::from_specs([SkillSpec::new(
             "review",
             "Review",
             "d",
@@ -1218,7 +1218,7 @@ mod tests {
 
     #[test]
     fn slash_command_expands_only_user_invocable_skills() {
-        let registry = InMemorySkillRegistry::from_specs([
+        let registry = FixedSkillRegistry::from_specs([
             SkillSpec::new("deploy", "Deploy", "d", "checklist for $ARGUMENTS"),
             SkillSpec {
                 user_invocable: false,
@@ -1243,7 +1243,7 @@ mod tests {
     fn slash_command_leaves_non_user_messages_untouched() {
         // The `role != User` early return: an assistant message that happens to
         // start with `/deploy` must NOT be expanded (only user turns invoke skills).
-        let registry = InMemorySkillRegistry::from_specs([SkillSpec::new(
+        let registry = FixedSkillRegistry::from_specs([SkillSpec::new(
             "deploy",
             "Deploy",
             "d",

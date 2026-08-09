@@ -11,7 +11,6 @@ use awaken_agent_contract::agent::state::{Command as StateCommand, Key, MergePol
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
 use awaken_runtime::Runtime;
-use awaken_runtime::memory::{MemoryCommitCoordinator, replay_state};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::llm::{
@@ -26,6 +25,7 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
 
 /// Calls a tool once, then ends with text.
 struct CallThenEnd {

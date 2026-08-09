@@ -29,8 +29,8 @@ use awaken_run_ingress::{
     DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore, RunDispatch, SqliteDispatchStore,
     SubmitOptions,
 };
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::resume::ResumeResult;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
     THREAD, TICKET, activation, counting_text_runtime, input_echo_runtime, tool_runtime,

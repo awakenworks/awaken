@@ -24,6 +24,7 @@ schema = ["dep:schemars"]
 
 [dev-dependencies]
 awaken-runtime = { workspace = true }
+awaken-store-inmem.workspace = true
 tokio.workspace = true
 
 [lints]

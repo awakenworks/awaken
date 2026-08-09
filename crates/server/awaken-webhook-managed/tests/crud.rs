@@ -9,15 +9,22 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
-use awaken_config_resolver::{WebhookEndpointDef, WebhookStore};
+use awaken_config_resolver::{
+    InMemoryWebhookStore, WebhookAuthoringPatch, WebhookAuthoringState, WebhookDeliveryOutcome,
+    WebhookDeliveryState, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
+};
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_contract::{
     ManagedLifecycleFact, ManagedSessionRepository, PersistedSession, SessionLifecycleSink,
 };
 use awaken_tenancy::WorkspaceScope;
-use awaken_webhook::{ResolvedSubscription, SubscriptionSource, WebhookDispatcher, WebhookSender};
+use awaken_webhook::{
+    ResolvedSubscription, SubscriptionFailureState, SubscriptionSource, WebhookDispatcher,
+    WebhookSender,
+};
 use awaken_webhook_managed::{
-    ConfigPlaneSubscriptionSource, WebhookLifecycleSink, webhook_config_router,
+    ConfigPlaneSubscriptionSource, WebhookLifecycleSink, config_plane_lifecycle_delivery,
+    reconcile_webhook_inventory, recover_webhook_mutations, webhook_config_router,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -28,7 +35,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 #[derive(Default)]
-struct MemStore(Mutex<HashMap<String, WebhookEndpointDef>>);
+struct MemStore(InMemoryWebhookStore);
 
 #[derive(Default)]
 struct SessionOutbox(Mutex<HashMap<String, ManagedLifecycleFact>>);
@@ -99,33 +106,20 @@ impl ManagedSessionRepository for SessionOutbox {
 
 impl MemStore {
     fn put(&self, def: WebhookEndpointDef) {
-        self.0.lock().unwrap().insert(def.id.clone(), def);
+        let intent = WebhookMutationIntent::create(def);
+        self.0.begin_mutation(intent.clone()).unwrap();
+        self.0.apply_mutation(&intent).unwrap();
+        self.0.complete_mutation(&intent).unwrap();
     }
     fn get(&self, id: &str) -> Option<WebhookEndpointDef> {
-        self.0.lock().unwrap().get(id).cloned()
+        self.0.get(id).unwrap()
     }
     fn list(&self, workspace_id: &str) -> Vec<WebhookEndpointDef> {
-        self.0
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|d| d.workspace_id == workspace_id)
-            .cloned()
-            .collect()
-    }
-    fn delete(&self, id: &str) -> bool {
-        self.0.lock().unwrap().remove(id).is_some()
+        self.0.list(workspace_id).unwrap()
     }
 }
 
 impl WebhookStore for MemStore {
-    fn put(
-        &self,
-        def: WebhookEndpointDef,
-    ) -> Result<(), awaken_config_resolver::ConfigRepositoryError> {
-        MemStore::put(self, def);
-        Ok(())
-    }
     fn get(
         &self,
         id: &str,
@@ -138,8 +132,47 @@ impl WebhookStore for MemStore {
     ) -> Result<Vec<WebhookEndpointDef>, awaken_config_resolver::ConfigRepositoryError> {
         Ok(MemStore::list(self, workspace_id))
     }
-    fn delete(&self, id: &str) -> Result<bool, awaken_config_resolver::ConfigRepositoryError> {
-        Ok(MemStore::delete(self, id))
+    fn update_authored(
+        &self,
+        patch: WebhookAuthoringPatch,
+    ) -> Result<WebhookAuthoringState, awaken_config_resolver::ConfigRepositoryError> {
+        self.0.update_authored(patch)
+    }
+    fn begin_mutation(
+        &self,
+        intent: WebhookMutationIntent,
+    ) -> Result<(), awaken_config_resolver::ConfigRepositoryError> {
+        self.0.begin_mutation(intent)
+    }
+    fn apply_mutation(
+        &self,
+        intent: &WebhookMutationIntent,
+    ) -> Result<(), awaken_config_resolver::ConfigRepositoryError> {
+        self.0.apply_mutation(intent)
+    }
+    fn pending_mutations(
+        &self,
+    ) -> Result<Vec<WebhookMutationIntent>, awaken_config_resolver::ConfigRepositoryError> {
+        self.0.pending_mutations()
+    }
+    fn complete_mutation(
+        &self,
+        intent: &WebhookMutationIntent,
+    ) -> Result<(), awaken_config_resolver::ConfigRepositoryError> {
+        self.0.complete_mutation(intent)
+    }
+    fn material_refs(
+        &self,
+    ) -> Result<Vec<SecretRef>, awaken_config_resolver::ConfigRepositoryError> {
+        self.0.material_refs()
+    }
+    fn record_delivery(
+        &self,
+        id: &str,
+        outcome: WebhookDeliveryOutcome,
+        failure_threshold: u32,
+    ) -> Result<WebhookDeliveryState, awaken_config_resolver::ConfigRepositoryError> {
+        self.0.record_delivery(id, outcome, failure_threshold)
     }
 }
 
@@ -148,6 +181,8 @@ impl WebhookStore for MemStore {
 struct MemSecrets {
     map: Mutex<HashMap<String, String>>,
     failing: bool,
+    fail_delete: AtomicBool,
+    after_first_inventory: Mutex<Option<(SecretRef, String)>>,
 }
 
 impl MemSecrets {
@@ -155,13 +190,23 @@ impl MemSecrets {
         Self {
             map: Mutex::new(HashMap::new()),
             failing: false,
+            fail_delete: AtomicBool::new(false),
+            after_first_inventory: Mutex::new(None),
         }
     }
     fn failing() -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
             failing: true,
+            fail_delete: AtomicBool::new(false),
+            after_first_inventory: Mutex::new(None),
         }
+    }
+
+    fn with_material_after_first_inventory(self, reference: SecretRef) -> Self {
+        *self.after_first_inventory.lock().unwrap() =
+            Some((reference, "concurrently-published".into()));
+        self
     }
 }
 
@@ -186,8 +231,25 @@ impl SecretStore for MemSecrets {
             .ok_or_else(|| CredentialError::SecretNotFound(r.0.clone()))
     }
     async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
+        if self.fail_delete.load(Ordering::SeqCst) {
+            return Err(CredentialError::Storage("delete failed".into()));
+        }
         self.map.lock().unwrap().remove(&r.0);
         Ok(())
+    }
+    async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        let inventory = self
+            .map
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .map(SecretRef)
+            .collect();
+        if let Some((reference, material)) = self.after_first_inventory.lock().unwrap().take() {
+            self.map.lock().unwrap().insert(reference.0, material);
+        }
+        Ok(inventory)
     }
 }
 
@@ -198,6 +260,7 @@ fn seed(store: &MemStore, id: &str, ws: &str) {
         url: "https://old.example/hook".into(),
         event_types: vec!["run.completed".into()],
         disabled: false,
+        consecutive_failures: 0,
         secret_ref: SecretRef(format!("whsec:{id}")),
     });
 }
@@ -256,6 +319,11 @@ async fn create_mints_a_secret_seals_it_and_stores_the_row() {
     // The secret-free row is stored, sealed under its own ref.
     let row = store.get("wh1").expect("row stored");
     assert_eq!(row.workspace_id, "ws_a");
+    assert!(
+        row.secret_ref.0.starts_with("sec:webhook:whref_"),
+        "the secret-free row carries a fresh opaque material reference"
+    );
+    assert!(!row.secret_ref.0.contains(secret));
     assert_eq!(
         secrets.get(&row.secret_ref).await.unwrap().expose_secret(),
         secret,
@@ -278,6 +346,34 @@ async fn create_without_url_is_400() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(store.get("wh1").is_none(), "no row on a bad request");
+}
+
+#[tokio::test]
+async fn malformed_authoring_fields_are_rejected_without_side_effects() {
+    // Cause/effect graph: C1 event_types is not an array of non-empty strings;
+    // C2 disabled is not boolean. Effects E1 400, E2 no row, E3 no material,
+    // E4 no mutation intent. Decision table R1=C1 -> E1..E4; R2=C2 -> E1..E4.
+    for body in [
+        json!({"url":"https://x.example/hook","event_types":["ok", 7]}),
+        json!({"url":"https://x.example/hook","event_types":[""]}),
+        json!({"url":"https://x.example/hook","disabled":"false"}),
+    ] {
+        let store = Arc::new(MemStore::default());
+        let secrets = Arc::new(MemSecrets::ok());
+        let (status, _) = call(
+            store.clone(),
+            secrets.clone(),
+            "PUT",
+            "/v1/config/webhook-subscriptions/wh_invalid",
+            Some("ws_a"),
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "R1/R2");
+        assert!(store.get("wh_invalid").is_none(), "E2");
+        assert!(secrets.map.lock().unwrap().is_empty(), "E3");
+        assert!(store.pending_mutations().unwrap().is_empty(), "E4");
+    }
 }
 
 #[tokio::test]
@@ -328,6 +424,43 @@ async fn seal_failure_is_500_and_stores_no_row() {
         store.get("wh1").is_none(),
         "a failed seal leaves no dangling row"
     );
+    assert!(
+        store.pending_mutations().unwrap().is_empty(),
+        "successful compensation retires the create intent"
+    );
+}
+
+#[tokio::test]
+async fn failed_seal_and_failed_compensation_remain_recoverable() {
+    // Cause/effect graph: C1 durable create intent; C2 secret put fails; C3
+    // compensating delete also fails. Effects E1 500/no row, E2 intent retained;
+    // after C3 clears, E3 recovery idempotently deletes and completes. Decision
+    // rules R1=C1∧C2∧C3 -> E1∧E2; R2=R1∧¬C3 -> E3.
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::failing());
+    secrets.fail_delete.store(true, Ordering::SeqCst);
+    let (status, _) = call(
+        store.clone(),
+        secrets.clone(),
+        "PUT",
+        "/v1/config/webhook-subscriptions/wh1",
+        Some("ws_a"),
+        Some(json!({ "url": "https://x.example/y" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "R1/E1");
+    assert!(store.get("wh1").is_none(), "R1/E1");
+    assert_eq!(store.pending_mutations().unwrap().len(), 1, "R1/E2");
+
+    secrets.fail_delete.store(false, Ordering::SeqCst);
+    assert_eq!(
+        recover_webhook_mutations(store.as_ref(), secrets.as_ref())
+            .await
+            .unwrap(),
+        1,
+        "R2/E3"
+    );
+    assert!(store.pending_mutations().unwrap().is_empty(), "R2/E3");
 }
 
 #[tokio::test]
@@ -386,6 +519,66 @@ async fn cross_tenant_delete_is_a_noop() {
 }
 
 #[tokio::test]
+async fn owned_delete_removes_row_and_signing_material() {
+    // Cause/effect graph: C1 owned row + sealed material; C2 DELETE; effects E1
+    // journal before mutation, E2 row removal, E3 material removal, E4 journal
+    // completion. Decision rule R1=C1∧C2 -> 204∧E2∧E3∧E4.
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    seed_resolvable(&store, &secrets, "wh1", "ws_a", &[]).await;
+    let reference = store.get("wh1").unwrap().secret_ref;
+    let (status, _) = call(
+        store.clone(),
+        secrets.clone(),
+        "DELETE",
+        "/v1/config/webhook-subscriptions/wh1",
+        Some("ws_a"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "R1");
+    assert!(store.get("wh1").is_none(), "R1/E2");
+    assert!(secrets.get(&reference).await.is_err(), "R1/E3");
+    assert!(store.pending_mutations().unwrap().is_empty(), "R1/E4");
+}
+
+#[tokio::test]
+async fn failed_delete_cleanup_keeps_a_recoverable_intent() {
+    // Cause/effect decision table: R1 committed row + delete publication + vault
+    // delete failure -> 500, row absent, material and intent retained; R2 vault
+    // recovers -> recovery removes material and completes the intent.
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+    seed_resolvable(&store, &secrets, "wh1", "ws_a", &[]).await;
+    let reference = store.get("wh1").unwrap().secret_ref;
+    secrets.fail_delete.store(true, Ordering::SeqCst);
+    let (status, _) = call(
+        store.clone(),
+        secrets.clone(),
+        "DELETE",
+        "/v1/config/webhook-subscriptions/wh1",
+        Some("ws_a"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "R1");
+    assert!(store.get("wh1").is_none(), "R1");
+    assert!(secrets.get(&reference).await.is_ok(), "R1");
+    assert_eq!(store.pending_mutations().unwrap().len(), 1, "R1");
+
+    secrets.fail_delete.store(false, Ordering::SeqCst);
+    assert_eq!(
+        recover_webhook_mutations(store.as_ref(), secrets.as_ref())
+            .await
+            .unwrap(),
+        1,
+        "R2"
+    );
+    assert!(secrets.get(&reference).await.is_err(), "R2");
+    assert!(store.pending_mutations().unwrap().is_empty(), "R2");
+}
+
+#[tokio::test]
 async fn update_in_place_preserves_the_sealed_secret() {
     let store = Arc::new(MemStore::default());
     store.put(WebhookEndpointDef {
@@ -394,6 +587,7 @@ async fn update_in_place_preserves_the_sealed_secret() {
         url: "https://old.example/hook".into(),
         event_types: vec![],
         disabled: true,
+        consecutive_failures: 7,
         secret_ref: SecretRef("whsec:original".into()),
     });
     let (status, body) = call(
@@ -415,6 +609,40 @@ async fn update_in_place_preserves_the_sealed_secret() {
         "sealed secret preserved"
     );
     assert!(row.disabled, "disabled flag preserved across an update");
+    assert_eq!(row.consecutive_failures, 7, "failure state is preserved");
+}
+
+#[tokio::test]
+async fn an_operator_can_reenable_an_auto_disabled_subscription() {
+    // Cause/effect graph: C1 existing disabled row; C2 PUT omits `disabled`; C3
+    // PUT explicitly sets false. Effects E1 preserve disabled/count (covered by
+    // `update_in_place...`); E2 re-enable and reset count while preserving secret.
+    // Decision rule R2=C1∧C3 -> E2 closes the auto-disable recovery loop.
+    let store = Arc::new(MemStore::default());
+    store.put(WebhookEndpointDef {
+        id: "wh1".into(),
+        workspace_id: "ws_a".into(),
+        url: "https://old.example/hook".into(),
+        event_types: vec![],
+        disabled: true,
+        consecutive_failures: 20,
+        secret_ref: SecretRef("whsec:original".into()),
+    });
+    let (status, body) = call(
+        store.clone(),
+        Arc::new(MemSecrets::ok()),
+        "PUT",
+        "/v1/config/webhook-subscriptions/wh1",
+        Some("ws_a"),
+        Some(json!({ "url": "https://fixed.example/hook", "disabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R2");
+    assert_eq!(body["disabled"], false, "R2");
+    let row = store.get("wh1").unwrap();
+    assert!(!row.disabled, "R2");
+    assert_eq!(row.consecutive_failures, 0, "R2");
+    assert_eq!(row.secret_ref.0, "whsec:original", "R2");
 }
 
 #[tokio::test]
@@ -483,6 +711,7 @@ async fn seed_resolvable(
         url: "https://x.example/hook".into(),
         event_types: types.iter().map(|s| s.to_string()).collect(),
         disabled: false,
+        consecutive_failures: 0,
         secret_ref,
     });
 }
@@ -501,7 +730,8 @@ async fn matching_resolves_an_enabled_subscription_with_its_secret() {
     seed_resolvable(&store, &secrets, "wh1", "ws_a", &["run.completed"]).await;
     let out = source(store, secrets)
         .matching("ws_a", "run.completed")
-        .await;
+        .await
+        .unwrap();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].id, "wh1");
     assert!(
@@ -511,18 +741,41 @@ async fn matching_resolves_an_enabled_subscription_with_its_secret() {
 }
 
 #[tokio::test]
-async fn matching_skips_a_subscription_whose_secret_is_unresolvable() {
+async fn matching_fails_closed_when_a_subscription_secret_is_unresolvable() {
+    // Cause/effect graph: C1 matching durable row; C2 secret material absent;
+    // E1 source error; E2 caller keeps the lifecycle outbox fact pending. Decision
+    // rule R1=C1∧C2 -> E1 (never an empty match set that would imply delivery).
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
-    // Row present, but its secret was never sealed → unsignable → skipped.
+    // Row present, but its secret was never sealed.
     seed(&store, "wh1", "ws_a");
-    let out = source(store, secrets)
+    let error = source(store, secrets)
         .matching("ws_a", "run.completed")
-        .await;
+        .await
+        .unwrap_err();
     assert!(
-        out.is_empty(),
-        "an endpoint that can never sign is not delivered to"
+        error.contains("wh1") && error.contains("not found"),
+        "R1 reports the affected subscription without leaking material: {error}"
     );
+
+    let store = Arc::new(MemStore::default());
+    seed(&store, "wh1", "ws_a");
+    let delivery = config_plane_lifecycle_delivery(
+        store as Arc<dyn WebhookStore>,
+        Arc::new(MemSecrets::ok()) as Arc<dyn SecretStore>,
+        None,
+    );
+    let error = delivery
+        .deliver(&ManagedLifecycleFact {
+            id: "event_missing_secret".into(),
+            object_id: "sesn_1".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "run.completed".into(),
+            timestamp: 1,
+        })
+        .await
+        .unwrap_err();
+    assert!(error.contains("wh1"), "R1/E2: {error}");
 }
 
 #[tokio::test]
@@ -532,13 +785,20 @@ async fn matching_skips_disabled_and_type_mismatched_subscriptions() {
     seed_resolvable(&store, &secrets, "wh_ok", "ws_a", &["run.completed"]).await;
     seed_resolvable(&store, &secrets, "wh_other", "ws_a", &["run.failed"]).await; // type mismatch
     seed_resolvable(&store, &secrets, "wh_dis", "ws_a", &["run.completed"]).await;
-    let mut disabled = store.get("wh_dis").unwrap();
-    disabled.disabled = true;
-    store.put(disabled);
+    store
+        .update_authored(WebhookAuthoringPatch {
+            id: "wh_dis".into(),
+            workspace_id: "ws_a".into(),
+            url: "https://x.example/hook".into(),
+            event_types: vec!["run.completed".into()],
+            disabled: Some(true),
+        })
+        .unwrap();
 
     let out = source(store, secrets)
         .matching("ws_a", "run.completed")
-        .await;
+        .await
+        .unwrap();
     let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -548,15 +808,177 @@ async fn matching_skips_disabled_and_type_mismatched_subscriptions() {
 }
 
 #[tokio::test]
-async fn disable_flips_the_row_in_the_store() {
+async fn delivery_results_persist_failure_disable_and_success_reset() {
+    // Cause/effect decision table: R1 failure below threshold -> durable count 1,
+    // active; R2 next failure at threshold -> disabled; R3 success on an active
+    // endpoint -> count reset. This proves the adapter delegates to the one store
+    // transition rather than maintaining a process-local counter.
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
     seed_resolvable(&store, &secrets, "wh1", "ws_a", &[]).await;
-    source(store.clone(), secrets).disable("wh1").await;
+    let source = source(store.clone(), secrets);
+    assert_eq!(
+        source.record_failure("wh1", 2).await.unwrap(),
+        SubscriptionFailureState::Active,
+        "R1"
+    );
+    assert_eq!(store.get("wh1").unwrap().consecutive_failures, 1, "R1");
+    assert_eq!(
+        source.record_failure("wh1", 2).await.unwrap(),
+        SubscriptionFailureState::Disabled,
+        "R2"
+    );
     assert!(
         store.get("wh1").unwrap().disabled,
-        "auto-disable is a config-plane write"
+        "R2: auto-disable is a config-plane write"
     );
+
+    seed_resolvable(&store, &MemSecrets::ok(), "wh2", "ws_a", &[]).await;
+    source.record_failure("wh2", 2).await.unwrap();
+    source.record_success("wh2").await.unwrap();
+    assert_eq!(store.get("wh2").unwrap().consecutive_failures, 0, "R3");
+}
+
+#[tokio::test]
+async fn interrupted_material_mutations_recover_from_the_durable_row() {
+    // Cause/effect decision table:
+    // R1 create intent + material + no row -> delete unpublished material;
+    // R2 create intent + material + committed row -> retain material;
+    // R3 delete intent + removed row + material -> delete retired material.
+    // Every rule completes the intent; no process-local phase flag participates.
+    let store = Arc::new(MemStore::default());
+    let secrets = Arc::new(MemSecrets::ok());
+
+    let create_def = |id: &str| WebhookEndpointDef {
+        id: id.into(),
+        workspace_id: "ws_a".into(),
+        url: "https://hooks.example/hook".into(),
+        event_types: vec![],
+        disabled: false,
+        consecutive_failures: 0,
+        secret_ref: SecretRef(format!("sec:webhook:{id}")),
+    };
+
+    let unpublished = WebhookMutationIntent::create(create_def("unpublished"));
+    store.begin_mutation(unpublished.clone()).unwrap();
+    secrets
+        .put(
+            &unpublished.after.as_ref().unwrap().secret_ref,
+            RedactedString::new("candidate"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        recover_webhook_mutations(store.as_ref(), secrets.as_ref())
+            .await
+            .unwrap(),
+        1,
+        "R1"
+    );
+    assert!(
+        secrets
+            .get(&unpublished.after.as_ref().unwrap().secret_ref)
+            .await
+            .is_err(),
+        "R1"
+    );
+
+    let published = WebhookMutationIntent::create(create_def("published"));
+    let published_ref = published.after.as_ref().unwrap().secret_ref.clone();
+    store.begin_mutation(published.clone()).unwrap();
+    secrets
+        .put(&published_ref, RedactedString::new("keep"))
+        .await
+        .unwrap();
+    store.apply_mutation(&published).unwrap();
+    assert_eq!(
+        recover_webhook_mutations(store.as_ref(), secrets.as_ref())
+            .await
+            .unwrap(),
+        1,
+        "R2"
+    );
+    assert_eq!(
+        secrets.get(&published_ref).await.unwrap().expose_secret(),
+        "keep",
+        "R2"
+    );
+
+    let before = store.get("published").unwrap();
+    let deleted = WebhookMutationIntent::delete(before);
+    store.begin_mutation(deleted.clone()).unwrap();
+    store.apply_mutation(&deleted).unwrap();
+    assert_eq!(
+        recover_webhook_mutations(store.as_ref(), secrets.as_ref())
+            .await
+            .unwrap(),
+        1,
+        "R3"
+    );
+    assert!(secrets.get(&published_ref).await.is_err(), "R3");
+    assert!(store.pending_mutations().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn inventory_reconciliation_protects_intents_and_reports_missing_material() {
+    // Cause graph: C1 unreferenced webhook key; C2 pending-create key; C3 committed
+    // missing key; C4 another domain's key; C5 a committed key becomes visible
+    // after the deletion snapshot. Effects E1 delete C1, E2 retain C2, E3 report
+    // C3, E4 never touch C4, E5 do not falsely report C5. Decision table R1..R5
+    // maps each cause to its effect and proves shared-vault ownership filtering
+    // plus the two-snapshot concurrency boundary.
+    let store = Arc::new(MemStore::default());
+    let concurrent = SecretRef("sec:webhook:concurrent".into());
+    let secrets =
+        Arc::new(MemSecrets::ok().with_material_after_first_inventory(concurrent.clone()));
+    let orphan = SecretRef("sec:webhook:orphan".into());
+    let protected = SecretRef("sec:webhook:pending".into());
+    let foreign = SecretRef("sec:cred:not-a-webhook".into());
+    for reference in [&orphan, &protected, &foreign] {
+        secrets
+            .put(reference, RedactedString::new("material"))
+            .await
+            .unwrap();
+    }
+    let pending = WebhookMutationIntent::create(WebhookEndpointDef {
+        id: "pending".into(),
+        workspace_id: "ws_a".into(),
+        url: "https://hooks.example/pending".into(),
+        event_types: vec![],
+        disabled: false,
+        consecutive_failures: 0,
+        secret_ref: protected.clone(),
+    });
+    store.begin_mutation(pending).unwrap();
+    let missing = SecretRef("sec:webhook:missing".into());
+    store.put(WebhookEndpointDef {
+        id: "missing".into(),
+        workspace_id: "ws_a".into(),
+        url: "https://hooks.example/missing".into(),
+        event_types: vec![],
+        disabled: false,
+        consecutive_failures: 0,
+        secret_ref: missing.clone(),
+    });
+    store.put(WebhookEndpointDef {
+        id: "concurrent".into(),
+        workspace_id: "ws_a".into(),
+        url: "https://hooks.example/concurrent".into(),
+        event_types: vec![],
+        disabled: false,
+        consecutive_failures: 0,
+        secret_ref: concurrent.clone(),
+    });
+
+    let report = reconcile_webhook_inventory(store.as_ref(), secrets.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(report.orphaned_deleted, vec![orphan.clone()], "R1/E1");
+    assert!(secrets.get(&orphan).await.is_err(), "R1/E1");
+    assert!(secrets.get(&protected).await.is_ok(), "R2/E2");
+    assert_eq!(report.missing_material, vec![missing], "R3/E3");
+    assert!(secrets.get(&foreign).await.is_ok(), "R4/E4");
+    assert!(secrets.get(&concurrent).await.is_ok(), "R5/E5");
 }
 
 // --- WebhookLifecycleSink: the no-owner early return ---
@@ -564,11 +986,20 @@ async fn disable_flips_the_row_in_the_store() {
 struct CountingSource(Arc<Mutex<u32>>);
 #[async_trait]
 impl SubscriptionSource for CountingSource {
-    async fn matching(&self, _ws: &str, _event: &str) -> Vec<ResolvedSubscription> {
+    async fn matching(&self, _ws: &str, _event: &str) -> Result<Vec<ResolvedSubscription>, String> {
         *self.0.lock().unwrap() += 1;
-        Vec::new()
+        Ok(Vec::new())
     }
-    async fn disable(&self, _id: &str) {}
+    async fn record_success(&self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+    async fn record_failure(
+        &self,
+        _id: &str,
+        _failure_threshold: u32,
+    ) -> Result<SubscriptionFailureState, String> {
+        Ok(SubscriptionFailureState::Active)
+    }
 }
 
 struct NoopSender;
@@ -612,14 +1043,23 @@ impl WebhookSender for RecordingSender {
 struct OneSubSource(String);
 #[async_trait]
 impl SubscriptionSource for OneSubSource {
-    async fn matching(&self, _ws: &str, _event: &str) -> Vec<ResolvedSubscription> {
-        vec![ResolvedSubscription {
+    async fn matching(&self, _ws: &str, _event: &str) -> Result<Vec<ResolvedSubscription>, String> {
+        Ok(vec![ResolvedSubscription {
             id: "wh1".into(),
             url: "https://x.example/hook".into(),
             secret: self.0.clone(),
-        }]
+        }])
     }
-    async fn disable(&self, _id: &str) {}
+    async fn record_success(&self, _id: &str) -> Result<(), String> {
+        Ok(())
+    }
+    async fn record_failure(
+        &self,
+        _id: &str,
+        _failure_threshold: u32,
+    ) -> Result<SubscriptionFailureState, String> {
+        Ok(SubscriptionFailureState::Active)
+    }
 }
 
 struct CountingStatusSender {

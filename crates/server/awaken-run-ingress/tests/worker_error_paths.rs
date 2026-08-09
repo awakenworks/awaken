@@ -17,9 +17,9 @@ use std::sync::atomic::Ordering;
 
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_run_ingress::{DispatchQueue, DispatchWorker, Error, MemoryDispatchStore, RunDispatch};
-use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::execution::RunExecutor;
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{FailingCommit, activation, schedule_n_runtime, text_runtime};
 

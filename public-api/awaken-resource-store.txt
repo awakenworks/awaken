@@ -2,7 +2,6 @@ pub mod awaken_resource_store
 pub struct awaken_resource_store::SqliteResourceStore
 impl awaken_resource_store::SqliteResourceStore
 pub fn awaken_resource_store::SqliteResourceStore::ensure_schema(&self) -> core::result::Result<(), awaken_resource_contract::lifecycle::ResourcePurgeError>
-pub fn awaken_resource_store::SqliteResourceStore::in_memory() -> core::result::Result<Self, awaken_resource_contract::lifecycle::ResourcePurgeError>
 pub fn awaken_resource_store::SqliteResourceStore::open(impl core::convert::AsRef<std::path::Path>) -> core::result::Result<Self, awaken_resource_contract::lifecycle::ResourcePurgeError>
 impl awaken_resource_contract::catalog::ResourceBindingValidator for awaken_resource_store::SqliteResourceStore
 pub fn awaken_resource_store::SqliteResourceStore::validate_memory_binding(&self, &str, &str, awaken_resource_contract::catalog::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::catalog::ResourceCatalogError>

@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
 use awaken_authz_enforce::{EnforceEngine, TokenSpec, guard};
-use awaken_config_resolver::{InMemoryWebhookStore, WebhookEndpointDef, WebhookStore};
+use awaken_config_resolver::{
+    InMemoryWebhookStore, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
+};
 use awaken_coordinator::webhooks;
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_protocol_managed::ManagedState;
@@ -70,19 +72,21 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         )
         .await
         .expect("seal the signing secret");
-    store
-        .put(WebhookEndpointDef {
-            id: "wh_live".to_string(),
-            workspace_id: "wrkspc_test".to_string(),
-            url: format!("http://{addr}/hook"),
-            event_types: vec![
-                "session.status_idled".to_string(),
-                "session.status_terminated".to_string(),
-            ],
-            disabled: false,
-            secret_ref: SecretRef("whsec:wh_live".into()),
-        })
-        .unwrap();
+    let intent = WebhookMutationIntent::create(WebhookEndpointDef {
+        id: "wh_live".to_string(),
+        workspace_id: "wrkspc_test".to_string(),
+        url: format!("http://{addr}/hook"),
+        event_types: vec![
+            "session.status_idled".to_string(),
+            "session.status_terminated".to_string(),
+        ],
+        disabled: false,
+        consecutive_failures: 0,
+        secret_ref: SecretRef("whsec:wh_live".into()),
+    });
+    store.begin_mutation(intent.clone()).unwrap();
+    store.apply_mutation(&intent).unwrap();
+    store.complete_mutation(&intent).unwrap();
     // The guarded production posture would refuse this loopback receiver (SSRF
     // pin/admission), so use the loopback assembly for the in-process e2e.
     let (sink, _crud) = webhooks::assemble_loopback(store, secrets, None, sessions.clone());
