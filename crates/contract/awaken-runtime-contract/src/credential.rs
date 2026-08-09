@@ -88,9 +88,10 @@ pub fn compile_candidate_credential_bindings(
             (Backend::Native, PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerProviderAdapter
             }
-            (Backend::Acp { .. }, PlaintextBoundary::Workload) => {
-                CredentialRealizationKind::ProcessSecretEnvironment
-            }
+            (Backend::Acp { .. }, PlaintextBoundary::Workload) => installed
+                .acp_backend_realization_kind(&candidate.binding.backend_ref)
+                .map_err(AttemptCredentialBindingError::InvalidWorkerCapabilities)?
+                .unwrap_or(CredentialRealizationKind::ProcessSecretEnvironment),
             (Backend::Acp { .. }, PlaintextBoundary::Worker) => {
                 CredentialRealizationKind::WorkerRelay
             }
@@ -340,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_acp_accepts_a_published_process_environment_usage_only_for_acp() {
+    fn routed_acp_accepts_a_published_process_environment_usage_only_for_acp() {
         let holder =
             PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN);
         let access = CredentialAccess::new(
@@ -396,6 +397,88 @@ mod tests {
             compile_candidate_credential_bindings(&[&native], Some(&holder), &capabilities, 1, 0,),
             Err(AttemptCredentialBindingError::InvalidCredentialUsage)
         );
+    }
+
+    #[test]
+    fn routed_acp_claim_uses_the_selected_backends_advertised_delivery_kind() {
+        // Independent ACP profiles coexist on one Worker. The claim compiler
+        // must retain backend-to-mechanism correlation instead of selecting a
+        // kind from the aggregate union.
+        let holder =
+            PlaintextHolder::new(PlaintextBoundary::Workload, SELF_HOSTED_ACP_TRUST_DOMAIN);
+        let profile = |backend_ref: &str, kind: CredentialRealizationKind, material_type: &str| {
+            CredentialRealizationCapabilities {
+                holders: [holder.clone()].into_iter().collect(),
+                material_sources: [CredentialMaterialSource::ControlPlaneReference]
+                    .into_iter()
+                    .collect(),
+                realization_kinds: [kind].into_iter().collect(),
+                extension_consumers: [(
+                    format!("{ACP_CREDENTIAL_CONSUMER_PREFIX}{backend_ref}"),
+                    [material_type.to_string()].into_iter().collect(),
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            }
+        };
+        let capabilities = CredentialRealizationCapabilities::alternatives([
+            profile(
+                "acp:environment-adapter",
+                CredentialRealizationKind::ProcessSecretEnvironment,
+                PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
+            ),
+            profile(
+                "acp:file-adapter",
+                CredentialRealizationKind::PrivateSecretFile,
+                PRIVATE_SECRET_FILE_MATERIAL_TYPE,
+            ),
+        ]);
+        let candidate = |backend_ref: &str| {
+            ResolvedModelCandidate::provider(
+                ModelBinding::new("provider", "model", backend_ref),
+                "provider@1",
+                "route@1",
+                "workspace-a",
+                Some(CredentialAccess::new(
+                    CredentialRef {
+                        id: "provider-key".into(),
+                        revision: 1,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::self_hosted_provider(),
+                )),
+                crate::InferenceEndpoint {
+                    adapter_kind: "generic".into(),
+                    api_dialect: "generic".into(),
+                    base_url: "https://provider.invalid".into(),
+                    upstream_model: "model".into(),
+                },
+            )
+        };
+
+        for (backend_ref, expected) in [
+            (
+                "acp:environment-adapter",
+                CredentialRealizationKind::ProcessSecretEnvironment,
+            ),
+            (
+                "acp:file-adapter",
+                CredentialRealizationKind::PrivateSecretFile,
+            ),
+        ] {
+            let candidate = candidate(backend_ref);
+            let bindings = compile_candidate_credential_bindings(
+                &[&candidate],
+                Some(&holder),
+                &capabilities,
+                7,
+                0,
+            )
+            .expect("backend-correlated admission");
+            assert_eq!(bindings[0].selected_realization_kind, expected);
+        }
     }
 
     #[test]

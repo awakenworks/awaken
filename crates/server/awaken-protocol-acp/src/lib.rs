@@ -128,8 +128,13 @@ impl Default for SupervisePolicy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AcpProjectedEvent {
-    /// Assistant text.
-    Message { text: String },
+    /// Assistant text. ACP's unstable message id is retained only as a transient
+    /// stream boundary; it never becomes a durable domain identifier.
+    Message {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+    },
     /// The agent surfaced a tool call to us (the inbound-tool path). `id` is the
     /// ACP `tool_call_id`, so a later [`ToolResult`](Self::ToolResult) correlates
     /// to this call.
@@ -287,6 +292,9 @@ pub struct TurnConfig<'a> {
     /// turn used — `session/new`'s fresh id when none was given — so the caller can
     /// resume it next turn. Left `None` by the newline stand-in.
     pub session_id: Option<String>,
+    /// Exact model to select with ACP `session/set_model`. `None` leaves the
+    /// Session's advertised current model unchanged.
+    pub session_model: Option<String>,
     /// In: a session mode to pin via `session/set_mode` after the handshake (an
     /// adapter-local datum — `None` leaves the agent's default). Validated
     /// fail-closed against the modes the agent advertised for the session.
@@ -324,6 +332,7 @@ impl<'a> TurnConfig<'a> {
             resolver,
             mcp_servers: Vec::new(),
             session_id: None,
+            session_model: None,
             session_mode: None,
             session_config_options: Vec::new(),
             session_cwd: None,
@@ -957,7 +966,10 @@ mod tests {
     #[tokio::test]
     async fn every_agent_event_variant_round_trips() {
         let events = [
-            AcpProjectedEvent::Message { text: "hi".into() },
+            AcpProjectedEvent::Message {
+                text: "hi".into(),
+                message_id: None,
+            },
             AcpProjectedEvent::ToolCall {
                 id: "call_1".into(),
                 name: "read_file".into(),

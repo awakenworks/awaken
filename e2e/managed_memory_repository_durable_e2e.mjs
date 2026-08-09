@@ -112,7 +112,12 @@ async function main() {
       precondition: { type: 'content_sha256', content_sha256: mem.content_sha256 },
       betas: BETAS,
     });
-    assert.equal(up.content, 'second');
+    assert.equal(up.content, null, 'update defaults to the basic projection');
+    const updatedFull = await c.beta.memoryStores.memories.retrieve(mem.id, {
+      memory_store_id: store.id,
+      betas: BETAS,
+    });
+    assert.equal(updatedFull.content, 'second', 'the full retrieval exposes updated content');
     assert.notEqual(up.memory_version_id, mem.memory_version_id, 'an update mints a new version');
     const staleReplay = await c.beta.memoryStores.memories.update(mem.id, {
       memory_store_id: store.id,

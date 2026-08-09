@@ -29,8 +29,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 use kube::api::{AttachParams, DeleteParams, ListParams};
 use kube::{Api, Client};
-use std::collections::BTreeMap;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::net::TcpAgentTransport;
 use crate::{
@@ -39,10 +38,15 @@ use crate::{
 
 mod live_inputs;
 mod names;
+mod pod_projection;
 mod pod_security;
 mod process;
 mod realization;
-use names::{cfg_owner_label, configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
+use names::{configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
+use pod_projection::{
+    CONFIGMAP_KEY, build_configmap, build_credential_secret, content_binds, credential_binds,
+    credential_key,
+};
 use pod_security::{
     egress_label, fuse_sidecar_security_context, hardened_security_context, pod_resources,
     unenforceable_k8s_limit,
@@ -69,109 +73,6 @@ pub(crate) fn api_conflict(error: &kube::Error) -> bool {
 
 pub(crate) fn api_not_found(error: &kube::Error) -> bool {
     matches!(error, kube::Error::Api(response) if response.code == 404)
-}
-
-/// The single ConfigMap data key each inline-content mount is stored under; the Pod
-/// projects it back to the mount's exact `mount_path` via a `subPath`.
-const CONFIGMAP_KEY: &str = "content";
-
-/// The Pod's inline single-file binds — those carrying self-contained bytes (`Inline` /
-/// `Other{content}`, or a resolved File/Resource) rather than a host ref, whether UTF-8
-/// (`content` → ConfigMap `data`) or binary (`content_bytes` → `binaryData`). Each becomes a
-/// ConfigMap volume; the stable order names the i-th ConfigMap in both `create` and `build_pod`.
-fn content_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
-    plan.binds
-        .iter()
-        .filter(|b| b.content.is_some() || b.content_bytes.is_some())
-        .collect()
-}
-
-fn credential_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
-    plan.binds
-        .iter()
-        .filter(|bind| bind.secret_content.is_some())
-        .collect()
-}
-
-fn credential_key(bind: &BindPlan) -> &str {
-    bind.credential_file_path
-        .as_deref()
-        .and_then(|path| path.rsplit('/').next())
-        .filter(|name| !name.is_empty())
-        .unwrap_or(CONFIGMAP_KEY)
-}
-
-/// Build a ConfigMap holding one inline-content mount's bytes under [`CONFIGMAP_KEY`].
-/// Immutable (the content is fixed at create) and owned by the same GC anchor as the Pod
-/// so it is reaped natively when set; labeled for best-effort `remove` in the ownerless
-/// case. ConfigMaps cap at ~1MiB — inline config (codex `config.toml`, resource bytes)
-/// is well under, and larger byte payloads belong on the blob-store path, not here.
-fn build_configmap(
-    id: &str,
-    i: usize,
-    content: Option<&str>,
-    content_bytes: Option<&[u8]>,
-    owner: &Option<OwnerReference>,
-) -> ConfigMap {
-    let mut labels = BTreeMap::new();
-    labels.insert("app".to_string(), "awaken-sandbox".to_string());
-    labels.insert("awaken-cfg-owner".to_string(), cfg_owner_label(id));
-    // UTF-8 content rides `data`; binary content rides `binaryData` (base64 on the wire) —
-    // the volume subPath projects the same `content` key as a file either way.
-    let (data, binary_data) = match (content, content_bytes) {
-        (Some(text), _) => (
-            Some(BTreeMap::from([(
-                CONFIGMAP_KEY.to_string(),
-                text.to_string(),
-            )])),
-            None,
-        ),
-        (None, Some(bytes)) => (
-            None,
-            Some(BTreeMap::from([(
-                CONFIGMAP_KEY.to_string(),
-                k8s_openapi::ByteString(bytes.to_vec()),
-            )])),
-        ),
-        (None, None) => (Some(BTreeMap::new()), None),
-    };
-    ConfigMap {
-        metadata: ObjectMeta {
-            name: Some(configmap_name(id, i)),
-            labels: Some(labels),
-            owner_references: owner.clone().map(|o| vec![o]),
-            ..Default::default()
-        },
-        data,
-        binary_data,
-        immutable: Some(true),
-    }
-}
-
-fn build_credential_secret(
-    id: &str,
-    i: usize,
-    key: &str,
-    bytes: &[u8],
-    owner: &Option<OwnerReference>,
-) -> Secret {
-    let mut labels = BTreeMap::new();
-    labels.insert("app".to_string(), "awaken-sandbox".to_string());
-    labels.insert("awaken-cfg-owner".to_string(), cfg_owner_label(id));
-    Secret {
-        metadata: ObjectMeta {
-            name: Some(credential_secret_name(id, i)),
-            labels: Some(labels),
-            owner_references: owner.clone().map(|o| vec![o]),
-            ..Default::default()
-        },
-        immutable: Some(true),
-        data: Some(BTreeMap::from([(
-            key.to_string(),
-            k8s_openapi::ByteString(bytes.to_vec()),
-        )])),
-        ..Default::default()
-    }
 }
 
 /// A Kubernetes-backed [`ContainerRuntime`]. `agent_addr` is the Service endpoint the
@@ -722,15 +623,15 @@ impl ContainerRuntime for K8sRuntime {
             std::process::id(),
             EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
-        let (pid_file, argv) = k8s_exec_argv(&id, command)?;
+        let execution = k8s_exec_argv(&id, command)?;
         let pods = self.pods();
         let mut attached = pods
             .exec(
                 container_id,
-                argv,
+                execution.argv,
                 &AttachParams::default()
                     .container("agent")
-                    .stdin(false)
+                    .stdin(!execution.secret_stdin.is_empty())
                     // kube requires at least one attached stdio stream. Keep stdout
                     // attached and drain it in the completion task so a noisy command
                     // cannot block before the remote status frame is delivered.
@@ -739,6 +640,18 @@ impl ContainerRuntime for K8sRuntime {
             )
             .await
             .map_err(backend)?;
+        if !execution.secret_stdin.is_empty() {
+            let mut stdin = attached
+                .stdin()
+                .ok_or_else(|| backend("k8s secret prelude has no stdin"))?;
+            for secret in execution.secret_stdin {
+                stdin
+                    .write_all(secret.expose().as_bytes())
+                    .await
+                    .map_err(backend)?;
+            }
+            stdin.shutdown().await.map_err(backend)?;
+        }
         let mut stdout = attached
             .stdout()
             .ok_or_else(|| backend("k8s exec has no stdout"))?;
@@ -753,7 +666,7 @@ impl ContainerRuntime for K8sRuntime {
         Ok(Box::new(K8sExecProcess {
             id,
             pod: container_id.to_string(),
-            pid_file,
+            pid_file: execution.pid_file,
             pods,
             state: tokio::sync::Mutex::new(K8sExecState {
                 completion: Some(completion),
@@ -772,12 +685,12 @@ impl ContainerRuntime for K8sRuntime {
             std::process::id(),
             EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
-        let (pid_file, argv) = k8s_exec_argv(&id, command)?;
+        let execution = k8s_exec_argv(&id, command)?;
         let pods = self.pods();
         let mut attached = pods
             .exec(
                 container_id,
-                argv,
+                execution.argv,
                 &AttachParams::default()
                     .container("agent")
                     .stdin(true)
@@ -789,6 +702,14 @@ impl ContainerRuntime for K8sRuntime {
         let stdin = attached
             .stdin()
             .ok_or_else(|| backend("k8s agent exec has no stdin"))?;
+        let mut stdin = stdin;
+        for secret in execution.secret_stdin {
+            stdin
+                .write_all(secret.expose().as_bytes())
+                .await
+                .map_err(backend)?;
+        }
+        stdin.flush().await.map_err(backend)?;
         let stdout = attached
             .stdout()
             .ok_or_else(|| backend("k8s agent exec has no stdout"))?;
@@ -799,7 +720,7 @@ impl ContainerRuntime for K8sRuntime {
             process: Box::new(K8sExecProcess {
                 id,
                 pod: container_id.to_string(),
-                pid_file,
+                pid_file: execution.pid_file,
                 pods,
                 state: tokio::sync::Mutex::new(K8sExecState {
                     completion: Some(tokio::spawn(completion)),
@@ -1146,6 +1067,36 @@ mod tests {
             ),
             "R6 rootless BuildKit must use a writable workspace"
         );
+        let environment = buildkit.env.as_ref().unwrap();
+        for name in [
+            "FORWARD_PROXY",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "http_proxy",
+            "https_proxy",
+        ] {
+            assert!(
+                environment.iter().any(|variable| {
+                    variable.name == name
+                        && variable.value.as_deref() == Some("http://proxy.internal:8080")
+                }),
+                "R8 BuildKit and package-manager egress must inherit {name}"
+            );
+        }
+        assert!(
+            environment.iter().any(|variable| {
+                variable.name == "NO_PROXY"
+                    && variable
+                        .value
+                        .as_deref()
+                        .is_some_and(|value| value.contains("registry.local:5000"))
+            }),
+            "R8 the package Registry must bypass the external proxy"
+        );
+        assert!(
+            buildkit.args.as_ref().unwrap()[0].contains("build-arg:HTTP_PROXY"),
+            "R8 predefined proxy args must reach package-manager RUN steps"
+        );
         assert!(
             K8sPackageImageProvisioner::new(
                 client,
@@ -1258,35 +1209,6 @@ mod tests {
         assert_eq!(process.poll().await.unwrap().unwrap().code, Some(7));
     }
 
-    #[test]
-    fn live_file_harvest_requires_a_successful_remote_exit_status() {
-        // Credential-harvest FMECA decision table. Causes: C1 remote `cat`
-        // exits 0; C2 it exits nonzero (missing/permission denied); C3 the API
-        // stream closes without a Status frame; C4 returned bytes are empty.
-        // Effects: E1 exact bytes are eligible for broker write-back; E2 fail
-        // closed so stale/empty material cannot replace authority. Rules: H1
-        // C1=>E1; H2 C1+C4=>E1 (empty is data, validation belongs upstream);
-        // H3 C2|C3=>E2.
-        assert_eq!(
-            k8s_live_file_result(Some(success_status(0)), b"rotated".to_vec()).unwrap(),
-            Some(b"rotated".to_vec()),
-            "H1"
-        );
-        assert_eq!(
-            k8s_live_file_result(Some(success_status(0)), Vec::new()).unwrap(),
-            Some(Vec::new()),
-            "H2"
-        );
-        assert!(
-            k8s_live_file_result(Some(success_status(1)), Vec::new()).is_err(),
-            "H3 nonzero"
-        );
-        assert!(
-            k8s_live_file_result(None, Vec::new()).is_err(),
-            "H3 missing status"
-        );
-    }
-
     #[tokio::test]
     async fn exec_poll_distinguishes_running_missing_and_finished_status() {
         let process = exec_process(Some(tokio::spawn(async {
@@ -1326,6 +1248,35 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn live_file_harvest_requires_a_successful_remote_exit_status() {
+        // Credential-harvest FMECA decision table. Causes: C1 remote `cat`
+        // exits 0; C2 it exits nonzero (missing/permission denied); C3 the API
+        // stream closes without a Status frame; C4 returned bytes are empty.
+        // Effects: E1 exact bytes are eligible for broker write-back; E2 fail
+        // closed so stale/empty material cannot replace authority. Rules: H1
+        // C1=>E1; H2 C1+C4=>E1 (empty is data, validation belongs upstream);
+        // H3 C2|C3=>E2.
+        assert_eq!(
+            k8s_live_file_result(Some(success_status(0)), b"rotated".to_vec()).unwrap(),
+            Some(b"rotated".to_vec()),
+            "H1"
+        );
+        assert_eq!(
+            k8s_live_file_result(Some(success_status(0)), Vec::new()).unwrap(),
+            Some(Vec::new()),
+            "H2"
+        );
+        assert!(
+            k8s_live_file_result(Some(success_status(1)), Vec::new()).is_err(),
+            "H3 nonzero"
+        );
+        assert!(
+            k8s_live_file_result(None, Vec::new()).is_err(),
+            "H3 missing status"
+        );
+    }
+
     #[tokio::test]
     async fn exec_admission_and_argv_materialization_cover_all_command_boundaries() {
         assert!(
@@ -1344,7 +1295,16 @@ mod tests {
         let secret = pc::materialize_process_command(&[], secret, Some(&broker))
             .await
             .unwrap();
-        assert!(k8s_exec_argv("secret", secret).is_err());
+        let secret = k8s_exec_argv("secret", secret).unwrap();
+        assert_eq!(secret.secret_stdin.len(), 1);
+        assert!(
+            secret
+                .argv
+                .iter()
+                .all(|value| !value.contains("container-process-secret")),
+            "the secret prelude must never enter Kubernetes exec argv"
+        );
+        assert!(secret.argv.iter().any(|value| value == "TOKEN"));
 
         let mut inline = pc::Command::new(["echo", "value"]);
         inline.cwd = "/workspace".into();
@@ -1356,10 +1316,11 @@ mod tests {
             visibility: pc::EnvVisibility::Process,
         });
         let inline = materialized(inline).await;
-        let (pid_file, argv) = k8s_exec_argv("inline", inline).unwrap();
-        assert_eq!(pid_file, "/tmp/inline.pid");
-        assert!(argv.iter().any(|value| value == "MODE=test"));
-        assert!(argv.iter().any(|value| value == "/workspace"));
+        let inline = k8s_exec_argv("inline", inline).unwrap();
+        assert_eq!(inline.pid_file, "/tmp/inline.pid");
+        assert!(inline.argv.iter().any(|value| value == "MODE=test"));
+        assert!(inline.argv.iter().any(|value| value == "/workspace"));
+        assert!(inline.secret_stdin.is_empty());
 
         let rt = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
         let mut piped = pc::MaterializedCommand::new(["echo", "value"]);
@@ -1370,6 +1331,46 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn secret_stdin_prelude_becomes_process_env_and_preserves_agent_protocol_input() {
+        use std::io::Write as _;
+
+        let mut command = pc::MaterializedCommand::new([
+            "sh",
+            "-c",
+            "printf '%s|' \"$TOKEN\"; IFS= read -r line; printf '%s' \"$line\"",
+        ]);
+        command.env.push(pc::MaterializedEnvVar {
+            name: "TOKEN".into(),
+            value: pc::MaterializedEnvValue::Secret(awaken_runtime_contract::RedactedString::new(
+                "test-secret",
+            )),
+        });
+        let execution = k8s_exec_argv("secret-prelude-test", command).unwrap();
+        assert!(
+            execution
+                .argv
+                .iter()
+                .all(|part| !part.contains("test-secret"))
+        );
+
+        let mut child = std::process::Command::new(&execution.argv[0])
+            .args(&execution.argv[1..])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.as_mut().unwrap();
+        for secret in execution.secret_stdin {
+            stdin.write_all(secret.expose().as_bytes()).unwrap();
+        }
+        stdin.write_all(b"protocol-message\n").unwrap();
+        let output = child.wait_with_output().unwrap();
+        let _ = std::fs::remove_file(execution.pid_file);
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"test-secret|protocol-message");
     }
 
     #[tokio::test]

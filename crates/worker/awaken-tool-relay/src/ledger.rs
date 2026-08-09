@@ -151,14 +151,12 @@ impl HandOperationLedger for FsOperationLedger {
         let hashed = operation_id.len() > LOSSLESS_STEM_ID_LIMIT;
         let claim_path = self.claim_path(operation_id);
         let result_path = self.result_path(operation_id);
-        if hashed {
-            if let Some(identity) = Self::read_claim_identity(&claim_path).await? {
-                Self::validate_hashed_claim(operation_id, &identity)?;
-                return Ok(match Self::read_result(&result_path).await? {
-                    Some(result) => LedgerAdmission::Cached(result),
-                    None => LedgerAdmission::Indeterminate,
-                });
-            }
+        if hashed && let Some(identity) = Self::read_claim_identity(&claim_path).await? {
+            Self::validate_hashed_claim(operation_id, &identity)?;
+            return Ok(match Self::read_result(&result_path).await? {
+                Some(result) => LedgerAdmission::Cached(result),
+                None => LedgerAdmission::Indeterminate,
+            });
         }
         if let Some(result) = Self::read_result(&result_path).await? {
             return Ok(LedgerAdmission::Cached(result));

@@ -132,8 +132,14 @@ pub trait AcpCapabilityObservationSource: Send + Sync {
     async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String>;
 }
 
-/// Canonical fingerprint shared by discovery, publication and launch-time
-/// handshake verification. Sorting makes adapter response order irrelevant.
+/// Canonical executable-capability fingerprint shared by discovery, publication
+/// and launch-time handshake verification.
+///
+/// Session defaults and config-option catalogues are intentionally excluded:
+/// an ACP may derive them from the provisioned provider/model route, so the
+/// secret-free Worker probe and the realized Session can legitimately differ.
+/// Every requested mode/config selection is still checked against the realized
+/// Session before it is sent. Sorting makes adapter response order irrelevant.
 #[must_use]
 pub fn capability_fingerprint(
     adapter_id: &str,
@@ -159,27 +165,6 @@ pub fn capability_fingerprint(
     modes.sort_by_key(|mode| &mode.native_id);
     for mode in modes {
         hash_value(&mut hash, &mode.native_id);
-        hash_value(&mut hash, &mode.name);
-        hash_optional(&mut hash, mode.description.as_deref());
-        hash.update([u8::from(mode.current)]);
-    }
-    let mut options = capabilities.config_options.iter().collect::<Vec<_>>();
-    options.sort_by_key(|option| &option.native_id);
-    for option in options {
-        hash_value(&mut hash, &option.native_id);
-        hash_value(&mut hash, &option.name);
-        hash_optional(&mut hash, option.description.as_deref());
-        hash_optional(&mut hash, option.category.as_deref());
-        hash_value(&mut hash, &option.current_value);
-        let mut choices = option.choices.iter().collect::<Vec<_>>();
-        choices.sort_by_key(|choice| (&choice.group_id, &choice.native_value));
-        for choice in choices {
-            hash_value(&mut hash, &choice.native_value);
-            hash_value(&mut hash, &choice.name);
-            hash_optional(&mut hash, choice.description.as_deref());
-            hash_optional(&mut hash, choice.group_id.as_deref());
-            hash_optional(&mut hash, choice.group_name.as_deref());
-        }
     }
     format!("{:x}", hash.finalize())
 }
@@ -187,13 +172,6 @@ pub fn capability_fingerprint(
 fn hash_value(hash: &mut Sha256, value: &str) {
     hash.update(value.len().to_le_bytes());
     hash.update(value.as_bytes());
-}
-
-fn hash_optional(hash: &mut Sha256, value: Option<&str>) {
-    hash.update([u8::from(value.is_some())]);
-    if let Some(value) = value {
-        hash_value(hash, value);
-    }
 }
 
 #[cfg(test)]
@@ -251,16 +229,18 @@ mod tests {
     }
 
     #[test]
-    fn capability_fingerprint_decision_table_is_canonical_and_complete() {
+    fn capability_fingerprint_decision_table_is_canonical_and_route_stable() {
         // Causes: C1 response order differs; C2 adapter identity differs; C3 a
-        // negotiated flag differs; C4 a nested choice differs. Effects: E1 order
-        // is normalized; E2-E4 semantic changes produce a new fingerprint.
+        // negotiated flag differs; C4 an executable mode differs; C5 provider
+        // routing changes defaults/config catalogues. Effects: E1 order and
+        // route-local state are normalized; E2-E4 executable changes differ.
         //
         // | Rule | C1 | C2 | C3 | C4 | Effect |
         // | R1   | T  | F  | F  | F  | E1 same fingerprint |
         // | R2   | F  | T  | F  | F  | E2 different |
         // | R3   | F  | F  | T  | F  | E3 different |
         // | R4   | F  | F  | F  | T  | E4 different |
+        // | R5 provider/session defaults differ | E1 same fingerprint |
         let original = capabilities();
         let expected = capability_fingerprint("codex", "1.0", &original);
 
@@ -284,12 +264,24 @@ mod tests {
             expected,
             "R3"
         );
-        let mut changed_choice = original;
-        changed_choice.config_options[0].choices[0].native_value = "tiny".into();
+        let mut changed_mode = original.clone();
+        changed_mode.modes[0].native_id = "audit".into();
         assert_ne!(
-            capability_fingerprint("codex", "1.0", &changed_choice),
+            capability_fingerprint("codex", "1.0", &changed_mode),
             expected,
             "R4"
+        );
+
+        let mut routed = original;
+        routed.modes[0].current = true;
+        routed.modes[1].current = false;
+        routed.modes[0].name = "Provider label".into();
+        routed.modes[0].description = Some("route-local presentation".into());
+        routed.config_options.clear();
+        assert_eq!(
+            capability_fingerprint("codex", "1.0", &routed),
+            expected,
+            "R5"
         );
     }
 

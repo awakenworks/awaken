@@ -45,15 +45,12 @@ impl MemoryView {
     fn parse(
         query: &std::collections::HashMap<String, String>,
         default: Self,
-    ) -> Result<Self, axum::response::Response> {
+    ) -> Result<Self, &'static str> {
         match query.get("view").map(String::as_str) {
             None => Ok(default),
             Some("basic") => Ok(Self::Basic),
             Some("full") => Ok(Self::Full),
-            Some(_) => Err(err(
-                StatusCode::BAD_REQUEST,
-                "view must be `basic` or `full`",
-            )),
+            Some(_) => Err("view must be `basic` or `full`"),
         }
     }
 
@@ -430,7 +427,7 @@ async fn create_memory(
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Basic) {
         Ok(view) => view,
-        Err(response) => return response,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     let Some(path) = body.get("path").and_then(Value::as_str) else {
         return err(StatusCode::BAD_REQUEST, "memory needs a `path`");
@@ -483,7 +480,7 @@ async fn list_memories(
     };
     let view = match MemoryView::parse(&q, MemoryView::Basic) {
         Ok(view) => view,
-        Err(response) => return response,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     let requested_limit = match q.get("limit") {
         None => awaken_agent_contract::page::DEFAULT_PAGE_LIMIT,
@@ -587,7 +584,7 @@ async fn get_memory(
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Full) {
         Ok(view) => view,
-        Err(response) => return response,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
@@ -620,7 +617,7 @@ async fn update_memory(
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Basic) {
         Ok(view) => view,
-        Err(response) => return response,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
@@ -706,7 +703,7 @@ async fn list_versions(
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Basic) {
         Ok(view) => view,
-        Err(response) => return response,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}
@@ -736,7 +733,7 @@ async fn get_version(
 ) -> axum::response::Response {
     let view = match MemoryView::parse(&query, MemoryView::Full) {
         Ok(view) => view,
-        Err(response) => return response,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     match active_store_exists(&state, &workspace, &id).await {
         Ok(true) => {}

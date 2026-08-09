@@ -543,7 +543,7 @@ pub awaken_session_contract::McpRealizationClaim::realization_id: alloc::string:
 pub awaken_session_contract::McpRealizationClaim::runtime_incarnation: alloc::string::String
 pub awaken_session_contract::McpRealizationClaim::stage_idempotency_key: alloc::string::String
 pub struct awaken_session_contract::McpRealizationReceipt
-pub awaken_session_contract::McpRealizationReceipt::actual_realization_kind: core::option::Option<awaken_credential_contract::CredentialRealizationKind>
+pub awaken_session_contract::McpRealizationReceipt::actual_realization_kind: core::option::Option<awaken_credential_contract::realization_capabilities::CredentialRealizationKind>
 pub awaken_session_contract::McpRealizationReceipt::generation: awaken_session_contract::McpGenerationRef
 pub awaken_session_contract::McpRealizationReceipt::realization_id: alloc::string::String
 pub awaken_session_contract::McpRealizationReceipt::receipt_fingerprint: alloc::string::String

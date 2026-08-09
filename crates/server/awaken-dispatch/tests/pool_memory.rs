@@ -1035,6 +1035,77 @@ async fn renewal_stops_when_claim_resolution_fails() {
     pool.shutdown().await;
 }
 
+/// A fallback drain and the maintenance loop wake on the same cadence. The
+/// retry-budget check must therefore happen on the claim path as well: otherwise
+/// a fast drain can reclaim the expired poison Run forever before maintenance
+/// records the dead letter.
+#[tokio::test]
+async fn drain_does_not_reclaim_a_run_past_its_retry_budget() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    store
+        .enqueue(RunDispatch::new(activation_on("poison", "thread-poison")))
+        .await
+        .unwrap();
+    assert!(
+        store
+            .claim("failed-worker", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .claim("failed-worker", 1, 2, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .claim("failed-worker", 1, 4, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    let resolver_calls = Arc::new(AtomicUsize::new(0));
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(ManualClock::new(6)),
+        "pool",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(60),
+            max_attempts: 2,
+            ..Default::default()
+        },
+        Arc::new(RejectingResolver {
+            calls: resolver_calls.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+
+    assert!(
+        wait_for_async(|| {
+            let store = store.clone();
+            async move {
+                store
+                    .dead_letters()
+                    .await
+                    .unwrap()
+                    .contains(&RunId("poison".to_string()))
+            }
+        })
+        .await,
+        "expired poison Run reaches the dead-letter ledger"
+    );
+    assert_eq!(resolver_calls.load(Ordering::SeqCst), 0);
+    pool.shutdown().await;
+}
+
 /// The maintenance loop REAPS a poison run (past its crash-retry budget) and later
 /// GCs the dead-letter. The single drain is kept busy on a blocking run so it cannot
 /// reclaim the poison first, making the reap deterministic; then advancing the clock

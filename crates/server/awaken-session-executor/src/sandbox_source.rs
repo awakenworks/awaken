@@ -199,6 +199,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             // that owns the staged File/Repository/MemoryStore projections.
             workspace_cwd: Some(self.sandbox.workspace_cwd()),
             mcp_session_servers: injection.session_servers,
+            session_model: launch.session_model,
             session_mode: launch.session_mode,
             session_config_options: launch.session_config_options,
             expected_capability: launch.expected_capability,
@@ -804,8 +805,9 @@ mod tests {
     async fn bound_codex_provisions_the_claimed_artifact_without_credential_environment() {
         // Causes: C1 Codex consumes provider coordinates through its OpenAI
         // dialect; C2 its credential delivery is an artifact. Effects: E1
-        // base/model enter process env; E2 credential bytes exist only at the
-        // claimed auth.json path, never OPENAI_API_KEY or Codex host-path env.
+        // base/model and non-secret provider config enter process env; E2
+        // credential bytes exist only at the claimed auth.json path, never
+        // OPENAI_API_KEY, Codex host-path env, or serialized provider config.
         let sandbox = Arc::new(CapturingAgentSandbox::default());
         let cli = *awaken_run_executor_acp::acp_cli("codex").expect("Codex ACP profile");
         let source = BoundLocalChannelSource {
@@ -856,7 +858,24 @@ mod tests {
         assert!(env("OPENAI_MODEL").is_some(), "E1");
         assert!(env("OPENAI_API_KEY").is_none(), "E2");
         assert!(env("CODEX_HOME").is_none(), "E2");
-        assert!(env("CODEX_CONFIG").is_none(), "E2");
+        assert_eq!(
+            env("MODEL_PROVIDER").map(|entry| &entry.value),
+            Some(&pc::EnvValue::Inline {
+                value: "awaken-managed".into(),
+            }),
+            "E1"
+        );
+        let provider_config = env("CODEX_CONFIG").expect("E1 provider config");
+        let pc::EnvValue::Inline { value } = &provider_config.value else {
+            panic!("E1 provider config must be non-secret inline metadata");
+        };
+        let value: serde_json::Value = serde_json::from_str(value).expect("E1 valid config");
+        assert_eq!(value["model"], "model", "E1");
+        assert_eq!(
+            value["model_providers"]["awaken-managed"]["base_url"], "http://model.invalid",
+            "E1"
+        );
+        assert!(!value.to_string().contains("secret"), "E2");
     }
 
     #[tokio::test]

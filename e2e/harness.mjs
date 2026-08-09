@@ -32,7 +32,7 @@ fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true });
 fs.mkdirSync(`${E2E_HOME}/.awaken`, { recursive: true });
 fs.writeFileSync(
   `${E2E_HOME}/.awaken/config.toml`,
-  `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\nidentity_mode = "no-login"\n`,
+  `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\nidentity_mode = "no-login"\nsandbox_tier = "local"\n`,
 );
 process.on('exit', () => fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true }));
 
@@ -64,7 +64,9 @@ export function deploymentEnv(
   for (const [field, value] of Object.entries(databases)) {
     if (value) lines.push(`${field} = ${JSON.stringify(value)}`);
   }
-  for (const [field, value] of Object.entries(fields)) {
+  // Generic process fixtures run in an explicitly selected local sandbox. A
+  // scenario that exercises another backend overrides this through `fields`.
+  for (const [field, value] of Object.entries({ sandbox_tier: 'local', ...fields })) {
     if (value !== undefined) lines.push(`${field} = ${JSON.stringify(value)}`);
   }
   if (cloudIam) {
