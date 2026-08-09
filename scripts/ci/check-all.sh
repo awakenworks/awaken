@@ -43,6 +43,7 @@ run "formal" scripts/ci/check_formal.sh --require-tools
 # never a successful skip. Developer-specific partial suites remain runnable by
 # invoking their scripts without the required flags.
 run "postgres" scripts/ci/pg_tests.sh --require-docker
+run "kubernetes-container" scripts/e2e/k8s_container_e2e.sh
 run "frontend" scripts/ci/check-frontend.sh --full
 run "deterministic-e2e" npm --prefix e2e run test:deterministic
 run "sandbox-capabilities" scripts/e2e/sandbox_capability_suite.sh --require-substrates

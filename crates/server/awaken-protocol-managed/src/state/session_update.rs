@@ -90,13 +90,15 @@ impl ManagedState {
             return Ok((self.get_session(id)?, receipt.committed_revision));
         }
 
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             match self
                 .update_session_once(id, &command, command_record.clone())
                 .await
             {
                 Err(StateError::Conflict)
-                    if command.if_match.is_none() && attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                    if command.if_match.is_none()
+                        && attempt + 1
+                            < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
                 {
                     continue;
                 }

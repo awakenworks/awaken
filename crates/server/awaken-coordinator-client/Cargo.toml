@@ -11,7 +11,6 @@ authority = "worker-runtime-transport"
 
 [dependencies]
 awaken-dispatch-contract.workspace = true
-awaken-session-executor.workspace = true
 awaken-session-contract.workspace = true
 awaken-worker-transport-security.workspace = true
 async-trait.workspace = true
@@ -24,6 +23,8 @@ thiserror.workspace = true
 awaken-agent-contract.workspace = true
 awaken-dispatch = { workspace = true, features = ["test-support"] }
 awaken-runtime-contract.workspace = true
+# Integration fixtures mount the Coordinator-side Host router; product Worker
+# code has no dependency on the Host implementation.
 awaken-session-executor = { workspace = true, features = ["test-support"] }
 awaken-session-contract.workspace = true
 awaken-worker-transport-security.workspace = true

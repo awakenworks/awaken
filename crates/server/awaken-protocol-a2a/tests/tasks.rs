@@ -138,19 +138,43 @@ async fn tasks_get_on_an_awaiting_run_reads_input_required() {
 
 #[tokio::test]
 async fn message_send_on_an_awaiting_context_resumes_it_rather_than_starting_a_fresh_turn() {
-    // The context is awaiting, so the send takes the resume branch (pending →
-    // resume, which completes) rather than starting a fresh (still-awaiting) turn.
+    // A2A approval FMECA rule A1: awaiting built-in + one explicit structured
+    // allow decision -> resume exactly once and complete, never start a fresh turn.
     let r = rpc(
         Arc::new(AtomicBool::new(false)),
         json!({
             "jsonrpc": "2.0",
             "id": 3,
             "method": "message/send",
-            "params": { "message": { "kind": "message", "messageId": "m1", "contextId": "ctx", "role": "user", "parts": [{ "kind": "text", "text": "the answer" }] } }
+            "params": { "message": { "kind": "message", "messageId": "m1", "contextId": "ctx", "role": "user", "parts": [{ "kind": "data", "data": { "type": "tool-approval", "allow": true, "note": "reviewed" } }] } }
         }),
     )
     .await;
     assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
+}
+
+#[tokio::test]
+async fn message_send_can_explicitly_deny_an_awaiting_builtin_tool() {
+    // Same cause graph as A1. Rule A2: awaiting built-in + explicit allow=false
+    // -> Confirm{allow:false}; the exact denial is delivered without canceling
+    // the whole Task. A3 text-only and malformed decisions are router-unit
+    // failures and never call this runtime seam.
+    let denied = Arc::new(AtomicBool::new(false));
+    let r = rpc(
+        denied.clone(),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 31,
+            "method": "message/send",
+            "params": { "message": { "kind": "message", "messageId": "m-deny", "contextId": "ctx", "role": "user", "parts": [{ "kind": "data", "data": { "type": "tool-approval", "allow": false, "note": "unsafe" } }] } }
+        }),
+    )
+    .await;
+    assert_eq!(r["result"]["status"]["state"], "completed", "{r}");
+    assert!(
+        denied.load(Ordering::SeqCst),
+        "A2 explicit denial delivered"
+    );
 }
 
 /// A runtime awaiting on a *client-executed* tool `c2`, recording the content of the

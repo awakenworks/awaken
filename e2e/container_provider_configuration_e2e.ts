@@ -7,8 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { execSync, spawn } from 'node:child_process';
-import net from 'node:net';
-import { REPO_ROOT, pass } from './harness.mjs';
+import { availablePort, REPO_ROOT, pass } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38215);
 
@@ -35,7 +34,16 @@ function buildBrain(features: string[] = []): string {
   throw new Error('could not resolve the scenario-host binary path');
 }
 
-async function expectBootFailure(binary: string, tier: string, marker: string, port: number): Promise<void> {
+async function expectBootFailure(
+  binary: string,
+  tier: string,
+  marker: string,
+  preferredPort: number,
+): Promise<void> {
+  // Do not derive sibling ports from one probed base: another process may own
+  // any offset. The canonical harness allocator preserves the preferred port
+  // when free and selects a kernel-assigned fallback when it is occupied.
+  const port = await availablePort(preferredPort);
   const child = spawn(binary, {
     env: {
       ...process.env,
@@ -51,14 +59,6 @@ async function expectBootFailure(binary: string, tier: string, marker: string, p
   child.stdout.on('data', (chunk) => (output += chunk));
   child.stderr.on('data', (chunk) => (output += chunk));
 
-  let listened = false;
-  const probe = net.createConnection({ host: '127.0.0.1', port });
-  probe.once('connect', () => {
-    listened = true;
-    probe.destroy();
-  });
-  probe.once('error', () => probe.destroy());
-
   const exit = await Promise.race([
     new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
       child.once('exit', (code, signal) => resolve({ code, signal }));
@@ -70,12 +70,26 @@ async function expectBootFailure(binary: string, tier: string, marker: string, p
       }, 30_000).unref();
     }),
   ]);
-  assert.equal(listened, false, `${tier} misconfiguration must fail before accepting traffic`);
   assert.notEqual(exit.code, 0, `${tier} misconfiguration must exit unsuccessfully`);
   assert.ok(output.includes(marker), `${tier} failure must name ${marker}; output=${output}`);
+  assert.ok(
+    !output.includes('awaken-coordinator listening on'),
+    `${tier} misconfiguration must fail before accepting traffic; output=${output}`,
+  );
 }
 
 async function main(): Promise<void> {
+  // Cause/effect graph: C1 selected tier; C2 matching backend compiled; C3
+  // preferred port free. E1 missing capability is named; E2 process exits
+  // non-zero before readiness; E3 an occupied preferred port selects an
+  // independent fallback and cannot masquerade as product traffic.
+  //
+  // Decision table:
+  // R1 docker|podman|k8s + no backend feature -> generic E1+E2.
+  // R2 podman|k8s + docker-only build       -> exact sibling E1+E2.
+  // R3 any R1/R2 + preferred port occupied -> E3, then the same E1+E2.
+  // Matching-feature success is owned by the live container scenarios; these
+  // cases exclusively verify the boot-time fail-closed partition.
   // A default build has no container backend. Every configured container tier
   // uses the common no-feature failure path instead of degrading to local.
   const defaultBinary = buildBrain();
