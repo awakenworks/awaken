@@ -72,10 +72,16 @@ pub struct PersistedSession {
     /// public protocol tool unions are projections and never persistence truth.
     #[serde(default)]
     pub tools: crate::SessionToolConfiguration,
-    /// Opaque, secret-free binding to the runtime-owned Session environment.
-    /// The Session context persists the bytes but never interprets them; only the
-    /// runtime that produced the binding may validate and adopt it after restart.
-    pub environment_binding: Option<String>,
+    /// Logical activity is distinct from public wire projection and from the
+    /// execution environment's physical residency. It is a root-CAS fence for a
+    /// stale idle scan racing newly admitted work.
+    #[serde(default)]
+    pub activity: crate::SessionActivity,
+    /// Durable, secret-free execution-environment phase. Opaque bindings are
+    /// interpreted only by the runtime that produced them; this aggregate owns
+    /// their transition, not their substrate meaning.
+    #[serde(default)]
+    pub environment: crate::SessionEnvironmentState,
     /// The only initial and hot MCP desired-state authority.
     pub mcp: crate::SessionMcpAttachmentSet,
     /// Durable resource activation state. Its `active` manifest is the exact,
@@ -333,7 +339,7 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// The stored configuration for `session_id`, if any.
     async fn get(&self, session_id: &str) -> Option<PersistedSession>;
 
-    /// Sessions carrying any durable Resource or MCP reconciliation work.
+    /// Sessions carrying any durable Resource, MCP, or environment reconciliation work.
     /// Implementations preserve the intrinsic Workspace partition in the same
     /// row scan; application coordinators filter by their owned state machine.
     /// One index avoids parallel per-feature recovery registries and scans.
@@ -437,7 +443,8 @@ mod mutation_tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
-            environment_binding: None,
+            activity: Default::default(),
+            environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,

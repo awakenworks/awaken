@@ -1591,13 +1591,13 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         slot.memory = None;
     });
     managed
-        .apply_session_inputs("memory-replay", host.local_workspace(), &resources)
+        .apply_session_inputs("memory-replay", host.local_workspace(), 1, &resources)
         .await
         .expect("cold durable generation installs beside the adopted Environment");
 
     let (left, right) = tokio::join!(
-        managed.apply_session_inputs("memory-replay", host.local_workspace(), &resources),
-        managed.apply_session_inputs("memory-replay", host.local_workspace(), &resources),
+        managed.apply_session_inputs("memory-replay", host.local_workspace(), 1, &resources),
+        managed.apply_session_inputs("memory-replay", host.local_workspace(), 1, &resources),
     );
     left.expect("first exact durable replay");
     right.expect("concurrent exact durable replay");
@@ -1610,6 +1610,7 @@ async fn exact_live_memory_manifest_replay_is_idempotent_but_change_fails_closed
         .apply_session_inputs(
             "memory-replay",
             host.local_workspace(),
+            2,
             &awaken_session_contract::ResolvedSessionResources::default(),
         )
         .await
@@ -2000,7 +2001,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     };
     let attached = effective_resources(vec![res.clone()]);
     managed
-        .apply_session_inputs("t-attach", host.local_workspace(), &attached)
+        .apply_session_inputs("t-attach", host.local_workspace(), 1, &attached)
         .await
         .expect("attach");
 
@@ -2052,6 +2053,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .apply_session_inputs(
             "t-attach",
             host.local_workspace(),
+            2,
             &awaken_session_contract::ResolvedSessionResources::default(),
         )
         .await
@@ -2135,7 +2137,7 @@ async fn live_mount_realization_precedes_logical_commit_and_retry_converges() {
 
     lifecycle.fail_replace.store(true, Ordering::SeqCst);
     managed
-        .apply_session_inputs("t-attach-retry", host.local_workspace(), &desired)
+        .apply_session_inputs("t-attach-retry", host.local_workspace(), 1, &desired)
         .await
         .expect_err("injected logical commit failure");
     assert!(host.sandbox_spec("t-attach-retry").mounts.is_empty());
@@ -2149,7 +2151,7 @@ async fn live_mount_realization_precedes_logical_commit_and_retry_converges() {
 
     lifecycle.fail_replace.store(false, Ordering::SeqCst);
     managed
-        .apply_session_inputs("t-attach-retry", host.local_workspace(), &desired)
+        .apply_session_inputs("t-attach-retry", host.local_workspace(), 1, &desired)
         .await
         .expect("idempotent retry");
     assert_eq!(host.sandbox_spec("t-attach-retry").mounts.len(), 1);
@@ -2206,7 +2208,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
     }]);
 
     let error = managed
-        .apply_session_inputs("t-local-attach", host.local_workspace(), &attached)
+        .apply_session_inputs("t-local-attach", host.local_workspace(), 1, &attached)
         .await
         .expect_err("Workdir cannot admit an official read-only File copy");
     assert!(error.message.contains("does not enforce read-only"));
@@ -4440,7 +4442,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
     // The Managed adapter stores the supplied credential in the Vault and publishes a
     // new Repository config before invoking this complete-manifest runtime port.
     managed
-        .apply_session_inputs("t-rot", host.local_workspace(), &next)
+        .apply_session_inputs("t-rot", host.local_workspace(), 1, &next)
         .await
         .unwrap();
 
@@ -4770,6 +4772,7 @@ async fn replacing_a_manifest_removes_the_old_delivered_skill_tree_immediately()
         .apply_session_inputs(
             "skill-revoke",
             &workspace,
+            1,
             &awaken_session_contract::ResolvedSessionResources {
                 inputs: Vec::new(),
                 skills: Some(Vec::new()),
@@ -4959,12 +4962,16 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     assert!(ctx.tool_executor.is_some(), "R3 Hand");
 }
 
+/// Dispatch projection rule: a registered manifest's Workspace, generation, and
+/// resolved values are one cause tuple; the envelope decode must reproduce that
+/// tuple exactly and select the Session-resource worker capability.
 #[test]
 fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let thread = "t-dispatch-resources";
-    let manifest = awaken_session_contract::SessionResourceManifest::new(
+    let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
         "workspace-a",
+        7,
         awaken_session_contract::ResolvedSessionResources {
             inputs: Vec::new(),
             skills: Some(Vec::new()),

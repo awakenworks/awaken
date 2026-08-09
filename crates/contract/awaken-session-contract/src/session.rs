@@ -449,12 +449,6 @@ pub trait SessionRuntime: Send + Sync {
         Err(RunError::internal("session toolset runtime is unsupported"))
     }
 
-    /// Return the runtime-owned, secret-free binding for the Session's live
-    /// environment. The adapter persists this opaque value but never parses it.
-    async fn session_environment_binding(&self, _thread: &str) -> Result<Option<String>, RunError> {
-        Ok(None)
-    }
-
     /// Adopt a previously persisted environment before reopening a Session.
     /// Implementations must validate that the binding belongs to `thread` and
     /// fail closed when it is malformed, unavailable, or owned elsewhere.
@@ -465,6 +459,14 @@ pub trait SessionRuntime: Send + Sync {
         _binding: &str,
     ) -> Result<(), RunError> {
         Ok(())
+    }
+
+    /// Release only recreatable process capabilities while retaining the
+    /// Session environment and its durable binding. Returns whether this host
+    /// owns a capability that can be hibernated. The next turn lazily reacquires
+    /// it; this is distinct from terminal [`end_session`](Self::end_session).
+    async fn hibernate_session_environment(&self, _thread: &str) -> Result<bool, RunError> {
+        Ok(false)
     }
 
     /// Resolve the current versions of already-authorized Skill resource ids once
@@ -493,6 +495,7 @@ pub trait SessionRuntime: Send + Sync {
         &self,
         _thread: &str,
         _workspace_id: &str,
+        _resource_revision: u64,
         _inputs: &crate::ResolvedSessionResources,
     ) -> Result<(), RunError> {
         Ok(())

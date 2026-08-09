@@ -16,6 +16,8 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use crate::wire::{HandErrorKind, HandReply, HandRequest, HandResult};
 
+const CHANNEL_CLOSED_BEFORE_DISPATCH: &str = "hand channel closed before dispatch";
+
 /// A `ToolExecutor` that runs each call on a remote hand over `channel`.
 ///
 /// Calls in one run are sequential (the loop awaits each), so a single framed
@@ -95,7 +97,7 @@ where
             // Could not even write the request → it never ran → definite failure.
             return HandResult::err(crate::wire::HandError::new(
                 HandErrorKind::Execution,
-                "hand channel closed before dispatch",
+                CHANNEL_CLOSED_BEFORE_DISPATCH,
             ));
         }
         // Past this point the request is on the wire; any read failure is
@@ -119,6 +121,12 @@ where
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
         match self.call_hand(call).await {
             HandResult::Ok { output } => Ok(output),
+            HandResult::Err { error }
+                if error.kind == HandErrorKind::Execution
+                    && error.message == CHANNEL_CLOSED_BEFORE_DISPATCH =>
+            {
+                Err(ToolError::UnavailableBeforeDispatch(error.message))
+            }
             HandResult::Err { error } => match error.kind {
                 // Preserve the in-process display so a remote unknown-tool reads
                 // identically to a local one.

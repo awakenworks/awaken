@@ -201,14 +201,18 @@ Active/Released commits follow it. Startup reconciliation reads the separately
 persisted trusted owner envelope and never imports a principal, role, API key,
 PDP decision, or policy document into this state machine.
 
-Durable dispatch carries `SessionResourceManifest { workspace_id, resources }`
+Durable dispatch carries `SessionResourceManifest { workspace_id, revision, resources }`
 beside the executable Agent snapshot. This envelope is secret-free and is not a
 second Session model: `resources` is the exact persisted
-`ResolvedSessionResources`, while `workspace_id` is the trusted intrinsic
-partition already recorded by the Session. A cold worker verifies that it equals
-the dispatch `execution_scope`, installs it before sandbox creation, and never
-re-reads current Agent bindings. Delegated child Runs inherit the same envelope
-because they execute in the parent's Session environment.
+`ResolvedSessionResources`, `revision` is the corresponding
+`SessionResourceState::revision`, and `workspace_id` is the trusted intrinsic
+partition already recorded by the Session. A cold worker verifies that the
+Workspace equals the dispatch `execution_scope`, installs the manifest before
+sandbox creation, and never re-reads current Agent bindings. A warm worker may
+replay the exact generation or advance to a newer one; it rejects older and
+same-revision/different-value manifests so a delayed Run cannot roll back live
+inputs. Delegated child Runs inherit the same envelope because they execute in
+the parent's Session environment.
 
 ### D6: Each resource reclaims according to its own invariant
 

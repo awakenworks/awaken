@@ -944,7 +944,8 @@ impl ManagedState {
             title: req.title.clone(),
             metadata: req.metadata.clone(),
             tools: effective_tools.clone(),
-            environment_binding: None,
+            activity: Default::default(),
+            environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
@@ -1149,7 +1150,12 @@ impl ManagedState {
                     .await?;
                 if let Err(error) = self
                     .runtime
-                    .apply_session_inputs(&session_id, owner_scope, &desired)
+                    .apply_session_inputs(
+                        &session_id,
+                        owner_scope,
+                        session.resources.revision,
+                        &desired,
+                    )
                     .await
                 {
                     session
@@ -1210,7 +1216,12 @@ impl ManagedState {
                 return Ok(session);
             }
             self.runtime
-                .apply_session_inputs(&session_id, owner_scope, &session.resources.active)
+                .apply_session_inputs(
+                    &session_id,
+                    owner_scope,
+                    session.resources.revision,
+                    &session.resources.active,
+                )
                 .await?;
             if session.resources.activations.is_empty() {
                 session.resources.adopt_legacy_active(&session_id);
@@ -1548,7 +1559,7 @@ impl ManagedState {
                 session
             };
             persisted = Some(recovered.clone());
-            if let Some(binding) = recovered.environment_binding.as_deref() {
+            if let Some(binding) = recovered.environment.binding() {
                 self.runtime
                     .restore_session_environment(&baseline.agent_id, id, binding)
                     .await

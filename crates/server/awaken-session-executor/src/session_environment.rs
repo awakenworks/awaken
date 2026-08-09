@@ -81,8 +81,7 @@ pub(crate) enum SessionEnvironment {
     Namespace(Arc<NamespaceSandbox>),
     Container {
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        hand_process: Arc<dyn pc::ProcessHandle>,
-        hand: Arc<dyn ToolExecutor>,
+        hand: Arc<RefreshingHandExecutor>,
         skills: Arc<ContainerSkillCache>,
         capabilities: pc::SandboxCapabilities,
     },
@@ -109,13 +108,8 @@ impl SessionEnvironment {
         match self {
             Self::Workdir(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
             Self::Namespace(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
-            Self::Container {
-                sandbox,
-                hand_process,
-                ..
-            } => {
-                let _ = hand_process.signal(pc::Signal::Term).await;
-                let _ = hand_process.wait().await;
+            Self::Container { sandbox, hand, .. } => {
+                hand.stop().await;
                 sandbox.dispose().await
             }
         }
@@ -133,27 +127,17 @@ impl SessionEnvironment {
 
     async fn container(
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
-        hand_factory: &dyn HandExecutorFactory,
+        hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: &str,
         capabilities: pc::SandboxCapabilities,
     ) -> Result<Self, pc::SandboxError> {
-        let process = sandbox
-            .spawn_agent_process(pc::Command {
-                argv: vec![hand_bin.to_owned(), "hand".into(), "--stdio".into()],
-                cwd: "/workspace".into(),
-                env: Vec::new(),
-                stdio: pc::Stdio::Piped,
-            })
-            .await?;
         let skills = Arc::new(ContainerSkillCache::default());
-        let hand: Arc<dyn ToolExecutor> = Arc::new(RefreshingHandExecutor {
-            inner: hand_factory.bind(process.channel, sandbox.id()),
-            sandbox: sandbox.clone(),
-            skills: skills.clone(),
-        });
+        let hand = Arc::new(
+            RefreshingHandExecutor::new(sandbox.clone(), skills.clone(), hand_factory, hand_bin)
+                .await?,
+        );
         Ok(Self::Container {
             sandbox,
-            hand_process: Arc::from(process.process),
             hand,
             skills,
             capabilities,
@@ -401,9 +385,18 @@ impl SessionEnvironment {
     /// Used when an adoption races a resident environment with the same handle;
     /// disposing here would incorrectly destroy the shared underlying container.
     pub(crate) async fn stop_bound_processes(&self) {
-        if let Self::Container { hand_process, .. } = self {
-            let _ = hand_process.signal(pc::Signal::Term).await;
-            let _ = hand_process.wait().await;
+        if let Self::Container { hand, .. } = self {
+            hand.stop().await;
+        }
+    }
+
+    /// Drop resumable process capabilities while retaining the Session sandbox.
+    /// Unlike terminal stop, this deliberately permits lazy reacquisition.
+    pub(crate) async fn hibernate_bound_processes(&self) -> bool {
+        if let Self::Container { hand, .. } = self {
+            hand.hibernate().await
+        } else {
+            false
         }
     }
 
@@ -583,11 +576,15 @@ mod tests {
     struct FakeContainerProvider {
         creates: std::sync::atomic::AtomicUsize,
         renews: Arc<std::sync::atomic::AtomicUsize>,
+        hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
+        fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
         shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     }
 
     struct FakeContainer {
         renews: Arc<std::sync::atomic::AtomicUsize>,
+        hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
+        fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
         shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     }
 
@@ -675,6 +672,8 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(Arc::new(FakeContainer {
                 renews: self.renews.clone(),
+                hand_spawns: self.hand_spawns.clone(),
+                fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
                 shared: self.shared.clone(),
             }))
         }
@@ -686,6 +685,8 @@ mod tests {
         {
             Ok(Arc::new(FakeContainer {
                 renews: self.renews.clone(),
+                hand_spawns: self.hand_spawns.clone(),
+                fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
                 shared: self.shared.clone(),
             }))
         }
@@ -700,6 +701,17 @@ mod tests {
             let (ours, theirs) = tokio::io::duplex(64 * 1024);
             let repository_export = command.argv.iter().any(|part| part == "bundle");
             if command.argv.iter().any(|part| part == "--stdio") {
+                let spawn = self
+                    .hand_spawns
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                if self
+                    .fail_hand_spawn_at
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == spawn
+                {
+                    return Err(pc::SandboxError::new("scripted Hand spawn failure"));
+                }
                 tokio::spawn(async move {
                     use tokio::io::AsyncReadExt;
                     let mut theirs = theirs;
@@ -1038,6 +1050,325 @@ mod tests {
         environment.dispose().await.unwrap();
     }
 
+    #[derive(Clone, Copy)]
+    enum ScriptedHandOutcome {
+        Success,
+        UnavailableBeforeDispatch,
+        Indeterminate,
+    }
+
+    struct ScriptedHandExecutor {
+        outcome: ScriptedHandOutcome,
+    }
+
+    #[async_trait]
+    impl ToolExecutor for ScriptedHandExecutor {
+        async fn invoke(
+            &self,
+            call: &ToolCall,
+        ) -> Result<
+            awaken_runtime_contract::tool::ToolOutput,
+            awaken_runtime_contract::tool::ToolError,
+        > {
+            match self.outcome {
+                ScriptedHandOutcome::Success => Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+                    &call.call_id,
+                    "recovered",
+                )),
+                ScriptedHandOutcome::UnavailableBeforeDispatch => Err(
+                    awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(
+                        "expired attached exec".into(),
+                    ),
+                ),
+                ScriptedHandOutcome::Indeterminate => {
+                    Err(awaken_runtime_contract::tool::ToolError::Execution(
+                        "indeterminate: hand connection lost during dispatch".into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    struct ScriptedHandFactory {
+        outcomes: std::sync::Mutex<std::collections::VecDeque<ScriptedHandOutcome>>,
+        binds: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ScriptedHandFactory {
+        fn new(outcomes: impl IntoIterator<Item = ScriptedHandOutcome>) -> Arc<Self> {
+            Arc::new(Self {
+                outcomes: std::sync::Mutex::new(outcomes.into_iter().collect()),
+                binds: std::sync::atomic::AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl HandExecutorFactory for ScriptedHandFactory {
+        fn bind(
+            &self,
+            _channel: Box<dyn AgentChannelType>,
+            _operation_scope: &str,
+        ) -> Arc<dyn ToolExecutor> {
+            self.binds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Arc::new(ScriptedHandExecutor {
+                outcome: self
+                    .outcomes
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(ScriptedHandOutcome::Success),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn container_hand_reacquires_only_for_a_proven_pre_dispatch_failure() {
+        /*
+         * Container-Hand recovery cause/effect decision table.
+         * Causes: C1 first binding succeeds or is unavailable before dispatch;
+         * C2 one or two calls arrive; C3 replacement succeeds or is also
+         * unavailable; C4 failure occurs after dispatch (indeterminate); C5 the
+         * replacement process cannot start; C6 the owner is already closed.
+         * Effects: E1 use the resident Hand without spawning; E2 stop the expired
+         * binding, spawn exactly one replacement, and safely retry; E3 serialize
+         * concurrent recovery behind that one replacement; E4 return after one
+         * bounded retry; E5 never replay an indeterminate call; E6 propagate a
+         * replacement-start failure without a loop; E7 never restart after close;
+         * E8 hibernate releases the binding but permits one lazy replacement;
+         * E9 repeated hibernate is an idempotent no-op.
+         * Rules: H1 success=>E1; H2 unavailable+C2+C3(success)=>E2+E3;
+         * H3 unavailable+C3(unavailable)=>E4; H4 C4=>E5; H5 C5=>E6;
+         * H6 C6=>E7; H7 hibernate then invoke=>E8; H8 hibernate twice=>E9.
+         */
+        let provider = Arc::new(FakeContainerProvider::default());
+        let stable = ScriptedHandFactory::new([ScriptedHandOutcome::Success]);
+        let environment = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            stable.clone(),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        let hand = environment.tool_executor();
+        assert_eq!(
+            hand.invoke(&ToolCall {
+                call_id: "stable".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await
+            .unwrap()
+            .text(),
+            "recovered"
+        );
+        assert_eq!(stable.binds.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            provider
+                .hand_spawns
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert!(environment.hibernate_bound_processes().await);
+        assert!(!environment.hibernate_bound_processes().await);
+        assert_eq!(
+            hand.invoke(&ToolCall {
+                call_id: "after-hibernate".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await
+            .unwrap()
+            .text(),
+            "recovered"
+        );
+        assert_eq!(stable.binds.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            provider
+                .hand_spawns
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "hibernation reacquires exactly one Hand on demand"
+        );
+        environment.stop_bound_processes().await;
+        assert!(matches!(
+            hand.invoke(&ToolCall {
+                call_id: "closed".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await,
+            Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        ));
+        assert_eq!(
+            provider
+                .hand_spawns
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "a closed owner never launches another Hand"
+        );
+        environment.dispose().await.unwrap();
+
+        let provider = Arc::new(FakeContainerProvider::default());
+        let recover = ScriptedHandFactory::new([
+            ScriptedHandOutcome::UnavailableBeforeDispatch,
+            ScriptedHandOutcome::Success,
+        ]);
+        let environment = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            recover.clone(),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        let hand = environment.tool_executor();
+        let left = ToolCall {
+            call_id: "left".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        };
+        let right = ToolCall {
+            call_id: "right".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        };
+        let (left, right) = tokio::join!(hand.invoke(&left), hand.invoke(&right));
+        assert_eq!(left.unwrap().text(), "recovered");
+        assert_eq!(right.unwrap().text(), "recovered");
+        assert_eq!(recover.binds.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            provider
+                .hand_spawns
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "concurrent callers share one replacement"
+        );
+        environment.dispose().await.unwrap();
+
+        let provider = Arc::new(FakeContainerProvider::default());
+        provider
+            .fail_hand_spawn_at
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        let failed_replacement =
+            ScriptedHandFactory::new([ScriptedHandOutcome::UnavailableBeforeDispatch]);
+        let environment = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            failed_replacement.clone(),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        let error = environment
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "replacement-spawn-failure".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await
+            .expect_err("a replacement spawn failure is propagated");
+        assert!(matches!(
+            error,
+            awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(ref message)
+                if message.contains("failed to reacquire Session hand")
+        ));
+        assert_eq!(
+            provider
+                .hand_spawns
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one initial spawn plus one failed replacement attempt"
+        );
+        assert_eq!(
+            failed_replacement
+                .binds
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a failed process spawn never creates an executor"
+        );
+        environment.dispose().await.unwrap();
+
+        let provider = Arc::new(FakeContainerProvider::default());
+        let bounded = ScriptedHandFactory::new([
+            ScriptedHandOutcome::UnavailableBeforeDispatch,
+            ScriptedHandOutcome::UnavailableBeforeDispatch,
+            ScriptedHandOutcome::Success,
+        ]);
+        let environment = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            bounded.clone(),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        let error = environment
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "bounded".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await
+            .expect_err("a second dead channel ends the bounded retry");
+        assert!(matches!(
+            error,
+            awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_)
+        ));
+        assert_eq!(bounded.binds.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(
+            provider
+                .hand_spawns
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        environment.dispose().await.unwrap();
+
+        let provider = Arc::new(FakeContainerProvider::default());
+        let indeterminate = ScriptedHandFactory::new([ScriptedHandOutcome::Indeterminate]);
+        let environment = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            indeterminate.clone(),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        let error = environment
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "indeterminate".into(),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await
+            .expect_err("a possibly executed call is never replayed");
+        assert!(matches!(
+            error,
+            awaken_runtime_contract::tool::ToolError::Execution(_)
+        ));
+        assert_eq!(
+            indeterminate
+                .binds
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            provider
+                .hand_spawns
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        environment.dispose().await.unwrap();
+    }
+
     #[tokio::test]
     async fn adopting_a_container_renews_its_ownership_before_use() {
         let provider = Arc::new(FakeContainerProvider::default());
@@ -1099,6 +1430,8 @@ mod tests {
         let shared = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let container = FakeContainer {
             renews: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            hand_spawns: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_hand_spawn_at: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             shared: shared.clone(),
         };
         shared

@@ -253,6 +253,11 @@ pub enum ToolError {
     Unknown(String),
     #[error("invalid tool arguments: {0}")]
     InvalidArguments(String),
+    /// The executor proved that the request never crossed its dispatch boundary.
+    /// An owner may reacquire that executor and retry the same call without
+    /// replaying an external effect. Failures after dispatch remain `Execution`.
+    #[error("tool executor unavailable before dispatch: {0}")]
+    UnavailableBeforeDispatch(String),
     #[error("tool execution failed: {0}")]
     Execution(String),
 }
