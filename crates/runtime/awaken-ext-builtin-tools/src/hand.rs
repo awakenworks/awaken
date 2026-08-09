@@ -265,11 +265,32 @@ impl Tool for BashTool {
         "bash"
     }
     async fn call(&self, args: BashArgs) -> Result<String, ToolError> {
+        // The async child wait yields to authority heartbeats and, unlike a
+        // `spawn_blocking(Command::output)` task, remains cancellation-safe. Each
+        // shell leads a private process group: dropping this tool call kills the
+        // entire group, so WorkUnit cancellation cannot orphan approval prompts,
+        // compilers, or other descendants under the Worker service.
         let mut command = platform_shell_command(&args.command);
-        let shell = command.get_program().to_string_lossy().into_owned();
-        let output = command
-            .output()
+        let shell = command
+            .as_std()
+            .get_program()
+            .to_string_lossy()
+            .into_owned();
+        configure_process_group(&mut command);
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let child = command
+            .spawn()
             .map_err(|err| ToolError::Execution(format!("spawn {shell}: {err}")))?;
+        let mut process_group = ProcessGroupGuard::new(child.id());
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|err| ToolError::Execution(format!("wait for {shell}: {err}")))?;
+        process_group.disarm();
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         if output.status.success() {
@@ -286,10 +307,77 @@ impl Tool for BashTool {
     }
 }
 
+#[cfg(all(test, not(windows)))]
+mod bash_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn bash_wait_does_not_starve_runtime_control_tasks() {
+        // A long local command must yield the sole async runtime thread. Worker
+        // heartbeat and dispatch renewal use the same scheduling path in the
+        // served runtime, so blocking here previously expired both authorities.
+        let control_task_ran = Arc::new(AtomicBool::new(false));
+        let observed = control_task_ran.clone();
+        let control = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            observed.store(true, Ordering::SeqCst);
+        });
+
+        BashTool
+            .call(BashArgs {
+                command: "sleep 0.15".into(),
+            })
+            .await
+            .expect("sleep command");
+
+        assert!(control_task_ran.load(Ordering::SeqCst));
+        control.await.expect("control task");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_bash_call_kills_its_descendant_process_group() {
+        // Cancellation previously dropped only the blocking-task join handle,
+        // leaving the shell and descendants alive beneath the Worker service.
+        // A descendant reports readiness, would write `leaked` after cancellation,
+        // and is required to disappear with its process group instead.
+        let directory = tempfile::tempdir().expect("temporary marker directory");
+        let ready = directory.path().join("ready");
+        let leaked = directory.path().join("leaked");
+        let command = format!(
+            "sh -c 'printf ready > {}; sleep 0.4; printf leaked > {}' & wait",
+            ready.display(),
+            leaked.display()
+        );
+        let call = tokio::spawn(BashTool.call(BashArgs { command }));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !ready.is_file() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("descendant becomes ready");
+
+        call.abort();
+        let _ = call.await;
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        assert!(
+            !leaked.exists(),
+            "a descendant survived cancellation and wrote {}",
+            leaked.display()
+        );
+    }
+}
+
 #[cfg(windows)]
-fn platform_shell_command(command: &str) -> std::process::Command {
+fn platform_shell_command(command: &str) -> tokio::process::Command {
     let shell = windows_posix_shell();
-    let mut process = std::process::Command::new(shell.as_deref().unwrap_or("cmd.exe"));
+    let mut process = tokio::process::Command::new(shell.as_deref().unwrap_or("cmd.exe"));
     if shell.is_some() {
         process.args(["-c", command]);
     } else {
@@ -321,10 +409,51 @@ fn windows_posix_shell() -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn platform_shell_command(command: &str) -> std::process::Command {
-    let mut process = std::process::Command::new("sh");
+fn platform_shell_command(command: &str) -> tokio::process::Command {
+    let mut process = tokio::process::Command::new("sh");
     process.args(["-c", command]);
     process
+}
+
+fn configure_process_group(command: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.as_std_mut().process_group(0);
+    }
+}
+
+/// Synchronously terminates a Unix process group when an in-flight tool future
+/// is dropped. Tokio's `kill_on_drop` covers the direct child on every platform;
+/// this guard extends that guarantee to descendants on Unix.
+struct ProcessGroupGuard {
+    #[cfg(unix)]
+    group: Option<nix::unistd::Pid>,
+}
+
+impl ProcessGroupGuard {
+    fn new(pid: Option<u32>) -> Self {
+        Self {
+            #[cfg(unix)]
+            group: pid.map(|value| nix::unistd::Pid::from_raw(value as i32)),
+        }
+    }
+
+    fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.group = None;
+        }
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(group) = self.group.take() {
+            let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL);
+        }
+    }
 }
 
 /// The local hand tools, erased for `Runtime::with_tool` registration. The
