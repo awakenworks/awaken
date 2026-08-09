@@ -444,7 +444,7 @@
             "type": "string"
           },
           "CredentialSourceId": {
-            "description": "Stable id of a [`CredentialSource`].",
+            "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
           }
         },
@@ -576,7 +576,7 @@
             "type": "object"
           },
           "CredentialSourceId": {
-            "description": "Stable id of a [`CredentialSource`].",
+            "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
           },
           "SelectionPolicy": {
@@ -638,7 +638,7 @@
       "CredentialPoolMember": {
         "$defs": {
           "CredentialSourceId": {
-            "description": "Stable id of a [`CredentialSource`].",
+            "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
           }
         },
@@ -699,7 +699,7 @@
             ]
           },
           "CredentialSourceId": {
-            "description": "Stable id of a [`CredentialSource`].",
+            "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
           },
           "CredentialStatus": {
@@ -1069,7 +1069,7 @@
             "type": "string"
           },
           "CredentialSourceId": {
-            "description": "Stable id of a [`CredentialSource`].",
+            "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
           },
           "ModelTarget": {
@@ -2137,7 +2137,7 @@
             ]
           },
           "CredentialSourceId": {
-            "description": "Stable id of a [`CredentialSource`].",
+            "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
           },
           "CredentialSourceView": {
@@ -2365,6 +2365,13 @@
                   "string",
                   "null"
                 ]
+              },
+              "supported_model_ids": {
+                "description": "Provider-verified model ids for this protocol surface. An empty list\nmeans every model returned by the provider directory is compatible.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -2592,7 +2599,7 @@
             "type": "string"
           },
           "CredentialSourceId": {
-            "description": "Stable id of a [`CredentialSource`].",
+            "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
           },
           "ModelTarget": {
@@ -2791,7 +2798,7 @@
             ]
           },
           "CredentialSourceId": {
-            "description": "Stable id of a [`CredentialSource`].",
+            "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
           },
           "OAuthHelper": {
@@ -2820,6 +2827,14 @@
             },
             "default": {},
             "type": "object"
+          },
+          "credential_name": {
+            "default": null,
+            "description": "Optional human label embedded into the generated credential source id.\nIt is non-secret and does not replace the stable idempotency fingerprint.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "credential_source_id": {
             "anyOf": [

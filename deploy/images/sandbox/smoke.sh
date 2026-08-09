@@ -8,6 +8,7 @@
 # Self-skips when Docker is unreachable. Run: bash deploy/images/sandbox/smoke.sh
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
+source scripts/ci/_deadline.sh
 
 if ! docker version >/dev/null 2>&1; then
   echo "SMOKE SKIP: no reachable Docker daemon"
@@ -35,7 +36,7 @@ for _ in $(seq 1 50); do
   # bash /dev/tcp connects only once the bridge has bound (else connection refused).
   if exec 3<>"/dev/tcp/127.0.0.1/${port}" 2>/dev/null; then
     printf 'hello\n' >&3
-    got=$(timeout 3 head -c 64 <&3 || true)
+    got=$(run_with_deadline 3 head -c 64 <&3 || true)
     exec 3>&- 3<&-
     [ -n "$got" ] && break
   fi

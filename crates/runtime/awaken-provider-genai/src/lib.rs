@@ -1266,6 +1266,14 @@ mod hermetic_tests {
         (format!("http://{addr}/v1"), requests)
     }
 
+    fn request_has_header(request: &str, expected_name: &str, expected_value: &str) -> bool {
+        request.lines().skip(1).any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case(expected_name) && value.trim() == expected_value
+            })
+        })
+    }
+
     #[tokio::test]
     async fn anthropic_model_discovery_reads_every_page_and_never_returns_a_partial_list() {
         let (base, requests) = spawn_json_pages(vec![
@@ -1280,7 +1288,7 @@ mod hermetic_tests {
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
         assert!(requests[0].starts_with("GET /v1/models?limit=1000 "));
-        assert!(requests[0].contains("x-api-key: private-key"));
+        assert!(request_has_header(&requests[0], "x-api-key", "private-key"));
         assert!(requests[1].contains("after_id=model-b"));
     }
 
