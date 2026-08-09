@@ -142,9 +142,11 @@ pub(super) async fn assemble_control_process_router(
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
     let web_search_publication_resolver =
         assembly.web_search_publication_resolver.unwrap_or_else(|| {
-            Arc::new(awaken_config_service::WebSearchPublicationResolver::new(
-                web_search_providers.clone(),
-            ))
+            Arc::new(
+                crate::web_search_publication::WebSearchPublicationResolver::new(
+                    web_search_providers.clone(),
+                ),
+            )
         });
     let runtimes = Arc::new(LiveRuntimeCapabilities {
         initial: assembly.local_acp_observations.clone(),

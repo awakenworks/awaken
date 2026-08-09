@@ -4,7 +4,7 @@
 //! [`AgentConfig`]. Keeping it separate from CRUD/publication prevents protocol
 //! projection details from growing the config-plane orchestration module.
 
-use awaken_config_store::{AgentConfig, ModelSelection, MultiagentConfig, ToolOverride};
+use awaken_agent_config::{AgentConfig, ModelSelection, MultiagentConfig, ToolOverride};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use serde_json::{Value, json};
@@ -444,7 +444,7 @@ mod tests {
         .expect("ordinary authoring remains valid");
         assert_eq!(
             config.lifecycle(),
-            awaken_config_store::AgentLifecycle::Published,
+            awaken_agent_config::AgentLifecycle::Published,
             "L1"
         );
     }

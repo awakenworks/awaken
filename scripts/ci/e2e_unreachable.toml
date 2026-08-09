@@ -29,10 +29,10 @@ reason = "The first range is the in-memory reference repository, while served pr
 evidence = "e2e/acp_local_discovery_e2e.mjs; e2e/control_plane_postgres_e2e.mjs; cargo test -p awaken-credential-vault"
 
 [[waiver]]
-path = "crates/control/awaken-credential-vault/src/postgres.rs"
+path = "crates/stores/awaken-credential-store/src/postgres.rs"
 ranges = ["139-155"]
 reason = "Postgres put_if_absent for a WorkerLocal source is selected only while the immutable local Worker is composed before the listener binds. Served credential routes deliberately reject WorkerLocal authoring and therefore cannot invoke this adapter operation after startup."
-evidence = "e2e/control_plane_postgres_e2e.mjs; cargo test -p awaken-credential-vault --features postgres"
+evidence = "e2e/control_plane_postgres_e2e.mjs; cargo test -p awaken-credential-store --features postgres"
 
 [[waiver]]
 path = "crates/server/awaken-run-executor-acp/src/acp_cli.rs"

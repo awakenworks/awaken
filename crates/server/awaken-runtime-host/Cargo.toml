@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "shared"
+layer = "infrastructure"
+authority = "runtime-host"
+
 [dependencies]
 # The neutral session substrate (SharedHost) and the two port adapters
 # (ManagedHost / RunApplicationHost) live here; the assembly bin mounts them.
@@ -57,6 +62,7 @@ awaken-run-executor-acp = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-credential-vault = { workspace = true }
+awaken-credential-contract.workspace = true
 awaken-credential-materializer = { workspace = true }
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -122,14 +128,9 @@ tempfile = "3"
 # The sandboxed-channel-source integration test observes what the bwrap-confined
 # agent said through the in-memory commit boundary.
 awaken-store-inmem = { workspace = true }
-# Drives the durable-ops axum router in-process (ServiceExt::oneshot) to exercise
-# the SharedHost operational verbs over their real HTTP surface.
+# Drives Worker transport routers in-process through `ServiceExt::oneshot`.
 tower = { version = "0.5", features = ["util"] }
 
 [[test]]
 name = "durable_child_run"
-required-features = ["test-support"]
-
-[[test]]
-name = "durable_verbs"
 required-features = ["test-support"]

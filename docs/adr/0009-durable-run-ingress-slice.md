@@ -15,7 +15,7 @@ durable commit backend, so — as its consequences noted — durable ingress fin
 
 The reference design planned this host: `key-design-decisions.md` D11 names an
 `awaken-run-ingress` "durable run host" crate (and a separate
-`awaken-run-ingress-contract`), and `deny.toml` already reserves the
+`awaken-run-ingress-contract`), and the metadata-derived boundary checker reserves the
 `awaken-run-ingress` layer. The risk is the opposite of missing it: a full
 durable dispatch subsystem (lease renewal, scheduled wake, supersession,
 dead-letter, cross-thread outbox, dispatch query/maintenance, a per-thread worker
@@ -32,7 +32,7 @@ ports, an in-memory reference store, the Postgres adapter, the worker, and
 split (ports in their own crate, backends in `awaken-stores`) is **deferred**
 until a second backend or an out-of-crate consumer needs it; splitting now would
 be a speculative crate list (`key-design-decisions.md`, "no speculative crate
-lists"). The crate sits in the layer `deny.toml` already reserved: it depends on
+lists"). The crate sits in its declared metadata layer: it depends on
 the runtime kernel and the store adapter; nothing below depends on it (G2/G29).
 
 It lives in `awaken-run-ingress`, not `awaken-store-postgres`, because the

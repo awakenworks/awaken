@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::RunState;
-use awaken_run_ingress::{RunClaim, WorkerIdentity};
+use awaken_run_ingress::RunClaim;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 use awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier;
@@ -93,98 +93,6 @@ pub trait ApplicationSessionControlClient:
         claim: &RunClaim,
         contribution: awaken_session_contract::ApplicationSessionContribution,
     ) -> Result<ApplicationSessionControlReceipt, ApplicationSessionError>;
-}
-
-/// Standard client using the same registered identity-bound Worker transport as
-/// lifecycle, dispatch, recovery, and claimed commits.
-pub struct WorkerControlApplicationSessionClient {
-    control: crate::WorkerControlClient,
-    identity: WorkerIdentity,
-}
-
-impl WorkerControlApplicationSessionClient {
-    #[must_use]
-    pub fn new(control: crate::WorkerControlClient, identity: WorkerIdentity) -> Self {
-        Self { control, identity }
-    }
-}
-
-#[async_trait::async_trait]
-impl ApplicationSessionControlClient for WorkerControlApplicationSessionClient {
-    async fn resume_frozen(
-        &self,
-        claim: &RunClaim,
-        session_id: &str,
-    ) -> Result<Option<awaken_session_contract::SessionRealizationDirective>, ApplicationSessionError>
-    {
-        self.control
-            .resume_application_session(&self.identity, claim, session_id)
-            .await
-            .map_err(ApplicationSessionError::new)
-    }
-
-    async fn contribute(
-        &self,
-        claim: &RunClaim,
-        contribution: awaken_session_contract::ApplicationSessionContribution,
-    ) -> Result<ApplicationSessionControlReceipt, ApplicationSessionError> {
-        self.control
-            .contribute_application(&self.identity, claim, contribution)
-            .await
-            .map_err(ApplicationSessionError::new)
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for WorkerControlApplicationSessionClient {
-    async fn begin_session_realization(
-        &self,
-        command: awaken_session_contract::BeginSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.control
-            .begin_session_realization(&self.identity, command)
-            .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
-    }
-
-    async fn activate_session_realization(
-        &self,
-        command: awaken_session_contract::ActivateSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.control
-            .activate_session_realization(&self.identity, command)
-            .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
-    }
-
-    async fn acknowledge_session_realization(
-        &self,
-        command: awaken_session_contract::AcknowledgeSessionRealization,
-    ) -> Result<
-        awaken_session_contract::SessionRealizationDirective,
-        awaken_session_contract::SessionRealizationControlFailure,
-    > {
-        self.control
-            .acknowledge_session_realization(&self.identity, command)
-            .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
-    }
-
-    async fn fail_session_realization(
-        &self,
-        command: awaken_session_contract::FailSessionRealization,
-    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
-        self.control
-            .fail_session_realization(&self.identity, command)
-            .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
-    }
 }
 
 /// The single Session-baseline prompt projection boundary for foreground,

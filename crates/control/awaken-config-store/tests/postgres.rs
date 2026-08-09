@@ -1,11 +1,11 @@
 //! Live Postgres config-store CRUD. Skips when no Postgres is reachable; isolates
 //! each test in a fresh schema (the store takes no prefix; ADR-0029/ADR-0031).
 
-use awaken_config_store::{
+use awaken_agent_config::{
     AgentConfig, AuditedConfigWrite, ConfigRegistry, ManagementAuditRecord, ManagementEffect,
-    PostgresConfigStore, PublicationState, ScopeId, ScopedConfigRegistry, StoredPublication,
-    compile_resolved,
+    PublicationState, ScopeId, ScopedConfigRegistry, StoredPublication, compile_resolved,
 };
+use awaken_config_store::PostgresConfigStore;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use sqlx::Executor;
@@ -14,7 +14,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
-) -> Result<awaken_config_store::ExecutableAgentSnapshot, awaken_config_store::CompileError> {
+) -> Result<awaken_agent_config::ExecutableAgentSnapshot, awaken_agent_config::CompileError> {
     compile_resolved(config, tools, AgentSnapshotMetadata::default())
 }
 
@@ -184,7 +184,7 @@ fn agent_config() -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
         inference: Default::default(),
         tool_ids: vec!["echo".to_string()],
         model_fallbacks: Vec::new(),
@@ -260,7 +260,7 @@ async fn postgres_list_published_reloads_published_rows_of_the_scope() {
             instructions: format!("body-{id}"),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
             inference: Default::default(),
             tool_ids: vec!["echo".to_string()],
             ..Default::default()
@@ -342,7 +342,7 @@ async fn postgres_list_published_warm_load_same_agent_reloads_the_full_set() {
             instructions: instr.to_string(),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
             inference: Default::default(),
             tool_ids: vec!["echo".to_string()],
             ..Default::default()

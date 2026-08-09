@@ -40,7 +40,7 @@ use crate::judge::AuxAgentTool;
 use crate::store::HostCommit;
 
 // The config pieces the host wires (registering the default extractor agent).
-pub use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
+use awaken_ext_memory::{DEFAULT_MEMORY_INSTRUCTIONS, default_memory_agent};
 
 static EXTRACTION_OWNER_SEQ: AtomicU64 = AtomicU64::new(1);
 

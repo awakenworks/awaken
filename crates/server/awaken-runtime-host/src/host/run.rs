@@ -322,7 +322,7 @@ impl SharedHost {
     /// superseded and never claimed again, then the new run is driven. Requires
     /// durable ingress. Unlike `run` it does not fail closed on an awaiting
     /// thread — superseding an awaiting run is the point.
-    pub(crate) async fn supersede_run(
+    pub async fn supersede_run(
         &self,
         agent: Option<&str>,
         thread: &str,
@@ -464,7 +464,7 @@ impl SharedHost {
 
     /// Reconcile `thread`'s dispatch queue (ADR-0011, slice E): reclaim and re-run
     /// any dispatch left runnable by a crash. Returns the recovered run ids.
-    pub(crate) async fn reconcile(&self, thread: &str) -> Result<Vec<String>, HostError> {
+    pub async fn reconcile(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let processed = self
             .durable_ingress(thread)
             .await?
@@ -478,7 +478,7 @@ impl SharedHost {
     /// crash-recoveries as of `now_ms` (ADR-0015, slice E). Returns how many were
     /// dead-lettered. `now_ms` is an as-of cutoff so an operator (or a test) can
     /// reap against a chosen clock.
-    pub(crate) async fn reap(
+    pub async fn reap(
         &self,
         thread: &str,
         max_attempts: u64,
@@ -492,7 +492,7 @@ impl SharedHost {
     }
 
     /// The run ids currently dead-lettered on `thread` (ADR-0015, slice E).
-    pub(crate) async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, HostError> {
+    pub async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let ids = self
             .durable_ingress(thread)
             .await?
@@ -504,7 +504,7 @@ impl SharedHost {
 
     /// Operator GC: purge every dead-lettered dispatch on `thread` (ADR-0015,
     /// slice E). Returns how many were removed.
-    pub(crate) async fn purge_dead_letters(&self, thread: &str) -> Result<usize, HostError> {
+    pub async fn purge_dead_letters(&self, thread: &str) -> Result<usize, HostError> {
         self.durable_ingress(thread)
             .await?
             .purge_dead_letters()
@@ -514,7 +514,7 @@ impl SharedHost {
 
     /// An operational snapshot of `thread`'s dispatch queue (ADR-0025): every row
     /// in enqueue order with its status and attempt count — the monitoring surface.
-    pub(crate) async fn list_dispatches(
+    pub async fn list_dispatches(
         &self,
         thread: &str,
     ) -> Result<Vec<(String, String, u64, bool)>, HostError> {
@@ -539,7 +539,7 @@ impl SharedHost {
 
     /// The run ids superseded by a newer submission on `thread` (ADR-0022,
     /// slice E).
-    pub(crate) async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
+    pub async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let ids = self
             .durable_ingress(thread)
             .await?
@@ -555,7 +555,7 @@ impl SharedHost {
     /// the run id. The pool drains it out of band — no foreground request drives it
     /// — so the caller observes completion by polling committed truth. Requires
     /// durable ingress (`typed durable ingress`), which spawns the pool.
-    pub(crate) async fn submit_background_async(
+    pub async fn submit_background_async(
         &self,
         agent: Option<&str>,
         thread: &str,

@@ -4,30 +4,7 @@
 use super::application::{ManagedMcpCandidate, ManagedMcpCandidateTarget, initial_mcp_candidates};
 use super::*;
 
-pub(super) fn typed_mcp_servers(
-    values: Vec<awaken_session_contract::VisibleMcpServer>,
-) -> Vec<crate::types::agent::AgentMcpServer> {
-    values
-        .into_iter()
-        .map(|server| match server.target {
-            awaken_session_contract::McpTarget::Http(target) => {
-                crate::types::agent::AgentMcpServer::Url {
-                    name: server.name,
-                    url: target.url,
-                    prompts_as_skills: server.prompts_as_skills,
-                }
-            }
-            awaken_session_contract::McpTarget::SandboxStdio(target) => {
-                crate::types::agent::AgentMcpServer::SandboxStdio {
-                    name: server.name,
-                    command: target.command,
-                    args: target.args,
-                    prompts_as_skills: server.prompts_as_skills,
-                }
-            }
-        })
-        .collect()
-}
+use super::session_mcp_projection::typed_mcp_servers;
 use crate::types::AgentRef;
 
 fn validate_session_skill_total(
@@ -73,56 +50,16 @@ fn validate_session_skill_total(
     Ok(())
 }
 
-pub(super) fn mcp_generation_ref(
-    session_id: &str,
-    attachment: &awaken_session_contract::SessionMcpAttachment,
-) -> Result<awaken_session_contract::McpGenerationRef, RunError> {
-    let claim = attachment
-        .realization
-        .as_ref()
-        .ok_or_else(|| RunError::internal("MCP generation has no durable realization claim"))?;
-    Ok(awaken_session_contract::McpGenerationRef {
-        session_id: session_id.to_string(),
-        attachment_id: attachment.attachment_id.clone(),
-        generation: attachment.generation,
-        runtime_incarnation: claim.runtime_incarnation.clone(),
-        lease_epoch: claim.lease_epoch,
-        lease_expires_at_unix_ms: claim.lease_expires_at_unix_ms,
-    })
-}
-
-pub(super) fn stage_mcp_request(
-    workspace_id: &str,
-    session_id: &str,
-    attachment: &awaken_session_contract::SessionMcpAttachment,
-) -> Result<awaken_session_contract::StageMcpAttachment, RunError> {
-    let claim = attachment
-        .realization
-        .as_ref()
-        .ok_or_else(|| RunError::internal("MCP generation has no durable realization claim"))?;
-    Ok(awaken_session_contract::StageMcpAttachment {
-        workspace_id: workspace_id.to_string(),
-        generation: mcp_generation_ref(session_id, attachment)?,
-        realization_id: claim.realization_id.clone(),
-        stage_idempotency_key: claim.stage_idempotency_key.clone(),
-        name: attachment.name.clone(),
-        target: attachment.target.clone(),
-        prompts_as_skills: attachment.prompts_as_skills,
-        credential: attachment.credential.clone(),
-        selected_plaintext_holder: attachment.selected_plaintext_holder.clone(),
-    })
-}
-
 impl ManagedState {
     pub fn validate_dream_agent(
         &self,
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<(), StateError> {
-        if agent_id == crate::dream::BUILT_IN_DREAM_AGENT_ID {
+        if agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID {
             return Ok(());
         }
-        let Some(source) = &self.config_source else {
+        let Some(source) = &self.application.config_source() else {
             return Err(StateError::Run(RunError::bad_request(format!(
                 "dream agent Agent `{agent_id}` is unavailable"
             ))));
@@ -154,7 +91,11 @@ impl ManagedState {
         if owner != workspace_id {
             return Err(StateError::NotFound);
         }
-        Ok(self.runtime.committed_messages(session_id).await)
+        Ok(self
+            .application
+            .runtime()
+            .committed_messages(session_id)
+            .await)
     }
 
     pub async fn prepare_protocol_session(
@@ -163,7 +104,13 @@ impl ManagedState {
         thread_id: &str,
         agent_id: &str,
     ) -> Result<(), StateError> {
-        if self.sessions_repo.get(thread_id).await.is_some() {
+        if self
+            .application
+            .session_repository()
+            .get(thread_id)
+            .await
+            .is_some()
+        {
             // A durable row does not imply that this process has reconstructed
             // the runtime projection.  Reuse the authoritative restart path so
             // resources and the exact Environment snapshot are restored before
@@ -184,7 +131,14 @@ impl ManagedState {
             // Concurrent first turns share the explicit protocol thread id. The
             // durable create fence chooses one winner; every loser adopts that
             // exact committed Session through the normal recovery seam.
-            Err(StateError::Conflict) if self.sessions_repo.get(thread_id).await.is_some() => {
+            Err(StateError::Conflict)
+                if self
+                    .application
+                    .session_repository()
+                    .get(thread_id)
+                    .await
+                    .is_some() =>
+            {
                 self.ensure_session(thread_id).await
             }
             Err(error) => Err(error),
@@ -257,8 +211,8 @@ impl ManagedState {
             };
             let credential = match candidate.published_credential {
                 Some((id, revision)) => {
-                    let source_id = awaken_credential_vault::CredentialSourceId(id.clone());
-                    let access = if let Some(vaults) = &self.credential_source {
+                    let source_id = awaken_credential_contract::CredentialSourceId(id.clone());
+                    let access = if let Some(vaults) = &self.application.credential_source() {
                         let access =
                             vaults
                                 .mcp_access_for_source(&source_id)
@@ -287,7 +241,7 @@ impl ManagedState {
                     };
                     Some(access)
                 }
-                None => match &self.credential_source {
+                None => match &self.application.credential_source() {
                     Some(vaults) => {
                         let source_id = match target.http_url() {
                             Some(url) => vaults
@@ -335,7 +289,8 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<PersistedSession, StateError> {
         let session = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(session_id)
             .await
             .ok_or(StateError::NotFound)?;
@@ -386,7 +341,8 @@ impl ManagedState {
             lifecycle_facts,
         };
         match self
-            .sessions_repo
+            .application
+            .session_repository()
             .commit_mutation(owner_scope, mutation)
             .await
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
@@ -398,7 +354,8 @@ impl ManagedState {
             }
             awaken_session_contract::SessionMutationResult::Replayed { .. } => {
                 let session = self
-                    .sessions_repo
+                    .application
+                    .session_repository()
                     .get(&session.session_id)
                     .await
                     .ok_or(StateError::NotFound)?;
@@ -422,7 +379,8 @@ impl ManagedState {
         let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
         let payload_hash = payload.stable_hash();
         let revision = self
-            .sessions_repo
+            .application
+            .session_repository()
             .create(
                 owner_scope,
                 session.clone(),
@@ -479,7 +437,8 @@ impl ManagedState {
             lifecycle_facts: vec![fact],
         };
         match self
-            .sessions_repo
+            .application
+            .session_repository()
             .commit_mutation(owner_scope, mutation)
             .await
             .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?
@@ -515,7 +474,7 @@ impl ManagedState {
     /// prepared, so it lives in a single method rather than inline — a dry-run
     /// bind check calls exactly this, and gets exactly the error create would.
     pub async fn check_bind(&self, req: &SessionCreateParams) -> Result<(), StateError> {
-        if let Some(vaults) = &self.credential_source {
+        if let Some(vaults) = &self.application.credential_source() {
             for vault_id in &req.vault_ids {
                 let exists = vaults.has_vault(vault_id).await.map_err(|error| {
                     StateError::Run(RunError::internal(format!(
@@ -624,12 +583,17 @@ impl ManagedState {
                     "sesn_{}",
                     awaken_session_contract::stable_fingerprint(&(
                         "managed-session",
-                        &self.runtime_incarnation,
+                        &self.application.runtime_incarnation(),
                         sequence,
                     ))
                 );
-                if !self.runtime.owns_thread(&candidate).await
-                    && self.sessions_repo.get(&candidate).await.is_none()
+                if !self.application.runtime().owns_thread(&candidate).await
+                    && self
+                        .application
+                        .session_repository()
+                        .get(&candidate)
+                        .await
+                        .is_none()
                 {
                     break candidate;
                 }
@@ -640,18 +604,18 @@ impl ManagedState {
             .clone()
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         let config_view = self
-            .config_source
-            .as_ref()
+            .application
+            .config_source()
             .and_then(|source| source.session_profile_in(&owner_scope, &agent_id));
-        let is_built_in_dream_agent = agent_id == crate::dream::BUILT_IN_DREAM_AGENT_ID
+        let is_built_in_dream_agent = agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
             && req
                 .metadata
                 .get("awaken.session.origin")
                 .is_some_and(|origin| origin == "dream");
         if config_view.is_none()
             && self
-                .config_source
-                .as_ref()
+                .application
+                .config_source()
                 .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
             && !is_built_in_dream_agent
         {
@@ -808,7 +772,7 @@ impl ManagedState {
             .iter()
             .map(|draft| draft.target.clone())
             .collect::<Vec<_>>();
-        let (environment_id, environment, self_hosted_environment) = self
+        let (environment_id, environment) = self
             .resolve_session_environment(
                 req.environment_id.as_deref(),
                 agent_environment,
@@ -822,8 +786,8 @@ impl ManagedState {
         // families. Runtime never re-opens Agent or Resource stores.
         let mut resolved_resources = awaken_session_contract::SessionInputResolver::resolve_inputs(
             &owner_scope,
-            self.resource_catalog
-                .as_deref()
+            self.application
+                .resource_catalog()
                 .map(|catalog| catalog as &dyn awaken_resource_contract::ResourceConfigSource),
             agent_defaults,
             &attachments,
@@ -842,7 +806,7 @@ impl ManagedState {
         }
         .or_else(|| config_view.as_ref().map(|view| view.skills.clone()));
         validate_session_skill_total(
-            self.config_source.as_deref(),
+            self.application.config_source(),
             &owner_scope,
             &agent_id,
             config_view.as_ref(),
@@ -851,7 +815,8 @@ impl ManagedState {
         .map_err(StateError::Run)?;
         if let Some(skills) = &effective_skills {
             resolved_resources.skills = Some(
-                self.runtime
+                self.application
+                    .runtime()
                     .resolve_session_skills(&owner_scope, skills)
                     .await
                     .map_err(StateError::Run)?,
@@ -865,7 +830,7 @@ impl ManagedState {
         .await?;
         // Validate the advertised tool surface before persisting an activation or
         // touching a Host. A definition error cannot strand Prepared resources.
-        let caps = self.runtime.capabilities_for(&id);
+        let caps = self.application.runtime().capabilities_for(&id);
         for tool in &caps.custom_tools {
             project::validate_custom_tool(tool)
                 .map_err(|msg| StateError::Run(RunError::bad_request(msg)))?;
@@ -894,7 +859,7 @@ impl ManagedState {
         };
         let resolved_model = selected_model
             .clone()
-            .unwrap_or_else(|| ModelConfig::new(self.runtime.model()));
+            .unwrap_or_else(|| ModelConfig::new(self.application.runtime().model()));
         let execution_model_ref = config_view
             .as_ref()
             .and_then(|view| view.execution_model_ref.clone())
@@ -1068,25 +1033,10 @@ impl ManagedState {
             Some(fact)
         };
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
-        let record = SessionRecord::new(
-            agent_id,
-            session,
-            persisted.resources,
-            Vec::new(),
-            Default::default(),
-        );
-        let session = record.session_projection();
-        self.sessions.lock().unwrap().insert(id.clone(), record);
         // Dispatch only after the active activation and Session lifecycle fact are
         // durable. A worker can never claim a work item whose resource intent is
-        // still merely Prepared.
-        if !application_required
-            && self_hosted_environment
-            && let Err(error) = self
-                .environments
-                .enqueue_session_work(&environment_id, &id)
-                .await
-        {
+        // still merely Prepared. The application command is shared with recovery.
+        if let Err(error) = self.application.dispatch_session_work(&persisted).await {
             // The frozen Session baseline is already durable and is the
             // authoritative dispatch intent. Returning an ambiguous create
             // failure here could make a client create a second Session while
@@ -1099,12 +1049,23 @@ impl ManagedState {
                 "Session WorkQueue dispatch remains pending after create"
             );
         }
+        let record = SessionRecord::new(
+            agent_id,
+            session,
+            persisted.resources,
+            Vec::new(),
+            Default::default(),
+        );
+        let session = record.session_projection();
+        self.sessions.lock().unwrap().insert(id.clone(), record);
         // Project the committed create as a lifecycle fact: a fresh session is idle,
         // so fan out `session.status_idled` (the webhook catalog name — past-tense
         // fact, distinct from the SSE `session.status_idle` transition) to any
         // workspace-scoped subscribers. The owning workspace comes from the edge (the
         // aspect), passed in — never read back from the core record. Out-of-band.
-        if let (Some(sink), Some(created_fact)) = (&self.lifecycle_sink, &created_fact) {
+        if let (Some(sink), Some(created_fact)) =
+            (&self.application.lifecycle_sink(), &created_fact)
+        {
             sink.emit_fact(
                 &created_fact.id,
                 &id,
@@ -1135,7 +1096,10 @@ impl ManagedState {
         if let Some(scope) = self.owner_scope(session_id) {
             return Some(scope);
         }
-        self.sessions_repo.owner(session_id).await
+        self.application
+            .session_repository()
+            .owner(session_id)
+            .await
     }
 
     pub(super) async fn reconcile_persisted_resources(
@@ -1169,7 +1133,8 @@ impl ManagedState {
                     )
                     .await?;
                 if let Err(error) = self
-                    .runtime
+                    .application
+                    .runtime()
                     .apply_session_inputs(
                         &session_id,
                         owner_scope,
@@ -1235,7 +1200,8 @@ impl ManagedState {
             {
                 return Ok(session);
             }
-            self.runtime
+            self.application
+                .runtime()
                 .apply_session_inputs(
                     &session_id,
                     owner_scope,
@@ -1268,7 +1234,8 @@ impl ManagedState {
         session = self
             .commit_session_snapshot(owner_scope, session, "resource-release-intent", Vec::new())
             .await?;
-        self.runtime
+        self.application
+            .runtime()
             .end_session(&session_id)
             .await
             .map_err(StateError::Run)?;
@@ -1313,7 +1280,7 @@ impl ManagedState {
         session_id: &str,
         resources: &awaken_session_contract::SessionResourceState,
     ) -> bool {
-        if self.resource_catalog.is_none() {
+        if self.application.resource_catalog().is_none() {
             return true;
         }
         let prefix = format!("managed:{session_id}:repository:");
@@ -1345,7 +1312,7 @@ impl ManagedState {
     }
 
     pub(crate) async fn retire_repository(&self, owner_scope: &str, repository_id: &str) -> bool {
-        let Some(catalog) = &self.resource_catalog else {
+        let Some(catalog) = &self.application.resource_catalog() else {
             return true;
         };
         let definition = match catalog.repository(owner_scope, repository_id) {
@@ -1360,7 +1327,7 @@ impl ManagedState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis() as u64)
             .unwrap_or_default();
-        if let Some(scheduler) = &self.resource_purge_scheduler
+        if let Some(scheduler) = &self.application.resource_purge_scheduler()
             && let Err(error) = scheduler
                 .schedule_purge(
                     awaken_resource_contract::ResourceTarget::new(
@@ -1396,7 +1363,7 @@ impl ManagedState {
         id: &str,
         persisted: Option<PersistedSession>,
     ) -> Result<Session, StateError> {
-        let caps = self.runtime.capabilities_for(id);
+        let caps = self.application.runtime().capabilities_for(id);
         let default_tools = project::agent_tools(&caps);
         let (
             agent_id,
@@ -1422,7 +1389,7 @@ impl ManagedState {
                     .unwrap_or_else(|| {
                         (
                             "assistant".into(),
-                            self.runtime.model(),
+                            self.application.runtime().model(),
                             p.environment_id().to_string(),
                         )
                     });
@@ -1441,7 +1408,7 @@ impl ManagedState {
             }
             None => (
                 "assistant".to_string(),
-                self.runtime.model(),
+                self.application.runtime().model(),
                 "env_local".to_string(),
                 None,
                 Default::default(),
@@ -1497,9 +1464,10 @@ impl ManagedState {
         // runtime history. Opening a thread constructs its context; doing that first
         // would transiently resolve today's Agent/Skill configuration and could both
         // drift from the Session pin and mutate its sandbox before the pin is known.
-        let persisted = self.sessions_repo.get(id).await;
+        let persisted = self.application.session_repository().get(id).await;
         let owner_scope = self
-            .sessions_repo
+            .application
+            .session_repository()
             .owner(id)
             .await
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
@@ -1532,7 +1500,8 @@ impl ManagedState {
             let recovered = if session.mcp.needs_reconciliation() {
                 self.recover_mcp_projections(id).await?
             } else {
-                self.runtime
+                self.application
+                    .runtime()
                     .prepare_session(
                         id,
                         SessionInit {
@@ -1550,7 +1519,8 @@ impl ManagedState {
                     .await
                     .map_err(StateError::Run)?;
                 if let Some(binding) = session.environment.binding() {
-                    self.runtime
+                    self.application
+                        .runtime()
                         .restore_session_environment(&baseline.agent_id, id, binding)
                         .await
                         .map_err(StateError::Run)?;
@@ -1560,11 +1530,12 @@ impl ManagedState {
             persisted = Some(recovered.clone());
         }
         let pending = self
-            .runtime
+            .application
+            .runtime()
             .pending_tool(id)
             .await
             .map_err(StateError::Run)?;
-        let messages = self.runtime.committed_messages(id).await;
+        let messages = self.application.runtime().committed_messages(id).await;
         if messages.is_empty() && persisted.is_none() {
             return Err(StateError::NotFound);
         }
@@ -1591,7 +1562,8 @@ impl ManagedState {
             .unwrap_or_default();
         let session = self.rehydrated_session(id, persisted)?;
         let delegated_runs = self
-            .runtime
+            .application
+            .runtime()
             .delegated_runs(id)
             .await
             .map_err(StateError::Run)?;
@@ -1625,18 +1597,21 @@ impl ManagedState {
             return Ok(());
         }
         let persisted = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(id)
             .await
             .filter(|session| !matches!(session.status.as_str(), "deleted" | "activation_failed"))
             .ok_or(StateError::NotFound)?;
         let owner_scope = self
-            .sessions_repo
+            .application
+            .session_repository()
             .owner(id)
             .await
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         let delegated_runs = self
-            .runtime
+            .application
+            .runtime()
             .delegated_runs(id)
             .await
             .map_err(StateError::Run)?;
@@ -1674,7 +1649,8 @@ impl ManagedState {
         &self,
         id: &str,
     ) -> Result<awaken_session_contract::SessionRevision, StateError> {
-        self.sessions_repo
+        self.application
+            .session_repository()
             .get(id)
             .await
             .map(|session| session.revision)
@@ -1743,7 +1719,8 @@ impl ManagedState {
             lifecycle_event::SESSION_DELETED,
         );
         let mut persisted = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
@@ -1785,7 +1762,8 @@ impl ManagedState {
             .await
         {
             let released = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .get(id)
                 .await
                 .ok_or(StateError::NotFound)?;
@@ -1796,7 +1774,7 @@ impl ManagedState {
         // notified, mirroring create's `session.status_idled` and archive's
         // `session.status_terminated`. The owner is resolved from the persisted
         // owner (the delete edge carries only the id).
-        if let Some(sink) = &self.lifecycle_sink {
+        if let Some(sink) = &self.application.lifecycle_sink() {
             sink.emit_fact(
                 &deleted_fact.id,
                 id,
@@ -1821,7 +1799,7 @@ impl ManagedState {
         }
         let mut released = true;
         for thread in threads {
-            if let Err(err) = self.runtime.end_session(&thread).await {
+            if let Err(err) = self.application.runtime().end_session(&thread).await {
                 released = false;
                 tracing::warn!(
                     session = id,
@@ -1840,7 +1818,7 @@ impl ManagedState {
         owner_scope: Option<&str>,
         child_threads: &[SessionThread],
     ) -> bool {
-        let Some(mut persisted) = self.sessions_repo.get(id).await else {
+        let Some(mut persisted) = self.application.session_repository().get(id).await else {
             return self.end_session_sandboxes(id, child_threads).await;
         };
         let owner_scope = owner_scope.unwrap_or(DEFAULT_SCOPE);
@@ -1921,7 +1899,8 @@ impl ManagedState {
         );
         if newly_terminated {
             let mut persisted = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .get(id)
                 .await
                 .ok_or(StateError::NotFound)?;
@@ -1958,12 +1937,17 @@ impl ManagedState {
         // sandbox — but only on the transition, so a re-archive (idempotent) does
         // not re-dispose. The record survives as a tombstone; only the sandbox goes.
         let release_required = newly_terminated
-            || self.sessions_repo.get(id).await.is_some_and(|persisted| {
-                persisted.resources.pending.is_some()
-                    || persisted.resources.activations.iter().any(|activation| {
-                        activation.state == awaken_session_contract::ActivationState::Active
-                    })
-            });
+            || self
+                .application
+                .session_repository()
+                .get(id)
+                .await
+                .is_some_and(|persisted| {
+                    persisted.resources.pending.is_some()
+                        || persisted.resources.activations.iter().any(|activation| {
+                            activation.state == awaken_session_contract::ActivationState::Active
+                        })
+                });
         if release_required
             && !self
                 .release_terminal_resources(id, owner.as_deref(), &child_threads)
@@ -1977,7 +1961,7 @@ impl ManagedState {
         // `session.status_idled`. The owning workspace is resolved from the session's
         // persisted owner (the archive edge carries only the id) so a subscription in
         // that workspace is matched even after a restart lost the in-memory index.
-        if newly_terminated && let Some(sink) = &self.lifecycle_sink {
+        if newly_terminated && let Some(sink) = &self.application.lifecycle_sink() {
             sink.emit_fact(
                 &terminated_fact.id,
                 id,

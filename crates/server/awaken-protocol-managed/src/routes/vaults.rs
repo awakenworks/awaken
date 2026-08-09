@@ -34,19 +34,21 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, CredentialRetirement, advance_credential_revision,
     enter_credential, enter_credential_with_materials, revoke_credential,
     rotate_credential_materials,
 };
 use awaken_credential_vault::{
-    CredentialCreateParams as DomainCredentialCreateParams, CredentialKind, CredentialSourceId,
+    CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore, StructuredCredentialMaterial,
 };
 use awaken_managed_bridge::{
     WireEnvVarCreate, WireMcpOauthCreate, WireStaticBearerCreate, env_var_to_create_params,
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
+use awaken_session_application::{RepositoryCredentialIngress, SessionCredentialSource};
 use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -174,53 +176,6 @@ pub struct VaultState {
     inner: std::sync::Mutex<Store>,
     vault_seq: AtomicU64,
     cred_seq: AtomicU64,
-}
-
-/// Secret-free credential selection port consumed by Coordinator Session
-/// compilation. A split Coordinator uses an authenticated Control adapter;
-/// AllInOne injects the same [`VaultState`] directly. Secret material never
-/// crosses this boundary.
-#[async_trait::async_trait]
-pub trait SessionCredentialSource: Send + Sync {
-    async fn has_vault(&self, id: &str) -> Result<bool, String>;
-
-    async fn mcp_credential_source_for_url(
-        &self,
-        vault_ids: &[String],
-        url: &str,
-    ) -> Result<Option<CredentialSourceId>, String>;
-
-    async fn mcp_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String>;
-
-    async fn credential_access_for_source(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-        usage: awaken_credential_contract::CredentialUsage,
-        policy: awaken_credential_contract::CredentialExecutionPolicy,
-    ) -> Result<awaken_credential_contract::CredentialAccess, String>;
-}
-
-/// Write-only repository credential ingress. Implementations must seal material
-/// before returning the opaque binding consumed by Session compilation.
-#[async_trait::async_trait]
-pub trait RepositoryCredentialIngress: Send + Sync {
-    async fn enter_repository_token(
-        &self,
-        source_id: CredentialSourceId,
-        workspace_id: &str,
-        token: RedactedString,
-    ) -> Result<CredentialSourceId, String>;
-
-    async fn rotate_repository_token(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-        token: RedactedString,
-    ) -> Result<(), String>;
 }
 
 impl VaultState {

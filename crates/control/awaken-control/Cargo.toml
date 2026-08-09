@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "bootstrap"
+authority = "control"
+
 # The authoring / authz plane (Stage B2): the management CRUD surfaces (admin
 # config, vault front door, webhook subscriptions, user profiles, config authoring,
 # and capabilities) plus the embedded IAM guard. Deployment/Session application
@@ -16,6 +21,7 @@ license.workspace = true
 # Control depends on this shared crate, NOT on the awaken-runtime-host execution host —
 # the authoring/authz plane stays a sibling of the data plane (control ⊥ execution).
 awaken-config-service = { workspace = true }
+awaken-ext-permission.workspace = true
 awaken-environment-application = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 awaken-executable-agent-contract = { workspace = true }
@@ -24,11 +30,15 @@ awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true }
 awaken-resource-contract.workspace = true
 awaken-session-contract.workspace = true
+awaken-agent-config.workspace = true
 awaken-config-store = { workspace = true }
 awaken-config-resolver = { workspace = true }
 awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-model-catalog = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-credential-vault = { workspace = true, features = ["oauth-command", "sqlite", "sealed-aead", "postgres"] }
+awaken-model-catalog.workspace = true
+awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
+awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
+awaken-credential-contract.workspace = true
 awaken-data-subject = { workspace = true }
 # Embedded IAM (ADR-0042/0043 P1): the authorizer, the argon2id token directory +
 # minter + default-deny PolicySet evaluator, the seeded Anthropic role catalog, the

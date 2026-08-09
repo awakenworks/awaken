@@ -115,6 +115,7 @@ pub(crate) fn now_ms() -> u64 {
 
 mod build;
 mod completion;
+mod durable_control;
 pub use completion::remote_worker_placement;
 pub use completion::self_hosted_inference_holder;
 mod credential_capabilities;

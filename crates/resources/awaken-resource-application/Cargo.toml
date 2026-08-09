@@ -5,7 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-package-class = "application"
+context = "resources"
+layer = "application"
 authority = "resource"
 
 [dependencies]

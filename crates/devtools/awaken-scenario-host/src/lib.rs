@@ -62,13 +62,14 @@ use axum::Router;
 
 // This scenario composition depends on each authoritative owner directly.
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
+pub use awaken_coordinator_runtime::durable_ops_router;
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed_resources::{
     default_models, files_router, memory_stores_router, models_router, skills_router,
 };
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, InferenceExecutorMaterializer, RunApplicationHost, SharedHost,
-    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools, durable_ops_router,
+    ThreadEvent, ThreadEventHub, VaultRefresher, advertised_tools,
 };
 pub use awaken_sandbox_local::content_fingerprint;
 
@@ -434,8 +435,8 @@ pub async fn build_real_gemini_router() -> Router {
 /// worker adapter materialize exactly that candidate. Env:
 /// `ANTHROPIC_API_KEY`/`KIMI_API_KEY` (+ `*_BASE_URL`, `*_MODEL`).
 pub async fn build_resolved_real_router() -> Router {
+    use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
-    use awaken_config_store::ModelSelection;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
@@ -540,10 +541,11 @@ pub async fn build_resolved_real_router() -> Router {
 /// worker realization path actually ran the helper. `AWAKEN_MODEL_MODE=
 /// oauth-resolved` with a fake upstream that authenticates exactly that token.
 pub async fn build_oauth_resolved_router() -> Router {
-    use awaken_config_store::ModelSelection;
+    use awaken_agent_config::ModelSelection;
+    use awaken_credential_contract::CredentialSourceId;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo};
     use awaken_credential_vault::{
-        CredentialKind, CredentialSource, CredentialSourceId, CredentialStatus, InMemorySecretStore,
+        CredentialKind, CredentialSource, CredentialStatus, InMemorySecretStore,
     };
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{
@@ -1132,7 +1134,7 @@ pub async fn build_config_router() -> Router {
     awaken_control::seed_admin_assistant(
         &plane,
         &platform_workspace,
-        awaken_config_store::ModelSelection::Auto,
+        awaken_agent_config::ModelSelection::Auto,
     )
     .await
     .expect("seed admin assistant");

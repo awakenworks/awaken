@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "runtime"
+layer = "infrastructure"
+authority = "ext-permission"
+
 [dependencies]
 awaken-runtime-contract.workspace = true
 awaken-tool-pattern.workspace = true

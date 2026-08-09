@@ -62,7 +62,7 @@ Two facts about the current code make the mechanism concrete:
   (`awaken-runtime-host/src/config.rs:137`) takes no scope; `ConfigService.tools` is a
   single `Vec<ToolDescriptor>` and `installed` is keyed by `agent_id` only
   (`config_plane.rs:31-35`). `compile` lets any config name any tool in that global
-  slice (`awaken-config-store/src/compile.rs:51-78`), and errors `UnknownTool` on a
+  slice (`awaken-agent-config/src/compile.rs`), and errors `UnknownTool` on a
   name that is absent (`compile.rs:56`, fail-closed). There is **no per-scope
   visibility fence today**.
 - The model catalog is **org/deployment-shared and readable from any scope**
@@ -78,7 +78,7 @@ It is authored, validated, compiled, content-addressed, published, and edited th
 the **same** path as any platform agent (`ConfigService::validate/publish` →
 `compile` → `RunnableConfig` → `AgentCatalog`). It is **not** an ephemeral synthesised
 spec (reference impl) and **not** a `RunnableConfig::builder` hardcode (this branch's
-built-ins). `AgentConfig` (`awaken-config-store/src/config.rs:13-48`) and
+built-ins). `AgentConfig` (`awaken-agent-config/src/config.rs`) and
 `ToolDescriptor` (`awaken-runtime-contract/src/resolved.rs:183-192`) gain **no new
 field** — no `origin`, no `kind`, no `audience`, no `locked`. Adding such a marker
 would smear authorization onto model-facing value objects that ADR-0043 keeps
@@ -348,7 +348,7 @@ Costs (accepted):
 - **S1** — New crate `crates/control/awaken-admin-assistant`: the six `ToolExecutor`s
   (bounded / redacted / never-publish) and their six `ToolDescriptor`s, plus
   the seeded instruction text. Add the crate to `check_crate_boundaries.py`
-  `ALLOWED_DEPS`.
+  metadata-derived crate dependency rules.
 - **S2** — `ToolCatalogSource` trait + `ScopedToolCatalog`; `ConfigService.tools` →
   `Arc<dyn ToolCatalogSource>`; thread `scope` into `validate`/`publish`
   (`config_plane.rs:72,88`); inject `ScopedToolCatalog { advertised_tools(...),

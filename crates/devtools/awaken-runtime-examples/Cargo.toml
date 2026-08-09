@@ -3,6 +3,11 @@ name = "awaken-runtime-examples"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[package.metadata.awaken]
+context = "devtools"
+layer = "tooling"
+authority = "runtime-examples"
 publish = false
 
 [dependencies]
@@ -39,9 +44,9 @@ coding-agent-tui = [
 ]
 
 [dev-dependencies]
+awaken-agent-config.workspace = true
 # `hello_agent` reuses the config domain's pure `compile()` to derive the
 # fingerprint — the embedded path borrows the producer, not the cloud storage.
-awaken-config-store = { workspace = true }
 # `memory_skills_combo` is the bare-Runtime assembly recipe for the two
 # extensions together — it must build from their public exports alone.
 awaken-ext-memory = { workspace = true }

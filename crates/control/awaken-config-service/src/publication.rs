@@ -1,6 +1,6 @@
 //! Configuration publication preparation and values shared by the service and HTTP edge.
 
-use awaken_config_store::{AgentConfig, AgentConfigRevision, ModelSelection};
+use awaken_agent_config::{AgentConfig, AgentConfigRevision, ModelSelection};
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
 use awaken_runtime_contract::ResolutionManifest;
 

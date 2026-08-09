@@ -41,7 +41,7 @@ impl awaken_config_service::ModelPublicationResolver for ExactHostModelPublicati
     async fn resolve_models(
         &self,
         _workspace: &awaken_tenancy::ScopeId,
-        selection: &awaken_config_store::ModelSelection,
+        selection: &awaken_agent_config::ModelSelection,
         candidates: &[awaken_runtime_contract::resolved::ModelBinding],
     ) -> Result<
         awaken_config_service::ResolvedPublicationModels,

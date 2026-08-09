@@ -177,7 +177,7 @@ mod tests {
             ..ProviderCatalog::default()
         };
         let credential = CredentialSource {
-            id: awaken_credential_vault::CredentialSourceId("credential".into()),
+            id: awaken_credential_contract::CredentialSourceId("credential".into()),
             workspace_id: "workspace".into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
             provider_id: Some("provider".into()),

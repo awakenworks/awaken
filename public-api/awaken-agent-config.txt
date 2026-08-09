@@ -1,0 +1,236 @@
+pub mod awaken_agent_config
+pub use awaken_agent_config::AgentSkillBinding
+pub use awaken_agent_config::DEFAULT_SCOPE
+pub use awaken_agent_config::ExecutableAgentSnapshot
+pub use awaken_agent_config::ExecutableAgentSnapshotBuilder
+pub use awaken_agent_config::ModelTarget
+pub use awaken_agent_config::ScopeId
+#[non_exhaustive] pub enum awaken_agent_config::AgentKind
+pub awaken_agent_config::AgentKind::A2a
+pub awaken_agent_config::AgentKind::A2a::endpoint: alloc::string::String
+pub awaken_agent_config::AgentKind::Acp
+pub awaken_agent_config::AgentKind::Acp::cli: alloc::string::String
+pub awaken_agent_config::AgentKind::Native
+impl awaken_agent_config::AgentKind
+pub fn awaken_agent_config::AgentKind::backend_ref(&self) -> alloc::string::String
+pub fn awaken_agent_config::AgentKind::from_backend_ref(&str) -> Self
+pub enum awaken_agent_config::AgentLifecycle
+pub awaken_agent_config::AgentLifecycle::Archived
+pub awaken_agent_config::AgentLifecycle::Disabled
+pub awaken_agent_config::AgentLifecycle::Published
+pub enum awaken_agent_config::AuditedConfigWrite
+pub awaken_agent_config::AuditedConfigWrite::Applied
+pub awaken_agent_config::AuditedConfigWrite::Replayed
+pub enum awaken_agent_config::CompileError
+pub awaken_agent_config::CompileError::InvalidBinding
+pub awaken_agent_config::CompileError::InvalidBinding::agent: alloc::string::String
+pub awaken_agent_config::CompileError::InvalidBinding::axis: &'static str
+pub awaken_agent_config::CompileError::InvalidBinding::reason: alloc::string::String
+pub awaken_agent_config::CompileError::InvalidResolution(alloc::string::String)
+pub awaken_agent_config::CompileError::InvalidResolvedModels
+pub awaken_agent_config::CompileError::InvalidResolvedModels::agent: alloc::string::String
+pub awaken_agent_config::CompileError::InvalidResolvedModels::reason: alloc::string::String
+pub awaken_agent_config::CompileError::InvalidToolOverride
+pub awaken_agent_config::CompileError::InvalidToolOverride::agent: alloc::string::String
+pub awaken_agent_config::CompileError::InvalidToolOverride::reason: alloc::string::String
+pub awaken_agent_config::CompileError::InvalidToolRecovery
+pub awaken_agent_config::CompileError::InvalidToolRecovery::agent: alloc::string::String
+pub awaken_agent_config::CompileError::InvalidToolRecovery::reason: alloc::string::String
+pub awaken_agent_config::CompileError::Serialize(alloc::string::String)
+pub awaken_agent_config::CompileError::UnknownTool
+pub awaken_agent_config::CompileError::UnknownTool::agent: alloc::string::String
+pub awaken_agent_config::CompileError::UnknownTool::tool: alloc::string::String
+pub awaken_agent_config::CompileError::UnresolvedModel
+pub awaken_agent_config::CompileError::UnresolvedModel::agent: alloc::string::String
+pub awaken_agent_config::CompileError::UnsupportedCapability
+pub awaken_agent_config::CompileError::UnsupportedCapability::agent: alloc::string::String
+pub awaken_agent_config::CompileError::UnsupportedCapability::axis: &'static str
+impl awaken_agent_config::CompileError
+pub fn awaken_agent_config::CompileError::field_path(&self) -> &'static str
+pub enum awaken_agent_config::ConfigWrite
+pub awaken_agent_config::ConfigWrite::Applied
+pub awaken_agent_config::ConfigWrite::Applied::revision: u64
+pub awaken_agent_config::ConfigWrite::Conflict
+pub awaken_agent_config::ConfigWrite::Conflict::current_revision: core::option::Option<u64>
+pub enum awaken_agent_config::ModelSelection
+pub awaken_agent_config::ModelSelection::Auto
+pub awaken_agent_config::ModelSelection::BackendDefault
+pub awaken_agent_config::ModelSelection::BackendDefault::backend_ref: alloc::string::String
+pub awaken_agent_config::ModelSelection::BackendDefault::configuration: awaken_agent_contract::acp::AcpSessionConfiguration
+pub awaken_agent_config::ModelSelection::BackendExact
+pub awaken_agent_config::ModelSelection::BackendExact::backend_ref: alloc::string::String
+pub awaken_agent_config::ModelSelection::BackendExact::configuration: awaken_agent_contract::acp::AcpSessionConfiguration
+pub awaken_agent_config::ModelSelection::BackendExact::model_ref: alloc::string::String
+pub awaken_agent_config::ModelSelection::Pinned(awaken_runtime_contract::resolved::ModelBinding)
+pub awaken_agent_config::ModelSelection::Profile
+pub awaken_agent_config::ModelSelection::Profile::profile_id: alloc::string::String
+pub awaken_agent_config::ModelSelection::Target
+pub awaken_agent_config::ModelSelection::Target::backend_ref: alloc::string::String
+pub awaken_agent_config::ModelSelection::Target::configuration: awaken_agent_contract::acp::AcpSessionConfiguration
+pub awaken_agent_config::ModelSelection::Target::target: awaken_agent_contract::model_target::ModelTarget
+impl awaken_agent_config::ModelSelection
+pub fn awaken_agent_config::ModelSelection::acp_configuration(&self) -> core::option::Option<&awaken_agent_contract::acp::AcpSessionConfiguration>
+pub fn awaken_agent_config::ModelSelection::backend_default_ref(&self) -> core::option::Option<&str>
+pub fn awaken_agent_config::ModelSelection::backend_exact(&self) -> core::option::Option<(&str, &str)>
+pub fn awaken_agent_config::ModelSelection::backend_ref(&self) -> core::option::Option<&str>
+pub fn awaken_agent_config::ModelSelection::is_auto(&self) -> bool
+pub fn awaken_agent_config::ModelSelection::pinned(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_config::ModelSelection::profile_ref(&self) -> core::option::Option<&str>
+pub fn awaken_agent_config::ModelSelection::requires_reconciliation(&self) -> bool
+pub fn awaken_agent_config::ModelSelection::resolved(&self) -> core::option::Option<&awaken_runtime_contract::resolved::ModelBinding>
+pub fn awaken_agent_config::ModelSelection::set_acp_configuration(&mut self, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<(), &'static str>
+pub fn awaken_agent_config::ModelSelection::target(&self) -> core::option::Option<(&awaken_agent_contract::model_target::ModelTarget, &str)>
+impl core::convert::From<awaken_runtime_contract::resolved::ModelBinding> for awaken_agent_config::ModelSelection
+pub fn awaken_agent_config::ModelSelection::from(awaken_runtime_contract::resolved::ModelBinding) -> Self
+impl serde_core::ser::Serialize for awaken_agent_config::ModelSelection
+pub fn awaken_agent_config::ModelSelection::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_config::ModelSelection
+pub fn awaken_agent_config::ModelSelection::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum awaken_agent_config::MultiagentTarget
+pub awaken_agent_config::MultiagentTarget::Agent
+pub awaken_agent_config::MultiagentTarget::Agent::id: alloc::string::String
+pub awaken_agent_config::MultiagentTarget::Agent::version: core::option::Option<u64>
+pub awaken_agent_config::MultiagentTarget::SelfReference
+impl awaken_agent_config::MultiagentTarget
+pub fn awaken_agent_config::MultiagentTarget::is_self_reference(&self) -> bool
+pub fn awaken_agent_config::MultiagentTarget::resolved_id<'a>(&'a self, &'a str) -> &'a str
+pub fn awaken_agent_config::MultiagentTarget::version(&self) -> core::option::Option<u64>
+impl serde_core::ser::Serialize for awaken_agent_config::MultiagentTarget
+pub fn awaken_agent_config::MultiagentTarget::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_config::MultiagentTarget
+pub fn awaken_agent_config::MultiagentTarget::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum awaken_agent_config::PublicationState
+pub awaken_agent_config::PublicationState::Compiled
+pub awaken_agent_config::PublicationState::Published
+impl awaken_agent_config::PublicationState
+pub fn awaken_agent_config::PublicationState::as_str(self) -> &'static str
+pub struct awaken_agent_config::AgentConfig
+pub awaken_agent_config::AgentConfig::archived_at: core::option::Option<alloc::string::String>
+pub awaken_agent_config::AgentConfig::client_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub awaken_agent_config::AgentConfig::compaction: core::option::Option<awaken_agent_config::CompactionStrategy>
+pub awaken_agent_config::AgentConfig::context_policy: awaken_runtime_contract::resolved::ContextPolicy
+pub awaken_agent_config::AgentConfig::delegation_limits: awaken_agent_contract::agent::delegation::DelegationLimits
+pub awaken_agent_config::AgentConfig::description: core::option::Option<alloc::string::String>
+pub awaken_agent_config::AgentConfig::disabled_at: core::option::Option<alloc::string::String>
+pub awaken_agent_config::AgentConfig::id: alloc::string::String
+pub awaken_agent_config::AgentConfig::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
+pub awaken_agent_config::AgentConfig::instructions: alloc::string::String
+pub awaken_agent_config::AgentConfig::max_steps: usize
+pub awaken_agent_config::AgentConfig::mcp_servers: alloc::vec::Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>
+pub awaken_agent_config::AgentConfig::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_agent_config::AgentConfig::model_binding: awaken_agent_config::ModelSelection
+pub awaken_agent_config::AgentConfig::model_fallbacks: alloc::vec::Vec<awaken_runtime_contract::resolved::ModelBinding>
+pub awaken_agent_config::AgentConfig::multiagent: core::option::Option<awaken_agent_config::MultiagentConfig>
+pub awaken_agent_config::AgentConfig::name: core::option::Option<alloc::string::String>
+pub awaken_agent_config::AgentConfig::plugin_config: alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>
+pub awaken_agent_config::AgentConfig::plugin_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_agent_config::AgentConfig::recovery_policies: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_runtime_contract::tool::ToolRecoveryPolicy>
+pub awaken_agent_config::AgentConfig::skills: alloc::vec::Vec<awaken_agent_contract::skill::AgentSkillBinding>
+pub awaken_agent_config::AgentConfig::tool_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_agent_config::AgentConfig::tool_overrides: alloc::vec::Vec<awaken_agent_config::ToolOverride>
+pub awaken_agent_config::AgentConfig::tool_patterns: alloc::vec::Vec<alloc::string::String>
+pub awaken_agent_config::AgentConfig::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
+impl awaken_agent_config::AgentConfig
+pub fn awaken_agent_config::AgentConfig::kind(&self) -> awaken_agent_config::AgentKind
+impl awaken_agent_config::AgentConfig
+pub fn awaken_agent_config::AgentConfig::lifecycle(&self) -> awaken_agent_config::AgentLifecycle
+pub struct awaken_agent_config::AgentConfigRevision
+pub awaken_agent_config::AgentConfigRevision::config: awaken_agent_config::AgentConfig
+pub awaken_agent_config::AgentConfigRevision::revision: u64
+pub struct awaken_agent_config::CompactionStrategy
+pub awaken_agent_config::CompactionStrategy::keep_recent: core::option::Option<u32>
+pub awaken_agent_config::CompactionStrategy::window: core::option::Option<u32>
+impl awaken_agent_config::CompactionStrategy
+pub fn awaken_agent_config::CompactionStrategy::effective_window(&self, core::option::Option<u32>, core::option::Option<u32>) -> core::option::Option<u32>
+pub struct awaken_agent_config::ConfigStoreError(pub alloc::string::String)
+pub struct awaken_agent_config::ManagementAuditEntry
+pub awaken_agent_config::ManagementAuditEntry::business_committed: bool
+pub awaken_agent_config::ManagementAuditEntry::record: awaken_agent_config::ManagementAuditRecord
+pub struct awaken_agent_config::ManagementAuditRecord
+pub awaken_agent_config::ManagementAuditRecord::call_id: alloc::string::String
+pub awaken_agent_config::ManagementAuditRecord::summary: alloc::string::String
+pub awaken_agent_config::ManagementAuditRecord::tool: alloc::string::String
+pub struct awaken_agent_config::ManagementEffect
+pub awaken_agent_config::ManagementEffect::key: alloc::string::String
+pub awaken_agent_config::ManagementEffect::kind: alloc::string::String
+pub awaken_agent_config::ManagementEffect::payload: serde_json::value::Value
+pub struct awaken_agent_config::MultiagentConfig
+pub awaken_agent_config::MultiagentConfig::agents: alloc::vec::Vec<awaken_agent_config::MultiagentTarget>
+impl awaken_agent_config::MultiagentConfig
+pub fn awaken_agent_config::MultiagentConfig::validate(&self, &str) -> core::result::Result<(), alloc::string::String>
+impl serde_core::ser::Serialize for awaken_agent_config::MultiagentConfig
+pub fn awaken_agent_config::MultiagentConfig::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_config::MultiagentConfig
+pub fn awaken_agent_config::MultiagentConfig::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct awaken_agent_config::ScopedConfig<S: awaken_agent_config::ScopedConfigRegistry + ?core::marker::Sized>
+impl<S: awaken_agent_config::ScopedConfigRegistry + ?core::marker::Sized> awaken_agent_config::ScopedConfig<S>
+pub fn awaken_agent_config::ScopedConfig<S>::new(alloc::sync::Arc<S>, awaken_tenancy::ScopeId) -> Self
+pub fn awaken_agent_config::ScopedConfig<S>::scope(&self) -> &awaken_tenancy::ScopeId
+impl<S: awaken_agent_config::ScopedConfigRegistry + ?core::marker::Sized> awaken_agent_config::ConfigRegistry for awaken_agent_config::ScopedConfig<S>
+pub fn awaken_agent_config::ScopedConfig<S>::get_config<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::AgentConfig>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::get_config_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::AgentConfigRevision>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::get_publication<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::StoredPublication>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::list_config_revisions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::AgentConfigRevision>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::list_configs<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::AgentConfig>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::put_config<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::put_config_if_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::AgentConfig, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::put_publication<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::StoredPublication) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::put_publication_if_config_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::StoredPublication, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_agent_config::StoredPublication
+pub awaken_agent_config::StoredPublication::agent_id: alloc::string::String
+pub awaken_agent_config::StoredPublication::agent_inputs: core::option::Option<serde_json::value::Value>
+pub awaken_agent_config::StoredPublication::fingerprint: alloc::string::String
+pub awaken_agent_config::StoredPublication::publication_id: alloc::string::String
+pub awaken_agent_config::StoredPublication::snapshot: awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+pub awaken_agent_config::StoredPublication::source_revision: u64
+pub awaken_agent_config::StoredPublication::state: awaken_agent_config::PublicationState
+impl awaken_agent_config::StoredPublication
+pub fn awaken_agent_config::StoredPublication::published(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_config::StoredPublication::published_at_revision(awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, impl core::convert::Into<alloc::string::String>, u64) -> Self
+pub fn awaken_agent_config::StoredPublication::with_agent_inputs(self, core::option::Option<serde_json::value::Value>) -> Self
+pub struct awaken_agent_config::ToolOverride
+pub awaken_agent_config::ToolOverride::alias: core::option::Option<alloc::string::String>
+pub awaken_agent_config::ToolOverride::defer: bool
+pub awaken_agent_config::ToolOverride::description: core::option::Option<alloc::string::String>
+pub awaken_agent_config::ToolOverride::target: alloc::string::String
+pub trait awaken_agent_config::ConfigRegistry: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_config::ConfigRegistry::get_config<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::AgentConfig>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ConfigRegistry::get_config_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::AgentConfigRevision>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ConfigRegistry::get_publication<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::StoredPublication>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ConfigRegistry::list_config_revisions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::AgentConfigRevision>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ConfigRegistry::list_configs<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::AgentConfig>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_agent_config::ConfigRegistry::put_config<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ConfigRegistry::put_config_if_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::AgentConfig, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ConfigRegistry::put_publication<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::StoredPublication) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ConfigRegistry::put_publication_if_config_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::StoredPublication, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl<S: awaken_agent_config::ScopedConfigRegistry + ?core::marker::Sized> awaken_agent_config::ConfigRegistry for awaken_agent_config::ScopedConfig<S>
+pub fn awaken_agent_config::ScopedConfig<S>::get_config<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::AgentConfig>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::get_config_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::AgentConfigRevision>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::get_publication<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::StoredPublication>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::list_config_revisions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::AgentConfigRevision>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::list_configs<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::AgentConfig>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::put_config<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::put_config_if_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::AgentConfig, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::put_publication<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::StoredPublication) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfig<S>::put_publication_if_config_revision<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::StoredPublication, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_agent_config::ScopedConfigRegistry: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_config::ScopedConfigRegistry::complete_management_effect_scoped<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::get_config_revision_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::AgentConfigRevision>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::get_config_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::AgentConfig>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::get_management_audit_scoped<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::ManagementAuditEntry>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::get_publication_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::StoredPublication>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::list_config_revisions_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::AgentConfigRevision>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::list_config_scopes<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_tenancy::ScopeId>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::list_configs_scoped<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::AgentConfig>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::list_published_scoped<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::StoredPublication>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::mark_management_audit_committed_scoped<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::pending_management_effects_scoped<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_config::ManagementEffect>, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::put_config_if_revision_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::AgentConfig, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::put_config_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::put_config_with_audit_effect_scoped<'life0, 'life1, 'life2, 'life3, 'life4, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::AgentConfig, &'life3 awaken_agent_config::ManagementAuditRecord, core::option::Option<&'life4 awaken_agent_config::ManagementEffect>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::AuditedConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::put_config_with_audit_scoped<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::AgentConfig, &'life3 awaken_agent_config::ManagementAuditRecord) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::AuditedConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::put_publication_if_config_revision_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::StoredPublication, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::put_publication_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::StoredPublication) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::ScopedConfigRegistry::record_management_audit_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::ManagementAuditRecord) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::AuditedConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_agent_config::compile_published(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata, awaken_runtime_contract::resolved::ResolvedModelCandidate, alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>
+pub fn awaken_agent_config::compile_resolved(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>

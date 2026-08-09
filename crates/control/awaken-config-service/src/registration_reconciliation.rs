@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use awaken_config_store::{AgentLifecycle, ScopedConfigRegistry};
+use awaken_agent_config::{AgentLifecycle, ScopedConfigRegistry};
 use awaken_executable_agent_contract::{ExecutableAgentRegistration, ExecutableAgentWithdrawal};
 use awaken_tenancy::ScopeId;
 

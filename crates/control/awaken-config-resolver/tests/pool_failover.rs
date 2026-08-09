@@ -17,11 +17,11 @@ fn profile_candidate(model_id: &str, credential_binding: CredentialBinding) -> P
         credential_binding,
     }
 }
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{
     CredentialBinding, CredentialCreateParams, CredentialKind, CredentialPool, CredentialPoolId,
-    CredentialPoolMember, CredentialSource, CredentialSourceId, CredentialStatus,
-    InMemorySecretStore, SelectionPolicy,
+    CredentialPoolMember, CredentialSource, CredentialStatus, InMemorySecretStore, SelectionPolicy,
 };
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{

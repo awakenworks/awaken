@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use awaken_config_store::AgentConfig;
+use awaken_agent_config::AgentConfig;
 use awaken_runtime_contract::credential::CredentialRef;
 use awaken_tenancy::ScopeId;
 

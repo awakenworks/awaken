@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use awaken_mcp_server_core::{
-    AllowAllOrigins, CallToolResult, McpCall, McpHostError, McpHttpBody, McpHttpMethod, McpServer,
-    McpToolDefinition, McpToolHost, NotifySink, NullSink, ToolContent, handle_streamable_http,
-    jsonrpc_reply,
+    AllowAllOrigins, McpCall, McpHostError, McpHttpBody, McpHttpMethod, McpServer, McpToolHost,
+    NotifySink, NullSink, handle_streamable_http, jsonrpc_reply,
 };
+use awaken_mcp_wire::{CallToolResult, McpToolDefinition, ToolContent};
 use http::{HeaderMap, HeaderValue, StatusCode, header};
 use proptest::prelude::*;
 use serde_json::{Value, json};

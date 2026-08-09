@@ -150,10 +150,10 @@ postgres/sqlite/schema unchanged, D5); (ADR-0038) `FileStore`
 |---|---|---|---|
 | Runtime truth | `CommitCoordinator`, `CheckpointReader`, `StreamSink` | `awaken-agent-contract` | G1, G13 |
 | Dispatch | `DispatchQueue`, `Inbox`, `Outbox` | new `awaken-run-ingress-contract` | G5, G6, G18 |
-| Config | `ConfigRegistry` | `awaken-config-store` | G3 |
+| Config | `ConfigRegistry` | `awaken-agent-config` (`awaken-config-store` implements it) | G3 |
 
 Backends (`awaken-store-*`) implement the union; the direction is enforced by
-`deny.toml` (backends depend on contracts, never the reverse — G2) and a
+the metadata-derived crate boundary checker (backends depend on contracts, never the reverse — G2) and a
 cross-backend conformance suite.
 
 ### Slices

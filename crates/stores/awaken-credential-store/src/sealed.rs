@@ -1,0 +1,358 @@
+//! AEAD-sealed [`SecretStore`] adapter (ADR-0043, feature `sealed-aead`).
+//!
+//! Encryption-at-rest so a stolen disk / DB dump / backup is inert without the
+//! key: each secret is sealed with ChaCha20-Poly1305 under a 256-bit key the
+//! composition root holds **separately** (OS keyring / KMS / env — never on the
+//! same medium as the ciphertext). A fresh random nonce is drawn per `put`, so
+//! sealing the same secret twice yields distinct ciphertexts; the nonce is stored
+//! alongside (`nonce ‖ ciphertext`). The domain and runtime still only ever see a
+//! resolved [`RedactedString`] at the seam — never ciphertext, never the key.
+//!
+//! Where the blobs *live* is a separate axis: this decorator writes them through
+//! the [`SealedBlobStore`] port, so the same AEAD layer composes with the
+//! test-only in-memory map or a durable engine such as `sqlite::SqliteSealedBlobStore`
+//! ([`over`](SealedAeadSecretStore::over)).
+
+use std::sync::Arc;
+
+use awaken_agent_contract::RedactedString;
+use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
+use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+
+#[cfg(any(test, feature = "test-support"))]
+use awaken_credential_vault::InMemorySealedBlobStore;
+use awaken_credential_vault::{CredentialError, SealedBlobStore, SecretRef, SecretStore};
+
+/// The 96-bit ChaCha20-Poly1305 nonce width, in bytes.
+const NONCE_LEN: usize = 12;
+
+/// A [`SecretStore`] that seals every secret under an AEAD key and persists only
+/// `nonce ‖ ciphertext` blobs through a [`SealedBlobStore`]. The key never leaves
+/// this struct; the blob store never learns it.
+pub struct SealedAeadSecretStore {
+    cipher: ChaCha20Poly1305,
+    blobs: Arc<dyn SealedBlobStore>,
+}
+
+impl SealedAeadSecretStore {
+    /// Build a test store sealing under `key` over the in-memory blob map.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_key(key: &[u8; 32]) -> Self {
+        Self::over(key, Arc::new(InMemorySealedBlobStore::new()))
+    }
+
+    /// Build a store sealing under `key` over an explicit blob backend —
+    /// AEAD-at-rest composed with a durable engine (e.g.
+    /// `SqliteSealedBlobStore`, feature `sqlite`).
+    #[must_use]
+    pub fn over(key: &[u8; 32], blobs: Arc<dyn SealedBlobStore>) -> Self {
+        Self {
+            cipher: ChaCha20Poly1305::new(Key::from_slice(key)),
+            blobs,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SecretStore for SealedAeadSecretStore {
+    async fn put(&self, r: &SecretRef, secret: RedactedString) -> Result<(), CredentialError> {
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let ciphertext = self
+            .cipher
+            .encrypt(&nonce, secret.expose_secret().as_bytes())
+            .map_err(|_| CredentialError::Seal)?;
+        // Store nonce ‖ ciphertext; the nonce is not secret, only single-use.
+        let mut blob = nonce.to_vec();
+        blob.extend_from_slice(&ciphertext);
+        self.blobs.put_blob(r, blob).await
+    }
+
+    async fn get(&self, r: &SecretRef) -> Result<RedactedString, CredentialError> {
+        let blob = self.blobs.get_blob(r).await?;
+        if blob.len() < NONCE_LEN {
+            return Err(CredentialError::Seal);
+        }
+        let (nonce, ciphertext) = blob.split_at(NONCE_LEN);
+        let plaintext = self
+            .cipher
+            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .map_err(|_| CredentialError::Seal)?;
+        let text = String::from_utf8(plaintext).map_err(|_| CredentialError::Seal)?;
+        Ok(RedactedString::new(text))
+    }
+
+    async fn delete(&self, r: &SecretRef) -> Result<(), CredentialError> {
+        self.blobs.delete_blob(r).await
+    }
+
+    async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        self.blobs.inventory_blobs().await
+    }
+}
+
+/// Generate a fresh 256-bit seal key with the same OS-backed CSPRNG used for
+/// AEAD nonces and return its canonical lowercase hex representation. Key
+/// generation belongs beside seal-key parsing so composition roots do not each
+/// choose their own entropy source or encoding.
+#[must_use]
+pub fn generate_seal_key_hex() -> String {
+    let key = ChaCha20Poly1305::generate_key(&mut OsRng);
+    key.iter().fold(String::with_capacity(64), |mut hex, byte| {
+        use std::fmt::Write as _;
+        write!(hex, "{byte:02x}").expect("writing to a String cannot fail");
+        hex
+    })
+}
+
+/// Parse a seal-key hex string into the 32-byte AEAD key
+/// [`SealedAeadSecretStore`] uses: exactly 64 hex characters. The single home for
+/// this so the Serve composition root and the worker share one implementation.
+pub fn parse_seal_key(hex: &str) -> Result<[u8; 32], String> {
+    let hex = hex.trim();
+    if hex.len() != 64 || !hex.is_ascii() {
+        return Err(format!(
+            "expected 64 hex characters (a 32-byte key), got {} characters",
+            hex.len()
+        ));
+    }
+    let mut key = [0u8; 32];
+    for (i, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+            .map_err(|_| format!("not hex at position {}", 2 * i))?;
+    }
+    Ok(key)
+}
+
+#[cfg(test)]
+mod seal_key_tests {
+    use super::{generate_seal_key_hex, parse_seal_key};
+
+    #[test]
+    fn parse_requires_exactly_64_hex_chars() {
+        assert!(
+            parse_seal_key(&"ab".repeat(32)).is_ok(),
+            "64 hex chars parse"
+        );
+        assert!(parse_seal_key("abc").is_err(), "too short");
+        assert!(parse_seal_key(&"zz".repeat(32)).is_err(), "non-hex");
+    }
+
+    #[test]
+    fn generated_key_has_the_canonical_parseable_shape() {
+        let generated = generate_seal_key_hex();
+        assert_eq!(generated.len(), 64);
+        assert!(parse_seal_key(&generated).is_ok());
+    }
+
+    #[test]
+    fn parse_maps_hex_digits_to_the_exact_key_bytes() {
+        // Value correctness, not just Ok: every byte of a 64-char hex string lands.
+        assert_eq!(parse_seal_key(&"0a".repeat(32)).unwrap(), [0x0au8; 32]);
+        let mixed = "00112233445566778899aabbccddeeff\
+                     ffeeddccbbaa99887766554433221100";
+        let key = parse_seal_key(mixed).unwrap();
+        assert_eq!(&key[..4], &[0x00, 0x11, 0x22, 0x33]);
+        assert_eq!(&key[28..], &[0x33, 0x22, 0x11, 0x00]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A store plus a handle on its blob backend, so tests can inspect and
+    /// tamper with exactly what is at rest.
+    fn store_with_blobs(key: &[u8; 32]) -> (SealedAeadSecretStore, Arc<InMemorySealedBlobStore>) {
+        let blobs = Arc::new(InMemorySealedBlobStore::new());
+        (SealedAeadSecretStore::over(key, blobs.clone()), blobs)
+    }
+
+    #[tokio::test]
+    async fn seals_and_opens_round_trip() {
+        let store = SealedAeadSecretStore::with_key(&[7u8; 32]);
+        let r = SecretRef("cred:1".into());
+        store
+            .put(&r, RedactedString::new("sk-secret"))
+            .await
+            .unwrap();
+        assert_eq!(store.get(&r).await.unwrap().expose_secret(), "sk-secret");
+    }
+
+    #[tokio::test]
+    async fn ciphertext_is_not_the_plaintext_and_nonce_is_random() {
+        let (store, blobs) = store_with_blobs(&[9u8; 32]);
+        store
+            .put(&SecretRef("a".into()), RedactedString::new("top-secret"))
+            .await
+            .unwrap();
+        store
+            .put(&SecretRef("b".into()), RedactedString::new("top-secret"))
+            .await
+            .unwrap();
+        let a = blobs.get_blob(&SecretRef("a".into())).await.unwrap();
+        let b = blobs.get_blob(&SecretRef("b".into())).await.unwrap();
+        // At-rest bytes never contain the plaintext...
+        assert!(!a.windows(10).any(|w| w == b"top-secret"));
+        // ...and a fresh nonce per put makes identical secrets seal differently.
+        assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_key_cannot_open() {
+        let (sealer, sealer_blobs) = store_with_blobs(&[1u8; 32]);
+        let r = SecretRef("cred:1".into());
+        sealer
+            .put(&r, RedactedString::new("sk-secret"))
+            .await
+            .unwrap();
+        // Move the ciphertext blob under a store with a different key.
+        let blob = sealer_blobs.get_blob(&r).await.unwrap();
+        let (attacker, attacker_blobs) = store_with_blobs(&[2u8; 32]);
+        attacker_blobs.put_blob(&r, blob).await.unwrap();
+        assert!(matches!(attacker.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    #[tokio::test]
+    async fn a_tampered_ciphertext_is_rejected() {
+        let (store, blobs) = store_with_blobs(&[3u8; 32]);
+        let r = SecretRef("cred:1".into());
+        store
+            .put(&r, RedactedString::new("sk-secret"))
+            .await
+            .unwrap();
+        // Flip one ciphertext byte (past the nonce) in the stored blob.
+        let mut blob = blobs.get_blob(&r).await.unwrap();
+        blob[NONCE_LEN] ^= 0x01;
+        blobs.put_blob(&r, blob).await.unwrap();
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    #[tokio::test]
+    async fn a_truncated_blob_is_a_seal_error() {
+        let (store, blobs) = store_with_blobs(&[4u8; 32]);
+        let r = SecretRef("cred:1".into());
+        // A blob shorter than the nonce cannot even be split, let alone opened.
+        blobs.put_blob(&r, vec![0u8; NONCE_LEN - 1]).await.unwrap();
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    #[tokio::test]
+    async fn identical_plaintext_sealed_twice_both_open_to_the_original() {
+        // put(c): distinct blobs for the same secret (proven elsewhere) must each
+        // still decrypt back to the one original plaintext — nonce reuse-avoidance
+        // does not cost recoverability.
+        let (store, _blobs) = store_with_blobs(&[6u8; 32]);
+        let a = SecretRef("a".into());
+        let b = SecretRef("b".into());
+        store
+            .put(&a, RedactedString::new("same-secret"))
+            .await
+            .unwrap();
+        store
+            .put(&b, RedactedString::new("same-secret"))
+            .await
+            .unwrap();
+        assert_eq!(store.get(&a).await.unwrap().expose_secret(), "same-secret");
+        assert_eq!(store.get(&b).await.unwrap().expose_secret(), "same-secret");
+    }
+
+    #[tokio::test]
+    async fn a_ciphertext_opening_to_non_utf8_is_a_seal_error() {
+        // get(d): a blob that passes the AEAD tag but decrypts to non-UTF-8 bytes
+        // must still fail closed as Seal (not surface lossy/garbage text). Sealed
+        // here directly with the cipher so the AEAD tag is valid — only the UTF-8
+        // check downstream rejects it.
+        const KEY: [u8; 32] = [11u8; 32];
+        let (store, blobs) = store_with_blobs(&KEY);
+        let cipher = ChaCha20Poly1305::new(Key::from_slice(&KEY));
+        let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let ciphertext = cipher
+            .encrypt(&nonce, &[0xff, 0xfe, 0x00, 0x80][..])
+            .unwrap();
+        let mut blob = nonce.to_vec();
+        blob.extend_from_slice(&ciphertext);
+        let r = SecretRef("nonutf8".into());
+        blobs.put_blob(&r, blob).await.unwrap();
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    #[tokio::test]
+    async fn a_missing_ref_is_secret_not_found() {
+        let store = SealedAeadSecretStore::with_key(&[5u8; 32]);
+        assert!(matches!(
+            store.get(&SecretRef("cred:absent".into())).await,
+            Err(CredentialError::SecretNotFound(id)) if id == "cred:absent"
+        ));
+    }
+
+    /// get(nonce-tamper): flipping a byte *inside* the 12-byte nonce prefix (not the
+    /// ciphertext) makes the AEAD decrypt under the wrong nonce — the Poly1305 tag no
+    /// longer verifies, so it fails closed as `Seal` and never surfaces plaintext.
+    /// Distinct from the ciphertext-tamper row: here the ciphertext bytes are
+    /// untouched and only the associated nonce is corrupted.
+    #[tokio::test]
+    async fn a_tampered_nonce_is_rejected() {
+        let (store, blobs) = store_with_blobs(&[12u8; 32]);
+        let r = SecretRef("cred:1".into());
+        store
+            .put(&r, RedactedString::new("sk-secret"))
+            .await
+            .unwrap();
+        let mut blob = blobs.get_blob(&r).await.unwrap();
+        blob[0] ^= 0x01; // a byte within [0, NONCE_LEN)
+        blobs.put_blob(&r, blob).await.unwrap();
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    /// get(boundary): a blob of *exactly* `NONCE_LEN` bytes clears the `< NONCE_LEN`
+    /// length guard but leaves an empty ciphertext — too short to carry the 16-byte
+    /// Poly1305 tag — so the AEAD open fails closed as `Seal`. Pins the boundary the
+    /// truncated-blob row (`NONCE_LEN - 1`) sits just below.
+    #[tokio::test]
+    async fn a_blob_of_exactly_the_nonce_length_is_a_seal_error() {
+        let (store, blobs) = store_with_blobs(&[13u8; 32]);
+        let r = SecretRef("cred:1".into());
+        blobs.put_blob(&r, vec![0u8; NONCE_LEN]).await.unwrap();
+        assert!(matches!(store.get(&r).await, Err(CredentialError::Seal)));
+    }
+
+    /// put/get(empty): an empty secret is still sealed (nonce ‖ tag) and round-trips
+    /// back to the empty string — the AEAD layer never special-cases it into a
+    /// plaintext-empty at-rest blob, and the at-rest bytes are non-empty.
+    #[tokio::test]
+    async fn an_empty_secret_seals_and_round_trips() {
+        let (store, blobs) = store_with_blobs(&[14u8; 32]);
+        let r = SecretRef("cred:empty".into());
+        store.put(&r, RedactedString::new("")).await.unwrap();
+        // At rest: nonce (12) + Poly1305 tag (16), never a zero-length blob.
+        let blob = blobs.get_blob(&r).await.unwrap();
+        assert!(blob.len() > NONCE_LEN);
+        assert_eq!(store.get(&r).await.unwrap().expose_secret(), "");
+    }
+
+    /// put(rotate): re-sealing the same `SecretRef` replaces the secret — a later
+    /// `get` yields the new plaintext, and the old plaintext is nowhere in the
+    /// at-rest blob. Pins secret rotation: no stale ciphertext lingers to be opened.
+    #[tokio::test]
+    async fn re_sealing_a_ref_replaces_the_secret_and_leaves_no_stale_plaintext() {
+        let (store, blobs) = store_with_blobs(&[15u8; 32]);
+        let r = SecretRef("cred:rotate".into());
+        store
+            .put(&r, RedactedString::new("old-secret-value"))
+            .await
+            .unwrap();
+        store
+            .put(&r, RedactedString::new("new-secret-value"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get(&r).await.unwrap().expose_secret(),
+            "new-secret-value"
+        );
+        // The rotated-out plaintext must not survive anywhere at rest.
+        let blob = blobs.get_blob(&r).await.unwrap();
+        let old = b"old-secret-value";
+        assert!(!blob.windows(old.len()).any(|w| w == old));
+    }
+}

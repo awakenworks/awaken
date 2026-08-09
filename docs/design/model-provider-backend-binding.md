@@ -164,9 +164,11 @@ Rules:
 
 Provider access, protocol endpoints, model catalog, and routing are **not** part
 of the agent config nor of the credential vault. They live in the **management
-plane** (mirroring awaken-next ADR-0088), decomposed by domain into config-store
-crates + a resolver service (`awaken-model-catalog` owns provider/endpoint/offering/
-model catalog + `InferenceProfile`; `awaken-config-resolver` reads it and resolves;
+plane** (mirroring awaken-next ADR-0088), decomposed into domain crates, durable
+`*-store` adapters, and a resolver service (`awaken-model-catalog` owns
+provider/endpoint/offering/model catalog + `InferenceProfile`;
+`awaken-model-catalog-store` implements persistence; `awaken-config-resolver` reads
+the injected port and resolves;
 see [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)
 § decomposition): declarative "what exists, where it runs, who runs it,"
 **orthogonal to execution**. Ingress **queries** it to resolve a run; a request never flows

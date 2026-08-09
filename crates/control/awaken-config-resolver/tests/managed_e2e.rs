@@ -11,10 +11,11 @@ use std::collections::HashMap;
 
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::{ResolvedInference, resolve_inference};
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{
     CredentialBinding, CredentialCreateParams, CredentialKind, CredentialSource,
-    CredentialSourceId, InMemorySecretStore,
+    InMemorySecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
 use awaken_model_catalog::{

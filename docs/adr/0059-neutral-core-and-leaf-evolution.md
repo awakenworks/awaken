@@ -1,10 +1,10 @@
 # ADR-0059: Neutral Core, Leaf Adapters — the Evolution Invariant, Its Fitness Functions, and the God-Hub Dissolution Plan
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-07-18
 - Builds on: the plane-aligned single workspace and inward dependency rule
-  (`Cargo.toml` bucket layout, `scripts/ci/check_crate_boundaries.py`,
-  `deny.toml` wrappers); the `X-contract` extraction convention that factored
+  (`Cargo.toml` metadata, `scripts/ci/check_crate_boundaries.py`); the
+  `X-contract` extraction convention that factored
   `awaken-run-ingress-contract` out of its host (ADR-0039 slice 2.1); the unified
   agent-configuration snapshot as the config→execution data seam (ADR-0057); the one
   neutral event vocabulary + `Transcoder` projection seam (ADR-0058); tenancy as an
@@ -116,39 +116,51 @@ admission, transport selection, credentials, recovery and cancellation.
 
 ### 5. Fitness functions (the invariant is enforced, not documented)
 
-The invariant is only real if a violating commit fails the build. Four architecture
-fitness functions, using the existing enforcement layers, hold it (the first three added
-with this ADR, living as pure predicates + cause-effect selftests in
-`scripts/ci/_arch_fitness.py`):
+The invariant is only real if a violating commit fails the build. One manifest walk
+builds the workspace model from mandatory `context`, `layer`, and `authority` metadata;
+the metadata-derived rules and focused semantic predicates carry cause-effect selftests.
 
-- **Contract classification and purity** — every `*-contract` crate declares its package
-  class and domain authority in Cargo metadata. Data/port-only contracts may not carry a
-  normal dep on an async runtime, a DB driver, or an HTTP/wire framework, regardless of
-  their deployment bucket. `awaken-runtime-contract` is explicitly classified as the
-  live runtime interface because cancellation/runtime handles are part of that boundary.
-  Directory placement is never used as a semantic proxy. Catches drift (2) recurring.
-- **Protocol leaves** — nothing may depend on a `protocol-*` crate except a composition
-  root, the host/control service layer, or a sibling/executor adapter (crate-name prefix
-  rule, so it holds for every current and future adapter, including zero-depender ones).
-  Duplicated as `deny.toml` wrappers for the adapters that have dependers (cargo-deny
-  layer). This is the primary guard against drift (1) — a new reverse edge onto an adapter
-  fails the build, forcing the neutral port to move to a contract leaf first.
-- **God-hub ratchet** — `awaken-runtime-host`'s first-party dependency count is monotone
-  non-increasing (ceiling started at 36 and is now 33). The hub may only shrink; each extraction lowers
-  the ceiling in the same commit.
-- **Bucket direction + secret-resolution-free runtime** — the pre-existing rules.
+- **Metadata completeness and direction** — every crate declares a bounded context,
+  Clean/DDD layer, and authority. Context and layer matrices are defined once by role;
+  no per-crate dependency list and no directory bucket participates in the decision.
+- **Contract and adapter semantics** — contracts reject database and wire frameworks;
+  domain/application code cannot reverse-depend on either interface or infrastructure
+  adapters. Live async handles are allowed in an explicit contract because they are part
+  of the published port.
+- **Ownership fitness** — resource authorization separation, runtime secret isolation,
+  migration ownership, Coordinator authority, and Managed route inventory remain focused
+  semantic checks over the same workspace graph/source tree.
 
 ### 6. The god-hub dissolution — sequence and blockers
 
-The full crate-split of `awaken-runtime-host` is a **multi-session, port-first** effort,
-not a single cut, because every module worth extracting is woven into `SharedHost`: the
-modules own its fields, add `impl SharedHost` methods, and the host itself depends on
-`awaken-run-ingress`, so dispatch glue cannot move *down* without a cycle. Verified
-per-cut state (2026-07-18):
+The split keeps one protocol-neutral `SharedHost` substrate and assigns role-specific
+interfaces to explicit owners. This avoids duplicating Host construction or Session state.
+Verified state after the 2026-08-04 cut:
 
-- **Dispatch / durable (`store`, `commit_*`, `dispatch_*`, `durable_ops`)** — 3–16
-  `SharedHost` references each; moving down to the ingress family would cycle. Requires a
-  `DispatchBackend` port at the host boundary first.
+- **Control aggregates and durable adapters** — `awaken-agent-config` owns the Agent
+  Config aggregate, compilation and repository ports; `awaken-model-catalog` owns the
+  catalog aggregate/ports; `awaken-credential-vault` owns credential materialization.
+  `awaken-config-store`, `awaken-model-catalog-store`, and
+  `awaken-credential-store` implement those ports. No application crate depends on an
+  infrastructure crate, and no compatibility re-export preserves the former mixed path.
+- **Outermost host adapters** — `awaken-runtime-host` and
+  `awaken-acp-application` are classified as infrastructure because their authoritative
+  responsibilities compose concrete execution/storage/process adapters. Their names are
+  retained to avoid inventing duplicate host or ACP catalogs; metadata records the
+  architectural role independently of the physical directory or historical suffix.
+
+- **Session application** — `awaken-session-application` owns the Session repository,
+  runtime/environment/credential/resource ports, environment-binding CAS, incarnation,
+  lifecycle-supervisor fence, exact Environment selection/runtime validation, and the sole
+  durable Session-to-WorkQueue projection command used by both create and recovery.
+  Its collaborators are private and reached through explicit application operations/ports;
+  `awaken-protocol-managed::ManagedState` has no `Deref` compatibility path and owns only
+  wire projections, event ids, and SSE channels.
+- **Coordinator runtime interface** — `awaken-coordinator-runtime` owns durable-operation
+  HTTP routing. Neutral durable-control methods remain on `SharedHost` as its application API.
+- **Worker runtime interface** — `awaken-worker-runtime` owns registration, heartbeat,
+  drain, and claim-fenced Session-control clients. `awaken-runtime-host` no longer exports
+  those Worker transport adapters.
 - **Sandbox realization (`sandbox_source`, `provisioning`)** — `sandbox_source` has zero
   host references and consumes the Session-owned environment that ADR-0066
   consolidated; it still uses host-internal modules;
@@ -165,20 +177,18 @@ per-cut state (2026-07-18):
   host's private `MemoryStores` / `SkillCatalog` subsystems and moving them would leak the
   subsystems' method surface — worse encapsulation.
 
-The dissolution therefore proceeds by introducing one narrow port at a time, moving its
-implementation to the sibling plane, and lowering the ratchet — the fitness functions make
-that sequence monotone and safe. The precursor cohesion work (sealing `SkillCatalog`,
-`MemoryStores`, `Delegates`, `Compaction` sub-structs) is done; the remaining substrate
-fields (`llm`, `sessions`, `hub`, `file_store`, model/provider) are the irreducible core.
+Further extraction still proceeds one port at a time. The remaining substrate fields
+(`llm`, Session slots, event hub, file/resource materialization, model/provider routing)
+are shared execution behavior; a role adapter may depend on the substrate, but it must not
+reimplement that behavior.
 
 ### 7. Layout rules recorded (previously implicit)
 
-- `stores/` holds **any** port's durable backend, including domain-specific ones
+- Physical `stores/` holds **any** port's durable backend, including domain-specific ones
   (work-queue / session / env registries), not only the generic fs/sqlite/postgres commit
   stores.
-- `control → server` is an accepted **anti-corruption exception**: the control plane mounts
-  the managed routes and reuses the wire `ErrorResponse`. If it must be severed later, the
-  wire error type sinks to `awaken-api-contract`. It is a named edge, not an accident.
+- Physical directories are not semantic layers. Moving a crate does not change its
+  architecture; changing `context`, `layer`, or `authority` does and is checked.
 - `bin/` holds **composed deployables** — `awaken-cli` (the primary binary), the db-less
   `awaken-worker` daemon, and the in-container `awaken-sandbox` bridge — not "exactly one
   binary." Dev tooling lives in `devtools/` (`publish = false`), off the delivery surface.
@@ -191,15 +201,14 @@ fields (`llm`, `sessions`, `hub`, `file_store`, model/provider) are the irreduci
 - The root disease cannot silently recur: a neutral port re-entering an adapter, a backend
   re-entering a contract leaf, or a new dependency on the god-hub each fail the build with
   a message naming the fix.
-- The god-hub shrinks monotonically. The cost is that its dissolution is spread across
-  sessions; the benefit is that no step risks a cycle or a broken build, and progress is
-  measured by the ratchet ceiling dropping.
-- The enforcement is split across two mechanisms (`check_crate_boundaries.py` /
-  `_arch_fitness.py` at pre-commit + CI, `deny.toml` at `cargo deny`) — deliberate defense
-  in depth, matching the pre-existing overlap between the boundary checker and the wrappers
-  allowlist. The duplicated protocol-leaf depender lists must be kept in sync; the
-  categorical prefix rule is the source of truth and covers cases the wrappers cannot
-  (a zero-depender member leaf).
+- `awaken-runtime-host` is shared host infrastructure rather than a
+  Coordinator/Worker facade. Role-specific interfaces can shrink independently without
+  producing two Hosts.
+- Architecture enforcement has one source of truth: Cargo metadata interpreted by
+  `check_crate_boundaries.py`. `deny.toml` retains dependency-hygiene settings only and
+  intentionally contains no architecture wrappers or depender allowlists.
+- Interface adapters do not publicly re-export another first-party crate. Consumers import
+  credential, Dream, and MCP wire values from their authoritative owner directly.
 - This ADR is documentation *plus* code: Phases 0.1 / 0.2 / 3 of the layout work landed the
   three new fitness functions; the neutral-port extractions (session-contract, the InMemory
   backends, and the common Run-attempt seam) landed the structural changes it describes.

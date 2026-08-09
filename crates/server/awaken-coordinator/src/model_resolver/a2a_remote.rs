@@ -154,9 +154,9 @@ impl CatalogModelPublicationResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
     use awaken_config_service::ModelPublicationResolver;
-    use awaken_config_store::ModelSelection;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, InMemorySecretStore};
     use awaken_model_catalog::ProviderCatalog;

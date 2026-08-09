@@ -229,6 +229,7 @@ pub fn awaken_run_ingress::DispatchWorker<S>::store(&self) -> &alloc::sync::Arc<
 pub async fn awaken_run_ingress::DispatchWorker<S>::tick(&self, u64) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_run_ingress::Error>
 pub async fn awaken_run_ingress::DispatchWorker<S>::tick_run(&self, &awaken_agent_contract::agent::run::Id, u64) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::run::RunState)>, awaken_run_ingress::Error>
 pub fn awaken_run_ingress::DispatchWorker<S>::with_claimed_commit(self, alloc::sync::Arc<dyn awaken_run_ingress::ClaimedRunCommit>) -> Self
+pub fn awaken_run_ingress::DispatchWorker<S>::with_claimed_stream_publisher(self, alloc::sync::Arc<dyn awaken_run_ingress::ClaimedStreamPublisher>) -> Self
 pub fn awaken_run_ingress::DispatchWorker<S>::with_context(self, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> Self
 pub fn awaken_run_ingress::DispatchWorker<S>::with_inference_materializer(self, awaken_run_ingress::InferenceMaterializerFn) -> Self
 pub fn awaken_run_ingress::DispatchWorker<S>::with_lease_ms(self, u64) -> Self
@@ -262,11 +263,13 @@ pub async fn awaken_run_ingress::DurableRunIngress<S>::stage_cross_thread(&self,
 pub async fn awaken_run_ingress::DurableRunIngress<S>::submit_superseding(&self, awaken_runtime_contract::activation::RunActivation) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_run_ingress::Error>
 pub async fn awaken_run_ingress::DurableRunIngress<S>::superseded(&self) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::run::Id>, awaken_run_ingress::Error>
 pub fn awaken_run_ingress::DurableRunIngress<S>::with_claimed_commit(self, alloc::sync::Arc<dyn awaken_run_ingress::ClaimedRunCommit>) -> Self
+pub fn awaken_run_ingress::DurableRunIngress<S>::with_claimed_stream_publisher(self, alloc::sync::Arc<dyn awaken_run_ingress::ClaimedStreamPublisher>) -> Self
 pub fn awaken_run_ingress::DurableRunIngress<S>::with_context(self, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> Self
 pub fn awaken_run_ingress::DurableRunIngress<S>::with_local_credential_capabilities(self, awaken_credential_contract::CredentialRealizationCapabilities) -> Self
 pub fn awaken_run_ingress::DurableRunIngress<S>::with_owner<C>(alloc::sync::Arc<awaken_runtime::runtime::Runtime>, alloc::sync::Arc<S>, alloc::sync::Arc<C>, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>) -> Self where C: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::thread_reader::ThreadReader + awaken_agent_contract::thread::read::run_store::RunStore + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_run_ingress::DurableRunIngress<S>::with_owner_and_resolver<C>(alloc::sync::Arc<awaken_runtime::runtime::Runtime>, alloc::sync::Arc<S>, alloc::sync::Arc<C>, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>>, core::option::Option<awaken_run_ingress::InferenceMaterializerFn>) -> Self where C: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::read::thread_reader::ThreadReader + awaken_agent_contract::thread::read::run_store::RunStore + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_run_ingress::DurableRunIngress<S>::with_recovery_projection(self, alloc::sync::Arc<awaken_run_ingress::RecoveryProjection>) -> Self
+pub fn awaken_run_ingress::DurableRunIngress<S>::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
 pub fn awaken_run_ingress::DurableRunIngress<S>::with_worker_credential_resolver(self, alloc::sync::Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>) -> Self
 pub fn awaken_run_ingress::DurableRunIngress<S>::worker(&self) -> &awaken_run_ingress::DispatchWorker<S>
 pub fn awaken_run_ingress::DurableRunIngress<S>::worker_handle(&self) -> alloc::sync::Arc<awaken_run_ingress::DispatchWorker<S>>
@@ -300,6 +303,8 @@ impl awaken_run_ingress::HttpDispatchQueue
 pub fn awaken_run_ingress::HttpDispatchQueue::new(impl core::convert::Into<alloc::string::String>, awaken_worker_contract::WorkerIdentity) -> Self
 pub fn awaken_run_ingress::HttpDispatchQueue::with_client(self, reqwest::async_impl::client::Client) -> Self
 pub fn awaken_run_ingress::HttpDispatchQueue::with_request_authorizer(self, alloc::sync::Arc<dyn awaken_run_ingress::WorkerRequestAuthorizer>) -> Self
+impl awaken_run_ingress::ClaimedStreamPublisher for awaken_run_ingress::HttpDispatchQueue
+pub fn awaken_run_ingress::HttpDispatchQueue::publish<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_run_ingress_contract::dispatch::DispatchQueue for awaken_run_ingress::HttpDispatchQueue
 pub fn awaken_run_ingress::HttpDispatchQueue::awaiting_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Id>, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress::HttpDispatchQueue::bind_sandbox<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_ingress_contract::dispatch::SettleOutcome, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -506,6 +511,10 @@ pub fn awaken_run_ingress::SqliteDispatchStore::relay<'life0, 'async_trait>(&'li
 pub fn awaken_run_ingress::SqliteDispatchStore::stage<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_run_ingress_contract::operational::DispatchOperationalFeed for awaken_run_ingress::SqliteDispatchStore
 pub fn awaken_run_ingress::SqliteDispatchStore::events_after<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::operational::DispatchCursor, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_run_ingress_contract::operational::DispatchPage, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_run_ingress::StreamEventRequest
+pub awaken_run_ingress::StreamEventRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
+pub awaken_run_ingress::StreamEventRequest::event: awaken_agent_contract::stream::event::Event
+pub awaken_run_ingress::StreamEventRequest::identity: awaken_worker_contract::WorkerIdentity
 pub struct awaken_run_ingress::SystemClock
 impl awaken_run_ingress::Clock for awaken_run_ingress::SystemClock
 pub fn awaken_run_ingress::SystemClock::now_ms(&self) -> u64
@@ -519,6 +528,10 @@ pub fn awaken_run_ingress::ClaimedRunCommit::commit_operation<'life0, 'async_tra
 impl awaken_run_ingress::ClaimedRunCommit for awaken_run_ingress::GuardedRunCommit
 pub fn awaken_run_ingress::GuardedRunCommit::commit<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress::GuardedRunCommit::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::ClaimedCommitCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_run_ingress::ClaimedStreamPublisher: core::marker::Send + core::marker::Sync
+pub fn awaken_run_ingress::ClaimedStreamPublisher::publish<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+impl awaken_run_ingress::ClaimedStreamPublisher for awaken_run_ingress::HttpDispatchQueue
+pub fn awaken_run_ingress::HttpDispatchQueue::publish<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_run_ingress_contract::dispatch::RunClaim, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_run_ingress::Clock: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress::Clock::now_ms(&self) -> u64
 impl awaken_run_ingress::Clock for awaken_run_ingress::ManualClock

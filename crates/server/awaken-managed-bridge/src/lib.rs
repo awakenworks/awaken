@@ -247,7 +247,7 @@ mod tests {
         // A URL-bound credential (static_bearer / mcp_oauth) has no `env_key`, so
         // the wire projection must omit `secret_name` entirely — not emit null.
         let source = CredentialSource {
-            id: awaken_credential_vault::CredentialSourceId("cred_1".into()),
+            id: awaken_credential_contract::CredentialSourceId("cred_1".into()),
             workspace_id: "ws1".into(),
             kind: CredentialKind::Vault,
             provider_id: None,

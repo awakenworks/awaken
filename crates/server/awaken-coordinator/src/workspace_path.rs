@@ -18,8 +18,7 @@
 //! data plane (flat `/v1/sessions`, workspace-from-key) is never prefixed.
 
 use awaken_authz_enforce::RequestTenancy;
-use awaken_protocol_managed::WorkspaceScope;
-use awaken_tenancy::ExecutionWorkspace;
+use awaken_tenancy::{ExecutionWorkspace, WorkspaceScope};
 use axum::Router;
 use axum::extract::{Path, Request, State};
 use axum::http::Uri;

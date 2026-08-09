@@ -43,8 +43,14 @@ pub fn contract_schemas() -> Map<String, Value> {
         "ProviderConnectionSummary",
         crate::ProviderConnectionSummary
     );
-    add!("ExecutableModelOption", crate::ExecutableModelOption);
-    add!("ExecutableModelReadiness", crate::ExecutableModelReadiness);
+    add!(
+        "ExecutableModelOption",
+        awaken_config_resolver::ExecutableModelOption
+    );
+    add!(
+        "ExecutableModelReadiness",
+        awaken_config_resolver::ExecutableModelReadiness
+    );
     add!("ProtocolEndpoint", awaken_model_catalog::ProtocolEndpoint);
     add!("Offering", awaken_model_catalog::Offering);
     add!("CatalogSyncResult", awaken_model_catalog::CatalogSyncResult);
@@ -79,7 +85,7 @@ pub fn contract_schemas() -> Map<String, Value> {
     // Authored aggregates (resolver-side domain types).
     add!("InferenceProfile", awaken_config_resolver::InferenceProfile);
     add!("AgentInputConfig", awaken_config_resolver::AgentInputConfig);
-    add!("ModelSelection", awaken_config_store::ModelSelection);
+    add!("ModelSelection", awaken_agent_config::ModelSelection);
 
     // Route request bodies (secret-in is write-only by construction).
     add!("EnterCredentialRequest", crate::EnterCredentialRequest);

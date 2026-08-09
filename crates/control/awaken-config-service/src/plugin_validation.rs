@@ -5,7 +5,7 @@
 //! never imports concrete plugins or duplicates validation and publication
 //! transformation rules.
 
-use awaken_config_store::AgentConfig;
+use awaken_agent_config::AgentConfig;
 
 #[async_trait::async_trait]
 pub trait PluginPublicationResolver: Send + Sync {

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "infrastructure"
+authority = "store-schema"
+
 [dependencies]
 awaken-scoped-migration.workspace = true
 

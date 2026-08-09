@@ -264,7 +264,8 @@ impl ApplicationSessionContributionApi for ManagedState {
 
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let mut session = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .get(&contribution.session_id)
                 .await
                 .ok_or(ApplicationSessionContributionFailure::NotFound)?;
@@ -460,7 +461,8 @@ mod tests {
         };
         let payload = awaken_session_contract::SessionMutationPayload::Replace(session.clone());
         state
-            .sessions_repo
+            .application
+            .session_repository()
             .create(
                 "workspace",
                 session,
@@ -635,7 +637,12 @@ mod tests {
             }
 
             if !matches!(rule, ContributionRule::MissingSession) {
-                let persisted = state.sessions_repo.get(&id).await.unwrap();
+                let persisted = state
+                    .application
+                    .session_repository()
+                    .get(&id)
+                    .await
+                    .unwrap();
                 let expected_revision = if matches!(
                     rule,
                     ContributionRule::Commit

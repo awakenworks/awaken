@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "application"
+authority = "config"
+
 # The config-authoring plane (ADR-0036/slice A), extracted from the data-plane host
 # so BOTH planes can share it without the authoring/authz plane (awaken-control)
 # depending on the execution host: the config service + its CRUD router, the
@@ -15,9 +20,7 @@ license.workspace = true
 awaken-agent-contract.workspace = true
 awaken-executable-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
-awaken-ext-permission = { workspace = true }
-awaken-ext-builtin-tools = { workspace = true }
-awaken-config-store = { workspace = true }
+awaken-agent-config.workspace = true
 awaken-tenancy = { workspace = true }
 awaken-config-resolver = { workspace = true }
 # Shared typed File/Memory/Repository binding vocabulary; contains no policy.

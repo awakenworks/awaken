@@ -4,15 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "interface"
+authority = "admin-config"
+
 [dependencies]
 awaken-model-catalog.workspace = true
 awaken-credential-vault.workspace = true
+awaken-credential-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-api-contract.workspace = true
 # The read/resolution face: the admin `inference/resolve` route dry-runs a binding
 # against the authored catalog through the resolver (secret-free result).
 awaken-config-resolver.workspace = true
-awaken-config-store = { workspace = true, optional = true }
+awaken-agent-config = { workspace = true, optional = true }
 # Failure disposition (Disposition) for the credential-cooldown ops route.
 awaken-runtime-contract.workspace = true
 awaken-store-runtime.workspace = true
@@ -61,8 +67,8 @@ schema = [
     "awaken-model-catalog/schema",
     "awaken-credential-vault/schema",
     "awaken-config-resolver/schema",
-    "dep:awaken-config-store",
-    "awaken-config-store/schema",
+    "dep:awaken-agent-config",
+    "awaken-agent-config/schema",
 ]
 
 [[example]]

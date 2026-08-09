@@ -1,7 +1,4 @@
 pub mod awaken_admin_config_api
-pub use awaken_admin_config_api::ExecutableModelOption
-pub use awaken_admin_config_api::ExecutableModelReadiness
-pub use awaken_admin_config_api::project_executable_models
 pub mod awaken_admin_config_api::schema
 pub const awaken_admin_config_api::schema::BUNDLE_ID: &str
 pub fn awaken_admin_config_api::schema::admin_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>
@@ -14,7 +11,7 @@ pub awaken_admin_config_api::ProbeStatus::Unknown
 pub awaken_admin_config_api::ProbeStatus::Valid
 pub enum awaken_admin_config_api::ProviderConnectionAuthentication
 pub awaken_admin_config_api::ProviderConnectionAuthentication::ApiKey(awaken_agent_contract::secret::RedactedString)
-pub awaken_admin_config_api::ProviderConnectionAuthentication::Existing(awaken_credential_vault::CredentialSourceId)
+pub awaken_admin_config_api::ProviderConnectionAuthentication::Existing(awaken_credential_contract::CredentialSourceId)
 pub awaken_admin_config_api::ProviderConnectionAuthentication::OAuth(awaken_credential_vault::OAuthHelper)
 pub enum awaken_admin_config_api::ProviderConnectionError
 pub awaken_admin_config_api::ProviderConnectionError::Catalog(awaken_model_catalog::repo::RepoError)
@@ -48,12 +45,14 @@ pub awaken_admin_config_api::AdminState::secrets: alloc::sync::Arc<dyn awaken_cr
 pub struct awaken_admin_config_api::ConfigCapabilitiesView
 pub awaken_admin_config_api::ConfigCapabilitiesView::identity: awaken_admin_config_api::IdentityCapabilityView
 pub awaken_admin_config_api::ConfigCapabilitiesView::models: awaken_admin_config_api::ModelSupplyCapabilityView
+pub awaken_admin_config_api::ConfigCapabilitiesView::surfaces: awaken_admin_config_api::ProductSurfaceCapabilityView
 impl core::default::Default for awaken_admin_config_api::ConfigCapabilitiesView
 pub fn awaken_admin_config_api::ConfigCapabilitiesView::default() -> Self
 pub struct awaken_admin_config_api::ConnectProviderCommand
 pub awaken_admin_config_api::ConnectProviderCommand::authentication: awaken_admin_config_api::ProviderConnectionAuthentication
 pub awaken_admin_config_api::ConnectProviderCommand::base_url: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::ConnectProviderCommand::configuration: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_admin_config_api::ConnectProviderCommand::credential_name: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::ConnectProviderCommand::dialect: awaken_model_catalog::ApiDialect
 pub awaken_admin_config_api::ConnectProviderCommand::display_name: alloc::string::String
 pub awaken_admin_config_api::ConnectProviderCommand::endpoint_name: core::option::Option<alloc::string::String>
@@ -64,7 +63,7 @@ pub awaken_admin_config_api::ConnectProviderCommand::workspace_id: alloc::string
 pub struct awaken_admin_config_api::CooldownRequest
 pub struct awaken_admin_config_api::CredentialSourceView
 pub awaken_admin_config_api::CredentialSourceView::env_key: core::option::Option<alloc::string::String>
-pub awaken_admin_config_api::CredentialSourceView::id: awaken_credential_vault::CredentialSourceId
+pub awaken_admin_config_api::CredentialSourceView::id: awaken_credential_contract::CredentialSourceId
 pub awaken_admin_config_api::CredentialSourceView::kind: awaken_credential_vault::CredentialKind
 pub awaken_admin_config_api::CredentialSourceView::oauth_helper: core::option::Option<awaken_credential_vault::OAuthHelper>
 pub awaken_admin_config_api::CredentialSourceView::protocol_endpoint_id: core::option::Option<alloc::string::String>
@@ -90,6 +89,11 @@ pub awaken_admin_config_api::ModelSupplyCapabilityView::profile_authoring_enable
 impl core::default::Default for awaken_admin_config_api::ModelSupplyCapabilityView
 pub fn awaken_admin_config_api::ModelSupplyCapabilityView::default() -> Self
 pub struct awaken_admin_config_api::PoolEligibleView
+pub struct awaken_admin_config_api::ProductSurfaceCapabilityView
+pub awaken_admin_config_api::ProductSurfaceCapabilityView::access_management: bool
+pub awaken_admin_config_api::ProductSurfaceCapabilityView::managed_runtime: bool
+impl core::default::Default for awaken_admin_config_api::ProductSurfaceCapabilityView
+pub fn awaken_admin_config_api::ProductSurfaceCapabilityView::default() -> Self
 pub struct awaken_admin_config_api::ProviderConnectionResult
 pub awaken_admin_config_api::ProviderConnectionResult::credential: awaken_credential_vault::CredentialSource
 pub awaken_admin_config_api::ProviderConnectionResult::endpoint: awaken_model_catalog::ProtocolEndpoint
@@ -125,7 +129,8 @@ pub struct awaken_admin_config_api::SaveProviderConnectionRequest
 pub awaken_admin_config_api::SaveProviderConnectionRequest::_legacy_endpoint_id: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::SaveProviderConnectionRequest::base_url: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::SaveProviderConnectionRequest::configuration: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_admin_config_api::SaveProviderConnectionRequest::credential_source_id: core::option::Option<awaken_credential_vault::CredentialSourceId>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::credential_name: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::SaveProviderConnectionRequest::credential_source_id: core::option::Option<awaken_credential_contract::CredentialSourceId>
 pub awaken_admin_config_api::SaveProviderConnectionRequest::dialect: awaken_model_catalog::ApiDialect
 pub awaken_admin_config_api::SaveProviderConnectionRequest::display_name: alloc::string::String
 pub awaken_admin_config_api::SaveProviderConnectionRequest::endpoint_name: core::option::Option<alloc::string::String>

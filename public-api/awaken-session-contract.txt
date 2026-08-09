@@ -141,6 +141,11 @@ pub fn awaken_session_contract::DreamModelInput::into_config(self) -> awaken_ses
 pub enum awaken_session_contract::DreamModelSpeed
 pub awaken_session_contract::DreamModelSpeed::Fast
 pub awaken_session_contract::DreamModelSpeed::Standard
+pub enum awaken_session_contract::DreamPolicyApplicationError
+pub awaken_session_contract::DreamPolicyApplicationError::BadRequest(alloc::string::String)
+pub awaken_session_contract::DreamPolicyApplicationError::Conflict(alloc::string::String)
+pub awaken_session_contract::DreamPolicyApplicationError::NotFound
+pub awaken_session_contract::DreamPolicyApplicationError::Unavailable(alloc::string::String)
 pub enum awaken_session_contract::DreamProcessStoreError
 pub awaken_session_contract::DreamProcessStoreError::Storage(alloc::string::String)
 pub enum awaken_session_contract::DreamStatus
@@ -419,6 +424,12 @@ pub awaken_session_contract::DreamOutput::memory_store_id: alloc::string::String
 pub struct awaken_session_contract::DreamPage
 pub awaken_session_contract::DreamPage::data: alloc::vec::Vec<awaken_session_contract::Dream>
 pub awaken_session_contract::DreamPage::next_page: core::option::Option<alloc::string::String>
+pub struct awaken_session_contract::DreamPolicy
+pub awaken_session_contract::DreamPolicy::config: awaken_session_contract::DreamPolicyConfig
+pub awaken_session_contract::DreamPolicy::last_completed_cutoff_at: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamPolicy::memory_store_id: alloc::string::String
+pub awaken_session_contract::DreamPolicy::next_due_at: core::option::Option<alloc::string::String>
+pub awaken_session_contract::DreamPolicy::object_type: &'static str
 pub struct awaken_session_contract::DreamPolicyConfig
 pub awaken_session_contract::DreamPolicyConfig::enabled: bool
 pub awaken_session_contract::DreamPolicyConfig::instructions: core::option::Option<alloc::string::String>
@@ -579,6 +590,7 @@ pub fn awaken_session_contract::PersistedSession::frozen_baseline(&self) -> core
 pub fn awaken_session_contract::PersistedSession::is_terminal(&self) -> bool
 pub fn awaken_session_contract::PersistedSession::model(&self) -> core::option::Option<&str>
 pub fn awaken_session_contract::PersistedSession::needs_reconciliation(&self) -> bool
+pub fn awaken_session_contract::PersistedSession::needs_resource_reconciliation(&self) -> bool
 pub fn awaken_session_contract::PersistedSession::needs_work_dispatch(&self) -> bool
 pub fn awaken_session_contract::PersistedSession::visible_mcp_servers(&self) -> alloc::vec::Vec<awaken_session_contract::VisibleMcpServer>
 pub struct awaken_session_contract::ResolvedInput
@@ -815,10 +827,16 @@ pub awaken_session_contract::VisibleMcpServer::name: alloc::string::String
 pub awaken_session_contract::VisibleMcpServer::prompts_as_skills: bool
 pub awaken_session_contract::VisibleMcpServer::target: awaken_agent_contract::mcp_target::McpTarget
 pub const awaken_session_contract::AGENT_TOOLSET_TOOL_IDS: [&str; 7]
+pub const awaken_session_contract::DREAM_MAX_INSTRUCTIONS_CHARS: usize
+pub const awaken_session_contract::DREAM_MAX_SESSIONS: usize
+pub const awaken_session_contract::DREAM_SUPPORTED_MODELS: &[&str]
 pub trait awaken_session_contract::ApplicationSessionContributionApi: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::ApplicationSessionContributionApi::contribute_application<'life0, 'async_trait>(&'life0 self, awaken_session_contract::ApplicationSessionContribution) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::ApplicationSessionContributionReceipt, awaken_session_contract::ApplicationSessionContributionFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_contract::ApplicationSessionControl: awaken_session_contract::ApplicationSessionContributionApi + awaken_session_contract::SessionRealizationControl
 impl<T> awaken_session_contract::ApplicationSessionControl for T where T: awaken_session_contract::ApplicationSessionContributionApi + awaken_session_contract::SessionRealizationControl
+pub trait awaken_session_contract::DreamPolicyApplication: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::DreamPolicyApplication::policy(&self, &str, &str) -> core::result::Result<awaken_session_contract::DreamPolicy, awaken_session_contract::DreamPolicyApplicationError>
+pub fn awaken_session_contract::DreamPolicyApplication::set_policy(&self, &str, &str, awaken_session_contract::DreamPolicyConfig) -> core::result::Result<(), awaken_session_contract::DreamPolicyApplicationError>
 pub trait awaken_session_contract::DreamProcessStore: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::DreamProcessStore::claim_dream_policy(&self, &awaken_session_contract::DreamPolicyRecord, awaken_session_contract::DreamPolicyRecord, awaken_session_contract::DreamProcessRecord) -> core::result::Result<bool, awaken_session_contract::DreamProcessStoreError>
 pub fn awaken_session_contract::DreamProcessStore::compare_and_swap_dream_policy(&self, core::option::Option<&awaken_session_contract::DreamPolicyRecord>, awaken_session_contract::DreamPolicyRecord) -> core::result::Result<bool, awaken_session_contract::DreamProcessStoreError>

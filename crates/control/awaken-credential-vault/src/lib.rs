@@ -16,24 +16,11 @@
 pub mod availability;
 #[cfg(feature = "oauth-command")]
 pub mod oauth;
-#[cfg(feature = "postgres")]
-pub mod postgres;
 pub mod repo;
-pub mod schema;
-#[cfg(feature = "sealed-aead")]
-pub mod sealed;
-#[cfg(feature = "sqlite")]
-pub mod sqlite;
 
 pub use availability::{AvailabilityLedger, AvailabilityState};
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
-#[cfg(feature = "postgres")]
-pub use postgres::{PostgresCredentialRepo, PostgresSealedBlobStore};
-#[cfg(feature = "sealed-aead")]
-pub use sealed::{SealedAeadSecretStore, generate_seal_key_hex, parse_seal_key};
-#[cfg(feature = "sqlite")]
-pub use sqlite::{SqliteCredentialRepo, SqliteSealedBlobStore};
 
 use std::collections::BTreeMap;
 #[cfg(any(test, feature = "test-support"))]
@@ -55,11 +42,7 @@ pub struct SecretRef(pub String);
 pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
 pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
-/// Stable id of a [`CredentialSource`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(transparent)]
-pub struct CredentialSourceId(pub String);
+use awaken_credential_contract::CredentialSourceId;
 
 /// Non-secret identity of material owned by one Worker-local driver. The
 /// credential source id is derived from this tuple for idempotent registration;
