@@ -18,12 +18,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, rotate_credential_materials_exact,
 };
 use awaken_credential_vault::{
-    CredentialSourceId, CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT,
-    SecretRef, SecretStore,
+    CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
 use awaken_ext_skills::SkillRegistry as _;

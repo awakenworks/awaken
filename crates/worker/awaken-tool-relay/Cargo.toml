@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "worker"
+layer = "infrastructure"
+authority = "tool-relay"
+
 [features]
 test-support = []
 

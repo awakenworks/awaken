@@ -4,6 +4,9 @@
 //! the only status/readiness projections consumed by setup and selection UIs,
 //! avoiding frontend-derived connection and executable-model state.
 
+#[cfg(test)]
+use awaken_config_resolver::ExecutableModelReadiness;
+use awaken_config_resolver::{ExecutableModelOption, project_executable_models};
 use awaken_credential_vault::CredentialStatus;
 use awaken_model_catalog::{CatalogSyncResult, OfferingStatus, ProtocolEndpoint, Provider};
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
@@ -49,10 +52,6 @@ pub struct ProviderConnectionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen_at_unix_ms: Option<u64>,
 }
-
-pub use awaken_config_resolver::{
-    ExecutableModelOption, ExecutableModelReadiness, project_executable_models,
-};
 
 #[derive(serde::Deserialize)]
 pub(super) struct ListProviderConnectionsQuery {
@@ -201,7 +200,8 @@ pub(super) async fn list_executable_models(
 
 #[cfg(test)]
 mod tests {
-    use awaken_credential_vault::{CredentialKind, CredentialSource, CredentialSourceId};
+    use awaken_credential_contract::CredentialSourceId;
+    use awaken_credential_vault::{CredentialKind, CredentialSource};
     use awaken_model_catalog::{
         ApiDialect, Offering, OfferingSource, ProtocolEndpointId, ProviderCatalog, ProviderId,
     };

@@ -106,9 +106,11 @@ fn terminal_pod_preconditions(pod: &Pod) -> Option<Preconditions> {
     if !terminal || pod.metadata.deletion_timestamp.is_some() {
         return None;
     }
+    let uid = pod.metadata.uid.clone()?;
+    let resource_version = pod.metadata.resource_version.clone()?;
     Some(Preconditions {
-        uid: pod.metadata.uid.clone(),
-        resource_version: pod.metadata.resource_version.clone(),
+        uid: Some(uid),
+        resource_version: Some(resource_version),
     })
 }
 
@@ -131,38 +133,85 @@ pub(super) fn pod_readiness(pod: &Pod) -> PodReadiness {
         return PodReadiness::Failed(format!("Pod reached terminal phase {phase}"));
     }
 
-    let agent = status
-        .and_then(|status| status.container_statuses.as_ref())
-        .and_then(|statuses| statuses.iter().find(|status| status.name == "agent"));
-    if phase == "Running"
-        && agent.is_some_and(|status| {
-            status.ready
-                && status
+    let Some(containers) = status.and_then(|status| status.container_statuses.as_ref()) else {
+        return PodReadiness::Waiting(format!("Pod phase is {phase}"));
+    };
+    let required = match pod
+        .spec
+        .as_ref()
+        .map(|spec| spec.containers.as_slice())
+        .filter(|declared| !declared.is_empty())
+    {
+        Some(declared) => {
+            let mut required = Vec::with_capacity(declared.len());
+            for expected in declared {
+                let Some(status) = containers
+                    .iter()
+                    .find(|status| status.name == expected.name)
+                else {
+                    return PodReadiness::Waiting(format!(
+                        "{} container has no status yet",
+                        expected.name
+                    ));
+                };
+                required.push(status);
+            }
+            required
+        }
+        None => containers.iter().collect(),
+    };
+    let agent = required.iter().find(|status| status.name == "agent");
+    for container in &required {
+        let state = container.state.as_ref();
+        if let Some(terminated) = state.and_then(|state| state.terminated.as_ref()) {
+            let reason = terminated.reason.as_deref().unwrap_or("terminated");
+            return PodReadiness::Failed(format!(
+                "{} container {reason} with exit code {}",
+                container.name, terminated.exit_code
+            ));
+        }
+        if let Some(waiting) = state.and_then(|state| state.waiting.as_ref()) {
+            let reason = waiting.reason.as_deref().unwrap_or("waiting");
+            let message = waiting.message.as_deref().unwrap_or_default();
+            if matches!(
+                reason,
+                "ErrImagePull"
+                    | "ImagePullBackOff"
+                    | "InvalidImageName"
+                    | "CreateContainerConfigError"
+                    | "CreateContainerError"
+                    | "RunContainerError"
+                    | "ContainerCannotRun"
+                    | "CrashLoopBackOff"
+            ) {
+                return PodReadiness::Failed(format!(
+                    "{} container {reason}: {message}",
+                    container.name
+                ));
+            }
+        }
+    }
+    let all_ready = !required.is_empty()
+        && required.iter().all(|container| {
+            container.ready
+                && container
                     .state
                     .as_ref()
                     .is_some_and(|state| state.running.is_some())
-        })
-    {
+        });
+    if phase == "Running" && agent.is_some() && all_ready {
         return PodReadiness::Ready;
     }
-    if let Some(waiting) = agent
-        .and_then(|status| status.state.as_ref())
-        .and_then(|state| state.waiting.as_ref())
-    {
+    if let Some((container, waiting)) = required.iter().find_map(|container| {
+        container
+            .state
+            .as_ref()
+            .and_then(|state| state.waiting.as_ref())
+            .map(|waiting| (container, waiting))
+    }) {
         let reason = waiting.reason.as_deref().unwrap_or("waiting");
         let message = waiting.message.as_deref().unwrap_or_default();
-        if matches!(
-            reason,
-            "ErrImagePull"
-                | "ImagePullBackOff"
-                | "InvalidImageName"
-                | "CreateContainerConfigError"
-                | "CreateContainerError"
-                | "RunContainerError"
-        ) {
-            return PodReadiness::Failed(format!("agent container {reason}: {message}"));
-        }
-        return PodReadiness::Waiting(format!("agent container {reason}: {message}"));
+        return PodReadiness::Waiting(format!("{} container {reason}: {message}", container.name));
     }
     PodReadiness::Waiting(format!("Pod phase is {phase}"))
 }
@@ -211,7 +260,8 @@ pub(super) async fn await_pod_deleted(api: &Api<Pod>, name: &str) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use k8s_openapi::api::core::v1::{
-        ContainerState, ContainerStateRunning, ContainerStateWaiting, ContainerStatus, PodStatus,
+        Container, ContainerState, ContainerStateRunning, ContainerStateTerminated,
+        ContainerStateWaiting, ContainerStatus, PodSpec, PodStatus,
     };
 
     use super::*;
@@ -243,12 +293,45 @@ mod tests {
         }
     }
 
+    fn sidecar(
+        name: &str,
+        ready: bool,
+        waiting: Option<&str>,
+        terminated: Option<i32>,
+    ) -> ContainerStatus {
+        ContainerStatus {
+            name: name.into(),
+            ready,
+            image: "sidecar:test".into(),
+            image_id: String::new(),
+            restart_count: 0,
+            started: Some(ready),
+            state: Some(ContainerState {
+                running: ready.then(ContainerStateRunning::default),
+                waiting: waiting.map(|reason| ContainerStateWaiting {
+                    reason: Some(reason.into()),
+                    ..Default::default()
+                }),
+                terminated: terminated.map(|exit_code| ContainerStateTerminated {
+                    exit_code,
+                    reason: Some("Error".into()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn pod_readiness_distinguishes_ready_transient_and_terminal_states() {
         /* Cause/effect decision table. Causes: C1 Running+agent-ready; C2 Pending
          * or nonterminal container wait; C3 image/config wait failure; C4 terminal
-         * phase. Effects: E1 Ready; E2 Waiting/Provisioning; E3 Failed with reason.
-         * Rules: P1 C1=>E1; P2 C2=>E2; P3 C3|C4=>E3. */
+         * phase; C5 every required sidecar is running+ready; C6 a sidecar is
+         * waiting fatally or has terminated; C7 a declared sidecar has no status
+         * yet. Effects: E1 Ready; E2
+         * Waiting/Provisioning; E3 Failed with the owning container and reason.
+         * Rules: P1 C1+C5=>E1; P2 C2=>E2; P3 C3|C4|C6=>E3;
+         * P4 C1+(!C5|C7)=>E2. */
         assert_eq!(
             pod_readiness(&pod("Running", true, None)),
             PodReadiness::Ready,
@@ -275,6 +358,79 @@ mod tests {
             ),
             "P3 phase"
         );
+
+        let mut all_ready = pod("Running", true, None);
+        all_ready
+            .status
+            .as_mut()
+            .unwrap()
+            .container_statuses
+            .as_mut()
+            .unwrap()
+            .push(sidecar("memoryd-0", true, None, None));
+        assert_eq!(pod_readiness(&all_ready), PodReadiness::Ready, "P1");
+
+        let mut starting_sidecar = pod("Running", true, None);
+        starting_sidecar
+            .status
+            .as_mut()
+            .unwrap()
+            .container_statuses
+            .as_mut()
+            .unwrap()
+            .push(sidecar(
+                "input-projector",
+                false,
+                Some("ContainerCreating"),
+                None,
+            ));
+        assert!(
+            matches!(pod_readiness(&starting_sidecar), PodReadiness::Waiting(_)),
+            "P4 an agent cannot make an incomplete Pod ready"
+        );
+
+        let mut missing_sidecar_status = pod("Running", true, None);
+        missing_sidecar_status.spec = Some(PodSpec {
+            containers: vec![
+                Container {
+                    name: "agent".into(),
+                    ..Default::default()
+                },
+                Container {
+                    name: "memoryd-0".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        assert!(
+            matches!(
+                pod_readiness(&missing_sidecar_status),
+                PodReadiness::Waiting(reason) if reason.contains("memoryd-0")
+            ),
+            "P4 a declared sidecar without status cannot be ignored"
+        );
+
+        for (name, waiting, terminated) in [
+            ("memoryd-0", Some("CrashLoopBackOff"), None),
+            ("input-projector", None, Some(9)),
+        ] {
+            let mut failed_sidecar = pod("Running", true, None);
+            failed_sidecar
+                .status
+                .as_mut()
+                .unwrap()
+                .container_statuses
+                .as_mut()
+                .unwrap()
+                .push(sidecar(name, false, waiting, terminated));
+            let result = pod_readiness(&failed_sidecar);
+            assert!(matches!(result, PodReadiness::Failed(_)), "P3 {result:?}");
+            assert!(
+                matches!(result, PodReadiness::Failed(reason) if reason.contains(name)),
+                "failure detection identifies the owning sidecar"
+            );
+        }
     }
 
     #[test]
@@ -298,10 +454,12 @@ mod tests {
     #[test]
     fn only_terminal_pods_are_safe_to_replace_with_identity_preconditions() {
         /* Recovery decision table. R1 Pending/Running => preserve; R2 a Pod
-         * already being deleted => preserve; R3 Failed/Succeeded => replace,
-         * guarded by the exact observed UID/resourceVersion. This covers the
+         * already being deleted => preserve; R3 Failed/Succeeded with complete
+         * UID/resourceVersion => replace under that exact fence; R4 terminal but
+         * missing either identity coordinate => preserve. This covers the
          * DiskPressure eviction that previously left deterministic names stuck
-         * behind `different realization` forever. */
+         * behind `different realization` forever without permitting an unfenced
+         * same-name deletion. */
         for phase in ["Pending", "Running"] {
             let mut existing = pod(phase, phase == "Running", None);
             existing.metadata.uid = Some("live-uid".into());
@@ -324,6 +482,18 @@ mod tests {
                     resource_version: Some("21413".into()),
                 }),
                 "R3 {phase}"
+            );
+        }
+
+        for missing in ["uid", "resourceVersion"] {
+            let mut terminal = pod("Failed", false, None);
+            terminal.metadata.uid = (missing != "uid").then(|| "observed-uid".into());
+            terminal.metadata.resource_version =
+                (missing != "resourceVersion").then(|| "21413".into());
+            assert_eq!(
+                terminal_pod_preconditions(&terminal),
+                None,
+                "R4 missing {missing} must preserve the Pod instead of issuing an unfenced delete"
             );
         }
     }

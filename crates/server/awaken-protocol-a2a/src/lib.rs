@@ -26,7 +26,6 @@ pub mod types;
 mod v1;
 mod version;
 
-pub use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
 pub use card::agent_card;
 pub use client::{ClientError, HttpTransport, Response, Transport};
 pub use router::{router, router_with_storage_root};

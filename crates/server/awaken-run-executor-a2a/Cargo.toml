@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "worker"
+layer = "infrastructure"
+authority = "run-executor-a2a"
+
 [dependencies]
 awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true

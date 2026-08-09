@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "infrastructure"
+authority = "session"
+
 [dependencies]
 awaken-agent-contract.workspace = true
 # The ManagedSessionRepository port + PersistedSession this crate implements a durable

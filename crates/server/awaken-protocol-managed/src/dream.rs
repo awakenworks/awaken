@@ -5,8 +5,6 @@ use awaken_dream_application::DreamSessionSource;
 use awaken_session_contract::DreamUsage;
 use chrono::DateTime;
 
-pub use awaken_dream_application::BUILT_IN_DREAM_AGENT_ID;
-
 #[async_trait]
 impl DreamSessionSource for crate::ManagedState {
     async fn eligible_sessions(

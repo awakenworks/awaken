@@ -3,7 +3,7 @@
 //! Domain mutation and publication remain owned by [`ConfigPlane`]; this module
 //! only binds request scope, maps wire JSON, and translates outcomes to HTTP.
 
-use awaken_config_store::{ConfigWrite, DEFAULT_SCOPE};
+use awaken_agent_config::{ConfigWrite, DEFAULT_SCOPE};
 use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
 use awaken_tenancy::{ExecutionWorkspace, ScopeId};
 use axum::extract::{Path, State};
@@ -602,7 +602,7 @@ mod publication_projection_tests {
 
         let mut non_native = agent_config("agent-acp");
         non_native.model_binding =
-            awaken_config_store::ModelSelection::pinned("p", "m", "acp:claude");
+            awaken_agent_config::ModelSelection::pinned("p", "m", "acp:claude");
         plane.put(&owner, &non_native).await.unwrap();
         let non_native = plane.publish(&owner, "agent-acp").await.unwrap();
         assert_eq!(

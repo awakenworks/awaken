@@ -73,7 +73,7 @@ impl awaken_config_service::ModelPublicationResolver for ScenarioHostModelResolv
     async fn resolve_models(
         &self,
         _workspace: &awaken_tenancy::ScopeId,
-        selection: &awaken_config_store::ModelSelection,
+        selection: &awaken_agent_config::ModelSelection,
         fallbacks: &[ModelBinding],
     ) -> Result<
         awaken_config_service::ResolvedPublicationModels,
@@ -125,7 +125,7 @@ impl awaken_config_service::ModelPublicationResolver for DistributedProviderPubl
     async fn resolve_models(
         &self,
         workspace: &awaken_tenancy::ScopeId,
-        selection: &awaken_config_store::ModelSelection,
+        selection: &awaken_agent_config::ModelSelection,
         fallbacks: &[ModelBinding],
     ) -> Result<
         awaken_config_service::ResolvedPublicationModels,
@@ -200,14 +200,14 @@ mod tests {
         let resolved = resolver
             .resolve_models(
                 &workspace,
-                &awaken_config_store::ModelSelection::Pinned(explicit.clone()),
+                &awaken_agent_config::ModelSelection::Pinned(explicit.clone()),
                 &[],
             )
             .await
             .expect("M1 explicit model");
         assert_eq!(resolved.primary.binding, explicit, "M1");
         let resolved = resolver
-            .resolve_models(&workspace, &awaken_config_store::ModelSelection::Auto, &[])
+            .resolve_models(&workspace, &awaken_agent_config::ModelSelection::Auto, &[])
             .await
             .expect("M2 Auto model");
         assert_eq!(resolved.primary.binding.model_ref, "echo", "M2");
@@ -217,7 +217,7 @@ mod tests {
         ));
         assert!(
             empty
-                .resolve_models(&workspace, &awaken_config_store::ModelSelection::Auto, &[])
+                .resolve_models(&workspace, &awaken_agent_config::ModelSelection::Auto, &[])
                 .await
                 .is_err(),
             "M3"
@@ -234,7 +234,7 @@ mod tests {
         let resolver =
             DistributedProviderPublicationResolver::new(scenario_model_catalog("echo").await);
         let resolved = resolver
-            .resolve_models(&workspace, &awaken_config_store::ModelSelection::Auto, &[])
+            .resolve_models(&workspace, &awaken_agent_config::ModelSelection::Auto, &[])
             .await
             .expect("P1 selected Provider model");
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
@@ -257,7 +257,7 @@ mod tests {
         ));
         assert!(
             empty
-                .resolve_models(&workspace, &awaken_config_store::ModelSelection::Auto, &[])
+                .resolve_models(&workspace, &awaken_agent_config::ModelSelection::Auto, &[])
                 .await
                 .is_err(),
             "P3"

@@ -81,7 +81,7 @@ pub(super) fn read_or_create_local_key(path: &Path) -> Result<String, String> {
         fs::create_dir_all(parent)
             .map_err(|error| format!("create {}: {error}", parent.display()))?;
     }
-    let encoded = awaken_credential_vault::generate_seal_key_hex();
+    let encoded = awaken_credential_store::generate_seal_key_hex();
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

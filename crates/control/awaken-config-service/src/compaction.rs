@@ -4,7 +4,7 @@
 /// Resolution calls this once; neither runtime realization derives it again.
 pub(crate) fn apply_compaction(
     plugin_config: &mut std::collections::BTreeMap<String, serde_json::Value>,
-    strategy: &awaken_config_store::CompactionStrategy,
+    strategy: &awaken_agent_config::CompactionStrategy,
     context_window: Option<u32>,
     max_output_tokens: Option<u32>,
 ) {

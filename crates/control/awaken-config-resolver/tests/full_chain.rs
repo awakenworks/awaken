@@ -8,9 +8,10 @@ use std::collections::HashMap;
 
 use awaken_agent_contract::RedactedString;
 use awaken_config_resolver::resolve_inference;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::{
     CredentialBinding, CredentialCreateParams, CredentialKind, CredentialSource,
-    CredentialSourceId, InMemorySecretStore, create_source,
+    InMemorySecretStore, create_source,
 };
 use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderCatalog,

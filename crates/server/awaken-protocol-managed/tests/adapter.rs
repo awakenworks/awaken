@@ -1972,7 +1972,7 @@ async fn caller_fault_is_400_with_invalid_request_envelope() {
 
 // --- Tenant session isolation (ADR-0051): the ownership guard ----------------
 
-use awaken_protocol_managed::WorkspaceScope;
+use awaken_tenancy::WorkspaceScope;
 
 /// Create a session with an edge-resolved owner scope stamped as `WorkspaceScope`
 /// (what the ingress guard does), returning its id.

@@ -60,13 +60,13 @@ CONFIG_STORE_SQLITE_SOURCE = "crates/control/awaken-config-store/src/sqlite.rs"
 ADMIN_CONFIG_SOURCE = "crates/control/awaken-admin-config-api/src/lib.rs"
 ADMIN_CONFIG_SQLITE_SOURCE = "crates/control/awaken-admin-config-api/src/sqlite.rs"
 MODEL_CATALOG_REPO_SOURCE = "crates/control/awaken-model-catalog/src/repo.rs"
-MODEL_CATALOG_SQLITE_SOURCE = "crates/control/awaken-model-catalog/src/sqlite.rs"
+MODEL_CATALOG_SQLITE_SOURCE = "crates/stores/awaken-model-catalog-store/src/sqlite.rs"
 CONFIG_RESOLVER_SOURCE = "crates/control/awaken-config-resolver/src/lib.rs"
 CONFIG_RESOLVER_STORES_SOURCE = "crates/control/awaken-config-resolver/src/stores.rs"
 CREDENTIAL_REPO_SOURCE = "crates/control/awaken-credential-vault/src/repo.rs"
 CREDENTIAL_VAULT_SOURCE = "crates/control/awaken-credential-vault/src/lib.rs"
-CREDENTIAL_SQLITE_SOURCE = "crates/control/awaken-credential-vault/src/sqlite.rs"
-CREDENTIAL_SEALED_SOURCE = "crates/control/awaken-credential-vault/src/sealed.rs"
+CREDENTIAL_SQLITE_SOURCE = "crates/stores/awaken-credential-store/src/sqlite.rs"
+CREDENTIAL_SEALED_SOURCE = "crates/stores/awaken-credential-store/src/sealed.rs"
 WEBHOOK_DISPATCH_SOURCE = "crates/server/awaken-webhook/src/dispatch.rs"
 WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
 
@@ -76,11 +76,13 @@ WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
 FORBIDDEN_WORKER_DEPENDENCIES = {
     "awaken-admin-config-api",
     "awaken-config-store",
+    "awaken-credential-store",
     "awaken-credential-vault",
     "awaken-executable-agent-catalog",
     "awaken-file-store",
     "awaken-memory-store",
     "awaken-model-catalog",
+    "awaken-model-catalog-store",
     "awaken-resource-store",
     "awaken-session-store",
     "awaken-skill-store",

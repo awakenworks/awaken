@@ -108,7 +108,25 @@ impl RuntimeCapability {
 struct CapabilityState {
     tools: Vec<ToolDescriptor>,
     plugins: Vec<PluginCapability>,
+    policies: Vec<PolicyCapability>,
     runtimes: Arc<dyn RuntimeCapabilitySource>,
+}
+
+/// One extension-owned policy schema projected by the config API.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolicyCapability {
+    pub id: String,
+    pub config_schema: Value,
+}
+
+impl PolicyCapability {
+    #[must_use]
+    pub fn new(id: impl Into<String>, config_schema: Value) -> Self {
+        Self {
+            id: id.into(),
+            config_schema,
+        }
+    }
 }
 
 /// Read port for current runtime observations. Discovery remains owned by the
@@ -139,11 +157,13 @@ pub fn static_runtime_capabilities(
 pub fn capabilities_router(
     tools: Vec<ToolDescriptor>,
     plugins: Vec<PluginCapability>,
+    policies: Vec<PolicyCapability>,
     runtimes: Vec<RuntimeCapability>,
 ) -> Router {
     capabilities_router_with_source(
         tools,
         plugins,
+        policies,
         Arc::new(StaticRuntimeCapabilities(runtimes)),
     )
 }
@@ -151,6 +171,7 @@ pub fn capabilities_router(
 pub fn capabilities_router_with_source(
     tools: Vec<ToolDescriptor>,
     plugins: Vec<PluginCapability>,
+    policies: Vec<PolicyCapability>,
     runtimes: Arc<dyn RuntimeCapabilitySource>,
 ) -> Router {
     Router::new()
@@ -158,6 +179,7 @@ pub fn capabilities_router_with_source(
         .with_state(Arc::new(CapabilityState {
             tools,
             plugins,
+            policies,
             runtimes,
         }))
 }
@@ -185,7 +207,7 @@ async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Val
         "runtime_version": env!("CARGO_PKG_VERSION"),
         "tools": tool_caps,
         "plugins": plugin_catalog(&state.plugins),
-        "policies": policy_catalog(),
+        "policies": policy_catalog(&state.policies),
         "runtimes": runtime_caps,
         "sandbox_execution_policy": sandbox_execution_policy_capability(),
         "dreams": dream_capability(),
@@ -229,11 +251,11 @@ pub fn sandbox_execution_policy_capability() -> Value {
 /// section (default behavior + ordered rules) drives the thread's authorization
 /// gate (see runtime-host `config::config_permission_ruleset`). Kept separate from
 /// `plugins` so the console renders a dedicated policy editor, not an enable toggle.
-fn policy_catalog() -> Vec<Value> {
-    vec![policy_cap(
-        "permission",
-        awaken_ext_permission::permission_config_schema(),
-    )]
+fn policy_catalog(policies: &[PolicyCapability]) -> Vec<Value> {
+    policies
+        .iter()
+        .map(|policy| policy_cap(&policy.id, policy.config_schema.clone()))
+        .collect()
 }
 
 fn policy_cap(id: &str, config_schema: Value) -> Value {
@@ -393,8 +415,14 @@ mod tests {
     }
 
     #[test]
-    fn policy_catalog_exposes_the_permission_schema() {
-        let policies = policy_catalog();
+    fn policy_catalog_projects_only_injected_policy_schemas() {
+        // Causes: C1 one injected policy; C2 no injected policies. Effects:
+        // E1 exact id/schema projection; E2 no application-owned fallback row.
+        // R1 C1 -> E1; R2 C2 -> E2.
+        let policies = policy_catalog(&[PolicyCapability::new(
+            "permission",
+            json!({"type": "object"}),
+        )]);
         let perm = policies
             .iter()
             .find(|p| p["id"] == "permission")
@@ -404,6 +432,7 @@ mod tests {
             "carries an object schema"
         );
         assert_eq!(perm["config_section"], "permission");
+        assert!(policy_catalog(&[]).is_empty(), "R2");
     }
 
     #[test]

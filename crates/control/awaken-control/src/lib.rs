@@ -67,10 +67,10 @@ pub use crate::worker_stores::{
 };
 
 use awaken_admin_config_api::{AdminState, CredentialProbe};
+use awaken_agent_config::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
 use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_config_resolver::{InferenceProfileStore, WebhookStore};
 use awaken_config_service::{ConfigPlane, ManagementAuditPlane, config_router};
-use awaken_config_store::{AuditedConfigWrite, DEFAULT_SCOPE, ManagementAuditRecord};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_model_catalog::repo::CatalogRepo;
@@ -216,7 +216,7 @@ pub struct ControlRouterInput {
     /// The config authoring plane (scope edge over the config service).
     pub plane: ConfigPlane,
     /// Model selection used to publish or recover the reserved Console Assistant.
-    pub assistant_model_selection: Option<awaken_config_store::ModelSelection>,
+    pub assistant_model_selection: Option<awaken_agent_config::ModelSelection>,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
     pub global_tools: Vec<ToolDescriptor>,
     /// The exact installable plugin catalog composed by the runtime host.
@@ -342,8 +342,15 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let agents = agents_router(Arc::new(agent_state));
     // Capability snapshot (`GET /v1/capabilities`): the host's tool descriptors +
     // installable plugins (with config schema) so the console authors data-driven.
-    let capabilities =
-        awaken_config_service::capabilities_router_with_source(global_tools, plugins, runtimes);
+    let capabilities = awaken_config_service::capabilities_router_with_source(
+        global_tools,
+        plugins,
+        vec![awaken_config_service::PolicyCapability::new(
+            "permission",
+            awaken_ext_permission::permission_config_schema(),
+        )],
+        runtimes,
+    );
     let fallback_workspace = platform_workspace;
     let workspace_context = Router::new().route(
         "/v1/config/workspace-context",

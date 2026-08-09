@@ -32,7 +32,9 @@ use tokio::sync::mpsc;
 
 use crate::export::{McpExportedTool, ToolExec, ToolExportSource};
 
-pub use awaken_mcp_server_core::{NotifySink, NullSink};
+use awaken_mcp_server_core::NotifySink;
+#[cfg(test)]
+use awaken_mcp_server_core::NullSink;
 
 /// The awaken-owned context presented to the neutral server port. External calls
 /// currently start with empty state; keeping it explicit prevents the core from

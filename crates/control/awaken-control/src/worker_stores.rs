@@ -42,11 +42,11 @@ pub async fn open_inference_materialization_stores(
     ) = match &cfg.credential {
         StoreBackend::Sqlite(p) => {
             let file = path(p);
-            let (creds, blobs) = awaken_credential_vault::sqlite::open_migrated_pair(&file)
+            let (creds, blobs) = awaken_credential_store::sqlite::open_migrated_pair(&file)
                 .expect("open credential sqlite");
             (
                 Arc::new(creds),
-                Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
+                Arc::new(awaken_credential_store::SealedAeadSecretStore::over(
                     key,
                     Arc::new(blobs),
                 )),
@@ -54,16 +54,16 @@ pub async fn open_inference_materialization_stores(
         }
         StoreBackend::Postgres(url) => {
             let creds = Arc::new(
-                awaken_credential_vault::PostgresCredentialRepo::connect(url)
+                awaken_credential_store::PostgresCredentialRepo::connect(url)
                     .await
                     .expect("connect credential postgres"),
             );
-            let blobs = awaken_credential_vault::PostgresSealedBlobStore::connect(url)
+            let blobs = awaken_credential_store::PostgresSealedBlobStore::connect(url)
                 .await
                 .expect("connect credential sealed-blob postgres");
             (
                 creds,
-                Arc::new(awaken_credential_vault::SealedAeadSecretStore::over(
+                Arc::new(awaken_credential_store::SealedAeadSecretStore::over(
                     key,
                     Arc::new(blobs),
                 )),

@@ -7,10 +7,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{CredentialRepo, enter_credential_idempotent};
 use awaken_credential_vault::{
-    CredentialCreateParams, CredentialError, CredentialKind, CredentialSource, CredentialSourceId,
-    CredentialStatus, OAuthHelper, SecretStore,
+    CredentialCreateParams, CredentialError, CredentialKind, CredentialSource, CredentialStatus,
+    OAuthHelper, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{

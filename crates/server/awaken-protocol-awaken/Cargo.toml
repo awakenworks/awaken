@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "interface"
+authority = "protocol-awaken"
+
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-environment-application.workspace = true

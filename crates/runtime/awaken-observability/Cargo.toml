@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "runtime"
+layer = "infrastructure"
+authority = "observability"
+
 # Cross-cutting telemetry infrastructure (NOT a runtime `ext-*`): the process-global
 # `tracing` subscriber, optional typed OTLP / trace-file span export, the W3C
 # `traceparent` propagator, and the axum ingress middleware that roots each request

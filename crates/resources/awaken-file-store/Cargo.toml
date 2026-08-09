@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "resources"
+layer = "infrastructure"
+authority = "file"
+
 [dependencies]
 # Port-only contract: the FileStore trait + FileStoreError live here; this crate
 # implements them and re-exports for backward-compatible paths.

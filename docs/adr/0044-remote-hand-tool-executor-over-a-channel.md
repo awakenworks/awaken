@@ -152,7 +152,7 @@ Unix) sufficient to prove the split end to end.
 | Model element | Value objects `HandRequest` / `HandReply` / `HandResult`; reuses `ToolCall` / `ToolOutput` |
 | Port / repository | `ToolExecutor` (existing, promoted to used); `HandServer` (`serve_hand`) |
 | Owning crate | new `awaken-tool-relay` (client `RemoteToolExecutor` + `serve_hand`); port unchanged in `awaken-runtime-contract` |
-| Guardrail + enforcer | **G33** (new): the hand build links no model/commit/store — `deny.toml` dependency-direction + `scripts/ci/check_crate_boundaries.py` |
+| Guardrail + enforcer | **G33** (new): the hand build links no model/commit/store — metadata-derived `scripts/ci/check_crate_boundaries.py` |
 | First vertical slice | `RemoteToolExecutor` ⇄ in-process duplex ⇄ `serve_hand` running only `bash`; kernel unchanged; one e2e runs `bash` out-of-process and commits its `ToolOutput` in the brain, then a dropped-channel test asserts `Indeterminate` + idempotent re-drive |
 
 ## Consequences

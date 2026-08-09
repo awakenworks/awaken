@@ -13,12 +13,12 @@ use awaken_admin_assistant::{
     ADMIN_ASSISTANT_AGENT_ID, CapabilityReader, DraftStore, DraftValidator, InputSpec,
     PlatformCapabilities, PluginInfo, ResourceInventory, admin_assistant_config,
 };
+use awaken_agent_config::{AgentConfig, ManagementEffect, ModelSelection};
 use awaken_config_resolver::{
     AgentInputBindingRepository, AgentInputConfig, BindingId, FileId, InputBinding,
     InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
 };
 use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
-use awaken_config_store::{AgentConfig, ManagementEffect, ModelSelection};
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
@@ -583,12 +583,13 @@ impl DraftStore for ConfigServiceDraftStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_config::{DEFAULT_SCOPE, ModelSelection};
     use awaken_config_resolver::InMemoryAgentInputBindingRepository;
     use awaken_config_service::{
         ConfigPlane, ConfigService, ModelPublicationResolver, ResolvedPublicationModels,
         ScopedToolCatalog, StaticToolCatalog,
     };
-    use awaken_config_store::{DEFAULT_SCOPE, ModelSelection, SqliteConfigStore};
+    use awaken_config_store::SqliteConfigStore;
     use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_model_catalog::repo::{CatalogRepo, InMemoryCatalogRepo};
     use awaken_model_catalog::{

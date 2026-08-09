@@ -627,7 +627,7 @@ the collision, and the containment.
     **Containment:** `SessionModeId(String)` preserves the free-string wire and
     the fail-closed `available_modes` check; no behavior change.
 
-11. **`awaken-config-store` is the pure upstream authoring aggregate — it depends
+11. **`awaken-agent-config` is the pure upstream authoring aggregate — it depends
     on neither the vault, the model catalog, nor the resolver** (only
     `awaken-runtime-contract`). Putting vault/catalog/resolver types on
     `AgentConfig` (`CredentialBinding`, `ApiDialect`, `McpServerDef`) would invert
@@ -640,7 +640,7 @@ the collision, and the containment.
     `awaken-model-catalog`. Publication performs the typed Offering-to-token join
     once, so there is no resolver-side duplicate table. This is the single most
     important constraint on the shape: it is why D5 extends `CredentialBinding`
-    in the vault rather than adding a credential enum to config-store.
+    in the vault rather than adding a credential enum to agent-config.
 
 ## Reuse of existing types (normative — do not re-invent)
 
@@ -807,7 +807,7 @@ declared-source mode on the existing `ConfigToolExecutorProvider`.
 Retires: production per-Agent `PlacementEntry` assembly. Static entries remain
 the deterministic scenario/test adapter, not a second product registry.
 
-Static structure: config-store validates the logical id; ConfigService's one
+Static structure: agent-config validates the logical id; ConfigService's one
 installed-publication projection retains it beside (never inside) the executable
 snapshot; the CLI composition root dials each deployment-owned `ConnectionPlan`
 once; the existing Server placement provider joins the Agent id to that ready
@@ -927,9 +927,9 @@ evidence.
 
 | Invariant | Mechanism | Violation becomes |
 |---|---|---|
-| Dependency direction (config-store ⊥ vault/resolver; runtime ⊥ control) | the Cargo graph itself + `deny.toml` `[bans]` edges | compile/CI error |
+| Dependency direction (agent-config ⊥ vault/resolver; application ⊥ infrastructure; runtime ⊥ control) | the Cargo graph plus declared context/layer metadata | boundary-check/compile error |
 | Kind-specific axes unrepresentable on other kinds (D3a) | data lives on enum variants, not on flag-guarded shared fields | compile error |
-| One source of truth for axis ① | the stored `backend_ref` is private to config-store; the `AgentKind` lens is the only constructor/reader (parse, don't validate); routers `match Backend` with **no `_` arm**, so a new variant forces every router | compile error |
+| One source of truth for axis ① | the stored `backend_ref` is private to agent-config; the `AgentKind` lens is the only constructor/reader (parse, don't validate); routers `match Backend` with **no `_` arm**, so a new variant forces every router | compile error |
 | No secret in any snapshot / queue payload | `RedactedString` implements no `Serialize`; `ResolvedSpec`'s field list *is* the whitelist | compile error |
 | Banned parallel types | `clippy.toml` `disallowed-types` (primary) + lefthook grep (backstop) | lint / commit error |
 | Env reads only at composition roots | clippy `disallowed-methods` on `std::env::var`, allowed only under `crates/bin/*` | lint error |

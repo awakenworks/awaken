@@ -44,6 +44,21 @@ pub(super) fn k8s_exit_status(status: Option<Status>) -> pc::ExitStatus {
     }
 }
 
+pub(super) fn k8s_live_file_result(
+    status: Option<Status>,
+    bytes: Vec<u8>,
+) -> Result<Option<Vec<u8>>, RuntimeError> {
+    let status = k8s_exit_status(status);
+    if status.code == Some(0) {
+        Ok(Some(bytes))
+    } else {
+        Err(backend(format!(
+            "Kubernetes live-file read failed with exit code {:?}",
+            status.code
+        )))
+    }
+}
+
 pub(super) fn k8s_exec_argv(
     id: &str,
     command: pc::MaterializedCommand,

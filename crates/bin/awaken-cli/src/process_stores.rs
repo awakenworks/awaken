@@ -25,7 +25,7 @@ pub(super) struct ControlStores {
     /// profiles/MCP: one admin store implements these distinct Control ports.
     pub(super) webhooks: Arc<dyn awaken_config_resolver::WebhookStore>,
     /// Rich Agent drafts and immutable publications, scoped per Workspace.
-    pub(super) config: Arc<dyn awaken_config_store::ScopedConfigRegistry>,
+    pub(super) config: Arc<dyn awaken_agent_config::ScopedConfigRegistry>,
     /// Control-owned subject aggregate and consent facts.
     pub(super) data_subjects: Arc<dyn awaken_data_subject::DataSubjectRepo>,
     /// Durable Control erasure process checkpoints over the same adapter.

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "worker"
+layer = "infrastructure"
+authority = "sandbox-memoryd"
+
 # ADR-0053: a write-through FUSE filesystem projecting a path-addressed memory store
 # (awaken-memory-store's `MemoryRepository`) as `/mnt/memory/{store}/*`, so an LLM edits
 # memory with native filesystem verbs. The FUSE logic is a faithful port of

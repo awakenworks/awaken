@@ -5,13 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-package-class = "contract"
+context = "control"
+layer = "contract"
 authority = "credential"
 
 [dependencies]
 awaken-agent-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
+schemars = "1"
 serde_json.workspace = true
 thiserror.workspace = true
 

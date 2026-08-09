@@ -99,8 +99,8 @@ is secondary to the port contract.
 
 ### Reused unchanged
 
-- `AgentConfig`, revision checks, publication compilation, and
-  `StoredPublication` persistence in `awaken-config-service` and
+- `AgentConfig`, revision checks, publication compilation, and repository ports in
+  `awaken-agent-config`, with unchanged `StoredPublication` persistence implemented by
   `awaken-config-store`;
 - `ExecutableAgentSnapshot` and its fingerprinted resolved data;
 - the existing publication reconciler trigger and durable publication history.

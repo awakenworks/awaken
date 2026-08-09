@@ -10,13 +10,13 @@ use std::time::Duration;
 
 use awaken_admin_assistant::{EnvironmentAuthor, ResourceInventory};
 use awaken_admin_config_api::{BrokeredCatalogDiscovery, CredentialProbe, ModelCatalogDiscovery};
+use awaken_agent_config::{ModelSelection, ScopedConfigRegistry};
 use awaken_config_resolver::{AgentInputBindingRepository, InferenceProfileStore, WebhookStore};
 use awaken_config_service::{
     ConfigPlane, ConfigService, ConfigServiceReconciler, ManagementAuditPlane,
     ModelPublicationResolver, PluginPublicationResolver, PublicationBindingReconciler,
     RESERVED_ADMIN_SCOPE, RuntimeCapabilitySource, ScopedToolCatalog, ToolCatalogSource,
 };
-use awaken_config_store::{ModelSelection, ScopedConfigRegistry};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_data_subject::{

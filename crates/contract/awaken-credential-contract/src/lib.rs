@@ -1957,3 +1957,21 @@ mod tests {
         );
     }
 }
+/// Stable, secret-free identity of a credential source.
+///
+/// The identifier crosses Control-to-Coordinator application ports, so its
+/// canonical owner is the credential contract rather than the Vault adapter.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(transparent)]
+pub struct CredentialSourceId(pub String);

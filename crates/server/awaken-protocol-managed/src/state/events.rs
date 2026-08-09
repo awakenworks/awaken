@@ -352,7 +352,8 @@ impl ManagedState {
         let mut found = None;
         loop {
             let page = self
-                .runtime
+                .application
+                .runtime()
                 .committed_run_lifecycle(session_id, cursor, PAGE_SIZE)
                 .await
                 .map_err(StateError::Run)?;
@@ -613,7 +614,11 @@ impl ManagedState {
         session_id: &str,
     ) -> Result<LiveInboxSnapshot, StateError> {
         self.require_session(session_id).await?;
-        Ok(self.runtime.live_inbox_snapshot(session_id).await)
+        Ok(self
+            .application
+            .runtime()
+            .live_inbox_snapshot(session_id)
+            .await)
     }
 
     /// Awaken `POST /v1/awaken/sessions/:id/live-inbox` application operation.
@@ -623,13 +628,21 @@ impl ManagedState {
         content: Vec<ContentBlock>,
     ) -> Result<u64, StateError> {
         self.require_session(session_id).await?;
-        Ok(self.runtime.live_inbox_queue(session_id, content).await?)
+        Ok(self
+            .application
+            .runtime()
+            .live_inbox_queue(session_id, content)
+            .await?)
     }
 
     /// Awaken `DELETE /v1/awaken/sessions/:id/live-inbox/:msg` operation.
     pub async fn live_inbox_remove(&self, session_id: &str, id: u64) -> Result<(), StateError> {
         self.require_session(session_id).await?;
-        Ok(self.runtime.live_inbox_remove(session_id, id).await?)
+        Ok(self
+            .application
+            .runtime()
+            .live_inbox_remove(session_id, id)
+            .await?)
     }
 
     /// Awaken `PUT /v1/awaken/sessions/:id/live-inbox/:msg` operation.
@@ -641,7 +654,8 @@ impl ManagedState {
     ) -> Result<(), StateError> {
         self.require_session(session_id).await?;
         Ok(self
-            .runtime
+            .application
+            .runtime()
             .live_inbox_replace(session_id, id, content)
             .await?)
     }
@@ -653,7 +667,11 @@ impl ManagedState {
         order: Vec<u64>,
     ) -> Result<(), StateError> {
         self.require_session(session_id).await?;
-        Ok(self.runtime.live_inbox_reorder(session_id, order).await?)
+        Ok(self
+            .application
+            .runtime()
+            .live_inbox_reorder(session_id, order)
+            .await?)
     }
 
     async fn process_inbound_event(
@@ -667,14 +685,18 @@ impl ManagedState {
             InboundEvent::UserMessage { content, model, .. } => {
                 let lifecycle_start = self.lifecycle_cursor(session_id)?;
                 if let Some(model) = model {
-                    self.runtime.rebind_model(session_id, model).await?;
+                    self.application
+                        .runtime()
+                        .rebind_model(session_id, model)
+                        .await?;
                 }
                 let sink = Arc::new(PreviewSink::new(
                     self.live_sender(session_id),
                     self.event_seq.clone(),
                 ));
                 let outcome = self
-                    .runtime
+                    .application
+                    .runtime()
                     .run_streaming_attributed(
                         agent_id,
                         session_id,
@@ -709,7 +731,8 @@ impl ManagedState {
                     note: deny_message.clone(),
                 };
                 let outcome = self
-                    .runtime
+                    .application
+                    .runtime()
                     .resume(session_id, tool_use_id, decision)
                     .await?;
                 self.append_committed_step(
@@ -727,7 +750,8 @@ impl ManagedState {
             } => {
                 let lifecycle_start = self.lifecycle_cursor(session_id)?;
                 let outcome = self
-                    .runtime
+                    .application
+                    .runtime()
                     .resume_custom(
                         session_id,
                         custom_tool_use_id,
@@ -750,7 +774,8 @@ impl ManagedState {
             } => {
                 let lifecycle_start = self.lifecycle_cursor(session_id)?;
                 let outcome = self
-                    .runtime
+                    .application
+                    .runtime()
                     .resume_custom(
                         session_id,
                         tool_use_id,
@@ -773,7 +798,8 @@ impl ManagedState {
             } => {
                 let rubric = rubric_text(rubric);
                 let report = self
-                    .runtime
+                    .application
+                    .runtime()
                     .define_outcome(
                         session_id,
                         description,
@@ -785,11 +811,14 @@ impl ManagedState {
             }
             InboundEvent::SystemMessage { content } => {
                 let text = content_text(content);
-                self.runtime.add_system(session_id, &text).await?;
+                self.application
+                    .runtime()
+                    .add_system(session_id, &text)
+                    .await?;
             }
             InboundEvent::UserInterrupt { session_thread_id } => {
                 for thread in self.interrupt_targets(session_id, session_thread_id.as_deref())? {
-                    self.runtime.interrupt(&thread).await?;
+                    self.application.runtime().interrupt(&thread).await?;
                 }
             }
         }
@@ -802,7 +831,8 @@ impl ManagedState {
         events: &[InboundEvent],
     ) -> Result<(), StateError> {
         let pending = self
-            .runtime
+            .application
+            .runtime()
             .pending_tool(session_id)
             .await
             .map_err(StateError::Run)?;
@@ -851,7 +881,8 @@ impl ManagedState {
                 }
                 InboundEvent::SystemMessage { .. }
                     if !self
-                        .runtime
+                        .application
+                        .runtime()
                         .supports_mid_conversation_system(session_id)
                         .await =>
                 {
@@ -908,7 +939,7 @@ impl ManagedState {
             }
             (
                 record.agent_id.clone(),
-                record.agent_id == crate::dream::BUILT_IN_DREAM_AGENT_ID
+                record.agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
                     && record
                         .session
                         .metadata
@@ -920,8 +951,8 @@ impl ManagedState {
             .owner_scope(session_id)
             .unwrap_or_else(|| super::DEFAULT_SCOPE.to_string());
         if self
-            .config_source
-            .as_ref()
+            .application
+            .config_source()
             .is_some_and(|source| source.agent_unavailable_in(&owner_scope, &agent_id))
             && !is_built_in_dream_agent
         {
@@ -981,7 +1012,7 @@ impl ManagedState {
         }
         // Refresh the session's accumulated token usage from the runtime's committed
         // tally, so a subsequent GET /v1/sessions reflects the tokens this turn spent.
-        let usage = self.runtime.session_usage(session_id).await;
+        let usage = self.application.runtime().session_usage(session_id).await;
         if let Some(record) = self.sessions.lock().unwrap().get_mut(session_id) {
             record.session.usage = session_usage_value(usage);
         }
@@ -1041,7 +1072,8 @@ impl ManagedState {
         let mut latest_lifecycle = None;
         loop {
             let page = self
-                .runtime
+                .application
+                .runtime()
                 .committed_run_lifecycle(session_id, lifecycle_cursor, LIFECYCLE_PAGE_SIZE)
                 .await
                 .map_err(StateError::Run)?;
@@ -1060,11 +1092,16 @@ impl ManagedState {
             lifecycle_cursor = page.next_cursor;
         }
         let pending = self
-            .runtime
+            .application
+            .runtime()
             .pending_tool(session_id)
             .await
             .map_err(StateError::Run)?;
-        let messages = self.runtime.committed_messages(session_id).await;
+        let messages = self
+            .application
+            .runtime()
+            .committed_messages(session_id)
+            .await;
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         let new_messages = messages

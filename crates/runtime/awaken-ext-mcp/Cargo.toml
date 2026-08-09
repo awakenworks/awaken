@@ -3,6 +3,11 @@ name = "awaken-ext-mcp"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+
+[package.metadata.awaken]
+context = "runtime"
+layer = "infrastructure"
+authority = "ext-mcp"
 description = "Model Context Protocol (MCP) client extension for Awaken"
 
 [dependencies]

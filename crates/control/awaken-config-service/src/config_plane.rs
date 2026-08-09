@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use awaken_config_resolver::AgentInputConfig;
-use awaken_config_store::{
+use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AuditedConfigWrite, ConfigRegistry, ConfigWrite,
     ManagementAuditEntry, ManagementAuditRecord, ManagementEffect, ScopedConfig,
     ScopedConfigRegistry, StoredPublication,
 };
+use awaken_config_resolver::AgentInputConfig;
 use awaken_executable_agent_contract::ExecutableAgentWithdrawal;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -253,7 +253,7 @@ impl ConfigPlane {
                 publications.into_iter().any(|publication| {
                     publication.agent_id == agent_id
                         && publication.source_revision == revision
-                        && publication.state == awaken_config_store::PublicationState::Published
+                        && publication.state == awaken_agent_config::PublicationState::Published
                 })
             })
             .map_err(|error| error.to_string())

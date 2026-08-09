@@ -135,9 +135,11 @@ pub(super) async fn assemble_runtime_process_router(
     };
     let web_search_publication_resolver =
         assembly.web_search_publication_resolver.unwrap_or_else(|| {
-            Arc::new(awaken_config_service::WebSearchPublicationResolver::new(
-                web_search_providers.clone(),
-            ))
+            Arc::new(
+                crate::web_search_publication::WebSearchPublicationResolver::new(
+                    web_search_providers.clone(),
+                ),
+            )
         });
     // Keep the IAM handles for the sibling resource PEP. The authoring router owns
     // its PEP; File/Memory/Skill routes are wrapped independently after the data
@@ -292,7 +294,7 @@ pub(super) async fn assemble_runtime_process_router(
                 Some(component.publication_reconciler),
                 component.admin_tools,
                 component.vault_state.clone()
-                    as Arc<dyn awaken_protocol_managed::SessionCredentialSource>,
+                    as Arc<dyn awaken_session_application::SessionCredentialSource>,
                 component.management_audit,
                 Some((
                     control_stores.webhooks.clone(),
