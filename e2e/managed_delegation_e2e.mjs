@@ -273,7 +273,7 @@ async function main() {
     assert.ok(!badText.includes('researched: 42'), `no sub-run output leaked: ${badText}`);
 
     console.log('E2E PASS: multi-agent delegation (happy + fail-closed) via TS SDK.');
-  });
+  }, { SESSION_DEPLOYMENT_SANDBOX_TIER: 'local' });
 }
 
 main().catch((err) => {

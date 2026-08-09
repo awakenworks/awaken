@@ -266,6 +266,37 @@ function loadPackage() {
   return JSON.parse(fs.readFileSync(path.join(E2E_ROOT, 'package.json'), 'utf8'));
 }
 
+export function verifyInstalledDependencies(
+  packageDocument,
+  lockDocument,
+  installRoot = E2E_ROOT,
+) {
+  const declared = {
+    ...(packageDocument.dependencies ?? {}),
+    ...(packageDocument.devDependencies ?? {}),
+  };
+  const drift = [];
+  for (const name of Object.keys(declared).sort()) {
+    const locked = lockDocument.packages?.[`node_modules/${name}`]?.version;
+    let installed;
+    try {
+      installed = JSON.parse(
+        fs.readFileSync(path.join(installRoot, 'node_modules', ...name.split('/'), 'package.json')),
+      ).version;
+    } catch {
+      installed = undefined;
+    }
+    if (typeof locked !== 'string' || installed !== locked) {
+      drift.push(`${name}: installed=${installed ?? 'missing'}, locked=${locked ?? 'missing'}`);
+    }
+  }
+  if (drift.length > 0) {
+    throw new Error(
+      `E2E dependencies do not match package-lock.json (${drift.join('; ')}); run npm --prefix e2e ci`,
+    );
+  }
+}
+
 function argumentValue(name) {
   const index = process.argv.indexOf(name);
   if (index === -1) return undefined;
@@ -275,6 +306,10 @@ function argumentValue(name) {
 
 export function runMain() {
   const packageDocument = loadPackage();
+  verifyInstalledDependencies(
+    packageDocument,
+    JSON.parse(fs.readFileSync(path.join(E2E_ROOT, 'package-lock.json'), 'utf8')),
+  );
   const suiteNames = packageDocument.awakenTest?.deterministicSuites;
   if (!Array.isArray(suiteNames) || suiteNames.length === 0) {
     throw new Error('package.json awakenTest.deterministicSuites must be a non-empty array');

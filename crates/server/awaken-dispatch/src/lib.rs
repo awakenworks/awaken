@@ -110,6 +110,80 @@ pub use worker_context::InferenceMaterializerFn;
 /// change lease ownership.
 pub const DEFAULT_LEASE_RENEWAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
+    max_epoch.checked_add(1).ok_or_else(|| {
+        DispatchError::Rejected(
+            "dispatch supersession epoch exhausted; refusing to wrap ordering authority"
+                .to_string(),
+        )
+    })
+}
+
+fn next_claim_epoch(previous_epoch: i64) -> Result<u64, DispatchError> {
+    let next = previous_epoch.checked_add(1).ok_or_else(|| {
+        DispatchError::Rejected(
+            "dispatch claim epoch exhausted; refusing to wrap fencing authority".to_string(),
+        )
+    })?;
+    u64::try_from(next).map_err(|_| {
+        DispatchError::Rejected(
+            "persisted dispatch claim epoch is negative; refusing to normalize fencing authority"
+                .to_string(),
+        )
+    })
+}
+
+fn next_memory_epoch(previous_epoch: u64, authority: &str) -> Result<u64, DispatchError> {
+    previous_epoch.checked_add(1).ok_or_else(|| {
+        DispatchError::Rejected(format!(
+            "{authority} epoch exhausted; refusing to wrap authority"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod supersession_epoch_tests {
+    use super::*;
+
+    #[test]
+    fn supersession_epoch_overflow_fails_closed() {
+        assert_eq!(next_supersession_epoch(0).unwrap(), 1);
+        assert!(matches!(
+            next_supersession_epoch(i64::MAX),
+            Err(DispatchError::Rejected(message))
+                if message.contains("refusing to wrap ordering authority")
+        ));
+    }
+
+    #[test]
+    fn claim_epoch_rejects_negative_and_exhausted_database_values() {
+        assert_eq!(next_claim_epoch(0).unwrap(), 1);
+        assert!(matches!(
+            next_claim_epoch(-2),
+            Err(DispatchError::Rejected(message)) if message.contains("negative")
+        ));
+        assert!(matches!(
+            next_claim_epoch(i64::MAX),
+            Err(DispatchError::Rejected(message)) if message.contains("refusing to wrap")
+        ));
+    }
+
+    #[test]
+    fn memory_epochs_fail_closed_at_the_same_boundary_as_sql_backends() {
+        assert_eq!(next_memory_epoch(0, "dispatch claim").unwrap(), 1);
+        assert!(matches!(
+            next_memory_epoch(u64::MAX, "dispatch claim"),
+            Err(DispatchError::Rejected(message))
+                if message.contains("dispatch claim epoch exhausted")
+        ));
+        assert!(matches!(
+            next_supersession_epoch(i64::MAX),
+            Err(DispatchError::Rejected(message))
+                if message.contains("dispatch supersession epoch exhausted")
+        ));
+    }
+}
+
 /// A durable-ingress failure: either the dispatch store rejected an operation or
 /// a runtime attempt failed. Kept as two arms so a queue-storage failure never
 /// masquerades as a run execution failure.
