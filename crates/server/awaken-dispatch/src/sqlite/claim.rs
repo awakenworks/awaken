@@ -125,9 +125,7 @@ pub(super) fn claim_exact_transaction_with_mode(
     {
         return Ok(None);
     }
-    let claim_epoch = (previous_epoch.max(0) as u64)
-        .checked_add(1)
-        .ok_or_else(|| DispatchError::Rejected("dispatch claim epoch exhausted".to_string()))?;
+    let claim_epoch = crate::next_claim_epoch(previous_epoch)?;
     let credential_bindings = if terminal_recovery || cancellation_requested != 0 {
         Vec::new()
     } else {
@@ -150,7 +148,9 @@ pub(super) fn claim_exact_transaction_with_mode(
             crate::clock::db_millis(expires),
             i64::from(status == "running"),
             requested_run,
-            claim_epoch as i64,
+            i64::try_from(claim_epoch).map_err(|_| DispatchError::Rejected(
+                "dispatch claim epoch exceeds the SQLite authority range".to_string()
+            ))?,
             (!terminal_recovery)
                 .then(|| worker.map(WorkerAssignment::from))
                 .flatten()
@@ -174,7 +174,9 @@ pub(super) fn claim_exact_transaction_with_mode(
                     "expired running dispatch has no persisted lease owner".to_string(),
                 )
             })?,
-            epoch: previous_epoch.max(0) as u64,
+            epoch: u64::try_from(previous_epoch).map_err(|_| {
+                DispatchError::Rejected("persisted dispatch claim epoch is negative".to_string())
+            })?,
         };
         insert_operation(
             tx,

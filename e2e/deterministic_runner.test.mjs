@@ -12,6 +12,7 @@ import {
   preparedEnvironment,
   timingWeights,
   validPrebuiltManifest,
+  verifyInstalledDependencies,
 } from './deterministic_runner.mjs';
 import { AWAKEN_BIN_ENV, SCENARIO_HOST_BIN_ENV, WORKER_BIN_ENV } from './cargo_binary.mjs';
 
@@ -34,6 +35,27 @@ test('expands the package-owned suite graph without a second scenario list', () 
     () => expandSuites({ first: 'npm run second', second: 'npm run first' }, ['first']),
     /cyclic npm suite/,
   );
+});
+
+test('fails before prebuild when installed E2E SDKs drift from package-lock', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-e2e-deps-'));
+  const installed = path.join(directory, 'node_modules', '@ai-sdk', 'react');
+  fs.mkdirSync(installed, { recursive: true });
+  const packageDocument = { dependencies: { '@ai-sdk/react': '^4.0.54' } };
+  const lockDocument = {
+    packages: { 'node_modules/@ai-sdk/react': { version: '4.0.54' } },
+  };
+  try {
+    fs.writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ version: '2.0.212' }));
+    assert.throws(
+      () => verifyInstalledDependencies(packageDocument, lockDocument, directory),
+      /installed=2\.0\.212, locked=4\.0\.54.*npm --prefix e2e ci/,
+    );
+    fs.writeFileSync(path.join(installed, 'package.json'), JSON.stringify({ version: '4.0.54' }));
+    assert.doesNotThrow(() => verifyInstalledDependencies(packageDocument, lockDocument, directory));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 // Cause/effect decision table:

@@ -77,8 +77,7 @@ impl RecoveryProjection {
             ));
         }
 
-        apply_to_snapshot(snapshot, commit, record.sequence);
-        Ok(())
+        apply_to_snapshot(snapshot, commit, record.sequence)
     }
 
     /// Apply an authoritative operation receipt exactly once. A duplicate
@@ -134,8 +133,7 @@ impl RecoveryProjection {
                 snapshot.thread_version, operation.expected_thread_version, receipt.thread_version
             )));
         }
-        apply_to_snapshot(snapshot, operation.commit, receipt.commit_sequence);
-        Ok(())
+        apply_to_snapshot(snapshot, operation.commit, receipt.commit_sequence)
     }
 
     #[must_use]
@@ -157,7 +155,18 @@ fn apply_to_snapshot(
     snapshot: &mut RunRecoverySnapshot,
     commit: ThreadCommit,
     commit_sequence: u64,
-) {
+) -> Result<(), CommitError> {
+    // Validate every monotonic counter before mutating the projection. A failed
+    // boundary check must not append messages/state and leave a partially advanced
+    // cache that no longer matches committed Coordinator truth.
+    let next_thread_version = snapshot
+        .thread_version
+        .checked_add(1)
+        .ok_or_else(|| CommitError::Rejected("Thread version overflow".to_string()))?;
+    let next_commit_ordinal = snapshot
+        .next_commit_ordinal
+        .checked_add(1)
+        .ok_or_else(|| CommitError::Rejected("commit ordinal overflow".to_string()))?;
     let run_id = commit.run_id().clone();
     let run_state = commit.run_state();
     let resume_ticket = commit.resume_ticket().cloned();
@@ -184,9 +193,10 @@ fn apply_to_snapshot(
             .resume_tickets
             .push(RunResumeTicket { run_id, ticket });
     }
-    snapshot.thread_version = snapshot.thread_version.saturating_add(1);
+    snapshot.thread_version = next_thread_version;
     snapshot.store_cursor = snapshot.store_cursor.max(commit_sequence);
-    snapshot.next_commit_ordinal = snapshot.next_commit_ordinal.saturating_add(1);
+    snapshot.next_commit_ordinal = next_commit_ordinal;
+    Ok(())
 }
 
 impl ThreadReader for RecoveryProjection {
