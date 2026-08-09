@@ -10,8 +10,9 @@ trap 'rm -f "$RENDERED"' EXIT
 # Causes: C1 the product overlay renders; C2 the Awaken Service is ClusterIP and
 # no external Kubernetes route exists; C3 state/config/tmp mounts and probes are
 # declared; C4 ingress is restricted to namespaces explicitly labelled as an
-# Awaken Design backend; C5 K8s sandbox, BuildKit Job, shared Registry, and
-# namespace-scoped RBAC are coherent; C6 model/provider secret names or values
+# Awaken Design backend; C5 K8s sandbox uses the imported non-`latest` base while
+# BuildKit Jobs, the derived-image Registry, and namespace-scoped RBAC are
+# coherent; C6 model/provider secret names or values
 # appear in the manifest. Effects: E1 one all-in-one backend can start from the canonical image;
 # E2 Awaken/Console and management APIs have no terminal-user ingress; E3 config
 # plus Awaken-owned provider configuration, Skills, Agents, and Sessions survive
@@ -34,6 +35,7 @@ grep -q 'role = "all-in-one"' "$RENDERED"
 grep -q 'no_browser = true' "$RENDERED"
 grep -q 'identity_mode = "self-managed"' "$RENDERED"
 grep -q 'sandbox_tier = "k8s"' "$RENDERED"
+grep -q 'container_image = "awaken-sandbox:local"' "$RENDERED"
 grep -q 'package_image_builder = "k8s"' "$RENDERED"
 grep -q 'package_image_registry = "k3d-awaken-registry.localhost:5111/environments"' "$RENDERED"
 grep -q 'package_registry_insecure = true' "$RENDERED"

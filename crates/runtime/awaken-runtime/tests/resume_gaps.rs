@@ -14,7 +14,7 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime::memory::MemoryCommitCoordinator;
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::execution::RunExecutor;
+use awaken_runtime_contract::execution::{RunAttemptExecutor, RunExecutor};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
@@ -252,6 +252,46 @@ async fn resume_against_an_unregistered_snapshot_fails_closed() {
         commit
             .resume_ticket_for(&RunId("run-1".to_string()))
             .is_some()
+    );
+}
+
+#[tokio::test]
+async fn attempt_resume_registers_its_exact_snapshot_after_runtime_rebuild() {
+    // Cause/effect decision table — RR4:
+    // C1: a run has a committed await ticket; C2: resume uses a freshly rebuilt
+    // Runtime with no in-memory snapshots; C3: RunActivation carries the ticket's
+    // exact snapshot. Rule C1+C2+C3 => E1: the attempt boundary registers that
+    // snapshot, E2: resume reaches its terminal result, and E3: the ticket is
+    // consumed. The complementary missing-activation path is covered by RR3 above:
+    // direct lower-level resume remains fail-closed when no snapshot is registered.
+    let awaiting = Runtime::new()
+        .with_llm(Arc::new(ToolThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(EchoTool))
+        .with_gate(Arc::new(SuspendGate));
+    let commit = begin_awaiting_run(&awaiting, Vec::new()).await;
+
+    let rebuilt = Runtime::new()
+        .with_llm(Arc::new(ToolThenText {
+            calls: AtomicUsize::new(1),
+        }))
+        .with_tool(Arc::new(EchoTool))
+        .with_gate(Arc::new(SuspendGate));
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_reader(commit.clone());
+    let state =
+        RunAttemptExecutor::resume(&rebuilt, activation(Vec::new()), resume_command(), context)
+            .await
+            .expect("the activated resume restores its exact snapshot after rebuild");
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert!(
+        commit
+            .resume_ticket_for(&RunId("run-1".to_string()))
+            .is_none(),
+        "the successful resume consumes the committed ticket"
     );
 }
 

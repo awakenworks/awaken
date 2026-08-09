@@ -2,10 +2,12 @@
 //!
 //! Implements [`ContainerRuntime`] over **kube** — the kube-apiserver via the SDK,
 //! never `kubectl`. Faithful to awaken-next's `K3sHandWorker` + this crate's
-//! [`crate::pod_plan`]: a **Session-owned Pod** (PID 1 retains its namespaces while
+//! [`K8sRuntime`]: a **Session-owned Pod** (PID 1 retains its namespaces while
 //! attempts run through attached exec, `restartPolicy: Never`), **native GC** (an
 //! `ownerReference` reaps orphans),
-//! memory stores realized as **memoryd sidecars + emptyDir**, the untrusted agent
+//! memory stores realized as **memoryd sidecars + emptyDir**, managed input Files
+//! exposed through a **read-only shared volume + isolated projector sidecar**, the
+//! untrusted agent
 //! **hardened** (no SA token, dropped caps) + labeled for a NetworkPolicy, and the
 //! stdio channel reached either by a direct **network dial** to the Service or, when
 //! a rendezvous is set, by **reverse dial** (the egress-fenced Pod dials the host
@@ -24,7 +26,7 @@ use k8s_openapi::api::core::v1::{
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference, Status};
-use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
+use kube::api::{AttachParams, DeleteParams, ListParams};
 use kube::{Api, Client};
 use std::collections::BTreeMap;
 use tokio::io::AsyncReadExt;
@@ -34,12 +36,28 @@ use crate::{
     BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
 };
 
+mod live_inputs;
+mod names;
+mod realization;
+use names::{cfg_owner_label, configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
+use realization::{
+    PodReadiness, await_pod_deleted, create_or_verify, pod_readiness, stamp_realization,
+};
+
 pub use crate::k8s_package_image::K8sPackageImageProvisioner;
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
+}
+
+pub(crate) fn api_conflict(error: &kube::Error) -> bool {
+    matches!(error, kube::Error::Api(response) if response.code == 409)
+}
+
+pub(crate) fn api_not_found(error: &kube::Error) -> bool {
+    matches!(error, kube::Error::Api(response) if response.code == 404)
 }
 
 struct K8sExecState {
@@ -212,27 +230,12 @@ fn credential_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
         .collect()
 }
 
-/// Deterministic ConfigMap name for the i-th inline-content mount of Pod `awaken-{id}`.
-fn configmap_name(id: &str, i: usize) -> String {
-    format!("awaken-{id}-cfg-{i}")
-}
-
-fn credential_secret_name(id: &str, i: usize) -> String {
-    format!("awaken-{id}-credential-{i}")
-}
-
 fn credential_key(bind: &BindPlan) -> &str {
     bind.credential_file_path
         .as_deref()
         .and_then(|path| path.rsplit('/').next())
         .filter(|name| !name.is_empty())
         .unwrap_or(CONFIGMAP_KEY)
-}
-
-/// Label the Pod's ConfigMaps carry so `remove` can reap them by selector — value is the
-/// Pod name (`awaken-{id}`), which is also the `container_id` handed back to `remove`.
-fn cfg_owner_label(id: &str) -> String {
-    format!("awaken-{id}")
 }
 
 /// Build a ConfigMap holding one inline-content mount's bytes under [`CONFIGMAP_KEY`].
@@ -597,10 +600,17 @@ fn build_pod(
             });
         }
 
-        // Inline content (codex `config.toml`, ADR-0038 resource bytes) has no host path a
-        // Pod can bind — each is realized as a ConfigMap volume (the ConfigMaps are created
-        // alongside the Pod in `create`) and projected read-only as a single file at its
-        // exact `mount_path` via `subPath`, so the interior layout matches the bwrap tier.
+        live_inputs::append_projection(
+            plan,
+            &mut volumes,
+            &mut agent_mounts,
+            &mut sidecars,
+            &mut init_containers,
+        );
+
+        // Inline content has no host path a Pod can bind, so every item is backed by
+        // a ConfigMap created alongside the Pod. Managed inputs seed the shared tree;
+        // other paths keep the exact read-only subPath projection used by bwrap parity.
         for (i, bind) in content_binds(plan).iter().enumerate() {
             let vol = format!("cfg-{i}");
             volumes.push(Volume {
@@ -611,13 +621,15 @@ fn build_pod(
                 }),
                 ..Default::default()
             });
-            agent_mounts.push(VolumeMount {
-                name: vol,
-                mount_path: bind.mount_path.clone(),
-                sub_path: Some(CONFIGMAP_KEY.to_string()),
-                read_only: Some(bind.read_only),
-                ..Default::default()
-            });
+            if !(bind.read_only && crate::live_input_relative_path(&bind.mount_path).is_some()) {
+                agent_mounts.push(VolumeMount {
+                    name: vol,
+                    mount_path: bind.mount_path.clone(),
+                    sub_path: Some(CONFIGMAP_KEY.to_string()),
+                    read_only: Some(bind.read_only),
+                    ..Default::default()
+                });
+            }
         }
 
         // A Kubernetes Secret volume is immutable/read-only. Seed each native OAuth
@@ -702,7 +714,7 @@ fn build_pod(
 
         Pod {
             metadata: ObjectMeta {
-                name: Some(format!("awaken-{id}")),
+                name: Some(pod_name(id)),
                 labels: Some(labels),
                 // native GC: the platform reaps this Pod when the owner is deleted.
                 owner_references: owner.clone().map(|o| vec![o]),
@@ -793,6 +805,23 @@ impl ContainerRuntime for K8sRuntime {
         true
     }
 
+    fn supports_live_input_projection(&self) -> bool {
+        true
+    }
+
+    async fn project_live_input(
+        &self,
+        container_id: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), RuntimeError> {
+        live_inputs::project(self, container_id, path, bytes).await
+    }
+
+    async fn remove_live_input(&self, container_id: &str, path: &str) -> Result<(), RuntimeError> {
+        live_inputs::remove(self, container_id, path).await
+    }
+
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
         if !matches!(plan.network, crate::NetworkMode::Open) {
             return Err(RuntimeError::Backend(
@@ -806,29 +835,29 @@ impl ContainerRuntime for K8sRuntime {
             return Err(RuntimeError::Backend(format!(
                 "k8s cannot enforce a per-Pod `{limit}` limit (it is a node/kubelet \
                  setting, not a Pod-spec field); refusing to place a `{limit}`-limited \
-                 spec on the k8s tier rather than silently dropping the cap"
+                spec on the k8s tier rather than silently dropping the cap"
             )));
         }
+        let runtime_id = k8s_runtime_id(id)?;
         // Realize inline-content mounts as ConfigMaps *before* the Pod: the Pod's volumes
         // reference them by name, and the kubelet blocks the Pod as `ContainerCreating`
         // until they exist. Ordered + named identically to `build_pod`'s projection.
         let cms = self.configmaps();
         for (i, bind) in content_binds(plan).iter().enumerate() {
-            let cm = build_configmap(
-                id,
+            let mut cm = build_configmap(
+                &runtime_id,
                 i,
                 bind.content.as_deref(),
                 bind.content_bytes.as_deref(),
                 &self.owner,
             );
-            cms.create(&PostParams::default(), &cm)
-                .await
-                .map_err(backend)?;
+            stamp_realization(&mut cm)?;
+            create_or_verify(&cms, &cm).await?;
         }
         let secrets = self.secrets();
         for (i, bind) in credential_binds(plan).iter().enumerate() {
-            let secret = build_credential_secret(
-                id,
+            let mut secret = build_credential_secret(
+                &runtime_id,
                 i,
                 credential_key(bind),
                 bind.secret_content
@@ -837,21 +866,19 @@ impl ContainerRuntime for K8sRuntime {
                     .expose(),
                 &self.owner,
             );
-            secrets
-                .create(&PostParams::default(), &secret)
-                .await
-                .map_err(backend)?;
+            stamp_realization(&mut secret)?;
+            create_or_verify(&secrets, &secret).await?;
         }
-        let pod = self.pod(id, plan);
-        let created = self
-            .pods()
-            .create(&PostParams::default(), &pod)
-            .await
-            .map_err(backend)?;
-        created
+        let mut pod = self.pod(&runtime_id, plan);
+        stamp_realization(&mut pod)?;
+        let pods = self.pods();
+        let created = create_or_verify(&pods, &pod).await?;
+        let name = created
             .metadata
             .name
-            .ok_or_else(|| backend("created pod has no name"))
+            .ok_or_else(|| backend("created pod has no name"))?;
+        realization::await_pod_ready(&pods, &name).await?;
+        Ok(name)
     }
 
     async fn spawn(
@@ -999,16 +1026,15 @@ impl ContainerRuntime for K8sRuntime {
     async fn inspect(&self, container_id: &str) -> Result<ContainerState, RuntimeError> {
         let pod = match self.pods().get(container_id).await {
             Ok(pod) => pod,
-            Err(kube::Error::Api(response)) if response.code == 404 => {
+            Err(error) if api_not_found(&error) => {
                 return Ok(ContainerState::Gone);
             }
             Err(error) => return Err(backend(error)),
         };
-        let phase = pod.status.and_then(|s| s.phase).unwrap_or_default();
-        Ok(if phase == "Running" || phase == "Pending" {
-            ContainerState::Running
-        } else {
-            ContainerState::Gone
+        Ok(match pod_readiness(&pod) {
+            PodReadiness::Ready => ContainerState::Running,
+            PodReadiness::Waiting(_) => ContainerState::Provisioning,
+            PodReadiness::Failed(_) => ContainerState::Gone,
         })
     }
 
@@ -1034,7 +1060,7 @@ impl ContainerRuntime for K8sRuntime {
 
     async fn poll(&self, container_id: &str) -> Result<Option<pc::ExitStatus>, RuntimeError> {
         match self.inspect(container_id).await? {
-            ContainerState::Running => Ok(None),
+            ContainerState::Provisioning | ContainerState::Running => Ok(None),
             ContainerState::Gone => Ok(Some(pc::ExitStatus {
                 code: None,
                 signaled: true,
@@ -1082,11 +1108,12 @@ impl ContainerRuntime for K8sRuntime {
         // this best-effort sweep (label = the Pod name) covers the ownerless dev/e2e case
         // so inline-content maps don't leak. It precedes the Pod delete and never fails it.
         self.cleanup_projected_content(container_id).await;
-        self.pods()
-            .delete(container_id, &DeleteParams::default())
-            .await
-            .map(|_| ())
-            .map_err(backend)
+        let pods = self.pods();
+        match pods.delete(container_id, &DeleteParams::default()).await {
+            Ok(_) => await_pod_deleted(&pods, container_id).await,
+            Err(error) if api_not_found(&error) => Ok(()),
+            Err(error) => Err(backend(error)),
+        }
     }
 }
 
@@ -1096,6 +1123,20 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn overlong_or_empty_scope_fails_before_the_first_k8s_write() {
+        /* Boundary rules extending the table above: N5 an empty scope or an
+         * injective encoding whose Pod/owner-label exceeds 63 bytes produces an
+         * explicit adapter error before the lazy test client can reach its
+         * deliberately unavailable API server. */
+        let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+        let plan = plan_with_memory(Vec::new());
+        for scope in [String::new(), "x".repeat(57)] {
+            let error = runtime.create(&scope, &plan).await.unwrap_err();
+            assert!(error.to_string().contains("sandbox scope"), "N5: {error}");
+        }
+    }
 
     #[tokio::test]
     async fn package_builder_job_is_rootless_bounded_and_registry_backed() {
@@ -1455,8 +1496,8 @@ mod tests {
         let pod = build_pod("run-1", &plan, &None, "memoryd:9", None, false, &[]);
         let spec = pod.spec.unwrap();
 
-        // agent + one memoryd sidecar per memory store.
-        assert_eq!(spec.containers.len(), 3);
+        // agent + one memoryd sidecar per memory store + the isolated input projector.
+        assert_eq!(spec.containers.len(), 4);
         assert_eq!(spec.containers[0].name, "agent");
         assert_eq!(
             spec.containers
@@ -1465,14 +1506,14 @@ mod tests {
                 .count(),
             2
         );
-        // one pod-scoped emptyDir per store, plus the three writable-rootfs dirs
-        // (workspace, outputs, and /tmp).
+        // one pod-scoped emptyDir per store, the three writable-rootfs dirs
+        // (workspace, outputs, and /tmp), and the live read-only input tree.
         let volumes = spec.volumes.as_ref().unwrap();
-        assert_eq!(volumes.len(), 2 + 3);
+        assert_eq!(volumes.len(), 2 + 3 + 1);
         assert!(volumes.iter().all(|v| v.empty_dir.is_some()));
-        // the agent mounts both memory volumes + the writable dirs + carries limits.
+        // the agent mounts both memory volumes + writable dirs + live inputs.
         let agent = &spec.containers[0];
-        assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3);
+        assert_eq!(agent.volume_mounts.as_ref().unwrap().len(), 2 + 3 + 1);
         assert!(agent.resources.is_some());
         // The sidecar names store/mount/mode through explicit argv; no environment
         // configuration path exists (the privilege lives only on this container).
@@ -1678,7 +1719,7 @@ mod tests {
     }
 
     #[test]
-    fn build_pod_without_memory_mounts_is_a_single_container() {
+    fn build_pod_without_memory_mounts_still_isolates_the_input_projector() {
         let pod = build_pod(
             "r",
             &plan_with_memory(Vec::new()),
@@ -1689,11 +1730,12 @@ mod tests {
             &[],
         );
         let spec = pod.spec.unwrap();
-        // No memoryd sidecar, but the agent still gets the three writable-rootfs
-        // emptyDirs (workspace, outputs, and /tmp).
-        assert_eq!(spec.containers.len(), 1);
-        assert_eq!(spec.volumes.as_ref().unwrap().len(), 3);
-        assert_eq!(spec.containers[0].volume_mounts.as_ref().unwrap().len(), 3);
+        // No memoryd sidecar; only the Agent and its runtime-owned input projector.
+        // The Agent gets three writable-rootfs emptyDirs plus one read-only input tree.
+        assert_eq!(spec.containers.len(), 2);
+        assert_eq!(spec.containers[1].name, live_inputs::PROJECTOR);
+        assert_eq!(spec.volumes.as_ref().unwrap().len(), 4);
+        assert_eq!(spec.containers[0].volume_mounts.as_ref().unwrap().len(), 4);
     }
 
     fn memoryd_sidecar(spec: &PodSpec) -> &Container {

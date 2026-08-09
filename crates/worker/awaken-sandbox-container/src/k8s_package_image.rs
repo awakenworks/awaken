@@ -13,15 +13,11 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 
-use crate::k8s::backend;
+use crate::k8s::{api_conflict, backend};
 use crate::{PackageImageProvisioner, RuntimeError};
 
 const DEFAULT_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
 const PACKAGE_BUILD_TIMEOUT_SECS: i64 = 10 * 60;
-
-fn api_conflict(error: &kube::Error) -> bool {
-    matches!(error, kube::Error::Api(response) if response.code == 409)
-}
 
 /// A short-lived rootless BuildKit Job builds one deterministic destination and
 /// pushes it to the shared Registry. Coordinator's database remains the sole

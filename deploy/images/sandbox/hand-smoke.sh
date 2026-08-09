@@ -20,24 +20,14 @@ if ! command -v python3 >/dev/null; then
   exit 0
 fi
 
-# Build the hand-featured binary and stage it into the build context.
 staged="deploy/images/sandbox/.awaken-sandbox-hand.bin"
-bin=$(cargo build --release -p awaken-sandbox --features hand --message-format=json 2>/dev/null \
-  | python3 -c "import sys,json
-for line in sys.stdin:
-    try: m=json.loads(line)
-    except Exception: continue
-    if m.get('reason')=='compiler-artifact' and m.get('target',{}).get('name')=='awaken-sandbox' and m.get('executable'):
-        print(m['executable'])" | tail -1)
-[ -n "$bin" ] || { echo "HAND-SMOKE FAIL: could not resolve the hand binary"; exit 1; }
-
 rv=$(mktemp -d /tmp/awaken-hand-rv.XXXXXX)
 name="awaken-hand-smoke-$$"
 cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; rm -f "$staged"; rm -rf "$rv"; }
 trap cleanup EXIT
 docker rm -f "$name" >/dev/null 2>&1 || true
 
-cp "$bin" "$staged"
+deploy/images/sandbox/stage-binary.sh "$staged" hand
 docker build -q -f deploy/images/sandbox/Dockerfile.hand-smoke \
   --build-arg BIN="$staged" -t awaken-sandbox-hand-smoke:test . >/dev/null
 
