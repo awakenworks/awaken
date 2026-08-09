@@ -28,7 +28,7 @@ export const NAV: NavItem[] = [
     sectionLabel: "Resources",
     sectionLabelZh: "资源",
   },
-  { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "author", path: "/w/:ws/memory" },
+  { key: "memory", label: "Memory", labelZh: "记忆", group: "author", path: "/w/:ws/memory" },
 
   { key: "sessions", label: "Sessions", labelZh: "会话", group: "run", path: "/w/:ws/sessions" },
   { key: "deployments", label: "Deployments", labelZh: "部署", group: "run", path: "/w/:ws/deployments" },
@@ -77,7 +77,7 @@ function primarySurface(key: string): NavItem {
 export const WORKSPACE_JOURNEY: readonly WorkspaceJourneyStep[] = [
   { number: "01", label: "Connect", labelZh: "连接", detail: "Model supply and runtime capabilities", detailZh: "模型供给与运行能力", destination: primarySurface("models") },
   { number: "02", label: "Build", labelZh: "构建", detail: "One publishable Agent definition", detailZh: "一个可发布的 Agent 定义", destination: primarySurface("agents") },
-  { number: "03", label: "Run", labelZh: "运行", detail: "A Session on a frozen publication", detailZh: "基于冻结发布版本的会话", destination: primarySurface("sessions") },
+  { number: "03", label: "Run", labelZh: "运行", detail: "A Session on the reviewed Agent version", detailZh: "基于已审阅 Agent 版本的 Session", destination: primarySurface("sessions") },
   { number: "04", label: "Observe", labelZh: "观察", detail: "Committed events, artifacts, and usage", detailZh: "已提交事件、产物与用量", destination: primarySurface("artifacts") },
 ];
 
@@ -89,7 +89,8 @@ export function titleForPath(pathname: string): { scope: string; title: string }
   const ws = pathname.match(/^\/w\/([^/]+)\//)?.[1] ?? "";
   if (pathname.match(/^\/w\/[^/]+\/sessions\/.+/)) return { scope: ws, title: "Session" };
   if (pathname.match(/^\/w\/[^/]+\/agents\/.+/)) return { scope: ws, title: "Agent" };
-  if (pathname.match(/^\/w\/[^/]+\/assistant$/)) return { scope: ws, title: "Draft with AI" };
+  if (pathname.match(/^\/w\/[^/]+\/memory\/dreams\/.+/)) return { scope: ws, title: "Dream" };
+  if (pathname.match(/^\/w\/[^/]+\/assistant$/)) return { scope: ws, title: "Assistant" };
   const hit = NAV.find((item) =>
     new RegExp(`^${item.path.replace(":ws", "[^/]+")}$`).test(pathname),
   );

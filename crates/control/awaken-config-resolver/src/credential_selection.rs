@@ -83,7 +83,17 @@ pub fn derive_vendor_pool(
                 )
         })
         .collect::<Vec<_>>();
-    eligible.sort_by_key(|source| (!source.is_claude_code_setup_token(), source.id.0.as_str()));
+    // Prefer a credential explicitly classified for this provider over a legacy
+    // unscoped Vault secret. Unscoped material remains a compatibility fallback,
+    // but a newly added runtime/MCP secret must never displace a verified model
+    // API key merely because its generated id sorts first.
+    eligible.sort_by_key(|source| {
+        (
+            !source.is_claude_code_setup_token(),
+            source.provider_id.as_deref() != Some(offering_provider_id),
+            source.id.0.as_str(),
+        )
+    });
     let members = eligible
         .into_iter()
         .enumerate()
@@ -388,5 +398,34 @@ mod tests {
             !can_consume("openai", Some("openai.open_ai_chat.primary"), &malformed,),
             "R5"
         );
+    }
+
+    #[test]
+    fn provider_scoped_credentials_precede_unscoped_vault_fallbacks() {
+        let scoped = CredentialSource {
+            id: awaken_credential_vault::CredentialSourceId("cred:z-provider".into()),
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some("anthropic".into()),
+            protocol_endpoint_id: None,
+            env_key: None,
+            material_ref: None,
+            auxiliary_material_refs: Default::default(),
+            oauth_command: None,
+            worker_local_binding: None,
+            status: CredentialStatus::Active,
+            version: 1,
+        };
+        let unscoped = CredentialSource {
+            provider_id: None,
+            id: awaken_credential_vault::CredentialSourceId("cred:a-runtime".into()),
+            ..scoped.clone()
+        };
+        let ids = derive_vendor_pool("ws", "anthropic", None, "genai", &[unscoped, scoped])
+            .selection_order()
+            .into_iter()
+            .map(|member| member.credential_source_id.0.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["cred:z-provider", "cred:a-runtime"]);
     }
 }

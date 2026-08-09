@@ -6,6 +6,7 @@ import { api, ws } from "../lib/api/client";
 import type { AgentConfigList } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useListState } from "../lib/useListState";
+import { visibleAgents } from "../lib/visible-agents";
 
 interface McpInventoryRow {
   key: string;
@@ -41,7 +42,7 @@ export default function McpOverviewSurface() {
     refetchInterval: 30_000,
   });
   const inventory = new Map<string, McpInventoryRow>();
-  for (const agent of agents.data?.data ?? []) {
+  for (const agent of visibleAgents(agents.data?.data)) {
     for (const raw of agent.mcp_servers ?? []) {
       const server = objectOf(raw);
       const name = typeof server.name === "string" ? server.name : "";
@@ -120,8 +121,8 @@ export default function McpOverviewSurface() {
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
         <p className="mut" style={{ margin: 0, maxWidth: 780 }}>
           {app.t(
-            "Read-only inventory derived from Agent drafts. MCP endpoints are authored and published inside each Agent; this page never creates a second connection registry.",
-            "这是从 Agent 草稿派生的只读清单。MCP endpoint 在各 Agent 内配置并发布；本页不会创建第二套连接目录。",
+            "This list is built from Agent drafts. Open the owning Agent when you need to change a server, credential, or prompt exposure.",
+            "此清单来自 Agent 草稿。需要修改服务器、凭证或 Prompt 暴露方式时，请打开对应 Agent。",
           )}
         </p>
         <Button variant="primary" onClick={() => nav(`/w/${wsId}/agents/new`)}>
@@ -131,8 +132,8 @@ export default function McpOverviewSurface() {
       <div className="banner info">
         <span>ⓘ</span>
         <span>{app.t(
-          "Configured does not mean connected. A Session exposes an MCP server only after its attachment becomes durably active.",
-          "“已配置”不代表“已连接”。只有附件持久化激活后，Session 才会显示该 MCP 服务器。",
+          "Configured means the Agent draft references this server. Confirm the connection in a real Session before relying on its tools.",
+          "“已配置”表示 Agent 草稿已引用该服务器。请在真实会话中确认连接后，再依赖其中的工具。",
         )}</span>
       </div>
       {agents.error instanceof Error && <div className="err">{agents.error.message}</div>}

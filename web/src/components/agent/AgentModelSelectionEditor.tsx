@@ -55,7 +55,7 @@ export default function AgentModelSelectionEditor({
   return (
     <>
       <label className="row" style={{ justifyContent: "space-between" }}>
-        <span>{app.t("Model (references workspace catalog)", "模型(引用工作区 catalog)")}</span>
+        <span>{app.t("Model", "模型")}</span>
         <button className="manage-link" onClick={onManage}>
           {app.t("Manage ↗", "管理 ↗")}
         </button>
@@ -63,11 +63,14 @@ export default function AgentModelSelectionEditor({
       {providerModels.length > 0 || availableAcp.length > 0 ? (
         <select
           className="input mono"
-          aria-label={app.t("Model (references workspace catalog)", "模型(引用工作区 catalog)")}
+          aria-label={app.t("Model", "模型")}
           value={selectionValue(model)}
           onChange={(event) => onChange(JSON.parse(event.target.value) as AgentConfig["model"])}
         >
           <option value="">{app.t("— select a model —", "— 选择模型 —")}</option>
+          <option value={selectionValue({ mode: "auto" })}>
+            {app.t("Automatically choose a ready model", "自动选择可用模型")}
+          </option>
           {providerModels.map((id) => (
             <option key={`provider:${id}`} value={selectionValue({ id })}>
               {id}{!readyModels.includes(id) ? app.t("  ⚠ no credential", "  ⚠ 无凭证") : ""}
@@ -83,8 +86,8 @@ export default function AgentModelSelectionEditor({
         <div className="banner gate">
           <span>◌</span>
           <span>{app.t(
-            "No model has a credential yet. Configure a provider + key in Models (Manage ↗) — only credentialed models can be selected.",
-            "还没有带凭证的模型。在 Models(管理 ↗)里配置一个 provider + key —— 只有带凭证的模型可选。",
+            "No runnable model is available. Open Models, connect a provider, and verify a real response before continuing.",
+            "没有可运行模型。请打开“模型”，连接供应商并验证一次真实响应后继续。",
           )}</span>
         </div>
       )}

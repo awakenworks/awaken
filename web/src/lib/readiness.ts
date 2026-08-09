@@ -34,39 +34,43 @@ export interface ReadinessFacts {
   managedModels: boolean;
 }
 
-export function deriveReadiness(facts: ReadinessFacts): ReadinessItem[] {
+export function deriveReadiness(facts: ReadinessFacts, zh = false): ReadinessItem[] {
   const supplyReady = facts.models > 0 || facts.acp > 0;
   const executionReady = facts.nativeRuntime || facts.acp > 0 || facts.environments > 0;
   const base = `/w/${facts.workspace}`;
   return [
     {
       id: "supply",
-      label: facts.managedModels ? "Models" : "AI supply",
+      label: facts.managedModels
+        ? zh ? "模型" : "Models"
+        : zh ? "模型与连接" : "Models and connections",
       detail: supplyReady
         ? facts.managedModels
-          ? `${facts.models} Cloud-managed models available`
-          : `${facts.models} runnable models · ${facts.providerConnections} provider connections · ${facts.acp} ACP`
+          ? zh ? `${facts.models} 个云端托管模型可用` : `${facts.models} Cloud-managed models available`
+          : zh
+            ? `${facts.models} 个可用模型 · ${facts.providerConnections} 个 Provider 连接 · ${facts.acp} 个 ACP`
+            : `${facts.models} runnable models · ${facts.providerConnections} Provider connections · ${facts.acp} ACP`
         : facts.managedModels
-          ? "Cloud model catalog is temporarily unavailable"
-          : "Connect a Provider or sign in to a detected ACP runtime",
+          ? zh ? "云端模型目录暂时不可用" : "Cloud model catalog is temporarily unavailable"
+          : zh ? "连接 Provider，或登录已检测到的 ACP 运行时" : "Connect a Provider or sign in to a detected ACP runtime",
       status: supplyReady ? "ready" : facts.managedModels ? "attention" : "action",
       href: `${base}/models`,
     },
     {
       id: "agent",
-      label: "Agent",
+      label: zh ? "Agent 发布" : "Agent publication",
       detail: facts.publishedAgents
-        ? `${facts.publishedAgents} published and available to Sessions`
-        : "Create, validate and publish an Agent",
+        ? zh ? `${facts.publishedAgents} 个已发布，可用于 Session` : `${facts.publishedAgents} published and available to Sessions`
+        : zh ? "创建、检查并发布一个 Agent" : "Create, validate and publish an Agent",
       status: facts.publishedAgents ? "ready" : "action",
       href: `${base}/agents`,
     },
     {
       id: "execution",
-      label: "Execution",
+      label: zh ? "运行环境" : "Execution environments",
       detail: executionReady
-        ? `${facts.environments} environments · ${facts.acp} ready ACP runtimes`
-        : "No executable runtime or environment is available",
+        ? zh ? `${facts.environments} 个 Environment · ${facts.acp} 个就绪 ACP` : `${facts.environments} Environments · ${facts.acp} ready ACP runtimes`
+        : zh ? "当前没有可执行的 Runtime 或 Environment" : "No executable runtime or Environment is available",
       status: executionReady ? "ready" : "attention",
       href: `${base}/environments`,
     },
@@ -140,7 +144,7 @@ export function useWorkspaceReadiness() {
     environments: activeEnvironments.length,
     nativeRuntime: nativeReady,
     managedModels: configCapabilities.data?.models.byok_enabled === false,
-  });
+  }, app.locale === "zh");
 
   return {
     items,

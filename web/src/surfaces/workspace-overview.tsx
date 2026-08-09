@@ -29,18 +29,12 @@ export default function WorkspaceOverviewSurface() {
   return (
     <div className="workspace-overview">
       <div className="page-intro workspace-overview__intro">
-        <span>
-          <small className="product-kicker">{app.t("Agent control plane", "Agent 控制面")}</small>
-          <h1>{app.t("Build an Agent that can prove its work.", "构建一个能证明其工作的 Agent。")}</h1>
-          <p className="mut">
-            {app.t("Connect governed capabilities, publish one exact definition, then inspect the committed Session evidence.", "连接受治理的能力，发布一个精确版本，再检查会话提交的证据。")}
-          </p>
-        </span>
+        <span><strong>{app.t("Choose where to continue", "选择下一步")}</strong><p className="mut">{app.t("Readiness checks below show what is already usable and what still needs setup.", "下方就绪检查会说明哪些能力已可用、哪些仍需配置。")}</p></span>
         <span className="row">
           <Button onClick={() => nav(`/w/${wsId}/models`)}>{app.t("Connect provider", "连接供应商")}</Button>
           <Button onClick={() => nav(`/w/${wsId}/agents/new`)}>{app.t("Create Agent", "创建 Agent")}</Button>
           <Button variant="primary" onClick={() => nav(`/w/${wsId}/sessions`)}>
-            {app.t("Run a Session", "运行会话")}
+            {app.t("Start real run", "开始真实运行")}
           </Button>
         </span>
       </div>

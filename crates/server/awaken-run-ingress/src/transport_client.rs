@@ -121,9 +121,22 @@ impl HttpDispatchQueue {
             .await
             .map_err(|e| DispatchError::Rejected(format!("dispatch transport: {e}")))?;
         if !resp.status().is_success() {
+            let status = resp.status();
+            let detail = resp
+                .text()
+                .await
+                .unwrap_or_default()
+                .trim()
+                .chars()
+                .take(512)
+                .collect::<String>();
             return Err(DispatchError::Rejected(format!(
-                "dispatch transport server returned {}",
-                resp.status()
+                "dispatch transport server returned {status}{}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
             )));
         }
         resp.json()
@@ -174,9 +187,22 @@ impl HttpDispatchQueue {
                 break;
             }
             if !response.status().is_success() {
+                let status = response.status();
+                let detail = response
+                    .text()
+                    .await
+                    .unwrap_or_default()
+                    .trim()
+                    .chars()
+                    .take(512)
+                    .collect::<String>();
                 return Err(DispatchError::Rejected(format!(
-                    "dispatch transport server returned {}",
-                    response.status()
+                    "dispatch transport server returned {status}{}",
+                    if detail.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {detail}")
+                    }
                 )));
             }
             match response.json().await {

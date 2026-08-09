@@ -1,5 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const backendPort = Number(process.env.AWAKEN_E2E_BACKEND_PORT ?? "38080");
+const webPort = Number(process.env.AWAKEN_E2E_WEB_PORT ?? "3002");
+const backendUrl = `http://127.0.0.1:${backendPort}`;
+const webUrl = `http://127.0.0.1:${webPort}`;
+const cargoTargetDir = process.env.AWAKEN_E2E_CARGO_TARGET_DIR ?? "/tmp/awaken-target-console-e2e";
+
 // UI e2e: drives the real console (vite dev on :3002, proxying /v1 to a real
 // awaken-server in management mode on :38080). Both are launched as
 // webServers; set AWAKEN_HTTP_URL to point vite's proxy at an existing backend.
@@ -15,7 +21,7 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   use: {
-    baseURL: "http://127.0.0.1:3002",
+    baseURL: webUrl,
     trace: "retain-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
@@ -30,17 +36,17 @@ export default defineConfig({
       // Browser E2E owns no human who can consume the one-time setup handoff.
       // Exercise application behavior in the explicit no-login deployment mode;
       // local-browser authentication has its own control-plane integration tests.
-      command: "e2e_data_dir=$(mktemp -d /tmp/awaken-console-e2e.XXXXXX) && CARGO_TARGET_DIR=/tmp/awaken-target-console-e2e exec cargo run --quiet -p awaken-cli --bin awaken -- start --port 38080 --data-dir \"$e2e_data_dir\" --no-browser --identity-mode no-login",
+      command: `e2e_data_dir=$(mktemp -d /tmp/awaken-console-e2e.XXXXXX) && CARGO_TARGET_DIR="${cargoTargetDir}" exec cargo run --quiet -p awaken-cli --bin awaken -- all-in-one --port ${backendPort} --data-dir "$e2e_data_dir" --no-browser --identity-mode no-login`,
       cwd: "..",
-      url: "http://127.0.0.1:38080/v1/config/catalog",
+      url: `${backendUrl}/v1/config/catalog`,
       // A cold Rust build on constrained CI runners can exceed four minutes;
       // keep the browser gate reliable while still bounding startup.
       timeout: 600_000,
       reuseExistingServer: true,
     },
     {
-      command: "pnpm dev",
-      url: "http://127.0.0.1:3002",
+      command: `AWAKEN_HTTP_URL=${backendUrl} pnpm exec vite --host 127.0.0.1 --port ${webPort}`,
+      url: webUrl,
       timeout: 60_000,
       reuseExistingServer: true,
     },

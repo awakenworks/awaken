@@ -15,22 +15,22 @@ export default function SessionIntegrations({ session }: { session?: Session }) 
     <Card style={{ marginTop: 10 }}>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <h2 className="section-title">{app.t("Active MCP integrations", "已激活的 MCP 集成")}</h2>
+          <h2 className="section-title">{app.t("MCP connections used by this Session", "本次 Session 使用的 MCP 连接")}</h2>
           <p className="hint">{app.t(
-            "This is the Session's durable active projection, not the Agent's desired configuration.",
-            "这里展示 Session 的持久化已激活投影，而不是 Agent 的期望配置。",
+            "Only MCP servers that connected successfully for this Session appear here.",
+            "这里只显示为当前 Session 成功连接的 MCP 服务器。",
           )}</p>
         </div>
         <Pill tone={servers.length > 0 ? "ok" : "neutral"}>
-          {servers.length} {app.t("active", "已激活")}
+          {servers.length} {app.t("connected", "已连接")}
         </Pill>
       </div>
       {servers.length === 0 ? (
         <EmptyState
-          title={app.t("No active MCP servers.", "没有已激活的 MCP 服务器。")}
+          title={app.t("No MCP servers connected.", "没有已连接的 MCP 服务器。")}
           hint={app.t(
-            "A configured server appears here only after Session preparation succeeds. Connection failures remain visible in Trace.",
-            "只有 Session 准备成功后，已配置服务器才会显示在这里；连接失败仍可在 Trace 中查看。",
+            "Configured servers appear after the Session starts successfully. Open Trace to diagnose a failed connection.",
+            "Session 成功启动后，已配置的服务器才会显示；连接失败时可打开“追踪”查看原因。",
           )}
         />
       ) : (

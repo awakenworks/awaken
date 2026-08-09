@@ -188,7 +188,24 @@ async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Val
         "policies": policy_catalog(),
         "runtimes": runtime_caps,
         "sandbox_execution_policy": sandbox_execution_policy_capability(),
+        "dreams": dream_capability(),
     }))
+}
+
+/// Stable, deployment-independent Dream authoring limits. Runtime model
+/// readiness remains workspace-scoped and is intersected with `/v1/config/catalog`.
+pub fn dream_capability() -> Value {
+    json!({
+        "enabled": true,
+        "research_preview": true,
+        "supported_models": awaken_session_contract::DREAM_SUPPORTED_MODELS,
+        "supported_speeds": ["standard"],
+        "max_sessions": awaken_session_contract::DREAM_MAX_SESSIONS,
+        "max_instructions_chars": awaken_session_contract::DREAM_MAX_INSTRUCTIONS_CHARS,
+        "policy_available": true,
+        "collection_path": "/v1/dreams",
+        "policy_path_template": "/v1/awaken/memory-stores/{memory_store_id}/dream-policy",
+    })
 }
 
 /// Authoring contract for the independent, versioned SandboxExecutionPolicy.
@@ -439,5 +456,22 @@ mod tests {
         assert_eq!(preset_ids, ["standard", "locked-down"]);
         let locked = presets.iter().find(|p| p["id"] == "locked-down").unwrap();
         assert_eq!(locked["spec"]["isolation"], "container");
+    }
+
+    #[test]
+    fn dream_capability_projects_the_shared_contract_limits() {
+        let dream = dream_capability();
+        assert_eq!(dream["enabled"], true);
+        assert_eq!(dream["research_preview"], true);
+        assert_eq!(dream["max_sessions"], 100);
+        assert_eq!(dream["max_instructions_chars"], 4096);
+        assert_eq!(dream["supported_speeds"], json!(["standard"]));
+        assert!(
+            dream["supported_models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|model| model == "claude-sonnet-5")
+        );
     }
 }

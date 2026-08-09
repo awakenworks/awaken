@@ -379,7 +379,7 @@ pub fn mount(host: Arc<SharedHost>) -> Router {
     // webhooks (identical to an unconfigured plane before).
     let catalog = ephemeral_resource_catalog();
     let state = local_managed_state(host.clone(), catalog.clone());
-    mount_with_managed_and_resource_catalog(host, state, catalog)
+    mount_with_managed_and_resource_catalog_and_dreams(host, state, catalog).0
 }
 
 /// Assemble the local/single-process Managed adapter with one shared ephemeral
@@ -521,7 +521,26 @@ pub fn mount_with_managed_and_resource_catalog(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
 ) -> Router {
-    mount_with_managed_over(host, managed_state, resource_catalog, None).0
+    mount_with_managed_and_resource_catalog_and_dreams(host, managed_state, resource_catalog).0
+}
+
+/// Scenario/embedder variant that returns the exact Dream aggregate mounted in
+/// the data router. Production callers use the fuller application-access variant
+/// below; deterministic hosts use this handle to mount the Awaken-only policy
+/// projection without constructing a second scheduler or state authority.
+pub fn mount_with_managed_and_resource_catalog_and_dreams(
+    host: Arc<SharedHost>,
+    managed_state: Arc<ManagedState>,
+    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+    let local_workspace = host.local_workspace().to_string();
+    let (data, dreams) = mount_with_managed_over(host, managed_state, resource_catalog, None);
+    // The bare scenario/test mount has no separate management edge. Keep the
+    // Awaken policy authoring projection reachable here so deterministic SDK and
+    // Console E2E can exercise it. Production composition mounts this exact
+    // router on `CoordinatorComponent::management_router`, behind IAM + audit.
+    let router = data.merge(awaken_protocol_awaken::dream_policy_router(dreams.clone()));
+    (with_local_workspace_scope(router, local_workspace), dreams)
 }
 
 /// Test-support data plane with application credentials enforced on browser-facing
@@ -681,6 +700,20 @@ fn mount_with_managed_over_and_models(
             .expect("load durable Dream jobs"),
     );
     dream_application.bind_session_source(managed_state.clone());
+    struct DreamModelDirectory(Arc<dyn awaken_protocol_managed_resources::ModelDirectory>);
+    #[async_trait::async_trait]
+    impl awaken_dream_application::DreamModelReadiness for DreamModelDirectory {
+        async fn is_ready(&self, workspace_id: &str, model_id: &str) -> Result<bool, String> {
+            self.0.list(workspace_id).await.map(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.id == model_id || entry.display_name == model_id)
+            })
+        }
+    }
+    if let Some(directory) = model_directory.clone() {
+        dream_application.bind_model_readiness(Arc::new(DreamModelDirectory(directory)));
+    }
     dream_application.resume_incomplete();
     let dreams = awaken_protocol_managed::dreams_router(dream_application.clone());
     let managed = router(managed_state.clone()).merge(dreams).merge(
@@ -755,29 +788,33 @@ fn mount_with_managed_over_and_models(
         .merge(durable_ops)
         .merge(worker_transport)
         .merge(resource_management_router)
-        .merge(models)
-        // A scope-less request is the local/single-tenant mode. Resolve that mode
-        // once at the composition edge so sessions and every resource adapter see
-        // the same platform-provisioned workspace. Authenticated/cloud edges stamp
-        // `WorkspaceScope` before this layer and therefore keep their resolved scope.
-        .layer(axum::middleware::from_fn(
-            move |mut request: axum::extract::Request, next: axum::middleware::Next| {
-                let local_workspace = local_workspace.clone();
-                async move {
-                    if request
-                        .extensions()
-                        .get::<awaken_protocol_managed::WorkspaceScope>()
-                        .is_none()
-                    {
-                        request
-                            .extensions_mut()
-                            .insert(awaken_protocol_managed::WorkspaceScope(local_workspace));
-                    }
-                    next.run(request).await
-                }
-            },
-        ));
+        .merge(models);
+    let router = with_local_workspace_scope(router, local_workspace);
     Ok((router, dream_application))
+}
+
+fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router {
+    router.layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+            let local_workspace = local_workspace.clone();
+            async move {
+                // A scope-less request is the local/single-tenant mode. Resolve
+                // that mode once at the composition edge so every adapter sees
+                // the same platform-provisioned Workspace. Authenticated/cloud
+                // edges already stamped a scope, which must remain authoritative.
+                if request
+                    .extensions()
+                    .get::<awaken_protocol_managed::WorkspaceScope>()
+                    .is_none()
+                {
+                    request
+                        .extensions_mut()
+                        .insert(awaken_protocol_managed::WorkspaceScope(local_workspace));
+                }
+                next.run(request).await
+            }
+        },
+    ))
 }
 
 #[cfg(feature = "test-support")]

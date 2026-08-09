@@ -21,7 +21,7 @@ use super::{EchoModel, SharedHost, resource_host, scenario_resource_catalog};
 pub(super) fn mount(host: Arc<SharedHost>) -> Router {
     let catalog = scenario_resource_catalog();
     let managed = awaken_coordinator::local_managed_state(host.clone(), catalog.clone());
-    awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
+    awaken_coordinator::mount_with_managed_and_resource_catalog_and_dreams(host, managed, catalog).0
 }
 
 pub(super) fn mount_with_agent_source(

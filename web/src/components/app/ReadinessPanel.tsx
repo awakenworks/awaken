@@ -14,8 +14,8 @@ export default function ReadinessPanel({ compact = false }: { compact?: boolean 
           <h2>{app.t("Ready to run", "运行就绪")}</h2>
           <p className="hint">
             {app.t(
-              "Live projection of the existing Workspace configuration; no settings are copied here.",
-              "现有工作区配置的实时投影；此处不复制任何设置。",
+              "Check whether a model, a published Agent, and an execution Environment are ready before starting a Session.",
+              "开始 Session 前，检查模型、已发布 Agent 和执行 Environment 是否已经就绪。",
             )}
           </p>
         </span>
@@ -41,7 +41,7 @@ export default function ReadinessPanel({ compact = false }: { compact?: boolean 
                 {!compact && <small>{item.detail}</small>}
               </span>
               <span className="readiness-action">
-                {item.status === "ready" ? app.t("View", "查看") : app.t("Fix", "修复")}
+                {item.status === "ready" ? app.t("Review", "查看") : app.t("Set up", "去配置")}
               </span>
             </button>
           ))}

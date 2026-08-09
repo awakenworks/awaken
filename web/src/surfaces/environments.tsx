@@ -8,6 +8,7 @@ import { api, ws } from "../lib/api/client";
 import type {
   Environment,
   EnvironmentConfig,
+  EnvironmentPackages,
   Page,
   SandboxExecutionPolicy,
   SandboxPolicyBinding,
@@ -15,7 +16,45 @@ import type {
   WorkQueueStats,
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
+import { Button, Card, Modal, Pill, Segmented, TextAreaField, TextField, useConfirm, useToast } from "../components/ui";
+
+const PACKAGE_MANAGERS = ["apt", "cargo", "gem", "go", "npm", "pip"] as const;
+type PackageManager = typeof PACKAGE_MANAGERS[number];
+type PackageDraft = Record<PackageManager, string>;
+type EnvironmentUpdateConfig = EnvironmentConfig | (Omit<EnvironmentConfig, "packages"> & { packages: null });
+
+const emptyPackages = (): PackageDraft => ({ apt: "", cargo: "", gem: "", go: "", npm: "", pip: "" });
+
+export function parsePackageList(value: string): string[] {
+  return value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function packageDraft(packages?: EnvironmentPackages): PackageDraft {
+  return Object.fromEntries(PACKAGE_MANAGERS.map((manager) => [manager, packages?.[manager]?.join("\n") ?? ""])) as PackageDraft;
+}
+
+function hasPackageRequirements(packages: PackageDraft): boolean {
+  return PACKAGE_MANAGERS.some((manager) => parsePackageList(packages[manager]).length > 0);
+}
+
+function PackageFields({ value, onChange }: { value: PackageDraft; onChange: (value: PackageDraft) => void }) {
+  const app = useApp();
+  return (
+    <details>
+      <summary className="mut" style={{ cursor: "pointer" }}>{app.t("Packages · optional", "Packages · 可选")}</summary>
+      <p className="mut">{app.t("One package requirement per line. Versions are allowed; command options are rejected by the server.", "每行一个 package，可带版本；服务端会拒绝命令行选项。")}</p>
+      <div className="banner info"><span>ⓘ</span><span>{app.t(
+        "Package lists are requirements for the Environment provider. A local runtime without package provisioning will reject the run instead of ignoring them.",
+        "Package 列表是对 Environment Provider 的要求。若本地运行时不支持安装 Package，运行会明确失败，不会静默忽略。",
+      )}</span></div>
+      <div className="grid-2">
+        {PACKAGE_MANAGERS.map((manager) => (
+          <TextAreaField key={manager} label={manager} mono rows={3} value={value[manager]} onChange={(event) => onChange({ ...value, [manager]: event.target.value })} placeholder={manager === "npm" ? "typescript@5" : manager === "pip" ? "httpx==0.28" : ""} />
+        ))}
+      </div>
+    </details>
+  );
+}
 
 /** The environment's durable work-queue state (EnvRegistry + WorkQueue). A self-hosted
  * worker polls this queue; `depth` = items queued (backlog waiting to be claimed),
@@ -60,15 +99,19 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   const workspace = app.workspaceId;
   const qc = useQueryClient();
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [placement, setPlacement] = useState<"cloud" | "self_hosted">("cloud");
   const [net, setNet] = useState<"unrestricted" | "limited">("unrestricted");
   const [hosts, setHosts] = useState("");
+  const [allowMcpServers, setAllowMcpServers] = useState(true);
+  const [allowPackageManagers, setAllowPackageManagers] = useState(true);
+  const [packages, setPackages] = useState<PackageDraft>(emptyPackages);
   const [provisioning, setProvisioning] = useState<SandboxProvisioning>("eager");
   const create = useMutation({
     mutationFn: async () => {
-      const config = buildEnvironmentConfig(placement, net, hosts);
+      const config = buildEnvironmentConfig(placement, net, hosts, packages, allowMcpServers, allowPackageManagers);
       assertSandboxProvisioningPlacement(placement, provisioning);
-      const environment = await api.post<Environment>(ws("/v1/environments"), { name: name || "environment", config });
+      const environment = await api.post<Environment>(ws("/v1/environments"), { name: name || "environment", description, config });
       const policy = buildDeferredSandboxPolicy(environment.id, placement, provisioning);
       if (policy) {
         const created = await api.post<SandboxExecutionPolicy>(ws("/v1/awaken/sandbox-execution-policies"), policy);
@@ -88,6 +131,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal title={app.t("New environment", "新建运行环境")} onClose={onClose}>
         <TextField label={app.t("Name", "名称")} value={name} onChange={(e) => setName(e.target.value)} placeholder="claude-sandbox-github" />
+        <TextField label={app.t("Description", "描述")} value={description} onChange={(e) => setDescription(e.target.value)} placeholder={app.t("What this Environment is for", "这个 Environment 的用途")} />
 
         <div className="field">
           <label>{app.t("Placement", "运行位置")}</label>
@@ -118,10 +162,16 @@ function CreateModal({ onClose }: { onClose: () => void }) {
                 onChange={setNet}
               />
               {net === "limited" && (
-                <input className="input mono" placeholder="api.example.com, *.foo.com" value={hosts} onChange={(e) => setHosts(e.target.value)} />
+                <>
+                  <input className="input mono" placeholder="api.example.com, *.foo.com" value={hosts} onChange={(e) => setHosts(e.target.value)} />
+                  <label className="row"><input type="checkbox" checked={allowMcpServers} onChange={(event) => setAllowMcpServers(event.target.checked)} />{app.t("Allow configured MCP servers", "允许已配置的 MCP Server")}</label>
+                  <label className="row"><input type="checkbox" checked={allowPackageManagers} onChange={(event) => setAllowPackageManagers(event.target.checked)} />{app.t("Allow public package registries", "允许公共 Package Registry")}</label>
+                </>
               )}
             </div>
         )}
+
+        {placement === "cloud" && <PackageFields value={packages} onChange={setPackages} />}
 
         {placement === "self_hosted" && (
           <div className="field">
@@ -159,6 +209,51 @@ function CreateModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+function EditModal({ environment, onClose }: { environment: Environment; onClose: () => void }) {
+  const app = useApp();
+  const qc = useQueryClient();
+  const [name, setName] = useState(environment.name);
+  const [description, setDescription] = useState(environment.description ?? "");
+  const [placement, setPlacement] = useState<"cloud" | "self_hosted">(environment.config.type);
+  const initialNetworking = environment.config.networking;
+  const [net, setNet] = useState<"unrestricted" | "limited">(initialNetworking?.type === "limited" ? "limited" : "unrestricted");
+  const [hosts, setHosts] = useState(initialNetworking?.type === "limited" ? (initialNetworking.allowed_hosts ?? []).join(", ") : "");
+  const [allowMcpServers, setAllowMcpServers] = useState(initialNetworking?.type === "limited" ? initialNetworking.allow_mcp_servers ?? false : true);
+  const [allowPackageManagers, setAllowPackageManagers] = useState(initialNetworking?.type === "limited" ? initialNetworking.allow_package_managers ?? false : true);
+  const [packages, setPackages] = useState<PackageDraft>(() => packageDraft(environment.config.packages));
+  const update = useMutation({
+    mutationFn: () => api.post<Environment>(ws(`/v1/environments/${environment.id}`), {
+      name: name.trim() || environment.name,
+      description,
+      config: buildEnvironmentUpdateConfig(placement, net, hosts, packages, allowMcpServers, allowPackageManagers),
+    }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["environments", app.workspaceId] });
+      onClose();
+    },
+  });
+  return (
+    <Modal
+      title={<>{app.t("Edit environment", "编辑运行环境")} · <span className="mono">{environment.id}</span></>}
+      onClose={onClose}
+      width="min(820px, 94vw)"
+      footer={<><Button onClick={onClose}>{app.t("Cancel", "取消")}</Button><Button variant="primary" disabled={update.isPending} onClick={() => update.mutate()}>{app.t("Save new revision", "保存新修订")}</Button></>}
+    >
+      <div className="stack">
+        <div className="grid-2"><TextField label={app.t("Name", "名称")} value={name} onChange={(event) => setName(event.target.value)} /><TextField label={app.t("Description", "描述")} value={description} onChange={(event) => setDescription(event.target.value)} /></div>
+        <div className="field"><label>{app.t("Placement", "运行位置")}</label><Segmented value={placement} onChange={setPlacement} options={[{ value: "cloud", label: app.t("cloud", "云托管") }, { value: "self_hosted", label: app.t("self-hosted", "自管") }]} /></div>
+        {placement === "cloud" && <>
+          <div className="field"><label>{app.t("Networking", "网络")}</label><Segmented value={net} onChange={setNet} options={[{ value: "unrestricted", label: app.t("unrestricted", "不限") }, { value: "limited", label: app.t("limited", "白名单") }]} />
+          {net === "limited" && <><TextField label={app.t("Allowed hosts", "允许的 Host")} mono value={hosts} onChange={(event) => setHosts(event.target.value)} /><label className="row"><input type="checkbox" checked={allowMcpServers} onChange={(event) => setAllowMcpServers(event.target.checked)} />{app.t("Allow configured MCP servers", "允许已配置的 MCP Server")}</label><label className="row"><input type="checkbox" checked={allowPackageManagers} onChange={(event) => setAllowPackageManagers(event.target.checked)} />{app.t("Allow public package registries", "允许公共 Package Registry")}</label></>}</div>
+          <PackageFields value={packages} onChange={setPackages} />
+        </>}
+        <div className="banner info"><span>ⓘ</span><span>{app.t("Saving creates a new immutable Environment revision. Existing Sessions keep their frozen revision.", "保存会生成新的不可变 Environment 修订；已有 Session 继续使用其冻结版本。")}</span></div>
+        {update.error instanceof Error && <div className="err">{update.error.message}</div>}
+      </div>
+    </Modal>
+  );
+}
+
 export default function EnvironmentsSurface() {
   const app = useApp();
   const workspace = app.workspaceId;
@@ -166,6 +261,7 @@ export default function EnvironmentsSurface() {
   const confirm = useConfirm();
   const toast = useToast();
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<Environment | null>(null);
   const envs = useQuery({
     queryKey: ["environments", workspace],
     queryFn: () => api.get<Page<Environment>>(ws("/v1/environments")),
@@ -192,12 +288,7 @@ export default function EnvironmentsSurface() {
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="mut">
-          {app.t(
-            "Reusable container templates. Sessions reference one by environment_id.",
-            "可复用的容器模板。会话按 environment_id 引用。",
-          )}
-        </span>
+        <span />
         <Button variant="primary" onClick={() => setCreating(true)}>
           + {app.t("New environment", "新建环境")}
         </Button>
@@ -207,7 +298,7 @@ export default function EnvironmentsSurface() {
         <table className="table">
           <thead>
             <tr>
-              <th>Environment</th>
+              <th>{app.t("Environment", "运行环境")}</th>
               <th>{app.t("Name", "名称")}</th>
               <th>{app.t("Placement", "运行位置")}</th>
               <th>{app.t("Networking", "网络")}</th>
@@ -223,13 +314,14 @@ export default function EnvironmentsSurface() {
                 <td>{e.name}</td>
                 <td>
                   <Pill tone={e.config.type === "self_hosted" ? "agent" : "neutral"}>
-                    {e.config.type}
+                    {e.config.type === "self_hosted" ? app.t("self-hosted", "自管") : app.t("cloud", "云托管")}
                   </Pill>
                 </td>
-                <td className="mut">{isolationLabel(e.config)}</td>
+                <td className="mut">{networkingLabel(e.config, app.locale === "zh")}</td>
                 <td><SandboxTiming id={e.id} /></td>
                 <td>{e.archived_at ? <span className="mut">—</span> : <EnvQueue id={e.id} />}</td>
                 <td style={{ textAlign: "right" }}>
+                  {e.id !== "env_local" && <Button variant="ghost" style={{ height: 22 }} onClick={() => setEditing(e)}>{app.t("Edit", "编辑")}</Button>}
                   {e.archived_at ? (
                     <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>
                   ) : (
@@ -256,6 +348,7 @@ export default function EnvironmentsSurface() {
         </table>
       </Card>
       {creating && <CreateModal onClose={() => setCreating(false)} />}
+      {editing && <EditModal environment={editing} onClose={() => setEditing(null)} />}
     </>
   );
 }
@@ -288,20 +381,53 @@ export function isolationLabel(config: EnvironmentConfig): string {
   return config.networking?.type ?? "provider default";
 }
 
+export function networkingLabel(config: EnvironmentConfig, zh = false): string {
+  const value = isolationLabel(config);
+  if (!zh) return value === "provider default" ? "Provider default" : value === "unrestricted" ? "Unrestricted" : "Allowlist";
+  return value === "provider default" ? "由 Provider 决定" : value === "unrestricted" ? "不限" : "白名单";
+}
+
 export function buildEnvironmentConfig(
   placement: "cloud" | "self_hosted",
   networking: "unrestricted" | "limited",
   hosts: string,
+  packages: PackageDraft = emptyPackages(),
+  allowMcpServers = true,
+  allowPackageManagers = true,
 ): EnvironmentConfig {
   if (placement === "self_hosted") return { type: "self_hosted" };
-  return {
+  const config: EnvironmentConfig = {
     type: "cloud",
     networking: networking === "limited"
       ? {
           type: "limited",
           allowed_hosts: hosts.split(",").map((host) => host.trim()).filter(Boolean),
-          allow_mcp_servers: true,
+          allow_mcp_servers: allowMcpServers,
+          allow_package_managers: allowPackageManagers,
         }
       : { type: "unrestricted" },
   };
+  if (hasPackageRequirements(packages)) {
+    config.packages = {
+      type: "packages",
+      ...Object.fromEntries(PACKAGE_MANAGERS.map((manager) => [manager, parsePackageList(packages[manager])])),
+    };
+  }
+  return config;
+}
+
+/** Updates must send an explicit null when the user clears every package field.
+ * Omitting the field means "preserve the previous package requirements" in the
+ * Managed Agents PATCH contract. */
+export function buildEnvironmentUpdateConfig(
+  placement: "cloud" | "self_hosted",
+  networking: "unrestricted" | "limited",
+  hosts: string,
+  packages: PackageDraft = emptyPackages(),
+  allowMcpServers = true,
+  allowPackageManagers = true,
+): EnvironmentUpdateConfig {
+  const config = buildEnvironmentConfig(placement, networking, hosts, packages, allowMcpServers, allowPackageManagers);
+  if (placement === "cloud" && !hasPackageRequirements(packages)) return { ...config, packages: null };
+  return config;
 }

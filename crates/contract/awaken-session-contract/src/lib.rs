@@ -55,10 +55,11 @@ pub use baseline::{
     SessionNetworkPolicy,
 };
 pub use dream::{
-    Dream, DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig,
-    DreamModelInput, DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyConfig, DreamPolicyRecord,
-    DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamProcessStoreError,
-    DreamStatus, DreamUsage,
+    DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
+    DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
+    DreamModelSpeed, DreamOutput, DreamPage, DreamPolicy, DreamPolicyApplication,
+    DreamPolicyApplicationError, DreamPolicyConfig, DreamPolicyRecord, DreamProcessFailure,
+    DreamProcessRecord, DreamProcessStore, DreamProcessStoreError, DreamStatus, DreamUsage,
 };
 pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
