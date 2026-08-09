@@ -81,7 +81,12 @@ pub fn commit_pg_bundle()
                 .find_map(|line| line.strip_prefix("--").map(|rest| rest.trim().to_string()))
                 .filter(|desc| !desc.is_empty())
                 .unwrap_or_else(|| (*name).to_string());
-            awaken_scoped_migration::Migration::new(version, description, contents.trim())
+            awaken_scoped_migration::Migration::published_legacy(
+                version,
+                description,
+                contents.trim(),
+                "84c3e9c903caa1962167ead4e6f15edda675be29a7b9869048a15048b697208a",
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
     awaken_scoped_migration::MigrationBundle::new(COMMIT_PG_BUNDLE_ID, migrations)
@@ -1050,9 +1055,10 @@ mod migration_tests {
     #[test]
     fn commit_sequence_creation_uses_the_scoped_receipt_as_its_only_guard() {
         // Cause/effect decision table: portable commit schema present + V0001
-        // receipt absent => create and seed the sequence; receipt present => the
-        // runner skips V0001; sequence present without a receipt => bare CREATE
-        // fails closed, exposing drift instead of recording a conditional no-op.
+        // receipt absent => execute the pinned historical create/seed body;
+        // canonical receipt present => apply nothing; edited body or unknown
+        // receipt => construction/planning fails closed. The published constructor
+        // owns compatibility, so adapters never rewrite the migration ledger.
         let bundle = commit_pg_bundle().expect("deterministic Postgres bundle");
         assert_eq!(bundle.migrations().len(), 1);
         assert_eq!(bundle.migrations()[0].version(), 1);

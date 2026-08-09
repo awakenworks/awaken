@@ -97,11 +97,20 @@ pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
     let migrations = FILES
         .iter()
         .map(|(name, contents)| {
-            Migration::new(
-                version_of(name),
-                description_of(name, contents),
-                contents.trim(),
-            )
+            let version = version_of(name);
+            let description = description_of(name, contents);
+            let sql = contents.trim();
+            if version == 9 {
+                Migration::published_legacy_with_aliases(
+                    version,
+                    description,
+                    sql,
+                    "43acd8cf624d2d939bff17aadb9c34061bc8f65207007b1c8dd68196a86763c4",
+                    ["987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131"],
+                )
+            } else {
+                Migration::new(version, description, sql)
+            }
         })
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)
@@ -109,17 +118,55 @@ pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use awaken_scoped_migration::{Dialect, MigrationError, plan};
+
     use super::*;
 
     #[test]
     fn admin_bundle_lints() {
         // Cause/effect decision table: every predecessor migration is applied in
-        // order (C1) and the scoped receipt is absent (C2) => V0009..V0011 execute
-        // their deterministic DROP statements (E1); receipts present => they are
-        // skipped (E2); schema drift/missing predecessors => a bare DROP fails
-        // closed (E3), rather than recording a conditional no-op as success.
+        // order (C1), the published V0009 checksum is exact (C2), and the V0010
+        // and V0011 receipts are absent/present (C3). The one canonical bundle
+        // accepts the exact old V0009 receipt, while fresh installs execute its
+        // pinned body (E1); V0010/V0011 execute once and then skip their recorded
+        // receipts (E2); edited bytes, checksum drift, or missing predecessors
+        // fail closed (E3). R1=C1+C2=>E1; R2=R1+C3=>E2;
+        // R3=!C1|!C2=>E3.
         let bundle = admin_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
+    }
+
+    #[test]
+    fn published_v9_receipts_are_accepted_without_rewriting_the_ledger() {
+        // Cause/effect decision table for the immutable Admin V9 body:
+        // R1 canonical 43acd receipt -> accept and apply nothing; R2 known
+        // 987ffe receipt written by the retired compatibility adapter -> accept
+        // and apply nothing; R3 any other receipt -> checksum mismatch. In all
+        // rules the ledger remains untouched and fresh installs execute only the
+        // canonical historical SQL owned by `admin_bundle`.
+        let bundle = admin_bundle().expect("bundle builds");
+        for receipt in [
+            "43acd8cf624d2d939bff17aadb9c34061bc8f65207007b1c8dd68196a86763c4",
+            "987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131",
+        ] {
+            let applied = BTreeMap::from([(9, receipt.to_string())]);
+            assert!(
+                plan(&bundle, &applied, Dialect::Sqlite)
+                    .unwrap()
+                    .iter()
+                    .all(|migration| migration.version() != 9)
+            );
+        }
+        let unknown = BTreeMap::from([(
+            9,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        )]);
+        assert!(matches!(
+            plan(&bundle, &unknown, Dialect::Sqlite).unwrap_err(),
+            MigrationError::ChecksumMismatch { version: 9, .. }
+        ));
     }
 
     #[test]

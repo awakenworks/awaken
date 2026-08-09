@@ -20,20 +20,23 @@ fn sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         "awaken.sandbox_execution_policy",
         vec![
-            Migration::new(
+            Migration::published_legacy(
                 1,
                 "immutable sandbox execution policy versions",
                 "CREATE TABLE IF NOT EXISTS {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
+                "8a7c8879b0530755672ef2a4e9912331c7acfb9071e81a07e4b2722773c637e4",
             )?,
-            Migration::new(
+            Migration::published_legacy(
                 2,
                 "current sandbox execution policy version",
                 "CREATE TABLE IF NOT EXISTS {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+                "9945afe967af15a5a43dd52c57782524dfab0bc0408bbc3efef88f18e4926049",
             )?,
-            Migration::new(
+            Migration::published_legacy(
                 3,
                 "exact environment sandbox execution policy binding",
                 "CREATE TABLE IF NOT EXISTS {prefix}_environment (environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version BIGINT NOT NULL)",
+                "9d94a82c5084ece33984423bd646e8f9d08de8b78c9067a2c7598a0b3a7b48d1",
             )?,
         ],
     )
