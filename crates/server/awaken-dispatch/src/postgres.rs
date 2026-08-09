@@ -74,6 +74,15 @@ async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         .map_err(|err| StoreError::Migrate(err.to_string()))
 }
 
+async fn verify_schema(pool: &PgPool) -> Result<(), StoreError> {
+    let bundle = dispatch_bundle().map_err(|err| StoreError::Migrate(err.to_string()))?;
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .map_err(|err| StoreError::Migrate(err.to_string()))?
+        .verify_bundle(&bundle)
+        .await
+        .map_err(|err| StoreError::Migrate(err.to_string()))
+}
+
 impl PostgresDispatchStore {
     /// Connect and apply the dispatch-schema migrations.
     ///
@@ -89,10 +98,27 @@ impl PostgresDispatchStore {
         Self::with_pool(pool).await
     }
 
+    /// Connect to a dispatch schema already applied by the deployment migration
+    /// phase. This path verifies the ledger and never executes DDL.
+    pub async fn connect_existing(url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(max_connections)
+            .connect(url)
+            .await
+            .map_err(|err| StoreError::Connect(err.to_string()))?;
+        Self::with_existing_pool(pool).await
+    }
+
     /// Build from an existing pool: apply the dispatch migrations under the
     /// runtime namespace.
     pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
         migrate(&pool).await?;
+        Ok(Self { pool })
+    }
+
+    /// Build from an existing pool after verifying the externally-owned ledger.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
+        verify_schema(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -137,9 +163,25 @@ impl PostgresStreamCheckpointStore {
         Self::with_pool(pool).await
     }
 
+    /// Connect to the already-migrated shared runtime-dispatch schema.
+    pub async fn connect_existing(url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(max_connections)
+            .connect(url)
+            .await
+            .map_err(|err| StoreError::Connect(err.to_string()))?;
+        Self::with_existing_pool(pool).await
+    }
+
     /// Build from an existing pool after applying the shared runtime schema.
     pub async fn with_pool(pool: PgPool) -> Result<Self, StoreError> {
         migrate(&pool).await?;
+        Ok(Self { pool })
+    }
+
+    /// Build from an existing pool after verifying the externally-owned ledger.
+    pub async fn with_existing_pool(pool: PgPool) -> Result<Self, StoreError> {
+        verify_schema(&pool).await?;
         Ok(Self { pool })
     }
 }

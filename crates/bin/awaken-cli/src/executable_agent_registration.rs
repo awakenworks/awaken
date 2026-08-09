@@ -28,10 +28,15 @@ pub(crate) async fn for_runtime_role(
     role: Role,
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
+    environments: Arc<awaken_protocol_managed::EnvironmentApplication>,
+    captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
 ) -> Result<ExecutableAgentWiring, String> {
     match role {
         Role::AllInOne => Ok(ExecutableAgentWiring::local()),
-        Role::Coordinator => ExecutableAgentWiring::coordinator(deployment, schema).await,
+        Role::Coordinator => {
+            ExecutableAgentWiring::coordinator(deployment, schema, environments, captured_content)
+                .await
+        }
         _ => unreachable!("runtime assembly accepts only AllInOne or Coordinator"),
     }
 }
@@ -51,6 +56,8 @@ pub(crate) struct ExecutableAgentWiring {
     pub(crate) registrar: Arc<dyn ExecutableAgentRegistrar>,
     pub(crate) projection_refresher: Option<Arc<PostgresExecutableAgentRegistrar>>,
     pub(crate) private_router: Router,
+    pub(crate) environment_author: Option<Arc<dyn awaken_admin_assistant::EnvironmentAuthor>>,
+    pub(crate) coordinator_content_eraser: Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
 }
 
 impl ExecutableAgentWiring {
@@ -61,6 +68,8 @@ impl ExecutableAgentWiring {
             catalog,
             projection_refresher: None,
             private_router: Router::new(),
+            environment_author: None,
+            coordinator_content_eraser: None,
         }
     }
 
@@ -68,13 +77,27 @@ impl ExecutableAgentWiring {
         let (coordinator_url, token) = deployment
             .executable_agent_registration
             .control_credentials()?;
-        let registrar = HttpExecutableAgentRegistrar::new(coordinator_url, token)
+        let registrar = HttpExecutableAgentRegistrar::new(coordinator_url, token.clone())
             .map_err(|error| error.to_string())?;
+        let environment_author = Arc::new(
+            awaken_server::environment_boundary::HttpEnvironmentAuthor::new(
+                coordinator_url,
+                token.clone(),
+            )?,
+        );
+        let coordinator_content_eraser = Arc::new(
+            awaken_server::data_subject_boundary::HttpCoordinatorContentEraser::new(
+                coordinator_url,
+                token,
+            )?,
+        );
         Ok(Self {
             catalog: Arc::new(ExecutableAgentCatalog::new()),
             registrar: Arc::new(registrar),
             projection_refresher: None,
             private_router: Router::new(),
+            environment_author: Some(environment_author),
+            coordinator_content_eraser: Some(coordinator_content_eraser),
         })
     }
 
@@ -84,17 +107,26 @@ impl ExecutableAgentWiring {
         let registrar = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
         let private_router = executable_agent_registration_router(registrar.clone(), token)
             .expect("test registration router");
+        let environment_author = Arc::new(
+            awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
+                awaken_protocol_managed::EnvironmentState::new().application(),
+            ),
+        );
         Self {
             catalog,
             registrar,
             projection_refresher: None,
             private_router,
+            environment_author: Some(environment_author),
+            coordinator_content_eraser: None,
         }
     }
 
     pub(crate) async fn coordinator(
         deployment: &ResolvedDeployment,
         schema: PostgresSchemaMode,
+        environments: Arc<awaken_protocol_managed::EnvironmentApplication>,
+        captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
     ) -> Result<Self, String> {
         let token = deployment
             .executable_agent_registration
@@ -114,13 +146,28 @@ impl ExecutableAgentWiring {
         }
         .map_err(|error| error.to_string())?;
         let registrar = Arc::new(registrar);
-        let private_router = executable_agent_registration_router(registrar.clone(), token)
+        let private_router = executable_agent_registration_router(registrar.clone(), token.clone())
             .map_err(|error| format!("construct executable Agent registration router: {error}"))?;
+        let private_router = private_router.merge(
+            awaken_server::environment_boundary::router(environments, token.clone())
+                .map_err(|error| format!("construct Environment command router: {error}"))?,
+        );
+        let coordinator_content = awaken_server::data_subject_boundary::coordinator_content_eraser(
+            captured_content,
+            deployment.runtime.acp_session_blob_root.clone(),
+        );
+        let private_router = private_router.merge(
+            awaken_server::data_subject_boundary::router(coordinator_content, token).map_err(
+                |error| format!("construct Coordinator content-erasure router: {error}"),
+            )?,
+        );
         Ok(Self {
             catalog,
             registrar: registrar.clone(),
             projection_refresher: Some(registrar),
             private_router,
+            environment_author: None,
+            coordinator_content_eraser: None,
         })
     }
 }
@@ -130,10 +177,12 @@ type ProcessParts = (
     Arc<dyn ExecutableAgentRegistrar>,
     Router,
     Option<Arc<PostgresExecutableAgentRegistrar>>,
+    Option<Arc<dyn awaken_admin_assistant::EnvironmentAuthor>>,
+    Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
 );
 
-/// Consume the role wiring into the four process-assembly values. The boundary
-/// module owns the local default as well as the distributed selection.
+/// Consume the role wiring into its process-assembly values. The boundary module
+/// owns the local default as well as the distributed selection.
 pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessParts {
     let wiring = wiring.unwrap_or_else(ExecutableAgentWiring::local);
     (
@@ -141,6 +190,8 @@ pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessPar
         wiring.registrar,
         wiring.private_router,
         wiring.projection_refresher,
+        wiring.environment_author,
+        wiring.coordinator_content_eraser,
     )
 }
 

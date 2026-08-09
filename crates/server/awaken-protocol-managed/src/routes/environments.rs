@@ -12,6 +12,7 @@
 //! `healthcheck` work item so the queue is exercisable end to end.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -96,16 +97,44 @@ pub(crate) fn default_environment_snapshot(
 pub struct EnvironmentState {
     envs: Arc<dyn EnvRegistry>,
     work: Arc<dyn WorkQueue>,
+    application: Arc<EnvironmentApplication>,
     sandbox_policies: Option<Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>>,
 }
 
 impl Default for EnvironmentState {
     fn default() -> Self {
+        let envs: Arc<dyn EnvRegistry> = Arc::new(InMemoryEnvRegistry::new());
+        let work: Arc<dyn WorkQueue> = Arc::new(InMemoryWorkQueue::new());
         Self {
-            envs: Arc::new(InMemoryEnvRegistry::new()),
-            work: Arc::new(InMemoryWorkQueue::new()),
+            application: Arc::new(EnvironmentApplication::new(envs.clone(), work.clone())),
+            envs,
+            work,
             sandbox_policies: None,
         }
+    }
+}
+
+/// The single Coordinator application service for Environment creation. Public
+/// Managed HTTP, private Control commands, and AllInOne local calls all enter
+/// here; storage adapters never coordinate the work-queue side effect themselves.
+pub struct EnvironmentApplication {
+    envs: Arc<dyn EnvRegistry>,
+    work: Arc<dyn WorkQueue>,
+}
+
+impl EnvironmentApplication {
+    fn new(envs: Arc<dyn EnvRegistry>, work: Arc<dyn WorkQueue>) -> Self {
+        Self { envs, work }
+    }
+
+    pub async fn create(
+        &self,
+        command: awaken_session_contract::env_registry::CreateEnvironmentCommand,
+    ) -> Result<EnvItem, awaken_session_contract::env_registry::CreateEnvironmentError> {
+        let outcome = self.envs.create_once(command).await?;
+        let item = outcome.item().clone();
+        self.work.ensure_healthcheck(&item.id).await;
+        Ok(item)
     }
 }
 
@@ -128,10 +157,40 @@ impl EnvironmentState {
     #[must_use]
     pub fn with_stores(envs: Arc<dyn EnvRegistry>, work: Arc<dyn WorkQueue>) -> Self {
         Self {
+            application: Arc::new(EnvironmentApplication::new(envs.clone(), work.clone())),
             envs,
             work,
             sandbox_policies: None,
         }
+    }
+
+    #[must_use]
+    pub fn application(&self) -> Arc<EnvironmentApplication> {
+        self.application.clone()
+    }
+
+    #[cfg(test)]
+    async fn author(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
+        static NEXT_TEST_COMMAND: AtomicU64 = AtomicU64::new(0);
+        let typed = serde_json::from_value::<EnvironmentConfigParams>(config)
+            .map_err(|error| format!("invalid Environment config: {error}"))?;
+        self.application
+            .create(
+                awaken_session_contract::env_registry::CreateEnvironmentCommand {
+                    command_id: format!(
+                        "test:{}",
+                        NEXT_TEST_COMMAND.fetch_add(1, Ordering::Relaxed)
+                    ),
+                    name: name.to_owned(),
+                    description: String::new(),
+                    metadata: Default::default(),
+                    scope: None,
+                    config: canonical_environment_config(typed),
+                },
+            )
+            .await
+            .map(|item| item.id)
+            .map_err(|error| error.to_string())
     }
 
     #[must_use]
@@ -265,40 +324,6 @@ impl EnvironmentState {
             .snapshot_for_session(env_id, runtime, mcp_targets)
             .await?;
         (snapshot.revision.0 == revision).then_some(snapshot)
-    }
-
-    /// Create an environment named `name` with the official typed config union and
-    /// seed its healthcheck work item — the same
-    /// effect as `POST /v1/environments`, exposed so an in-process author (the admin
-    /// assistant's `admin_draft_environment`) persists through the SAME registry path.
-    /// Returns the new environment id.
-    pub async fn author(&self, name: &str, config: serde_json::Value) -> Result<String, String> {
-        let typed = serde_json::from_value::<EnvironmentConfigParams>(config)
-            .map_err(|error| format!("invalid Environment config: {error}"))?;
-        Ok(self
-            .author_config(name, canonical_environment_config(typed))
-            .await)
-    }
-
-    /// Persist an already-admitted canonical Environment config through the same
-    /// registry/work side effects as the HTTP route.
-    pub async fn author_config(
-        &self,
-        name: &str,
-        config: awaken_session_contract::env_registry::EnvironmentConfig,
-    ) -> String {
-        let item = self
-            .envs
-            .create_scoped(
-                name.to_string(),
-                String::new(),
-                Default::default(),
-                None,
-                config,
-            )
-            .await;
-        self.work.enqueue_healthcheck(&item.id).await;
-        item.id
     }
 
     /// Whether `env_id` is a self-hosted environment. Sessions assigned to one are
@@ -538,24 +563,57 @@ fn bad_request(message: impl Into<String>) -> WireError {
 
 async fn create_env(
     State(state): State<Arc<EnvironmentState>>,
+    headers: HeaderMap,
     ManagedJson(params): ManagedJson<EnvironmentCreateParams>,
 ) -> Result<Json<Environment>, WireError> {
     let config = canonical_environment_config(params.config.unwrap_or_default());
-    // No `scope` on the wire: ownership is credential-implicit (authz enforces the
-    // workspace) and any awaken tenancy is an ingress concern.
+    let command_id = environment_command_id(&headers)?;
     let item = state
-        .envs
-        .create_scoped(
-            params.name,
-            params.description.unwrap_or_default(),
-            params.metadata,
-            params.scope.map(|scope| scope.as_str().to_string()),
-            config,
+        .application
+        .create(
+            awaken_session_contract::env_registry::CreateEnvironmentCommand {
+                command_id,
+                name: params.name,
+                description: params.description.unwrap_or_default(),
+                metadata: params.metadata,
+                scope: params.scope.map(|scope| scope.as_str().to_string()),
+                config,
+            },
         )
-        .await;
-    // Seed one healthcheck work item so the queue is exercisable end to end.
-    state.work.enqueue_healthcheck(&item.id).await;
+        .await
+        .map_err(|error| match error {
+            awaken_session_contract::env_registry::CreateEnvironmentError::IdempotencyConflict => (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse::new("conflict_error", error.to_string())),
+            ),
+            awaken_session_contract::env_registry::CreateEnvironmentError::Store(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new("api_error", error.to_string())),
+            ),
+        })?;
     Ok(Json(crate::env_registry::project_env(&item)))
+}
+
+fn environment_command_id(headers: &HeaderMap) -> Result<String, WireError> {
+    static NEXT_UNKEYED: AtomicU64 = AtomicU64::new(0);
+    match headers.get("idempotency-key") {
+        Some(value) => {
+            let value = value
+                .to_str()
+                .map_err(|_| bad_request("Idempotency-Key must be visible ASCII"))?;
+            if value.is_empty() || value.len() > 255 {
+                return Err(bad_request(
+                    "Idempotency-Key must contain 1 to 255 characters",
+                ));
+            }
+            Ok(format!("managed:{value}"))
+        }
+        None => Ok(format!(
+            "managed-unkeyed:{}:{}",
+            std::process::id(),
+            NEXT_UNKEYED.fetch_add(1, Ordering::Relaxed)
+        )),
+    }
 }
 
 async fn retrieve_env(

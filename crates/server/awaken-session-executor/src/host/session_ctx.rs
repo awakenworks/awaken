@@ -57,6 +57,7 @@ pub(crate) struct SessionCtx {
     /// the host. `None` = content is recorded to spans only.
     pub(crate) capture_sink: Option<Arc<dyn awaken_runtime_contract::CaptureSink>>,
     pub(crate) capture_decision: awaken_runtime_contract::CaptureDecision,
+    pub(crate) data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     pub(crate) thread_id: ThreadId,
     /// The thread's sandbox environment, reused to build an Outcome Worker runtime
     /// for `define_outcome` (same tools, same environment).
@@ -160,6 +161,11 @@ impl SessionCtx {
     ) -> Result<RuntimeRunContext, awaken_runtime_contract::tool::ToolExecutorSelectionError> {
         let mut ctx = self.context();
         if let Some(subject) = activation.data_subject_id.clone() {
+            let consent = self
+                .data_subject_consent
+                .consent_ceiling(&subject, awaken_runtime_contract::Purpose::TelemetryContent)
+                .await;
+            ctx.capture.decision.level = ctx.capture.decision.level.meet(consent);
             ctx = match self.capture_sink.clone() {
                 Some(sink) => ctx.with_capture_sink(subject, sink),
                 None => ctx.with_data_subject(subject),

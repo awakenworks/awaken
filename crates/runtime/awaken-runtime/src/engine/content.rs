@@ -28,9 +28,12 @@ pub(crate) async fn emit_content(
         return;
     };
     tracing::Span::current().record(field, scrubbed.as_ref());
-    if let Some((sink, subject)) = sink {
-        sink.record(subject, Purpose::TelemetryContent, kind, scrubbed.as_ref())
-            .await;
+    if let Some((sink, subject)) = sink
+        && let Err(error) = sink
+            .record(subject, Purpose::TelemetryContent, kind, scrubbed.as_ref())
+            .await
+    {
+        tracing::error!(error = %error, "captured content was not persisted");
     }
 }
 

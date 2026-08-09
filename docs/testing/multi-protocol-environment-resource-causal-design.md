@@ -282,24 +282,24 @@ is the only owner of the ephemeral-versus-durable ResourcePlane decision, so a
 special protocol cannot silently discard storage, pool, Environment, or Resource
 ownership selected by the test deployment.
 
-## Phase 12: Workspace ownership and legacy Resource import
+## Phase 12: Workspace ownership and canonical Resource persistence
 
 ```text
 production config data root -> persisted platform Workspace
 scenario-only explicit Workspace -> AWAKEN_SCENARIO_WORKSPACE -> canonical Host
-legacy resource-api.db -> canonical Memory/Skill import -> receipt -> old DB removable
+canonical Resource stores -> reopen under the same exact Workspace
 ```
 
-| Rule | Process type | Workspace input | Legacy source | Expected |
+| Rule | Process type | Workspace input | Resource source | Expected |
 |---|---|---|---|---|
 | W1 | production | persisted data-root identity | none | exact persisted Workspace |
-| W2 | scenario | explicit scenario metadata | Memory + Skill | import into that exact scope |
-| W3 | scenario restart | same explicit metadata | source removed | canonical aggregates remain |
+| W2 | scenario | explicit scenario metadata | canonical Memory + Skill | writes use that exact scope |
+| W3 | scenario restart | same explicit metadata | same canonical stores | canonical aggregates remain |
 | W4 | production | `AWAKEN_LOCAL_WORKSPACE_ID` | any | ignored; no configuration effect |
 
 The test-only name prevents fixture metadata from becoming a second production
-deployment boundary. Legacy migration reuses the server's one migration function
-and writes only canonical Resource stores; it never installs a dual-read adapter.
+deployment boundary. There is no startup legacy-Resource importer or dual-read
+adapter; unreleased pre-baseline databases are recreated before this suite runs.
 
 ## Phase 13: retained Session upgrade under one data root
 
@@ -505,10 +505,10 @@ one typed deployment file
 | T1 | catalog_db | external A | catalog only at A |
 | T2 | credential_db | nested external B | credential only at B |
 | T3 | config_db | external C | Agent publication only at C |
-| T4 | admin_db / environment_db / sessions_db absent | data_dir | default typed deployment root |
+| T4 | admin_db / data_subject_db / environment_db / sessions_db / captured_content_db absent | data_dir | default role-owned database files |
 | T5 | removed per-component environment variables | any inherited value | no topology effect |
 | T6 | `management_database_url_file` only | projected Secret file | all control + Resource stores share one URL |
-| T7 | Control has environment_db but no sessions_db | shared Environment URL | Admin Assistant and Coordinator see one registry; Control opens no Session store |
+| T7 | Control has environment_db, sessions_db, or captured_content_db | any | reject before store acquisition; Control uses Coordinator ports only |
 
 `spawnProduction` accepts the same database map already owned by
 `deploymentEnv`; per-component tests no longer duplicate binary discovery,

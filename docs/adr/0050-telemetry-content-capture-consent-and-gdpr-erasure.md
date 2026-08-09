@@ -345,7 +345,7 @@ struct ConsentGrant { purpose: Purpose, status: ConsentStatus,
 // mapping: Granted for the purpose ⇒ Full allowed; else ⇒ capped at Structured
 ```
 
-**`DataSubject` aggregate + home.** New crate `config/awaken-data-subject` (peer of
+**`DataSubject` aggregate + home.** Crate `control/awaken-data-subject` (peer of
 `awaken-credential-vault`; control/compliance plane, Org-scoped).
 
 ```rust
@@ -395,11 +395,14 @@ decision.
 
 **DDD best practices:**
 
-- **Zero new aggregates, zero new crates.** Consent = an Awaken-neutral grant on
+- **One aggregate; persistence follows service ownership.** Consent = an Awaken-neutral grant on
   the existing `user_profile` subject aggregate (D4 — a net-new write+store path,
-  but not a new aggregate or crate); ceiling = fields on existing
+  but not a second aggregate); captured runtime content is not part of that
+  aggregate and therefore lives in the Coordinator-owned
+  `awaken-captured-content-store`; ceiling = fields on existing
   config/Org aggregates (D3); redactor = a stateless domain service in an existing
-  crate (D6); erasure = a capability on existing stores (D7). This directly avoids
+  crate (D6); Coordinator erasure composes the existing captured-content and
+  portable ACP session adapters behind one stable target (D7). This directly avoids
   the anemic-leaf-crate smell called out in the goal-vs-dev gap review.
 - **Bounded contexts respected; contexts don't leak.** Controller/compliance
   semantics live only on the Org aggregate; operational narrowing lives on
@@ -424,7 +427,7 @@ Build slices (**core** = both builds; **managed** = server-local only):
    thread the opaque id through inference attribution. *(core)*
 4. `DataSubjectErasure` + per-record `data_subject_id`/`purpose`/`retention`;
    TTL sweep; downgrade `AWAKEN_TRACE_FILE` to `Structured`-only. *(core)*
-5. `config/awaken-data-subject` crate: `DataSubject` aggregate + `ConsentGrant` (G1) +
+5. `control/awaken-data-subject` crate: `DataSubject` aggregate + `ConsentGrant` (G1) +
    `DataSubjectRepo` (inmem/sqlite/pg) + `RepoDataSubjectResolver`. *(managed)*
 6. **Fix ①:** split `user_profiles` out of `awaken-protocol-managed` into
    `awaken-protocol-user-profiles` with header `user-profiles-2026-03-24`; its routes
@@ -433,7 +436,10 @@ Build slices (**core** = both builds; **managed** = server-local only):
 8. `content_capture` request field + decision projection on sessions. *(managed)*
 9. Enrollment flow (G3): signed-token URL → server-rendered consent page →
    `ConsentGrant` write; `RepoDataSubjectResolver` gates on it; withdrawal → erasure. *(managed)*
-10. `POST /v1/user_profiles/:id/erasure` fan-out across trace+eval+memory+session;
+10. `POST /v1/user_profiles/:id/erasure` fans out through stable domain targets;
+    Coordinator currently erases captured telemetry and portable ACP sessions,
+    while each adapter fences late writes and replays its durable receipt;
+    trace/eval/memory adapters join their owning target when subject-keyed storage is implemented;
     optional Art. 15 access. *(managed)*
 11. Apply the same `CaptureDecision` gate + `data_subject_id` attribution when
     `awaken-eval` records real runs (purpose `eval_recording`, separate consent).

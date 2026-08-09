@@ -417,15 +417,17 @@ deployments; a per-CLI slim image aligns better with capability-aware claim (H)'
 heterogeneous fleet — both are `Prebaked`, differing only in packaging
 granularity, a deployment choice this ADR does not fix.
 
-### D8 — GDPR builds on ADR-0050, adding ACP content-store registration
+### D8 — GDPR builds on ADR-0050, adding ACP content to Coordinator erasure
 
-ACP session-home / `session_export_excludes` / `memory_entrypoint` / session blobs are
-personal-data content stores. They MUST register with the ADR-0050 erasure
-fan-out (`with_eraser`) and honor `consent_ceiling(purpose)` on transcript
-capture. ACP agents default deny-egress (bwrap `--unshare-net`) and route model
-traffic through a region-pinned cloud-managed gateway (lease token, no raw key in
-the sandbox). Config text is not personal data; secrets stay AEAD-sealed and
-`RedactedString`-guarded.
+The portable ACP session blob is a Coordinator-owned personal-data content
+store. The one Coordinator erasure application includes its
+`FsSessionBlobStore` adapter when `acp_session_blob_root` is configured; the
+adapter persists a subject fence and stable receipt. Runtime transcript capture
+is independently narrowed through the Control-owned
+`DataSubjectConsentSource`. ACP agents default deny-egress (bwrap
+`--unshare-net`) and route model traffic through a region-pinned cloud-managed
+gateway (lease token, no raw key in the sandbox). Config text is not personal
+data; secrets stay AEAD-sealed and `RedactedString`-guarded.
 
 ### D9 — One dispatch flow for all three kinds; differences compress to the execution edge
 
@@ -830,14 +832,16 @@ the `Installing` lifecycle state.
 Guard: missing acquisition evidence prevents route registration; restart reuses
 the installed path without network; container Workers remain pre-provisioned.
 
-**G2 `erasable-acp-content`** — *Complete. ACP session content joins the
-ADR-0050 consent/erasure fan-out.*
-Adds: session-home/`session_export_excludes`/`memory_entrypoint`/session-blob stores
-registered `with_eraser`; transcript capture behind `consent_ceiling`.
-Retires: nothing (pure wiring) — closes the GDPR gap.
+**G2 `erasable-acp-content`** — *Complete. Portable ACP session content joins the
+ADR-0050 Coordinator erasure application.*
+Adds: the subject-keyed `FsSessionBlobStore` adapter with a durable erasure fence
+and stable receipt; transcript capture behind `DataSubjectConsentSource`.
+Retires: thread/adapter-only durable blob keys and order-dependent eraser
+registration — closes the GDPR gap without a parallel compatibility path.
 Guard: erasure e2e — after Art.17 erase, ACP session blobs for the subject are
-gone.
-Done when: the eraser fan-out inventory lists every ACP content store.
+gone, retries return the same receipt, and late harvest cannot recreate them.
+Done when: the Coordinator erasure target includes every durable subject-keyed
+ACP content adapter.
 
 **H `capability-claim`** — *Complete (2026-07-29). The queue routes runs only
 to workers that can serve them.*

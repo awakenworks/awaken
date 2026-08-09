@@ -109,7 +109,7 @@ impl DeploymentState {
             launcher: Mutex::new(None),
             rate_limiter: Mutex::new(None),
             repository: Some(repository),
-            agent_repository: Mutex::new(None),
+            executable_agents: Mutex::new(None),
             scheduled_limit: MAX_SCHEDULED_DEPLOYMENTS,
         })
     }
@@ -236,11 +236,11 @@ impl DeploymentState {
         *self.rate_limiter.lock().unwrap() = Some(limiter);
     }
 
-    /// Bind the same authoritative Agent repository used by `/v1/agents`.
-    /// Deployment writes resolve a bare Agent id to the current published version
-    /// once, so every later run remains pinned to that concrete version.
-    pub fn bind_agent_repository(&self, repository: Arc<dyn ManagedAgentRepository>) {
-        *self.agent_repository.lock().unwrap() = Some(repository);
+    /// Bind Coordinator's immutable executable-Agent projection. Deployment
+    /// writes resolve a bare Agent id to the current registered publication once,
+    /// so every later run remains pinned without reading Control's authoring DB.
+    pub fn bind_executable_agents(&self, source: Arc<dyn ExecutableAgentRegistrationSource>) {
+        *self.executable_agents.lock().unwrap() = Some(source);
     }
 
     pub(super) async fn resolve_agent(
@@ -267,21 +267,24 @@ impl DeploymentState {
                 "deployment Agent object must be an unmodified `agent` reference",
             ));
         }
-        let repository = self.agent_repository.lock().unwrap().clone();
-        let Some(repository) = repository else {
+        let source = self.executable_agents.lock().unwrap().clone();
+        let Some(source) = source else {
             return Ok(AgentReference::from_input(input));
         };
-        let selected = repository
-            .retrieve(workspace_id, input.id(), input.version().map(u64::from))
-            .await
-            .map_err(agent_resolution_error)?;
-        if selected.status != AgentStatus::Published || selected.archived_at.is_some() {
-            return Err(invalid(format!(
-                "agent `{}` is disabled or archived",
-                selected.id
-            )));
+        let selected = match input.version().map(u64::from) {
+            Some(version) => {
+                source
+                    .registration_at_revision(workspace_id, input.id(), version)
+                    .await
+            }
+            None => source.current_registration(workspace_id, input.id()).await,
         }
-        Ok(AgentReference::new(selected.id, selected.version))
+        .map_err(agent_resolution_error)?
+        .ok_or_else(|| not_found("agent"))?;
+        Ok(AgentReference::new(
+            selected.agent_id,
+            selected.source_revision,
+        ))
     }
 
     async fn primary_agent_missing_or_archived(
@@ -289,15 +292,15 @@ impl DeploymentState {
         workspace_id: &str,
         agent_id: &str,
     ) -> Result<bool, DeploymentRepositoryError> {
-        let repository = self.agent_repository.lock().unwrap().clone();
-        let Some(repository) = repository else {
+        let source = self.executable_agents.lock().unwrap().clone();
+        let Some(source) = source else {
             return Ok(false);
         };
-        match repository.retrieve(workspace_id, agent_id, None).await {
-            Ok(agent) => Ok(agent.status == AgentStatus::Archived || agent.archived_at.is_some()),
-            Err(ManagedAgentError::NotFound) => Ok(true),
-            Err(error) => Err(DeploymentRepositoryError::Storage(error.to_string())),
-        }
+        source
+            .current_registration(workspace_id, agent_id)
+            .await
+            .map(|registration| registration.is_none())
+            .map_err(|error| DeploymentRepositoryError::Storage(error.to_string()))
     }
 
     /// Archive every live Deployment whose primary Agent was archived. The Agent

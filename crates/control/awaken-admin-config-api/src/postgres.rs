@@ -1,6 +1,6 @@
 //! Postgres adapter (feature `postgres`, ADR-0043) for the admin-plane
 //! aggregates, over the crate's own `admin` migration scope ([`admin_bundle`]):
-//! one [`PostgresAdminStore`] serves the same four sync store ports the sqlite
+//! one [`PostgresAdminStore`] serves the same three sync store ports the sqlite
 //! backend does from a single connection pool.
 //!
 //! The repository ports are synchronous but fallible: SQL and JSON failures

@@ -7,7 +7,7 @@ use sqlx::postgres::PgPool;
 use crate::schema::skill_store_bundle;
 use crate::{
     SkillAggregate, SkillDefinition, SkillStore, SkillStoreError, SkillVersion, append_to,
-    decode_aggregate, legacy_aggregate, remove_version_from, validate_create,
+    decode_aggregate, remove_version_from, validate_create,
 };
 
 const NS: &str = "skill_store";
@@ -88,35 +88,7 @@ impl PgSkillStore {
     /// Apply the `skill_store` scoped migration bundle (idempotent). Optional:
     /// skip it when the schema is owned externally.
     pub async fn ensure_schema(&self) -> Result<(), PgStoreError> {
-        run_migrations(&self.pool).await?;
-        let rows = sqlx::query(&format!("SELECT workspace_id, id, content FROM {NS}_skill"))
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
-        for row in rows {
-            let workspace = row
-                .try_get::<String, _>("workspace_id")
-                .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
-            let id = row
-                .try_get::<String, _>("id")
-                .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
-            let content = row
-                .try_get::<String, _>("content")
-                .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
-            let data =
-                serde_json::to_string(&legacy_aggregate(&workspace, &id, content.as_bytes()))
-                    .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
-            sqlx::query(&format!(
-                "INSERT INTO {NS}_aggregate(workspace_id, id, data) VALUES ($1, $2, $3) ON CONFLICT (workspace_id, id) DO NOTHING"
-            ))
-            .bind(workspace)
-            .bind(id)
-            .bind(data)
-            .execute(&self.pool)
-            .await
-            .map_err(|error| PgStoreError::Migrate(error.to_string()))?;
-        }
-        Ok(())
+        run_migrations(&self.pool).await
     }
 
     async fn workspace_snapshot(

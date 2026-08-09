@@ -1,8 +1,8 @@
 //! Test-only scenario host: the deterministic mock models and the `build_*_router`
 //! scenario assemblies the e2e harness + integration tests drive. Extracted from
 //! `awaken-server` so the product crate carries zero mocks. It reuses the
-//! product crate's now-`pub` data-plane assembly helpers (`mount` / `mount_with_managed`
-//! / `data_subject_plane`) and production executors via `awaken_server::`.
+//! product crate's now-`pub` data-plane assembly helpers (`mount` /
+//! `mount_with_managed`) and production executors via `awaken_server::`.
 
 mod acp_gateway;
 mod attempt_credential;
@@ -242,18 +242,15 @@ fn scenario_resource_catalog() -> Arc<dyn awaken_protocol_managed::ResourceCatal
     let root = scenario_storage_dir();
     let Some(root) = root else {
         return Arc::new(
-            awaken_admin_config_api::SqliteAdminStore::open_in_memory()
+            awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open ephemeral scenario resource catalog"),
         );
     };
     std::fs::create_dir_all(&root).expect("create scenario resource registry directory");
-    let catalog =
-        awaken_admin_config_api::SqliteAdminStore::open(&root.join("admin.db").to_string_lossy())
-            .expect("open durable scenario resource catalog");
-    catalog
-        .migrate_legacy_memory_stores()
-        .expect("migrate legacy scenario MemoryStore rows");
-    Arc::new(catalog)
+    Arc::new(
+        awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
+            .expect("open durable scenario resource catalog"),
+    )
 }
 
 /// A router with context compaction (the compaction e2e): a low threshold folds
@@ -1228,7 +1225,7 @@ pub fn build_echo_router() -> Router {
     build_router(Arc::new(EchoModel), "echo-model")
 }
 
-/// Ephemeral ResourcePlane behind the production workspace-path adapter. This
+/// Ephemeral ResourceComponent behind the production workspace-path adapter. This
 /// is the sole multi-workspace process fixture for volatile resource semantics;
 /// it decorates the canonical scenario Host instead of defining another store.
 pub fn build_ephemeral_resource_router() -> Router {
@@ -1675,16 +1672,7 @@ pub fn build_skills_router() -> Router {
 pub async fn build_skills_durable_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(SkillDrivingModel), "skills-durable");
     let deployment = scenario_deployment();
-    let storage_root = deployment.storage_dir.clone();
     let host = resource_host_with_deployment(model, model_ref, deployment);
-    if let Some(storage_root) = storage_root {
-        let skills = host
-            .skill_store()
-            .expect("canonical scenario ResourcePlane installs SkillStore");
-        awaken_server::migrate_legacy_skill_registry(&storage_root, skills.as_ref())
-            .await
-            .expect("migrate legacy scenario Skill registry");
-    }
     mount(Arc::new(host))
 }
 pub async fn build_config_router() -> Router {
@@ -1757,9 +1745,11 @@ pub async fn build_config_router() -> Router {
         )),
         // A fresh in-memory environment registry satisfies the author port for the
         // scenario host (no durable env state in scope).
-        Arc::new(awaken_control::EnvironmentStateAuthor::new(Arc::new(
-            awaken_protocol_managed::EnvironmentState::new(),
-        ))),
+        Arc::new(
+            awaken_server::environment_boundary::LocalEnvironmentAuthor::new(
+                awaken_protocol_managed::EnvironmentState::new().application(),
+            ),
+        ),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
     let host = resource_host_with_deployment(model, model_ref, deployment)

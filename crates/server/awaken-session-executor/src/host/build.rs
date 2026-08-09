@@ -4,47 +4,6 @@
 use super::*;
 use awaken_runtime_contract::delegation::RunDelegationService;
 
-/// Backend-neutral Resource plane selected atomically by an outer composition
-/// root. This is a composition value, not a resource aggregate or authorization
-/// context; it contains no principal, credential, role, policy, or PDP result.
-#[derive(Clone)]
-pub struct ResourcePlane {
-    file_store: Arc<dyn awaken_file_store::FileStore>,
-    file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
-    memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
-    skill_store: Arc<dyn awaken_skill_store::SkillStore>,
-    lifecycle: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
-}
-
-impl ResourcePlane {
-    pub fn new(
-        file_store: Arc<dyn awaken_file_store::FileStore>,
-        file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
-        memory_repository: Arc<dyn awaken_memory_store::MemoryRepository>,
-        skill_store: Arc<dyn awaken_skill_store::SkillStore>,
-        lifecycle: Arc<dyn awaken_resource_contract::ResourceLifecycleRepository>,
-    ) -> Self {
-        Self {
-            file_store,
-            file_catalog,
-            memory_repository,
-            skill_store,
-            lifecycle,
-        }
-    }
-
-    /// Clone the Memory repository so an outer composition root can build the
-    /// matching worker-side mounter before moving this complete plane into the Host.
-    pub fn memory_repository(&self) -> Arc<dyn awaken_memory_store::MemoryRepository> {
-        self.memory_repository.clone()
-    }
-
-    /// Clone the Skill store for management API composition.
-    pub fn skill_store(&self) -> Arc<dyn awaken_skill_store::SkillStore> {
-        self.skill_store.clone()
-    }
-}
-
 impl SharedHost {
     /// Resolve or provision the stable local workspace coordinate owned by this
     /// installation. Composition roots call this once and pass the value to every
@@ -121,10 +80,10 @@ impl SharedHost {
     /// Construct with an already selected resource persistence family. Unlike
     /// post-construction overrides, this never opens node-local resource stores
     /// before installing shared adapters, so there is no unused second truth.
-    pub fn new_with_resource_plane(
+    pub fn new_with_resource_component(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: ResourcePlane,
+        resources: awaken_resource_contract::ResourceComponent,
     ) -> Self {
         Self::build(
             llm,
@@ -137,10 +96,10 @@ impl SharedHost {
 
     /// Construct directly from the composition root's resolved deployment.
     /// No resource or runtime backend is opened from process-global state first.
-    pub fn new_with_resource_plane_and_deployment(
+    pub fn new_with_resource_component_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: ResourcePlane,
+        resources: awaken_resource_contract::ResourceComponent,
         deployment: crate::DeploymentConfig,
     ) -> Self {
         Self::build(llm, model_ref.into(), Some(resources), None, deployment)
@@ -169,7 +128,7 @@ impl SharedHost {
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
-        resources: Option<ResourcePlane>,
+        resources: Option<awaken_resource_contract::ResourceComponent>,
         worker_content: Option<(
             Arc<dyn crate::FileContentSource>,
             Arc<dyn awaken_memory_store::MemoryRepository>,
@@ -195,9 +154,7 @@ impl SharedHost {
             resources.as_ref().map_or_else(
                 || crate::memory_stores::MemoryStores::open(store_dir.as_deref()),
                 |plane| {
-                    crate::memory_stores::MemoryStores::with_repository(
-                        plane.memory_repository.clone(),
-                    )
+                    crate::memory_stores::MemoryStores::with_repository(plane.memory_repository())
                 },
             )
         };
@@ -239,7 +196,7 @@ impl SharedHost {
         )) as Arc<dyn awaken_ext_memory::RecallSelector>);
         let mut skills = crate::skill_catalog::SkillCatalog::new();
         if let Some(plane) = &resources {
-            skills.set_store(plane.skill_store.clone());
+            skills.set_store(plane.skill_store());
         }
         let (file_store, file_catalog) = if worker_content.is_some() {
             let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
@@ -270,10 +227,10 @@ impl SharedHost {
                         )
                     }
                 },
-                |plane| (plane.file_store.clone(), plane.file_catalog.clone()),
+                |plane| (plane.file_store(), plane.file_catalog()),
             )
         };
-        let resource_lifecycle = resources.as_ref().map(|plane| plane.lifecycle.clone());
+        let resource_lifecycle = resources.as_ref().map(|plane| plane.lifecycle());
         #[cfg(test)]
         let resource_lifecycle =
             resource_lifecycle.or_else(|| Some(super::tests::test_resource_lifecycle()));
@@ -352,6 +309,7 @@ impl SharedHost {
             environment_binding_sink: std::sync::RwLock::new(None),
             capture_sink: std::sync::RwLock::new(None),
             capture_decision,
+            data_subject_consent: Arc::new(awaken_runtime_contract::NullResolver),
             admin_tools: Vec::new(),
         }
     }
@@ -596,6 +554,16 @@ impl SharedHost {
             .capture_sink
             .write()
             .expect("capture sink lock poisoned") = Some(sink);
+    }
+
+    /// Install the Control-owned consent read port used once per attributed Run.
+    #[must_use]
+    pub fn with_data_subject_consent_source(
+        mut self,
+        source: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    ) -> Self {
+        self.data_subject_consent = source;
+        self
     }
 
     /// Deployment-resolved capture ceiling used by protocol decision projections.

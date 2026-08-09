@@ -299,10 +299,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_mcp_tables_are_removed_by_the_scoped_migration() {
+    fn control_admin_schema_contains_only_owned_active_tables() {
+        // Cause/effect decision table:
+        // R1 active Control profile/input/webhook aggregates -> present.
+        // R2 retired MCP/memory/outbox tracks -> absent.
+        // R3 Resources-owned catalog -> absent from the Control database.
         let store = SqliteAdminStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
-        for table in ["admin_mcp_server", "admin_agent_mcp"] {
+        for table in [
+            "admin_inference_profile",
+            "admin_agent_resource",
+            "admin_webhook",
+        ] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -310,7 +318,23 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "{table} must not survive migration V9");
+            assert_eq!(count, 1, "R1: {table}");
+        }
+        for table in [
+            "admin_mcp_server",
+            "admin_agent_mcp",
+            "admin_memory_store",
+            "admin_webhook_outbox",
+            "admin_resource_catalog_entry",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "R2/R3: {table}");
         }
     }
 

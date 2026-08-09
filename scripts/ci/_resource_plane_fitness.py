@@ -26,8 +26,8 @@ RESOURCE_PLANE_CRATES = {
 # crate may have broader dependencies for sibling modules, so scan these files
 # directly in addition to the dedicated resource crates above.
 RESOURCE_APPLICATION_SOURCES = (
-    "crates/control/awaken-admin-config-api/src/postgres_resource_catalog.rs",
-    "crates/control/awaken-admin-config-api/src/sqlite_resource_catalog.rs",
+    "crates/stores/awaken-resource-store/src/postgres_catalog.rs",
+    "crates/stores/awaken-resource-store/src/sqlite_catalog.rs",
     "crates/server/awaken-managed-routers/src/files.rs",
     "crates/server/awaken-protocol-managed/src/state/resource.rs",
     "crates/server/awaken-protocol-managed/src/state/resources.rs",

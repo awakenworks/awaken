@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use awaken_credential_vault::repo::CredentialRepo;
+use awaken_executable_agent_contract::ExecutableAgentInventorySource;
 use awaken_managed_routers::{ModelDirectory, ModelDirectoryFuture, ModelEntry};
 use awaken_model_catalog::{Offering, OfferingStatus, ProviderCatalog, repo::CatalogRepo};
 
@@ -10,6 +11,45 @@ pub struct CatalogModelDirectory {
     catalog: Arc<dyn CatalogRepo>,
     credentials: Arc<dyn CredentialRepo>,
     executors: Arc<dyn ExecutorModelCapabilitySource>,
+}
+
+/// Coordinator-native model projection derived from the same immutable
+/// executable registrations used for Session resolution.
+pub struct ExecutableAgentModelDirectory {
+    registrations: Arc<dyn ExecutableAgentInventorySource>,
+}
+
+impl ExecutableAgentModelDirectory {
+    #[must_use]
+    pub fn new(registrations: Arc<dyn ExecutableAgentInventorySource>) -> Self {
+        Self { registrations }
+    }
+}
+
+impl ModelDirectory for ExecutableAgentModelDirectory {
+    fn list<'a>(&'a self, workspace_id: &'a str) -> ModelDirectoryFuture<'a> {
+        Box::pin(async move {
+            let registrations = self
+                .registrations
+                .current_registrations(workspace_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut entries = registrations
+                .into_iter()
+                .flat_map(|registration| {
+                    let spec = registration.snapshot.resolved_spec;
+                    std::iter::once(spec.model_binding)
+                        .chain(spec.model_candidates)
+                        .map(|candidate| candidate.binding.model_ref)
+                })
+                .filter(|model_ref| !model_ref.trim().is_empty())
+                .map(|model_ref| ModelEntry::new(&model_ref, &model_ref))
+                .collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.id.cmp(&right.id));
+            entries.dedup_by(|left, right| left.id == right.id);
+            Ok(entries)
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -105,6 +145,78 @@ fn endpoint_qualifier(offering: &Offering, executable: &[&Offering]) -> String {
         relative.to_string()
     } else {
         short.to_string()
+    }
+}
+
+#[cfg(test)]
+mod executable_registration_tests {
+    use super::*;
+    use awaken_executable_agent_contract::{
+        ExecutableAgentRegistration, ExecutableAgentRegistrationError,
+        ExecutableAgentSessionProfile,
+    };
+    use awaken_runtime_contract::resolved::ModelBinding;
+
+    struct Inventory(Vec<ExecutableAgentRegistration>);
+
+    #[async_trait::async_trait]
+    impl ExecutableAgentInventorySource for Inventory {
+        async fn current_registrations(
+            &self,
+            workspace_id: &str,
+        ) -> Result<Vec<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|registration| registration.workspace_id == workspace_id)
+                .cloned()
+                .collect())
+        }
+    }
+
+    fn registration(agent: &str, primary: &str, fallbacks: &[&str]) -> ExecutableAgentRegistration {
+        ExecutableAgentRegistration {
+            workspace_id: "workspace-a".into(),
+            agent_id: agent.into(),
+            source_revision: 1,
+            snapshot: awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent)
+                .model(ModelBinding::new("provider", primary, "native"))
+                .model_candidates(
+                    fallbacks
+                        .iter()
+                        .map(|model| ModelBinding::new("provider", *model, "native")),
+                )
+                .build(),
+            session_profile: ExecutableAgentSessionProfile::default(),
+            declared_hand: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn model_directory_projects_current_registration_inventory() {
+        // Cause/effect decision table: R1 current registrations in the requested
+        // Workspace -> primary and fallback model refs are sorted and deduplicated;
+        // R2 registrations in another Workspace or no current registration -> no
+        // entry. Thus Coordinator model discovery consumes only its rebuildable
+        // executable projection and never falls back to a Control catalog.
+        let inventory = Arc::new(Inventory(vec![
+            registration("agent-a", "model-b", &["model-a"]),
+            registration("agent-b", "model-a", &["model-c"]),
+        ]));
+        let directory = ExecutableAgentModelDirectory::new(inventory);
+        let entries = directory.list("workspace-a").await.unwrap();
+        assert_eq!(
+            entries
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>(),
+            vec!["model-a", "model-b", "model-c"],
+            "R1"
+        );
+        assert!(
+            directory.list("workspace-b").await.unwrap().is_empty(),
+            "R2"
+        );
     }
 }
 

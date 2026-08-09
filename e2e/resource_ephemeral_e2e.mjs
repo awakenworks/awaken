@@ -251,7 +251,7 @@ async function main() {
       'an archived store cannot publish another behavior version',
     );
 
-    // Skill is an independently durable aggregate. Ephemeral ResourcePlane
+    // Skill is an independently durable aggregate. Ephemeral ResourceComponent
     // composition must not invent a parallel volatile Skill implementation.
     const skillId = `volatile-skill-${process.pid}`;
     const skill = await json('POST', WORKSPACE, 'skills', {

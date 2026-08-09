@@ -106,26 +106,28 @@ pub fn config_bundle() -> Result<MigrationBundle, MigrationError> {
             data {json} NOT NULL, created_at {timestamptz} NOT NULL DEFAULT {now}, \
             PRIMARY KEY (scope_id, id, generation)); \
          INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
-            SELECT scope_id, id, generation, data FROM {prefix}_agent \
-            ON CONFLICT (scope_id, id, generation) DO NOTHING; \
+            SELECT scope_id, id, generation, data FROM {prefix}_agent; \
          CREATE FUNCTION {prefix}_capture_agent_revision() RETURNS TRIGGER AS $$ \
             BEGIN INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
-              VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data) \
-              ON CONFLICT (scope_id, id, generation) DO NOTHING; RETURN NEW; END; \
+              VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); RETURN NEW; END; \
             $$ LANGUAGE plpgsql; \
-         CREATE TRIGGER {prefix}_agent_revision_capture AFTER INSERT OR UPDATE ON {prefix}_agent \
-            FOR EACH ROW EXECUTE FUNCTION {prefix}_capture_agent_revision()",
+         CREATE TRIGGER {prefix}_agent_revision_insert AFTER INSERT ON {prefix}_agent \
+            FOR EACH ROW EXECUTE FUNCTION {prefix}_capture_agent_revision(); \
+         CREATE TRIGGER {prefix}_agent_revision_update AFTER UPDATE ON {prefix}_agent \
+            FOR EACH ROW WHEN (OLD.generation IS DISTINCT FROM NEW.generation) \
+            EXECUTE FUNCTION {prefix}_capture_agent_revision()",
         "CREATE TABLE {prefix}_agent_revision (\
             scope_id TEXT NOT NULL, id TEXT NOT NULL, generation BIGINT NOT NULL, \
             data TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, \
             PRIMARY KEY (scope_id, id, generation)); \
-         INSERT OR IGNORE INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+         INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
             SELECT scope_id, id, generation, data FROM {prefix}_agent; \
          CREATE TRIGGER {prefix}_agent_revision_insert AFTER INSERT ON {prefix}_agent BEGIN \
-            INSERT OR IGNORE INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+            INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
               VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END; \
-         CREATE TRIGGER {prefix}_agent_revision_update AFTER UPDATE ON {prefix}_agent BEGIN \
-            INSERT OR IGNORE INTO {prefix}_agent_revision (scope_id, id, generation, data) \
+         CREATE TRIGGER {prefix}_agent_revision_update AFTER UPDATE ON {prefix}_agent \
+            WHEN OLD.generation <> NEW.generation BEGIN \
+            INSERT INTO {prefix}_agent_revision (scope_id, id, generation, data) \
               VALUES (NEW.scope_id, NEW.id, NEW.generation, NEW.data); END",
     )?);
     MigrationBundle::new(BUNDLE_ID, migrations)

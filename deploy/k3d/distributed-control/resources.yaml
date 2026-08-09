@@ -23,6 +23,7 @@ metadata: { name: adr71-control-auth }
 type: Opaque
 stringData:
   registration-token: "adr71-registration-token" # awaken-allow: secret
+  control-service-token: "adr71-control-service-token" # awaken-allow: secret
   seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
 ---
 apiVersion: v1
@@ -31,7 +32,7 @@ metadata: { name: adr71-coordinator-auth }
 type: Opaque
 stringData:
   registration-token: "adr71-registration-token" # awaken-allow: secret
-  seal-key: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff" # awaken-allow: secret
+  control-service-token: "adr71-control-service-token" # awaken-allow: secret
   worker-trust.json: |
     [
       {"worker_id":"worker-0","key_id":"adr71-key-0","credential_id":"adr71-worker-0","secret_base64":"YWRyNzEtd29ya2VyLTA="},
@@ -70,7 +71,7 @@ stringData:
     identity_mode = "no-login"
     coordinator_internal_url = "http://coordinator:3000"
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
-    worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
+    control_service_token_file = "/etc/awaken-auth/control-service-token"
     control_seal_key_file = "/etc/awaken-auth/seal-key"
     catalog_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
     credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
@@ -92,15 +93,12 @@ stringData:
     # database capacity is sized for every owner repository across all replicas.
     postgres_max_connections = 32
     resource_database_url = "postgres://postgres:test@postgres:5432/resources" # awaken-allow: secret
-    catalog_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
-    credential_db = "postgres://postgres:test@postgres:5432/credentials" # awaken-allow: secret
-    config_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
-    admin_db = "postgres://postgres:test@postgres:5432/control" # awaken-allow: secret
     environment_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     sessions_db = "postgres://postgres:test@postgres:5432/runtime" # awaken-allow: secret
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
+    control_internal_url = "http://control:3000"
+    control_service_token_file = "/etc/awaken-auth/control-service-token"
     worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
-    control_seal_key_file = "/etc/awaken-auth/seal-key"
     sandbox_tier = "namespace"
     dispatch_wake = "pg-notify"
     dispatch_owner = "adr71-coordinator"

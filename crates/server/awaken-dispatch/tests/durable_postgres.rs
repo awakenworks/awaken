@@ -310,6 +310,12 @@ async fn enqueued_dispatch_survives_a_restart() {
 
 #[tokio::test]
 async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
+    // Cause/effect decision table for schema access:
+    // R1 empty schema + connect -> migration bundle is applied.
+    // R2 R1 ledger + connect_existing -> verification succeeds without DDL and
+    // the resulting store serves the same dispatch behavior.
+    // R3 empty schema + connect_existing -> fail closed (covered by the
+    // scoped-migration verify tests shared by every Postgres adapter).
     // Create the isolated schema; connect() opens its own pool, so pin its
     // search_path via the URL.
     let schema = "t_pg_recover";
@@ -318,9 +324,13 @@ async fn postgres_connect_applies_migrations_and_claim_recovers_a_lease() {
     }
 
     // connect() (not with_pool) applies the dispatch migrations on a fresh pool.
-    let store = PostgresDispatchStore::connect(&harness::database_url_in_schema(schema), 10)
+    let url = harness::database_url_in_schema(schema);
+    PostgresDispatchStore::connect(&url, 10)
         .await
         .expect("connect");
+    let store = PostgresDispatchStore::connect_existing(&url, 10)
+        .await
+        .expect("verify and connect existing");
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await

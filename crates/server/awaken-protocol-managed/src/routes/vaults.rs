@@ -179,6 +179,34 @@ pub struct VaultState {
     cred_seq: AtomicU64,
 }
 
+/// Secret-free credential selection port consumed by Coordinator Session
+/// compilation. A split Coordinator uses an authenticated Control adapter;
+/// AllInOne injects the same [`VaultState`] directly. Secret material never
+/// crosses this boundary.
+#[async_trait::async_trait]
+pub trait SessionCredentialSource: Send + Sync {
+    async fn has_vault(&self, id: &str) -> Result<bool, String>;
+
+    async fn mcp_credential_source_for_url(
+        &self,
+        vault_ids: &[String],
+        url: &str,
+    ) -> Result<Option<CredentialSourceId>, String>;
+
+    async fn mcp_access_for_source(
+        &self,
+        source_id: &CredentialSourceId,
+    ) -> Result<awaken_credential_contract::CredentialAccess, String>;
+
+    async fn credential_access_for_source(
+        &self,
+        source_id: &CredentialSourceId,
+        workspace_id: &str,
+        usage: awaken_credential_contract::CredentialUsage,
+        policy: awaken_credential_contract::CredentialExecutionPolicy,
+    ) -> Result<awaken_credential_contract::CredentialAccess, String>;
+}
+
 impl VaultState {
     /// Build the vault surface over the credential domain's secret store + repo.
     pub fn new(secrets: Arc<dyn SecretStore>, credentials: Arc<dyn CredentialRepo>) -> Self {
@@ -501,6 +529,44 @@ impl VaultState {
             vault_id: record.vault_id.clone(),
             display_name: record.display_name.clone(),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionCredentialSource for VaultState {
+    async fn has_vault(&self, id: &str) -> Result<bool, String> {
+        Ok(VaultState::has_vault(self, id))
+    }
+
+    async fn mcp_credential_source_for_url(
+        &self,
+        vault_ids: &[String],
+        url: &str,
+    ) -> Result<Option<CredentialSourceId>, String> {
+        Ok(VaultState::mcp_credential_source_for_url(
+            self, vault_ids, url,
+        ))
+    }
+
+    async fn mcp_access_for_source(
+        &self,
+        source_id: &CredentialSourceId,
+    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+        VaultState::mcp_access_for_source(self, source_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn credential_access_for_source(
+        &self,
+        source_id: &CredentialSourceId,
+        workspace_id: &str,
+        usage: awaken_credential_contract::CredentialUsage,
+        policy: awaken_credential_contract::CredentialExecutionPolicy,
+    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+        VaultState::credential_access_for_source(self, source_id, workspace_id, usage, policy)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 

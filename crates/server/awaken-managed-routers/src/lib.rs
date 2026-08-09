@@ -10,14 +10,12 @@
 //! they no longer reach through `SharedHost`. Their physical module move can remain
 //! mechanical because the dependency boundary is already enforced by constructors.
 
-mod data_subject;
 mod files;
 mod memory_stores;
 mod models;
 mod resource_scope;
 mod skills;
 
-pub use data_subject::{consent_router, erasure_router};
 pub use files::files_router;
 pub use memory_stores::memory_stores_router_with_catalog;
 pub use models::{

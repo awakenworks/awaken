@@ -39,7 +39,7 @@ fn memory_input(
     }
 }
 
-fn create_store(catalog: &awaken_admin_config_api::SqliteAdminStore, id: &str) {
+fn create_store(catalog: &awaken_resource_store::SqliteResourceStore, id: &str) {
     catalog
         .create_memory_store(
             MemoryStoreDefinition {
@@ -80,7 +80,7 @@ async fn memory_snapshot_and_writeback_are_exact_claim_and_cas_fenced() {
         .create("memory-rw", "/seed.md", "seed")
         .await
         .unwrap();
-    let catalog = Arc::new(awaken_admin_config_api::SqliteAdminStore::open_in_memory().unwrap());
+    let catalog = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
     create_store(&catalog, "memory-rw");
     create_store(&catalog, "memory-ro");
     let resources = awaken_session_contract::ResolvedSessionResources {

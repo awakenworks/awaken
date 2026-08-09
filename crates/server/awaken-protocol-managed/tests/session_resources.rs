@@ -5,7 +5,6 @@
 
 mod support;
 
-use awaken_admin_config_api::SqliteAdminStore;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_credential_vault::repo::CredentialRepo;
@@ -45,9 +44,10 @@ fn input(
     }
 }
 
-fn resource_catalog() -> std::sync::Arc<SqliteAdminStore> {
+fn resource_catalog() -> std::sync::Arc<awaken_resource_store::SqliteResourceStore> {
     let catalog = std::sync::Arc::new(
-        SqliteAdminStore::open_in_memory().expect("open ephemeral Resource Catalog"),
+        awaken_resource_store::SqliteResourceStore::in_memory()
+            .expect("open ephemeral Resource Catalog"),
     );
     for id in [
         "mem_1",
@@ -529,12 +529,24 @@ async fn publication_backend_is_the_only_session_backend_authority() {
 async fn agent_default_environment_requires_the_exact_revision() {
     let environments = std::sync::Arc::new(awaken_protocol_managed::EnvironmentState::new());
     let environment_id = environments
-        .author(
-            "agent default",
-            json!({"type": "cloud", "networking": {"type": "unrestricted"}}),
+        .application()
+        .create(
+            awaken_session_contract::env_registry::CreateEnvironmentCommand {
+                command_id: "test:agent-default".into(),
+                name: "agent default".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: awaken_session_contract::env_registry::EnvironmentConfig::Cloud {
+                    networking:
+                        awaken_session_contract::env_registry::EnvironmentNetworking::Unrestricted,
+                    packages: Default::default(),
+                },
+            },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .id;
     let revision = environments
         .snapshot(&environment_id, None)
         .await

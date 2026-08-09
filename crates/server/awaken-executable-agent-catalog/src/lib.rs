@@ -9,8 +9,9 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use awaken_executable_agent_contract::{
-    ExecutableAgentProfileSource, ExecutableAgentRegistrar, ExecutableAgentRegistration,
-    ExecutableAgentRegistrationError, ExecutableAgentRegistrationOutcome,
+    ExecutableAgentInventorySource, ExecutableAgentProfileSource, ExecutableAgentRegistrar,
+    ExecutableAgentRegistration, ExecutableAgentRegistrationError,
+    ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationSource,
     ExecutableAgentSessionProfile, ExecutableAgentWithdrawal, ExecutableAgentWithdrawalOutcome,
 };
 use awaken_resource_contract::{
@@ -240,6 +241,47 @@ impl ExecutableAgentCatalog {
     ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
         let mut state = self.state.read().expect("executable Agent catalog").clone();
         Self::withdraw_locked(&mut state, withdrawal)
+    }
+}
+
+#[async_trait]
+impl ExecutableAgentRegistrationSource for ExecutableAgentCatalog {
+    async fn current_registration(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+        Ok(self.current(workspace_id, agent_id))
+    }
+
+    async fn registration_at_revision(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Result<Option<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+        Ok(self.at_revision(workspace_id, agent_id, source_revision))
+    }
+}
+
+#[async_trait]
+impl ExecutableAgentInventorySource for ExecutableAgentCatalog {
+    async fn current_registrations(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+        let state = self.state.read().expect("executable Agent catalog");
+        let mut registrations = state
+            .current
+            .iter()
+            .filter_map(|((workspace, _), entry)| {
+                (workspace == workspace_id)
+                    .then(|| entry.registration.clone())
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        registrations.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        Ok(registrations)
     }
 }
 
