@@ -470,7 +470,13 @@ pub(super) async fn assemble_runtime_process_router(
             resource_reclamation.clone(),
         )
         .expect("construct resource reclaimer")
-        .with_guard(resource_reclamation),
+        .with_guard(resource_reclamation)
+        .with_guard(Arc::new(
+            awaken_session_application::SessionResourcePurgeGuard::new(
+                sessions.clone(),
+                resource_component.file_catalog(),
+            ),
+        )),
     );
     let now_ms = || {
         std::time::SystemTime::now()
@@ -519,12 +525,17 @@ pub(super) async fn assemble_runtime_process_router(
             environment_execution.clone(),
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement: session_execution_placement,
+                local_realization_owner: host.dispatch_owner().to_string(),
             },
         );
     let mut managed_state = ManagedState::from_application(session_application)
         .with_credential_source(credential_source)
         .with_resource_catalog(resource_catalog.clone())
         .with_resource_purge_scheduler(resource_application.purge_scheduler())
+        .with_resource_reference_authority(
+            resource_component.lifecycle(),
+            resource_component.file_catalog(),
+        )
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
         // published agent's model sees the authoritative config-plane truth (M2).
         .with_config_source(executable_agent_catalog.clone());

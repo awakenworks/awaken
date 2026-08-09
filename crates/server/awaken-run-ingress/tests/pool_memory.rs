@@ -19,6 +19,7 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::run::RunState;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::run_store::RunStore;
+use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
 use awaken_run_ingress::{
     Clock, CompletionSink, DEFAULT_LEASE_MS, DispatchError, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DispatchWorker, Error, Inbox, ManualClock, MemoryDispatchStore,
@@ -87,6 +88,37 @@ impl WorkerResolver<MemoryDispatchStore> for RejectingResolver {
                 "synthetic provisioning failure".into(),
             ),
         ))
+    }
+}
+
+struct SettlingRejectingResolver {
+    worker: Arc<MemWorker>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for SettlingRejectingResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(Error::TerminalResolution(
+            awaken_runtime_contract::execution::Error::Execution(
+                "synthetic deterministic realization failure".into(),
+            ),
+        ))
+    }
+
+    async fn settle_claimed_resolution_failure(
+        &self,
+        claimed: &awaken_run_ingress::Claimed,
+        error: Error,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        self.worker
+            .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
+            .await
     }
 }
 
@@ -1031,6 +1063,80 @@ async fn renewal_stops_when_claim_resolution_fails() {
         .await
         .unwrap();
     assert!(reclaimed.is_some(), "R2 failed claim must expire");
+
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn returned_resolution_failure_commits_and_settles_when_resolver_owns_that_capability() {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Cause/effect graph: C1=the process crashes while resolving (no returned
+    // value); C2=Session realization returns a typed terminal error after its
+    // application failure commit; C3=the resolver owns
+    // a claim-fenced commit adapter; C4=the exact claim is still current;
+    // C5=commit/settle authority was replaced; C6=an ordinary retryable resolver
+    // error is returned. E1=lease expiry/reclaim handles
+    // recovery; E2=one Error Run is committed; E3=the dispatch settles Done and
+    // foreground completion wakes; E4=fencing rejects stale effects. Constraints:
+    // C1 and C2 are exclusive; E2/E3 require C2+C3+C4. Decision table:
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
+    // | F1   | T  | F  | -  | -  | -  | F  | E1     |
+    // | F2   | F  | F  | -  | -  | -  | T  | E1     |
+    // | F3   | F  | T  | T  | T  | F  | F  | E2,E3  |
+    // | F4   | F  | T  | T  | F  | T  | F  | E4     |
+    // F1/F2 are covered by `renewal_stops_when_claim_resolution_fails`; claim
+    // replacement fencing is covered by the worker/store fencing suites. This
+    // case proves F3 and prevents a deterministic provisioning error from being
+    // misclassified as a crash that leaves the foreground request waiting.
+    #[derive(Default)]
+    struct RecordingSink(Mutex<Vec<(String, RunState)>>);
+    impl CompletionSink for RecordingSink {
+        fn settled(&self, run_id: &RunId, state: &RunState) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((run_id.0.clone(), state.clone()));
+        }
+    }
+
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = worker_over(text_runtime(), store.clone(), commit.clone());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let sink = Arc::new(RecordingSink::default());
+    let pool = DispatchPool::spawn_with_completion(
+        store.clone(),
+        Arc::new(SystemClock),
+        "settling-owner",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig::default(),
+        Arc::new(SettlingRejectingResolver {
+            worker,
+            calls: calls.clone(),
+        }),
+        1,
+        sink.clone(),
+    );
+
+    pool.submit(activation("resolution-failure")).await.unwrap();
+    assert!(
+        wait_for(|| !sink.0.lock().unwrap().is_empty()).await,
+        "F3 foreground completion is notified"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "F3 resolves once");
+    assert_eq!(store.dispatch_count(), 0, "F3 dispatch settled Done");
+    let state = commit
+        .run_state(&RunId("resolution-failure".into()))
+        .expect("F3 terminal Run commit");
+    assert!(
+        matches!(
+            state,
+            RunState::Ended(awaken_agent_contract::agent::run::EndCause::Error(_))
+        ),
+        "F3 deterministic resolution error is committed as a Run failure"
+    );
 
     pool.shutdown().await;
 }

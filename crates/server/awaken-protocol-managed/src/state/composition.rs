@@ -138,6 +138,20 @@ impl ManagedState {
         self
     }
 
+    /// Wire the atomic Resource component's durable reference index and File
+    /// catalog into Session retention projection. The protocol only composes
+    /// existing neutral ports; it does not own Resource lifecycle behavior.
+    #[must_use]
+    pub fn with_resource_reference_authority(
+        mut self,
+        references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
+        files: Arc<dyn awaken_resource_contract::FileCatalog>,
+    ) -> Self {
+        self.application_mut()
+            .set_resource_reference_authority(references, files);
+        self
+    }
+
     /// Wire the vault surface, so `POST /v1/sessions` binds each requested MCP
     /// server to a vault credential by URL (ADR-0043 Phase 3). Share the same
     /// `VaultState` with [`crate::vault_router`], or the sessions and the vault

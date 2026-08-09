@@ -146,11 +146,13 @@ impl ManagedState {
         }
     }
 
-    fn wire_session_status(status: &str) -> &'static str {
+    pub(super) fn wire_session_status(status: &str) -> &'static str {
         match status {
             "preparing" => "preparing",
             "activating" => "activating",
             "activation_failed" => "failed",
+            "running" => "running",
+            "rescheduling" => "rescheduling",
             "terminated" => "terminated",
             _ => "idle",
         }
@@ -787,11 +789,11 @@ impl ManagedState {
             // Resource wire values are projected from `resource_state` on response.
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
-            status: if application_required {
-                "preparing"
-            } else {
-                "idle"
-            },
+            // The durable application aggregate is the sole lifecycle truth.
+            // A registered-Worker placement remains preparing until its claimed
+            // realization acknowledges the exact frozen projection; hardcoding
+            // non-Application creation to idle created a second, unsafe status.
+            status: Self::wire_session_status(&persisted.status),
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),

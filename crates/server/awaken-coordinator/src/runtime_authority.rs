@@ -51,28 +51,45 @@ pub struct DurableRuntimeAuthority {
 }
 
 impl DurableRuntimeAuthority {
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn open(
         deployment: &DeploymentConfig,
         schema: SchemaAccess,
     ) -> Result<Arc<Self>, String> {
-        let (dispatch, wake) = open_dispatch(deployment, schema).await?;
+        let postgres_pool = if deployment.dispatch_backend == DispatchBackend::Postgres
+            || deployment.store == StoreKind::Postgres
+        {
+            Some(
+                sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(deployment.postgres_max_connections.get())
+                    .connect(required_database_url(
+                        deployment,
+                        "Postgres Runtime authority",
+                    )?)
+                    .await
+                    .map_err(|error| format!("connect Coordinator Postgres pool: {error}"))?,
+            )
+        } else {
+            None
+        };
+        Self::open_with_postgres_pool(deployment, schema, postgres_pool).await
+    }
+
+    /// Open every Runtime persistence adapter over the composition root's one
+    /// process pool when Postgres is selected. SQLite callers pass no pool.
+    pub async fn open_with_postgres_pool(
+        deployment: &DeploymentConfig,
+        schema: SchemaAccess,
+        postgres_pool: Option<sqlx::PgPool>,
+    ) -> Result<Arc<Self>, String> {
+        let (dispatch, wake) = open_dispatch(deployment, schema, postgres_pool.clone()).await?;
         let postgres_commit = if deployment.store == StoreKind::Postgres {
-            let url = required_database_url(deployment, "Postgres commit")?;
+            let pool = postgres_pool.ok_or_else(|| {
+                "Postgres commit requires the process-owned Coordinator pool".to_owned()
+            })?;
             let commit = match schema {
-                SchemaAccess::Migrate => {
-                    PostgresCommitCoordinator::connect(
-                        url,
-                        deployment.postgres_max_connections.get(),
-                    )
-                    .await
-                }
-                SchemaAccess::Verify => {
-                    PostgresCommitCoordinator::connect_existing(
-                        url,
-                        deployment.postgres_max_connections.get(),
-                    )
-                    .await
-                }
+                SchemaAccess::Migrate => PostgresCommitCoordinator::with_pool(pool).await,
+                SchemaAccess::Verify => PostgresCommitCoordinator::with_existing_pool(pool).await,
             }
             .map_err(|error| error.to_string())?;
             Some(Arc::new(commit))
@@ -133,6 +150,7 @@ fn required_database_url<'a>(
 async fn open_dispatch(
     deployment: &DeploymentConfig,
     schema: SchemaAccess,
+    postgres_pool: Option<sqlx::PgPool>,
 ) -> Result<(Arc<AnyDispatchStore>, Option<Arc<dyn WakeSignal>>), String> {
     match deployment.dispatch_backend {
         DispatchBackend::Sqlite => {
@@ -145,23 +163,15 @@ async fn open_dispatch(
             Ok((Arc::new(store), None))
         }
         DispatchBackend::Postgres => {
-            let url = required_database_url(deployment, "Postgres dispatch")?;
+            let pool = postgres_pool.ok_or_else(|| {
+                "Postgres dispatch requires the process-owned Coordinator pool".to_owned()
+            })?;
             match deployment.wake {
                 Wake::None => {
                     let store = match schema {
-                        SchemaAccess::Migrate => {
-                            AnyDispatchStore::connect_postgres(
-                                url,
-                                deployment.postgres_max_connections.get(),
-                            )
-                            .await?
-                        }
+                        SchemaAccess::Migrate => AnyDispatchStore::with_postgres_pool(pool).await?,
                         SchemaAccess::Verify => {
-                            AnyDispatchStore::connect_postgres_existing(
-                                url,
-                                deployment.postgres_max_connections.get(),
-                            )
-                            .await?
+                            AnyDispatchStore::with_existing_postgres_pool(pool).await?
                         }
                     };
                     Ok((Arc::new(store), None))
@@ -169,25 +179,23 @@ async fn open_dispatch(
                 Wake::PgNotify => {
                     let (store, wake) = match schema {
                         SchemaAccess::Migrate => {
-                            AnyDispatchStore::connect_postgres_with_wake(
-                                url,
+                            AnyDispatchStore::with_postgres_pool_and_wake(
+                                pool,
                                 &deployment.wake_channel,
-                                deployment.postgres_max_connections.get(),
                             )
                             .await?
                         }
                         SchemaAccess::Verify => {
-                            AnyDispatchStore::connect_postgres_existing_with_wake(
-                                url,
+                            AnyDispatchStore::with_existing_postgres_pool_and_wake(
+                                pool,
                                 &deployment.wake_channel,
-                                deployment.postgres_max_connections.get(),
                             )
                             .await?
                         }
                     };
                     Ok((Arc::new(store), Some(wake)))
                 }
-                Wake::Nats => open_nats_dispatch(url, deployment, schema).await,
+                Wake::Nats => open_nats_dispatch(pool, deployment, schema).await,
             }
         }
     }
@@ -195,7 +203,7 @@ async fn open_dispatch(
 
 #[cfg(feature = "nats")]
 async fn open_nats_dispatch(
-    url: &str,
+    pool: sqlx::PgPool,
     deployment: &DeploymentConfig,
     schema: SchemaAccess,
 ) -> Result<(Arc<AnyDispatchStore>, Option<Arc<dyn WakeSignal>>), String> {
@@ -203,32 +211,21 @@ async fn open_nats_dispatch(
         .nats_url
         .as_deref()
         .ok_or_else(|| "NATS dispatch wake requires runtime.nats_url".to_owned())?;
-    let (store, wake) = match schema {
-        SchemaAccess::Migrate => {
-            AnyDispatchStore::connect_postgres_with_nats_wake(
-                url,
-                nats_url,
-                &deployment.wake_channel,
-                deployment.postgres_max_connections.get(),
-            )
-            .await?
-        }
-        SchemaAccess::Verify => {
-            AnyDispatchStore::connect_postgres_existing_with_nats_wake(
-                url,
-                nats_url,
-                &deployment.wake_channel,
-                deployment.postgres_max_connections.get(),
-            )
-            .await?
-        }
+    let store = match schema {
+        SchemaAccess::Migrate => AnyDispatchStore::with_postgres_pool(pool).await?,
+        SchemaAccess::Verify => AnyDispatchStore::with_existing_postgres_pool(pool).await?,
     };
+    let wake: Arc<dyn WakeSignal> = Arc::new(
+        awaken_run_ingress::NatsWakeSignal::connect(nats_url, deployment.wake_channel.clone())
+            .await
+            .map_err(|error| error.to_string())?,
+    );
     Ok((Arc::new(store), Some(wake)))
 }
 
 #[cfg(not(feature = "nats"))]
 async fn open_nats_dispatch(
-    _url: &str,
+    _pool: sqlx::PgPool,
     _deployment: &DeploymentConfig,
     _schema: SchemaAccess,
 ) -> Result<(Arc<AnyDispatchStore>, Option<Arc<dyn WakeSignal>>), String> {
@@ -536,13 +533,10 @@ mod tests {
 
         #[cfg(not(feature = "nats"))]
         {
-            let error = match open_nats_dispatch(
-                "postgres://must-not-be-dialed.invalid/db",
-                &durable,
-                SchemaAccess::Verify,
-            )
-            .await
-            {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgres://must-not-be-dialed.invalid/db")
+                .expect("syntactically valid lazy pool");
+            let error = match open_nats_dispatch(pool, &durable, SchemaAccess::Verify).await {
                 Ok(_) => panic!("A3 must reject a missing NATS capability"),
                 Err(error) => error,
             };

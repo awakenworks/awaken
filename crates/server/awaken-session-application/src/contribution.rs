@@ -141,7 +141,7 @@ impl SessionApplication {
         session.baseline = SessionBaselineState::Frozen(compiled.baseline);
         session.resources = resources;
         session.mcp = mcp;
-        self.commit_session_snapshot(owner_scope, session, "finalize-creation", Vec::new())
+        self.commit_resource_snapshot(owner_scope, session, "finalize-creation", Vec::new())
             .await
             .map_err(|error| match error {
                 SessionMutationError::Conflict => ApplicationSessionContributionFailure::Conflict,

@@ -57,7 +57,15 @@ const checks = [
   }],
   ["failure artifact", () => {
     assert.match(harness, /\.failed/);
-    assert.match(readme, /failed assertion produces only/);
+    assert.match(readme, /failed assertion produces/);
+    assert.match(harness, /\.mp4\.tmp\.mp4/);
+    assert.match(harness, /Recording stopped/);
+  }],
+  ["recording composition", () => {
+    assert.match(harness, /width: 1600, height: 900/);
+    assert.match(harness, /videoStartedAt/);
+    assert.match(harness, /classList\.toggle\("top", targetIsLow\)/);
+    assert.match(harness, /AWAKEN_RECORD_KEEP_WEBM/);
   }],
   ["no turn vocabulary", () => eachFlow((name, source) => {
     assert.doesNotMatch(source, /\bturns?\b/i, `${name}: use run/step/thread vocabulary`);

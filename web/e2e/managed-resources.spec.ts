@@ -66,14 +66,16 @@ test("Environment: configure native Sandbox creation on the first Hand tool", as
   });
 });
 
-test("Environment work queue: a fresh env shows its seeded healthcheck queued", async ({ page }) => {
-  // Creating an environment seeds one `healthcheck` work item into its durable queue
-  // (EnvRegistry + WorkQueue). The env row's Queue cell projects GET …/work/stats, so
-  // a fresh env reads `depth: 1` and the cell shows "1 queued".
+test("Environment work queue: a fresh self-hosted env shows its seeded healthcheck queued", async ({ page }) => {
+  // Environment queue decision table: C1=self-hosted placement, C2=create
+  // succeeds. C1+C2 seeds one durable healthcheck and the Queue projection shows
+  // `1 queued`; !C1+C2 is cloud-provider owned and remains idle. This case covers
+  // the only branch that owns a Worker work queue instead of conflating both.
   const name = `envq-${Date.now()}`;
   await page.goto("/w/default/environments");
   await page.getByRole("button", { name: /New environment/ }).click();
   await page.getByPlaceholder("claude-sandbox-github").fill(name);
+  await page.getByRole("button", { name: /self-hosted|自管/ }).click();
   await page.getByRole("button", { name: "Create", exact: true }).click();
   const row = page.locator("tr", { hasText: name });
   await expect(row).toContainText(/1 queued|1 排队/);
@@ -87,12 +89,15 @@ test("Models exposes Provider Connections as the single authoring path", async (
 });
 
 test("Skills: the surface reads the delivered-skill catalog", async ({ page, request }) => {
+  // Catalog projection table: an empty authoritative catalog renders the one
+  // create/import empty state; a non-empty catalog renders its first durable id.
+  // Neither branch invents a client-side Skill index.
   await page.goto("/w/default/skills");
   // The backend may be reused locally and already contain a delivered Skill. Assert
   // the UI mirrors the live catalog in either state instead of assuming isolation.
   const catalog = await (await request.get("/v1/skills", { headers: SKILLS_HEADERS })).json();
   if (catalog.data.length === 0) {
-    await expect(page.getByText(/No skills delivered yet|尚无已交付技能/)).toBeVisible();
+    await expect(page.getByText(/No Skills yet|还没有技能/)).toBeVisible();
   } else {
     await expect(page.locator("tr", { hasText: catalog.data[0].id }).first()).toBeVisible();
   }
@@ -191,6 +196,10 @@ test("Agent Resources: attach a file to an agent and persist it", async ({ page,
 });
 
 test("Files: upload an input through the global resource library and keep it out of Artifacts", async ({ page, request }) => {
+  // File view decision table: input+tree shows hierarchy only; input+list shows
+  // the authoritative purpose; artifact query must exclude that same id. Switch
+  // to the list projection before asserting purpose rather than duplicating the
+  // purpose column in the tree view.
   const filename = `global-input-${Date.now()}.txt`;
   await page.goto("/w/default/files");
   const chooser = page.waitForEvent("filechooser");
@@ -200,6 +209,7 @@ test("Files: upload an input through the global resource library and keep it out
     mimeType: "text/plain",
     buffer: Buffer.from("workspace input"),
   });
+  await page.getByRole("button", { name: /List|列表/, exact: true }).click();
   const row = page.locator("tr", { hasText: filename });
   await expect(row).toBeVisible();
   await expect(row).toContainText(/Agent input|Agent 输入/);
@@ -211,6 +221,7 @@ test("Files: upload an input through the global resource library and keep it out
   expect(artifacts.data.some((file: { filename: string }) => file.filename === filename)).toBe(false);
 
   await page.goto("/w/default/artifacts");
+  await page.getByRole("button", { name: /List|列表/, exact: true }).click();
   await page.getByPlaceholder(/Filter artifacts/).fill(filename);
   await expect(page.locator("tr", { hasText: filename })).toHaveCount(0);
 });
@@ -254,16 +265,25 @@ test("Agent Resources: add a skill to an agent and persist it", async ({ page, r
     candidate.display_title === skillName);
   expect(skill).toBeTruthy();
 
+  const hydrated = page.waitForResponse((response) =>
+    response.request().method() === "GET"
+      && response.url().endsWith(`/v1/config/agents/${agent}`));
   await page.goto(`/w/default/agents/${agent}`);
+  expect((await hydrated).ok()).toBe(true);
   await openBuild(page, "Skills & MCP");
   await page.getByRole("button", { name: "+ Skill", exact: true }).click();
-  await page.getByLabel("Skill id").fill(skill.id);
+  // Skill-binding decision table: an id present in the authoritative catalog is
+  // selected from that catalog; an absent id is retained only while rehydrating
+  // an older binding. New bindings must not recreate the removed free-text path.
+  const skillBindings = page.locator(".agent-config-card", { hasText: "Skill bindings" });
+  await skillBindings.locator("select").selectOption(skill.id);
   await page.getByRole("button", { name: /Save draft/ }).click();
   await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
 
   await page.reload();
   await openBuild(page, "Skills & MCP");
-  await expect(page.getByLabel("Skill id")).toHaveValue(skill.id);
+  await expect(page.locator(".agent-config-card", { hasText: "Skill bindings" }).locator("select"))
+    .toHaveValue(skill.id);
 });
 
 test("Tool presentation: alias a tool in the editor and persist it", async ({ page, request }) => {
@@ -298,22 +318,42 @@ test("Session Inputs and Artifacts are separate backend projections", async ({ p
     headers: MEMORY_HEADERS,
     data: { name: store },
   })).json()).id as string;
+  const stamp = Date.now();
+  const agent = `session-files-agent-${stamp}`;
+  const model = `session-files-model-${stamp}`;
+  await syntheticModels.configure(request, model);
+  const authored = await request.put(`/v1/config/agents/${agent}`, {
+    data: { id: agent, model: { id: model }, ...MIN_AGENT },
+  });
+  expect(authored.ok(), await authored.text()).toBe(true);
+  const published = await request.post(`/v1/config/agents/${agent}/publish`);
+  expect(published.ok(), await published.text()).toBe(true);
   // A memory_store binds at session creation (Managed Agents contract — it can't be
   // attached to a running session), so mount it via the create body's resources[].
   const sid = (await (await request.post("/v1/sessions", {
     headers: MANAGED_HEADERS,
     data: {
-      agent: "default",
+      agent,
       title: "files-e2e",
       resources: [{ type: "memory_store", memory_store_id: storeId, mount_path: "/mnt/memory/notes" }],
     },
   })).json()).id as string;
 
+  // Resource projection decision table: create+no Worker effect leaves the
+  // generation Prepared and must not label it mounted; a successful claimed run
+  // activates the exact frozen generation, after which Inputs shows mount/id.
+  // Artifacts remain independently empty until output bytes are published.
+  const run = await request.post(`/v1/sessions/${sid}/events`, {
+    headers: MANAGED_HEADERS,
+    data: { events: [{ type: "user.message", content: [{ type: "text", text: "activate inputs" }] }] },
+  });
+  expect(run.ok(), await run.text()).toBe(true);
+
   await page.goto(`/w/default/sessions/${sid}`);
   await page.getByRole("button", { name: "Inputs", exact: true }).click();
   await expect(page.getByText("/mnt/memory/notes")).toBeVisible(); // mounted resource path
   await expect(page.getByText(storeId)).toBeVisible(); // backing reference
-  await expect(page.getByText(/creation snapshot|创建快照/)).toBeVisible();
+  await expect(page.getByText(/stay the same for the life|本次 Session 中保持不变/)).toBeVisible();
   await page.locator(".segmented").getByRole("button", { name: "Artifacts", exact: true }).click();
   await expect(page.getByText(/No artifacts yet|还没有产物/)).toBeVisible(); // live artifacts read
 });

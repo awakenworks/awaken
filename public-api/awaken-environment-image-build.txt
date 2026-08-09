@@ -18,6 +18,7 @@ pub struct awaken_environment_image_build::EnvironmentImageBuildPolicy
 pub awaken_environment_image_build::EnvironmentImageBuildPolicy::lease: core::time::Duration
 pub awaken_environment_image_build::EnvironmentImageBuildPolicy::poll_interval: core::time::Duration
 pub awaken_environment_image_build::EnvironmentImageBuildPolicy::retry: core::time::Duration
+pub awaken_environment_image_build::EnvironmentImageBuildPolicy::retry_cap: core::time::Duration
 pub awaken_environment_image_build::EnvironmentImageBuildPolicy::wait_timeout: core::time::Duration
 impl core::default::Default for awaken_environment_image_build::EnvironmentImageBuildPolicy
 pub fn awaken_environment_image_build::EnvironmentImageBuildPolicy::default() -> Self

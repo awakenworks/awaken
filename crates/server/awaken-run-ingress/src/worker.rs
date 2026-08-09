@@ -968,6 +968,75 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
     }
 
+    /// Commit and settle a deterministic failure returned while resolving this
+    /// exact claimed attempt, before an executor could be constructed. This is
+    /// the same terminal commit and claim fence used after execution; it is not a
+    /// dead-letter shortcut. If authority was lost, commit/settle fencing leaves
+    /// the replacement owner untouched and the error remains recoverable.
+    pub async fn fail_claimed_before_execution(
+        &self,
+        claimed: &Claimed,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        use awaken_agent_contract::agent::run::{EndCause, Failure};
+        use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
+
+        let run_id = claimed.lease.run_id.clone();
+        let thread_id = claimed.request.thread_id().clone();
+        let epoch = claimed.lease.epoch;
+        let consumed = claimed
+            .pending
+            .iter()
+            .map(|pending| pending.message_id.clone())
+            .collect::<Vec<_>>();
+        let cause = EndCause::Error(Failure::Inference {
+            code: code.into(),
+            message: message.into(),
+        });
+        let state = RunState::Ended(cause.clone());
+        let claim = RunClaim::from(&claimed.lease);
+        if let Some(projection) = &self.recovery_projection {
+            let snapshot = self.store.load_recovery_snapshot(&claim).await?;
+            projection.install(&run_id, snapshot).map_err(|error| {
+                Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+            })?;
+        }
+        let context = self.execution_context_with(&claim, &None, &[]);
+        let coordinator = context.commit.ok_or_else(|| {
+            Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                "claimed resolution failure has no commit coordinator".to_string(),
+            ))
+        })?;
+        if let Err(error) = commit_run(
+            coordinator.as_ref(),
+            &thread_id,
+            RunDisposition::ended(run_id.clone(), cause),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        {
+            return self
+                .settle_if_terminal_or_raise(
+                    &run_id,
+                    &thread_id,
+                    epoch,
+                    &consumed,
+                    Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                        error.to_string(),
+                    )),
+                )
+                .await;
+        }
+        self.redeliver_terminal_observers(&run_id, &thread_id).await;
+        Ok(self
+            .settle(&run_id, epoch, DispatchOutcome::Done, &consumed)
+            .await?
+            .applied()
+            .then_some((run_id, state)))
+    }
+
     /// Reconcile one quiescent awaiting dispatch or expired running lease whose
     /// committed Run is already terminal. The committed reader is checked before
     /// the special claim, and

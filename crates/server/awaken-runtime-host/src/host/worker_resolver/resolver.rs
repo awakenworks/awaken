@@ -19,6 +19,14 @@ impl HostWorkerResolver {
         ))
     }
 
+    pub(in crate::host) fn terminal_resolution_error(
+        message: impl Into<String>,
+    ) -> awaken_run_ingress::Error {
+        awaken_run_ingress::Error::TerminalResolution(
+            awaken_runtime_contract::execution::Error::Execution(message.into()),
+        )
+    }
+
     pub(in crate::host) fn host(&self) -> Result<Arc<SharedHost>, awaken_run_ingress::Error> {
         self.host
             .upgrade()

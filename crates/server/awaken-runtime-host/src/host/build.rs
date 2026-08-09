@@ -2,6 +2,14 @@
 //! `with_*` methods, per-thread registration, and the process dispatch pool.
 
 use super::*;
+
+/// Worker-side Resource content ports that must be installed as one unit.
+/// Keeping the pair named prevents a partially remote Host composition from
+/// silently opening a local content authority for the missing half.
+struct WorkerContentAdapters {
+    file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
+    memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+}
 use awaken_runtime_contract::delegation::RunDelegationService;
 
 impl SharedHost {
@@ -169,7 +177,10 @@ impl SharedHost {
             llm,
             model_ref.into(),
             None,
-            Some((file_content_source, memory_repository)),
+            Some(WorkerContentAdapters {
+                file_content_source,
+                memory_repository,
+            }),
             None,
             deployment,
         )
@@ -179,10 +190,7 @@ impl SharedHost {
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
         resources: Option<awaken_resource_contract::ResourceComponent>,
-        worker_content: Option<(
-            Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
-            Arc<dyn awaken_resource_contract::MemoryRepository>,
-        )>,
+        worker_content: Option<WorkerContentAdapters>,
         extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
@@ -195,8 +203,8 @@ impl SharedHost {
         // Product Resource content is injected atomically through ResourceComponent;
         // a Worker receives its remote adapter. Only test-support construction may
         // still use the local opener below.
-        let memory_stores = if let Some((_, repository)) = &worker_content {
-            crate::memory_stores::MemoryStores::with_repository(repository.clone())
+        let memory_stores = if let Some(content) = &worker_content {
+            crate::memory_stores::MemoryStores::with_repository(content.memory_repository.clone())
         } else if let Some(plane) = &resources {
             crate::memory_stores::MemoryStores::with_repository(plane.memory_repository())
         } else {
@@ -284,7 +292,7 @@ impl SharedHost {
         let file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>> =
             worker_content
                 .as_ref()
-                .map(|(source, _)| source.clone())
+                .map(|content| content.file_content_source.clone())
                 .unwrap_or_else(|| {
                     #[cfg(test)]
                     if let Some(application) = &file_application {
@@ -637,6 +645,13 @@ impl SharedHost {
     #[must_use]
     pub fn runs_local_dispatch_pool(&self) -> bool {
         !self.deployment.disable_local_pool
+    }
+
+    /// Stable logical identity used by both local dispatch claims and local
+    /// Session realization. The process incarnation is deliberately separate.
+    #[must_use]
+    pub fn dispatch_owner(&self) -> &str {
+        &self.deployment.dispatch_owner
     }
 
     /// Clone the completion projection consumed by the authenticated Worker

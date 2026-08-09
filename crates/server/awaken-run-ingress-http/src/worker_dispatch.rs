@@ -495,6 +495,11 @@ async fn application_resume(
                     runtime_incarnation: request.identity.lease_owner(),
                     lease_expires_at_unix_ms: realization_expiry,
                     renew_existing_lease: false,
+                    // The exact live dispatch guard above proves this Worker is
+                    // the sole executor for the Session thread. It may therefore
+                    // fence a predecessor Worker's longer-lived projection lease
+                    // without waiting for an unrelated timeout.
+                    reassign_existing_lease: true,
                 },
             })
             .await
@@ -579,6 +584,7 @@ async fn application_contribution(
                     runtime_incarnation: request.identity.lease_owner(),
                     lease_expires_at_unix_ms: realization_expiry,
                     renew_existing_lease: false,
+                    reassign_existing_lease: true,
                 },
             })
             .await
@@ -644,6 +650,7 @@ async fn begin_session_realization(
             .unwrap_or(u64::MAX);
         let target = &request.command.target;
         if !target.renew_existing_lease
+            || target.reassign_existing_lease
             || target.owner != request.identity.worker_id
             || target.runtime_incarnation != request.identity.lease_owner()
             || !awaken_session_contract::realization_lease_is_live_at(

@@ -288,16 +288,17 @@ stamped by the PEP, not evidence that authorization was granted.
 `ResourceComponent` injects the Resource Catalog, File store/catalog, Memory,
 Skill, and lifecycle ports atomically when the process is constructed. A shared
 deployment therefore never opens an unused local File/Memory/Skill/lifecycle
-store before replacing it. A shared Runtime also
-requires the Resource Catalog/Agent-binding store (`AWAKEN_ADMIN_DB`) to be
-shared; startup fails closed when shared execution is combined with a local
-resource configuration catalog.
+store before replacing it. A shared Runtime also requires the complete Resource
+backend family, including its canonical Resource Catalog, to be shared; startup
+fails closed when shared execution is combined with a node-local Resource
+component. Agent bindings are published by Control and do not grant the
+Coordinator direct ownership of Control's admin store.
 
 Remote worker placement requires `session-resources/v1` whenever a frozen
 manifest is present, including an explicit empty selection: the capability also
 owns revocation of material from an earlier manifest. A credentialed Repository additionally
 requires `repository-credentials/v1`. A worker advertises the former only when
-both the shared resource backend family and shared Resource Catalog validator are
+the complete shared Resource component and its Resource Catalog validator are
 installed, and the latter only with an explicit shared credential backend. Missing
 or mismatched wiring is therefore an admission incompatibility, not a late
 node-local fallback.

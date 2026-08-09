@@ -56,7 +56,14 @@ impl SessionApplication {
                 .activity_epoch
                 .checked_add(1)
                 .ok_or(SessionActivityError::EpochExhausted)?;
-            session.status = "running".into();
+            // A driving event is also the trigger that makes a registered Worker
+            // claim and realize a freshly prepared Session. Preserve that
+            // stronger realization phase until it converges: replacing it with
+            // `running` would let a failed Stage look like an ordinary turn and
+            // a later settlement could erase `activation_failed` back to idle.
+            if session.status == "idle" {
+                session.status = "running".into();
+            }
             match self
                 .commit_session_snapshot(&owner_scope, session, "begin-activity", Vec::new())
                 .await
@@ -89,6 +96,13 @@ impl SessionApplication {
                 .await
                 .ok_or(SessionActivityError::NotFound)?;
             if session.is_terminal() || session.activity_epoch != expected_epoch {
+                return Ok(session);
+            }
+            // Only the activity transition that wrote `running` owns the inverse
+            // transition. Initial realization may still be preparing/activating,
+            // or may have failed terminally on another process while this event
+            // was queued; settlement must not overwrite either authority.
+            if session.status != "running" {
                 return Ok(session);
             }
             session.status = "idle".into();

@@ -9,6 +9,7 @@ use std::sync::{
     Mutex,
     atomic::{AtomicBool, Ordering},
 };
+use tokio::io::AsyncWriteExt;
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -385,7 +386,7 @@ fn memory_store_mounts_are_pulled_out_of_binds_into_memory_mounts() {
     // The memory store is NOT a byte bind — binds stay the 2 file/resource mounts.
     assert_eq!(plan.binds.len(), 2);
     assert!(plan.binds.iter().all(|b| b.source_ref != "store-42"));
-    // It is realized as a memory mount (→ sidecar downstream).
+    // It is realized as a distinct Memory plan through the canonical mounter.
     assert_eq!(plan.memory_mounts.len(), 1);
     assert_eq!(plan.memory_mounts[0].store_id, "store-42");
     assert_eq!(plan.memory_mounts[0].mount_path, "/workspace/.mnt/notes");
@@ -522,8 +523,8 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
         .iter()
         .find(|r| r.mount_id == "notes")
         .expect("memory mount realized");
-    // No-FUSE portable default: the container tier reports Copy (the memoryd sidecar
-    // materializes + harvests), not a live Fuse mount.
+    // Portable default: the container tier reports the canonical mounter's Copy,
+    // not a second runtime-local store.
     assert_eq!(mem.realization, pc::Realization::Copy);
     {
         let state = p.runtime.st.lock().unwrap();
@@ -539,6 +540,116 @@ async fn memory_store_realizes_as_copy_on_the_container_tier() {
     }
     sandbox.dispose().await.unwrap();
     assert!(torn_down.load(Ordering::SeqCst));
+}
+
+fn one_file_archive(path: &str, bytes: &[u8]) -> Vec<u8> {
+    let mut archive = tar::Builder::new(Vec::new());
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o660);
+    header.set_cksum();
+    archive.append_data(&mut header, path, bytes).unwrap();
+    archive.into_inner().unwrap()
+}
+
+struct HarvestingMemoryMounter {
+    reference: Arc<Mutex<Option<String>>>,
+    harvested: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+struct HarvestingMemoryMount {
+    root: std::path::PathBuf,
+    harvested: Arc<Mutex<Option<Vec<u8>>>>,
+}
+
+#[async_trait]
+impl pc::MemoryMounter for HarvestingMemoryMounter {
+    async fn mount(
+        &self,
+        store_id: &str,
+        host_path: &std::path::Path,
+        _access: pc::MountAccess,
+    ) -> Result<Box<dyn pc::MemoryMount>, pc::SandboxError> {
+        *self.reference.lock().unwrap() = Some(store_id.to_owned());
+        std::fs::create_dir_all(host_path)
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        std::fs::write(host_path.join("seed.txt"), b"seed")
+            .map_err(|error| pc::SandboxError::new(error.to_string()))?;
+        Ok(Box::new(HarvestingMemoryMount {
+            root: host_path.to_path_buf(),
+            harvested: self.harvested.clone(),
+        }))
+    }
+}
+
+#[async_trait]
+impl pc::MemoryMount for HarvestingMemoryMount {
+    fn realization(&self) -> pc::Realization {
+        pc::Realization::Copy
+    }
+
+    async fn teardown(self: Box<Self>) {
+        *self.harvested.lock().unwrap() = std::fs::read(self.root.join("changed.txt")).ok();
+    }
+}
+
+#[tokio::test]
+async fn native_memory_volume_seeds_and_harvests_through_the_same_mounter() {
+    /* Native Memory lifecycle cause/effect decision table — NM1:
+     * C1 a claim-fenced materialization reference resolves through the installed
+     * mounter; C2 the runtime owns a native volume; C3 access is read-write; C4
+     * the live tree can be archived. C1+C2 => E1 the runtime receives the seeded
+     * tar and no host bind/second store. C1+C2+C3+C4 => E2 disposal replaces the
+     * staging copy and the same mount handle harvests it exactly once. !C1 or !C4
+     * fails before removal, retaining the environment for retry; read-only access
+     * deliberately has no harvest effect (KM1 covers its Pod mount projection).
+     */
+    let archive = one_file_archive("changed.txt", b"changed-in-pod");
+    let runtime = Arc::new(FakeRuntime::default().with_native_memory_archive(archive));
+    let mut sandbox_spec = spec("native-memory");
+    sandbox_spec.mounts.push(pc::MountRequirement {
+        mount_id: "memory".into(),
+        source: pc::MountSource::MemoryStore {
+            store_id: "mutable-store-id".into(),
+            materialization_reference: Some("claim-fenced-reference".into()),
+            write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
+        },
+        mount_path: "/workspace/.mnt/memory".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    });
+    let provider = provider(runtime.clone());
+    let reference = Arc::new(Mutex::new(None));
+    let harvested = Arc::new(Mutex::new(None));
+    provider.install_memory_mounter(Arc::new(HarvestingMemoryMounter {
+        reference: reference.clone(),
+        harvested: harvested.clone(),
+    }));
+
+    let sandbox = provider.create(&sandbox_spec).await.expect("NM1 create");
+    assert_eq!(
+        reference.lock().unwrap().as_deref(),
+        Some("claim-fenced-reference"),
+        "E1 exact reference"
+    );
+    {
+        let state = runtime.st.lock().unwrap();
+        assert!(
+            state.created_binds["cid-native-memory"]
+                .iter()
+                .all(|bind| bind.mount_path != "/workspace/.mnt/memory")
+        );
+        let mount = &state.created_memory_mounts["cid-native-memory"][0];
+        assert!(!mount.snapshot_tar.is_empty(), "E1 seeded snapshot");
+    }
+
+    sandbox.dispose().await.expect("NM1 dispose");
+    assert_eq!(
+        harvested.lock().unwrap().as_deref(),
+        Some(b"changed-in-pod".as_slice()),
+        "E2 same mounter harvest"
+    );
 }
 
 struct FakeMemoryMounter {
@@ -605,6 +716,9 @@ struct FakeState {
     process_secret_observations: Vec<(bool, bool)>,
     live_input_projection: bool,
     live_inputs: HashMap<String, Vec<u8>>,
+    native_memory: bool,
+    memory_archive: Vec<u8>,
+    created_memory_mounts: HashMap<String, Vec<MemoryMount>>,
 }
 
 #[derive(Default)]
@@ -675,6 +789,14 @@ impl FakeRuntime {
         self.st.lock().unwrap().live_input_projection = true;
         self
     }
+
+    fn with_native_memory_archive(self, archive: Vec<u8>) -> Self {
+        let mut state = self.st.lock().unwrap();
+        state.native_memory = true;
+        state.memory_archive = archive;
+        drop(state);
+        self
+    }
 }
 
 #[async_trait]
@@ -685,6 +807,10 @@ impl ContainerRuntime for FakeRuntime {
 
     fn supports_live_input_projection(&self) -> bool {
         self.st.lock().unwrap().live_input_projection
+    }
+
+    fn has_native_memory_mounts(&self) -> bool {
+        self.st.lock().unwrap().native_memory
     }
 
     async fn project_live_input(
@@ -744,6 +870,8 @@ impl ContainerRuntime for FakeRuntime {
         st.created_command.insert(cid.clone(), plan.command.clone());
         st.created_env.insert(cid.clone(), plan.env.clone());
         st.created_binds.insert(cid.clone(), plan.binds.clone());
+        st.created_memory_mounts
+            .insert(cid.clone(), plan.memory_mounts.clone());
         st.created_images.insert(cid.clone(), plan.image.clone());
         st.exits.insert(
             cid.clone(),
@@ -802,8 +930,17 @@ impl ContainerRuntime for FakeRuntime {
         container_id: &str,
         command: pc::MaterializedCommand,
     ) -> Result<RuntimeAgentProcess, RuntimeError> {
+        let memory_archive = if command.argv.iter().any(|arg| arg == "awaken-read-files") {
+            self.st.lock().unwrap().memory_archive.clone()
+        } else {
+            Vec::new()
+        };
         let process = self.spawn(container_id, command).await?;
-        let (ours, _peer) = tokio::io::duplex(64);
+        let capacity = memory_archive.len().max(64);
+        let (ours, mut peer) = tokio::io::duplex(capacity);
+        tokio::spawn(async move {
+            let _ = peer.write_all(&memory_archive).await;
+        });
         Ok(RuntimeAgentProcess {
             process,
             channel: Box::new(ours),

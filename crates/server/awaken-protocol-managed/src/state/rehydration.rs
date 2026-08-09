@@ -267,6 +267,7 @@ mod tests {
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement:
                     awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
+                ..Default::default()
             },
         );
         let restarted = ManagedState::from_application(application);

@@ -32,6 +32,26 @@ where
     Ok(())
 }
 
+/// Stamp a Pod's immutable realization without treating the process-local reaper
+/// owner as part of that identity. The owner label is a transferable liveness
+/// lease: a replacement Worker must be able to adopt the same frozen Session Pod
+/// while every executable/mount/security field remains digest-fenced.
+pub(super) fn stamp_pod_realization(pod: &mut Pod) -> Result<(), RuntimeError> {
+    let owner = pod
+        .metadata
+        .labels
+        .as_mut()
+        .and_then(|labels| labels.remove(crate::REAPER_OWNER_LABEL));
+    let result = stamp_realization(pod);
+    if let Some(owner) = owner {
+        pod.metadata
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert(crate::REAPER_OWNER_LABEL.to_string(), owner);
+    }
+    result
+}
+
 /// Create once, or verify and reuse the exact object produced by a concurrent or
 /// retried realization. Kubernetes 409 is not success by itself: the immutable
 /// fingerprint must match and the existing object must not be terminating.
@@ -39,8 +59,26 @@ pub(super) async fn create_or_verify<K>(api: &Api<K>, desired: &K) -> Result<K, 
 where
     K: Clone + Debug + DeserializeOwned + Resource<DynamicType = ()> + Serialize,
 {
+    Ok(create_or_verify_with_status(api, desired).await?.object)
+}
+
+pub(super) struct CreateOutcome<K> {
+    pub object: K,
+    pub created: bool,
+}
+
+pub(super) async fn create_or_verify_with_status<K>(
+    api: &Api<K>,
+    desired: &K,
+) -> Result<CreateOutcome<K>, RuntimeError>
+where
+    K: Clone + Debug + DeserializeOwned + Resource<DynamicType = ()> + Serialize,
+{
     match api.create(&PostParams::default(), desired).await {
-        Ok(created) => Ok(created),
+        Ok(created) => Ok(CreateOutcome {
+            object: created,
+            created: true,
+        }),
         Err(error) if api_conflict(&error) => {
             let name = desired.name_any();
             let existing = api.get(&name).await.map_err(backend)?;
@@ -66,7 +104,10 @@ where
                     K::kind(&())
                 )));
             }
-            Ok(existing)
+            Ok(CreateOutcome {
+                object: existing,
+                created: false,
+            })
         }
         Err(error) => Err(backend(error)),
     }
@@ -460,6 +501,49 @@ mod tests {
         changed.metadata.name = Some("different".into());
         stamp_realization(&mut changed).unwrap();
         assert_ne!(first.annotations(), changed.annotations(), "F2");
+    }
+
+    #[test]
+    fn reaper_owner_is_transferable_but_pod_realization_remains_fenced() {
+        /* Worker-restart adoption decision table — F3:
+         * C1 two Workers project the same frozen Pod; C2 only the process-local
+         * reaper owner differs; C3 an executable Pod field is same/different.
+         * C1+C2+same(C3) => E1 equal immutable digest while both owner labels are
+         * retained for CAS transfer. C1+C2+different(C3) => E2 different digest,
+         * so owner transfer cannot authorize a changed realization.
+         */
+        let mut first = Pod::default();
+        first.metadata.name = Some("session".into());
+        first.metadata.labels = Some(std::collections::BTreeMap::from([(
+            crate::REAPER_OWNER_LABEL.into(),
+            "worker-incarnation-a".into(),
+        )]));
+        first.spec = Some(PodSpec {
+            containers: vec![Container {
+                name: "agent".into(),
+                image: Some("agent:v1".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let mut replacement = first.clone();
+        replacement.metadata.labels.as_mut().unwrap().insert(
+            crate::REAPER_OWNER_LABEL.into(),
+            "worker-incarnation-b".into(),
+        );
+        stamp_pod_realization(&mut first).unwrap();
+        stamp_pod_realization(&mut replacement).unwrap();
+        assert_eq!(first.annotations(), replacement.annotations(), "E1 digest");
+        assert_ne!(
+            first.metadata.labels, replacement.metadata.labels,
+            "E1 lease"
+        );
+
+        let mut changed = replacement.clone();
+        changed.spec.as_mut().unwrap().containers[0].image = Some("agent:v2".into());
+        changed.metadata.annotations = None;
+        stamp_pod_realization(&mut changed).unwrap();
+        assert_ne!(first.annotations(), changed.annotations(), "E2");
     }
 
     #[test]

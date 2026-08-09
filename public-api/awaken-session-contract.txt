@@ -319,6 +319,7 @@ pub awaken_session_contract::AcknowledgeSessionRealization::session_id: alloc::s
 pub struct awaken_session_contract::ActivateSessionRealization
 pub awaken_session_contract::ActivateSessionRealization::lease: awaken_session_contract::SessionRealizationLease
 pub awaken_session_contract::ActivateSessionRealization::mcp_receipts: alloc::vec::Vec<awaken_session_contract::McpRealizationReceipt>
+pub awaken_session_contract::ActivateSessionRealization::prepared_resource_revision: core::option::Option<u64>
 pub awaken_session_contract::ActivateSessionRealization::session_id: alloc::string::String
 pub struct awaken_session_contract::AgentCapabilities
 pub awaken_session_contract::AgentCapabilities::builtin_tools: alloc::vec::Vec<awaken_session_contract::BuiltinTool>
@@ -500,6 +501,7 @@ impl awaken_agent_contract::stream::sink::Sink for awaken_session_contract::Even
 pub fn awaken_session_contract::EventForwardingSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_session_contract::FailSessionRealization
 pub awaken_session_contract::FailSessionRealization::lease: awaken_session_contract::SessionRealizationLease
+pub awaken_session_contract::FailSessionRealization::prepared_resource_revision: core::option::Option<u64>
 pub awaken_session_contract::FailSessionRealization::reason: alloc::string::String
 pub awaken_session_contract::FailSessionRealization::session_id: alloc::string::String
 pub struct awaken_session_contract::FrozenSessionProjection
@@ -754,6 +756,7 @@ pub awaken_session_contract::SessionRealizationLease::runtime_incarnation: alloc
 pub struct awaken_session_contract::SessionRealizationTarget
 pub awaken_session_contract::SessionRealizationTarget::lease_expires_at_unix_ms: u64
 pub awaken_session_contract::SessionRealizationTarget::owner: alloc::string::String
+pub awaken_session_contract::SessionRealizationTarget::reassign_existing_lease: bool
 pub awaken_session_contract::SessionRealizationTarget::renew_existing_lease: bool
 pub awaken_session_contract::SessionRealizationTarget::runtime_incarnation: alloc::string::String
 pub struct awaken_session_contract::SessionResourceActivation
@@ -780,16 +783,21 @@ pub awaken_session_contract::SessionResourceState::active: awaken_session_contra
 pub awaken_session_contract::SessionResourceState::pending: core::option::Option<awaken_session_contract::ResolvedSessionResources>
 pub awaken_session_contract::SessionResourceState::revision: u64
 impl awaken_session_contract::SessionResourceState
+pub fn awaken_session_contract::SessionResourceState::active_revision(&self) -> u64
 pub fn awaken_session_contract::SessionResourceState::adopt_legacy_active(&mut self, &str)
 pub fn awaken_session_contract::SessionResourceState::begin_release(&mut self) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::commit(&mut self) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::complete_release(&mut self)
 pub fn awaken_session_contract::SessionResourceState::complete_terminal_release(&mut self, impl core::convert::Into<alloc::string::String>)
+pub fn awaken_session_contract::SessionResourceState::desired(&self) -> &awaken_session_contract::ResolvedSessionResources
 pub fn awaken_session_contract::SessionResourceState::from_legacy(awaken_session_contract::ResolvedSessionResources) -> Self
 pub fn awaken_session_contract::SessionResourceState::has_active(&self) -> bool
+pub fn awaken_session_contract::SessionResourceState::has_references(&self) -> bool
 pub fn awaken_session_contract::SessionResourceState::needs_reconciliation(&self) -> bool
 pub fn awaken_session_contract::SessionResourceState::note_retryable_failure(&mut self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::prepare(&mut self, &str, awaken_session_contract::ResolvedSessionResources) -> core::result::Result<u64, awaken_session_contract::ResourceActivationError>
+pub fn awaken_session_contract::SessionResourceState::reference_manifest(&self) -> awaken_session_contract::ResolvedSessionResources
+pub fn awaken_session_contract::SessionResourceState::revise_unattempted_pending(&mut self, &str, awaken_session_contract::ResolvedSessionResources) -> core::result::Result<u64, awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::rollback(&mut self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::start_attempt(&mut self) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub struct awaken_session_contract::SessionRevision(pub u64)

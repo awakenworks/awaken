@@ -20,7 +20,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  cleanupFixtureTree,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38213);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -88,7 +96,7 @@ async function recallsMarker(storeId, tries = 24) {
 }
 
 async function main() {
-  fs.rmSync(STORE_DIR, { recursive: true, force: true });
+  cleanupFixtureTree(STORE_DIR);
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const servers = [];
   const upstream = await startUpstream('memory');
@@ -158,7 +166,10 @@ async function main() {
   } finally {
     for (const srv of servers) await stopServer(srv);
     upstream.close();
-    fs.rmSync(STORE_DIR, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    // Crash/restart can leave a disconnected FUSE projection after the child
+    // exits. The canonical fixture cleanup detaches every nested mount before
+    // removing the tree; raw rmSync is not a valid cleanup oracle for EISDIR.
+    cleanupFixtureTree(STORE_DIR);
   }
 }
 

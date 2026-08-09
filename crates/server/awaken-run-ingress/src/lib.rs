@@ -119,6 +119,18 @@ pub enum Error {
     Dispatch(#[from] dispatch::DispatchError),
     #[error(transparent)]
     Execution(#[from] awaken_runtime_contract::execution::Error),
+    /// Session realization already committed its absorbing application failure;
+    /// the still-current Run claim must now commit/settle the corresponding Run
+    /// failure instead of pretending the Worker crashed.
+    #[error(transparent)]
+    TerminalResolution(awaken_runtime_contract::execution::Error),
+}
+
+impl Error {
+    #[must_use]
+    pub fn is_terminal_resolution(&self) -> bool {
+        matches!(self, Self::TerminalResolution(_))
+    }
 }
 
 /// Shared policy adapter used by every durable backend. Eligibility and

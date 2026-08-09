@@ -289,7 +289,6 @@ impl DispatchSessionRuntime {
                     manifest.revision,
                     &manifest.resources,
                     claim,
-                    false,
                 )
                 .await;
         }
@@ -304,7 +303,6 @@ impl DispatchSessionRuntime {
                 manifest.revision,
                 &manifest.resources,
                 claim,
-                false,
             )
             .await?;
         Ok(())
@@ -569,16 +567,9 @@ impl ManagedHost {
         resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
         compiled: CompiledEffectiveInputs,
-        update_authority_references: bool,
     ) -> Result<(), RunError> {
         // The complete manifest replaces the prior projection. Register an empty
         // value too, so deleting the final input cannot leave a stale mount behind.
-        if update_authority_references {
-            self.host
-                .replace_session_references(workspace, thread, inputs)
-                .await
-                .map_err(|error| RunError::internal(error.to_string()))?;
-        }
         self.host.register_thread_resources(thread, compiled.staged);
         self.host.register_thread_resource_manifest(
             thread,
@@ -602,20 +593,12 @@ impl ManagedHost {
         resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_run_ingress::RunClaim>,
-        update_authority_references: bool,
     ) -> Result<(), RunError> {
         let compiled = self
             .compile_effective_inputs(thread, workspace, inputs, claim)
             .await?;
-        self.install_effective_inputs(
-            thread,
-            workspace,
-            resource_revision,
-            inputs,
-            compiled,
-            update_authority_references,
-        )
-        .await
+        self.install_effective_inputs(thread, workspace, resource_revision, inputs, compiled)
+            .await
     }
 
     /// Install one already-resolved Session resource manifest. This is shared by
@@ -628,7 +611,6 @@ impl ManagedHost {
         resource_revision: u64,
         resources: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_run_ingress::RunClaim>,
-        update_authority_references: bool,
     ) -> Result<(), RunError> {
         self.host.register_thread_workspace(thread, workspace);
         let desired = awaken_session_contract::SessionResourceManifest::at_revision(
@@ -670,20 +652,20 @@ impl ManagedHost {
                     .update(thread, |slot| slot.skills = None);
             }
         }
-        self.stage_effective_inputs(
-            thread,
-            workspace,
-            desired.revision,
-            resources,
-            claim,
-            update_authority_references,
-        )
-        .await
+        self.stage_effective_inputs(thread, workspace, desired.revision, resources, claim)
+            .await
     }
 
     async fn validate_thread_resource_bindings(&self, thread: &str) -> Result<(), RunError> {
         use crate::provisioning::ResourceBindingCheck;
 
+        // This method is entered only through the SessionRuntime application
+        // port. Preserve that neutral identity before dispatch: an Application-
+        // required Session has no frozen Environment yet, but the claiming
+        // Worker must still enter the Control contribution/realization path.
+        self.host
+            .session_slots
+            .update(thread, |slot| slot.session_dispatch = true);
         let checks = self
             .host
             .session_slots
@@ -785,7 +767,6 @@ impl ManagedHost {
         resource_revision: u64,
         inputs: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_run_ingress::RunClaim>,
-        update_authority_references: bool,
     ) -> Result<(), RunError> {
         // Reuse the Session slot's canonical realization mutex. Cold active-active
         // requests may concurrently replay the same durable generation; only one
@@ -950,15 +931,8 @@ impl ManagedHost {
                 }
             }
         }
-        self.install_effective_inputs(
-            thread,
-            workspace_id,
-            resource_revision,
-            inputs,
-            compiled,
-            update_authority_references,
-        )
-        .await?;
+        self.install_effective_inputs(thread, workspace_id, resource_revision, inputs, compiled)
+            .await?;
         self.host
             .session_slots
             .update(thread, |slot| slot.skills = skill_versions);
@@ -1299,7 +1273,6 @@ impl SessionRuntime for ManagedHost {
             resource_revision,
             inputs,
             None,
-            true,
         )
         .await
     }
@@ -1342,9 +1315,10 @@ impl SessionRuntime for ManagedHost {
                 "cannot install a frozen Session projection while its Runtime is active",
             ));
         }
-        self.host
-            .session_slots
-            .update(thread, |slot| slot.runtime = None);
+        self.host.session_slots.update(thread, |slot| {
+            slot.runtime = None;
+            slot.session_dispatch = true;
+        });
         // This is the one projection lowering path shared with claimed Worker
         // replay. In particular, workspace/Agent/backend cannot drift between
         // Coordinator dispatch construction and Worker execution.
@@ -1371,7 +1345,6 @@ impl SessionRuntime for ManagedHost {
             init.resource_revision,
             &init.resources,
             None,
-            true,
         )
         .await?;
         Ok(())
@@ -1503,10 +1476,10 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        if !awaken_session_contract::realization_lease_is_live_at(
-            request.generation.lease_expires_at_unix_ms,
-            now_unix_ms,
-        ) {
+        if !self
+            .host
+            .mcp_generation_is_authorized_at(&request.generation, now_unix_ms)
+        {
             return Err(RunError::classified(
                 "mcp_stale_ownership",
                 "MCP realization lease has expired",
@@ -1514,17 +1487,25 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
         }
         let request_fingerprint = request.fingerprint();
         if let Some(existing) = self.host.mcp_projection(&request.generation) {
-            if existing.request.realization_id == request.realization_id
+            let exact_replay = existing.request.realization_id == request.realization_id
                 && existing.request.stage_idempotency_key == request.stage_idempotency_key
-                && existing.receipt.receipt_fingerprint == request_fingerprint
-                && existing.state != crate::session_slot::McpProjectionState::Removed
-            {
-                return Ok(existing.receipt);
+                && existing.receipt.receipt_fingerprint == request_fingerprint;
+            if exact_replay {
+                if existing.state != crate::session_slot::McpProjectionState::Removed {
+                    return Ok(existing.receipt);
+                }
+                if !self.host.forget_exact_removed_mcp_projection(&request) {
+                    return Err(RunError::classified(
+                        "mcp_stale_generation",
+                        "MCP generation changed while its removed projection was being recovered",
+                    ));
+                }
+            } else {
+                return Err(RunError::classified(
+                    "mcp_stale_generation",
+                    "MCP generation is already bound to another realization",
+                ));
             }
-            return Err(RunError::classified(
-                "mcp_stale_generation",
-                "MCP generation is already bound to another realization",
-            ));
         }
         match self.host.renew_mcp_projection(&request) {
             Ok(Some(receipt)) => return Ok(receipt),
@@ -1902,10 +1883,10 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
             .unwrap_or_default();
-        if !awaken_session_contract::realization_lease_is_live_at(
-            generation.lease_expires_at_unix_ms,
-            now_unix_ms,
-        ) {
+        if !self
+            .host
+            .mcp_generation_is_authorized_at(&generation, now_unix_ms)
+        {
             return Err(RunError::classified(
                 "mcp_stale_ownership",
                 "MCP publication lease has expired",

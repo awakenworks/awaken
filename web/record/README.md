@@ -1,8 +1,10 @@
 # Awaken product-video tests
 
-These scripts are executable product claims, not click macros. A successful run produces
-`out/<flow>.mp4`; a failed assertion produces only `out/<flow>.failed.mp4` for diagnosis
-and exits non-zero.
+These scripts are executable product claims, not click macros. A successful run atomically
+produces `out/<flow>.mp4`; a failed assertion produces `out/<flow>.failed.mp4` plus a
+diagnostic screenshot and exits non-zero. If FFmpeg itself fails, the harness exits non-zero
+and keeps `out/<flow>.failed.webm` instead of publishing a partial or stale MP4. Set
+`AWAKEN_RECORD_KEEP_WEBM=1` only when the raw successful recording is needed for editing.
 
 Every flow must follow the same story contract:
 

@@ -57,6 +57,12 @@ pub(super) async fn install_claimed_session_projection(
         ))
     })?;
     let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+    // A delegated Run carries its parent's Session identity separately from its
+    // own execution Thread and Agent snapshot. That child snapshot must never be
+    // used to realize the parent Session; the synchronizer resolves the parent's
+    // frozen Agent publication from Control instead.
+    let session_publication =
+        (claimed.request.thread_id() == thread_id).then_some(&claimed.request.activation.snapshot);
 
     if let Some(directive) = control
         .resume_frozen(&claim, &thread_id.0)
@@ -113,7 +119,7 @@ pub(super) async fn install_claimed_session_projection(
             &thread_id.0,
             directive,
             Some(&claim),
-            Some(&claimed.request.activation.snapshot),
+            session_publication,
             claimed.request.placement.recovery
                 == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )
@@ -171,7 +177,7 @@ pub(super) async fn install_claimed_session_projection(
             &thread_id.0,
             receipt.realization,
             Some(&claim),
-            Some(&claimed.request.activation.snapshot),
+            session_publication,
             claimed.request.placement.recovery
                 == awaken_run_ingress::WorkerRecoveryMode::RebuildFromCommittedTruth,
         )

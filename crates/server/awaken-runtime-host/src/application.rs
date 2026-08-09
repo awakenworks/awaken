@@ -25,24 +25,26 @@ use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecuto
 /// the baseline.
 pub(crate) struct SessionPromptAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
-    prompts: Vec<String>,
+    slots: crate::session_slot::SessionRuntimeSlots,
+    session_id: String,
 }
 
 impl SessionPromptAttemptExecutor {
-    pub(crate) fn new(inner: Arc<dyn RunAttemptExecutor>, prompts: Vec<String>) -> Self {
-        Self { inner, prompts }
+    pub(crate) fn new(
+        inner: Arc<dyn RunAttemptExecutor>,
+        slots: crate::session_slot::SessionRuntimeSlots,
+        session_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            inner,
+            slots,
+            session_id: session_id.into(),
+        }
     }
 
-    fn project(
-        &self,
-        mut activation: RunActivation,
-        context: &awaken_runtime_contract::RuntimeRunContext,
-    ) -> RunActivation {
-        let first_turn = context
-            .reader
-            .as_ref()
-            .is_none_or(|reader| reader.committed_messages(&activation.thread_id).is_empty());
-        if !first_turn || self.prompts.is_empty() {
+    fn project(&self, mut activation: RunActivation) -> RunActivation {
+        let prompts = self.slots.prompts(&self.session_id);
+        if prompts.is_empty() {
             return activation;
         }
         let already_present = |prompt: &str| {
@@ -57,8 +59,7 @@ impl SessionPromptAttemptExecutor {
                     })
             })
         };
-        let mut projected = self
-            .prompts
+        let mut projected = prompts
             .iter()
             .enumerate()
             .filter(|(_, prompt)| !already_present(prompt))
@@ -86,9 +87,7 @@ impl awaken_runtime_contract::execution::RunExecutor for SessionPromptAttemptExe
         activation: RunActivation,
         context: awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
-        self.inner
-            .execute(self.project(activation, &context), context)
-            .await
+        self.inner.execute(self.project(activation), context).await
     }
 
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -105,7 +104,7 @@ impl RunAttemptExecutor for SessionPromptAttemptExecutor {
         context: awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
         self.inner
-            .resume(self.project(activation, &context), command, context)
+            .resume(self.project(activation), command, context)
             .await
     }
 
@@ -274,6 +273,62 @@ mod acp_context_tests {
         )
     }
 
+    /// Session prompt FMECA cause/effect graph:
+    /// C1=frozen prompts exist, C2=the durable user input was committed before
+    /// the Worker claim, C3=the exact deterministic prompt is already present.
+    /// E1=prepend the prompt exactly once, E2=leave input byte-stable.
+    /// Decision rules: C1 C2 !C3 -> E1; C1 * C3 -> E2; !C1 * * -> E2.
+    /// Runtime's committed-id filter, rather than transcript emptiness, owns
+    /// replay/later-run de-duplication; a committed user message is not proof
+    /// that the frozen system prompt has ever reached inference.
+    #[test]
+    fn session_prompt_projection_survives_precommitted_user_input_without_duplication() {
+        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let executor =
+            SessionPromptAttemptExecutor::new(Arc::new(UnusedExecutor), slots.clone(), "session-1");
+        // Construction happens before the claim-fenced Application plan is
+        // accepted; realization installs the one authoritative slot later.
+        slots.update("session-1", |slot| {
+            slot.baseline = Some(crate::session_slot::FrozenBaselineRuntimeProjection {
+                fingerprint: awaken_session_contract::SessionBaselineFingerprint("baseline".into()),
+                agent_id: "agent".into(),
+                mounts: Vec::new(),
+                env: Vec::new(),
+                prompts: vec!["frozen application prompt".into()],
+            });
+        });
+        let projected = executor.project(activation("genai"));
+        assert_eq!(projected.input.len(), 2, "C1+C2+!C3 -> E1");
+        assert_eq!(projected.input[0].role, Role::System, "E1");
+        assert_eq!(
+            projected.input[0].text_content(),
+            "frozen application prompt",
+            "E1"
+        );
+
+        let replayed = executor.project(projected);
+        assert_eq!(
+            replayed
+                .input
+                .iter()
+                .filter(|message| message.role == Role::System)
+                .count(),
+            1,
+            "C1+C3 -> E2"
+        );
+
+        let empty = SessionPromptAttemptExecutor::new(
+            Arc::new(UnusedExecutor),
+            crate::session_slot::SessionRuntimeSlots::default(),
+            "session-1",
+        );
+        assert_eq!(
+            empty.project(activation("genai")).input.len(),
+            1,
+            "!C1 -> E2"
+        );
+    }
+
     /// Cause/effect graph:
     /// C1 ACP backend, C2 selected model-invocable Skill, C3 non-empty Memory
     /// -> E1 one Skill context and E2 one bounded Memory context; a Native
@@ -350,6 +405,36 @@ impl crate::SharedHost {
             .update(session_id, |slot| slot.realization_lease = Some(lease));
     }
 
+    /// Authorize an MCP effect admitted before a same-epoch lease extension.
+    /// The exact request remains immutable; only the Control-installed local
+    /// lease may prove that its owner incarnation and epoch still have live,
+    /// monotonically extended authority.
+    pub(crate) fn mcp_generation_is_authorized_at(
+        &self,
+        generation: &awaken_session_contract::McpGenerationRef,
+        now_unix_ms: u64,
+    ) -> bool {
+        if awaken_session_contract::realization_lease_is_live_at(
+            generation.lease_expires_at_unix_ms,
+            now_unix_ms,
+        ) {
+            return true;
+        }
+        self.session_slots
+            .read(&generation.session_id, |slot| {
+                slot.realization_lease.as_ref().is_some_and(|current| {
+                    current.runtime_incarnation == generation.runtime_incarnation
+                        && current.epoch == generation.lease_epoch
+                        && current.expires_at_unix_ms >= generation.lease_expires_at_unix_ms
+                        && awaken_session_contract::realization_lease_is_live_at(
+                            current.expires_at_unix_ms,
+                            now_unix_ms,
+                        )
+                })
+            })
+            .unwrap_or(false)
+    }
+
     /// Renew every active MCP projection approaching expiry through the same
     /// Control phase protocol used for initial creation and hot replacement.
     /// A failed renewal revokes that Session's process-local projection before
@@ -386,6 +471,7 @@ impl crate::SharedHost {
                             runtime_incarnation: lease.runtime_incarnation.clone(),
                             lease_expires_at_unix_ms: requested_expiry_unix_ms,
                             renew_existing_lease: true,
+                            reassign_existing_lease: false,
                         },
                     })
                     .await
@@ -520,6 +606,7 @@ impl crate::SharedHost {
         thread: &str,
         projection: awaken_session_contract::FrozenSessionProjection,
         claim: Option<&RunClaim>,
+        synchronize_resources: bool,
     ) -> Result<(), crate::HostError> {
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
@@ -551,7 +638,9 @@ impl crate::SharedHost {
             // manifest on every claimed replay so Repository checks never retain
             // a prior lease epoch. `install_dispatched_resources` owns generation
             // equality/fencing and does not realize an existing environment.
-            if projection.resources != awaken_session_contract::ResolvedSessionResources::default()
+            if synchronize_resources
+                && projection.resources
+                    != awaken_session_contract::ResolvedSessionResources::default()
             {
                 let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
                     projection.workspace_id.clone(),
@@ -584,7 +673,16 @@ impl crate::SharedHost {
 
         validate_baseline_projection(&baseline, &built_in_mounts)?;
         self.project_session_init(thread, &init)?;
-        if projection.resources != awaken_session_contract::ResolvedSessionResources::default() {
+        if !synchronize_resources
+            && projection.resources != awaken_session_contract::ResolvedSessionResources::default()
+        {
+            return Err(crate::HostError::internal(format!(
+                "thread {thread} cannot cold-materialize frozen Session Resources during lease-only renewal"
+            )));
+        }
+        if synchronize_resources
+            && projection.resources != awaken_session_contract::ResolvedSessionResources::default()
+        {
             let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
                 projection.workspace_id.clone(),
                 projection.resource_revision,
@@ -658,16 +756,9 @@ impl crate::SharedHost {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(crate) fn thread_session_prompts(&self, thread: &str) -> Vec<String> {
-        self.session_slots
-            .read(thread, |slot| {
-                let mut prompts = slot.resources.prompts.clone();
-                if let Some(baseline) = &slot.baseline {
-                    prompts.extend(baseline.prompts.clone());
-                }
-                prompts
-            })
-            .unwrap_or_default()
+        self.session_slots.prompts(thread)
     }
 }
 

@@ -8,7 +8,9 @@
 //! `IsolatedRoot`), reached over the published agent port via [`crate::net`] — the
 //! same dial the Docker adapter uses. Compile-verified here; running needs `podman`.
 
+use std::ffi::{OsStr, OsString};
 use std::net::SocketAddr;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -27,6 +29,33 @@ use crate::{
 };
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Resolve the canonical rootless systemd user-manager bus.
+/// Podman uses this bus to create a delegated cgroup scope; without it, resource
+/// limits fail even though the user's systemd manager and cgroup delegation are
+/// healthy. Desktop sessions may expose another live D-Bus socket that does not
+/// own `org.freedesktop.systemd1`; the XDG runtime bus is therefore the sole
+/// authority for this Podman subprocess. A missing/non-socket endpoint is not
+/// papered over: Podman remains the authority for the fail-closed diagnostic.
+fn rootless_systemd_bus(runtime_dir: Option<&OsStr>) -> Option<OsString> {
+    let bus = Path::new(runtime_dir?).join("bus");
+    let metadata = std::fs::symlink_metadata(&bus).ok()?;
+    if !metadata.file_type().is_socket() {
+        return None;
+    }
+    Some(format!("unix:path={}", bus.to_str()?).into())
+}
+
+/// Sole production constructor for Podman child processes. Keeping the
+/// rootless-session adaptation here prevents run/exec/signal from drifting into
+/// three subtly different host-environment contracts.
+fn podman_command(bin: &str) -> OsCommand {
+    let mut command = OsCommand::new(bin);
+    if let Some(address) = rootless_systemd_bus(std::env::var_os("XDG_RUNTIME_DIR").as_deref()) {
+        command.env("DBUS_SESSION_BUS_ADDRESS", address);
+    }
+    command
+}
 
 fn backend(e: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Backend(e.to_string())
@@ -108,7 +137,7 @@ impl pc::ProcessHandle for PodmanExecProcess {
             self.pid_file.replace('\'', "'\\''"),
             name
         );
-        let status = OsCommand::new(&self.bin)
+        let status = podman_command(&self.bin)
             .args(["exec", &self.container_id, "sh", "-c", &script])
             .status()
             .await
@@ -146,7 +175,7 @@ struct OsCommandExec;
 #[async_trait]
 impl CommandExec for OsCommandExec {
     async fn exec(&self, bin: &str, args: &[String]) -> std::io::Result<CmdOutput> {
-        let out = OsCommand::new(bin).args(args).output().await?;
+        let out = podman_command(bin).args(args).output().await?;
         Ok(CmdOutput {
             ok: out.status.success(),
             stdout: out.stdout,
@@ -424,7 +453,7 @@ impl PodmanRuntime {
         if !command.cwd.is_empty() {
             args.extend(["--workdir".into(), command.cwd.clone()]);
         }
-        let mut process = OsCommand::new(&self.bin);
+        let mut process = podman_command(&self.bin);
         let mut secret_bindings = Vec::new();
         for var in &command.env {
             match &var.value {
@@ -1005,6 +1034,43 @@ mod tests {
             memory_mounts: vec![],
             rootfs: RootfsPlan::Image("img:latest".into()),
         }
+    }
+
+    /// Rootless-cgroup FMECA cause/effect graph. C1 XDG_RUNTIME_DIR contains the
+    /// user-manager Unix bus; C2 the endpoint is missing or a regular file; C3
+    /// the parent may carry an unrelated desktop-session bus. Effects: E1 select
+    /// the user-manager bus for every Podman subprocess (overriding C3); E2 do
+    /// not fabricate an address, leaving Podman to fail closed.
+    ///
+    /// | Rule | Runtime bus | Ambient desktop bus | Effect |
+    /// |---|---|---|---|
+    /// | B1 | Unix socket | any | E1 |
+    /// | B2 | absent/non-socket | any | E2 |
+    #[test]
+    fn rootless_systemd_bus_decision_table_selects_only_user_manager_authority() {
+        let runtime = tempfile::tempdir().expect("runtime dir");
+        assert_eq!(
+            rootless_systemd_bus(Some(runtime.path().as_os_str())),
+            None,
+            "B2 an absent endpoint cannot be fabricated",
+        );
+
+        std::fs::write(runtime.path().join("bus"), b"not a socket").expect("regular file");
+        assert_eq!(
+            rootless_systemd_bus(Some(runtime.path().as_os_str())),
+            None,
+            "B2 a regular file is not trusted as a user-manager bus",
+        );
+        std::fs::remove_file(runtime.path().join("bus")).expect("remove regular file");
+        let _listener = std::os::unix::net::UnixListener::bind(runtime.path().join("bus"))
+            .expect("user bus fixture");
+        let expected: OsString =
+            format!("unix:path={}", runtime.path().join("bus").display()).into();
+        assert_eq!(
+            rootless_systemd_bus(Some(runtime.path().as_os_str())),
+            Some(expected),
+            "B1 the canonical user-manager socket is selected for Podman",
+        );
     }
 
     #[test]

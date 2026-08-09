@@ -26,6 +26,10 @@ process.env.E2E_PORT ??= String(processPortBase);
 process.env.E2E_WORKER_PORT ??= String(processPortBase + 50);
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// One test-side owner for the public User Profiles beta vocabulary. Individual
+// scenarios still own their cause/effect assertions, but must not fork the wire
+// version string from the protocol contract.
+export const USER_PROFILES_BETA = 'user-profiles-2026-03-24';
 // Match scripts/ci/_cargo_target.sh: a caller-owned coverage/isolated target
 // wins; otherwise keep this worktree's Cargo artifacts out of any user-level
 // shared target that can contain same-name packages from another worktree.

@@ -97,7 +97,7 @@ impl ManagedState {
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
-        let current = persisted.resources.active.clone();
+        let current = persisted.resources.desired().clone();
         if matches!(parsed.target, ParsedInputTarget::File(_))
             && current
                 .inputs

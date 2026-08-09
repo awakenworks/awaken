@@ -10,6 +10,9 @@
 //   C7 = continuing Worker authority remains provable near lease expiry
 //   C8 = continuing Worker authority is later lost
 //   C9 = application network policy uses the neutral provisioning vocabulary
+//   C10 = a tool effect is requested after a lease-only renewal
+//   C11 = the exact renewed MCP projection remains locally installed
+//   C12 = the public permission boundary explicitly approves that effect
 //
 // Decision table:
 //   C1 C2 C3 C4 C5 C6 C7 C8 | result
@@ -21,6 +24,9 @@
 //    1  1  1  1  1  0  *  * | committed state remains authoritative; no fabricated success
 //    1  1  1  1  1  1  1  1 | heartbeat fails closed; local Session projection is revoked
 //    1  1  1  1  1  1  1  0 + C9 | policy freezes without a parallel vocabulary/path
+//    1  1  1  1  1  1  1  0 + C10 C11 C12 | the already-admitted MCP effect returns 42
+//    1  1  1  1  1  1  1  0 + C10 C11 !C12 | requires_action; no tools/call
+//    1  1  1  1  1  1  1  0 + C10 !C11 | fail closed; never report a fabricated tool result
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -66,6 +72,14 @@ async function events(client: Anthropic, sessionId: string): Promise<any[]> {
 }
 
 async function waitForProjection(client: Anthropic, sessionId: string): Promise<any[]> {
+  return waitForCommittedText(client, sessionId, 'application-session-projection:visible');
+}
+
+async function waitForCommittedText(
+  client: Anthropic,
+  sessionId: string,
+  expected: string,
+): Promise<any[]> {
   const deadline = Date.now() + 30_000;
   let observed: any[] = [];
   while (Date.now() <= deadline) {
@@ -80,12 +94,26 @@ async function waitForProjection(client: Anthropic, sessionId: string): Promise<
       ? ((await durableResponse.json()) as any).messages ?? []
       : [];
     const durableText = durable.map((message: any) => message.text ?? '').join('');
-    if (`${managedText}${durableText}`.includes('application-session-projection:visible')) {
+    if (`${managedText}${durableText}`.includes(expected)) {
       return [...observed, ...durable];
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`application projection never became visible: ${JSON.stringify(observed)}`);
+  throw new Error(`committed text ${JSON.stringify(expected)} never became visible: ${JSON.stringify(observed)}`);
+}
+
+async function waitForMcpToolUse(client: Anthropic, sessionId: string): Promise<any> {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() <= deadline) {
+    const observed = await events(client, sessionId);
+    const toolUse = observed.find(
+      (event) => event.type === 'agent.mcp_tool_use'
+        && event.name === 'mcp__application_only__add',
+    );
+    if (toolUse) return toolUse;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('post-renewal Application MCP never reached requires_action');
 }
 
 async function main(): Promise<void> {
@@ -210,6 +238,42 @@ async function main(): Promise<void> {
       `C7 the due Session lease advances through the same realization CAS protocol: settled=${settledRevision} renewed=${renewedRevision} ${workerOutput}`,
     );
 
+    // FMECA rule R10: lease renewal must extend the authority of the exact
+    // installed generation without re-staging MCP. A real post-renewal
+    // tools/call proves the positive effect path; a missing/replaced local
+    // projection must fail closed and therefore cannot synthesize this text.
+    const callsBeforeRenewedEffect = applicationMcp.calls.filter(
+      (call: any) => call.method === 'tools/call',
+    ).length;
+    await client.beta.sessions.events.send(session.id, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: 'exercise renewed application MCP' }],
+      }],
+      betas: BETAS,
+    });
+    const renewedToolUse = await waitForMcpToolUse(client, session.id);
+    assert.equal(renewedToolUse.evaluated_permission, 'ask', 'C10+!C12 requires explicit approval');
+    assert.equal(
+      applicationMcp.calls.filter((call: any) => call.method === 'tools/call').length,
+      callsBeforeRenewedEffect,
+      'C10+!C12 cannot execute the effect before approval',
+    );
+    await client.beta.sessions.events.send(session.id, {
+      events: [{
+        type: 'user.tool_confirmation',
+        tool_use_id: renewedToolUse.id,
+        result: 'allow',
+      }],
+      betas: BETAS,
+    } as any);
+    await waitForCommittedText(client, session.id, 'application-session-renewed-mcp:42');
+    assert.equal(
+      applicationMcp.calls.filter((call: any) => call.method === 'tools/call').length,
+      callsBeforeRenewedEffect + 1,
+      'C10+C11 invokes the exact Application MCP once after lease-only renewal',
+    );
+
     await stopServer(cell);
     cellStopped = true;
     const authorityDeadline = Date.now() + 60_000;
@@ -224,7 +288,7 @@ async function main(): Promise<void> {
       /worker heartbeat cannot prove continuing authority/,
       'C8 loss of Control authority closes claims and revokes the local Session projection',
     );
-    console.log('APPLICATION SESSION WORKER TS E2E PASS: factory -> claim-fenced contribution -> exact realization -> prompt-visible model turn.');
+    console.log('APPLICATION SESSION WORKER TS E2E PASS: factory -> claim-fenced contribution -> exact realization -> renewal -> MCP effect.');
   } finally {
     if (worker) await stopServer(worker);
     if (!cellStopped) await stopServer(cell);

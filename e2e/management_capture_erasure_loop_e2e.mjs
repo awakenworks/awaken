@@ -23,10 +23,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { deploymentEnv, withRealServer, pass } from './harness.mjs';
+import {
+  USER_PROFILES_BETA,
+  deploymentEnv,
+  withRealServer,
+  pass,
+} from './harness.mjs';
 import { sqliteRows } from './sqlite.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const PROFILE_HEADERS = { 'anthropic-beta': USER_PROFILES_BETA };
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-capture-erasure-'));
@@ -42,12 +48,14 @@ async function main() {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
       const consent = await fetch(`${base}/v1/user_profiles/dsub_full/consent`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { ...PROFILE_HEADERS, 'content-type': 'application/json' },
         body: JSON.stringify({ purpose: 'telemetry_content', version: 'v1' }),
       });
       assert.equal(consent.status, 200, `consent status ${consent.status}`);
       const decision = await (
-        await fetch(`${base}/v1/user_profiles/dsub_full/capture-decision?requested=full`)
+        await fetch(`${base}/v1/user_profiles/dsub_full/capture-decision?requested=full`, {
+          headers: PROFILE_HEADERS,
+        })
       ).json();
       assert.equal(decision.effective, 'full', `capture decision ${JSON.stringify(decision)}`);
 
@@ -95,7 +103,10 @@ async function main() {
       pass(`run→capture→store: ${captured.length} subject-owned records persisted`);
 
       // Erasure removes exactly this subject's captured content.
-      const res = await fetch(`${base}/v1/user_profiles/dsub_full/erasure`, { method: 'POST' });
+      const res = await fetch(`${base}/v1/user_profiles/dsub_full/erasure`, {
+        method: 'POST',
+        headers: PROFILE_HEADERS,
+      });
       assert.equal(res.status, 200, `erasure status ${res.status}`);
       const body = await res.json();
       assert.ok(
@@ -107,7 +118,10 @@ async function main() {
       // A retry returns the same durable receipt. `records_removed` is cumulative
       // accountability evidence, not the delta of this HTTP attempt.
       const again = await (
-        await fetch(`${base}/v1/user_profiles/dsub_full/erasure`, { method: 'POST' })
+        await fetch(`${base}/v1/user_profiles/dsub_full/erasure`, {
+          method: 'POST',
+          headers: PROFILE_HEADERS,
+        })
       ).json();
       assert.equal(
         again.records_removed,

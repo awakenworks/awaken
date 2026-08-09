@@ -23,6 +23,76 @@ pub(super) async fn adopt_bound_sandbox(
 }
 
 impl HostWorkerResolver {
+    async fn recovered_child_worker(
+        &self,
+        host: &SharedHost,
+        claimed: &awaken_run_ingress::Claimed,
+        session_thread_id: &awaken_agent_contract::agent::thread::Id,
+        adopted: Option<crate::session_environment::SessionEnvironment>,
+    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
+    {
+        let parent = host
+            .ctx_for_snapshot_with_sandbox(&session_thread_id.0, None, None, adopted)
+            .await
+            .map_err(|error| Self::execution_error(error.to_string()))?;
+        let environment = parent.env.clone().ok_or_else(|| {
+            Self::execution_error("a delegated child recovery has no parent Session environment")
+        })?;
+        let snapshot = &claimed.request.activation.snapshot;
+        let mut runtime = crate::config::build_runtime(host.llm.clone(), environment.as_ref());
+        let authored = crate::config::config_permission_ruleset(
+            snapshot.resolved_spec.plugin_config.plugins(),
+        );
+        let permission = crate::config::server_permission_policy_with_toolsets(
+            authored,
+            &[],
+            &snapshot.resolved_spec.plugin_config.agent.toolsets,
+        );
+        // The parent Session context owns the one hydrated commit/read boundary.
+        // Reopening the same durable file here creates a parallel projection:
+        // the child can commit through it, but the in-flight parent waiter cannot
+        // observe that terminal state until another process restart.
+        let commit = parent.commit.clone();
+        if let Some(delegation) = host
+            .run_delegation(
+                &session_thread_id.0,
+                environment.clone(),
+                permission.clone(),
+                commit.clone(),
+                Some(snapshot),
+            )
+            .map_err(|error| Self::execution_error(error.to_string()))?
+        {
+            runtime = runtime.with_run_delegation(delegation);
+        }
+        let acp = host.acp.clone().map(|acp| {
+            let environment = environment.clone();
+            let permission = permission.clone();
+            Arc::new(move |backend| {
+                Ok(
+                    acp.executor_for(environment.clone(), permission.clone(), backend, Vec::new())
+                        as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
+                )
+            }) as crate::agent_runner::ChildAcpExecutorFactory
+        });
+        let adapters = crate::agent_runner::ChildExecutionAdapters {
+            acp,
+            remote: host.remote_attempt_executor.clone(),
+            remote_credentials: host.remote_credential_realization.clone(),
+        };
+        let runtime = Arc::new(runtime);
+        let attempt = crate::agent_runner::child_attempt_executor(runtime, snapshot, &adapters)
+            .map_err(|error| Self::execution_error(error.to_string()))?;
+        let worker = self.boundary_worker(host, claimed, commit, false).await?;
+        let mut worker =
+            Arc::into_inner(worker).expect("a new child recovery boundary worker is not shared");
+        worker.install_attempt_executor(attempt);
+        worker = worker
+            .with_context(parent.attempt_context.clone())
+            .with_local_credential_capabilities(adapters.remote_credentials);
+        Ok(Arc::new(worker))
+    }
+
     pub(super) async fn reconcile_dispatched_mcp(
         host: &SharedHost,
         session_id: &str,
@@ -140,6 +210,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             return self.cancellation_worker(&host, claimed).await;
         }
         let thread_id = claimed.request.session_thread_id();
+        let run_thread_id = claimed.request.thread_id();
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
         let dispatched_resources = if let Some(envelope) = &claimed.request.session_resources {
@@ -280,6 +351,11 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         if let Some(stages) = dispatched_mcp_stages {
             Self::reconcile_dispatched_mcp(&host, &thread_id.0, stages).await?;
         }
+        if run_thread_id != thread_id {
+            return self
+                .recovered_child_worker(&host, claimed, thread_id, adopted.take())
+                .await;
+        }
         host.session_slots.update(&thread_id.0, |slot| {
             slot.dispatch_claim = Some(awaken_run_ingress::RunClaim::from(&claimed.lease));
         });
@@ -314,6 +390,24 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             }
         }
         Ok(worker)
+    }
+
+    async fn settle_claimed_resolution_failure(
+        &self,
+        claimed: &awaken_run_ingress::Claimed,
+        error: awaken_run_ingress::Error,
+    ) -> Result<Option<(RunId, RunState)>, awaken_run_ingress::Error> {
+        let host = self.host()?;
+        let thread_id = claimed.request.session_thread_id();
+        let commit = Arc::new(
+            host.build_commit(&thread_id.0)
+                .await
+                .map_err(|commit_error| Self::execution_error(commit_error.to_string()))?,
+        );
+        let worker = self.boundary_worker(&host, claimed, commit, false).await?;
+        worker
+            .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
+            .await
     }
 
     async fn reconcile_committed_terminals(

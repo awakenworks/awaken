@@ -399,6 +399,24 @@ impl ResolvedDeployment {
                 "log_filter and OTel timeout/export interval must be non-empty/non-zero".to_owned(),
             );
         }
+        let dispatch_owner = match file.dispatch_owner.as_deref() {
+            Some(owner) if owner.trim().is_empty() => {
+                return Err("dispatch_owner must be non-empty".to_owned());
+            }
+            Some(owner) => owner.trim().to_owned(),
+            None => match role {
+                // A co-located Worker must retain its logical identity across a
+                // process restart so the new Runtime incarnation can fence the
+                // old Session-realization lease immediately.
+                Role::AllInOne => "embedded-worker".to_owned(),
+                // Registered Worker identity already has one authoritative,
+                // validated product value; do not mint a parallel owner name.
+                Role::Worker => worker.worker_id.clone(),
+                Role::Control | Role::Coordinator => {
+                    format!("host-{}", std::process::id())
+                }
+            },
+        };
         let mut runtime = DeploymentConfig {
             durable: true,
             storage_dir: Some(data_dir.clone()),
@@ -416,10 +434,7 @@ impl ResolvedDeployment {
             nats_url: file.nats_url.clone(),
             database_url: dispatch_url,
             postgres_max_connections,
-            dispatch_owner: file
-                .dispatch_owner
-                .clone()
-                .unwrap_or_else(|| format!("host-{}", std::process::id())),
+            dispatch_owner,
             upstream: worker_server.clone(),
             sandbox_tier: runtime_settings.sandbox_tier,
             sandbox_dir: file.sandbox_dir.clone(),
@@ -501,11 +516,9 @@ impl ResolvedDeployment {
             Some(_) => return Err("resource_database_url must be postgres://".to_owned()),
             None => ResourceStoreBackend::Embedded(data_dir.clone()),
         };
-        if dispatch_backend == DispatchBackend::Postgres && !resources.is_shared() {
-            return Err(
-                "a shared runtime requires resource_database_url to use Postgres".to_owned(),
-            );
-        }
+        resources
+            .validate_dispatch_compatibility(dispatch_backend == DispatchBackend::Postgres)
+            .map_err(str::to_owned)?;
         let seal_key = match (
             role,
             &file.control_seal_key,
@@ -969,6 +982,43 @@ mod tests {
         )
         .expect_err("R3");
         assert!(error.contains("worker_id"), "R3: {error}");
+    }
+
+    #[test]
+    fn local_realization_reuses_the_canonical_dispatch_owner() {
+        // Local restart identity cause graph: C1 dispatch_owner is omitted,
+        // explicit, or invalid; C2 this is the all-in-one topology. Effects are
+        // E1 one stable embedded logical owner, E2 the normalized configured
+        // owner, or E3 startup rejection before a Session lease can be written.
+        //
+        // | Rule | Owner input | Effect |
+        // |---|---|---|
+        // | O1 | omitted | E1 embedded-worker |
+        // | O2 | non-empty | E2 exact normalized owner |
+        // | O3 | whitespace | E3 configuration error |
+        let defaulted = resolve(FileConfig::default(), ConfigOverrides::default());
+        assert_eq!(defaulted.runtime.dispatch_owner, "embedded-worker", "O1/E1");
+
+        let explicit = resolve(
+            FileConfig {
+                dispatch_owner: Some(" local-node-a ".into()),
+                ..Default::default()
+            },
+            ConfigOverrides::default(),
+        );
+        assert_eq!(explicit.runtime.dispatch_owner, "local-node-a", "O2/E2");
+
+        let error = ResolvedDeployment::resolve_file(
+            ConfigOverrides::default(),
+            Some(PathBuf::from("/home/dev")),
+            PathBuf::from("/home/dev/.awaken/config.toml"),
+            FileConfig {
+                dispatch_owner: Some(" ".into()),
+                ..Default::default()
+            },
+        )
+        .expect_err("O3 invalid owner");
+        assert!(error.contains("dispatch_owner"), "O3/E3: {error}");
     }
 
     #[test]

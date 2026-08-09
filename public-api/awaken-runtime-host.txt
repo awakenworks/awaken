@@ -308,6 +308,7 @@ pub fn awaken_runtime_host::SharedHost::default_environment_capacity_shape(&self
 pub async fn awaken_runtime_host::SharedHost::discard_default_environment_capacity(&self)
 pub async fn awaken_runtime_host::SharedHost::discard_environment_snapshot_capacity(&self, &awaken_session_contract::baseline::EnvironmentSnapshot)
 pub fn awaken_runtime_host::SharedHost::dispatch_completion_sink(&self) -> alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>
+pub fn awaken_runtime_host::SharedHost::dispatch_owner(&self) -> &str
 pub fn awaken_runtime_host::SharedHost::dispatch_store(&self) -> core::result::Result<alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>, awaken_runtime_host::HostError>
 pub async fn awaken_runtime_host::SharedHost::drain_memory(&self, core::time::Duration) -> bool
 pub fn awaken_runtime_host::SharedHost::ensure_dispatch_pool(&alloc::sync::Arc<Self>)
@@ -400,7 +401,6 @@ pub fn awaken_runtime_host::SharedHost::ensure_terminal_dispatch_reconciliation(
 impl awaken_runtime_host::SharedHost
 pub fn awaken_runtime_host::SharedHost::file_application(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>>
 pub fn awaken_runtime_host::SharedHost::file_catalog(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>
-pub async fn awaken_runtime_host::SharedHost::file_has_any_reference(&self, &str) -> core::result::Result<bool, awaken_resource_contract::lifecycle::ResourcePurgeError>
 pub fn awaken_runtime_host::SharedHost::file_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_artifacts(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::FileRecord>, awaken_resource_contract::lifecycle::ResourcePurgeError>
 pub async fn awaken_runtime_host::SharedHost::harvest_thread_skills(&self, &str)
@@ -490,7 +490,7 @@ pub fn awaken_runtime_host::authorable_tools() -> alloc::vec::Vec<awaken_runtime
 pub fn awaken_runtime_host::block_text(&[awaken_agent_contract::agent::content::ContentBlock]) -> alloc::string::String
 pub fn awaken_runtime_host::claimed_commit_service(alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> awaken_run_ingress::application::ClaimedCommitService
 pub fn awaken_runtime_host::default_postgres_max_connections() -> core::num::nonzero::NonZeroU32
-pub async fn awaken_runtime_host::package_image_provisioner(&awaken_runtime_host::DeploymentConfig) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>, alloc::string::String>
+pub async fn awaken_runtime_host::package_image_provisioner(&awaken_runtime_host::DeploymentConfig) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::runtime::PackageImageProvisioner>>, alloc::string::String>
 pub fn awaken_runtime_host::platform_plugin_capabilities() -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::platform_plugin_capabilities_with_web_search(&awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> alloc::vec::Vec<awaken_runtime_contract::capability::PluginCapability>
 pub fn awaken_runtime_host::remote_worker_placement(&awaken_runtime_contract::resolved::ResolvedSpec, core::option::Option<&awaken_session_contract::baseline::EnvironmentSnapshot>, core::option::Option<&awaken_session_contract::resource::SessionResourceManifest>, bool) -> awaken_worker_contract::PlacementRequirements

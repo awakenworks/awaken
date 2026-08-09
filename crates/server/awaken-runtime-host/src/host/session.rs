@@ -159,6 +159,7 @@ impl SharedHost {
         thread: &str,
         agent: Option<&str>,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+        has_published_delegates: bool,
     ) -> bool {
         // A Coordinator-only Host constructs the durable dispatch envelope but
         // never executes it. Creating an eager sandbox here would make the
@@ -205,10 +206,15 @@ impl SharedHost {
             .is_some_and(|backend_ref| {
                 awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref).is_acp()
             });
+        // Delegation itself is a Sandbox capability: the child must inherit the
+        // exact parent environment and its lifecycle fence. Keep that fact in the
+        // sole eager-vs-deferred classifier instead of accepting deferral here and
+        // rejecting the same snapshot later while the Runtime is being wired.
         slot_allows
             && !self.session_has_local_environment_inputs(thread, published_snapshot)
             && !published_backend_is_acp
             && !selected_backend_is_acp
+            && !has_published_delegates
     }
 
     async fn persist_environment_before_publish(
@@ -633,12 +639,21 @@ impl SharedHost {
                 "remote A2A execution cannot bind a local Session Environment",
             ));
         }
+        let has_published_delegates = installed.as_ref().is_some_and(|snapshot| {
+            !snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .delegates
+                .is_empty()
+        });
         let deferred = retained.is_none()
             && adopted.is_none()
             && self.can_defer_session_environment(
                 thread,
                 Some(selected_agent.as_str()),
                 installed.as_ref(),
+                has_published_delegates,
             );
         let (env, needs_provision, needs_registration) = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
@@ -802,17 +817,9 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        let has_published_delegates = installed.as_ref().is_some_and(|snapshot| {
-            !snapshot
-                .resolved_spec
-                .plugin_config
-                .agent
-                .delegates
-                .is_empty()
-        });
-        if has_published_delegates && env.is_none() {
+        if has_published_delegates && env.is_none() && !self.deployment.disable_local_pool {
             return Err(HostError::internal(
-                "deferred Session environment cannot host delegate targets",
+                "remote-only execution cannot host local delegate targets",
             ));
         }
         if let Some(env) = env.clone()
@@ -1212,7 +1219,8 @@ impl SharedHost {
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
             Arc::new(crate::application::SessionPromptAttemptExecutor::new(
                 attempt_executor,
-                self.thread_session_prompts(thread),
+                self.session_slots.clone(),
+                thread,
             ));
         let attempt_executor = self
             .application_attempt_decorator
@@ -1551,16 +1559,12 @@ impl SharedHost {
         // credential-bearing MCP relay routes. A future Session reusing the opaque
         // thread id must start from an empty projection and be authorized/staged
         // again; resource state never outlives its Session boundary in these maps.
-        let reference_result = self
-            .clear_session_references(thread)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()));
         self.session_slots.remove(thread);
         if let Some(relay) = self.mcp_relay.get() {
             relay.remove_routes(thread);
         }
 
-        dispose_result.and(reference_result)
+        dispose_result
     }
 }
 

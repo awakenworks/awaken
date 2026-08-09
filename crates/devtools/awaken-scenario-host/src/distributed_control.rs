@@ -17,10 +17,17 @@ use axum::routing::post;
 use crate::model_publication::{DistributedProviderPublicationResolver, scenario_model_catalog};
 
 pub async fn build_distributed_control_router() -> Router {
-    let deployment = awaken_cli::config::ResolvedDeployment::load(
-        awaken_cli::config::ConfigOverrides::default(),
-    )
-    .unwrap_or_else(|error| panic!("distributed Control deployment configuration: {error}"));
+    // The scenario process is a thin composition adapter, not a second config
+    // owner. Its deployment fixture supplies the same explicit file used by the
+    // production Control migration command; omission retains the normal default
+    // path for focused unit tests.
+    let config_path = std::env::var_os("AWAKEN_SCENARIO_CONFIG").map(std::path::PathBuf::from);
+    let deployment =
+        awaken_cli::config::ResolvedDeployment::load(awaken_cli::config::ConfigOverrides {
+            config_path,
+            ..Default::default()
+        })
+        .unwrap_or_else(|error| panic!("distributed Control deployment configuration: {error}"));
     assert_eq!(
         deployment.role,
         awaken_cli::config::Role::Control,

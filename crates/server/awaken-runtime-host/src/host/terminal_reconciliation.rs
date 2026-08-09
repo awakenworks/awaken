@@ -64,7 +64,7 @@ impl HostWorkerResolver {
         self.boundary_worker(host, claimed, commit, true).await
     }
 
-    async fn boundary_worker(
+    pub(super) async fn boundary_worker(
         &self,
         host: &SharedHost,
         claimed: &awaken_run_ingress::Claimed,

@@ -16,6 +16,7 @@ use awaken_executable_environment_contract::{
 pub struct EnvironmentImageBuildPolicy {
     pub lease: Duration,
     pub retry: Duration,
+    pub retry_cap: Duration,
     pub wait_timeout: Duration,
     pub poll_interval: Duration,
 }
@@ -25,6 +26,7 @@ impl Default for EnvironmentImageBuildPolicy {
         Self {
             lease: Duration::from_secs(15 * 60),
             retry: Duration::from_secs(15),
+            retry_cap: Duration::from_secs(6 * 60 * 60),
             wait_timeout: Duration::from_secs(20 * 60),
             poll_interval: Duration::from_millis(250),
         }
@@ -96,44 +98,28 @@ impl EnvironmentImageBuildCoordinator {
         else {
             return Ok(false);
         };
-        match self.builder.build(&claim.demand).await {
+        let failure = match self.builder.build(&claim.demand).await {
             Ok(image) => match self.builder.available(&image).await {
                 Ok(true) => {
                     self.store
                         .complete(&claim, &image, crate::now_unix_ms())
                         .await?;
+                    None
                 }
-                Ok(false) => {
-                    self.store
-                        .fail(
-                            &claim,
-                            "builder returned an unavailable image",
-                            crate::now_unix_ms(),
-                            millis(self.policy.retry),
-                        )
-                        .await?;
-                }
-                Err(error) => {
-                    self.store
-                        .fail(
-                            &claim,
-                            &error.to_string(),
-                            crate::now_unix_ms(),
-                            millis(self.policy.retry),
-                        )
-                        .await?;
-                }
+                Ok(false) => Some("builder returned an unavailable image".to_owned()),
+                Err(error) => Some(error.to_string()),
             },
-            Err(error) => {
-                self.store
-                    .fail(
-                        &claim,
-                        &error.to_string(),
-                        crate::now_unix_ms(),
-                        millis(self.policy.retry),
-                    )
-                    .await?;
-            }
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(message) = failure {
+            self.store
+                .fail(
+                    &claim,
+                    &message,
+                    crate::now_unix_ms(),
+                    retry_delay_ms(&self.policy, claim.lease_epoch),
+                )
+                .await?;
         }
         Ok(true)
     }
@@ -260,6 +246,14 @@ fn millis(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+fn retry_delay_ms(policy: &EnvironmentImageBuildPolicy, attempt: u64) -> u64 {
+    let base = millis(policy.retry);
+    let cap = millis(policy.retry_cap).max(base);
+    let exponent = u32::try_from(attempt.saturating_sub(1).min(63)).unwrap_or(63);
+    base.saturating_mul(1_u64.checked_shl(exponent).unwrap_or(u64::MAX))
+        .min(cap)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -275,8 +269,75 @@ mod tests {
     use super::*;
     use crate::InMemoryEnvironmentImageBuildStore;
 
+    #[test]
+    fn retry_delay_uses_attempt_backoff_and_a_bounded_cap() {
+        // Cause/effect decision table for failed immutable build recipes:
+        // | Rule | base | cap versus base | attempt | effect |
+        // | R1 | 15s | above | 1 | retry after 15s |
+        // | R2 | 15s | above | 2 | retry after 30s |
+        // | R3 | 15s | above | very large | retry at the 6h cap without overflow |
+        // | R4 | 15s | below | any | effective cap cannot shorten the base delay |
+        // Constraints: attempt is the existing durable claim epoch (minimum one
+        // after a claim); Failed remains recoverable, so no terminal state or
+        // second scheduler is introduced. Effects cover prompt transient retry,
+        // load shedding for persistent failures, and arithmetic saturation.
+        let policy = EnvironmentImageBuildPolicy::default();
+        assert_eq!(retry_delay_ms(&policy, 1), 15_000, "R1");
+        assert_eq!(retry_delay_ms(&policy, 2), 30_000, "R2");
+        assert_eq!(retry_delay_ms(&policy, u64::MAX), 21_600_000, "R3");
+
+        let below_base_cap = EnvironmentImageBuildPolicy {
+            retry_cap: Duration::from_secs(1),
+            ..policy
+        };
+        assert_eq!(retry_delay_ms(&below_base_cap, u64::MAX), 15_000, "R4");
+    }
+
     struct FakeBuilder {
         builds: Mutex<usize>,
+    }
+
+    #[derive(Clone, Copy)]
+    enum FailureMode {
+        Build,
+        UnavailableImage,
+        AvailabilityCheck,
+    }
+
+    struct FailingBuilder(FailureMode);
+
+    #[async_trait]
+    impl EnvironmentImageBuilder for FailingBuilder {
+        async fn base_image_identity(
+            &self,
+            reference: &str,
+        ) -> Result<String, EnvironmentImageBuildError> {
+            Ok(format!("{reference}@sha256:resolved"))
+        }
+
+        async fn build(
+            &self,
+            demand: &EnvironmentImageBuildDemand,
+        ) -> Result<String, EnvironmentImageBuildError> {
+            match self.0 {
+                FailureMode::Build => Err(EnvironmentImageBuildError::Unavailable(
+                    "build failed".into(),
+                )),
+                FailureMode::UnavailableImage | FailureMode::AvailabilityCheck => {
+                    Ok(format!("{}@sha256:candidate", demand.base_image))
+                }
+            }
+        }
+
+        async fn available(&self, _image: &str) -> Result<bool, EnvironmentImageBuildError> {
+            match self.0 {
+                FailureMode::Build => unreachable!("a failed build has no image to inspect"),
+                FailureMode::UnavailableImage => Ok(false),
+                FailureMode::AvailabilityCheck => Err(EnvironmentImageBuildError::Unavailable(
+                    "availability failed".into(),
+                )),
+            }
+        }
     }
 
     #[async_trait]
@@ -319,6 +380,64 @@ mod tests {
             },
             None,
         )
+    }
+
+    #[tokio::test]
+    async fn all_builder_failures_use_the_one_backoff_transition() {
+        // Cause/effect graph: a claimed build can fail while building (C1),
+        // return an image that is absent (C2), or fail while proving image
+        // availability (C3). Each cause must produce the same authoritative
+        // Failed transition (E1), preserve attempt=1 (E2), and schedule the
+        // first retry at the policy base delay (E3). Decision-table rules
+        // R1=C1, R2=C2, and R3=C3 cover every failure edge; successful Ready
+        // behavior is covered by registration_worker_and_readiness_follow_one_demand_path.
+        for (rule, mode, expected_message) in [
+            ("R1", FailureMode::Build, "build failed"),
+            (
+                "R2",
+                FailureMode::UnavailableImage,
+                "builder returned an unavailable image",
+            ),
+            ("R3", FailureMode::AvailabilityCheck, "availability failed"),
+        ] {
+            let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
+            let builder = Arc::new(FailingBuilder(mode));
+            let coordinator = EnvironmentImageBuildCoordinator::new(
+                store.clone(),
+                builder,
+                "registry/awaken:base",
+                EnvironmentImageBuildPolicy::default(),
+            )
+            .unwrap();
+            let packaged = registration(
+                &format!("env-{rule}"),
+                EnvironmentConfig::Cloud {
+                    networking: Default::default(),
+                    packages: EnvironmentPackages {
+                        npm: vec!["@playwright/mcp@latest".into()],
+                        ..Default::default()
+                    },
+                },
+            );
+            coordinator.ensure_registration(&packaged).await.unwrap();
+            let demand = coordinator.demand(&packaged, None).await.unwrap().unwrap();
+            let before = crate::now_unix_ms();
+            assert!(coordinator.run_once("builder-a").await.unwrap(), "{rule}");
+            let after = crate::now_unix_ms();
+            let record = store.get(&demand.build_key).await.unwrap().unwrap();
+            let EnvironmentImageBuildState::Failed {
+                message,
+                retry_at_ms,
+                attempt,
+            } = record.state
+            else {
+                panic!("{rule}: expected one Failed transition")
+            };
+            assert!(message.contains(expected_message), "{rule}: E1");
+            assert_eq!(attempt, 1, "{rule}: E2");
+            assert!(retry_at_ms >= before + 15_000, "{rule}: E3 lower bound");
+            assert!(retry_at_ms <= after + 15_000, "{rule}: E3 upper bound");
+        }
     }
 
     #[tokio::test]

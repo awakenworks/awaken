@@ -209,20 +209,14 @@ mod tests {
         let mut without = plan();
         without.binds.clear();
 
-        let spec = build_pod("live", &with_a, &None, "m", None, false, &[])
-            .spec
-            .unwrap();
+        let spec = build_pod("live", &with_a, &None, None, &[]).spec.unwrap();
         assert_eq!(
             spec,
-            build_pod("live", &with_b, &None, "m", None, false, &[])
-                .spec
-                .unwrap()
+            build_pod("live", &with_b, &None, None, &[]).spec.unwrap()
         );
         assert_eq!(
             spec,
-            build_pod("live", &without, &None, "m", None, false, &[])
-                .spec
-                .unwrap()
+            build_pod("live", &without, &None, None, &[]).spec.unwrap()
         );
         let agent = spec
             .containers

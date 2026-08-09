@@ -79,6 +79,20 @@ pub trait WorkerResolver<S>: Send + Sync {
             .await
     }
 
+    /// Convert a returned pre-execution resolution failure into committed Run
+    /// truth while the exact claim is still owned. The default preserves retry
+    /// semantics for resolvers that cannot author commits; recovery-aware
+    /// resolvers override this and use the ordinary claim-fenced failure commit
+    /// plus settlement path. A process crash never calls this method and remains
+    /// governed by lease expiry/reclaim.
+    async fn settle_claimed_resolution_failure(
+        &self,
+        _claimed: &Claimed,
+        error: Error,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        Err(error)
+    }
+
     /// Reconcile up to `limit` quiescent or expired dispatches against the
     /// resolver's authoritative committed Run readers. Generic resolvers have no
     /// global reader registry and do nothing; a Runtime Host overrides this once
@@ -653,8 +667,16 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // sandbox/provider metadata, while a recovery-aware host can adopt it before
     // constructing the session runtime. Legacy resolvers use the default method,
     // which derives the same thread/agent arguments as before.
-    let worker = resolver.worker_for_claimed(&claimed).await?;
-    if let Some((run_id, state)) = worker.drive_claimed(claimed, now).await?
+    let settled = match resolver.worker_for_claimed(&claimed).await {
+        Ok(worker) => worker.drive_claimed(claimed, now).await?,
+        Err(error) if error.is_terminal_resolution() => {
+            resolver
+                .settle_claimed_resolution_failure(&claimed, error)
+                .await?
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some((run_id, state)) = settled
         && let Some(sink) = completion
     {
         // Signal the foreground waiter (if any) the instant the run settles.

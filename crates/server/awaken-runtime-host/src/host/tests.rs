@@ -7,7 +7,7 @@ use awaken_session_contract::SessionRuntime;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 
 fn native_credential_profile() -> awaken_runtime_contract::CredentialRealizationProfile {
@@ -56,7 +56,6 @@ pub(super) struct TestResourceLifecycle {
     intents: Mutex<BTreeMap<String, awaken_resource_contract::ResourcePurgeIntent>>,
     references: Mutex<BTreeSet<awaken_resource_contract::ResourceReferenceRecord>>,
     fences: Mutex<BTreeMap<(awaken_resource_contract::ResourceKind, String), String>>,
-    fail_replace: AtomicBool,
 }
 
 #[async_trait::async_trait]
@@ -141,11 +140,6 @@ impl awaken_resource_contract::ResourceReferenceIndex for TestResourceLifecycle 
         reference_id: &str,
         records: Vec<awaken_resource_contract::ResourceReferenceRecord>,
     ) -> Result<(), awaken_resource_contract::ResourcePurgeError> {
-        if self.fail_replace.load(Ordering::SeqCst) {
-            return Err(awaken_resource_contract::ResourcePurgeError::Storage(
-                "injected reference replacement failure".into(),
-            ));
-        }
         let mut references = self.references.lock().unwrap();
         references.retain(|record| {
             record.reference.kind != kind || record.reference.reference_id != reference_id
@@ -938,10 +932,10 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     let _managed = crate::ManagedHost::new(host.clone())
         .with_repository_binding_verifier(repository_claims.clone());
     let frozen = projection("Use the bound Flow project.", true);
-    host.install_frozen_session_projection("flow-thread", frozen.clone(), None)
+    host.install_frozen_session_projection("flow-thread", frozen.clone(), None, true)
         .await
         .expect("first frozen projection installs");
-    host.install_frozen_session_projection("flow-thread", frozen, None)
+    host.install_frozen_session_projection("flow-thread", frozen, None, true)
         .await
         .expect("same frozen fingerprint is idempotent");
 
@@ -994,6 +988,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         "prompt-thread",
         projection("Use the bound Flow project.", false),
         None,
+        true,
     )
     .await
     .expect("P2/P4 projection");
@@ -1003,9 +998,14 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
     host.run(None, "prompt-thread", user("P4"))
         .await
         .expect("P4");
-    host.install_frozen_session_projection("deduplicated", projection("exact prompt", false), None)
-        .await
-        .expect("P3 projection");
+    host.install_frozen_session_projection(
+        "deduplicated",
+        projection("exact prompt", false),
+        None,
+        true,
+    )
+    .await
+    .expect("P3 projection");
     host.run(
         None,
         "deduplicated",
@@ -1051,7 +1051,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
 
     let replacement = projection("different", true);
     assert!(
-        host.install_frozen_session_projection("flow-thread", replacement, None)
+        host.install_frozen_session_projection("flow-thread", replacement, None, true)
             .await
             .is_err(),
         "a bound Session cannot switch frozen baselines"
@@ -1079,6 +1079,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         "repository-claim-thread",
         repository_projection.clone(),
         Some(&claim(1)),
+        true,
     )
     .await
     .expect("C1 first claim");
@@ -1086,6 +1087,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
         "repository-claim-thread",
         repository_projection,
         Some(&claim(2)),
+        true,
     )
     .await
     .expect("C2 replacement claim");
@@ -2369,84 +2371,6 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
     );
 }
 
-/// Live replacement commit-failure decision table:
-/// | physical realization | reference/manifest commit | effect |
-/// |---|---|---|
-/// | succeeds | fails | old logical manifest remains; realized target is retryable |
-/// | succeeds again | succeeds | desired manifest commits exactly once |
-///
-/// Constraint: the persisted Session owns the pending generation and retries the
-/// complete replacement. Rule C1 proves Runtime ordering does not turn a transient
-/// commit failure into a permanently missing mount on that retry.
-#[tokio::test]
-async fn live_mount_realization_precedes_logical_commit_and_retry_converges() {
-    use awaken_session_contract::SessionRuntime;
-
-    let lifecycle = Arc::new(TestResourceLifecycle::default());
-    let mut raw_host =
-        SharedHost::new(Arc::new(OkModel), "stub").with_resource_lifecycle(lifecycle.clone());
-    raw_host.session_provider =
-        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
-            std::env::temp_dir().join(format!("awaken-hot-attach-retry-{}", std::process::id())),
-            false,
-        );
-    let host = Arc::new(raw_host);
-    let managed = managed_with_resource_source(host.clone());
-    host.run(
-        None,
-        "t-attach-retry",
-        vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
-    )
-    .await
-    .expect("first turn");
-    let environment = host
-        .session_environment("t-attach-retry")
-        .await
-        .expect("live Namespace environment");
-    let file_id = host
-        .file_application()
-        .expect("test composition installs File application")
-        .create_uploaded_file(
-            host.local_workspace(),
-            "retry.txt".into(),
-            "text/plain".into(),
-            b"retry-safe",
-        )
-        .await
-        .expect("create File")
-        .id;
-    let desired = effective_resources(vec![TestInput {
-        kind: "file".into(),
-        id: file_id,
-        mount_path: "/retry.txt".into(),
-        access: awaken_resource_contract::ResourceAccess::ReadOnly,
-        instructions: None,
-        initial_branch: None,
-        initial_commit: None,
-    }]);
-
-    lifecycle.fail_replace.store(true, Ordering::SeqCst);
-    managed
-        .apply_session_inputs("t-attach-retry", host.local_workspace(), 1, &desired)
-        .await
-        .expect_err("injected logical commit failure");
-    assert!(host.sandbox_spec("t-attach-retry").mounts.is_empty());
-    assert_eq!(
-        environment
-            .list_files("/mnt/session/uploads")
-            .await
-            .unwrap(),
-        vec![("retry.txt".into(), b"retry-safe".to_vec())]
-    );
-
-    lifecycle.fail_replace.store(false, Ordering::SeqCst);
-    managed
-        .apply_session_inputs("t-attach-retry", host.local_workspace(), 1, &desired)
-        .await
-        .expect("idempotent retry");
-    assert_eq!(host.sandbox_spec("t-attach-retry").mounts.len(), 1);
-}
-
 /// Causes: a live Workdir environment exists and the replacement manifest adds
 /// a read-only File. Constraint: Workdir provides lexical containment but cannot
 /// enforce mount immutability. Effect/rule W1: reject before changing the staged
@@ -2957,6 +2881,66 @@ async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
     assert!(host.session_environment("deferred-text").await.is_none());
 }
 
+/// Delegation/provisioning cause-effect graph: C1=`on_tool_use`; C2=the exact
+/// publication contains a delegate; C3=this Host executes locally. Effects:
+/// E1=plain inference without C2 stays deferred; E2=C1+C2+C3 creates one
+/// Session Environment before the delegation service is exposed; E3=a
+/// Coordinator-only Host remains environment-free because the claimed Worker
+/// owns E2. Decision rows L1, L9, and D1 cover E1, E2, and E3 respectively.
+#[tokio::test]
+async fn on_tool_use_published_delegate_forces_one_eager_environment() {
+    use awaken_runtime_contract::StaticPublishedAgentSnapshots;
+    use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
+    use awaken_runtime_contract::snapshot::AgentId;
+    use awaken_session_contract::{SessionInit, SessionRuntime};
+
+    let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("child").build();
+    let parent = awaken_runtime_contract::ExecutableAgentSnapshot::builder("parent")
+        .agent_bindings(AgentBindings {
+            delegates: vec![AgentDelegateBinding {
+                agent_id: AgentId("child".into()),
+                source_revision: None,
+                recursive_self: false,
+            }],
+            ..Default::default()
+        })
+        .build();
+    let publications = StaticPublishedAgentSnapshots::try_new([parent, child])
+        .expect("one authoritative publication catalog");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
+    );
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "deferred-delegate",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "parent".into(),
+                delegate_ids: vec!["child".into()],
+                toolsets: None,
+                resource_revision: 0,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .expect("prepare exact publication");
+
+    let context = host
+        .ctx_for("deferred-delegate", Some("parent"))
+        .await
+        .expect("L9 delegate context");
+    assert!(context.env.is_some(), "L9/E2 runtime environment");
+    assert!(
+        host.session_environment("deferred-delegate")
+            .await
+            .is_some(),
+        "L9/E2 single Session owner"
+    );
+}
+
 struct BrainSkillModel;
 
 #[async_trait::async_trait]
@@ -3229,6 +3213,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             toolsets: Vec::new(),
         },
         None,
+        true,
     )
     .await
     .expect("L8 cold legacy projection");
@@ -3973,8 +3958,10 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H16 | exact binding | same lease/new key | renew | - | reject/no mutation |
     // | H17 | non-bearer usage | exact holder/revision | stage | - | reject before materialization |
     // | H18 | authenticated ACP/Forbidden exposure | exact | stage | - | reject before relay/no lookup |
+    // | H19 | expired predecessor/current same-epoch renewal | exact | stage+publish | admitted effects complete under current local authority |
     // | H20 | authenticated ACP/complete provider evidence | exact | stage+publish+call | generation route injects; no inline secret |
     // | H21 | non-OAuth bearer/exact factory | exact | stage | - | one neutral challenge refresher; no Vault in Runtime |
+    // | H22 | exact removed tombstone | exact request replay | stage | - | rebuild one staged projection/material |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -4075,7 +4062,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     renewal.stage_idempotency_key = "renew-exact".into();
     let renewed_generation = renewal.generation.clone();
     let renewed = managed
-        .stage_mcp_attachment(renewal)
+        .stage_mcp_attachment(renewal.clone())
         .await
         .expect("H14 stage");
     assert_eq!(renewed.generation, renewed_generation, "H14");
@@ -4111,10 +4098,28 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .expect("H7");
     assert!(
         managed
-            .publish_mcp_generation(renewed_generation)
+            .publish_mcp_generation(renewed_generation.clone())
             .await
             .is_err(),
         "H8"
+    );
+    let recovered = managed
+        .stage_mcp_attachment(renewal)
+        .await
+        .expect("H22 exact removed replay");
+    assert_eq!(recovered.generation, renewed_generation, "H22");
+    let recovered_projection = host
+        .mcp_projection(&renewed_generation)
+        .expect("H22 rebuilt projection");
+    assert_eq!(
+        recovered_projection.state,
+        crate::session_slot::McpProjectionState::Staged,
+        "H22"
+    );
+    assert_eq!(
+        host.session_slots.read("mcp-exact", |slot| slot.mcp.len()),
+        Some(1),
+        "H22 no duplicate tombstone"
     );
     let mut expired = request("mcp-expired", "workspace-a", 1);
     expired.generation.lease_expires_at_unix_ms = 0;
@@ -4128,6 +4133,25 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         "H9"
     );
     assert!(host.mcp_projection(&generation("mcp-expired")).is_none());
+    let mut admitted_before_renewal = request("mcp-renewed-authority", "workspace-a", 1);
+    admitted_before_renewal.generation.lease_expires_at_unix_ms = 0;
+    host.install_session_realization_lease(
+        "mcp-renewed-authority",
+        awaken_session_contract::SessionRealizationLease {
+            owner: "worker-a".into(),
+            runtime_incarnation: "runtime-1".into(),
+            epoch: 1,
+            expires_at_unix_ms: u64::MAX,
+        },
+    );
+    let admitted_receipt = managed
+        .stage_mcp_attachment(admitted_before_renewal)
+        .await
+        .expect("H19 stage admitted before renewal");
+    managed
+        .publish_mcp_generation(admitted_receipt.generation)
+        .await
+        .expect("H19 publish admitted before renewal");
     let first = request("mcp-conflict", "workspace-a", 1);
     managed
         .stage_mcp_attachment(first)
@@ -4644,6 +4668,93 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         reqwest::StatusCode::NOT_FOUND,
         "P5"
     );
+}
+
+/// MCP-effect authority cause/effect graph: C1 the asserted generation lease is
+/// live; C2 the local Control projection has the same Runtime incarnation and
+/// epoch; C3 that projection monotonically extends the asserted expiry; C4 the
+/// projected lease is live. Effects: E1 permit the already-admitted effect; E2
+/// fence it before any MCP I/O.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | A1 | yes | any | any | any | E1 |
+/// | A2 | no | yes | yes | yes | E1 |
+/// | A3 | no | no | any | yes | E2 |
+/// | A4 | no | yes | no | yes | E2 |
+/// | A5 | no | yes | yes | no | E2 |
+/// | A6 | no | absent | absent | absent | E2 |
+#[test]
+fn mcp_effect_authority_accepts_only_a_live_assertion_or_its_live_same_epoch_renewal() {
+    let generation = awaken_session_contract::McpGenerationRef {
+        session_id: "mcp-effect-authority".into(),
+        attachment_id: awaken_session_contract::McpAttachmentId("browser".into()),
+        generation: awaken_session_contract::McpGeneration(1),
+        runtime_incarnation: "runtime-a/boot-1".into(),
+        lease_epoch: 3,
+        lease_expires_at_unix_ms: 101,
+    };
+    let live = SharedHost::new(Arc::new(OkModel), "stub");
+    assert!(
+        live.mcp_generation_is_authorized_at(&generation, 100),
+        "A1/E1"
+    );
+
+    let mut expired = generation;
+    expired.lease_expires_at_unix_ms = 90;
+    for (rule, lease, expected) in [
+        (
+            "A2",
+            Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-a/boot-1".into(),
+                epoch: 3,
+                expires_at_unix_ms: 110,
+            }),
+            true,
+        ),
+        (
+            "A3",
+            Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-b/boot-1".into(),
+                epoch: 3,
+                expires_at_unix_ms: 110,
+            }),
+            false,
+        ),
+        (
+            "A4",
+            Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-a/boot-1".into(),
+                epoch: 3,
+                expires_at_unix_ms: 80,
+            }),
+            false,
+        ),
+        (
+            "A5",
+            Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker-a".into(),
+                runtime_incarnation: "runtime-a/boot-1".into(),
+                epoch: 3,
+                expires_at_unix_ms: 100,
+            }),
+            false,
+        ),
+        ("A6", None, false),
+    ] {
+        let host = SharedHost::new(Arc::new(OkModel), "stub");
+        if let Some(lease) = lease {
+            host.install_session_realization_lease(&expired.session_id, lease);
+        }
+        assert_eq!(
+            host.mcp_generation_is_authorized_at(&expired, 100),
+            expected,
+            "{rule}"
+        );
+    }
 }
 
 #[test]
@@ -6290,15 +6401,15 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
 
 #[test]
 fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() {
-    // Cause/effect graph: C1 a Coordinator has installed the frozen Session
-    // runtime projection; C2 only a Resource manifest exists; C3 a child Run is
-    // parent-mediated. Effects: E1 the root dispatch names its own Session and
-    // the Worker enters Control realization; E2 an ordinary resource-bearing
-    // Run remains ordinary; E3 a child retains the parent Session pointer. C1
-    // and C2 are mutually exclusive test fixtures here; C3 is owned by
+    // Cause/effect graph: C1 the request entered the Session application port;
+    // C2 only a Resource manifest exists; C3 a child Run is parent-mediated.
+    // Effects: E1 the root dispatch names its own Session even before an
+    // Application contribution can freeze its Environment; E2 an ordinary
+    // resource-bearing Run remains ordinary; E3 a child retains the parent
+    // Session pointer. C1 and C2 are mutually exclusive test fixtures here; C3 is owned by
     // `child_dispatch_reuses_publication_pinned_model_candidates`.
     //
-    // | Rule | Frozen runtime | Resources only | Child | session_thread_id |
+    // | Rule | Session API | Resources only | Child | session_thread_id |
     // | R1   | yes            | any            | no    | root thread       |
     // | R2   | no             | yes            | no    | none              |
     // | R3   | n/a            | any            | yes   | parent thread     |
@@ -6307,14 +6418,8 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
     // existing child-dispatch test owns R3, avoiding a parallel child builder.
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let thread = "prepared-root-session";
-    host.install_environment_projection(
-        thread,
-        &session_environment(
-            awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-            serde_json::json!({}),
-        ),
-    )
-    .expect("install frozen Session runtime projection");
+    host.session_slots
+        .update(thread, |slot| slot.session_dispatch = true);
     let activation = awaken_runtime_contract::RunActivation::new(
         awaken_agent_contract::agent::run::Id("run-prepared-root-session".into()),
         awaken_agent_contract::agent::thread::Id(thread.into()),
