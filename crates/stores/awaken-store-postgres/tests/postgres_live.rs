@@ -501,6 +501,77 @@ async fn resume_ticket_awaits_then_clears() {
 }
 
 #[tokio::test]
+async fn authoritative_wait_tracks_the_latest_cross_replica_run() {
+    /*
+     * Awaiting-read cause/effect decision table.
+     * Causes: C1 this coordinator's compatibility projection contains an older
+     * Awaiting Run; C2 a peer commits a newer terminal Run on the same Thread;
+     * C3 that peer then commits a still newer Awaiting Run. Effects: E1 the
+     * authoritative read returns no ticket after C2 instead of blocking on C1;
+     * E2 after C3 it returns exactly the newest durable ticket even though the
+     * observer projection never advanced. Rules: W1=C1+C2=>E1;
+     * W2=C1+C2+C3=>E2. This is the cross-protocol recovery race: admission and
+     * resume must follow shared PostgreSQL truth, not a process-local cache.
+     */
+    let Some(pool) = schema_pool("t_authoritative_wait").await else {
+        return;
+    };
+    let observer = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("observer");
+    let peer = PostgresCommitCoordinator::with_existing_pool(pool)
+        .await
+        .expect("peer");
+    let thread = ThreadId("thread-1".to_string());
+
+    observer
+        .commit(ThreadCommit {
+            thread_id: thread.clone(),
+            run: awaiting_disposition("run-old"),
+            messages: vec![],
+            state: vec![],
+            events: vec![],
+        })
+        .await
+        .expect("old wait");
+    peer.commit(ThreadCommit {
+        thread_id: thread.clone(),
+        run: ended("run-new"),
+        messages: vec![],
+        state: vec![],
+        events: vec![],
+    })
+    .await
+    .expect("new terminal");
+
+    assert!(
+        observer
+            .authoritative_open_wait_for_thread(&thread)
+            .await
+            .expect("authoritative terminal read")
+            .is_none(),
+        "a peer's newer terminal Run supersedes the observer's stale wait"
+    );
+
+    peer.commit(ThreadCommit {
+        thread_id: thread.clone(),
+        run: RunDisposition::awaiting(ticket("run-latest", "thread-1")),
+        messages: vec![],
+        state: vec![],
+        events: vec![],
+    })
+    .await
+    .expect("latest wait");
+    let (run_id, latest_ticket) = observer
+        .authoritative_open_wait_for_thread(&thread)
+        .await
+        .expect("authoritative awaiting read")
+        .expect("latest wait exists");
+    assert_eq!(run_id.0, "run-latest");
+    assert_eq!(latest_ticket.run_id.0, "run-latest");
+}
+
+#[tokio::test]
 async fn migration_phase_applies_schema_then_runtime_verifies_and_commits() {
     // Cause/effect decision table for schema access:
     // R1 empty schema + migrate -> portable and PG-only bundles are applied
