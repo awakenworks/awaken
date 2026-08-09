@@ -73,7 +73,8 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                 "sandbox stdio MCP realization requires the exact claimed Agent snapshot before effects",
             ));
         }
-        let adopted = if environment_absent && let Some(binding) = projection.environment.binding()
+        let (adopted, rebuild_binding) = if environment_absent
+            && let Some(binding) = projection.environment.binding()
         {
             let published_snapshot = published_snapshot.ok_or_else(|| {
                 awaken_session_contract::RunError::classified(
@@ -90,10 +91,18 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                 )
                 .await
                 .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?
-                .0
         } else {
-            None
+            (None, false)
         };
+        if rebuild_binding {
+            // The only admissible replacement path is the claim-bound recovery
+            // decision above. Clear the process-local expectation only after the
+            // provider has proved the exact durable binding unavailable; the new
+            // Environment receipt must still pass the ordinary durable sink.
+            self.host
+                .install_expected_environment_binding(session_id, None)
+                .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
+        }
         // Synchronization is the single ordering boundary between Control's
         // frozen projection and MCP effects. A first-use Environment has no
         // durable binding to adopt yet, but its stage still needs the exact Run

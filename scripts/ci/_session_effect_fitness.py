@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -16,6 +17,7 @@ APPLICATION_CLEANUP = (
 PROTOCOL_SESSIONS = "crates/server/awaken-protocol-managed/src/state/sessions.rs"
 SESSION_STORE = "crates/stores/awaken-session-store/src/lib.rs"
 RUNTIME_HOST = "crates/server/awaken-runtime-host/src/lib.rs"
+WORKER_RUNTIME = "crates/bin/awaken-worker/src/lib.rs"
 ARTIFACT_HARVEST = "crates/server/awaken-runtime-host/src/provisioning.rs"
 ARTIFACT_TRANSPORT = (
     "crates/resources/awaken-resource-worker-http/src/artifact_publication_http.rs"
@@ -73,6 +75,7 @@ REQUIRED = {
         "SessionTerminalCleanupReceipt::new",
         ".harvest_thread_artifacts(&intent.thread_id)",
     ),
+    WORKER_RUNTIME: (),
     ARTIFACT_HARVEST: (
         "harvest_idempotency_key",
         ".verify()",
@@ -106,6 +109,22 @@ def session_effect_violations(sources: dict[str, str]) -> list[str]:
         errors.append(
             f"{PROTOCOL_SESSIONS}: protocol projection still supplies terminal cleanup targets"
         )
+    if "PersistedSession {" in protocol or re.search(
+        r"\bpersisted\.(?:baseline|tools|activity_epoch|environment|mcp|resources|"
+        r"realization|execution|disposition|terminal_cleanup|revision)\s*=",
+        protocol,
+    ):
+        errors.append(
+            f"{PROTOCOL_SESSIONS}: protocol adapter constructs or mutates Session authority; "
+            "use the aggregate constructor and SessionApplication command"
+        )
+    worker = sources.get(WORKER_RUNTIME, "")
+    for forbidden in ("SessionTerminalCleanupIntent", "execute_terminal_cleanup"):
+        if forbidden in worker:
+            errors.append(
+                f"{WORKER_RUNTIME}: stale Worker can settle Coordinator-owned cleanup via "
+                f"{forbidden!r}"
+            )
     combined = "\n".join(sources.values())
     for obsolete in (
         "try_pending_lifecycle",
@@ -127,6 +146,10 @@ def check_all(repo_root: Path) -> list[str]:
 
 
 def selftest() -> None:
+    # Cause/effect graph: C1 the Managed adapter projects committed Session
+    # truth; C2 it constructs or directly mutates the aggregate. E1 C1 is
+    # accepted, while E2 C2 is rejected before a second authority path lands.
+    # The existing intent/receipt checks cover the independent effect bypass.
     canonical = {
         relative: "\n".join(markers) for relative, markers in REQUIRED.items()
     }
@@ -141,3 +164,29 @@ def selftest() -> None:
         "receipt.verify(&publication)", ""
     )
     assert session_effect_violations(missing_receipt), "unverified receipt rejected"
+
+    # Mutation-test rules: removing any one critical edge must make the fitness
+    # gate fail independently. This is the static complement to F0-F6 crash
+    # injection and prevents one broad marker from masking a missing fence,
+    # target freeze, exact settlement, or quiescence edge.
+    for rule, marker in (
+        ("durable fence", '"terminal-cleanup-fence"'),
+        ("quiescence", ".quiesce_terminal_delegations(session_id)"),
+        ("watermarked freeze", ".freeze_targets("),
+        ("exact settlement", ".complete(session_id, &receipts)"),
+    ):
+        mutant = dict(canonical)
+        mutant[APPLICATION_CLEANUP] = mutant[APPLICATION_CLEANUP].replace(marker, "")
+        assert session_effect_violations(mutant), f"removed {rule} rejected"
+
+    protocol_authority = dict(canonical)
+    protocol_authority[PROTOCOL_SESSIONS] += "\nlet value = PersistedSession { ... };"
+    assert session_effect_violations(protocol_authority), "protocol constructor rejected"
+    protocol_authority[PROTOCOL_SESSIONS] = (
+        canonical[PROTOCOL_SESSIONS] + "\npersisted.resources = Default::default();"
+    )
+    assert session_effect_violations(protocol_authority), "protocol mutation rejected"
+
+    stale_worker = dict(canonical)
+    stale_worker[WORKER_RUNTIME] = "execute_terminal_cleanup(SessionTerminalCleanupIntent)"
+    assert session_effect_violations(stale_worker), "Worker cleanup settlement rejected"

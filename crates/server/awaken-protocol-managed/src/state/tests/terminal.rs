@@ -507,7 +507,13 @@ async fn archive_persists_release_before_and_after_sandbox_teardown() {
         durable.resources.activations[0].state,
         awaken_session_contract::ActivationState::Released
     );
-    assert!(repo.reconcilable_sessions().await.unwrap().is_empty());
+    assert!(
+        repo.reconcilable_sessions()
+            .await
+            .unwrap()
+            .sessions
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -660,7 +666,7 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
         "cleanup failure stays durable for ResourceReclaimer"
     );
     assert_eq!(
-        repo.reconcilable_sessions().await.unwrap(),
+        repo.reconcilable_sessions().await.unwrap().sessions,
         vec![awaken_session_contract::ScopedPersistedSession {
             workspace_id: DEFAULT_SCOPE.to_string(),
             session: durable,

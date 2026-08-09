@@ -29,6 +29,7 @@ rusqlite = { workspace = true, optional = true }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"], optional = true }
 awaken-scoped-migration = { workspace = true, features = ["postgres"], optional = true }
 awaken-scoped-migration-sqlite = { workspace = true, optional = true }
+awaken-store-runtime.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

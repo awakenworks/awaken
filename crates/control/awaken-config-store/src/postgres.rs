@@ -4,6 +4,7 @@ use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 
+use awaken_store_runtime::StoredU64;
 use awaken_tenancy::ScopeId;
 
 use crate::schema::config_bundle;
@@ -81,6 +82,18 @@ impl PostgresConfigStore {
 
 fn reject(err: impl std::fmt::Display) -> ConfigStoreError {
     ConfigStoreError(err.to_string())
+}
+
+fn database_generation(value: u64) -> Result<i64, ConfigStoreError> {
+    StoredU64::try_from(value)
+        .map(StoredU64::database_value)
+        .map_err(reject)
+}
+
+fn domain_generation(value: i64) -> Result<u64, ConfigStoreError> {
+    StoredU64::try_from(value)
+        .map(StoredU64::domain_value)
+        .map_err(reject)
 }
 
 #[async_trait::async_trait]
@@ -443,13 +456,13 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .bind(&config.id)
         .bind(Json(config))
         .bind(&scope.0)
-        .bind(expected_generation as i64)
+        .bind(database_generation(expected_generation)?)
         .fetch_optional(&self.pool)
         .await
         .map_err(reject)?;
         if let Some(generation) = applied {
             return Ok(ConfigWrite::Applied {
-                revision: generation as u64,
+                revision: domain_generation(generation)?,
             });
         }
         let current_revision = sqlx::query_scalar::<_, i64>(&format!(
@@ -460,7 +473,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(reject)?
-        .map(|generation| generation as u64);
+        .map(domain_generation)
+        .transpose()?;
         Ok(ConfigWrite::Conflict { current_revision })
     }
 
@@ -505,7 +519,7 @@ impl ScopedConfigRegistry for PostgresConfigStore {
                 let revision: i64 = row.try_get("generation").map_err(reject)?;
                 Ok(Some(AgentConfigRevision {
                     config,
-                    revision: revision as u64,
+                    revision: domain_generation(revision)?,
                 }))
             }
             None => Ok(None),
@@ -593,7 +607,8 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?
-        .map(|generation| generation as u64);
+        .map(domain_generation)
+        .transpose()?;
         if current_revision != Some(expected_generation) {
             tx.rollback().await.map_err(reject)?;
             return Ok(ConfigWrite::Conflict { current_revision });

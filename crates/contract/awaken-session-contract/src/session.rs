@@ -415,6 +415,16 @@ pub trait SessionRuntime: Send + Sync {
         _lease: crate::SessionRealizationLease,
     ) {
     }
+    /// Project the durable Environment binding expectation before recovery I/O.
+    /// `Some` forbids creating a substitute environment if adoption later fails;
+    /// the binding itself remains owned by the Session aggregate.
+    fn install_expected_environment_binding(
+        &self,
+        _session_id: &str,
+        _binding: Option<String>,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
     /// Read the runtime-owned, durable child-Run relationships for `thread`.
     /// Protocol adapters use this only to rebuild disposable projections after a
     /// restart; the runtime relationship registry remains the sole authority.

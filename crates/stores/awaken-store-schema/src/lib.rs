@@ -11,78 +11,7 @@
 //! driver — it owns the schema, the backends own the runner.
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
-
-/// The only representation permitted at the `u64`/SQL `BIGINT` authority
-/// boundary. SQL backends are signed; silently casting either direction can
-/// turn overflow into a negative fence or corruption into a huge valid cursor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StoredU64(i64);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum StoredU64Error {
-    #[error("durable authority value {0} is negative")]
-    Negative(i64),
-    #[error("durable authority value {0} exceeds signed database range")]
-    OutOfRange(u64),
-    #[error("durable authority arithmetic overflow")]
-    ArithmeticOverflow,
-}
-
-impl StoredU64 {
-    #[must_use]
-    pub const fn database_value(self) -> i64 {
-        self.0
-    }
-
-    #[must_use]
-    pub const fn domain_value(self) -> u64 {
-        self.0 as u64
-    }
-
-    pub fn checked_add(self, increment: u64) -> Result<Self, StoredU64Error> {
-        let value = self
-            .domain_value()
-            .checked_add(increment)
-            .ok_or(StoredU64Error::ArithmeticOverflow)?;
-        Self::try_from(value)
-    }
-
-    pub fn checked_scale_and_offset(
-        self,
-        scale: u64,
-        offset: usize,
-    ) -> Result<Self, StoredU64Error> {
-        let offset = u64::try_from(offset).map_err(|_| StoredU64Error::ArithmeticOverflow)?;
-        let value = self
-            .domain_value()
-            .checked_mul(scale)
-            .and_then(|value| value.checked_add(offset))
-            .ok_or(StoredU64Error::ArithmeticOverflow)?;
-        Self::try_from(value)
-    }
-}
-
-impl TryFrom<u64> for StoredU64 {
-    type Error = StoredU64Error;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        i64::try_from(value)
-            .map(Self)
-            .map_err(|_| StoredU64Error::OutOfRange(value))
-    }
-}
-
-impl TryFrom<i64> for StoredU64 {
-    type Error = StoredU64Error;
-
-    fn try_from(value: i64) -> Result<Self, Self::Error> {
-        if value < 0 {
-            Err(StoredU64Error::Negative(value))
-        } else {
-            Ok(Self(value))
-        }
-    }
-}
+pub use awaken_store_runtime::{StoredU64, StoredU64Error};
 
 /// The bundle id for the runtime commit schema. Scoped so it never collides with
 /// another component's migrations in the same database.
@@ -226,32 +155,6 @@ pub fn commit_bundle() -> Result<MigrationBundle, MigrationError> {
          CREATE TRIGGER {prefix}_receipt_nonnegative_update BEFORE UPDATE OF operation_ordinal, commit_sequence, thread_version ON {prefix}_commit_receipt WHEN NEW.operation_ordinal < 0 OR NEW.commit_sequence < 0 OR NEW.thread_version < 0 BEGIN SELECT RAISE(ABORT, 'negative commit receipt authority'); END",
     )?);
     MigrationBundle::new(COMMIT_BUNDLE_ID, migrations)
-}
-
-#[cfg(test)]
-mod stored_integer_tests {
-    use super::*;
-
-    #[test]
-    fn signed_database_boundary_is_fail_closed() {
-        assert_eq!(
-            StoredU64::try_from(-1_i64),
-            Err(StoredU64Error::Negative(-1))
-        );
-        assert_eq!(StoredU64::try_from(0_i64).unwrap().domain_value(), 0);
-        assert_eq!(
-            StoredU64::try_from(i64::MAX).unwrap().domain_value(),
-            i64::MAX as u64
-        );
-        assert!(matches!(
-            StoredU64::try_from(i64::MAX as u64 + 1),
-            Err(StoredU64Error::OutOfRange(_))
-        ));
-        assert_eq!(
-            StoredU64::try_from(i64::MAX).unwrap().checked_add(1),
-            Err(StoredU64Error::OutOfRange(i64::MAX as u64 + 1))
-        );
-    }
 }
 
 #[cfg(kani)]

@@ -2,6 +2,18 @@
 
 use super::*;
 
+fn application_provisioning_error(
+    run_id: &str,
+    error: awaken_session_contract::ApplicationSessionProvisionError,
+) -> awaken_run_ingress::Error {
+    let detail = format!("run {run_id} application provisioning failed: {error}");
+    if error.is_terminal() {
+        HostWorkerResolver::terminal_resolution_error(detail)
+    } else {
+        HostWorkerResolver::execution_error(detail)
+    }
+}
+
 /// Install the frozen Session projection under the authenticated Run claim.
 /// Application contribution is one optional branch; ordinary registered-Worker
 /// Sessions use this same realization owner and phase driver.
@@ -136,12 +148,7 @@ pub(super) async fn install_claimed_session_projection(
         let contribution = provisioner
             .prepare(&claimed.request.activation, &thread_id.0, ownership.clone())
             .await
-            .map_err(|error| {
-                HostWorkerResolver::execution_error(format!(
-                    "run {} application provisioning failed: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?;
+            .map_err(|error| application_provisioning_error(&claimed.lease.run_id.0, error))?;
         ownership.verify_current().await.map_err(|error| {
             HostWorkerResolver::execution_error(format!(
                 "run {} lost ownership during application provisioning: {error}",
@@ -184,4 +191,28 @@ pub(super) async fn install_claimed_session_projection(
         .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_absorbing_application_provisioning_failures_terminalize_the_claim() {
+        let retryable = application_provisioning_error(
+            "run-retryable",
+            awaken_session_contract::ApplicationSessionProvisionError::retryable(
+                "transport unavailable",
+            ),
+        );
+        let terminal = application_provisioning_error(
+            "run-terminal",
+            awaken_session_contract::ApplicationSessionProvisionError::terminal(
+                "frozen request rejected",
+            ),
+        );
+
+        assert!(!retryable.is_terminal_resolution());
+        assert!(terminal.is_terminal_resolution());
+    }
 }

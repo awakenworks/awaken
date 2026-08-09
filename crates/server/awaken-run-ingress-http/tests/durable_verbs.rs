@@ -245,3 +245,33 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
         "the superseded older run is reported: {v}"
     );
 }
+
+#[tokio::test]
+async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability() {
+    /* Cause/effect decision table. Causes: C1 typed durable ingress installed;
+     * C2 operation is read-only (dispatches/superseded/dead-letters) or repair
+     * (requeue). Effects: E1 route through the per-Thread durable ingress; E2
+     * reject 400 before reading the process dispatch store. D1 C1=T,C2=*=>E1
+     * is covered by the lifecycle test above. D2 C1=F,C2=read=>E2; D3
+     * C1=F,C2=repair=>E2. This prevents monitoring from becoming a parallel
+     * authority/capability path. */
+    let router = durable_ops_router(Arc::new(SharedHost::new(Arc::new(OkModel), "stub")));
+    for (method, path) in [
+        ("GET", "/v1/durable/threads/direct/dispatches"),
+        ("GET", "/v1/durable/threads/direct/superseded"),
+        ("GET", "/v1/durable/threads/direct/dead-letters"),
+        (
+            "POST",
+            "/v1/durable/threads/direct/dead-letters/run/requeue",
+        ),
+    ] {
+        let (status, body) = call(&router, method, path).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{method} {path}: {body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("durable ingress")),
+            "{method} {path}: {body}",
+        );
+    }
+}

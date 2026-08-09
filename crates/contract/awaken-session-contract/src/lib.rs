@@ -48,7 +48,8 @@ pub use application_contribution::{
     FrozenSessionProjection,
 };
 pub use application_provisioning::{
-    ApplicationSessionProvisionError, ApplicationSessionProvisioner,
+    ApplicationSessionProvisionError, ApplicationSessionProvisionFailureKind,
+    ApplicationSessionProvisioner,
 };
 pub use awaken_agent_contract::stable_fingerprint;
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
@@ -120,8 +121,9 @@ pub use session_repo::{
     SessionDisposition, SessionDispositionTransitionError, SessionExecutionState,
     SessionExecutionStateError, SessionExecutionTransitionError, SessionIdempotencyReceipt,
     SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
-    SessionRealizationLease, SessionRepositoryConflict, SessionRepositoryError,
-    SessionRepositoryRecoveryAction, SessionRevision, SessionTombstone, VisibleMcpServer,
+    SessionRealizationLease, SessionRecoveryQuarantine, SessionRecoveryScan,
+    SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
+    SessionRevision, SessionTombstone, VisibleMcpServer,
 };
 pub use skill_execution::{SkillBundleSource, SkillBundleSourceError, validate_skill_bundle};
 pub use terminal_cleanup::{

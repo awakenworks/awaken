@@ -1,4 +1,6 @@
 pub mod awaken_store_schema
+pub use awaken_store_schema::StoredU64
+pub use awaken_store_schema::StoredU64Error
 pub const awaken_store_schema::COMMIT_BUNDLE_ID: &str
 pub fn awaken_store_schema::commit_bundle() -> core::result::Result<awaken_scoped_migration::MigrationBundle, awaken_scoped_migration::MigrationError>
 pub const fn awaken_store_schema::migration_step(u32, u32) -> u32

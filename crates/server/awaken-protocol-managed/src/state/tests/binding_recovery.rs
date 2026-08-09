@@ -108,7 +108,7 @@ impl ManagedSessionRepository for ConflictInjectingRepo {
     async fn reconcilable_sessions(
         &self,
     ) -> Result<
-        Vec<awaken_session_contract::ScopedPersistedSession>,
+        awaken_session_contract::SessionRecoveryScan,
         awaken_session_contract::SessionRepositoryError,
     > {
         self.inner.reconcilable_sessions().await
@@ -681,7 +681,13 @@ async fn resource_reclaimer_finishes_terminal_release_after_restart() {
         ),
         "D3: a successful retry converges the hidden cleanup row to a tombstone"
     );
-    assert!(repo.reconcilable_sessions().await.unwrap().is_empty());
+    assert!(
+        repo.reconcilable_sessions()
+            .await
+            .unwrap()
+            .sessions
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -847,7 +853,7 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
     failed.execution = SessionExecutionState::ActivationFailed;
     create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, failed).await;
     assert_eq!(
-        repo.reconcilable_sessions().await.unwrap().len(),
+        repo.reconcilable_sessions().await.unwrap().sessions.len(),
         1,
         "T1 indexed"
     );
@@ -855,7 +861,11 @@ async fn terminal_root_fences_mcp_recovery_before_runtime_effects() {
     let runtime = RehydrateFake::default();
     let runtime_effects = runtime.restored_runtimes.clone();
     let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
-    assert_eq!(restarted.reconcile_mcp_attachments().await, 0, "T1 skip");
+    assert_eq!(
+        restarted.reconcile_session_realizations().await,
+        0,
+        "T1 skip"
+    );
     assert!(
         runtime_effects.lock().unwrap().is_empty(),
         "T1 terminal root creates no MCP Runtime effect"
@@ -885,7 +895,7 @@ async fn startup_mcp_recovery_adopts_the_durable_environment_before_staging() {
     let order = runtime.order.clone();
     let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo.clone());
 
-    assert_eq!(restarted.reconcile_mcp_attachments().await, 1, "C1-C3");
+    assert_eq!(restarted.reconcile_session_realizations().await, 1, "C1-C3");
     assert_eq!(
         order.lock().unwrap().as_slice(),
         &["runtime", "environment", "mcp"],

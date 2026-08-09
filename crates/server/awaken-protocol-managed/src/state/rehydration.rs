@@ -278,7 +278,11 @@ mod tests {
         );
         let restarted = ManagedState::from_application(application);
 
-        assert_eq!(restarted.reconcile_mcp_attachments().await, 0, "R2-R6/E4");
+        assert_eq!(
+            restarted.reconcile_session_realizations().await,
+            0,
+            "R2-R6/E4"
+        );
         assert_eq!(
             restarted.reconcile_resource_activations().await,
             0,

@@ -11,7 +11,7 @@ authority = "store-schema"
 
 [dependencies]
 awaken-scoped-migration.workspace = true
-thiserror.workspace = true
+awaken-store-runtime.workspace = true
 
 # Dev-only: prove the portable bundle actually APPLIES on both real backends it
 # drives. The schema crate itself names no SQL driver; these harness deps (the two

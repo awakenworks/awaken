@@ -302,6 +302,7 @@ pub awaken_provisioning_contract::SandboxExecutionPolicyRef::version: awaken_pro
 pub struct awaken_provisioning_contract::SandboxExecutionPolicyVersion(pub u64)
 impl awaken_provisioning_contract::SandboxExecutionPolicyVersion
 pub const awaken_provisioning_contract::SandboxExecutionPolicyVersion::INITIAL: Self
+pub fn awaken_provisioning_contract::SandboxExecutionPolicyVersion::checked_next(self) -> core::result::Result<Self, awaken_provisioning_contract::SandboxExecutionPolicyError>
 pub struct awaken_provisioning_contract::SandboxHandle
 pub awaken_provisioning_contract::SandboxHandle::extra: core::option::Option<serde_json::value::Value>
 pub awaken_provisioning_contract::SandboxHandle::provider_kind: alloc::string::String

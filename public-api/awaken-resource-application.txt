@@ -5,7 +5,7 @@ pub struct awaken_resource_application::ApplicationArtifactPublisher
 impl awaken_resource_application::ApplicationArtifactPublisher
 pub fn awaken_resource_application::ApplicationArtifactPublisher::new(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> Self
 impl<C: core::marker::Send + core::marker::Sync + 'static> awaken_resource_contract::execution::ArtifactPublisher<C> for awaken_resource_application::ApplicationArtifactPublisher
-pub fn awaken_resource_application::ApplicationArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::FileRecord, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_resource_application::ApplicationArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::ArtifactPublicationReceipt, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_resource_application::ApplicationFileContentSource
 impl awaken_resource_application::ApplicationFileContentSource
 pub fn awaken_resource_application::ApplicationFileContentSource::new(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> Self

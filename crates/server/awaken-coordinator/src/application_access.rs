@@ -341,10 +341,10 @@ mod tests {
         async fn reconcilable_sessions(
             &self,
         ) -> Result<
-            Vec<awaken_session_contract::ScopedPersistedSession>,
+            awaken_session_contract::SessionRecoveryScan,
             awaken_session_contract::SessionRepositoryError,
         > {
-            Ok(Vec::new())
+            Ok(awaken_session_contract::SessionRecoveryScan::default())
         }
 
         async fn idempotency_receipt(

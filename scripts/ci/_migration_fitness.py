@@ -14,6 +14,20 @@ DDL = re.compile(
     r"ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|SEQUENCE|FUNCTION|TRIGGER|VIEW))\b",
     re.IGNORECASE,
 )
+SESSION_SCHEMA = "crates/stores/awaken-session-store/src/schema.rs"
+
+
+def _session_registry_violations(source: str) -> list[str]:
+    errors: list[str] = []
+    if "fn published(" not in source or "Migration::published_legacy(" not in source:
+        errors.append(
+            f"{SESSION_SCHEMA}: published Session migrations must use the immutable runtime registry"
+        )
+    if '22 => (' in source:
+        errors.append(
+            f"{SESSION_SCHEMA}: new V0022 quarantine migration must not masquerade as previously published"
+        )
+    return errors
 
 
 def _production_rust(source: str) -> str:
@@ -64,6 +78,11 @@ def check_all(repo_root: Path) -> list[str]:
     """
     errors: list[str] = []
     crates = repo_root / "crates"
+    session_schema = repo_root / SESSION_SCHEMA
+    if session_schema.exists():
+        errors.extend(
+            _session_registry_violations(session_schema.read_text(encoding="utf-8"))
+        )
 
     dialect_groups: dict[tuple[Path, str], dict[str, Path]] = {}
     for path in sorted(crates.rglob("*.sql")):
@@ -162,3 +181,7 @@ pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     assert postgres and sqlite
     assert postgres.group("identity") == sqlite.group("identity")  # M9
     assert not DIALECT_SQL.fullmatch("V0025__nonnegative_authority.mysql.sql")
+    registry = "fn published() { Migration::published_legacy(); }\nMigration::new(22);"
+    assert _session_registry_violations(registry) == []  # M10 immutable + append-only
+    assert _session_registry_violations("Migration::new(1);")  # M11 mutable history
+    assert _session_registry_violations(registry + "\n22 => (x)")  # M12 relabel new as old

@@ -686,22 +686,13 @@ impl ManagedState {
                     .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?,
             )
         };
-        let mut persisted = PersistedSession {
-            session_id: id.clone(),
-            revision: Default::default(),
-            baseline: awaken_session_contract::SessionBaselineState::Preparing(creation_intent),
-            title: req.title.clone(),
-            metadata: req.metadata.clone(),
-            tools: effective_tools.clone(),
-            activity_epoch: 0,
-            environment: Default::default(),
-            mcp: Default::default(),
-            resources: Default::default(),
-            realization: None,
-            execution: SessionExecutionState::Preparing,
-            disposition: Default::default(),
-            terminal_cleanup: Default::default(),
-        };
+        let mut persisted = PersistedSession::preparing(
+            id.clone(),
+            creation_intent,
+            req.title.clone(),
+            req.metadata.clone(),
+            effective_tools.clone(),
+        );
         // The activation intent and owner fence commit before Host/worker IO.
         persisted = self.create_session_root(&owner_scope, persisted).await?;
         if let Some(compiled) = compiled {
@@ -813,7 +804,6 @@ impl ManagedState {
                 session.agent.tools = project::resolved_tools(tools.as_deref().unwrap_or_default());
             }
         }
-        persisted.tools = project::session_tool_configuration(&session.agent.tools);
         // Persist the session's config (secret-free) so a restart or a peer process
         // rehydrates its real agent/model/title/metadata/MCP, not a placeholder.
         // The core session record is tenancy-agnostic (authz is an edge aspect) —

@@ -178,6 +178,40 @@ async fn existing_postgres_store_validates_without_applying_schema() {
     assert!(error.to_string().contains("checksum mismatch"));
 }
 
+#[tokio::test]
+async fn negative_config_generation_is_reported_as_corrupt_storage() {
+    // Cause/effect graph: C1 a durable generation is non-negative or negative;
+    // C2 the row is read through the config authority. E1 exact revision is
+    // returned for C1>=0; E2 C1<0 is a storage error, never a huge u64 revision.
+    //
+    // | Rule | generation | Effect |
+    // | G1 | non-negative | E1 exact revision |
+    // | G2 | negative | E2 fail closed |
+    let Some(pool) = schema_pool("t_config_negative_generation").await else {
+        return;
+    };
+    let store = PostgresConfigStore::with_pool(pool.clone())
+        .await
+        .expect("store");
+    let scope = ScopeId::from("ws_negative");
+    let config = agent_config();
+    store
+        .put_config_scoped(&scope, &config)
+        .await
+        .expect("G1 insert");
+    sqlx::query("UPDATE config_agent SET generation = -1 WHERE scope_id = $1 AND id = $2")
+        .bind(&scope.0)
+        .bind(&config.id)
+        .execute(&pool)
+        .await
+        .expect("inject historical corruption");
+    let error = store
+        .get_config_revision_scoped(&scope, &config.id)
+        .await
+        .expect_err("G2 negative generation fails closed");
+    assert!(error.to_string().contains("negative"), "G2/E2: {error}");
+}
+
 fn agent_config() -> AgentConfig {
     AgentConfig {
         id: "agent-1".to_string(),

@@ -396,13 +396,34 @@ mod acp_context_tests {
 }
 
 impl crate::SharedHost {
+    pub(crate) fn install_expected_environment_binding(
+        &self,
+        session_id: &str,
+        binding: Option<String>,
+    ) -> Result<(), crate::HostError> {
+        self.session_slots.update(session_id, |slot| {
+            if let (Some(existing), Some(asserted)) = (&slot.expected_environment_binding, &binding)
+                && existing != asserted
+            {
+                return Err(crate::HostError::internal(format!(
+                    "Session {session_id} is already bound to a different durable environment"
+                )));
+            }
+            slot.expected_environment_binding = binding;
+            Ok(())
+        })
+    }
+
     pub(crate) fn install_session_realization_lease(
         &self,
         session_id: &str,
         lease: awaken_session_contract::SessionRealizationLease,
     ) {
-        self.session_slots
-            .update(session_id, |slot| slot.realization_lease = Some(lease));
+        let changed = self.session_slots.update(session_id, |slot| {
+            slot.realization_lease = Some(lease);
+            slot.realization_changed.clone()
+        });
+        changed.notify_waiters();
     }
 
     /// Authorize an MCP effect admitted before a same-epoch lease extension.
@@ -620,6 +641,7 @@ impl crate::SharedHost {
                     | awaken_session_contract::McpAttachmentState::Failed
             )
         });
+        let expected_environment_binding = projection.environment.binding().map(str::to_owned);
         let baseline = decode_baseline_projection(&projection.baseline)?;
         let init = projection.session_init();
 
@@ -633,6 +655,10 @@ impl crate::SharedHost {
                     "thread {thread} is already bound to a different frozen Session baseline"
                 )));
             }
+            self.install_expected_environment_binding(
+                thread,
+                expected_environment_binding.clone(),
+            )?;
             // The baseline is immutable, but a remote Resource verification is
             // authorized by the current dispatch claim. Re-stage the exact
             // manifest on every claimed replay so Repository checks never retain
@@ -672,6 +698,7 @@ impl crate::SharedHost {
         }
 
         validate_baseline_projection(&baseline, &built_in_mounts)?;
+        self.install_expected_environment_binding(thread, expected_environment_binding)?;
         self.project_session_init(thread, &init)?;
         if !synchronize_resources
             && projection.resources != awaken_session_contract::ResolvedSessionResources::default()

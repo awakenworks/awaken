@@ -1270,7 +1270,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
     )
     .await;
 
-    assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R1");
+    assert_eq!(h.managed.reconcile_session_realizations().await, 1, "R1");
     let mut active = h.repo.get(id).await.unwrap();
     assert_eq!(
         active.mcp.attachments[0].state,
@@ -1288,7 +1288,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         "test:recovery-expired-lease",
     )
     .await;
-    assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R2");
+    assert_eq!(h.managed.reconcile_session_realizations().await, 1, "R2");
     let active = h.repo.get(id).await.unwrap();
     assert!(
         active.realization.as_ref().unwrap().epoch > first_epoch,
@@ -1315,7 +1315,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
     )
     .await;
     let staged_before = h.state.lock().unwrap().staged.len();
-    assert_eq!(h.managed.reconcile_mcp_attachments().await, 1, "R3");
+    assert_eq!(h.managed.reconcile_session_realizations().await, 1, "R3");
     let removed = h.repo.get(id).await.unwrap();
     assert_eq!(
         removed.mcp.attachments[0].state,
@@ -1332,7 +1332,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
             state.drained.len(),
         )
     };
-    assert_eq!(h.managed.reconcile_mcp_attachments().await, 0, "R4");
+    assert_eq!(h.managed.reconcile_session_realizations().await, 0, "R4");
     {
         let state = h.state.lock().unwrap();
         assert_eq!(
@@ -1372,7 +1372,7 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
         .unwrap();
     replace_session_fixture(h.repo.as_ref(), "default", retry, "test:recovery-retry").await;
     h.state.lock().unwrap().mode = HotStageMode::FailNext;
-    assert_eq!(h.managed.reconcile_mcp_attachments().await, 0, "R5");
+    assert_eq!(h.managed.reconcile_session_realizations().await, 0, "R5");
     let failed_retry = h.repo.get(retry_id).await.unwrap();
     assert_eq!(
         failed_retry.mcp.attachments[0].state,

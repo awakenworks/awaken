@@ -234,9 +234,9 @@ pub enum Error {
     Dispatch(#[from] dispatch::DispatchError),
     #[error(transparent)]
     Execution(#[from] awaken_runtime_contract::execution::Error),
-    /// Session realization already committed its absorbing application failure;
-    /// the still-current Run claim must now commit/settle the corresponding Run
-    /// failure instead of pretending the Worker crashed.
+    /// Session resolution identified an absorbing application failure; the
+    /// still-current Run claim must commit/settle the corresponding Run failure
+    /// instead of pretending the Worker crashed.
     #[error(transparent)]
     TerminalResolution(awaken_runtime_contract::execution::Error),
 }

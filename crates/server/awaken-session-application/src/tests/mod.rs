@@ -16,8 +16,11 @@ struct NoopRuntime;
 
 #[derive(Default)]
 struct RecordingCleanupRuntime {
+    fail_quiesce_once: AtomicBool,
+    fail_before_effect_once: AtomicBool,
     fail_once: AtomicBool,
     intents: Mutex<Vec<awaken_session_contract::SessionTerminalCleanupIntent>>,
+    effective_ids: Mutex<BTreeSet<String>>,
     block_quiesce: AtomicBool,
     quiesce_entered: tokio::sync::Notify,
     quiesce_release: tokio::sync::Notify,
@@ -210,6 +213,9 @@ impl SessionRuntime for RecordingCleanupRuntime {
         &self,
         _thread: &str,
     ) -> Result<awaken_session_contract::DelegatedRunSnapshot, RunError> {
+        if self.fail_quiesce_once.swap(false, Ordering::SeqCst) {
+            return Err(RunError::internal("injected pre-quiescence crash window"));
+        }
         if self.block_quiesce.load(Ordering::SeqCst) {
             self.quiesce_entered.notify_one();
             self.quiesce_release.notified().await;
@@ -221,7 +227,14 @@ impl SessionRuntime for RecordingCleanupRuntime {
         &self,
         intent: awaken_session_contract::SessionTerminalCleanupIntent,
     ) -> Result<awaken_session_contract::SessionTerminalCleanupReceipt, RunError> {
+        if self.fail_before_effect_once.swap(false, Ordering::SeqCst) {
+            return Err(RunError::internal("injected pre-effect crash window"));
+        }
         self.intents.lock().unwrap().push(intent.clone());
+        self.effective_ids
+            .lock()
+            .unwrap()
+            .insert(intent.effect_id.clone());
         if self.fail_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::internal("injected cleanup crash window"));
         }
@@ -278,6 +291,124 @@ impl SessionRuntime for RecordingCleanupRuntime {
 
     fn model(&self) -> String {
         "unused".into()
+    }
+}
+
+struct FaultingSessionRepository {
+    inner: Arc<dyn ManagedSessionRepository>,
+    fail_operation_once: Mutex<Option<String>>,
+}
+
+impl FaultingSessionRepository {
+    fn new(inner: Arc<dyn ManagedSessionRepository>) -> Self {
+        Self {
+            inner,
+            fail_operation_once: Mutex::new(None),
+        }
+    }
+
+    fn fail_once(&self, operation: &str) {
+        *self.fail_operation_once.lock().unwrap() = Some(operation.to_string());
+    }
+}
+
+#[async_trait::async_trait]
+impl ManagedSessionRepository for FaultingSessionRepository {
+    async fn create(
+        &self,
+        owner_scope: &str,
+        session: PersistedSession,
+        idempotency: awaken_session_contract::IdempotencyRecord,
+        lifecycle_facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
+    ) -> Result<
+        awaken_session_contract::SessionRevision,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner
+            .create(owner_scope, session, idempotency, lifecycle_facts)
+            .await
+    }
+
+    async fn commit_mutation(
+        &self,
+        owner_scope: &str,
+        mutation: awaken_session_contract::SessionMutation,
+    ) -> Result<
+        awaken_session_contract::SessionMutationResult,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        let should_fail = self
+            .fail_operation_once
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|operation| mutation.idempotency.key.contains(operation));
+        if should_fail {
+            self.fail_operation_once.lock().unwrap().take();
+            return Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "injected root-CAS outage".into(),
+                ),
+            );
+        }
+        self.inner.commit_mutation(owner_scope, mutation).await
+    }
+
+    async fn append_lifecycle(
+        &self,
+        fact: awaken_session_contract::ManagedLifecycleFact,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+        self.inner.append_lifecycle(fact).await
+    }
+
+    async fn pending_lifecycle(
+        &self,
+    ) -> Result<
+        Vec<awaken_session_contract::ManagedLifecycleFact>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner.pending_lifecycle().await
+    }
+
+    async fn complete_lifecycle(
+        &self,
+        fact_id: &str,
+    ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+        self.inner.complete_lifecycle(fact_id).await
+    }
+
+    async fn get(
+        &self,
+        session_id: &str,
+    ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
+        self.inner.get(session_id).await
+    }
+
+    async fn reconcilable_sessions(
+        &self,
+    ) -> Result<
+        awaken_session_contract::SessionRecoveryScan,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner.reconcilable_sessions().await
+    }
+
+    async fn idempotency_receipt(
+        &self,
+        session_id: &str,
+        key: &str,
+    ) -> Result<
+        Option<awaken_session_contract::SessionIdempotencyReceipt>,
+        awaken_session_contract::SessionRepositoryError,
+    > {
+        self.inner.idempotency_receipt(session_id, key).await
+    }
+
+    async fn owner(
+        &self,
+        session_id: &str,
+    ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
+        self.inner.owner(session_id).await
     }
 }
 

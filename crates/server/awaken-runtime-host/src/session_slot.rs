@@ -79,6 +79,10 @@ pub(crate) struct SessionRuntimeSlot {
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
     pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
+    /// Durable binding that recovery must adopt. If it is present while no
+    /// environment is resident, cold context creation fails closed instead of
+    /// manufacturing an unrelated replacement.
+    pub expected_environment_binding: Option<String>,
     pub deferred_executor: Option<Arc<dyn awaken_runtime_contract::tool::ToolExecutor>>,
     /// Current durable dispatch claim used by claim-fenced Resource effects.
     /// This process-local projection is replaced at every claimed resolve; the
@@ -111,6 +115,10 @@ pub(crate) struct SessionRuntimeSlot {
     /// Current Control-issued projection authority. It is a live cache used to
     /// request renewal; durable ownership remains in the Session aggregate.
     pub realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
+    /// Wakes a claim resolver waiting for the Session application's initial
+    /// restart reassignment. The lease above remains the only projected fact;
+    /// this notification carries no authority or parallel state.
+    pub realization_changed: Arc<tokio::sync::Notify>,
     /// Whether the last Control-frozen projection contains a nonterminal MCP
     /// attachment. This supports lease supervision when effects live behind an
     /// injected realizer and therefore are not stored in `mcp` locally.

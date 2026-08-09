@@ -1,6 +1,7 @@
 //! Postgres [`MemoryRepository`] over the crate's `memory_store` migration scope — the
 //! multi-node sibling of the SQLite backend over the same portable bundle.
 
+use awaken_store_runtime::StoredU64;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
@@ -48,6 +49,19 @@ use crate::{
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
     MemErr::Storage(err.to_string())
+}
+
+fn domain_version(value: i64) -> Result<u64, MemErr> {
+    StoredU64::try_from(value)
+        .map(StoredU64::domain_value)
+        .map_err(mem_err)
+}
+
+fn next_domain_version(value: i64) -> Result<u64, MemErr> {
+    StoredU64::try_from(value)
+        .and_then(|value| value.checked_add(1))
+        .map(StoredU64::domain_value)
+        .map_err(mem_err)
 }
 
 /// A Postgres-backed [`MemoryRepository`] (path-addressed, CAS). Compare-and-swap and rename
@@ -110,7 +124,7 @@ fn to_memory(
         id,
         path,
         content_sha256: sha,
-        version: version as u64,
+        version: domain_version(version)?,
         created_unix_nanos: created as u128,
         updated_unix_nanos: updated as u128,
     })
@@ -249,18 +263,29 @@ impl MemoryRepository for PostgresMemoryRepository {
         .fetch_all(&self.pool)
         .await
         .map_err(mem_err)?;
-        Ok(rows
-            .into_iter()
-            .map(|r| MemoryEntry {
-                id: r.get("id"),
-                path: r.get("path"),
-                content_sha256: r.get("sha"),
-                content_size: r.get::<i32, _>("n") as u64,
-                version: r.get::<i64, _>("version") as u64,
-                updated_unix_nanos: r.get::<i64, _>("updated") as u128,
+        rows.into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>("id"),
+                    r.get::<String, _>("path"),
+                    r.get::<String, _>("sha"),
+                    r.get::<i32, _>("n"),
+                    r.get::<i64, _>("version"),
+                    r.get::<i64, _>("updated"),
+                )
             })
-            .filter(|e| under_prefix(&e.path, prefix))
-            .collect())
+            .filter(|(_, path, ..)| under_prefix(path, prefix))
+            .map(|(id, path, sha, size, version, updated)| {
+                Ok(MemoryEntry {
+                    id,
+                    path,
+                    content_sha256: sha,
+                    content_size: u64::try_from(size).map_err(mem_err)?,
+                    version: domain_version(version)?,
+                    updated_unix_nanos: updated as u128,
+                })
+            })
+            .collect()
     }
 
     async fn get_by_path(&self, store: &str, path: &str) -> Result<Option<Memory>, MemErr> {
@@ -522,7 +547,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             id: id.to_string(),
             path: requested_path.to_string(),
             content_sha256: new_sha,
-            version: (version + 1) as u64,
+            version: next_domain_version(version)?,
             created_unix_nanos: created as u128,
             updated_unix_nanos: now as u128,
         })
@@ -609,7 +634,7 @@ impl MemoryRepository for PostgresMemoryRepository {
             id,
             path: to.to_string(),
             content_sha256: sha,
-            version: (version + 1) as u64,
+            version: next_domain_version(version)?,
             created_unix_nanos: created as u128,
             updated_unix_nanos: now as u128,
         })

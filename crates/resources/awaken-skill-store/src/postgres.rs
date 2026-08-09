@@ -344,7 +344,7 @@ impl SkillStore for PgSkillStore {
         .execute(&self.pool)
         .await
         .map_err(storage)?;
-        Ok(aggregate.versions.len() as u64)
+        u64::try_from(aggregate.versions.len()).map_err(storage)
     }
 }
 

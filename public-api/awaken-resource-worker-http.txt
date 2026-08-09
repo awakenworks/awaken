@@ -2,6 +2,7 @@ pub mod awaken_resource_worker_http
 pub struct awaken_resource_worker_http::ArtifactPublicationRequest
 pub awaken_resource_worker_http::ArtifactPublicationRequest::claim: awaken_run_ingress_contract::dispatch::RunClaim
 pub awaken_resource_worker_http::ArtifactPublicationRequest::content_id: alloc::string::String
+pub awaken_resource_worker_http::ArtifactPublicationRequest::effect_id: alloc::string::String
 pub awaken_resource_worker_http::ArtifactPublicationRequest::identity: core::option::Option<awaken_worker_contract::WorkerIdentity>
 pub awaken_resource_worker_http::ArtifactPublicationRequest::logical_path: alloc::string::String
 pub awaken_resource_worker_http::ArtifactPublicationRequest::mime_type: alloc::string::String
@@ -11,7 +12,7 @@ pub struct awaken_resource_worker_http::HttpArtifactPublisher
 impl awaken_resource_worker_http::HttpArtifactPublisher
 pub fn awaken_resource_worker_http::HttpArtifactPublisher::new(awaken_worker_transport_security::WorkerUpstream) -> Self
 impl awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim> for awaken_resource_worker_http::HttpArtifactPublisher
-pub fn awaken_resource_worker_http::HttpArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::FileRecord, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_resource_worker_http::HttpArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::ArtifactPublicationReceipt, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_resource_worker_http::HttpFileContentSource
 impl awaken_resource_worker_http::HttpFileContentSource
 pub fn awaken_resource_worker_http::HttpFileContentSource::new(awaken_worker_transport_security::WorkerUpstream) -> Self

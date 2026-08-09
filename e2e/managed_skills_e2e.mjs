@@ -25,10 +25,17 @@ const listEvents = async (sessionId) => {
 };
 
 async function main() {
-  const upstream = await startUpstream('skills');
-  const { server } = spawnServer('skills', PORT, realServerEnv('skills', upstream, { mode: 'skills' }));
-  await waitForPort(PORT);
+  let upstream;
+  let server;
   try {
+    // Startup/cleanup decision table: C1 upstream starts, C2 product child
+    // starts and becomes ready. S1 C1+C2 => run and close both; S2 C1+!C2 =>
+    // close upstream even though no request was served; S3 !C1 => no owned
+    // handle exists. This keeps a readiness failure terminal instead of leaving
+    // the Node process alive on the upstream listener.
+    upstream = await startUpstream('skills');
+    ({ server } = spawnServer('skills', PORT, realServerEnv('skills', upstream, { mode: 'skills' })));
+    await waitForPort(PORT);
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'please discover and use a skill' }] }],
@@ -54,8 +61,8 @@ async function main() {
 
     console.log('E2E PASS: skill discovery → activation → use via TS SDK (ADR-0036).');
   } finally {
-    await stopServer(server);
-    upstream.close();
+    if (server) await stopServer(server);
+    upstream?.close();
   }
 }
 

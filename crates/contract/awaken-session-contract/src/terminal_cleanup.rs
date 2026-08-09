@@ -348,6 +348,7 @@ fn cleanup_effect_id(session_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn intent_and_receipt_are_stable_across_recovery() {
@@ -437,5 +438,211 @@ mod tests {
             ),
             Err(SessionTerminalCleanupError::FrozenTargetsMismatch)
         );
+    }
+
+    #[test]
+    fn cleanup_identity_and_exact_receipt_set_follow_the_decision_table() {
+        // Cause/effect graph: C1 the asserted Session matches the fenced root;
+        // C2 evidence includes the root exactly once; C3 every frozen child is
+        // present exactly once. Effects are E1 freeze/complete, or E2 a precise
+        // fail-closed error without changing durable Requested state.
+        //
+        // | Rule | Session | root receipt | duplicate | child set | Effect |
+        // | T05 | foreign | n/a | no | exact | IntentMismatch |
+        // | T06 | exact | missing | no | child only | MissingRootReceipt |
+        // | T07 | exact | present | yes | exact | DuplicateThread |
+        // | T04 | exact | present | no | expanded after freeze | FrozenTargetsMismatch |
+        let mut foreign = SessionTerminalCleanupState::default();
+        foreign.request("session-a");
+        assert_eq!(
+            foreign.freeze_targets("session-b", [], 1),
+            Err(SessionTerminalCleanupError::IntentMismatch),
+            "T05"
+        );
+        assert!(foreign.is_fenced(), "T05 leaves Session-A unchanged");
+
+        let mut state = SessionTerminalCleanupState::default();
+        state.request("session-a");
+        state
+            .freeze_targets("session-a", ["child-a".to_string()], 7)
+            .unwrap();
+        let root = state.intent_for("session-a", "session-a").unwrap();
+        let child = state.intent_for("session-a", "child-a").unwrap();
+        let root_receipt = SessionTerminalCleanupReceipt::new(&root, Vec::new(), true, true, true);
+        let child_receipt =
+            SessionTerminalCleanupReceipt::new(&child, Vec::new(), true, true, true);
+        assert_eq!(
+            state.complete("session-a", std::slice::from_ref(&child_receipt)),
+            Err(SessionTerminalCleanupError::MissingRootReceipt),
+            "T06"
+        );
+        assert!(state.is_requested(), "T06");
+        assert_eq!(
+            state.complete(
+                "session-a",
+                &[root_receipt.clone(), root_receipt, child_receipt],
+            ),
+            Err(SessionTerminalCleanupError::DuplicateThread(
+                "session-a".to_string()
+            )),
+            "T07"
+        );
+        assert!(state.is_requested(), "T07");
+    }
+
+    #[test]
+    fn receipt_settlement_order_and_watermark_follow_the_decision_table() {
+        // Cause/effect graph: C1 Repository/Skill/Environment evidence is all
+        // true; C2 receipt arrival order varies; C3 the frozen watermark is
+        // replayed exactly. Effects: E1 any false evidence is rejected; E2 order
+        // is canonical; E3 a different watermark cannot rewrite frozen truth.
+        //
+        // | Rule | settlement | order | watermark | Effect |
+        // | T08a-c | one false | any | exact | ReceiptMismatch |
+        // | T09 | all true | root/child or child/root | exact | same fingerprint |
+        // | T10 | all true | any | changed | FrozenTargetsMismatch |
+        for flags in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            let mut state = SessionTerminalCleanupState::default();
+            state.request("session-flags");
+            state.freeze_targets("session-flags", [], 3).unwrap();
+            let intent = state.intent_for("session-flags", "session-flags").unwrap();
+            let receipt =
+                SessionTerminalCleanupReceipt::new(&intent, Vec::new(), flags.0, flags.1, flags.2);
+            assert_eq!(
+                state.complete("session-flags", &[receipt]),
+                Err(SessionTerminalCleanupError::ReceiptMismatch),
+                "T08 {flags:?}"
+            );
+            assert!(state.is_requested(), "T08 {flags:?}");
+        }
+
+        fn completed_with_order(reverse: bool) -> SessionTerminalCleanupState {
+            let mut state = SessionTerminalCleanupState::default();
+            state.request("session-order");
+            state
+                .freeze_targets("session-order", ["child-order".to_string()], 9)
+                .unwrap();
+            let root = state.intent_for("session-order", "session-order").unwrap();
+            let child = state.intent_for("session-order", "child-order").unwrap();
+            let mut receipts = vec![
+                SessionTerminalCleanupReceipt::new(&root, Vec::new(), true, true, true),
+                SessionTerminalCleanupReceipt::new(&child, Vec::new(), true, true, true),
+            ];
+            if reverse {
+                receipts.reverse();
+            }
+            state.complete("session-order", &receipts).unwrap();
+            state
+        }
+        let forward = completed_with_order(false);
+        let reverse = completed_with_order(true);
+        assert_eq!(forward, reverse, "T09 canonical receipt order");
+
+        let mut watermark = SessionTerminalCleanupState::default();
+        watermark.request("session-watermark");
+        watermark
+            .freeze_targets("session-watermark", ["child".to_string()], 10)
+            .unwrap();
+        assert_eq!(
+            watermark.freeze_targets("session-watermark", ["child".to_string()], 11),
+            Err(SessionTerminalCleanupError::FrozenTargetsMismatch),
+            "T10"
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn random_cleanup_command_sequences_refine_the_monotonic_state_model(
+            actions in proptest::collection::vec(0_u8..6, 0..80),
+            watermark in any::<u64>(),
+        ) {
+            /* Model-based cause/effect design. Each generated action is one of:
+             * C0 request, C1 exact freeze, C2 exact receipt settlement, C3
+             * foreign freeze, C4 request replay, C5 mismatched freeze replay.
+             * Effects/invariants: E1 state rank never decreases; E2 Completed is
+             * immutable; E3 an intent exists only in Requested; E4 foreign or
+             * mismatched commands never rewrite authority. Random sequences
+             * cover order/replay combinations after the deterministic decision
+             * table owns each individual oracle. */
+            let mut state = SessionTerminalCleanupState::default();
+            for action in actions {
+                let before = state.clone();
+                let before_rank = cleanup_rank(&before);
+                match action {
+                    0 | 4 => {
+                        state.request("model-session");
+                    }
+                    1 => {
+                        let _ = state.freeze_targets(
+                            "model-session",
+                            ["model-child".to_string()],
+                            watermark,
+                        );
+                    }
+                    2 => {
+                        if state.is_requested() {
+                            let receipts = state
+                                .thread_ids()
+                                .unwrap()
+                                .iter()
+                                .map(|thread_id| {
+                                    let intent = state
+                                        .intent_for("model-session", thread_id)
+                                        .unwrap();
+                                    SessionTerminalCleanupReceipt::new(
+                                        &intent,
+                                        Vec::new(),
+                                        true,
+                                        true,
+                                        true,
+                                    )
+                                })
+                                .collect::<Vec<_>>();
+                            state.complete("model-session", &receipts).unwrap();
+                        } else if state.is_completed() {
+                            prop_assert_eq!(state.complete("model-session", &[]), Ok(false));
+                        } else {
+                            prop_assert_eq!(
+                                state.complete("model-session", &[]),
+                                Err(SessionTerminalCleanupError::NotRequested),
+                            );
+                        }
+                    }
+                    3 => {
+                        let _ = state.freeze_targets("foreign-session", [], watermark);
+                    }
+                    5 => {
+                        let _ = state.freeze_targets(
+                            "model-session",
+                            ["late-child".to_string()],
+                            watermark.wrapping_add(1),
+                        );
+                    }
+                    _ => unreachable!(),
+                }
+                prop_assert!(cleanup_rank(&state) >= before_rank, "E1");
+                if before.is_completed() {
+                    prop_assert_eq!(&state, &before, "E2");
+                }
+                prop_assert_eq!(
+                    state.intent_for("model-session", "model-session").is_some(),
+                    state.is_requested(),
+                    "E3",
+                );
+            }
+        }
+    }
+
+    fn cleanup_rank(state: &SessionTerminalCleanupState) -> u8 {
+        match state {
+            SessionTerminalCleanupState::NotRequested => 0,
+            SessionTerminalCleanupState::Fenced { .. } => 1,
+            SessionTerminalCleanupState::Requested { .. } => 2,
+            SessionTerminalCleanupState::Completed { .. } => 3,
+        }
     }
 }

@@ -105,6 +105,7 @@ use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
 pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox_tier};
+use crate::skill_catalog::skill_store_run_error;
 pub use crate::skills::SkillForkPlacement;
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the composition root builds a config host from.
@@ -634,7 +635,7 @@ impl ManagedHost {
                     .skills
                     .load_pinned(workspace, bindings, claim)
                     .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                    .map_err(skill_store_run_error)?;
                 self.host
                     .session_slots
                     .update(thread, |slot| slot.skills = Some(versions));
@@ -646,7 +647,7 @@ impl ManagedHost {
                     .skills
                     .reload_cache_in(workspace)
                     .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                    .map_err(skill_store_run_error)?;
                 self.host
                     .session_slots
                     .update(thread, |slot| slot.skills = None);
@@ -859,7 +860,7 @@ impl ManagedHost {
                     .skills
                     .load_pinned(workspace_id, bindings, claim)
                     .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?,
+                    .map_err(skill_store_run_error)?,
             ),
             None => None,
         };
@@ -967,6 +968,16 @@ impl SessionRuntime for ManagedHost {
     ) {
         self.host
             .install_session_realization_lease(session_id, lease);
+    }
+
+    fn install_expected_environment_binding(
+        &self,
+        session_id: &str,
+        binding: Option<String>,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        self.host
+            .install_expected_environment_binding(session_id, binding)
+            .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))
     }
 
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
@@ -1303,7 +1314,7 @@ impl SessionRuntime for ManagedHost {
             .skills
             .resolve(workspace_id, skills)
             .await
-            .map_err(|error| RunError::bad_request(error.to_string()))
+            .map_err(skill_store_run_error)
     }
 
     async fn apply_session_inputs(

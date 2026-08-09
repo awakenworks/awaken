@@ -22,6 +22,8 @@ pub struct WorkDispatchFailure {
 pub struct WorkDispatchReconciliation {
     pub settled: usize,
     pub failures: Vec<WorkDispatchFailure>,
+    pub quarantined: Vec<awaken_session_contract::SessionRecoveryQuarantine>,
+    pub pending: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -419,7 +421,9 @@ async fn reconcile_work_dispatches(
             return report;
         }
     };
-    for scoped in sessions {
+    report.pending = sessions.sessions.len();
+    report.quarantined.clone_from(&sessions.quarantined);
+    for scoped in sessions.sessions {
         let session = scoped.session;
         match dispatch_session_work(environments, &session).await {
             Ok(true) => report.settled += 1,
@@ -485,20 +489,18 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or_default();
-            let realization_is_current = match (
-                session.realization.as_ref(),
-                receipt.realization.as_ref(),
-            ) {
-                (Some(current), Some(asserted)) => {
-                    awaken_session_contract::realization_lease_authorizes(
-                        current,
-                        asserted,
-                        now_unix_ms,
-                    )
-                }
-                (None, None) => true,
-                _ => false,
-            };
+            let realization_is_current =
+                match (session.realization.as_ref(), receipt.realization.as_ref()) {
+                    (Some(current), Some(asserted)) => {
+                        awaken_session_contract::realization_lease_authorizes(
+                            current,
+                            asserted,
+                            now_unix_ms,
+                        )
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
             if !realization_is_current {
                 return Err(RunError::classified(
                     "session_realization_stale",

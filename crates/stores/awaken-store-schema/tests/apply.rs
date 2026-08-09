@@ -115,48 +115,133 @@ fn column_types_sqlite(
     rows.map(|r| r.expect("pragma row")).collect()
 }
 
-// Forward migration: applying only v1 first, then the full bundle, applies exactly
-// the v2..=9 delta (the ledger skips the already-applied v1). This proves a store
-// opened at an older schema version migrates forward to the current one, applying
-// only the new specs — the real upgrade path.
+// Historical-upgrade cause/effect graph: C1 the ledger is empty or ends at any
+// published prefix; C2 the same full declaration is started once or repeatedly.
+// Effects: E1 only the missing suffix applies in order, E2 every table reaches the
+// current shape, and E3 a repeated start is a no-op. Every prefix is a distinct
+// compatibility state; checking only v1 would leave intermediate releases blind.
+//
+// | Rule | historical prefix | startup | Effect |
+// | H1 | 0 | full | E1 versions 1..=tip + E2 |
+// | H2 | 1..tip-1 | full | E1 missing suffix + E2 |
+// | H3 | tip | full | E3 no-op + E2 |
+// | H4 | any after E2 | full again | E3 no-op |
 #[test]
-fn bundle_migrates_forward_v1_to_full() {
-    let conn = Connection::open_in_memory().expect("open sqlite");
+fn every_sqlite_historical_prefix_migrates_to_full() {
     let full = commit_bundle().expect("bundle builds");
-
-    // A partial bundle carrying only migration v1 (cloned from the shared bundle,
-    // so it is byte-identical — same version, description, and checksum).
-    let v1_only = awaken_scoped_migration::MigrationBundle::new(
-        COMMIT_BUNDLE_ID,
-        vec![full.migrations()[0].clone()],
-    )
-    .expect("v1-only bundle");
-
-    let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
-    let first = runner.run_bundle(&conn, &v1_only).expect("apply v1");
-    assert_eq!(first.len(), 1, "only v1 applied on the first pass");
-    assert_eq!(first[0].version, 1);
-
-    // Re-run with the full bundle: v1 is already recorded, so only v2..=9 apply.
-    let delta = runner.run_bundle(&conn, &full).expect("apply forward");
-    let versions: Vec<i64> = delta.iter().map(|m| m.version).collect();
-    assert_eq!(
-        versions,
-        vec![2, 3, 4, 5, 6, 7, 8, 9],
-        "forward migration applied exactly the v2..=9 delta"
-    );
-
-    // All eight tables now exist.
-    for table in TABLES {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-                [table],
-                |row| row.get(0),
+    for prefix_len in 0..=full.migrations().len() {
+        let conn = Connection::open_in_memory().expect("open sqlite");
+        let runner = SqliteMigrationRunner::with_prefix(NS).expect("runner");
+        if prefix_len > 0 {
+            let prefix = awaken_scoped_migration::MigrationBundle::new(
+                COMMIT_BUNDLE_ID,
+                full.migrations()[..prefix_len].to_vec(),
             )
-            .expect("query sqlite_master");
-        assert_eq!(count, 1, "table {table} exists after forward migration");
+            .expect("historical prefix");
+            runner
+                .run_bundle(&conn, &prefix)
+                .expect("apply historical prefix");
+        }
+        let delta = runner.run_bundle(&conn, &full).expect("apply forward");
+        let versions: Vec<i64> = delta.iter().map(|migration| migration.version).collect();
+        let expected =
+            ((prefix_len + 1) as i64..=full.migrations().len() as i64).collect::<Vec<_>>();
+        assert_eq!(versions, expected, "H1/H2/H3 prefix={prefix_len}");
+        assert!(
+            runner
+                .run_bundle(&conn, &full)
+                .expect("repeat full")
+                .is_empty(),
+            "H4 prefix={prefix_len}"
+        );
+        for table in TABLES {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .expect("query sqlite_master");
+            assert_eq!(count, 1, "H1/H2/H3 {table} prefix={prefix_len}");
+        }
     }
+}
+
+#[tokio::test]
+async fn every_postgres_historical_prefix_migrates_to_full() {
+    use sqlx::Executor;
+    use sqlx::postgres::PgPool;
+
+    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+    });
+    let admin = match PgPool::connect(&url).await {
+        Ok(pool) => pool,
+        Err(error) => {
+            println!("[skip] no Postgres reachable: {error}");
+            return;
+        }
+    };
+    let full = commit_bundle().expect("bundle builds");
+    for prefix_len in 0..=full.migrations().len() {
+        let schema = format!("t_schema_history_{prefix_len}");
+        admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await
+            .expect("drop historical schema");
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .expect("create historical schema");
+        let selected_schema = schema.clone();
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .after_connect(move |connection, _| {
+                let selected_schema = selected_schema.clone();
+                Box::pin(async move {
+                    connection
+                        .execute(format!("SET search_path = {selected_schema}").as_str())
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("historical schema pool");
+        let runner = awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(
+            pool.clone(),
+            NS,
+        )
+        .expect("runner");
+        if prefix_len > 0 {
+            let prefix = awaken_scoped_migration::MigrationBundle::new(
+                COMMIT_BUNDLE_ID,
+                full.migrations()[..prefix_len].to_vec(),
+            )
+            .expect("historical prefix");
+            runner
+                .run_bundle(&prefix)
+                .await
+                .expect("apply historical prefix");
+        }
+        let delta = runner.run_bundle(&full).await.expect("apply forward");
+        let versions = delta
+            .iter()
+            .map(|migration| migration.version)
+            .collect::<Vec<_>>();
+        let expected =
+            ((prefix_len + 1) as i64..=full.migrations().len() as i64).collect::<Vec<_>>();
+        assert_eq!(versions, expected, "H1/H2/H3 prefix={prefix_len}");
+        assert!(
+            runner
+                .run_bundle(&full)
+                .await
+                .expect("repeat full")
+                .is_empty(),
+            "H4 prefix={prefix_len}"
+        );
+        pool.close().await;
+    }
+    admin.close().await;
 }
 
 // The bundle applies against a real Postgres (skip-on-unreachable), rendering the

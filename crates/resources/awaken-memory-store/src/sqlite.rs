@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use awaken_store_runtime::StoredU64;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::schema::memory_store_bundle;
@@ -43,6 +44,19 @@ use crate::{
 
 fn mem_err(err: impl std::fmt::Display) -> MemErr {
     MemErr::Storage(err.to_string())
+}
+
+fn domain_version(value: i64) -> Result<u64, MemErr> {
+    StoredU64::try_from(value)
+        .map(StoredU64::domain_value)
+        .map_err(mem_err)
+}
+
+fn next_domain_version(value: i64) -> Result<u64, MemErr> {
+    StoredU64::try_from(value)
+        .and_then(|value| value.checked_add(1))
+        .map(StoredU64::domain_value)
+        .map_err(mem_err)
 }
 
 /// Like [`with_conn`] but the closure carries [`MemErr`] (so it can raise
@@ -118,7 +132,7 @@ fn row_memory(
         id,
         path,
         content_sha256: sha,
-        version: version as u64,
+        version: domain_version(version)?,
         created_unix_nanos: created as u128,
         updated_unix_nanos: updated as u128,
     })
@@ -294,18 +308,19 @@ impl MemoryRepository for SqliteMemoryRepository {
                 .map_err(mem_err)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(mem_err)?;
-            Ok(rows
-                .into_iter()
+            rows.into_iter()
                 .filter(|(_, path, ..)| under_prefix(path, &prefix))
-                .map(|(id, path, sha, size, version, updated)| MemoryEntry {
-                    id,
-                    path,
-                    content_sha256: sha,
-                    content_size: size as u64,
-                    version: version as u64,
-                    updated_unix_nanos: updated as u128,
+                .map(|(id, path, sha, size, version, updated)| {
+                    Ok(MemoryEntry {
+                        id,
+                        path,
+                        content_sha256: sha,
+                        content_size: u64::try_from(size).map_err(mem_err)?,
+                        version: domain_version(version)?,
+                        updated_unix_nanos: updated as u128,
+                    })
                 })
-                .collect())
+                .collect::<Result<Vec<_>, MemErr>>()
         })
         .await
     }
@@ -526,7 +541,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 id,
                 path: requested_path,
                 content_sha256: new_sha,
-                version: (version + 1) as u64,
+                version: next_domain_version(version)?,
                 created_unix_nanos: created as u128,
                 updated_unix_nanos: now as u128,
             })
@@ -619,7 +634,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                 id,
                 path: to,
                 content_sha256: sha,
-                version: (version + 1) as u64,
+                version: next_domain_version(version)?,
                 created_unix_nanos: created as u128,
                 updated_unix_nanos: now as u128,
             })

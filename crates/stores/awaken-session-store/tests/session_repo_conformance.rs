@@ -345,7 +345,7 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
     pending = create_session(r, "ws_a", pending, Vec::new()).await;
 
     assert_eq!(
-        r.reconcilable_sessions().await.unwrap(),
+        r.reconcilable_sessions().await.unwrap().sessions,
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending.clone(),
@@ -356,13 +356,13 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
     pending.resources.commit().unwrap();
     pending = replace_session(r, "ws_a", pending, "test:resource-active", Vec::new()).await;
     let indexed = r.reconcilable_sessions().await.unwrap();
-    assert_eq!(indexed.len(), 1, "active MCP remains restart work");
-    assert!(indexed[0].session.mcp.needs_reconciliation());
+    assert_eq!(indexed.sessions.len(), 1, "active MCP remains restart work");
+    assert!(indexed.sessions[0].session.mcp.needs_reconciliation());
 
     pending.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Failed;
     pending = replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
     assert_eq!(
-        r.reconcilable_sessions().await.unwrap(),
+        r.reconcilable_sessions().await.unwrap().sessions,
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending.clone(),
@@ -375,12 +375,12 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
         .resources
         .complete_terminal_release("conformance cleanup");
     pending = replace_session(r, "ws_a", pending, "test:resource-released", Vec::new()).await;
-    assert!(r.reconcilable_sessions().await.unwrap().is_empty());
+    assert!(r.reconcilable_sessions().await.unwrap().sessions.is_empty());
 
     pending.environment.set_resident("worker-owned-binding");
     pending = replace_session(r, "ws_a", pending, "test:resident-environment", Vec::new()).await;
     assert_eq!(
-        r.reconcilable_sessions().await.unwrap(),
+        r.reconcilable_sessions().await.unwrap().sessions,
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending,

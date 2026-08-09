@@ -578,4 +578,41 @@ mod postgres {
             "postgres must not reuse an identity observed by an earlier run"
         );
     }
+
+    #[tokio::test]
+    async fn postgres_negative_memory_version_fails_closed() {
+        // Cause/effect graph: C1 the SQL version is non-negative or negative;
+        // C2 get/list decodes the authority. Effects: E1 exact version for C1>=0
+        // and E2 typed storage failure for C1<0; negative never wraps to u64.
+        //
+        // | Rule | version | Read | Effect |
+        // | V1 | non-negative | get/list | E1 exact |
+        // | V2 | negative | get | E2 storage error |
+        // | V3 | negative | list | E2 storage error |
+        let Some(pool) = schema_pool("t_memory_negative_version").await else {
+            return;
+        };
+        let fs = PostgresMemoryRepository::with_pool(pool.clone());
+        fs.ensure_schema().await.unwrap();
+        fs.create("s", "/negative.md", "value")
+            .await
+            .expect("V1 create");
+        sqlx::query(
+            "UPDATE memory_store_memories SET version = -1 WHERE store_id = 's' AND path = '/negative.md'",
+        )
+        .execute(&pool)
+        .await
+        .expect("inject historical corruption");
+        assert!(
+            matches!(
+                fs.get_by_path("s", "/negative.md").await,
+                Err(MemErr::Storage(_))
+            ),
+            "V2/E2"
+        );
+        assert!(
+            matches!(fs.list("s", "/").await, Err(MemErr::Storage(_))),
+            "V3/E2"
+        );
+    }
 }

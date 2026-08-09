@@ -104,10 +104,10 @@ awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }
 awaken-control = { path = "crates/control/awaken-control" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
-awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation", rev = "5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176" }
-awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation", rev = "5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176" }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation", rev = "5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176" }
-awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation", rev = "5f6d8b36dd2383a0af9ca403b9ab03e1f64f1176" }
+awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "36d0b6ed9d2b3dc47e57ae6f5c9f906b91b03a52" }
+awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "36d0b6ed9d2b3dc47e57ae6f5c9f906b91b03a52" }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "36d0b6ed9d2b3dc47e57ae6f5c9f906b91b03a52" }
+awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "36d0b6ed9d2b3dc47e57ae6f5c9f906b91b03a52" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
 # /v1/vaults/* in awaken-coordinator, opt-in via AWAKEN_MGMT_IAM=embedded.
@@ -115,15 +115,15 @@ awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-
 # became consumable once iam adopted foundation ADR-0005 (rusqlite as a
 # links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
 # embedded authz rows instead of a hand-rolled schema.
-awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam", rev = "1a2612550dfd4a541eedc9b62912a556bbd7fc54" }
-awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam", rev = "1a2612550dfd4a541eedc9b62912a556bbd7fc54" }
-awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam", rev = "1a2612550dfd4a541eedc9b62912a556bbd7fc54" }
-awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam", rev = "1a2612550dfd4a541eedc9b62912a556bbd7fc54" }
-awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam", rev = "1a2612550dfd4a541eedc9b62912a556bbd7fc54" }
+awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "5f384d700d01b62f537beb7606c47d17e39110f1" }
+awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "5f384d700d01b62f537beb7606c47d17e39110f1" }
+awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "5f384d700d01b62f537beb7606c47d17e39110f1" }
+awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "5f384d700d01b62f537beb7606c47d17e39110f1" }
+awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "5f384d700d01b62f537beb7606c47d17e39110f1" }
 # The assembly layer (ADR-0048): one IamGate (authn+authz PDP) + auth_layer PEP,
 # three modes (Open/Local/Remote). Local mode is the zero-config single-machine
 # embed (in-memory SQLite, seeded roles, ephemeral bootstrap admin token).
-awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam", rev = "1a2612550dfd4a541eedc9b62912a556bbd7fc54" }
+awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "5f384d700d01b62f537beb7606c47d17e39110f1" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-runtime = { path = "crates/stores/awaken-store-runtime" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }

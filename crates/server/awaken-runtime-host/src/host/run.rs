@@ -587,7 +587,8 @@ impl SharedHost {
     /// The run ids currently dead-lettered on `thread` (ADR-0015, slice E).
     pub async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let rows = self
-            .dispatch_store()?
+            .durable_ingress(thread)
+            .await?
             .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
@@ -604,8 +605,8 @@ impl SharedHost {
     /// Return one dead-lettered run to the durable queue with a fresh retry
     /// budget after the operator has repaired the external failure.
     pub async fn requeue_dead_letter(&self, thread: &str, run_id: &str) -> Result<bool, HostError> {
-        let store = self.dispatch_store()?;
-        let belongs_to_thread = store
+        let ingress = self.durable_ingress(thread).await?;
+        let belongs_to_thread = ingress
             .list_dispatches()
             .await
             .map_err(|error| HostError::internal(error.to_string()))?
@@ -618,7 +619,7 @@ impl SharedHost {
         if !belongs_to_thread {
             return Ok(false);
         }
-        store
+        ingress
             .requeue(&RunId(run_id.to_owned()))
             .await
             .map_err(|error| HostError::internal(error.to_string()))
@@ -641,7 +642,8 @@ impl SharedHost {
         thread: &str,
     ) -> Result<Vec<(String, String, u64, bool)>, HostError> {
         let rows = self
-            .dispatch_store()?
+            .durable_ingress(thread)
+            .await?
             .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
@@ -663,7 +665,8 @@ impl SharedHost {
     /// slice E).
     pub async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let rows = self
-            .dispatch_store()?
+            .durable_ingress(thread)
+            .await?
             .list_dispatches()
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;

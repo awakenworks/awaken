@@ -242,14 +242,56 @@ impl SharedHost {
                 .session_slots
                 .read(thread, |slot| slot.realization_lease.clone())
                 .flatten();
-            sink.persist(awaken_session_contract::SessionEnvironmentReceipt::new(
+            let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
                 thread,
                 kind,
-                binding,
-                realization,
-            ))
-            .await
-            .map_err(|error| {
+                binding.clone(),
+                realization.clone(),
+            );
+            let persisted = match sink.persist(receipt).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.code == "session_realization_stale" => {
+                    // Restart ordering decision table: C1 a claimed Run reaches
+                    // environment adoption; C2 the Session application has not
+                    // yet installed its replacement realization lease; C3 it
+                    // installs a different exact lease. R1 exact authority
+                    // persists immediately; R2 C1+C2 waits without publishing;
+                    // R3 C1+C2+C3 retries one exact receipt; R4 no C3 times out
+                    // and fails closed. The notification carries no authority.
+                    let changed = self
+                        .session_slots
+                        .update(thread, |slot| slot.realization_changed.clone());
+                    let replacement =
+                        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                            loop {
+                                let notified = changed.notified();
+                                let current = self
+                                    .session_slots
+                                    .read(thread, |slot| slot.realization_lease.clone())
+                                    .flatten();
+                                if current.is_some() && current != realization {
+                                    break current;
+                                }
+                                notified.await;
+                            }
+                        })
+                        .await;
+                    match replacement {
+                        Ok(replacement) => {
+                            sink.persist(awaken_session_contract::SessionEnvironmentReceipt::new(
+                                thread,
+                                kind,
+                                binding,
+                                replacement,
+                            ))
+                            .await
+                        }
+                        Err(_) => Err(error),
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            persisted.map_err(|error| {
                 HostError::internal(format!(
                     "persist Session environment binding before use: {error}"
                 ))
@@ -652,6 +694,19 @@ impl SharedHost {
             return Err(HostError::bad_request(
                 "remote A2A execution cannot bind a local Session Environment",
             ));
+        }
+        let expected_binding = self
+            .session_slots
+            .read(thread, |slot| slot.expected_environment_binding.clone())
+            .flatten();
+        // Recovery cause/effect decision table: C1 durable binding exists; C2 a
+        // matching resident/adopted environment is available. R1 !C1 may create
+        // the first environment; R2 C1+C2 reuses/adopts it; R3 C1+!C2 fails
+        // closed. A failed recovery must never erase C1 by creating a substitute.
+        if expected_binding.is_some() && retained.is_none() && adopted.is_none() {
+            return Err(HostError::internal(format!(
+                "Session {thread} has a durable environment binding that was not adopted"
+            )));
         }
         let has_published_delegates = installed.as_ref().is_some_and(|snapshot| {
             !snapshot

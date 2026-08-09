@@ -32,6 +32,8 @@ pub awaken_worker_contract::PlacementError::IneligibleResult(alloc::string::Stri
 pub awaken_worker_contract::PlacementError::NoEligibleWorker
 pub awaken_worker_contract::PlacementError::Policy(alloc::string::String)
 pub enum awaken_worker_contract::RegistryError
+pub awaken_worker_contract::RegistryError::GenerationExhausted
+pub awaken_worker_contract::RegistryError::GenerationExhausted::worker_id: alloc::string::String
 pub awaken_worker_contract::RegistryError::InvalidIdentity
 pub awaken_worker_contract::RegistryError::ManifestChanged
 pub awaken_worker_contract::RegistryError::Persistence(alloc::string::String)

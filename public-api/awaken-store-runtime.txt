@@ -1,3 +1,19 @@
 pub mod awaken_store_runtime
+pub enum awaken_store_runtime::StoredU64Error
+pub awaken_store_runtime::StoredU64Error::ArithmeticOverflow
+pub awaken_store_runtime::StoredU64Error::Negative(i64)
+pub awaken_store_runtime::StoredU64Error::OutOfRange(u64)
+pub struct awaken_store_runtime::StoredU64(_)
+impl awaken_store_runtime::StoredU64
+pub fn awaken_store_runtime::StoredU64::checked_add(self, u64) -> core::result::Result<Self, awaken_store_runtime::StoredU64Error>
+pub fn awaken_store_runtime::StoredU64::checked_scale_and_offset(self, u64, usize) -> core::result::Result<Self, awaken_store_runtime::StoredU64Error>
+pub const fn awaken_store_runtime::StoredU64::database_value(self) -> i64
+pub const fn awaken_store_runtime::StoredU64::domain_value(self) -> u64
+impl core::convert::TryFrom<i64> for awaken_store_runtime::StoredU64
+pub type awaken_store_runtime::StoredU64::Error = awaken_store_runtime::StoredU64Error
+pub fn awaken_store_runtime::StoredU64::try_from(i64) -> core::result::Result<Self, Self::Error>
+impl core::convert::TryFrom<u64> for awaken_store_runtime::StoredU64
+pub type awaken_store_runtime::StoredU64::Error = awaken_store_runtime::StoredU64Error
+pub fn awaken_store_runtime::StoredU64::try_from(u64) -> core::result::Result<Self, Self::Error>
 pub fn awaken_store_runtime::block_on_ambient_runtime<T, F, Fut>(&tokio::runtime::handle::Handle, F) -> T where F: core::ops::function::FnOnce() -> Fut + core::marker::Send + 'static, Fut: core::future::future::Future<Output = T>, T: core::marker::Send + 'static
 pub fn awaken_store_runtime::block_on_owned_runtime<T, F, Fut>(&tokio::runtime::handle::Handle, F) -> T where F: core::ops::function::FnOnce() -> Fut + core::marker::Send + 'static, Fut: core::future::future::Future<Output = T>, T: core::marker::Send + 'static

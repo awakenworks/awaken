@@ -365,45 +365,74 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .map_err(corrupt)
     }
 
-    async fn reconcilable_sessions(
-        &self,
-    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError> {
+    async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let mut scan = SessionRecoveryScan::default();
+        for row in sqlx::query(
+            "SELECT session_id, reason FROM managed_session_quarantine ORDER BY session_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?
+        {
+            scan.quarantined.push(SessionRecoveryQuarantine {
+                session_id: row.try_get("session_id").map_err(storage)?,
+                reason: row.try_get("reason").map_err(storage)?,
+            });
+        }
         let rows = sqlx::query(
             "SELECT scope_id, session_id, aggregate_json, agent_id, model, title, metadata_json, environment_id, status, archived_at, effective_inputs_json, environment_binding, runtime_json, revision \
-             FROM managed_session ORDER BY session_id",
+             FROM managed_session session \
+             WHERE NOT EXISTS (SELECT 1 FROM managed_session_quarantine quarantine \
+                               WHERE quarantine.session_id = session.session_id) \
+             ORDER BY session_id",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(storage)?;
-        rows.into_iter()
-            .map(|row| {
-                let encoded = EncodedSessionRow {
-                    aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
-                    session_id: row.try_get("session_id").map_err(storage)?,
-                    agent_id: row.try_get("agent_id").map_err(storage)?,
-                    model: row.try_get("model").map_err(storage)?,
-                    title: row.try_get("title").map_err(storage)?,
-                    metadata_json: row.try_get("metadata_json").map_err(storage)?,
-                    environment_id: row.try_get("environment_id").map_err(storage)?,
-                    status: row.try_get("status").map_err(storage)?,
-                    archived_at: row.try_get("archived_at").map_err(storage)?,
-                    effective_inputs_json: row.try_get("effective_inputs_json").map_err(storage)?,
-                    environment_binding: row.try_get("environment_binding").map_err(storage)?,
-                    runtime_json: row.try_get("runtime_json").map_err(storage)?,
-                    revision: row.try_get("revision").map_err(storage)?,
-                };
-                Ok(ScopedPersistedSession {
-                    workspace_id: row.try_get("scope_id").map_err(storage)?,
-                    session: decode(encoded).map_err(corrupt)?,
-                })
-            })
-            .collect::<Result<Vec<_>, SessionRepositoryError>>()
-            .map(|records| {
-                records
-                    .into_iter()
-                    .filter(|record| record.session.needs_reconciliation())
-                    .collect()
-            })
+        for row in rows {
+            let session_id: String = row.try_get("session_id").map_err(storage)?;
+            let encoded = EncodedSessionRow {
+                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                session_id: session_id.clone(),
+                agent_id: row.try_get("agent_id").map_err(storage)?,
+                model: row.try_get("model").map_err(storage)?,
+                title: row.try_get("title").map_err(storage)?,
+                metadata_json: row.try_get("metadata_json").map_err(storage)?,
+                environment_id: row.try_get("environment_id").map_err(storage)?,
+                status: row.try_get("status").map_err(storage)?,
+                archived_at: row.try_get("archived_at").map_err(storage)?,
+                effective_inputs_json: row.try_get("effective_inputs_json").map_err(storage)?,
+                environment_binding: row.try_get("environment_binding").map_err(storage)?,
+                runtime_json: row.try_get("runtime_json").map_err(storage)?,
+                revision: row.try_get("revision").map_err(storage)?,
+            };
+            match decode(encoded) {
+                Ok(session) if session.needs_reconciliation() => {
+                    scan.sessions.push(ScopedPersistedSession {
+                        workspace_id: row.try_get("scope_id").map_err(storage)?,
+                        session,
+                    });
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let reason = error.to_string();
+                    sqlx::query(
+                        "INSERT INTO managed_session_quarantine (session_id, reason) \
+                         VALUES ($1, $2) ON CONFLICT (session_id) DO NOTHING",
+                    )
+                    .bind(&session_id)
+                    .bind(&reason)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(storage)?;
+                    scan.quarantined
+                        .push(SessionRecoveryQuarantine { session_id, reason });
+                }
+            }
+        }
+        tx.commit().await.map_err(storage)?;
+        Ok(scan)
     }
 
     async fn idempotency_receipt(
