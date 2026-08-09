@@ -122,6 +122,41 @@ impl EnvironmentApplication {
         self.publish(outcome.item().clone()).await
     }
 
+    /// Reconcile one exact Environment into the rebuildable executable projection.
+    ///
+    /// Dispatch readiness is scoped to one frozen Environment activation. It must
+    /// not replay the entire catalog: an unrelated package-image registration may
+    /// be slow or unavailable without invalidating an already-selected Environment.
+    /// The background registration supervisor remains responsible for full-catalog
+    /// recovery.
+    pub async fn reconcile_registration(
+        &self,
+        environment_id: &str,
+    ) -> Result<Option<EnvItem>, EnvironmentApplicationError> {
+        if environment_id == "env_local" {
+            self.registrar
+                .register(default_environment_registration())
+                .await?;
+            return Ok(Some(builtin_local_environment()));
+        }
+        let Some(current) = self.envs.get(environment_id).await else {
+            return Ok(None);
+        };
+        if current.archived_at.is_some() {
+            self.registrar
+                .withdraw(ExecutableEnvironmentWithdrawal {
+                    environment_id: current.id.clone(),
+                    lifecycle_revision: current.revision,
+                })
+                .await?;
+        } else {
+            self.registrar
+                .register(self.registration(current.clone()).await?)
+                .await?;
+        }
+        Ok(Some(current))
+    }
+
     /// Replay every immutable Control revision into the rebuildable Coordinator
     /// projection. This repairs a boundary failure after the authority commit.
     pub async fn reconcile_registrations(&self) -> Result<u64, EnvironmentApplicationError> {
@@ -365,6 +400,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingRegistrar {
         fail_registration: AtomicBool,
+        failed_environment: Mutex<Option<String>>,
         registrations: Mutex<Vec<ExecutableEnvironmentRegistration>>,
         withdrawals: Mutex<Vec<ExecutableEnvironmentWithdrawal>>,
     }
@@ -413,6 +449,17 @@ mod tests {
             if self.fail_registration.load(Ordering::SeqCst) {
                 return Err(ExecutableEnvironmentRegistrationError::Unavailable(
                     "injected projection outage".into(),
+                ));
+            }
+            if self
+                .failed_environment
+                .lock()
+                .unwrap()
+                .as_deref()
+                .is_some_and(|name| name == registration.definition.name)
+            {
+                return Err(ExecutableEnvironmentRegistrationError::Unavailable(
+                    "injected unrelated projection outage".into(),
                 ));
             }
             self.registrations.lock().unwrap().push(registration);
@@ -520,6 +567,72 @@ mod tests {
                 .iter()
                 .any(|registration| registration.definition.name == "Retained"),
             "R2 exact retained revision"
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_reconciliation_isolated_from_unrelated_registration_failure() {
+        // Decision table:
+        // R1 full replay + unrelated failure -> replay fails closed;
+        // R2 exact healthy id + same unrelated failure -> healthy registration succeeds;
+        // R3 unknown id -> no registration and an explicit missing result.
+        let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let registrar = Arc::new(RecordingRegistrar::default());
+        let application = EnvironmentApplication::new(envs, registrar.clone(), None);
+        let healthy = application
+            .create(CreateEnvironmentCommand {
+                command_id: "healthy".into(),
+                name: "Healthy".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: EnvironmentConfig::SelfHosted,
+            })
+            .await
+            .unwrap();
+        application
+            .create(CreateEnvironmentCommand {
+                command_id: "unrelated".into(),
+                name: "Unrelated".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: EnvironmentConfig::SelfHosted,
+            })
+            .await
+            .unwrap();
+        registrar.registrations.lock().unwrap().clear();
+        *registrar.failed_environment.lock().unwrap() = Some("Unrelated".into());
+
+        assert!(application.reconcile_registrations().await.is_err(), "R1");
+        registrar.registrations.lock().unwrap().clear();
+        assert_eq!(
+            application
+                .reconcile_registration(&healthy.id)
+                .await
+                .unwrap()
+                .map(|item| item.id),
+            Some(healthy.id.clone()),
+            "R2"
+        );
+        assert_eq!(
+            registrar
+                .registrations
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|registration| registration.definition.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Healthy"],
+            "R2"
+        );
+        assert!(
+            application
+                .reconcile_registration("env_missing")
+                .await
+                .unwrap()
+                .is_none(),
+            "R3"
         );
     }
 

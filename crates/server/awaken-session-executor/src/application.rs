@@ -47,6 +47,22 @@ pub trait ApplicationSessionProvisioner: Send + Sync {
         session_id: &str,
         ownership: Arc<dyn AttemptOwnershipVerifier>,
     ) -> Result<awaken_session_contract::ApplicationSessionContribution, ApplicationSessionError>;
+
+    /// Refresh attempt-scoped material referenced by an already-frozen Session.
+    ///
+    /// A retry must not rebuild or mutate the durable Session baseline, but
+    /// short-lived capabilities behind stable credential references may need to
+    /// be reissued for the new claim. Implementations may update only that
+    /// indirect material here. The default keeps applications without expiring
+    /// contribution material unchanged.
+    async fn refresh_frozen(
+        &self,
+        _activation: &RunActivation,
+        _session_id: &str,
+        _ownership: Arc<dyn AttemptOwnershipVerifier>,
+    ) -> Result<(), ApplicationSessionError> {
+        Ok(())
+    }
 }
 
 /// Result of the claim-fenced contribution and initial realization assignment.
@@ -63,6 +79,15 @@ pub struct ApplicationSessionControlReceipt {
 pub trait ApplicationSessionControlClient:
     awaken_session_contract::SessionRealizationControl + Send + Sync
 {
+    /// Resume an already-frozen Session from Control-owned committed truth.
+    /// `None` means the Session is still preparing and needs its one initial
+    /// application contribution. The current Run claim fences both outcomes.
+    async fn resume_frozen(
+        &self,
+        claim: &RunClaim,
+        session_id: &str,
+    ) -> Result<Option<awaken_session_contract::SessionRealizationDirective>, ApplicationSessionError>;
+
     async fn contribute(
         &self,
         claim: &RunClaim,
@@ -86,6 +111,18 @@ impl WorkerControlApplicationSessionClient {
 
 #[async_trait::async_trait]
 impl ApplicationSessionControlClient for WorkerControlApplicationSessionClient {
+    async fn resume_frozen(
+        &self,
+        claim: &RunClaim,
+        session_id: &str,
+    ) -> Result<Option<awaken_session_contract::SessionRealizationDirective>, ApplicationSessionError>
+    {
+        self.control
+            .resume_application_session(&self.identity, claim, session_id)
+            .await
+            .map_err(ApplicationSessionError::new)
+    }
+
     async fn contribute(
         &self,
         claim: &RunClaim,
@@ -569,6 +606,24 @@ impl crate::SharedHost {
             Some(error) => Err(error),
             None => Ok(revoked),
         }
+    }
+
+    /// Cancel every run currently backed by a process-local Session projection.
+    ///
+    /// Worker authority loss must stop in-flight tool processes before terminal
+    /// Session disposal removes their workspaces. Otherwise a native process (or
+    /// a nested container bind-mounted from that workspace) can continue writing
+    /// while [`Self::revoke_all_session_realizations`] recursively reaps the same
+    /// directory, leaving a partially deleted checkout behind.
+    pub async fn interrupt_all_session_runs(&self) -> usize {
+        let session_ids = self.session_slots.session_ids();
+        let mut interrupted = 0;
+        for session_id in session_ids {
+            if self.interrupt(&session_id).await.is_ok() {
+                interrupted += 1;
+            }
+        }
+        interrupted
     }
 
     pub(crate) async fn install_frozen_session_projection(

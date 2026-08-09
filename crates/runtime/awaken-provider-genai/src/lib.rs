@@ -764,6 +764,19 @@ pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
             .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
             .map(to_genai_part)
             .collect();
+        // The neutral transcript commits one Tool message per completed call.
+        // Anthropic Messages instead requires every result for one assistant
+        // tool-use turn to appear together in the immediately following user
+        // message. `genai` maps one Tool message to one Anthropic user message,
+        // so coalesce adjacent Tool messages here. OpenAI/Responses still emit
+        // one wire result per part from the combined message.
+        if message.role == Role::Tool
+            && let Some(previous) = messages.last_mut()
+            && previous.role == genai::chat::ChatRole::Tool
+        {
+            previous.content.extend(parts);
+            continue;
+        }
         let genai_message = match message.role {
             Role::System => ChatMessage::system(parts),
             Role::Assistant => ChatMessage::assistant(parts),

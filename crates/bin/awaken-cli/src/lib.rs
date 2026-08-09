@@ -1024,7 +1024,7 @@ mod runtime_session_store_tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
-            activity: Default::default(),
+            activity_epoch: 0,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),

@@ -67,6 +67,18 @@ operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
   echo "AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 }
+
+# A selected docker-container Buildx driver does not load `docker build` results
+# into the local image store unless the output is explicit. The production-image
+# acceptance command below must inspect the image that this invocation built,
+# never a stale local tag or an unavailable BuildKit-only result.
+build_image() {
+  if [[ "${engine##*/}" == "docker" ]]; then
+    run_with_deadline "$build_timeout_seconds" "$engine" build --load "$@"
+  else
+    run_with_deadline "$build_timeout_seconds" "$engine" build "$@"
+  fi
+}
 staged="$repo/deploy/images/sandbox/.awaken-sandbox.bin"
 cleanup() { rm -f "$staged"; }
 trap cleanup EXIT
@@ -74,14 +86,11 @@ trap cleanup EXIT
 cd "$repo"
 "$repo/deploy/images/sandbox/stage-binary.sh" "$staged" hand
 if [[ -n "${AWAKEN_SANDBOX_BUILD_NETWORK:-}" ]]; then
-  run_with_deadline "$build_timeout_seconds" "$engine" build --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
+  build_image --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
     --build-arg ACP_NPM_PACKAGES="$packages" \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 else
-  # macOS still ships Bash 3.2, where expanding an empty array under `set -u`
-  # raises "unbound variable". Keep the zero-argument case explicit so the
-  # hermetic image path works on every supported host shell.
-  run_with_deadline "$build_timeout_seconds" "$engine" build --build-arg ACP_NPM_PACKAGES="$packages" \
+  build_image --build-arg ACP_NPM_PACKAGES="$packages" \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 fi
 
@@ -92,3 +101,6 @@ fi
 # of surfacing later as a closed Session hand channel.
 run_with_deadline "$operation_timeout_seconds" \
   "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null
+run_with_deadline "$operation_timeout_seconds" \
+  "$engine" run --rm --entrypoint /bin/sh "$image" -c \
+  'command -v curl >/dev/null && curl --version >/dev/null'

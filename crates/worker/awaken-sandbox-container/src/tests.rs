@@ -542,7 +542,13 @@ struct FakeState {
     live_credential: Option<Vec<u8>>,
     credential_source: Option<std::path::PathBuf>,
     spawned: Vec<(String, Vec<String>)>,
-    runtime_path_observations: Vec<(Option<String>, Option<String>)>,
+    runtime_path_observations: Vec<(
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )>,
     process_secret_observations: Vec<(bool, bool)>,
     live_input_projection: bool,
     live_inputs: HashMap<String, Vec<u8>>,
@@ -721,6 +727,9 @@ impl ContainerRuntime for FakeRuntime {
         state.runtime_path_observations.push((
             runtime_path("AWAKEN_PROJECT_DIR"),
             runtime_path("AWAKEN_OUTPUTS_DIR"),
+            runtime_path("HOME"),
+            runtime_path("XDG_CONFIG_HOME"),
+            runtime_path("XDG_CACHE_HOME"),
         ));
         state.spawned.push((container_id.to_string(), command.argv));
         Ok(Box::new(FakeExecProcess { id }))
@@ -1042,7 +1051,10 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
             .cloned(),
         Some((
             Some("/workspace".into()),
-            Some("/mnt/session/outputs".into())
+            Some("/mnt/session/outputs".into()),
+            Some("/workspace".into()),
+            Some("/workspace/.config".into()),
+            Some("/workspace/.cache".into())
         )),
         "an adopted process receives the same runtime-owned paths"
     );
@@ -1350,6 +1362,27 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
             },
             visibility: pc::EnvVisibility::Process,
         },
+        pc::EnvVar {
+            name: "HOME".into(),
+            value: pc::EnvValue::Inline {
+                value: "/root".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+        pc::EnvVar {
+            name: "XDG_CONFIG_HOME".into(),
+            value: pc::EnvValue::Inline {
+                value: "/root/.config".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+        pc::EnvVar {
+            name: "XDG_CACHE_HOME".into(),
+            value: pc::EnvValue::Inline {
+                value: "/root/.cache".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
     ]);
     let native = pc::Sandbox::spawn(&sandbox, native_command).await.unwrap();
     let agent = sandbox
@@ -1381,11 +1414,17 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
         vec![
             (
                 Some("/workspace".into()),
-                Some("/mnt/session/outputs".into())
+                Some("/mnt/session/outputs".into()),
+                Some("/workspace".into()),
+                Some("/workspace/.config".into()),
+                Some("/workspace/.cache".into())
             ),
             (
                 Some("/workspace".into()),
-                Some("/mnt/session/outputs".into())
+                Some("/mnt/session/outputs".into()),
+                Some("/workspace".into()),
+                Some("/workspace/.config".into()),
+                Some("/workspace/.cache".into())
             ),
         ],
         "native and agent processes share the runtime-owned paths"

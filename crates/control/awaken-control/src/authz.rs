@@ -105,7 +105,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_iam_contract::{
     AccountId, ActivateAuthorizationProfile, ApiToken, ApiTokenId, AuthorizationDecision,
-    AuthorizationRequest, OrgId, PolicySnapshot, PrincipalRef, ScopeRef, Timestamp, WorkspaceId,
+    AuthorizationRequest, CreateAuthorizationProfile, OrgId, PolicySnapshot, PrincipalRef,
+    ScopeRef, Timestamp, WorkspaceId,
 };
 #[cfg(test)]
 use awaken_iam_contract::{GrantEffect, GrantSubjectRef, ScopeKind};
@@ -528,6 +529,54 @@ pub fn embedded_iam_for_workspace(dir: &Path, workspace_id: &str) -> Arc<Managem
     embedded_iam_for_tenant(dir, DEFAULT_ORG_ID, workspace_id)
 }
 
+/// Reconcile one product-owned immutable profile into the durable PAP and live
+/// PDP. Equal documents hydrate the active revision; a changed built-in contract
+/// appends and CAS-activates one revision instead of leaving restarts on a stale
+/// policy or maintaining a consumer-side authorization bypass.
+fn reconcile_builtin_profile(
+    profiles: &AuthorizationProfileAdmin,
+    engine: &mut AuthzApi,
+    request: CreateAuthorizationProfile,
+) {
+    let namespace = request.namespace.clone();
+    let active = profiles
+        .active(&namespace)
+        .expect("read active built-in authorization profile");
+    if active
+        .as_ref()
+        .is_some_and(|profile| profile.document == request.document)
+    {
+        profiles
+            .hydrate(engine, &PolicySnapshot::default(), &namespace)
+            .expect("hydrate active built-in authorization profile");
+        return;
+    }
+
+    let expected_active_revision = active.map(|profile| profile.revision);
+    let draft = profiles
+        .create_draft(request)
+        .expect("create built-in authorization profile revision");
+    let validation = profiles
+        .validate(&namespace, draft.revision)
+        .expect("validate built-in authorization profile revision");
+    assert!(
+        validation.valid,
+        "invalid built-in authorization profile: {:?}",
+        validation.errors
+    );
+    profiles
+        .activate(
+            engine,
+            &PolicySnapshot::default(),
+            &namespace,
+            draft.revision,
+            ActivateAuthorizationProfile {
+                expected_active_revision,
+            },
+        )
+        .expect("activate built-in authorization profile revision");
+}
+
 /// Open embedded IAM for the platform-owned `Org -> Workspace` coordinates.
 /// Runtime deliberately has no Project authorization scope.
 pub fn embedded_iam_for_tenant(
@@ -598,78 +647,16 @@ pub fn embedded_iam_for_tenant(
     )
     .expect("migrate authorization profile store");
     let profiles = AuthorizationProfileAdmin::new(Arc::new(profile_store));
-    let profile_request = management_authorization_profile();
-    let namespace = profile_request.namespace.clone();
-    if profiles
-        .active(&namespace)
-        .expect("read active management profile")
-        .is_some()
-    {
-        profiles
-            .hydrate(&mut engine, &PolicySnapshot::default(), &namespace)
-            .expect("hydrate active management profile");
-    } else {
-        let draft = profiles
-            .create_draft(profile_request)
-            .expect("create built-in management profile");
-        let validation = profiles
-            .validate(&namespace, draft.revision)
-            .expect("validate built-in management profile");
-        assert!(
-            validation.valid,
-            "invalid built-in management profile: {:?}",
-            validation.errors
-        );
-        profiles
-            .activate(
-                &mut engine,
-                &PolicySnapshot::default(),
-                &namespace,
-                draft.revision,
-                ActivateAuthorizationProfile {
-                    expected_active_revision: None,
-                },
-            )
-            .expect("activate built-in management profile");
-    }
+    reconcile_builtin_profile(&profiles, &mut engine, management_authorization_profile());
 
     // Resource authorization is an independent PAP document/namespace. It reuses
     // the same principals, role bindings, scope graph, and PDP, but can be replaced
     // without changing management actions or any File/Memory/Skill service.
-    let resource_profile_request = management_resource_authorization_profile();
-    let resource_namespace = resource_profile_request.namespace.clone();
-    if profiles
-        .active(&resource_namespace)
-        .expect("read active resource profile")
-        .is_some()
-    {
-        profiles
-            .hydrate(&mut engine, &PolicySnapshot::default(), &resource_namespace)
-            .expect("hydrate active resource profile");
-    } else {
-        let draft = profiles
-            .create_draft(resource_profile_request)
-            .expect("create built-in resource profile");
-        let validation = profiles
-            .validate(&resource_namespace, draft.revision)
-            .expect("validate built-in resource profile");
-        assert!(
-            validation.valid,
-            "invalid built-in resource profile: {:?}",
-            validation.errors
-        );
-        profiles
-            .activate(
-                &mut engine,
-                &PolicySnapshot::default(),
-                &resource_namespace,
-                draft.revision,
-                ActivateAuthorizationProfile {
-                    expected_active_revision: None,
-                },
-            )
-            .expect("activate built-in resource profile");
-    }
+    reconcile_builtin_profile(
+        &profiles,
+        &mut engine,
+        management_resource_authorization_profile(),
+    );
 
     engine.policy_mut().scope_graph_mut().assign_workspace(
         WorkspaceId(workspace_id.to_owned()),

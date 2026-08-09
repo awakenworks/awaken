@@ -528,6 +528,13 @@ pub fn mount_with_managed_and_resource_catalog(
 /// the data router. Production callers use the fuller application-access variant
 /// below; deterministic hosts use this handle to mount the Awaken-only policy
 /// projection without constructing a second scheduler or state authority.
+///
+/// Compile-matrix decision rule: when `test-support` is absent, neither this
+/// scenario entry point nor its ephemeral dependencies may enter the product
+/// build; when it is present, both must compile as one path. The corresponding
+/// gates are exercised by no-feature product builds and test-support scenario
+/// builds rather than by a second runtime implementation.
+#[cfg(feature = "test-support")]
 pub fn mount_with_managed_and_resource_catalog_and_dreams(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,

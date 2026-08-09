@@ -4,11 +4,10 @@
 //! Why this exists (and why it is not a duplicate mechanism): [`SandboxManager`] is the
 //! in-process reuse orchestrator (ADR-0056) — it renews/reconciles the sandboxes THIS
 //! worker created, from an in-memory registry that dies with the process. So it
-//! structurally cannot reap what a process that already crashed left running. The k8s
-//! tier does not need a custom reaper: pods carry `ownerReferences`, so native GC
-//! deletes them when their owner is deleted. The **docker/podman** tiers have no native
-//! lease/TTL, so a container whose owning worker crashed (or a warm-pool instance never
-//! claimed) lingers forever. This reaper closes exactly that gap.
+//! structurally cannot reap what a process that already crashed left running. Kubernetes
+//! uses native GC when a platform owner exists, but local/control-plane deployments can
+//! legitimately create ownerless Pods. Docker and Podman likewise have no native
+//! lease/TTL. This reaper closes the cross-restart gap for all three backends.
 //!
 //! The decision is a pure value test over the signals the runtime discovers
 //! ([`ManagedContainer`]): containers protected by this runtime instance are never
@@ -75,8 +74,7 @@ impl<R: ContainerRuntime + 'static> SandboxReaper<R> {
     /// One sweep: discover the managed containers, decide each with [`should_reap`], and
     /// remove the reapable ones. Returns each reaped `(id, reason)`. A `remove` failure
     /// is skipped (not reported) so the next sweep retries it — never a hard error, so a
-    /// single bad container can't stall the loop. A runtime with native GC (k8s) returns
-    /// no managed containers, making this a no-op there.
+    /// single bad container can't stall the loop.
     pub async fn sweep(&self) -> Vec<(String, ReapReason)> {
         let managed = match self.runtime.list_managed().await {
             Ok(managed) => managed,

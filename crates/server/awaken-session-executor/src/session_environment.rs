@@ -129,12 +129,19 @@ impl SessionEnvironment {
         sandbox: Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: &str,
+        hand_idle_after: std::time::Duration,
         capabilities: pc::SandboxCapabilities,
     ) -> Result<Self, pc::SandboxError> {
         let skills = Arc::new(ContainerSkillCache::default());
         let hand = Arc::new(
-            RefreshingHandExecutor::new(sandbox.clone(), skills.clone(), hand_factory, hand_bin)
-                .await?,
+            RefreshingHandExecutor::new(
+                sandbox.clone(),
+                skills.clone(),
+                hand_factory,
+                hand_bin,
+                hand_idle_after,
+            )
+            .await?,
         );
         Ok(Self::Container {
             sandbox,
@@ -386,16 +393,6 @@ impl SessionEnvironment {
         }
     }
 
-    /// Drop resumable process capabilities while retaining the Session sandbox.
-    /// Unlike terminal stop, this deliberately permits lazy reacquisition.
-    pub(crate) async fn hibernate_bound_processes(&self) -> bool {
-        if let Self::Container { hand, .. } = self {
-            hand.hibernate().await
-        } else {
-            false
-        }
-    }
-
     pub(crate) async fn spawn_agent(
         &self,
         command: pc::Command,
@@ -537,6 +534,7 @@ mod tests {
     };
     use awaken_runtime_contract::llm::ToolCall;
     use awaken_sandbox_local::{LocalProvider, NamespaceProvider};
+    use std::sync::atomic::Ordering;
     use tokio::io::AsyncReadExt;
 
     #[derive(Default)]
@@ -559,6 +557,8 @@ mod tests {
         id: String,
         code: i32,
     }
+
+    struct UnreapableProcess;
 
     impl DoneProcess {
         fn success(id: impl Into<String>) -> Self {
@@ -625,6 +625,25 @@ mod tests {
 
         async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
             Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl pc::ProcessHandle for UnreapableProcess {
+        fn id(&self) -> &str {
+            "unreapable-hand"
+        }
+
+        async fn wait(&self) -> Result<pc::ExitStatus, pc::SandboxError> {
+            std::future::pending().await
+        }
+
+        async fn poll(&self) -> Result<Option<pc::ExitStatus>, pc::SandboxError> {
+            Ok(None)
+        }
+
+        async fn signal(&self, _signal: pc::Signal) -> Result<(), pc::SandboxError> {
+            Err(pc::SandboxError::new("scripted signal failure"))
         }
     }
 
@@ -719,8 +738,19 @@ mod tests {
             } else {
                 0
             };
+            let unreapable = command.argv.iter().any(|part| part == "--stdio")
+                && self
+                    .shared
+                    .lock()
+                    .unwrap()
+                    .contains_key("__unreapable_hand");
+            let process: Box<dyn pc::ProcessHandle> = if unreapable {
+                Box::new(UnreapableProcess)
+            } else {
+                Box::new(DoneProcess::exited("container-exec", exit_code))
+            };
             Ok(awaken_sandbox_container::RuntimeAgentProcess {
-                process: Box::new(DoneProcess::exited("container-exec", exit_code)),
+                process,
                 channel: Box::new(ours),
             })
         }
@@ -1071,6 +1101,52 @@ mod tests {
         binds: std::sync::atomic::AtomicUsize,
     }
 
+    struct BlockingHandFactory {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        block_once: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct BlockingHandExecutor {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        block_once: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl ToolExecutor for BlockingHandExecutor {
+        async fn invoke(
+            &self,
+            call: &ToolCall,
+        ) -> Result<
+            awaken_runtime_contract::tool::ToolOutput,
+            awaken_runtime_contract::tool::ToolError,
+        > {
+            if self.block_once.swap(false, Ordering::SeqCst) {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            Ok(awaken_runtime_contract::tool::ToolOutput::ok(
+                &call.call_id,
+                "completed",
+            ))
+        }
+    }
+
+    impl HandExecutorFactory for BlockingHandFactory {
+        fn bind(
+            &self,
+            _channel: Box<dyn AgentChannelType>,
+            _operation_scope: &str,
+        ) -> Arc<dyn ToolExecutor> {
+            Arc::new(BlockingHandExecutor {
+                started: self.started.clone(),
+                release: self.release.clone(),
+                block_once: self.block_once.clone(),
+            })
+        }
+    }
+
     impl ScriptedHandFactory {
         fn new(outcomes: impl IntoIterator<Item = ScriptedHandOutcome>) -> Arc<Self> {
             Arc::new(Self {
@@ -1111,11 +1187,10 @@ mod tests {
          * concurrent recovery behind that one replacement; E4 return after one
          * bounded retry; E5 never replay an indeterminate call; E6 propagate a
          * replacement-start failure without a loop; E7 never restart after close;
-         * E8 hibernate releases the binding but permits one lazy replacement;
-         * E9 repeated hibernate is an idempotent no-op.
+         * E8 idle hibernation and its stale-timer races are covered separately.
          * Rules: H1 success=>E1; H2 unavailable+C2+C3(success)=>E2+E3;
          * H3 unavailable+C3(unavailable)=>E4; H4 C4=>E5; H5 C5=>E6;
-         * H6 C6=>E7; H7 hibernate then invoke=>E8; H8 hibernate twice=>E9.
+         * H6 C6=>E7.
          */
         let provider = Arc::new(FakeContainerProvider::default());
         let stable = ScriptedHandFactory::new([ScriptedHandOutcome::Success]);
@@ -1129,6 +1204,7 @@ mod tests {
         .await
         .unwrap();
         let hand = environment.tool_executor();
+        tokio::task::yield_now().await;
         assert_eq!(
             hand.invoke(&ToolCall {
                 call_id: "stable".into(),
@@ -1147,27 +1223,6 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst),
             1
         );
-        assert!(environment.hibernate_bound_processes().await);
-        assert!(!environment.hibernate_bound_processes().await);
-        assert_eq!(
-            hand.invoke(&ToolCall {
-                call_id: "after-hibernate".into(),
-                tool_id: "read".into(),
-                arguments: serde_json::json!({}),
-            })
-            .await
-            .unwrap()
-            .text(),
-            "recovered"
-        );
-        assert_eq!(stable.binds.load(std::sync::atomic::Ordering::SeqCst), 2);
-        assert_eq!(
-            provider
-                .hand_spawns
-                .load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "hibernation reacquires exactly one Hand on demand"
-        );
         environment.stop_bound_processes().await;
         assert!(matches!(
             hand.invoke(&ToolCall {
@@ -1182,7 +1237,7 @@ mod tests {
             provider
                 .hand_spawns
                 .load(std::sync::atomic::Ordering::SeqCst),
-            2,
+            1,
             "a closed owner never launches another Hand"
         );
         environment.dispose().await.unwrap();
@@ -1342,6 +1397,183 @@ mod tests {
                 .hand_spawns
                 .load(std::sync::atomic::Ordering::SeqCst),
             1
+        );
+        environment.dispose().await.unwrap();
+    }
+
+    /// Worker-local Hand inactivity cause/effect decision table.
+    /// C1=idle policy enabled; C2=deadline reached; C3=a newer invocation touches
+    /// the generation; C4=policy is zero; C5=invocation follows hibernation.
+    /// E1=keep one binding before the deadline; E2=stale deadline cannot stop a
+    /// newer generation; E3=deadline releases the Hand; E4=next call lazily
+    /// creates exactly one replacement; E5=zero disables hibernation; C6=the
+    /// provider cannot reap the expired process; E6=close the owner and never
+    /// launch a possibly concurrent replacement. Rules:
+    /// I1 C1+!C2=>E1; I2 C1+C2+C3=>E2; I3 C1+C2+!C3=>E3;
+    /// I4 I3+C5=>E4; I5 C4=>E5; I6 C6=>E6. This executes in the Runtime Host
+    /// without a Coordinator or durable Session scan, covering split deployment
+    /// ownership.
+    #[tokio::test(start_paused = true)]
+    async fn container_hand_hibernates_on_worker_local_inactivity_and_reacquires_once() {
+        let provider = Arc::new(FakeContainerProvider::default());
+        let factory =
+            ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
+        let environment = SessionEnvironmentProvider::container_with_hand_idle(
+            provider.clone(),
+            Vec::new(),
+            factory.clone(),
+            "/usr/local/bin/awaken-sandbox",
+            std::time::Duration::from_secs(60),
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        let hand = environment.tool_executor();
+
+        tokio::time::advance(std::time::Duration::from_secs(59)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 1, "I1");
+
+        hand.invoke(&ToolCall {
+            call_id: "refresh-deadline".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 1, "I2");
+
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        hand.invoke(&ToolCall {
+            call_id: "after-idle".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 2, "I3+I4");
+        assert_eq!(factory.binds.load(Ordering::SeqCst), 2, "I4");
+        environment.dispose().await.unwrap();
+
+        let disabled_provider = Arc::new(FakeContainerProvider::default());
+        let disabled = SessionEnvironmentProvider::container(
+            disabled_provider.clone(),
+            Vec::new(),
+            ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
+            "/usr/local/bin/awaken-sandbox",
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(3_600)).await;
+        tokio::task::yield_now().await;
+        disabled
+            .tool_executor()
+            .invoke(&ToolCall {
+                call_id: "disabled".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            disabled_provider.hand_spawns.load(Ordering::SeqCst),
+            1,
+            "I5"
+        );
+        disabled.dispose().await.unwrap();
+
+        let failed_provider = Arc::new(FakeContainerProvider::default());
+        failed_provider
+            .shared
+            .lock()
+            .unwrap()
+            .insert("__unreapable_hand".into(), Vec::new());
+        let failed = SessionEnvironmentProvider::container_with_hand_idle(
+            failed_provider.clone(),
+            Vec::new(),
+            ScriptedHandFactory::new([ScriptedHandOutcome::Success]),
+            "/usr/local/bin/awaken-sandbox",
+            std::time::Duration::from_secs(60),
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            failed
+                .tool_executor()
+                .invoke(&ToolCall {
+                    call_id: "after-reap-failure".into(),
+                    tool_id: "read".into(),
+                    arguments: serde_json::json!({}),
+                })
+                .await,
+            Err(awaken_runtime_contract::tool::ToolError::UnavailableBeforeDispatch(_))
+        ));
+        assert_eq!(failed_provider.hand_spawns.load(Ordering::SeqCst), 1, "I6");
+        failed.dispose().await.unwrap();
+    }
+
+    /// Idle/invoke race rule I7: C1=the old deadline fires while a Hand call owns
+    /// the lifecycle mutex; C2=the call completes and advances its generation;
+    /// E1=the waiting timer observes the new generation and cannot reap the live
+    /// binding; E2=the next call reuses that same Hand without a second spawn.
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_deadline_cannot_reap_a_concurrent_hand_invocation() {
+        let provider = Arc::new(FakeContainerProvider::default());
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let environment = SessionEnvironmentProvider::container_with_hand_idle(
+            provider.clone(),
+            Vec::new(),
+            Arc::new(BlockingHandFactory {
+                started: started.clone(),
+                release: release.clone(),
+                block_once: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            }),
+            "/usr/local/bin/awaken-sandbox",
+            std::time::Duration::from_secs(60),
+        )
+        .create(&spec())
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        let hand = environment.tool_executor();
+        let running_hand = hand.clone();
+        let running = tokio::spawn(async move {
+            running_hand
+                .invoke(&ToolCall {
+                    call_id: "running-at-deadline".into(),
+                    tool_id: "read".into(),
+                    arguments: serde_json::json!({}),
+                })
+                .await
+        });
+        started.notified().await;
+        tokio::time::advance(std::time::Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        release.notify_one();
+        assert_eq!(running.await.unwrap().unwrap().text(), "completed");
+        tokio::task::yield_now().await;
+
+        hand.invoke(&ToolCall {
+            call_id: "reuse-after-race".into(),
+            tool_id: "read".into(),
+            arguments: serde_json::json!({}),
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            provider.hand_spawns.load(Ordering::SeqCst),
+            1,
+            "I7: a stale timer never forces replacement"
         );
         environment.dispose().await.unwrap();
     }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
@@ -807,6 +807,42 @@ impl LlmExecutor for AlwaysToolCall {
     }
 }
 
+/// Uses tools while they are offered, then obeys the runtime's reserved final
+/// request and returns a natural response.
+struct ToolUntilFinalRequest {
+    calls: AtomicUsize,
+    saw_final_request: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for ToolUntilFinalRequest {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = if request.tools.is_empty() {
+            self.saw_final_request.fetch_add(1, Ordering::SeqCst);
+            assert!(request.messages.iter().any(|message| {
+                message.role == Role::System
+                    && extract_text(&message.content).contains("final inference step")
+            }));
+            AssistantOutput::text("final evidence")
+        } else {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: format!("call-final-{n}"),
+                tool_id: "echo".to_string(),
+                arguments: serde_json::json!({"text": "collect"}),
+            }])
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 #[tokio::test]
 async fn a_loop_that_never_ends_naturally_terminates_on_the_step_ceiling() {
     let ran = Arc::new(AtomicUsize::new(0));
@@ -857,9 +893,32 @@ async fn the_configured_step_ceiling_is_honored() {
     assert_eq!(outcome, RunState::Ended(EndCause::MaxSteps));
     assert_eq!(
         ran.load(Ordering::SeqCst),
-        3,
-        "the loop honors the configured step ceiling"
+        2,
+        "the final inference allowance never executes another tool"
     );
+}
+
+#[tokio::test]
+async fn the_last_step_is_reserved_for_a_natural_final_response() {
+    let ran = Arc::new(AtomicUsize::new(0));
+    let llm = Arc::new(ToolUntilFinalRequest {
+        calls: AtomicUsize::new(0),
+        saw_final_request: AtomicUsize::new(0),
+    });
+    let runtime = Runtime::new()
+        .with_llm(llm.clone())
+        .with_tool(Arc::new(EchoTool { ran: ran.clone() }))
+        .with_gate(Arc::new(ConstGate(GateOutcome::Allow)));
+
+    let outcome = runtime
+        .execute(activation_with_steps(3), RuntimeRunContext::new())
+        .await
+        .expect("runs");
+
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(llm.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(llm.saw_final_request.load(Ordering::SeqCst), 1);
+    assert_eq!(ran.load(Ordering::SeqCst), 2);
 }
 
 /// First response interleaves a text block and a tool-call block; the second ends.

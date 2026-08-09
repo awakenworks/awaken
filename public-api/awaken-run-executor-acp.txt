@@ -8,6 +8,7 @@ pub use awaken_run_executor_acp::McpServerConfig
 pub use awaken_run_executor_acp::McpTransport
 pub use awaken_run_executor_acp::SandboxError
 pub use awaken_run_executor_acp::SecretBroker
+pub use awaken_run_executor_acp::Supervisor
 pub enum awaken_run_executor_acp::AcpAcquisition
 pub awaken_run_executor_acp::AcpAcquisition::Direct
 pub awaken_run_executor_acp::AcpAcquisition::Direct::args: &'static [&'static str]

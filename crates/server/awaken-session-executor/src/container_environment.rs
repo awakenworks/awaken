@@ -18,7 +18,11 @@ use crate::deployment_config::SandboxTier;
     feature = "container-k8s"
 ))]
 use crate::sandbox_source::container_image;
-#[cfg(any(feature = "container-docker", feature = "container-podman"))]
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
 use crate::sandbox_source::spawn_container_reaper;
 
 #[cfg(any(
@@ -134,16 +138,31 @@ async fn k8s_package_provisioner(
         crate::PackageImageBuilder::Podman => {
             Err("package_image_builder=podman needs the `container-podman` feature".into())
         }
-        crate::PackageImageBuilder::Kubernetes => Ok(Some(Arc::new(
-            awaken_sandbox_container::k8s::K8sPackageImageProvisioner::connect(
-                settings.k8s_namespace.clone(),
-                registry,
-                settings.k8s_image_pull_secrets.clone(),
-                settings.package_registry_insecure,
-            )
-            .await
-            .map_err(|error| format!("Kubernetes package builder: {error}"))?,
-        ))),
+        crate::PackageImageBuilder::Kubernetes => {
+            let mut provisioner =
+                awaken_sandbox_container::k8s::K8sPackageImageProvisioner::connect(
+                    settings.k8s_namespace.clone(),
+                    registry,
+                    settings.k8s_image_pull_secrets.clone(),
+                    settings.package_registry_insecure,
+                )
+                .await
+                .map_err(|error| format!("Kubernetes package builder: {error}"))?
+                .with_buildkit_image(settings.k8s_buildkit_image.clone())
+                .map_err(|error| format!("Kubernetes package builder: {error}"))?;
+            if let Some(url) = settings
+                .container_forward_proxy
+                .as_deref()
+                .filter(|url| !url.trim().is_empty())
+            {
+                provisioner = provisioner
+                    .with_forward_proxy(awaken_sandbox_container::ForwardProxy {
+                        url: url.to_owned(),
+                    })
+                    .map_err(|error| format!("Kubernetes package builder: {error}"))?;
+            }
+            Ok(Some(Arc::new(provisioner)))
+        }
     }
 }
 
@@ -213,6 +232,7 @@ pub(crate) async fn build(
                     .map_err(|error| format!("k8s runtime: {error}"))?
                     .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone()),
             );
+            spawn_container_reaper(runtime.clone(), settings);
             let package_provisioner = k8s_package_provisioner(settings).await?;
             finish(runtime, image, settings, package_provisioner)?
         }

@@ -469,6 +469,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T10 | exact/live | explicit renewal within registry lease | - | begin reaches control |
     // | T11 | exact/live | implicit/non-renew begin | - | reject before control |
     // | T12 | exact/live | renewal beyond registry lease | - | reject before control |
+    // | T13 | exact/live | exact/live | frozen Session | resume without contribution |
+    // | T14 | exact/live | exact/live | wrong Session | reject resume before control |
     let client = WorkerControlClient::new(upstream.clone());
     let contribution = awaken_session_contract::ApplicationSessionContribution {
         session_id: "signed-thread".into(),
@@ -484,6 +486,20 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         awaken_session_contract::ApplicationContributionOutcome::Committed
     );
     assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T1");
+    let resumed = client
+        .resume_application_session(&registered.snapshot.identity, &claim, "signed-thread")
+        .await
+        .expect("T13 claim-bound frozen Session resume")
+        .expect("T13 frozen Session has a realization directive");
+    assert_eq!(resumed.projection, receipt.contribution.projection, "T13");
+    assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T13");
+    assert!(
+        client
+            .resume_application_session(&registered.snapshot.identity, &claim, "another-session",)
+            .await
+            .is_err(),
+        "T14"
+    );
     let mut wrong_owner = claim.clone();
     wrong_owner.owner = "another-owner".into();
     assert!(
@@ -525,7 +541,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .begin_session_realization(&registered.snapshot.identity, renewal.clone())
         .await
         .expect("T10");
-    assert_eq!(contributions.begins.lock().unwrap().len(), 2, "T10");
+    assert_eq!(contributions.begins.lock().unwrap().len(), 3, "T10");
     let mut implicit = renewal.clone();
     implicit.target.renew_existing_lease = false;
     assert!(
@@ -544,7 +560,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T12"
     );
-    assert_eq!(contributions.begins.lock().unwrap().len(), 2, "T11/T12");
+    assert_eq!(contributions.begins.lock().unwrap().len(), 3, "T11/T12");
     client
         .activate_session_realization(
             &registered.snapshot.identity,

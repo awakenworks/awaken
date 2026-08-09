@@ -231,7 +231,18 @@ async fn infer_with_retry_inner(
             continuation_request(&request, &prefix)
         };
         sink.reset();
-        match llm.infer_streaming(attempt_request, &sink).await {
+        let attempt_result = tokio::time::timeout(
+            policy.attempt_timeout,
+            llm.infer_streaming(attempt_request, &sink),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(awaken_runtime_contract::llm::Error::Timeout(format!(
+                "inference attempt exceeded {}ms",
+                policy.attempt_timeout.as_millis()
+            )))
+        });
+        match attempt_result {
             Ok(response) => {
                 permit.success();
                 return Ok(stitch_prefix(response, &prefix));

@@ -21,6 +21,51 @@ static METER_PROVIDER: OnceLock<SdkMeterProvider> = OnceLock::new();
 /// [`render_prometheus`] can encode a scrape of the whole process's metrics.
 static PROM_REGISTRY: OnceLock<prometheus::Registry> = OnceLock::new();
 
+struct HandLifecycleMetrics {
+    count: Counter<u64>,
+    duration: Histogram<f64>,
+    live: UpDownCounter<i64>,
+}
+
+static HAND_LIFECYCLE_METRICS: OnceLock<HandLifecycleMetrics> = OnceLock::new();
+
+fn hand_lifecycle_metrics() -> &'static HandLifecycleMetrics {
+    HAND_LIFECYCLE_METRICS.get_or_init(|| {
+        let meter = global::meter("awaken-observability");
+        HandLifecycleMetrics {
+            count: meter
+                .u64_counter("awaken.hand.lifecycle.count")
+                .with_description("Worker-local Hand lifecycle operations by event and outcome.")
+                .build(),
+            duration: meter
+                .f64_histogram("awaken.hand.lifecycle.duration")
+                .with_unit("s")
+                .with_description("Worker-local Hand lifecycle operation duration.")
+                .build(),
+            live: meter
+                .i64_up_down_counter("awaken.hand.live")
+                .with_description("Hand processes currently known live in this Worker.")
+                .build(),
+        }
+    })
+}
+
+/// Record one content-free Worker-local Hand lifecycle result.
+pub fn record_hand_lifecycle(event: &'static str, outcome: &'static str, duration: Duration) {
+    let labels = [
+        KeyValue::new("event", event),
+        KeyValue::new("outcome", outcome),
+    ];
+    let metrics = hand_lifecycle_metrics();
+    metrics.count.add(1, &labels);
+    metrics.duration.record(duration.as_secs_f64(), &labels);
+}
+
+/// Adjust the process-local count after a Hand launch or proven reap.
+pub fn add_live_hand(delta: i64) {
+    hand_lifecycle_metrics().live.add(delta, &[]);
+}
+
 /// Records the runtime's structure-only metrics onto OpenTelemetry instruments
 /// bound to the global `Meter`. Construct it at the composition root **after**
 /// [`init_meters`] has installed the provider, so the instruments bind to the
@@ -366,6 +411,11 @@ mod meter_tests {
         recorder.record_dispatch_fenced();
         recorder.record_dispatch_in_flight(1);
         recorder.record_dispatch_drive(Duration::from_millis(9));
+        // Hand telemetry rule H1: a lifecycle result records one content-free
+        // event/outcome counter + duration; a proven launch/reap adjusts the live
+        // process gauge through the same global meter.
+        record_hand_lifecycle("reacquire", "ok", Duration::from_millis(4));
+        add_live_hand(1);
 
         let scrape = render_prometheus();
 
@@ -388,6 +438,9 @@ mod meter_tests {
             "awaken_dispatch_commits_fenced",
             "awaken_dispatch_runs_in_flight",
             "awaken_dispatch_drive_duration",
+            "awaken_hand_lifecycle_count",
+            "awaken_hand_lifecycle_duration",
+            "awaken_hand_live",
         ] {
             assert!(
                 scrape.contains(stem),
@@ -397,7 +450,9 @@ mod meter_tests {
 
         // Structure-only labels are carried through (model id + outcome), never content.
         assert!(
-            scrape.contains("oracle-model") && scrape.contains("oracle-tool"),
+            scrape.contains("oracle-model")
+                && scrape.contains("oracle-tool")
+                && scrape.contains("reacquire"),
             "the structure-only labels are present in the scrape:\n{scrape}"
         );
     }

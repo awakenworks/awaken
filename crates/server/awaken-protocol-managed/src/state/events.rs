@@ -974,21 +974,7 @@ impl ManagedState {
                 record.session.status = "idle";
             }
             if let Some(activity_epoch) = activity_epoch {
-                let still_pending = if processing.is_ok() {
-                    self.runtime
-                        .pending_tool(session_id)
-                        .await
-                        .map_err(StateError::Run)?
-                        .is_some()
-                } else {
-                    false
-                };
-                let reason = if still_pending {
-                    awaken_session_contract::SessionIdleReason::AwaitingAction
-                } else {
-                    awaken_session_contract::SessionIdleReason::EndTurn
-                };
-                self.settle_session_activity(session_id, activity_epoch, reason)
+                self.settle_session_activity(session_id, activity_epoch)
                     .await?;
             }
             processing?;
@@ -1172,19 +1158,26 @@ impl ManagedState {
         Ok(())
     }
 
-    /// `GET /v1/sessions/{id}/events` — the session's events, oldest-first, paged
-    /// by cursor via the kernel's shared [`paginate_by_id`]. `cursor` is the id of
-    /// the last event on the previous page; an absent/empty cursor starts at the
-    /// beginning; an unknown cursor is a caller error (400).
+    /// `GET /v1/sessions/{id}/events` — the session's events in the requested
+    /// chronological direction, paged by cursor via the kernel's shared
+    /// [`paginate_by_id`]. `cursor` is the id of the last event on the previous
+    /// page; an absent/empty cursor starts at that direction's beginning; an
+    /// unknown cursor is a caller error (400).
     pub fn list_events(
         &self,
         session_id: &str,
         cursor: Option<&str>,
         limit: Option<usize>,
+        descending: bool,
     ) -> Result<ListEventsResponse, StateError> {
         let sessions = self.sessions.lock().unwrap();
         let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        let page = paginate_by_id(&record.events, cursor, limit, |e| e.id.as_str())
+        let ordered = if descending {
+            record.events.iter().rev().cloned().collect::<Vec<_>>()
+        } else {
+            record.events.clone()
+        };
+        let page = paginate_by_id(&ordered, cursor, limit, |e| e.id.as_str())
             .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;
         Ok(ListEventsResponse {
             data: page.items.to_vec(),
@@ -1418,7 +1411,8 @@ mod tests {
         state.refresh_committed_events(&thread).await.unwrap();
         assert_eq!(state.get_session(&thread).unwrap().status, "running", "R1");
         let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
+                .unwrap();
         assert!(!rendered.contains("session.status_idle"), "R1");
 
         let call_id = "call-cross-submit";
@@ -1447,7 +1441,8 @@ mod tests {
         state.refresh_committed_events(&thread).await.unwrap();
         state.refresh_committed_events(&thread).await.unwrap();
         let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
+                .unwrap();
         assert_eq!(rendered.matches(call_id).count(), 2, "R2");
         assert_eq!(rendered.matches("session.status_idle").count(), 1, "R2/E4");
 
@@ -1477,7 +1472,8 @@ mod tests {
         state.refresh_committed_events(&thread).await.unwrap();
         state.refresh_committed_events(&thread).await.unwrap();
         let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
+                .unwrap();
         assert_eq!(rendered.matches("session.status_idle").count(), 2, "R3/E4");
         assert_eq!(rendered.matches("done").count(), 1, "R3/E4");
 
@@ -1521,7 +1517,8 @@ mod tests {
         state.refresh_committed_events(&thread).await.unwrap();
         state.refresh_committed_events(&thread).await.unwrap();
         let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
+                .unwrap();
         assert_eq!(rendered.matches("session.status_idle").count(), 3, "R4/E4");
         assert_eq!(rendered.matches("local done").count(), 1, "R4/E4");
 
@@ -1576,7 +1573,8 @@ mod tests {
             .unwrap();
         state.refresh_committed_events(&thread).await.unwrap();
         let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
+                .unwrap();
         assert_eq!(rendered.matches("session.status_idle").count(), 4, "R6/E7");
         assert_eq!(rendered.matches(resumed_call_id).count(), 2, "R6/E2/E4");
 
@@ -1617,7 +1615,8 @@ mod tests {
         state.refresh_committed_events(&thread).await.unwrap();
         state.refresh_committed_events(&thread).await.unwrap();
         let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None).unwrap().data).unwrap();
+            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
+                .unwrap();
         assert_eq!(
             rendered.matches("agent.custom_tool_use").count(),
             1,
@@ -1626,7 +1625,11 @@ mod tests {
         assert!(!rendered.contains("\"type\":\"agent.tool_use\""), "R5/E6");
         assert_eq!(rendered.matches(cold_call_id).count(), 2, "R5/E2/E4");
 
-        let before = state.list_events(&thread, None, None).unwrap().data.len();
+        let before = state
+            .list_events(&thread, None, None, false)
+            .unwrap()
+            .data
+            .len();
         let missing = state
             .append_committed_step(
                 &thread,
@@ -1644,7 +1647,11 @@ mod tests {
             "R7/E9"
         );
         assert_eq!(
-            state.list_events(&thread, None, None).unwrap().data.len(),
+            state
+                .list_events(&thread, None, None, false)
+                .unwrap()
+                .data
+                .len(),
             before,
             "R7/E4/E9"
         );

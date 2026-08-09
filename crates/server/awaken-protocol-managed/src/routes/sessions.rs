@@ -999,6 +999,24 @@ fn parse_event_deltas(raw: Option<&str>) -> Result<bool, WireErr> {
     Ok(requested)
 }
 
+fn parse_event_list_order(raw: Option<&str>) -> Result<SessionListOrder, WireErr> {
+    let mut order = None;
+    if let Some(query) = raw {
+        for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+            if key != "order" {
+                continue;
+            }
+            if order.is_some() {
+                return Err(error_response(StateError::Run(RunError::bad_request(
+                    "order may be specified once",
+                ))));
+            }
+            order = Some(SessionListOrder::parse(&value)?);
+        }
+    }
+    Ok(order.unwrap_or(SessionListOrder::Asc))
+}
+
 /// The terminal committed events that close a turn's SSE stream.
 fn is_terminal(frame: &StreamFrame) -> bool {
     matches!(
@@ -1195,14 +1213,21 @@ async fn send_events(
 async fn list_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
+    RawQuery(raw): RawQuery,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let order = parse_event_list_order(raw.as_deref())?;
     state
         .refresh_committed_events(&id)
         .await
         .map_err(error_response)?;
     state
-        .list_events(&id, query.page.as_deref(), query.limit)
+        .list_events(
+            &id,
+            query.page.as_deref(),
+            query.limit,
+            order == SessionListOrder::Desc,
+        )
         .map(Json)
         .map_err(error_response)
 }

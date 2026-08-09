@@ -307,15 +307,18 @@ pub(crate) fn container_image(image: Option<&str>) -> Result<String, String> {
         .ok_or_else(|| "a container sandbox tier requires AWAKEN_CONTAINER_IMAGE".to_string())
 }
 
-/// Spawn the cross-restart container reaper on `runtime` (docker/podman): a background
+/// Spawn the cross-restart container reaper on `runtime`: a background
 /// sweep that reaps awaken-labeled containers a *crashed* worker left behind — exited
 /// (agent done) or aged past the cap (hung / leaked warm instance). On by default (a
 /// safety net); typed [`SandboxSettings`](crate::deployment_config::SandboxSettings)
-/// selects enablement, cadence and maximum age. NOT wired for k8s: pods carry
-/// `ownerReferences`, so
-/// native GC reaps them (its `list_managed` is empty → a reaper there is a no-op).
+/// selects enablement, cadence and maximum age. Kubernetes also participates because
+/// ownerless local/control-plane deployments have no native GC owner to delete.
 /// Called once per host from the composition seam, so exactly one loop runs.
-#[cfg(any(feature = "container-docker", feature = "container-podman"))]
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
 pub(crate) fn spawn_container_reaper<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     runtime: Arc<R>,
     settings: &crate::deployment_config::SandboxSettings,

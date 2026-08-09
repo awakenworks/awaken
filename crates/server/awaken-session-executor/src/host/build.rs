@@ -933,12 +933,14 @@ impl SharedHost {
         hand_factory: Arc<dyn crate::HandExecutorFactory>,
     ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
-        self.session_provider = crate::session_environment::SessionEnvironmentProvider::container(
-            provider,
-            Vec::new(),
-            hand_factory,
-            hand_bin,
-        );
+        self.session_provider =
+            crate::session_environment::SessionEnvironmentProvider::container_with_hand_idle(
+                provider,
+                Vec::new(),
+                hand_factory,
+                hand_bin,
+                std::time::Duration::from_secs(self.deployment.sandbox.container_hand_idle_secs),
+            );
         self.session_provider_explicit = true;
         if let Some(mounter) = self.memory_mounter() {
             self.session_provider.install_memory_mounter(mounter);

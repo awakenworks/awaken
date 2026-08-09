@@ -136,6 +136,12 @@ pub(crate) fn spawn_heartbeat(
 
 async fn revoke_worker_session_authority(lifecycle: &WorkerLifecycle) {
     lifecycle.host.begin_pool_drain().await;
+    // Fail closed without racing terminal sandbox disposal against in-flight
+    // native tools. Cancellation stops each process group (including descendant
+    // containers), and the bounded drain lets those futures release their
+    // workspace handles before the directories are reaped below.
+    lifecycle.host.interrupt_all_session_runs().await;
+    wait_for_in_flight(&lifecycle.host, std::time::Duration::from_secs(20)).await;
     if let Err(error) = lifecycle.host.revoke_all_session_realizations().await {
         eprintln!("Session realization revocation remains incomplete: {error}");
     }
