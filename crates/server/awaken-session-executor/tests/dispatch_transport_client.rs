@@ -14,7 +14,7 @@ use awaken_agent_contract::thread::commit::coordinator::Coordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_dispatch::{
     CredentialRealizationReceipt, DispatchOutcome, DispatchQueue, FencedStreamCheckpointStore,
-    HttpDispatchQueue, MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, WorkerIdentity,
+    MemoryDispatchStore, PendingInput, RunClaim, RunDispatch, WorkerIdentity,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
@@ -29,6 +29,7 @@ use awaken_runtime_contract::{
 };
 use awaken_session_executor::{WorkerDispatchService, dispatch_transport_router_with_service};
 use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamCheckpointStore};
+use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, ManualWorkerClock,
 };

@@ -59,6 +59,7 @@ awaken-tenancy = { workspace = true }
 awaken-dispatch = { workspace = true }
 awaken-dispatch-contract.workspace = true
 awaken-worker-transport-security = { workspace = true }
+awaken-coordinator-client.workspace = true
 awaken-run-executor-acp = { workspace = true }
 awaken-acp-contract = { workspace = true }
 awaken-config-resolver = { workspace = true }

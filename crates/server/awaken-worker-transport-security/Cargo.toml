@@ -10,7 +10,7 @@ layer = "infrastructure"
 authority = "worker-transport-security"
 
 [dependencies]
-awaken-dispatch.workspace = true
+awaken-dispatch-contract.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 base64 = "0.22"
