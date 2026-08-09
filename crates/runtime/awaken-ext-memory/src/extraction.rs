@@ -5,8 +5,9 @@
 //! authorization decision. The intent therefore carries only the already-selected
 //! Workspace, MemoryStore identity/config version, secret-free extractor snapshot
 //! and input.
-//! No principal, role, API key, policy, Project, WorkUnit or credential material
-//! crosses this boundary.
+//! No authorization principal, API key, Project/WorkUnit identity, or raw
+//! credential material crosses this boundary. The complete executable snapshot
+//! may carry secret-free permission policy and credential references.
 
 use async_trait::async_trait;
 use awaken_agent_contract::agent::message::Message;
@@ -16,16 +17,64 @@ use awaken_agent_contract::thread::read::transcript::{
 use serde::{Deserialize, Serialize};
 
 /// Frozen, secret-free extractor configuration used by every retry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MemoryExtractorSnapshot {
-    pub agent_id: String,
-    /// Complete configuration-publication candidate used on every retry. It
-    /// contains references only, never secret bytes.
-    pub model: awaken_runtime_contract::resolved::ResolvedModelCandidate,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<String>,
+    /// Complete ordinary Agent publication used on every retry. It contains
+    /// model/tool/plugin references only, never secret bytes.
+    pub agent: awaken_runtime_contract::ExecutableAgentSnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extraction_prompt: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for MemoryExtractorSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Current {
+                agent: awaken_runtime_contract::ExecutableAgentSnapshot,
+                #[serde(default)]
+                extraction_prompt: Option<String>,
+            },
+            Legacy {
+                agent_id: String,
+                model: awaken_runtime_contract::resolved::ResolvedModelCandidate,
+                #[serde(default)]
+                instructions: Option<String>,
+                #[serde(default)]
+                extraction_prompt: Option<String>,
+            },
+        }
+
+        Ok(match Stored::deserialize(deserializer)? {
+            Stored::Current {
+                agent,
+                extraction_prompt,
+            } => Self {
+                agent,
+                extraction_prompt,
+            },
+            Stored::Legacy {
+                agent_id,
+                model,
+                instructions,
+                extraction_prompt,
+            } => Self {
+                agent: crate::memory_agent(
+                    &agent_id,
+                    model,
+                    instructions
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or(crate::DEFAULT_MEMORY_INSTRUCTIONS),
+                ),
+                extraction_prompt,
+            },
+        })
+    }
 }
 
 impl MemoryExtractorSnapshot {
@@ -39,16 +88,19 @@ impl MemoryExtractorSnapshot {
         model_ref: impl Into<String>,
         backend_ref: impl Into<String>,
     ) -> Self {
+        let agent_id = agent_id.into();
         Self {
-            agent_id: agent_id.into(),
-            model: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                awaken_runtime_contract::resolved::ModelBinding::new(
-                    provider_identity_ref,
-                    model_ref,
-                    backend_ref,
+            agent: crate::memory_agent(
+                &agent_id,
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                    awaken_runtime_contract::resolved::ModelBinding::new(
+                        provider_identity_ref,
+                        model_ref,
+                        backend_ref,
+                    ),
                 ),
+                crate::DEFAULT_MEMORY_INSTRUCTIONS,
             ),
-            instructions: None,
             extraction_prompt: None,
         }
     }
@@ -313,10 +365,19 @@ impl MemoryExtractionIntent {
             ("session_id", self.session_id.as_str()),
             ("terminal_commit_id", self.terminal_commit_id.as_str()),
             ("memory_store_id", self.memory_store_id.as_str()),
-            ("extractor.agent_id", self.extractor.agent_id.as_str()),
+            (
+                "extractor.agent_id",
+                self.extractor.agent.root_agent_id.0.as_str(),
+            ),
             (
                 "extractor.model_ref",
-                self.extractor.model.binding.model_ref.as_str(),
+                self.extractor
+                    .agent
+                    .resolved_spec
+                    .model_binding
+                    .binding
+                    .model_ref
+                    .as_str(),
             ),
         ] {
             if value.trim().is_empty() {
@@ -1204,18 +1265,12 @@ mod tests {
             0,
             1,
             vec![Message::text(Id("m1".into()), Role::User, "remember me")],
-            MemoryExtractorSnapshot {
-                agent_id: "memory-agent".into(),
-                model: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
-                    awaken_runtime_contract::resolved::ModelBinding::new(
-                        "host",
-                        "model-config-2",
-                        "host",
-                    ),
-                ),
-                instructions: None,
-                extraction_prompt: None,
-            },
+            MemoryExtractorSnapshot::host_executor(
+                "memory-agent",
+                "host",
+                "model-config-2",
+                "host",
+            ),
         )
         .unwrap()
     }
@@ -1416,15 +1471,11 @@ mod tests {
     fn intent_is_secret_and_authorization_language_free_on_the_wire() {
         let value = serde_json::to_value(intent()).unwrap();
         let text = value.to_string();
-        // `transcript[*].role` is the Agent message role, not an IAM role.
-        for forbidden in [
-            "principal",
-            "api_key",
-            "authorization_role",
-            "iam_role",
-            "policy",
-            "credential",
-        ] {
+        // Cause/effect rule: freezing a complete ordinary Agent snapshot may
+        // include secret-free permission policy and credential *references*;
+        // it must never persist an authorization principal or raw material.
+        // `transcript[*].role` remains the Agent message role, not an IAM role.
+        for forbidden in ["principal", "api_key", "bearer_token", "password", "secret"] {
             assert!(!text.contains(forbidden));
         }
         assert_eq!(value["workspace_id"], "ws-a");

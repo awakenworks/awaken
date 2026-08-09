@@ -1,11 +1,9 @@
-//! The neutral session vocabulary + the [`SessionRuntime`] port now live in
-//! `awaken-session-contract` (a contract/ leaf); this module re-exports them so
-//! existing `crate::state::…` / `awaken_protocol_managed::…` paths keep resolving
-//! until consumers flip to the contract directly. The Managed wire DTOs + the
-//! neutral→wire encoder stay in this adapter (`crate::types`, `crate::project`).
+//! Private imports of neutral Session vocabulary consumed by adapter state.
+//! Public consumers import these types from `awaken-session-contract`; the
+//! protocol crate publishes no compatibility path.
 
-pub use awaken_session_contract::{
-    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
-    SessionInit, SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
+pub(crate) use awaken_session_contract::{
+    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxError, LiveInboxSnapshot,
+    OutcomeIteration, OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime,
+    SessionUsage, StepOutcome, ToolPermissionDecision,
 };

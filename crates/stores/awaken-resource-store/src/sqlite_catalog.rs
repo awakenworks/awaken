@@ -465,7 +465,7 @@ impl ResourceCatalog for SqliteResourceStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_resource_contract::{ClonePolicy, ExtractionPolicy, RecallPolicy, RetentionPolicy};
+    use awaken_resource_contract::{ClonePolicy, RetentionPolicy};
 
     fn memory() -> (MemoryStoreDefinition, MemoryStoreConfigVersion) {
         (
@@ -482,8 +482,6 @@ mod tests {
             MemoryStoreConfigVersion {
                 memory_store_id: "memory-1".into(),
                 version: ConfigVersion::INITIAL,
-                recall_policy: RecallPolicy::default(),
-                extraction_policy: ExtractionPolicy::default(),
                 retention_policy: RetentionPolicy::default(),
             },
         )
@@ -530,7 +528,7 @@ mod tests {
                 .unwrap()
                 .unwrap();
             second.version = ConfigVersion(2);
-            second.recall_policy.max_results = 25;
+            second.retention_policy.retention_days = Some(25);
             assert!(matches!(
                 store.publish_memory_config("workspace-b", ConfigVersion(1), second.clone()),
                 Err(ResourceCatalogError::NotFound(_))

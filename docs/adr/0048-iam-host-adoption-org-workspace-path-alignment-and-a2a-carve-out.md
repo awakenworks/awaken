@@ -24,7 +24,7 @@ listed as Non-Goals. Since then two facts changed the ground:
    (`Open`/`Local`/`Remote`), one `IamGate` (authentication + authorization in
    one handle), and an `auth_layer(gate, RouteActions)` axum middleware. The
    in-repo management plane instead hand-rolls two parallel engines
-   (`ManagementAuthz` in `awaken-server-local/src/authz.rs`, `EnforceEngine` in
+   (`ManagementAuthz` in `awaken-coordinator-local/src/authz.rs`, `EnforceEngine` in
    `awaken-authz-enforce`), each with its own token directory, route→action
    table, and mint path, gated opt-in behind `AWAKEN_MGMT_IAM=embedded` (unset =
    fully open, no guard).

@@ -178,17 +178,19 @@ async function main() {
     server = start(directory);
     await ready(server);
 
-    assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 500);
+    // Cause/effect boundary rule: missing internal catalog config can fail
+    // resource lifecycle/binding, but cannot make removed HTTP routes reappear.
+    assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 404);
     assert.equal(
       (await json('GET', `memory_stores/${memory.body.id}/config_versions/1`)).status,
-      500,
+      404,
     );
     assert.equal(
       (await json('POST', `memory_stores/${memory.body.id}/config`, {
         expected_config_version: 1,
         recall_policy: { enabled: true },
       })).status,
-      500,
+      404,
     );
     assert.equal((await json('DELETE', `memory_stores/${memory.body.id}`)).status, 500);
     const deniedMemoryBinding = await json('POST', 'sessions', {
@@ -224,7 +226,7 @@ async function main() {
     assert.equal(recovered.activations.at(-1).state, 'active');
     assert.equal(recovered.activations.at(-1).attempts, 2);
     assert.equal(recovered.activations.at(-1).last_error, undefined);
-    assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 200);
+    assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 404);
 
     // Every catalog read validates the complete aggregate. Corrupt durable JSON
     // must fail closed on a cold process without panicking or serving a partial

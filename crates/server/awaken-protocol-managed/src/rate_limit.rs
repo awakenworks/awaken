@@ -191,7 +191,9 @@ fn apply_headers(headers: &mut HeaderMap, decision: RateDecision) {
         .unwrap_or_default()
         .as_millis() as u64
         + decision.reset_after.saturating_mul(1_000);
-    if let Ok(value) = HeaderValue::from_str(&crate::cron::to_rfc3339(reset_ms)) {
+    if let Ok(value) =
+        HeaderValue::from_str(&awaken_session_contract::epoch_millis_to_rfc3339(reset_ms))
+    {
         headers.insert("anthropic-ratelimit-requests-reset", value);
     }
     if let Some(retry_after) = decision.retry_after {
@@ -231,8 +233,6 @@ fn is_managed_family(segments: &[&str]) -> bool {
                     | "skills"
                     | "user_profiles"
                     | "dreams"
-                    | "dream_policies"
-                    | "dream_agent_configuration"
             )
         )
 }
@@ -249,8 +249,6 @@ fn is_create_endpoint(segments: &[&str]) -> bool {
             | ["v1", "skills"]
             | ["v1", "user_profiles"]
             | ["v1", "dreams"]
-            | ["v1", "dream_policies", _]
-            | ["v1", "dream_agent_configuration"]
             | ["v1", "sessions", _, "resources"]
             | ["v1", "vaults", _, "credentials"]
             | ["v1", "memory_stores", _, "memories"]

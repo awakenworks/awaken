@@ -82,7 +82,7 @@ async fn postgres_commit_backs_execute_resume_and_survives_restart() {
         "the active ticket rehydrated — the await survives restart"
     );
 
-    // Resume against the rehydrated reader: the pending tool runs and the run ends.
+    // RunResume against the rehydrated reader: the pending tool runs and the run ends.
     let context = RuntimeRunContext::new().with_commit(restarted.clone());
     let state = runtime
         .resume(allow_resume(), restarted.as_ref(), context)

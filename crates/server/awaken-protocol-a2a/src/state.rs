@@ -1,6 +1,6 @@
 //! Router-scoped A2A task projections, live subscribers, and push subscriptions.
 //!
-//! Runtime truth remains behind `ProtocolRuntime`; this state only caches the A2A
+//! Runtime truth remains behind `RunApplication`; this state only caches the A2A
 //! wire projection needed by resubscribe and webhook delivery. It is shared by all
 //! routes mounted from one router and never enters the neutral runtime.
 
@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
-use awaken_protocol_transport::ProtocolRuntime;
+use awaken_session_contract::RunApplication;
 
 use crate::types::{PushNotificationConfig, StreamResponse, Task, TaskStatusUpdateEvent};
 
@@ -30,7 +30,7 @@ pub(crate) enum PushProtocolVersion {
 
 #[derive(Clone)]
 pub(crate) struct A2aState {
-    pub runtime: Arc<dyn ProtocolRuntime>,
+    pub runtime: Arc<dyn RunApplication>,
     inner: Arc<RwLock<Inner>>,
     client: ureq::Agent,
     delivery_queues: Arc<StdMutex<HashMap<String, mpsc::UnboundedSender<Delivery>>>>,
@@ -73,12 +73,12 @@ struct PersistentState {
 }
 
 impl A2aState {
-    pub fn new(runtime: Arc<dyn ProtocolRuntime>, persistence_path: Option<PathBuf>) -> Self {
+    pub fn new(runtime: Arc<dyn RunApplication>, persistence_path: Option<PathBuf>) -> Self {
         Self::with_persistence_path(runtime, persistence_path)
     }
 
     fn with_persistence_path(
-        runtime: Arc<dyn ProtocolRuntime>,
+        runtime: Arc<dyn RunApplication>,
         persistence_path: Option<PathBuf>,
     ) -> Self {
         let persistent = persistence_path
@@ -476,21 +476,26 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use awaken_agent_contract::agent::message::Message;
-    use awaken_protocol_transport::{DriverError, Pending, Resume, StepOutcome};
+    use awaken_session_contract::{Pending, RunApplicationError, RunResume, StepOutcome};
 
     struct Runtime;
 
     #[async_trait]
-    impl ProtocolRuntime for Runtime {
+    impl RunApplication for Runtime {
         async fn run(
             &self,
             _: &str,
             _: Option<String>,
             _: Vec<Message>,
-        ) -> Result<StepOutcome, DriverError> {
+        ) -> Result<StepOutcome, RunApplicationError> {
             unreachable!()
         }
-        async fn resume(&self, _: &str, _: &str, _: Resume) -> Result<StepOutcome, DriverError> {
+        async fn resume(
+            &self,
+            _: &str,
+            _: &str,
+            _: RunResume,
+        ) -> Result<StepOutcome, RunApplicationError> {
             unreachable!()
         }
         async fn pending(&self, _: &str) -> Option<Pending> {

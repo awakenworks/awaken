@@ -4,7 +4,6 @@
 //! ConfigService, publication persistence, and schema ownership remain in their
 //! existing modules.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 

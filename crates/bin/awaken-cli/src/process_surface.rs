@@ -54,8 +54,9 @@ pub(crate) fn finish(
         );
         flat = flat.layer(reconcile_on_authority_change);
     }
-    let flat = awaken_server::workspace_path::with_platform_workspace(flat, platform_workspace);
-    awaken_server::workspace_path::with_workspace_path_addressing(flat)
+    let flat =
+        awaken_coordinator::workspace_path::with_platform_workspace(flat, platform_workspace);
+    awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
 }
 
 #[cfg(test)]

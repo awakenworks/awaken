@@ -28,7 +28,7 @@
 ## Context
 
 We want the platform equivalent of the "FAB" management assistant shipped elsewhere
-in the product line (the `__admin_assistant` in `awaken-server` on `origin/main` and
+in the product line (the `__admin_assistant` in `awaken-coordinator` on `origin/main` and
 in the `goal` reimplementation — a right-hand-corner console helper that reads
 platform capabilities, drafts and validates `AgentConfig`s, but never publishes and
 never touches secrets). That crate does **not** exist on this `1.0.0-dev` branch, so
@@ -66,7 +66,7 @@ Two facts about the current code make the mechanism concrete:
   name that is absent (`compile.rs:56`, fail-closed). There is **no per-scope
   visibility fence today**.
 - The model catalog is **org/deployment-shared and readable from any scope**
-  (ADR-0051's settled decision; `awaken-server/src/resource_scope_fence.rs`).
+  (ADR-0051's settled decision; `awaken-coordinator/src/resource_scope_fence.rs`).
   `compile` requires `model_binding` to be already filled (`compile.rs:82`, a plain
   clone with no default). There is **no auto-selection of a model today**.
 
@@ -86,9 +86,13 @@ authorization-free ("authority lives behind the gate"). Privilege is expressed b
 **where the config lives** and **what its scope can see** (D2, D3), not by a flag on
 the definition.
 
-Corollary: this agent's hardcoded bypass is retired in favour of the ordinary path.
-Migrating the *other* built-ins (compactor, judge, memory) onto `AgentConfig` is
-**orthogonal and out of scope** — pursued separately if at all.
+Corollary: this agent's hardcoded bypass is retired in favour of the ordinary
+path. The same invariant now applies to Dream, Compact, and Memory auxiliary
+Agents: each has a stable ordinary Agent id, resolves a Workspace publication
+first, freezes the complete executable snapshot, and uses only a built-in
+fallback when no publication exists. Per-parent Memory/Compact plugin settings
+may select a different auxiliary Agent id and override prompt text without
+creating a private catalog or a special authoring contract.
 
 ### D2: Its configuration home is a reserved `ScopeId`; execution uses a real Workspace
 

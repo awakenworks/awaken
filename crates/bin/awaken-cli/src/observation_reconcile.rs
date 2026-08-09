@@ -37,7 +37,7 @@ impl WorkerObservationReconcileGate {
 }
 
 async fn current_worker_observation_fingerprint() -> Result<String, String> {
-    let mut workers = awaken_server::worker_directory()
+    let mut workers = awaken_coordinator::worker_directory()
         .list()
         .await
         .map_err(|error| error.to_string())?;

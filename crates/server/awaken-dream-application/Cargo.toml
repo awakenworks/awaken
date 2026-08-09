@@ -1,0 +1,17 @@
+[package]
+name = "awaken-dream-application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+awaken-session-contract.workspace = true
+async-trait.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["serde"] }
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing = "0.1"
+
+[lints]
+workspace = true

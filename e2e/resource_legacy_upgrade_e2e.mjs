@@ -199,18 +199,9 @@ async function assertImportedSkill() {
   assert.equal(await filesystemContent.text(), 'legacy-filesystem-skill');
 }
 
-async function createMemory(publishConfig = false) {
+async function createMemory() {
   const c = client();
   const store = await c.beta.memoryStores.create({ betas: MEMORY_BETAS });
-  if (publishConfig) {
-    const published = await rawJson('POST', `/v1/memory_stores/${store.id}/config`, {
-      expected_config_version: 1,
-      recall_policy: { enabled: true, max_results: 17 },
-      extraction_policy: { enabled: false },
-    });
-    assert.equal(published.status, 200);
-    assert.equal(published.body.version, 2);
-  }
   const memory = await c.beta.memoryStores.memories.create(store.id, {
     path: '/new.md',
     content: 'new-memory',
@@ -240,7 +231,7 @@ async function main() {
     servers.push(first.server);
     await waitForPort(PORT);
     await assertImportedSkill();
-    const configuredStore = await createMemory(true);
+    const configuredStore = await createMemory();
     pass('legacy Memory history and two-version Skill aggregate imported once');
 
     await stopServer(first.server);
@@ -274,8 +265,8 @@ async function main() {
     assert.equal((await importedCatalog.json()).name, 'Legacy governed memory');
     assert.equal(
       (await raw('/v1/memory_stores/legacy-catalog-owned/config')).status,
-      200,
-      'an imported identity receives the initial immutable behavior config',
+      404,
+      'internal migration metadata does not expose a behavior-config route',
     );
     const archivedCatalog = await raw('/v1/memory_stores/legacy-catalog-archived');
     assert.equal(archivedCatalog.status, 200);
@@ -305,12 +296,11 @@ async function main() {
     servers.push(second.server);
     await waitForPort(PORT);
     await assertImportedSkill();
-    const restoredConfig = await raw(`/v1/memory_stores/${configuredStore}/config`);
-    assert.equal(restoredConfig.status, 200);
-    const restoredConfigBody = await restoredConfig.json();
-    assert.equal(restoredConfigBody.version, 2);
-    assert.equal(restoredConfigBody.recall_policy.max_results, 17);
-    assert.equal(restoredConfigBody.extraction_policy.enabled, false);
+    assert.equal(
+      (await raw(`/v1/memory_stores/${configuredStore}/config`)).status,
+      404,
+      'replacement keeps the compatible route inventory closed',
+    );
     const restoredLegacy = await raw('/v1/memory_stores/legacy-catalog-owned');
     assert.equal((await restoredLegacy.json()).description, 'updated after one-time import');
     await createMemory();

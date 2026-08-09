@@ -13,9 +13,10 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId};
-use awaken_protocol_managed::{
-    DelegatedRun, ManagedState, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepOutcome,
-    ToolPermissionDecision, router,
+use awaken_protocol_managed::{ManagedState, router};
+use awaken_session_contract::{
+    DelegatedRun, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepOutcome,
+    ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;

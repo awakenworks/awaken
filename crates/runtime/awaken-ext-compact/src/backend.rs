@@ -11,6 +11,8 @@ use awaken_agent_contract::agent::message::Message;
 /// One immutable prefix handed to the compactor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactRequest {
+    /// Ordinary auxiliary Agent frozen by the parent Agent's compact config.
+    pub agent_id: String,
     /// Cache/recovery namespace: parent Thread plus compaction policy identity.
     pub scope: String,
     /// Content-derived stable identity for this exact prefix and prompt.

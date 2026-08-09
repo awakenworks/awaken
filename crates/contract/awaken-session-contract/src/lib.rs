@@ -7,18 +7,19 @@
 //! inward — this is a `contract/` leaf, so the host and other implementors depend on
 //! it instead of reverse-depending on a protocol adapter.
 //!
-//! Extraction is incremental: boundaries move here one family at a time, with
-//! `awaken-protocol-managed` re-exporting each via a shim so consumers stay unchanged
-//! until they are flipped to depend on this crate directly.
+//! Protocol adapters consume these contracts directly; this crate remains the
+//! single definition site for neutral Session and cross-Session process semantics.
 
 mod agent_config;
 mod application_contribution;
 mod baseline;
+mod dream;
 mod lifecycle;
 mod mcp_attachment;
 mod mcp_probe;
 mod resource;
 mod resource_activation;
+mod run_application;
 mod session;
 mod session_realization;
 mod session_repo;
@@ -52,6 +53,12 @@ pub use baseline::{
     SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
     SessionNetworkPolicy,
 };
+pub use dream::{
+    Dream, DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig,
+    DreamModelInput, DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyConfig, DreamPolicyRecord,
+    DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamProcessStoreError,
+    DreamStatus, DreamUsage,
+};
 pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
@@ -69,11 +76,16 @@ pub use resource::{
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceState,
 };
+pub use run_application::{
+    CursorParams, EventForwardingSink, HistoryPage, RunApplication, RunApplicationError, RunResume,
+    blocks_text, epoch_millis_to_rfc3339, paginate_history,
+};
 pub use session::{
-    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionRuntime, SessionUsage,
-    StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxApplication,
+    LiveInboxApplicationError, LiveInboxEntry, LiveInboxError, LiveInboxSnapshot,
+    McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
+    SessionEnvironmentBindingSink, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
+    ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationSessionControl,

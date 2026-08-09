@@ -37,20 +37,22 @@ fn credential_state_name(state: awaken_runtime_contract::CredentialObservationSt
 
 pub(crate) struct LiveRuntimeCapabilities {
     pub(crate) initial: Vec<awaken_acp_application::AcpHostObservation>,
-    pub(crate) workers: awaken_server::WorkerDirectoryHandle,
+    pub(crate) workers: awaken_coordinator::WorkerDirectoryHandle,
     pub(crate) credentials: Arc<dyn awaken_credential_vault::repo::CredentialRepo>,
     pub(crate) workspace: String,
 }
 
 #[async_trait::async_trait]
-impl awaken_server::model_directory::ExecutorModelCapabilitySource for LiveRuntimeCapabilities {
+impl awaken_coordinator::model_directory::ExecutorModelCapabilitySource
+    for LiveRuntimeCapabilities
+{
     async fn current(&self) -> Vec<awaken_config_resolver::ExecutorModelCapability> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
         let workers = self.workers.list().await.unwrap_or_default();
-        awaken_server::model_directory::installed_executor_model_capabilities()
+        awaken_coordinator::model_directory::installed_executor_model_capabilities()
             .into_iter()
             .map(|mut capability| {
                 if capability.backend_ref != "genai" {
