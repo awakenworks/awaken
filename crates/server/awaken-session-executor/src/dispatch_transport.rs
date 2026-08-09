@@ -26,8 +26,8 @@ use awaken_dispatch::{
     ClaimWorkerRequest as ClaimWorkerReq, ClaimedStreamPublisher, CompletionSink,
     CredentialRealizationRequest as CredentialRealizationReq,
     DeliverAndClaimRequest as DeliverAndClaimReq, Dispatch, DispatchQueue,
-    EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, HttpDispatchQueue,
-    PlacementPolicy, RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
+    EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy,
+    RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
     RenewRequest as RenewReq, RunClaim, SettleRequest as SettleReq,
     StreamEventRequest as StreamEventReq, WorkerDirectory, WorkerIdentity,
     WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
@@ -35,6 +35,7 @@ use awaken_dispatch::{
 
 use crate::host::{HostError, SharedHost};
 use crate::worker_http::respond;
+use awaken_coordinator_client::HttpDispatchQueue;
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
     WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, WorkerUpstream,

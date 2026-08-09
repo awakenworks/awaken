@@ -7,10 +7,13 @@
 //! serializable [`RunDispatch`] a durable queue persists and replays — no live
 //! handles (G3). Worker wiring stays private to the host.
 
+mod claimed_commit;
 mod claimed_session;
+mod claimed_stream;
 pub mod dispatch;
 pub mod operational;
 pub mod run_dispatch;
+mod worker_transport;
 
 pub use awaken_runtime_contract::{
     AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationReceipt,
@@ -27,9 +30,11 @@ pub use awaken_worker_contract::{
     WorkerRegistration, WorkerSnapshot, WorkerState, can_assign, can_claim, can_claim_locally,
     place_assignment,
 };
+pub use claimed_commit::ClaimedRunCommit;
 pub use claimed_session::{
     ClaimedSessionContributionReceipt, ClaimedSessionControl, ClaimedSessionControlError,
 };
+pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
     AttemptCredentialBindingError, CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard,
     Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
@@ -43,4 +48,10 @@ pub use operational::{
 pub use run_dispatch::{
     ExecutionScopeRef, PlacementRequirements, RunDispatch, SessionResourceEnvelope,
     SessionRuntimeEnvelope,
+};
+pub use worker_transport::{
+    BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
+    ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
+    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest,
+    StreamEventRequest, WorkerIdentityRequest,
 };
