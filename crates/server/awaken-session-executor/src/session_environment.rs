@@ -180,9 +180,12 @@ impl SessionEnvironment {
     ) -> Result<(), pc::SandboxError> {
         pc::validate_mount_requirements(next, &self.capabilities())
             .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-        if previous != next && matches!(self, Self::Container { .. }) {
+        if previous != next
+            && let Self::Container { sandbox, .. } = self
+            && !sandbox.supports_live_mount_replacement(previous, next)
+        {
             return Err(pc::SandboxError::new(
-                "late mount replacement is unsupported on the container tier",
+                "late mount replacement is unsupported for this container input set",
             ));
         }
         Ok(())
@@ -385,7 +388,11 @@ impl SessionEnvironment {
             Self::Workdir(sandbox) => sandbox.remove_inline(logical),
             Self::Namespace(sandbox) => sandbox.remove_mount(logical),
             Self::Container { sandbox, .. } => {
-                container_files::remove(sandbox.as_ref(), logical).await
+                if awaken_sandbox_container::live_input_relative_path(logical).is_some() {
+                    sandbox.remove_live_input_path(logical).await
+                } else {
+                    container_files::remove(sandbox.as_ref(), logical).await
+                }
             }
         }
     }

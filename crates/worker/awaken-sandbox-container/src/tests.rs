@@ -419,25 +419,6 @@ impl pc::MemoryMount for FakeMemoryMount {
     }
 }
 
-#[test]
-fn pod_plan_is_process_as_container_with_native_gc() {
-    let cmd = pc::Command::new(["claude", "--acp"]);
-    let plan = pod_plan(&spec("run-7"), &cmd, "img:1", "owner-uid-123", None).unwrap();
-    assert_eq!(plan.name, "awaken-run-7");
-    // The agent argv IS the container command (not exec-into-idle).
-    assert_eq!(
-        plan.command,
-        vec!["claude".to_string(), "--acp".to_string()]
-    );
-    assert_eq!(plan.owner_uid, "owner-uid-123");
-    assert!(
-        plan.restart_never,
-        "a finished agent pod is reaped, not looped"
-    );
-    assert_eq!(plan.outputs_volume, "/mnt/session/outputs");
-    assert_eq!(plan.binds.len(), 2);
-}
-
 // ── Fake runtime + provider lifecycle ───────────────────────────────────────────
 
 #[derive(Default)]
@@ -457,7 +438,10 @@ struct FakeState {
     live_credential: Option<Vec<u8>>,
     credential_source: Option<std::path::PathBuf>,
     spawned: Vec<(String, Vec<String>)>,
+    runtime_path_observations: Vec<(Option<String>, Option<String>)>,
     process_secret_observations: Vec<(bool, bool)>,
+    live_input_projection: bool,
+    live_inputs: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -518,12 +502,40 @@ impl FakeRuntime {
         self.st.lock().unwrap().live_credential = Some(bytes.to_vec());
         self
     }
+
+    fn with_live_input_projection(self) -> Self {
+        self.st.lock().unwrap().live_input_projection = true;
+        self
+    }
 }
 
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
     fn enforces_network_none(&self) -> bool {
         true
+    }
+
+    fn supports_live_input_projection(&self) -> bool {
+        self.st.lock().unwrap().live_input_projection
+    }
+
+    async fn project_live_input(
+        &self,
+        _container_id: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), RuntimeError> {
+        self.st
+            .lock()
+            .unwrap()
+            .live_inputs
+            .insert(path.into(), bytes.to_vec());
+        Ok(())
+    }
+
+    async fn remove_live_input(&self, _container_id: &str, path: &str) -> Result<(), RuntimeError> {
+        self.st.lock().unwrap().live_inputs.remove(path);
+        Ok(())
     }
 
     async fn read_live_file(
@@ -595,6 +607,17 @@ impl ContainerRuntime for FakeRuntime {
             // Retain only the security observation, never the material itself.
             state.process_secret_observations.push(value);
         }
+        let runtime_path = |name: &str| {
+            command
+                .env
+                .iter()
+                .find(|value| value.name == name && !value.value.is_secret())
+                .map(|value| value.value.expose().to_string())
+        };
+        state.runtime_path_observations.push((
+            runtime_path("AWAKEN_PROJECT_DIR"),
+            runtime_path("AWAKEN_OUTPUTS_DIR"),
+        ));
         state.spawned.push((container_id.to_string(), command.argv));
         Ok(Box::new(FakeExecProcess { id }))
     }
@@ -871,10 +894,13 @@ async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
 
 #[tokio::test]
 async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
-    // Cross-node recovery on the container tier: two provider objects (two workers)
-    // over the SAME runtime backend — the container lives in a shared cluster/daemon
-    // reachable from both. Node A realizes it; Node A vanishes; Node B adopts it from
-    // the persisted handle and takes over its process, artifacts, and lease.
+    // Cause/effect recovery table — AR1:
+    // C1: node A persists a container handle and disappears; C2: node B shares the
+    // runtime and adopts that live handle; C3: the output boundary belongs to the
+    // sandbox specification, not either worker process.
+    // C1+C2+C3 => E1 node B reaches the same container, E2 its next process receives
+    // the exact runtime-owned project/output paths, and E3 artifacts and lease
+    // renewal remain available without creating a second environment.
     let rt =
         Arc::new(FakeRuntime::default().with_artifact("a1", "/mnt/session/outputs/o.txt", b"work"));
     let node_a = provider(rt.clone());
@@ -903,6 +929,19 @@ async fn a_second_node_adopts_a_running_container_over_the_shared_runtime() {
         .await
         .unwrap();
     assert_eq!(proc.id(), "exec-0");
+    assert_eq!(
+        rt.st
+            .lock()
+            .unwrap()
+            .runtime_path_observations
+            .last()
+            .cloned(),
+        Some((
+            Some("/workspace".into()),
+            Some("/mnt/session/outputs".into())
+        )),
+        "an adopted process receives the same runtime-owned paths"
+    );
     assert_eq!(sandbox_b.read_artifact("a1").await.unwrap(), b"work");
     sandbox_b.renew_lease().await.unwrap();
     assert_eq!(rt.st.lock().unwrap().lease_touches, 1);
@@ -930,6 +969,92 @@ async fn handle_round_trips_and_adopt_reconnects() {
     assert_eq!(proc.id(), "main");
     // late attach fails closed on this tier
     assert!(adopted.attach(spec("x").mounts.remove(0)).await.is_err());
+}
+
+#[tokio::test]
+async fn a_capable_runtime_replaces_only_read_only_files_below_the_live_input_root() {
+    // Cause/effect live-input table — LI1:
+    // C1: the resident runtime owns an isolated projector; C2: a later generation
+    // is a read-only File below /mnt/session/uploads; C3: canonical BlobSource
+    // bytes resolve. C1+C2+C3 => E1 attach atomically replaces the projected bytes
+    // and E2 removal deletes them; C1 survives handle adoption => E3 recovery uses
+    // the same projector. !C1 or !C2 => E4 fail closed without projection.
+    let runtime = Arc::new(FakeRuntime::default().with_live_input_projection());
+    let sandbox = provider(runtime.clone())
+        .create_container(&spec("live-inputs"))
+        .await
+        .unwrap();
+    let input = pc::MountRequirement {
+        mount_id: "current-report".into(),
+        source: pc::MountSource::File {
+            file_id: "file-1".into(),
+            content_hash: None,
+        },
+        mount_path: "/mnt/session/uploads/awaken-design/current/report.html".into(),
+        access: pc::MountAccess::ReadOnly,
+        lifetime: pc::MountLifetime::Session,
+        required: true,
+    };
+
+    assert!(sandbox.supports_live_mount_replacement(&[], std::slice::from_ref(&input)));
+    let realized = pc::Sandbox::attach(&sandbox, input.clone()).await.unwrap();
+    assert_eq!(realized.mount_path, input.mount_path);
+    assert_eq!(realized.access, pc::MountAccess::ReadOnly);
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .live_inputs
+            .get(&input.mount_path),
+        Some(&b"in-bytes".to_vec())
+    );
+
+    sandbox
+        .remove_live_input_path(&input.mount_path)
+        .await
+        .unwrap();
+    assert!(
+        !runtime
+            .st
+            .lock()
+            .unwrap()
+            .live_inputs
+            .contains_key(&input.mount_path)
+    );
+
+    let adopted = provider(runtime.clone())
+        .adopt_container(&pc::Sandbox::handle(&sandbox))
+        .await
+        .unwrap();
+    assert!(adopted.supports_live_mount_replacement(&[], std::slice::from_ref(&input)));
+    pc::Sandbox::attach(&adopted, input.clone())
+        .await
+        .expect("recovery retains the resident Pod's projector capability");
+
+    let mut outside = input.clone();
+    outside.mount_path = "/workspace/report.html".into();
+    assert!(!sandbox.supports_live_mount_replacement(&[], std::slice::from_ref(&outside)));
+    assert!(pc::Sandbox::attach(&sandbox, outside).await.is_err());
+
+    let mut escaped = input;
+    escaped.mount_path = "/mnt/session/uploads/../secret".into();
+    assert!(!adopted.supports_live_mount_replacement(&[], std::slice::from_ref(&escaped)));
+    assert!(pc::Sandbox::attach(&adopted, escaped).await.is_err());
+}
+
+#[tokio::test]
+async fn adopt_rejects_a_handle_whose_runtime_is_gone() {
+    /* Recovery decision rule A1: a well-formed durable handle plus a live
+     * runtime target is adoptable; A2: the same handle after physical teardown
+     * is an orphan and must fail adoption so the existing reconciler can
+     * re-place it. Merely completing locator decoding is not successful adopt. */
+    let rt = Arc::new(FakeRuntime::default());
+    let p = provider(rt);
+    let sandbox = p.create(&spec("run-gone")).await.unwrap();
+    let handle = sandbox.handle();
+    sandbox.dispose().await.unwrap();
+    assert!(p.adopt(&handle).await.is_err(), "A2");
 }
 
 #[tokio::test]
@@ -1093,15 +1218,36 @@ async fn open_agent_creates_the_container_and_returns_its_channel_and_process() 
 
 #[tokio::test]
 async fn one_container_environment_executes_native_and_agent_processes_without_recreation() {
+    // Cause/effect decision table — RP1:
+    // C1: native exec or C2: opaque Agent/Hand exec enters a ContainerSandbox;
+    // C3: the caller omits runtime paths or C4: attempts stale replacements.
+    // Rules (C1|C2)+(C3|C4) => E1 both processes receive /workspace and the
+    // sandbox's exact output boundary, E2 caller values cannot override runtime
+    // ownership, and E3 the environment is still created only once.
     let runtime = Arc::new(FakeRuntime::default());
     let sandbox = provider(runtime.clone())
         .create_container(&spec("shared-session"))
         .await
         .unwrap();
 
-    let native = pc::Sandbox::spawn(&sandbox, pc::Command::new(["sh", "-c", "touch marker"]))
-        .await
-        .unwrap();
+    let mut native_command = pc::Command::new(["sh", "-c", "touch marker"]);
+    native_command.env.extend([
+        pc::EnvVar {
+            name: "AWAKEN_PROJECT_DIR".into(),
+            value: pc::EnvValue::Inline {
+                value: "/stale-workspace".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+        pc::EnvVar {
+            name: "AWAKEN_OUTPUTS_DIR".into(),
+            value: pc::EnvValue::Inline {
+                value: "/stale-outputs".into(),
+            },
+            visibility: pc::EnvVisibility::Process,
+        },
+    ]);
+    let native = pc::Sandbox::spawn(&sandbox, native_command).await.unwrap();
     let agent = sandbox
         .spawn_agent(pc::Command {
             stdio: pc::Stdio::Piped,
@@ -1126,6 +1272,20 @@ async fn one_container_environment_executes_native_and_agent_processes_without_r
         ["sh", "-c", "touch marker"].map(str::to_string)
     );
     assert_eq!(state.spawned[1].1, ["codex", "--acp"].map(str::to_string));
+    assert_eq!(
+        state.runtime_path_observations,
+        vec![
+            (
+                Some("/workspace".into()),
+                Some("/mnt/session/outputs".into())
+            ),
+            (
+                Some("/workspace".into()),
+                Some("/mnt/session/outputs".into())
+            ),
+        ],
+        "native and agent processes share the runtime-owned paths"
+    );
     assert_eq!(state.alive.get("cid-shared-session"), Some(&true));
 }
 

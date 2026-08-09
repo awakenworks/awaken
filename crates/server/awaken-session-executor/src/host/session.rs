@@ -1074,9 +1074,8 @@ impl SharedHost {
         // already hold this thread's history and an awaiting run after a restart.
         let mut state = SessionState::default();
         if let Some((run_id, _)) = commit.open_wait_for_thread(&thread_id) {
-            // Prime the fresh runtime so the awaiting run's snapshot resolves on
-            // resume — `start_run` would normally have installed it.
-            runtime.register_snapshot(config.clone());
+            // The activated resume boundary installs its exact snapshot; session
+            // construction only restores the committed position.
             state.awaiting_run = Some(run_id);
         }
         let runtime = Arc::new(runtime);
