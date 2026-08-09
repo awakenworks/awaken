@@ -171,15 +171,23 @@ async function main() {
       // carried through the neutral AgentConfigView/SessionInit into the one
       // runtime gate, then projected as the same Managed event sequence.
       //
-      // Cause graph / decision table for permission ownership:
-      // | MCP toolset | legacy permission config | expected result |
-      // | present     | absent                   | toolset owns the gate |
-      // | present     | present                  | reject competing owners |
-      // | absent      | present                  | legacy config owns the gate |
+      // FMECA cause/effect graph: C1=MCP toolset owns policy; C2=tool call is
+      // enabled and evaluates `always_ask`; C3=an exact out-of-band decision is
+      // supplied. Effects: E1=without C3 the Run remains `requires_action` and
+      // performs no `tools/call`; E2=allow executes exactly once and emits an MCP
+      // result; E3=deny emits a blocked MCP result for the model but performs no
+      // transport call. Competing legacy policy ownership fails at compilation.
       //
-      // This scenario selects the first row. Compile-level tests cover the two
-      // fail-closed/legacy rows; the served E2E proves the toolset policy reaches
-      // requires_action and resumes after the user's exact confirmation.
+      // | Rule | C1 | C2 | C3      | Effect |
+      // |---|---|---|---|---|
+      // | O1 | T | T | absent | E1 durable await, no call |
+      // | O2 | T | T | allow  | E2 one call + result |
+      // | O3 | T | T | deny   | E3 blocked result, no call |
+      // | O4 | T + legacy | * | * | reject competing owners |
+      //
+      // Compile-level tests own O4. This served scenario owns O1-O3 through the
+      // same durable permission/resume path used by built-ins; MCP adds no
+      // parallel approval authority.
       const gatedAgent = 'calc-gated-agent';
       r = await req(base, 'PUT', `/v1/config/agents/${gatedAgent}`, {
         name: 'Gated Calculator',
@@ -204,7 +212,44 @@ async function main() {
       });
       gatedEvents = await listEvents(client, gated.id);
       assert.ok(gatedEvents.some((event) => event.type === 'agent.mcp_tool_result'), JSON.stringify(gatedEvents));
-      pass('MCP always_ask -> requires_action -> user.tool_confirmation -> mcp_tool_result');
+      pass('O1/O2: MCP always_ask -> requires_action -> allow -> one tools/call');
+
+      const callsBeforeDeny = fixture.calls.filter((call) => call.method === 'tools/call').length;
+      await sendMessage(client, gated.id, 'add 6 5');
+      gatedEvents = await listEvents(client, gated.id);
+      const deniedUse = gatedEvents
+        .filter((event) => event.type === 'agent.mcp_tool_use')
+        .at(-1);
+      assert.ok(deniedUse, JSON.stringify(gatedEvents));
+      const deniedIdle = [...gatedEvents]
+        .reverse()
+        .find((event) => event.type === 'session.status_idle');
+      assert.equal(deniedIdle.stop_reason.type, 'requires_action');
+      assert.ok(deniedIdle.stop_reason.event_ids.includes(deniedUse.id));
+      await client.beta.sessions.events.send(gated.id, {
+        events: [{
+          type: 'user.tool_confirmation',
+          tool_use_id: deniedUse.id,
+          result: 'deny',
+          deny_message: 'operator denied MCP access',
+        }],
+        betas: BETAS,
+      });
+      gatedEvents = await listEvents(client, gated.id);
+      const callsAfterDeny = fixture.calls.filter((call) => call.method === 'tools/call').length;
+      assert.equal(callsAfterDeny, callsBeforeDeny, 'O3 deny must not reach MCP transport');
+      const deniedResult = gatedEvents.find(
+        (event) => event.type === 'agent.mcp_tool_result' &&
+          event.mcp_tool_use_id === deniedUse.id,
+      );
+      assert.ok(deniedResult, JSON.stringify(gatedEvents));
+      assert.match(JSON.stringify(deniedResult.content), /blocked: operator denied MCP access/u);
+      assert.ok(
+        agentMessages(gatedEvents).some((message) =>
+          message.includes('blocked: operator denied MCP access')),
+        'O3 model receives the blocked result and terminates the continuation',
+      );
+      pass('O3: MCP deny produces a model-visible blocked result without tools/call');
 
       // Exact-generation staging establishes the MCP connection before durable
       // activation.  It therefore rejects an invalid credential or unreachable

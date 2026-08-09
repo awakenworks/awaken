@@ -9,10 +9,10 @@ use std::sync::Arc;
 use awaken_authz_enforce::ApplicationAccessStore;
 use awaken_deployment_contract::DeploymentRepository;
 use awaken_executable_agent_contract::ExecutableAgentRegistrationSource;
+use awaken_protocol_managed::ModelDirectory;
 use awaken_protocol_managed::{
     DeploymentState, EnvironmentExecutionState, ManagedRateLimiter, ManagedState,
 };
-use awaken_protocol_managed_resources::ModelDirectory;
 use awaken_resource_contract::ResourceCatalog;
 use awaken_session_contract::DreamProcessStore;
 use awaken_session_contract::ManagedSessionRepository;

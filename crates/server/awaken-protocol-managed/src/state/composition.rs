@@ -7,18 +7,23 @@ use std::sync::{Arc, Mutex};
 use awaken_session_application::{
     RepositoryCredentialIngress, SessionApplication, SessionCredentialSource,
 };
-use awaken_session_contract::{ManagedSessionRepository, SessionLifecycleSink};
+#[cfg(any(test, feature = "test-support"))]
+use awaken_session_contract::ManagedSessionRepository;
+use awaken_session_contract::SessionLifecycleSink;
 #[cfg(any(test, feature = "test-support"))]
 use awaken_session_store::SqliteManagedSessionRepository;
 
+use super::ManagedState;
+#[cfg(any(test, feature = "test-support"))]
+use super::SessionRuntime;
+#[cfg(any(test, feature = "test-support"))]
 use super::mcp_attachment::UnsupportedMcpAttachmentRealizer;
-use super::{ManagedState, SessionRuntime};
 use crate::routes::vaults::VaultState;
 
 impl ManagedState {
     /// Volatile fixture constructor. Product composition must inject the durable
     /// Session repository and the canonical Environment execution projection via
-    /// [`ManagedState::from_required_ports`].
+    /// [`ManagedState::from_application`].
     #[cfg(any(test, feature = "test-support"))]
     pub fn new(runtime: impl SessionRuntime + 'static) -> Self {
         Self::from_ports(
@@ -46,54 +51,32 @@ impl ManagedState {
         )
     }
 
-    /// Production constructor over all persistence/placement authority required
-    /// before the Managed aggregate can accept a Session.
-    pub fn from_required_ports(
-        runtime: impl SessionRuntime + 'static,
-        sessions_repo: Arc<dyn ManagedSessionRepository>,
-        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
-    ) -> Self {
-        Self::from_ports(
-            Arc::new(runtime),
-            Arc::new(UnsupportedMcpAttachmentRealizer),
-            sessions_repo,
-            environments,
-        )
-    }
-
-    /// Production constructor when one runtime implements both Session execution
-    /// and MCP attachment realization.
-    pub fn from_required_ports_with_mcp<R>(
-        runtime: R,
-        sessions_repo: Arc<dyn ManagedSessionRepository>,
-        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
-    ) -> Self
-    where
-        R: SessionRuntime + awaken_session_contract::McpAttachmentRealizer + 'static,
-    {
-        let runtime = Arc::new(runtime);
-        Self::from_ports(runtime.clone(), runtime, sessions_repo, environments)
-    }
-
-    fn from_ports(
-        runtime: Arc<dyn SessionRuntime>,
-        mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
-        sessions_repo: Arc<dyn ManagedSessionRepository>,
-        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
-    ) -> Self {
+    /// Construct the disposable Managed wire projection over the one canonical
+    /// Session application assembled by the process composition root.
+    pub fn from_application(application: SessionApplication) -> Self {
         Self {
-            application: SessionApplication::new(
-                runtime,
-                mcp_realizer,
-                sessions_repo,
-                environments,
-            ),
+            application,
             sessions: Mutex::new(HashMap::new()),
             owners: Mutex::new(HashMap::new()),
             session_seq: AtomicU64::new(0),
             event_seq: Arc::new(AtomicU64::new(0)),
             live: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn from_ports(
+        runtime: Arc<dyn SessionRuntime>,
+        mcp_realizer: Arc<dyn awaken_session_contract::McpAttachmentRealizer>,
+        sessions_repo: Arc<dyn ManagedSessionRepository>,
+        environments: Arc<crate::routes::environments::EnvironmentExecutionState>,
+    ) -> Self {
+        Self::from_application(SessionApplication::new(
+            runtime,
+            mcp_realizer,
+            sessions_repo,
+            environments,
+        ))
     }
 
     /// Wire a projection sink (a webhook dispatcher) so committed session lifecycle

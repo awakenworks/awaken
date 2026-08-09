@@ -9,7 +9,7 @@
 //! `versions` subresource (create / list / retrieve / content / delete), the legacy
 //! JSON path's fail-closed 409 when no durable store is wired, and the error arms.
 
-use awaken_protocol_managed_resources::skills_router;
+use awaken_protocol_managed::skills_router;
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
 use axum::body::Body;
@@ -28,8 +28,8 @@ fn router_with_store() -> (Router, std::path::PathBuf) {
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    let store = support::filesystem_skill_store(dir.join("store"));
-    let resources = support::resources(store.clone());
+    let store = support::resources::filesystem_skill_store(dir.join("store"));
+    let resources = support::resources::resources(store.clone());
     (skills_router(Some(store), resources.purge_scheduler()), dir)
 }
 static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -509,7 +509,7 @@ async fn sdk_multipart_create_list_retrieve_and_version_lifecycle() {
 async fn legacy_json_create_fails_closed_without_a_durable_store() {
     // No SkillStore port: the adapter has no durable skill catalog, so the legacy
     // `{id, content}` delivery has nowhere to land → 409 (fail closed, no silent drop).
-    let resources = support::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources();
     let router = skills_router(None, resources.purge_scheduler());
     let (status, v) = post_json(
         &router,
@@ -545,7 +545,7 @@ async fn legacy_json_create_delivers_with_a_durable_store() {
 // module's "BOTH feed the durable catalog … survives a restart" contract.
 #[tokio::test]
 async fn sdk_multipart_create_fails_closed_without_a_durable_store() {
-    let resources = support::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources();
     let router = skills_router(None, resources.purge_scheduler());
     // Multipart fails closed (409) when nothing durable backs it…
     let (status, created) = post_multipart(&router, "/v1/skills", SKILL_V1).await;

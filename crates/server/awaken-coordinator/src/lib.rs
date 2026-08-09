@@ -40,7 +40,7 @@ pub mod worker_placement;
 mod worker_registry;
 pub mod workspace_path;
 
-pub use awaken_protocol_managed_resources::ModelDirectory;
+pub use awaken_protocol_managed::ModelDirectory;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
     build_coordinator_component, restore_deployment_state,
@@ -69,7 +69,7 @@ pub use awaken_acp_application::{
 };
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
-pub use awaken_protocol_managed_resources::{
+pub use awaken_protocol_managed::{
     ResourcesRouterInput, default_models, models_router, resources_router,
 };
 
@@ -576,7 +576,7 @@ pub fn mount_with_managed_and_application_access_and_models(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
-    model_directory: Arc<dyn awaken_protocol_managed_resources::ModelDirectory>,
+    model_directory: Arc<dyn awaken_protocol_managed::ModelDirectory>,
 ) -> Router {
     let resources = resource_management_router_from_host(&host, resource_catalog.clone());
     mount_with_managed_over_and_models(
@@ -613,7 +613,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
-    model_directory: Arc<dyn awaken_protocol_managed_resources::ModelDirectory>,
+    model_directory: Arc<dyn awaken_protocol_managed::ModelDirectory>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
 ) -> Result<
@@ -662,7 +662,7 @@ fn mount_with_managed_over_and_models(
     managed_state: Arc<ManagedState>,
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
-    model_directory: Option<Arc<dyn awaken_protocol_managed_resources::ModelDirectory>>,
+    model_directory: Option<Arc<dyn awaken_protocol_managed::ModelDirectory>>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
 ) -> Result<
@@ -708,7 +708,7 @@ fn mount_with_managed_over_and_models(
             .expect("load durable Dream jobs"),
     );
     dream_application.bind_session_source(managed_state.clone());
-    struct DreamModelDirectory(Arc<dyn awaken_protocol_managed_resources::ModelDirectory>);
+    struct DreamModelDirectory(Arc<dyn awaken_protocol_managed::ModelDirectory>);
     #[async_trait::async_trait]
     impl awaken_dream_application::DreamModelReadiness for DreamModelDirectory {
         async fn is_ready(&self, workspace_id: &str, model_id: &str) -> Result<bool, String> {
@@ -786,7 +786,7 @@ fn mount_with_managed_over_and_models(
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = model_directory.map_or_else(
         || models_router(std::sync::Arc::new(default_models())),
-        awaken_protocol_managed_resources::models_router_with_directory,
+        awaken_protocol_managed::models_router_with_directory,
     );
     let local_workspace = host.local_workspace().to_string();
     let router = managed

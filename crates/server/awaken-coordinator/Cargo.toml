@@ -28,7 +28,6 @@ awaken-service-auth-contract.workspace = true
 awaken-deployment-contract.workspace = true
 awaken-worker-registry = { workspace = true }
 awaken-acp-contract = { workspace = true }
-awaken-protocol-managed-resources = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
 # Cross-cutting telemetry: the tracing subscriber + OTLP/AWAKEN_TRACE_FILE span
@@ -127,6 +126,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
     "awaken-captured-content-store/test-support",
+    "awaken-coordinator-runtime/test-support",
     "awaken-config-resolver/test-support",
     "awaken-config-store/test-support",
     "awaken-credential-vault/test-support",

@@ -383,6 +383,7 @@ mod tests {
             SessionBaselineState::Preparing(awaken_session_contract::SessionCreationIntent {
                 control: awaken_session_contract::ControlSessionCreationInputs {
                     environment: baseline.environment,
+                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     model: baseline.model.clone(),
                     execution_model_ref: baseline.model,

@@ -3,7 +3,7 @@
 //! deduplicate privately in the BLAKE3 FileStore. The comments beside each test
 //! preserve the cause/effect decision rules for this compatibility boundary.
 
-use awaken_protocol_managed_resources::files_router;
+use awaken_protocol_managed::files_router;
 use awaken_resource_contract::FileRecord;
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
@@ -15,7 +15,7 @@ use tower::ServiceExt;
 mod support;
 
 fn router() -> Router {
-    files_router(support::ephemeral_resources().files())
+    files_router(support::resources::ephemeral_resources().files())
 }
 
 const BOUNDARY: &str = "X-AWAKEN-BOUNDARY";
@@ -150,7 +150,7 @@ async fn upload_fails_closed_without_a_composition_root_lifecycle_port() {
         _: std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>,
     ) {
     }
-    requires_complete_port(support::ephemeral_resources().files());
+    requires_complete_port(support::resources::ephemeral_resources().files());
 }
 
 #[tokio::test]
@@ -236,7 +236,7 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
     // Rule R8: downloadable output record + durable blob + Session no longer
     // registered → scope query and content download still succeed. This pins the
     // File-over-Session lifecycle edge without relying on a GET-time harvest.
-    let resources = support::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources();
     let ports = resources.ports();
     let blob_id = ports.file_store().put(b"finished report").await.unwrap();
     let record = FileRecord {
@@ -347,7 +347,7 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
     // Rule R12: active logical bytes at the 500 GiB Workspace boundary + a
     // nonempty upload → invalid request before the new blob/File is created.
     // A synthetic catalog record tests the boundary without allocating 500 GiB.
-    let resources = support::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources();
     resources
         .ports()
         .file_catalog()

@@ -31,12 +31,14 @@ use serde::Serialize;
 
 mod handshake;
 mod mcp;
+mod permission;
 mod wire;
 pub use handshake::negotiate_capabilities;
 use handshake::{initialize_agent, open_new_session};
 use wire::{JSONRPC, Wire};
 
 use mcp::to_acp_mcp_servers;
+use permission::answer_request;
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
@@ -445,126 +447,6 @@ async fn project_notification(
         sink.append(*seq, &event).await?;
     }
     Ok(())
-}
-
-/// Answer an agent→client request: a permission request is decided by `resolver`
-/// (the neutral `ToolPermissionPolicy`) and projected back onto the agent's own
-/// offered option — allow or reject, once-preferred over always; `cancelled` when
-/// no matching option is offered. Every other method — the `fs`/`terminal`
-/// capabilities we never advertised — gets `method_not_found`, because tool
-/// execution is the hand's job and is never proxied back over ACP.
-async fn answer_request(
-    wire: &mut Wire<'_>,
-    id: serde_json::Value,
-    method: &str,
-    params: Option<serde_json::Value>,
-    resolver: &dyn PermissionResolver,
-) -> Result<(), AcpError> {
-    if method == CLIENT_METHOD_NAMES.session_request_permission {
-        let outcome = match params.and_then(|p| {
-            parse::<RequestPermissionRequest>(p.clone())
-                .ok()
-                .map(|r| (p, r))
-        }) {
-            Some((raw, req)) => {
-                let ask = permission_ask(&raw);
-                match resolver.resolve(&ask).await {
-                    PermissionVerdict::Await { correlation_id } => {
-                        wire.send(&OutResult {
-                            jsonrpc: JSONRPC,
-                            id,
-                            result: RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Cancelled,
-                            ),
-                        })
-                        .await?;
-                        return Err(AcpError::PermissionAwait {
-                            correlation_id,
-                            ask,
-                        });
-                    }
-                    verdict => select_outcome(&req, verdict),
-                }
-            }
-            None => RequestPermissionOutcome::Cancelled,
-        };
-        return wire
-            .send(&OutResult {
-                jsonrpc: JSONRPC,
-                id,
-                result: RequestPermissionResponse::new(outcome),
-            })
-            .await;
-    }
-    wire.send(&OutError {
-        jsonrpc: JSONRPC,
-        id,
-        error: RpcErrorBody {
-            code: METHOD_NOT_FOUND,
-            message: "capability not supported by this client",
-        },
-    })
-    .await
-}
-
-/// Project a raw `session/request_permission` params object into a neutral
-/// [`PermissionAsk`] — the tool's title/kind, its `toolCallId`, and its `rawInput`
-/// — read loosely so the ask survives adapter-to-adapter shape differences.
-fn permission_ask(raw: &serde_json::Value) -> PermissionAsk {
-    let tool_call = raw.get("toolCall");
-    let tool = tool_call
-        .and_then(|tc| tc.get("title").or_else(|| tc.get("kind")))
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let call_id = tool_call
-        .and_then(|tc| tc.get("toolCallId"))
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let arguments = tool_call
-        .and_then(|tc| tc.get("rawInput"))
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    PermissionAsk {
-        tool,
-        call_id,
-        arguments,
-    }
-}
-
-/// Project a [`PermissionVerdict`] onto the agent's own offered option: an
-/// `Allow` picks `allow_once` (else `allow_always`); a `Deny` picks `reject_once`
-/// (else `reject_always`). When the agent offered no option of the decided kind
-/// the turn is cancelled (a well-behaved agent always offers both).
-fn select_outcome(
-    req: &RequestPermissionRequest,
-    verdict: PermissionVerdict,
-) -> RequestPermissionOutcome {
-    let (once, always) = match verdict {
-        PermissionVerdict::Allow => (
-            PermissionOptionKind::AllowOnce,
-            PermissionOptionKind::AllowAlways,
-        ),
-        PermissionVerdict::Deny => (
-            PermissionOptionKind::RejectOnce,
-            PermissionOptionKind::RejectAlways,
-        ),
-        PermissionVerdict::Await { .. } => {
-            unreachable!("await is handled before immediate outcome selection")
-        }
-    };
-    let chosen = req
-        .options
-        .iter()
-        .find(|o| o.kind == once)
-        .or_else(|| req.options.iter().find(|o| o.kind == always));
-    match chosen {
-        Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-            option.option_id.clone(),
-        )),
-        None => RequestPermissionOutcome::Cancelled,
-    }
 }
 
 fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, AcpError> {
@@ -1770,57 +1652,6 @@ mod tests {
             reply.contains("capability not supported"),
             "names the unsupported capability: {reply}"
         );
-    }
-
-    fn perm_req(options: serde_json::Value) -> RequestPermissionRequest {
-        serde_json::from_value(serde_json::json!({
-            "sessionId": "sess-1",
-            "toolCall": { "toolCallId": "t1" },
-            "options": options,
-        }))
-        .expect("a valid permission request")
-    }
-
-    fn outcome_json(outcome: &RequestPermissionOutcome) -> String {
-        serde_json::to_value(outcome).unwrap().to_string()
-    }
-
-    #[test]
-    fn reject_once_is_preferred_over_allow_and_reject_always() {
-        let req = perm_req(serde_json::json!([
-            {"optionId":"ok","name":"Allow","kind":"allow_once"},
-            {"optionId":"no","name":"Reject","kind":"reject_once"},
-            {"optionId":"never","name":"Reject always","kind":"reject_always"},
-        ]));
-        let out = select_outcome(&req, PermissionVerdict::Deny);
-        assert!(matches!(out, RequestPermissionOutcome::Selected(_)));
-        assert!(
-            outcome_json(&out).contains("\"no\""),
-            "{}",
-            outcome_json(&out)
-        );
-    }
-
-    #[test]
-    fn reject_always_is_the_fallback_when_no_reject_once() {
-        let req = perm_req(serde_json::json!([
-            {"optionId":"ok","name":"Allow","kind":"allow_once"},
-            {"optionId":"never","name":"Reject always","kind":"reject_always"},
-        ]));
-        let out = select_outcome(&req, PermissionVerdict::Deny);
-        assert!(matches!(out, RequestPermissionOutcome::Selected(_)));
-        assert!(outcome_json(&out).contains("\"never\""));
-    }
-
-    #[test]
-    fn no_reject_option_offered_cancels_the_turn() {
-        let req = perm_req(serde_json::json!([
-            {"optionId":"ok","name":"Allow","kind":"allow_once"},
-        ]));
-        assert!(matches!(
-            select_outcome(&req, PermissionVerdict::Deny),
-            RequestPermissionOutcome::Cancelled
-        ));
     }
 
     // ── Multi-chunk streaming + interleave ordering ──────────────────────────

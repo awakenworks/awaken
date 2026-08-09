@@ -376,7 +376,17 @@ data:
       proxy_next_upstream_timeout 5s;
       location ^~ /internal/ { return 404; }
       location ^~ /v1/worker/ { return 404; }
-      location ~ ^/v1/(sessions|deployments|deployment_runs|environments|files|memory_stores|skills|models|dreams|ai-sdk|ag-ui|a2a|message|capabilities)(/|$) {
+      # Cause/effect route table: Environment definitions are Control-owned;
+      # only the lease/ack work subresource is Coordinator-owned. The specific
+      # work match must precede the general fallthrough so authoring and queue
+      # state never gain parallel owners.
+      location ~ ^/v1/environments/[^/]+/work(/|$) {
+        proxy_pass http://coordinator_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+      }
+      location ~ ^/v1/(sessions|deployments|deployment_runs|files|memory_stores|skills|models|dreams|ai-sdk|ag-ui|a2a|message|capabilities)(/|$) {
         proxy_pass http://coordinator_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

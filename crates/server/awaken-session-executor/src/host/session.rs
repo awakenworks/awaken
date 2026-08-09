@@ -146,6 +146,12 @@ impl SharedHost {
         agent: Option<&str>,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> bool {
+        // A Coordinator-only Host constructs the durable dispatch envelope but
+        // never executes it. Creating an eager sandbox here would make the
+        // Coordinator a second physical owner beside the registered Worker.
+        if self.deployment.disable_local_pool {
+            return true;
+        }
         let slot_allows = self
             .session_slots
             .read(thread, |slot| {
@@ -207,11 +213,17 @@ impl SharedHost {
             if !sink.owns(thread).await {
                 return Ok(());
             }
-            sink.persist(thread, &binding).await.map_err(|error| {
-                HostError::internal(format!(
-                    "persist Session environment binding before use: {error}"
-                ))
-            })?;
+            let realization = self
+                .session_slots
+                .read(thread, |slot| slot.realization_lease.clone())
+                .flatten();
+            sink.persist(thread, &binding, realization.as_ref())
+                .await
+                .map_err(|error| {
+                    HostError::internal(format!(
+                        "persist Session environment binding before use: {error}"
+                    ))
+                })?;
         }
         Ok(())
     }

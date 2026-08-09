@@ -41,6 +41,8 @@ REQUIRED_RELEASE_COMMANDS = (
     "check_formal.sh --require-tools",
     "pg_tests.sh --require-docker",
     "scripts/e2e/k8s_container_e2e.sh",
+    "AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh",
+    "AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12",
     "npm --prefix e2e run test:deterministic",
     "sandbox_capability_suite.sh --require-substrates",
 )

@@ -14,7 +14,7 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.
 const read = (rel) => readFileSync(path.join(REPO, rel), 'utf8');
 
 const SESSION_RS = 'crates/server/awaken-protocol-managed/src/types/session.rs';
-const BRIDGE_RS = 'crates/server/awaken-managed-bridge/src/lib.rs';
+const MANAGED_HEADERS_RS = 'crates/server/awaken-protocol-managed/src/common/headers.rs';
 const EVENTS_DTS = 'e2e/node_modules/@anthropic-ai/sdk/resources/beta/sessions/events.d.ts';
 // `session.updated` / `system.message` events are declared here and re-exported
 // into the event unions, so the catalog scan must read this file too.
@@ -70,8 +70,8 @@ export function rustInboundTypes() {
 }
 
 export function rustBeta() {
-  const m = read(BRIDGE_RS).match(/MANAGED_BETA:\s*&str\s*=\s*"([^"]+)"/);
-  if (!m) throw new Error('MANAGED_BETA const not found in awaken-managed-bridge');
+  const m = read(MANAGED_HEADERS_RS).match(/MANAGED_BETA:\s*&str\s*=\s*"([^"]+)"/);
+  if (!m) throw new Error('MANAGED_BETA const not found in protocol-managed headers');
   return m[1];
 }
 

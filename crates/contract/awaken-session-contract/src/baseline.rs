@@ -25,6 +25,21 @@ pub enum SandboxProvisioning {
     OnToolUse,
 }
 
+/// Frozen owner class for the Session Runtime projection. Environment
+/// WorkQueue selection is an independent Environment concern and must not be
+/// reinterpreted as this deployment placement decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionRuntimePlacement {
+    /// Retained rows written before Runtime placement became a frozen Session
+    /// fact. Only the Session application may resolve this upgrade state from
+    /// the process role; newly compiled baselines never emit it.
+    #[default]
+    LegacyUnspecified,
+    Local,
+    Worker,
+}
+
 impl SessionNetworkPolicy {
     /// Whether the frozen Session policy restricts egress at all.
     #[must_use]
@@ -133,6 +148,8 @@ pub struct SessionMcpAuthoringContext {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ControlSessionCreationInputs {
     pub environment: EnvironmentSnapshot,
+    #[serde(default)]
+    pub runtime_placement: SessionRuntimePlacement,
     pub agent_id: String,
     pub model: String,
     #[serde(default)]
@@ -331,6 +348,7 @@ impl SessionCreationIntent {
 
         let ControlSessionCreationInputs {
             mut environment,
+            runtime_placement,
             agent_id,
             model,
             execution_model_ref,
@@ -356,6 +374,7 @@ impl SessionCreationIntent {
         let baseline = SessionBaseline::compile_with_execution_model_ref(
             SessionBaselineInputs {
                 environment,
+                runtime_placement,
                 mcp_authoring,
                 agent_id,
                 model,
@@ -381,6 +400,8 @@ impl SessionCreationIntent {
 pub struct SessionBaseline {
     pub fingerprint: SessionBaselineFingerprint,
     pub environment: EnvironmentSnapshot,
+    #[serde(default)]
+    pub runtime_placement: SessionRuntimePlacement,
     pub mcp_authoring: SessionMcpAuthoringContext,
     pub agent_id: String,
     pub model: String,
@@ -406,6 +427,7 @@ pub struct SessionBaseline {
 
 pub struct SessionBaselineInputs {
     pub environment: EnvironmentSnapshot,
+    pub runtime_placement: SessionRuntimePlacement,
     pub mcp_authoring: SessionMcpAuthoringContext,
     pub agent_id: String,
     pub model: String,
@@ -442,6 +464,7 @@ impl SessionBaseline {
         #[derive(serde::Serialize)]
         struct Facts<'a> {
             environment: &'a EnvironmentSnapshot,
+            runtime_placement: SessionRuntimePlacement,
             mcp_authoring: &'a SessionMcpAuthoringContext,
             agent_id: &'a str,
             model: &'a str,
@@ -456,6 +479,7 @@ impl SessionBaseline {
         }
         let SessionBaselineInputs {
             environment,
+            runtime_placement,
             mcp_authoring,
             agent_id,
             model,
@@ -469,6 +493,7 @@ impl SessionBaseline {
         } = inputs;
         let fingerprint = SessionBaselineFingerprint(crate::stable_fingerprint(&Facts {
             environment: &environment,
+            runtime_placement,
             mcp_authoring: &mcp_authoring,
             agent_id: &agent_id,
             model: &model,
@@ -484,6 +509,7 @@ impl SessionBaseline {
         Self {
             fingerprint,
             environment,
+            runtime_placement,
             mcp_authoring,
             agent_id,
             model,
@@ -549,6 +575,7 @@ mod tests {
     fn baseline_inputs(environment: EnvironmentSnapshot) -> SessionBaselineInputs {
         SessionBaselineInputs {
             environment,
+            runtime_placement: SessionRuntimePlacement::Local,
             mcp_authoring: SessionMcpAuthoringContext::default(),
             agent_id: "agent".into(),
             model: "model".into(),
@@ -569,6 +596,7 @@ mod tests {
     fn control_inputs(network: SessionNetworkPolicy) -> ControlSessionCreationInputs {
         ControlSessionCreationInputs {
             environment: environment(1, network),
+            runtime_placement: SessionRuntimePlacement::Local,
             agent_id: "agent".into(),
             model: "model".into(),
             execution_model_ref: "model".into(),
@@ -867,6 +895,17 @@ mod tests {
 
     #[test]
     fn legacy_baseline_defaults_new_application_fields() {
+        // Cause/effect graph: C1 a retained baseline omits fields introduced
+        // after its fingerprint was written; E1 neutral application collections
+        // remain empty and E2 Runtime placement stays explicitly unresolved.
+        // An application composition decision, never serde or the protocol,
+        // resolves E2. An explicit value must round-trip unchanged.
+        //
+        // | Rule | placement field | Effect |
+        // |---|---|---|
+        // | L1 | absent | LegacyUnspecified |
+        // | L2 | local | Local |
+        // | L3 | worker | Worker |
         let legacy = serde_json::json!({
             "fingerprint": "legacy",
             "environment": environment(1, SessionNetworkPolicy::Unrestricted),
@@ -882,6 +921,25 @@ mod tests {
         let decoded: SessionBaseline = serde_json::from_value(legacy).unwrap();
         assert!(decoded.application.is_none());
         assert!(decoded.mounts.is_empty());
+        assert_eq!(
+            decoded.runtime_placement,
+            SessionRuntimePlacement::LegacyUnspecified,
+            "L1"
+        );
+        for (rule, placement) in [
+            ("L2", SessionRuntimePlacement::Local),
+            ("L3", SessionRuntimePlacement::Worker),
+        ] {
+            let decoded: SessionBaseline = serde_json::from_value(
+                serde_json::to_value(SessionBaseline::compile(SessionBaselineInputs {
+                    runtime_placement: placement,
+                    ..baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted))
+                }))
+                .expect("encode explicit placement"),
+            )
+            .expect("decode explicit placement");
+            assert_eq!(decoded.runtime_placement, placement, "{rule}");
+        }
     }
 
     #[derive(Clone, Copy)]

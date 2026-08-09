@@ -26,7 +26,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 
-use crate::resource_scope::RequiredWorkspaceScope;
+use crate::common::scope::RequiredWorkspaceScope;
 
 fn now_nanos() -> u64 {
     std::time::SystemTime::now()

@@ -22,6 +22,28 @@ k3d_require_tools() {
   docker info >/dev/null 2>&1
 }
 
+# k3d_admit_or_exit <scenario-label> [required: 0|1]
+#
+# This is the single process-level admission policy for repository k3d tests.
+# Release callers select strict behavior with AWAKEN_K3D_REQUIRED=1 (or the
+# explicit second argument); developer invocations remain an intentional skip
+# when their machine has no cluster tooling.
+k3d_admit_or_exit() {
+  local scenario="$1"
+  local required="${2:-${AWAKEN_K3D_REQUIRED:-0}}"
+  [[ "$required" = "0" || "$required" = "1" ]] || {
+    echo "invalid k3d required flag: $required" >&2
+    exit 2
+  }
+  k3d_require_tools && return 0
+  if [[ "$required" = "1" ]]; then
+    echo "$scenario requires k3d, kubectl, and a reachable Docker daemon" >&2
+    exit 1
+  fi
+  echo "k3d/kubectl/docker unavailable; skipping $scenario"
+  exit 0
+}
+
 k3d_delete_cluster() {
   local cluster="$1"
   k3d_validate_name "$cluster" || {
@@ -190,7 +212,10 @@ k3d_harness_selftest() (
   # rejection before kubectl; H6 valid preferred port -> an available IPv4 port;
   # H7 malformed preferred port -> rejection before a socket probe; H8 an exact
   # Registry coordinate is attached once and malformed input is rejected before
-  # cluster mutation. The scenario tests own network and topology effects.
+  # cluster mutation; H9 tools available -> continue in optional and strict mode;
+  # H10 tools unavailable + optional mode -> successful explicit skip; H11 tools
+  # unavailable + strict mode -> failure; H12 malformed strictness -> configuration
+  # failure. The scenario tests own network and topology effects.
   local k3d_calls=() docker_saves=()
   k3d() { k3d_calls+=("$*"); }
 
@@ -222,6 +247,36 @@ k3d_harness_selftest() (
   [[ "$available_port" =~ ^[0-9]+$ ]] && (( available_port >= 43000 ))
   ! k3d_available_port 80
   ! k3d_available_port many
+
+  # Admission cause/effect decision table:
+  # | Rule | tools available | required | valid flag | Effect |
+  # | H9   | T               | *        | T          | continue caller |
+  # | H10  | F               | F        | T          | exit 0 with explicit skip |
+  # | H11  | F               | T        | T          | exit 1; release gate fails |
+  # | H12  | *               | *        | F          | exit 2; reject configuration |
+  k3d_require_tools() { return 0; }
+  k3d_admit_or_exit "fixture" 0
+  k3d_admit_or_exit "fixture" 1
+  k3d_require_tools() { return 1; }
+  local admission_output admission_status
+  set +e
+  admission_output=$(k3d_admit_or_exit "fixture" 0 2>&1)
+  admission_status=$?
+  set -e
+  [[ "$admission_status" = "0" ]]
+  [[ "$admission_output" = *"skipping fixture"* ]]
+  set +e
+  admission_output=$(k3d_admit_or_exit "fixture" 1 2>&1)
+  admission_status=$?
+  set -e
+  [[ "$admission_status" = "1" ]]
+  [[ "$admission_output" = *"fixture requires k3d"* ]]
+  set +e
+  admission_output=$(k3d_admit_or_exit "fixture" invalid 2>&1)
+  admission_status=$?
+  set -e
+  [[ "$admission_status" = "2" ]]
+  [[ "$admission_output" = *"invalid k3d required flag"* ]]
 
   [[ "$(k3d_archive_name 'registry:5000/awaken@sha256:abc')" = "registry_5000_awaken_sha256_abc" ]]
   docker() {

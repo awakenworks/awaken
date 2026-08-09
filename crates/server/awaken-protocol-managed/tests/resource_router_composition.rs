@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use awaken_protocol_managed_resources::{
+use awaken_protocol_managed::{
     ResourcesRouterInput, default_models, models_router, resources_router,
 };
 use awaken_tenancy::WorkspaceScope;
@@ -28,7 +28,7 @@ async fn status(app: &Router, uri: &str) -> StatusCode {
 
 #[tokio::test]
 async fn the_resource_planes_merge_over_one_host_without_route_conflicts() {
-    let resources = support::ephemeral_resources();
+    let resources = support::resources::ephemeral_resources();
     let ports = resources.ports();
 
     // Merge the same way the assembly binary does: every plane's router over the one

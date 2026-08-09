@@ -328,17 +328,15 @@ pub fn build_unscoped_resource_router() -> Router {
         );
     let memory_stores =
         awaken_coordinator::memory_store_application(scenario_resource_catalog(), purge.clone());
-    awaken_protocol_managed_resources::resources_router(
-        awaken_protocol_managed_resources::ResourcesRouterInput {
-            files: host
-                .file_application()
-                .expect("scenario resource composition installs File application"),
-            memories: host.memory_repository(),
-            memory_stores,
-            skills: host.skill_store(),
-            purge,
-        },
-    )
+    awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput {
+        files: host
+            .file_application()
+            .expect("scenario resource composition installs File application"),
+        memories: host.memory_repository(),
+        memory_stores,
+        skills: host.skill_store(),
+        purge,
+    })
 }
 
 #[cfg(test)]

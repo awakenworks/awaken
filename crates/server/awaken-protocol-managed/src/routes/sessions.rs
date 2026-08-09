@@ -609,12 +609,12 @@ pub async fn enforce_managed_beta(
     let is_family = |family: &str| path == family || path.starts_with(&format!("{family}/"));
     if is_family("/v1/memory_stores") {
         let has_memory = has_beta(&req, MEMORY_BETA);
-        let has_managed = has_beta(&req, awaken_managed_bridge::MANAGED_BETA);
+        let has_managed = has_beta(&req, crate::MANAGED_BETA);
         if !has_memory || has_managed {
             let message = if has_memory && has_managed {
                 format!(
                     "the {MEMORY_BETA} beta replaces {managed} on memory store endpoints; do not send both",
-                    managed = awaken_managed_bridge::MANAGED_BETA,
+                    managed = crate::MANAGED_BETA,
                 )
             } else {
                 format!(
@@ -664,14 +664,14 @@ pub async fn enforce_managed_beta(
     ]
     .into_iter()
     .any(is_family);
-    if is_managed && !has_beta(&req, awaken_managed_bridge::MANAGED_BETA) {
+    if is_managed && !has_beta(&req, crate::MANAGED_BETA) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "invalid_request_error",
                 format!(
                     "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
-                    beta = awaken_managed_bridge::MANAGED_BETA,
+                    beta = crate::MANAGED_BETA,
                 ),
             )),
         )

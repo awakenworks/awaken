@@ -233,8 +233,13 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         } else {
             None
         };
-        install_application_projection(&host, claimed, thread_id, dispatched_resources.as_ref())
-            .await?;
+        install_claimed_session_projection(
+            &host,
+            claimed,
+            thread_id,
+            dispatched_resources.as_ref(),
+        )
+        .await?;
         if let Some(stages) = dispatched_mcp_stages {
             host.register_thread_agent_projection(&thread_id.0, agent_id.unwrap_or("assistant"));
             host.register_thread_backend_projection(

@@ -272,7 +272,7 @@ impl SharedHost {
         > = None;
         #[cfg(test)]
         let file_application = resource_lifecycle.as_ref().map(|lifecycle| {
-            Arc::new(awaken_file_application::FileApplication::new(
+            Arc::new(awaken_resource_application::FileApplication::new(
                 file_store.clone(),
                 file_catalog.clone(),
                 lifecycle.clone(),
@@ -511,7 +511,7 @@ impl SharedHost {
     ) -> Self {
         #[cfg(test)]
         {
-            let application = Arc::new(awaken_file_application::FileApplication::new(
+            let application = Arc::new(awaken_resource_application::FileApplication::new(
                 self.file_store.clone(),
                 self.file_catalog.clone(),
                 repository.clone(),
