@@ -1,7 +1,7 @@
 // Navigation SSOT. Workspace is the only public scope; groups follow the
 // operator's job rather than internal implementation layers.
 
-export type NavGroup = "workspace" | "build" | "run" | "supply" | "govern";
+export type NavGroup = "workspace" | "author" | "run" | "connect" | "govern";
 
 export interface NavItem {
   key: string;
@@ -10,23 +10,35 @@ export interface NavItem {
   group: NavGroup;
   path: string;
   agentBadge?: boolean;
+  sectionLabel?: string;
+  sectionLabelZh?: string;
 }
 
 export const NAV: NavItem[] = [
   { key: "overview", label: "Overview", labelZh: "概览", group: "workspace", path: "/w/:ws/overview" },
 
-  { key: "agents", label: "Agents", labelZh: "Agents", group: "build", path: "/w/:ws/agents", agentBadge: true },
-  { key: "skills", label: "Skills", labelZh: "技能", group: "build", path: "/w/:ws/skills" },
-  { key: "memory", label: "Memory", labelZh: "记忆", group: "build", path: "/w/:ws/memory" },
-  { key: "environments", label: "Environments", labelZh: "运行环境", group: "build", path: "/w/:ws/environments" },
+  { key: "agents", label: "Agents", labelZh: "Agents", group: "author", path: "/w/:ws/agents", agentBadge: true },
+  { key: "skills", label: "Skills", labelZh: "技能", group: "author", path: "/w/:ws/skills" },
+  {
+    key: "files",
+    label: "Files",
+    labelZh: "文件",
+    group: "author",
+    path: "/w/:ws/files",
+    sectionLabel: "Resources",
+    sectionLabelZh: "资源",
+  },
+  { key: "memory", label: "Memory stores", labelZh: "记忆库", group: "author", path: "/w/:ws/memory" },
 
-  { key: "deployments", label: "Deployments", labelZh: "部署", group: "run", path: "/w/:ws/deployments" },
   { key: "sessions", label: "Sessions", labelZh: "会话", group: "run", path: "/w/:ws/sessions" },
-  { key: "protocols", label: "API & protocols", labelZh: "API 与协议", group: "run", path: "/w/:ws/protocols" },
-  { key: "a2a", label: "A2A federation", labelZh: "A2A 联邦", group: "run", path: "/w/:ws/a2a-servers" },
+  { key: "deployments", label: "Deployments", labelZh: "部署", group: "run", path: "/w/:ws/deployments" },
+  { key: "artifacts", label: "Artifacts", labelZh: "产物", group: "run", path: "/w/:ws/artifacts" },
+  { key: "environments", label: "Environments", labelZh: "运行环境", group: "run", path: "/w/:ws/environments" },
 
-  { key: "models", label: "Providers & models", labelZh: "供应商与模型", group: "supply", path: "/w/:ws/models" },
-  { key: "credentials", label: "Inference credentials", labelZh: "推理凭证", group: "supply", path: "/w/:ws/credentials" },
+  { key: "models", label: "Models & providers", labelZh: "模型与供应商", group: "connect", path: "/w/:ws/models" },
+  { key: "mcp", label: "MCP overview", labelZh: "MCP 概览", group: "connect", path: "/w/:ws/mcp" },
+  { key: "protocols", label: "API & protocols", labelZh: "API 与协议", group: "connect", path: "/w/:ws/protocols" },
+  { key: "a2a", label: "A2A federation", labelZh: "A2A 联邦", group: "connect", path: "/w/:ws/a2a-servers" },
 
   { key: "access", label: "Access", labelZh: "访问控制", group: "govern", path: "/w/:ws/access" },
   { key: "vaults", label: "Runtime secrets", labelZh: "运行秘密", group: "govern", path: "/w/:ws/vaults" },
@@ -37,9 +49,9 @@ export const NAV: NavItem[] = [
  * boundary; this removes deployment-inapplicable tasks without creating a
  * second Cloud/local mode flag in the browser. */
 export function visibleNavigation(byokEnabled: boolean): NavItem[] {
-  return NAV.filter((item) => byokEnabled || item.key !== "credentials").map((item) =>
+  return NAV.map((item) =>
     !byokEnabled && item.key === "models"
-      ? { ...item, label: "Models", labelZh: "模型", group: "build" }
+      ? { ...item, label: "Models", labelZh: "模型", group: "author" }
       : item,
   );
 }

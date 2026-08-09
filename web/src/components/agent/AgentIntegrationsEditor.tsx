@@ -4,7 +4,8 @@
 // editor for less common SDK union variants.
 
 import { useEffect, useState } from "react";
-import type { AgentConfig } from "../../lib/api/types";
+import { Link } from "react-router";
+import type { AgentConfig, CredentialSource } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Button, Card, TextAreaField, TextField } from "../ui";
 
@@ -17,22 +18,35 @@ function objectOf(value: unknown): JsonObject {
 function referenceId(value: unknown): string {
   if (typeof value === "string") return value;
   const object = objectOf(value);
+  if (typeof object.skill_id === "string") return object.skill_id;
   return typeof object.id === "string" ? object.id : "";
+}
+
+function credentialValue(value: unknown): string {
+  const credential = objectOf(value);
+  return typeof credential.id === "string" && typeof credential.revision === "number"
+    ? `${credential.id}@${credential.revision}`
+    : "";
 }
 
 export default function AgentIntegrationsEditor({
   config,
+  credentials,
   onChange,
   onValidityChange,
+  section = "all",
 }: {
   config: AgentConfig;
+  credentials: CredentialSource[];
   onChange: (patch: Partial<AgentConfig>) => void;
   onValidityChange: (valid: boolean) => void;
+  section?: "bindings" | "topology" | "all";
 }) {
   const app = useApp();
   const servers = config.mcp_servers ?? [];
   const skills = config.skills ?? [];
   const metadata = config.metadata ?? {};
+  const activeCredentials = credentials.filter((credential) => credential.status === "active");
   const [multiagentText, setMultiagentText] = useState(() =>
     config.multiagent == null ? "" : JSON.stringify(config.multiagent, null, 2));
   const [multiagentError, setMultiagentError] = useState("");
@@ -43,36 +57,123 @@ export default function AgentIntegrationsEditor({
 
   const setServer = (index: number, patch: JsonObject) =>
     onChange({ mcp_servers: servers.map((server, i) => i === index ? { ...objectOf(server), ...patch } : server) });
+  const replaceServer = (index: number, replacement: JsonObject) =>
+    onChange({ mcp_servers: servers.map((server, i) => i === index ? replacement : server) });
   const setSkill = (index: number, id: string) =>
     onChange({ skills: skills.map((skill, i) => i === index ? { ...objectOf(skill), id } : skill) });
 
   return (
     <div className="agent-integration-stack">
+      {(section === "bindings" || section === "all") && (
+      <>
       <Card className="agent-config-card">
         <h2>{app.t("Direct MCP servers", "直接 MCP 服务器")}</h2>
         <p className="hint">
           {app.t(
-            "Managed Agents-compatible name + URL bindings. Runtime tools appear as mcp__server__tool and can be renamed or deferred in Tools.",
-            "兼容 Managed Agents 的名称 + URL 绑定。运行时工具以 mcp__server__tool 出现，可在 Tools 中改名或延迟加载。",
+            "MCP endpoints belong to this Agent draft and are frozen into its publication. Runtime tools are discovered when the server connects; policy and presentation remain under Tools.",
+            "MCP endpoint 属于当前 Agent 草稿，并固化到发布版本中。运行时工具在服务器连接时发现；策略与呈现仍在 Tools 中配置。",
           )}
         </p>
+        <div className="banner info">
+          <span>ⓘ</span>
+          <span>{app.t(
+            "Credentials are exact secret-free references validated at publication. Session Vault ids remain a separate run-scoped mechanism.",
+            "凭据是不含秘密的精确引用，并在发布时校验。Session Vault id 仍是独立的运行级机制。",
+          )}{" "}
+            <Link to={`/w/${app.workspaceId}/credentials`}>{app.t("Manage credential sources ↗", "管理凭据来源 ↗")}</Link>
+          </span>
+        </div>
         {servers.map((server, index) => {
           const value = objectOf(server);
+          const sandboxStdio = value.type === "sandbox_stdio";
           return (
             <div className="agent-integration-row" key={index}>
+              <label className="field">
+                <span>{app.t("Transport", "传输方式")}</span>
+                <select
+                  className="input mono"
+                  value={sandboxStdio ? "sandbox_stdio" : "url"}
+                  onChange={(event) => replaceServer(index, event.target.value === "sandbox_stdio"
+                    ? {
+                        type: "sandbox_stdio",
+                        name: typeof value.name === "string" ? value.name : "",
+                        command: "",
+                        args: [],
+                        prompts_as_skills: value.prompts_as_skills === true,
+                      }
+                    : {
+                        type: "url",
+                        name: typeof value.name === "string" ? value.name : "",
+                        url: "",
+                        prompts_as_skills: value.prompts_as_skills === true,
+                      })}
+                >
+                  <option value="url">HTTP</option>
+                  <option value="sandbox_stdio">{app.t("Sandbox stdio", "Sandbox stdio")}</option>
+                </select>
+              </label>
               <TextField
                 label={app.t("Server name", "服务器名称")}
                 mono
                 value={typeof value.name === "string" ? value.name : ""}
-                onChange={(event) => setServer(index, { type: "url", name: event.target.value })}
+                onChange={(event) => setServer(index, { name: event.target.value })}
               />
-              <TextField
-                label="URL"
-                mono
-                placeholder="https://mcp.example.com"
-                value={typeof value.url === "string" ? value.url : ""}
-                onChange={(event) => setServer(index, { type: "url", url: event.target.value })}
-              />
+              {sandboxStdio ? (
+                <>
+                  <TextField
+                    label={app.t("Sandbox command", "Sandbox 命令")}
+                    mono
+                    placeholder="playwright-mcp"
+                    value={typeof value.command === "string" ? value.command : ""}
+                    onChange={(event) => setServer(index, { command: event.target.value })}
+                  />
+                  <TextAreaField
+                    label={app.t("Arguments (one per line)", "参数（每行一个）")}
+                    mono
+                    rows={3}
+                    value={Array.isArray(value.args) ? value.args.filter((arg): arg is string => typeof arg === "string").join("\n") : ""}
+                    onChange={(event) => setServer(index, {
+                      args: event.target.value.split("\n").filter((arg) => arg.length > 0),
+                    })}
+                  />
+                </>
+              ) : (
+                <TextField
+                  label="URL"
+                  mono
+                  placeholder="https://mcp.example.com"
+                  value={typeof value.url === "string" ? value.url : ""}
+                  onChange={(event) => setServer(index, { type: "url", url: event.target.value })}
+                />
+              )}
+              {!sandboxStdio && (
+              <label className="field">
+                <span>{app.t("Credential source", "凭据来源")}</span>
+                <select
+                  className="input mono"
+                  value={credentialValue(value.credential)}
+                  onChange={(event) => {
+                    const selected = activeCredentials.find((credential) =>
+                      `${credential.id}@${credential.version}` === event.target.value);
+                    setServer(index, {
+                      credential: selected
+                        ? { id: selected.id, revision: selected.version }
+                        : undefined,
+                    });
+                  }}
+                >
+                  <option value="">{app.t("Unauthenticated", "无认证")}</option>
+                  {activeCredentials.map((credential) => (
+                    <option
+                      key={`${credential.id}@${credential.version}`}
+                      value={`${credential.id}@${credential.version}`}
+                    >
+                      {credential.id}@{credential.version} · {credential.kind}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              )}
               <label className="field" style={{ alignSelf: "center" }}>
                 <span>{app.t("Prompts as skills", "将 Prompt 作为 Skill")}</span>
                 <input
@@ -89,13 +190,12 @@ export default function AgentIntegrationsEditor({
           + {app.t("MCP server", "MCP 服务器")}
         </Button>
       </Card>
-
       <Card className="agent-config-card">
         <h2>{app.t("Skill bindings", "Skill 绑定")}</h2>
         <p className="hint">
           {app.t(
-            "Bind focused instructions so the operator can state only the goal; the Agent discovers and activates detailed procedure at runtime.",
-            "绑定聚焦的指令，让用户只需说明目标；Agent 在运行时发现并激活详细流程。",
+            "Bind durable managed Skills so the operator can state only the goal. MCP Prompt Skills stay remote and instruction-only; enable Prompts as skills on the owning MCP server instead of creating fake local files.",
+            "绑定持久化 Managed Skills，让操作者只需说明目标。MCP Prompt Skills 保持远程且仅含指令；请在对应 MCP 服务器上启用“Prompt 作为 Skill”，不要创建虚假的本地文件。",
           )}
         </p>
         {skills.map((skill, index) => (
@@ -111,7 +211,10 @@ export default function AgentIntegrationsEditor({
         ))}
         <Button onClick={() => onChange({ skills: [...skills, { id: "" }] })}>+ Skill</Button>
       </Card>
+      </>
+      )}
 
+      {(section === "topology" || section === "all") && (
       <Card className="agent-config-card">
         <h2>{app.t("Metadata & multi-agent topology", "元数据与多 Agent 拓扑")}</h2>
         <p className="hint">
@@ -162,6 +265,7 @@ export default function AgentIntegrationsEditor({
         />
         {multiagentError && <span className="err" role="alert">{multiagentError}</span>}
       </Card>
+      )}
     </div>
   );
 }

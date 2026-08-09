@@ -35,6 +35,7 @@ export default function StateMachineEditor({
   const app = useApp();
   const cfg = asConfig(value);
   const [raw, setRaw] = useState(false);
+  const [transitionsExpanded, setTransitionsExpanded] = useState(false);
 
   const setMachine = (index: number, machine: SmMachine | null) => {
     const machines = cfg.machines.slice();
@@ -88,6 +89,9 @@ export default function StateMachineEditor({
         <Button variant="ghost" style={{ height: 28, marginLeft: "auto" }} onClick={() => setRaw(true)}>
           {"{}"} {app.t("JSON", "JSON")}
         </Button>
+        <Button variant="ghost" style={{ height: 28 }} onClick={() => setTransitionsExpanded((expanded) => !expanded)}>
+          {transitionsExpanded ? app.t("Collapse transitions", "收起转移") : app.t("Expand transitions", "展开转移")}
+        </Button>
       </div>
 
       {cfg.machines.length === 0 && (
@@ -103,6 +107,7 @@ export default function StateMachineEditor({
         <MachineEditor
           key={`${machine.name}-${index}`}
           machine={machine}
+          transitionsExpanded={transitionsExpanded}
           onChange={(next) => setMachine(index, next)}
           onRemove={() => setMachine(index, null)}
         />
@@ -151,10 +156,12 @@ function RawEditor({
 
 function MachineEditor({
   machine,
+  transitionsExpanded,
   onChange,
   onRemove,
 }: {
   machine: SmMachine;
+  transitionsExpanded: boolean;
   onChange: (machine: SmMachine) => void;
   onRemove: () => void;
 }) {
@@ -212,6 +219,9 @@ function MachineEditor({
         <Labeled label={app.t("Terminal", "终态")}>
           <input {...inp} style={{ ...inp.style, width: 120 }} placeholder="done, idle" value={(machine.terminal ?? []).join(", ")} onChange={(e) => onChange({ ...machine, terminal: splitList(e.target.value) })} />
         </Labeled>
+        <Labeled label={app.t("No result matched", "结果未匹配时")}>
+          <input {...inp} style={{ ...inp.style, width: 125 }} placeholder={app.t("stay (default)", "保持当前状态")} value={machine.on_unmatched ?? ""} onChange={(e) => onChange({ ...machine, on_unmatched: e.target.value || undefined })} />
+        </Labeled>
         <label className="row mut" style={{ gap: 5, fontSize: 11, alignSelf: "flex-end", height: 30 }}>
           <input type="checkbox" checked={machine.strict ?? false} onChange={(e) => onChange({ ...machine, strict: e.target.checked || undefined })} />
           {app.t("deny unmatched tools", "拒绝未声明工具")}
@@ -233,6 +243,7 @@ function MachineEditor({
           <TransitionRow
             key={index}
             transition={transition}
+            expanded={transitionsExpanded}
             onChange={(next) => setTransition(index, next)}
             onRemove={() => setTransition(index, null)}
           />
@@ -247,10 +258,12 @@ function MachineEditor({
 
 function TransitionRow({
   transition,
+  expanded,
   onChange,
   onRemove,
 }: {
   transition: SmTransition;
+  expanded: boolean;
   onChange: (transition: SmTransition) => void;
   onRemove: () => void;
 }) {
@@ -259,9 +272,17 @@ function TransitionRow({
   const emit = transition.emit;
   const whenStatus = typeof transition.when === "string" ? transition.when : transition.when?.status;
   const whenContent = typeof transition.when === "object" ? transition.when.content : undefined;
+  const [open, setOpen] = useState(expanded);
+  useEffect(() => setOpen(expanded), [expanded]);
 
   return (
-    <div style={{ borderRadius: 8, background: "var(--soft)", padding: "9px 10px", display: "flex", flexDirection: "column", gap: 7 }}>
+    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} style={{ borderRadius: 8, background: "var(--soft)", padding: "9px 10px" }}>
+      <summary style={{ cursor: "pointer", fontSize: 12 }}>
+        <span className="mono">{kind}:{triggerText(transition.on) || "*"}</span>
+        <span className="mut"> · {fromList(transition.from).join(", ")} → {transition.to}</span>
+        {transition.emit && <span className="pill" style={{ marginLeft: 6 }}>{app.t("reminder", "提醒")}</span>}
+      </summary>
+      <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 8 }}>
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
           <select aria-label={app.t("Trigger type", "触发类型")} className="input mono" style={{ height: 30, width: 92 }} value={kind} onChange={(e) => onChange(withTriggerKind(transition, e.target.value as "tool" | "event"))}>
           <option value="tool">tool</option>
@@ -324,7 +345,7 @@ function TransitionRow({
 
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
         <span className="mut" style={{ fontSize: 11, width: 72 }}>{app.t("Reminder", "提醒")}</span>
-        <input {...inp} style={{ ...inp.style, flex: 1, minWidth: 240, height: 28 }} placeholder={app.t("Optional message to the model", "可选：给模型的消息")} value={emit?.content ?? ""} onChange={(e) => onChange({ ...transition, emit: e.target.value ? { target: kind === "event" ? "context" : emit?.target ?? "suffix_system", content: e.target.value, cooldown_steps: emit?.cooldown_steps } : undefined })} />
+        <input {...inp} style={{ ...inp.style, flex: 1, minWidth: 240, height: 28 }} placeholder={app.t("Optional message to the model", "可选：给模型的消息")} value={emit?.content ?? ""} onChange={(e) => onChange({ ...transition, emit: e.target.value ? { ...emit, target: kind === "event" ? "context" : emit?.target ?? "suffix_system", content: e.target.value } : undefined })} />
         {emit && (
           <>
             <select aria-label={app.t("Reminder target", "提醒目标")} className="input mono" style={{ height: 28 }} value={kind === "event" ? "context" : emit.target ?? "suffix_system"} disabled={kind === "event"} onChange={(e) => onChange({ ...transition, emit: { ...emit, target: e.target.value as NonNullable<typeof emit.target> } })}>
@@ -335,10 +356,16 @@ function TransitionRow({
               <option value="conversation">conversation</option>
             </select>
             <input {...inp} type="number" min={0} style={{ ...inp.style, width: 118, height: 28 }} placeholder="cooldown steps" title={app.t("Completed inference steps between reminders", "两次提醒之间完成的 inference step 数")} value={emit.cooldown_steps ?? ""} onChange={(e) => onChange({ ...transition, emit: { ...emit, cooldown_steps: Number(e.target.value) || 0 } })} />
+            <select aria-label={app.t("Reminder role", "提醒角色")} className="input mono" style={{ height: 28 }} value={emit.role ?? ""} onChange={(e) => onChange({ ...transition, emit: { ...emit, role: (e.target.value || undefined) as typeof emit.role } })}>
+              <option value="">{app.t("default role", "默认角色")}</option>
+              <option value="user">user</option>
+              <option value="assistant">assistant</option>
+            </select>
           </>
         )}
       </div>
-    </div>
+      </div>
+    </details>
   );
 }
 

@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import { PRESETS } from "../src/components/agent/state-machine-presets";
+import { MANAGED_HEADERS } from "./betas";
 
 // End-to-end proof that the visual editor's state-machine PRESET actually enforces at
 // runtime on a real model (KIMI): we build an agent with the exact `read-before-write`
@@ -57,8 +58,12 @@ test("read-before-write state machine blocks an unread write at runtime (real mo
   });
   await request.post(`/v1/config/agents/${id}/publish`);
 
-  const s = await (await request.post("/v1/sessions", { data: { agent: id, title: "sm-rbw" } })).json();
+  const s = await (await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent: id, title: "sm-rbw" },
+  })).json();
   await request.post(`/v1/sessions/${s.id}/events`, {
+    headers: MANAGED_HEADERS,
     data: { events: [{ type: "user.message", content: [{ type: "text", text: 'Write the text "hello" to /work/a.txt immediately using the write tool. Do NOT read anything first.' }] }] },
   });
 
@@ -67,7 +72,9 @@ test("read-before-write state machine blocks an unread write at runtime (real mo
   let blocked = false;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 2000));
-    const evs = (await (await request.get(`/v1/sessions/${s.id}/events`)).json()).data as Array<{ type: string; content?: Array<{ text?: string }>; stop_reason?: { type?: string } }>;
+    const evs = (await (await request.get(`/v1/sessions/${s.id}/events`, {
+      headers: MANAGED_HEADERS,
+    })).json()).data as Array<{ type: string; content?: Array<{ text?: string }>; stop_reason?: { type?: string } }>;
     blocked = evs.some((e) => e.type === "agent.tool_result" && (e.content ?? []).some((c) => /blocked|Read .* before writing/i.test(c.text ?? "")));
     if (blocked) break;
     const failed = evs.find((event) => event.type === "session.error")

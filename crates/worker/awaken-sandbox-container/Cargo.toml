@@ -9,6 +9,7 @@ awaken-provisioning-contract.workspace = true
 awaken-agent-channel.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 # BLAKE3 content id: the tier resolves mount bytes through the injected BlobSource
 # port (A-G17, no durable store linked) and verifies the declared content hash itself —
@@ -23,6 +24,7 @@ tokio = { workspace = true, features = ["sync"] }
 # Real Docker backend (Docker Engine API via the SDK, not the CLI). Optional.
 bollard = { version = "0.18", optional = true }
 futures-util = { version = "0.3", optional = true }
+base64 = { version = "0.22", optional = true }
 # Real Kubernetes backend (kube-apiserver via the SDK, not kubectl). Optional.
 kube = { version = "1", default-features = false, features = ["client", "rustls-tls", "ws"], optional = true }
 k8s-openapi = { version = "0.25", features = ["v1_30"], optional = true }
@@ -35,7 +37,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"], opti
 connection = ["dep:awaken-connection", "tokio/net", "tokio/io-util", "tokio/rt", "tokio/time"]
 # Real Docker ContainerRuntime (bollard). Dials the published agent port via the
 # `connection` transport. Compile-verified; running needs a Docker daemon.
-docker = ["dep:bollard", "dep:futures-util", "connection"]
+docker = ["dep:bollard", "dep:futures-util", "dep:base64", "connection"]
 # Real Kubernetes ContainerRuntime (kube). Process-as-container Pod + native-GC.
 # Compile-verified; running needs a cluster.
 k8s = ["dep:kube", "dep:k8s-openapi", "dep:rustls", "connection"]
@@ -47,3 +49,4 @@ podman = ["connection", "tokio/process"]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "sync", "io-util", "net", "time", "test-util"] }
 awaken-runtime-contract.workspace = true
 awaken-tool-relay.workspace = true
+tempfile = "3"

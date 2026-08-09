@@ -384,8 +384,9 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     // | Family                         | Method | Expected action |
     // | provider-connections           | GET    | model_supply.read    |
     // | provider-connections           | POST   | model_supply.connect |
-    // | publications/{fingerprint}     | GET    | workspace.read  |
-    // | publications/{fingerprint}     | POST   | workspace.write |
+    // | executable-models              | GET    | model_supply.read    |
+    // | publications/{fingerprint}     | GET    | workspace.read       |
+    // | publications/{fingerprint}     | POST   | workspace.write      |
     // | unknown config family          | any    | unmapped/deny   |
     // The aggregate contains no credential material; secret entry remains
     // delegated to the credential boundary inside the write command.
@@ -421,6 +422,10 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     assert_eq!(
         action_for(&post, "/v1/config/provider-connections"),
         Some(MODEL_SUPPLY_CONNECT)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/config/executable-models"),
+        Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(
         action_for(&get, "/v1/config/publications/fingerprint"),
@@ -509,6 +514,10 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     // Concrete route membership belongs to axum; registered aggregate families
     // receive a total read/write policy while unknown families fail closed.
     assert_eq!(action_for(&get, "/v1/config/unknown"), None);
+    assert_eq!(
+        action_for(&get, "/v1/config/workspace-context"),
+        Some(WORKSPACE_READ)
+    );
     assert_eq!(
         action_for(&post, "/v1/config/catalog"),
         Some(MODEL_SUPPLY_WRITE)
@@ -716,6 +725,76 @@ async fn local_browser_session_enters_the_existing_management_pdp() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+// Cause/effect graph for the local console's Resource API edge:
+// setup token -> HttpOnly session -> resource PDP -> trusted workspace stamp;
+// no bearer and no session -> 401. This proves the Console can manage Memory
+// and Skills without ever receiving the durable admin API token.
+#[tokio::test]
+async fn local_browser_session_enters_the_existing_resource_pdp() {
+    async fn echo(
+        axum::Extension(scope): axum::Extension<awaken_tenancy::WorkspaceScope>,
+    ) -> Response {
+        (StatusCode::OK, Json(json!({ "workspace": scope.0 }))).into_response()
+    }
+
+    let (_dir, iam) = fresh_iam();
+    let account = AccountId("local-console-resource-admin".into());
+    let (browser, handoff) = LocalBrowserAuth::begin(account.clone()).unwrap();
+    iam.enable_local_browser(&browser, &account);
+    let exchange = awaken_iam_host::local_browser_router(browser)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/local/exchange")
+                .header("host", "127.0.0.1:8080")
+                .header("origin", "http://127.0.0.1:8080")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "setup_token": handoff.setup_token }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let cookie = exchange
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+    let app = Router::new()
+        .fallback(echo)
+        .layer(axum::middleware::from_fn_with_state(iam, resource_guard));
+
+    let admitted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/memory_stores")
+                .header("cookie", cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admitted.status(), StatusCode::OK);
+
+    let missing = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/skills")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
 }
 
 /// The token routes WITHOUT the guard — so the handlers see no
@@ -1146,6 +1225,14 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     );
     assert_eq!(
         scoped(put.clone(), "/v1/config/agents/a1"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(post.clone(), "/v1/config/agent-previews/preview-1"),
+        Some(WORKSPACE_WRITE)
+    );
+    assert_eq!(
+        scoped(Method::DELETE, "/v1/config/agent-previews/preview-1"),
         Some(WORKSPACE_WRITE)
     );
     assert_eq!(scoped(get.clone(), "/v1/config/projects"), None);

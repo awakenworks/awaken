@@ -212,7 +212,7 @@ pub async fn build_control_component(
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
     let agent_repository: Arc<dyn ManagedAgentRepository> = Arc::new(
-        ConfigPlaneManagedAgentRepository::new(config_plane.clone(), execution_workspace),
+        ConfigPlaneManagedAgentRepository::new(config_plane.clone(), execution_workspace.clone()),
     );
     let resolver = RepoDataSubjectResolver::new(data_subjects.clone(), erasure_jobs)
         .with_target(ErasureTarget::Coordinator, coordinator_content_eraser);
@@ -241,6 +241,7 @@ pub async fn build_control_component(
         global_tools,
         plugins: platform_plugins,
         runtimes,
+        platform_workspace: execution_workspace,
         iam,
         local_browser_auth,
         remote_iam,

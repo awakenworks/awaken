@@ -88,6 +88,13 @@ pub struct StoredPublication {
     pub source_revision: u64,
     pub state: PublicationState,
     pub snapshot: ExecutableAgentSnapshot,
+    /// Exact Agent input defaults used to compile this publication. Keeping the
+    /// value beside the executable snapshot makes a publication self-contained:
+    /// later Draft edits cannot change (or make unavailable) an already-published
+    /// Agent, and startup recovery never has to reconstruct an old Resource revision
+    /// from the mutable authoring repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_inputs: Option<serde_json::Value>,
 }
 
 impl StoredPublication {
@@ -110,7 +117,15 @@ impl StoredPublication {
             source_revision,
             state: PublicationState::Published,
             snapshot: config,
+            agent_inputs: None,
         }
+    }
+
+    /// Freeze the exact Resource bindings that belong to this publication.
+    #[must_use]
+    pub fn with_agent_inputs(mut self, inputs: Option<serde_json::Value>) -> Self {
+        self.agent_inputs = inputs;
+        self
     }
 }
 

@@ -18,7 +18,7 @@ use awaken_config_store::{
 use awaken_protocol_managed::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentSkill, AgentStatus, AgentTool,
     AgentUpdateParams, AwakenAgentExtensions, CustomToolInputSchema,
-    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer, UrlMcpServerKind,
+    MultiagentConfig as WireMultiagent, MultiagentRosterEntry, UrlMcpServer,
 };
 use awaken_protocol_managed::types::{AwakenModelExtensions, ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
@@ -246,7 +246,9 @@ fn typed_mcp_servers(values: Vec<UrlMcpServer>) -> Vec<AgentMcpServerBinding> {
         .into_iter()
         .map(|server| AgentMcpServerBinding {
             name: server.name,
-            url: server.url,
+            transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+                server.url,
+            ),
             prompts_as_skills: server.prompts_as_skills,
             credential: None,
         })
@@ -351,13 +353,9 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
                 "mcp_server name must be 1-255 characters".into(),
             ));
         }
-        if server.url.chars().count() > 2048
-            || awaken_agent_contract::McpTarget::identity(&server.url).is_err()
-        {
-            return Err(ManagedAgentError::Invalid(
-                "mcp_server url must be an HTTP(S) URL of at most 2048 characters".into(),
-            ));
-        }
+        server.transport.normalize().map_err(|error| {
+            ManagedAgentError::Invalid(format!("mcp_server transport is invalid: {error}"))
+        })?;
     }
     if server_names.len() != config.mcp_servers.len() {
         return Err(ManagedAgentError::Invalid(
@@ -573,11 +571,22 @@ fn project(revision: AgentConfigRevision) -> Agent {
         mcp_servers: config
             .mcp_servers
             .into_iter()
-            .map(|server| UrlMcpServer {
-                name: server.name,
-                url: server.url,
-                kind: UrlMcpServerKind::Url,
-                prompts_as_skills: server.prompts_as_skills,
+            .map(|server| match server.transport {
+                awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::Http(
+                    transport,
+                ) => awaken_protocol_managed::types::agent::McpServerView::Url {
+                    name: server.name,
+                    url: transport.url,
+                    prompts_as_skills: server.prompts_as_skills,
+                },
+                awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::SandboxStdio(
+                    transport,
+                ) => awaken_protocol_managed::types::agent::McpServerView::SandboxStdio {
+                    name: server.name,
+                    command: transport.command,
+                    args: transport.args,
+                    prompts_as_skills: server.prompts_as_skills,
+                },
             })
             .collect(),
         skills: config
@@ -1210,7 +1219,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.version, 1);
-        assert_eq!(created.mcp_servers[0].name, "docs");
+        assert!(matches!(
+            &created.mcp_servers[0],
+            awaken_protocol_managed::types::agent::McpServerView::Url { name, .. }
+                if name == "docs"
+        ));
         assert!(matches!(
             &created.skills[0],
             AgentSkill::Custom { skill_id, .. } if skill_id == "skill-docs"

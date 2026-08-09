@@ -99,7 +99,10 @@ fn project(
             .into_iter()
             .map(|server| ExecutableAgentMcpServer {
                 name: server.name,
-                url: server.url,
+                target: server
+                    .transport
+                    .normalize()
+                    .expect("compiled MCP transport is normalized"),
                 prompts_as_skills: server.prompts_as_skills,
                 credential_source_id: server
                     .credential

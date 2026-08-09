@@ -12,7 +12,7 @@ import {
   type IssuedApplicationAccessToken,
   ws,
 } from "../../lib/api/client";
-import type { Session } from "../../lib/api/types";
+import type { AgentConfig, InputBinding, Session } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Button, Card, EmptyState, Pill } from "../ui";
 
@@ -32,15 +32,30 @@ export function uiMessageText(message: UIMessage): string {
     .join("");
 }
 
+export function draftPreviewSignature(draft: AgentConfig, resources: InputBinding[]): string {
+  return JSON.stringify([draft, resources]);
+}
+
+export function draftPreviewRequest(previewId: string, draft: AgentConfig, resources: InputBinding[]) {
+  return {
+    config: draft,
+    resources: {
+      agent_id: previewId,
+      inputs: resources,
+      revision: 1,
+    },
+  };
+}
+
 function AiSdkPreview({
   agentId,
   access,
-  dirty,
+  stale,
   onNew,
 }: {
   agentId: string;
   access: PreviewAccess;
-  dirty: boolean;
+  stale: boolean;
   onNew: () => void;
 }) {
   const app = useApp();
@@ -95,13 +110,13 @@ function AiSdkPreview({
           ↻ {app.t("New preview", "新预览")}
         </Button>
       </div>
-      {dirty && (
+      {stale && (
         <div className="banner warn" style={{ marginBottom: 8 }}>
           <span>⚠</span>
           <span>
             {app.t(
-              "Unsaved edits aren't live yet — Save + Publish to test them.",
-              "未保存的修改尚未生效——保存并发布后再测试。",
+              "The draft changed after this preview started. Start a new preview to test the latest edits.",
+              "当前草稿在预览开始后有新改动，请新建预览以测试最新内容。",
             )}
           </span>
         </div>
@@ -109,7 +124,7 @@ function AiSdkPreview({
       <div className="transcript" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {messages.length === 0 && (
           <div className="mut" style={{ padding: "18px 4px", textAlign: "center" }}>
-            {app.t("Ask the published Agent anything.", "向已发布的 Agent 提问。")}
+            {app.t("Ask the current Agent draft anything.", "向当前 Agent 草稿提问。")}
           </div>
         )}
         {messages.map((message) => {
@@ -177,19 +192,20 @@ function AiSdkPreview({
   );
 }
 
-/** Enabled only for a published, saved agent — an unpublished draft is not
- * installed in the runtime, so there is nothing live to talk to yet. */
 export default function SandboxPane({
-  agentId,
-  ready,
-  dirty,
+  draft,
+  resources,
+  canPreview,
 }: {
-  agentId: string;
-  ready: boolean;
-  dirty: boolean;
+  draft: AgentConfig;
+  resources: InputBinding[];
+  canPreview: boolean;
 }) {
   const app = useApp();
+  const previewId = useRef<string | undefined>(undefined);
+  const signature = useMemo(() => draftPreviewSignature(draft, resources), [draft, resources]);
   const [access, setAccess] = useState<PreviewAccess>();
+  const [previewedSignature, setPreviewedSignature] = useState<string>();
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string>();
 
@@ -197,8 +213,15 @@ export default function SandboxPane({
     setStarting(true);
     setStartError(undefined);
     const externalThreadId = crypto.randomUUID();
+    const nextPreviewId = `preview-${crypto.randomUUID()}`;
+    let registered = false;
     try {
-      const session = await api.post<Session>(ws("/v1/sessions"), { agent: agentId });
+      await api.post(
+        ws(`/v1/config/agent-previews/${nextPreviewId}`),
+        draftPreviewRequest(nextPreviewId, draft, resources),
+      );
+      registered = true;
+      const session = await api.post<Session>(ws("/v1/sessions"), { agent: nextPreviewId });
       const token = await issueApplicationAccessToken({
         authority_id: "awaken-console",
         application_scope: previewApplicationScope(getWorkspace()),
@@ -210,21 +233,36 @@ export default function SandboxPane({
         }],
         expires_in_seconds: 900,
       });
+      const previousPreviewId = previewId.current;
+      previewId.current = nextPreviewId;
       setAccess({ token, threadId: externalThreadId });
+      setPreviewedSignature(signature);
+      if (previousPreviewId) {
+        void api.del(ws(`/v1/config/agent-previews/${previousPreviewId}`)).catch(() => undefined);
+      }
     } catch (error) {
+      if (registered) {
+        void api.del(ws(`/v1/config/agent-previews/${nextPreviewId}`)).catch(() => undefined);
+      }
       setStartError(error instanceof Error ? error.message : String(error));
     } finally {
       setStarting(false);
     }
   };
 
-  if (!ready) {
+  useEffect(() => () => {
+    if (previewId.current) {
+      void api.del(ws(`/v1/config/agent-previews/${previewId.current}`)).catch(() => undefined);
+    }
+  }, []);
+
+  if (!canPreview) {
     return (
       <EmptyState
-        title={app.t("Publish to test in Live Preview", "发布后即可实时预览")}
+        title={app.t("Complete the runnable fields to Try", "补全运行必填项后即可试运行")}
         hint={app.t(
-          "Live Preview runs the installed Agent through the authenticated AI SDK endpoint.",
-          "实时预览通过带应用鉴权的 AI SDK 接口运行已安装的 Agent。",
+          "A system prompt and a resolvable model are required. Saving and publishing are not required.",
+          "需要填写系统提示词并选择可解析的模型；无需保存或发布。",
         )}
       />
     );
@@ -233,10 +271,10 @@ export default function SandboxPane({
   if (!access) {
     return (
       <EmptyState
-        title={app.t("Start an authenticated Live Preview", "开始带鉴权的实时预览")}
+        title={app.t("Try the current draft", "试运行当前草稿")}
         hint={app.t(
-          "Awaken creates one Managed Session, then issues a 15-minute token bound to it and kept only in this tab.",
-          "Awaken 会先创建唯一的 Managed Session，再签发绑定该 Session、有效 15 分钟且只保存在当前标签页的应用令牌。",
+          "Awaken compiles an isolated, temporary snapshot of the current fields and resources. It is never saved or published as an Agent.",
+          "Awaken 会把当前字段和资源编译为隔离的临时快照，不会保存或发布为正式 Agent。",
         )}
         action={
           <div className="col" style={{ gap: 8, alignItems: "center" }}>
@@ -253,9 +291,9 @@ export default function SandboxPane({
   return (
     <AiSdkPreview
       key={access.threadId}
-      agentId={agentId}
+      agentId={draft.id.trim() || app.t("new draft", "新草稿")}
       access={access}
-      dirty={dirty}
+      stale={previewedSignature !== signature}
       onNew={() => void start()}
     />
   );

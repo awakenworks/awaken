@@ -20,6 +20,7 @@ use awaken_mcp_wire::{
     CallToolParams, CallToolResult, InitializeParams, ListToolsResult, McpToolDefinition,
 };
 use serde_json::Value;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, broadcast, mpsc};
 
@@ -41,7 +42,7 @@ pub struct StdioTransport {
     timeout: Duration,
     /// The child is kept alive here (its stdio is owned by the peer's tasks);
     /// `kill_on_drop` reaps it when this transport is dropped.
-    child: Mutex<Child>,
+    child: Option<Mutex<Child>>,
     /// Typed notification sinks fed by the background router.
     sinks: Arc<NotificationSinks>,
     /// Allocates a unique `progressToken` per progress-tracked call.
@@ -127,13 +128,47 @@ impl StdioTransport {
             .take()
             .ok_or_else(|| McpTransportError::TransportError("child has no stdin".to_string()))?;
 
-        let (peer, notifications) = JsonRpcPeer::new(stdout, stdin, request_handler);
+        Self::initialize_stream(stdout, stdin, Some(child), config, timeout, request_handler).await
+    }
+
+    /// Connect MCP over an already-attached duplex process stream.
+    ///
+    /// The caller owns the process lifecycle. This is used by a Runtime Host
+    /// whose MCP server was launched inside a Session sandbox: the sandbox
+    /// provider supplies the bytes while this transport remains responsible only
+    /// for MCP framing, initialization, notifications, and requests.
+    pub async fn connect_stream<S>(
+        stream: S,
+        config: Option<Value>,
+        timeout: Duration,
+        request_handler: Option<Arc<dyn ServerRequestHandler>>,
+    ) -> Result<Self, McpTransportError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (reader, writer) = tokio::io::split(stream);
+        Self::initialize_stream(reader, writer, None, config, timeout, request_handler).await
+    }
+
+    async fn initialize_stream<R, W>(
+        reader: R,
+        writer: W,
+        child: Option<Child>,
+        config: Option<Value>,
+        timeout: Duration,
+        request_handler: Option<Arc<dyn ServerRequestHandler>>,
+    ) -> Result<Self, McpTransportError>
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let (peer, notifications) = JsonRpcPeer::new(reader, writer, request_handler);
         let sinks = Arc::new(NotificationSinks::new());
         spawn_router(notifications, Arc::clone(&sinks));
         let transport = Self {
             peer,
             timeout,
-            child: Mutex::new(child),
+            child: child.map(Mutex::new),
             sinks,
             next_progress_token: AtomicI64::new(1),
         };
@@ -172,12 +207,15 @@ impl StdioTransport {
 
     /// Terminate the child process.
     pub async fn stop(&self) -> Result<(), McpTransportError> {
-        self.child
-            .lock()
-            .await
-            .kill()
-            .await
-            .map_err(|e| McpTransportError::TransportError(e.to_string()))
+        match &self.child {
+            Some(child) => child
+                .lock()
+                .await
+                .kill()
+                .await
+                .map_err(|e| McpTransportError::TransportError(e.to_string())),
+            None => Ok(()),
+        }
     }
 }
 
@@ -284,5 +322,49 @@ impl McpToolTransport for StdioTransport {
 
     fn is_alive(&self) -> bool {
         self.peer.is_alive()
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn attached_duplex_stream_drives_the_same_mcp_client() {
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server);
+            let mut lines = BufReader::new(reader).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let value: Value = serde_json::from_str(&line).unwrap();
+                let Some(id) = value.get("id").cloned() else {
+                    continue;
+                };
+                let result = match value["method"].as_str() {
+                    Some("initialize") => serde_json::json!({
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "serverInfo": {"name": "attached", "version": "1"}
+                    }),
+                    Some("tools/list") => serde_json::json!({
+                        "tools": [{"name": "browser_navigate", "inputSchema": {"type": "object"}}]
+                    }),
+                    method => panic!("unexpected method: {method:?}"),
+                };
+                let reply = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result});
+                writer
+                    .write_all(format!("{reply}\n").as_bytes())
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let transport = StdioTransport::connect_stream(client, None, Duration::from_secs(2), None)
+            .await
+            .unwrap();
+        let tools = transport.list_tools().await.unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "browser_navigate");
     }
 }

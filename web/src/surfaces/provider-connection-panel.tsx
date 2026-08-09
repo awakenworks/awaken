@@ -7,7 +7,7 @@ import {
   SelectField,
   TextField,
 } from "../components/ui";
-import { api, ws } from "../lib/api/client";
+import { api, workspaceFields, ws } from "../lib/api/client";
 import type {
   CredentialSource,
   ProviderConnectionView,
@@ -94,7 +94,7 @@ export default function ProviderConnectionPanel({
         ws("/v1/config/provider-connections"),
         {
           idempotency_key: idempotencyKey,
-          workspace_id: workspace,
+          ...workspaceFields(workspace),
           provider_id: draft.provider,
           display_name: selectedDescriptor?.display_name ?? draft.provider,
           dialect: draft.dialect,

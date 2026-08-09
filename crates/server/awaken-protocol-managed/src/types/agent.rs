@@ -37,6 +37,28 @@ pub enum UrlMcpServerKind {
     Url,
 }
 
+/// Effective MCP binding projected in Agent and Session responses. `url` is the
+/// Managed Agents-compatible variant; `sandbox_stdio` is an Awaken extension
+/// for an executable realized inside the Session Environment.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum McpServerView {
+    Url {
+        name: String,
+        url: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        prompts_as_skills: bool,
+    },
+    SandboxStdio {
+        name: String,
+        command: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        prompts_as_skills: bool,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentSkill {
@@ -295,7 +317,7 @@ pub struct Agent {
     pub model: ModelConfig,
     pub system: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    pub mcp_servers: Vec<UrlMcpServer>,
+    pub mcp_servers: Vec<McpServerView>,
     pub skills: Vec<AgentSkill>,
     pub tools: Vec<AgentTool>,
     pub multiagent: Option<MultiagentConfig>,

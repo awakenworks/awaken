@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { MANAGED_HEADERS, MEMORY_HEADERS } from "./betas";
 
 // Real-LLM e2e via the CONFIG PLANE (no env model config). The backend runs in plain
 // management mode — NO AWAKEN_MODEL_SOURCE / GEMINI_API_KEY on the server. The model
@@ -35,12 +36,15 @@ async function configureGemini(request: APIRequestContext) {
 // (status idle with at least one agent.message). Returns the concatenated assistant text.
 async function runTurn(request: APIRequestContext, sessionId: string, text: string): Promise<string> {
   await request.post(`/v1/sessions/${sessionId}/events`, {
+    headers: MANAGED_HEADERS,
     data: { events: [{ type: "user.message", content: [{ type: "text", text }] }] },
   });
   const deadline = Date.now() + REPLY_TIMEOUT;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 1500));
-    const evs = (await (await request.get(`/v1/sessions/${sessionId}/events`)).json()).data as Array<{ type: string; content?: Array<{ text?: string }> }>;
+    const evs = (await (await request.get(`/v1/sessions/${sessionId}/events`, {
+      headers: MANAGED_HEADERS,
+    })).json()).data as Array<{ type: string; content?: Array<{ text?: string }> }>;
     // Surface an upstream turn failure (e.g. an exhausted model quota) as the error it
     // is, rather than a mute timeout — the message tells the operator to check quota/key.
     if (evs.some((e) => e.type === "session.error")) {
@@ -64,9 +68,11 @@ test("Sandbox answers for real via config-plane credential (no env)", async ({ p
   // Author + publish an agent bound to that model, via the console.
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
-  await page.locator("select").first().selectOption("gemini-2.5-flash");
-  await page.locator("textarea").first().fill("You are a terse assistant. Answer in one short sentence.");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByLabel("Model (references workspace catalog)").selectOption({ label: "gemini-2.5-flash" });
+  await page.getByRole("tab", { name: "Build", exact: true }).click();
+  await page.getByRole("tab", { name: "Instructions", exact: true }).click();
+  await page.getByLabel("System instructions").fill("You are a terse assistant. Answer in one short sentence.");
+  await page.getByRole("button", { name: "Save draft", exact: true }).click();
   await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
   await expect(page).toHaveURL(new RegExp(`/agents/${id}$`));
   await page.getByRole("button", { name: /Publish/ }).click();
@@ -75,8 +81,8 @@ test("Sandbox answers for real via config-plane credential (no env)", async ({ p
 
   // Sandbox: the runtime resolves the model to a REAL Gemini executor from the
   // configured credential (no env), and a real reply lands on screen.
-  await page.getByRole("button", { name: /Try it/ }).click();
-  await page.getByRole("button", { name: /Start session/ }).click();
+  await page.getByRole("button", { name: /Try draft/ }).click();
+  await page.getByRole("button", { name: /Start preview/ }).click();
   const ask = page.getByPlaceholder("Ask the agent…");
   await expect(ask).toBeVisible();
   await ask.fill("Say hello.");
@@ -103,7 +109,10 @@ test("Agent reads/writes its bound memory store across sessions (real model)", a
 
   // A memory store to bind. Author the agent with file tools + a bypass permission
   // policy (a note-keeper should read/write its own memory autonomously), publish it.
-  const store = await (await request.post("/v1/memory_stores", { data: { name: `brain-${Date.now()}` } })).json();
+  const store = await (await request.post("/v1/memory_stores", {
+    headers: MEMORY_HEADERS,
+    data: { name: `brain-${Date.now()}` },
+  })).json();
   await request.put(`/v1/config/agents/${agent}`, {
     data: {
       id: agent,
@@ -121,25 +130,34 @@ test("Agent reads/writes its bound memory store across sessions (real model)", a
 
   // Bind the store to the agent through the SAME console tab a user would use.
   await page.goto(`/w/default/agents/${agent}`);
-  await page.getByRole("tab", { name: "Resources" }).click();
+  await page.getByRole("tab", { name: "Build", exact: true }).click();
+  await page.getByRole("tab", { name: "Memory & resources", exact: true }).click();
   await page.getByRole("button", { name: /bind a store/ }).click();
   await page.locator("select").nth(1).selectOption({ label: store.name }); // 0=kind, 1=store
-  await page.getByRole("button", { name: /Save resources/ }).click();
-  await expect(page.locator(".ui-toast").filter({ hasText: /Resources saved|资源已保存/ })).toBeVisible();
+  await page.getByRole("button", { name: /Save draft/ }).click();
+  await expect(page.locator(".ui-toast").filter({ hasText: /Saved|已保存/ })).toBeVisible();
   await request.post(`/v1/config/agents/${agent}/publish`);
 
   // Session 1: the agent writes the secret into its bound memory.
-  const s1 = await (await request.post("/v1/sessions", { data: { agent, title: "write" } })).json();
+  const s1 = await (await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent, title: "write" },
+  })).json();
   const wrote = await runTurn(request, s1.id, `Save this to your memory so you never forget it: the secret code is ${secret}. Write it to your memory file now.`);
   expect(wrote.length).toBeGreaterThan(0);
 
   // Harvest: persist the session's memory write-back into the durable store blob.
   await request.get(`/v1/files?scope_id=${s1.id}`);
-  const stored = await (await request.get(`/v1/memory_stores/${store.id}`)).json();
+  const stored = await (await request.get(`/v1/memory_stores/${store.id}`, {
+    headers: MEMORY_HEADERS,
+  })).json();
   expect(stored.content ?? "").toContain(secret);
 
   // Session 2: a fresh session (no shared history) reads the persisted memory back.
-  const s2 = await (await request.post("/v1/sessions", { data: { agent, title: "read" } })).json();
+  const s2 = await (await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent, title: "read" },
+  })).json();
   const recalled = await runTurn(request, s2.id, "Read your memory file and tell me the secret code. Answer with only the code.");
   expect(recalled).toContain(secret);
 });
@@ -179,7 +197,10 @@ test("Agent reads a bound read-only file (real model)", async ({ request }) => {
   await request.post(`/v1/config/agents/${agent}/publish`);
 
   // One session: the agent reads the mounted file and reports the secret.
-  const s = await (await request.post("/v1/sessions", { data: { agent, title: "read-file" } })).json();
+  const s = await (await request.post("/v1/sessions", {
+    headers: MANAGED_HEADERS,
+    data: { agent, title: "read-file" },
+  })).json();
   const answer = await runTurn(request, s.id, "Read the config file that is mounted for you and tell me the launch code. Answer with only the code.");
   expect(answer).toContain(secret);
 });

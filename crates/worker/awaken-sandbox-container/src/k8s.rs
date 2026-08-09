@@ -18,9 +18,9 @@ use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
-    Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar, Pod,
-    PodSecurityContext, PodSpec, ResourceRequirements, Secret, SecretVolumeSource, SecurityContext,
-    Volume, VolumeMount,
+    Capabilities, ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
+    LocalObjectReference, Pod, PodSecurityContext, PodSpec, ResourceRequirements, Secret,
+    SecretVolumeSource, SecurityContext, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference, Status};
@@ -365,6 +365,7 @@ pub struct K8sRuntime {
     /// harvests writes back on teardown (ADR-0053 D6) — so a cluster without FUSE
     /// still works, just without live write-through.
     memoryd_fuse: bool,
+    image_pull_secrets: Vec<String>,
 }
 
 /// Default memoryd sidecar image (overridable via [`K8sRuntime::with_memoryd_image`]).
@@ -392,6 +393,7 @@ impl K8sRuntime {
             memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
             rendezvous: None,
             memoryd_fuse: false,
+            image_pull_secrets: Vec::new(),
         })
     }
 
@@ -426,6 +428,19 @@ impl K8sRuntime {
         self
     }
 
+    /// Attach existing namespace-local imagePullSecrets to every Session Pod.
+    /// Registry credentials remain Kubernetes-owned and are never injected into
+    /// the Agent container.
+    #[must_use]
+    pub fn with_image_pull_secrets(mut self, names: impl IntoIterator<Item = String>) -> Self {
+        self.image_pull_secrets = names
+            .into_iter()
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .collect();
+        self
+    }
+
     /// A runtime backed by a **lazy** client (no cluster dial), for unit-testing the
     /// builder + Pod-assembly paths; the live `create`/`wait`/… methods still need a
     /// real apiserver (exercised by the gated `k8s_it` integration test).
@@ -442,6 +457,7 @@ impl K8sRuntime {
             memoryd_image: DEFAULT_MEMORYD_IMAGE.to_string(),
             rendezvous: None,
             memoryd_fuse: false,
+            image_pull_secrets: Vec::new(),
         }
     }
 
@@ -488,6 +504,7 @@ impl K8sRuntime {
             &self.memoryd_image,
             rendezvous.as_deref(),
             self.memoryd_fuse,
+            &self.image_pull_secrets,
         )
     }
 }
@@ -503,6 +520,7 @@ fn build_pod(
     memoryd_image: &str,
     rendezvous: Option<&str>,
     memoryd_fuse: bool,
+    image_pull_secrets: &[String],
 ) -> Pod {
     {
         let mut agent_env: Vec<EnvVar> = plan
@@ -701,6 +719,12 @@ fn build_pod(
                 // The untrusted agent must NOT reach the kube API (no SA token): its
                 // only control-plane channel is the ACP data channel, nothing else.
                 automount_service_account_token: Some(false),
+                image_pull_secrets: (!image_pull_secrets.is_empty()).then(|| {
+                    image_pull_secrets
+                        .iter()
+                        .map(|name| LocalObjectReference { name: name.clone() })
+                        .collect()
+                }),
                 ..Default::default()
             }),
             status: None,
@@ -1231,11 +1255,21 @@ mod tests {
             .with_memoryd_fuse(true)
             .with_owner(OwnerReference::default())
             .with_rendezvous("127.0.0.1:7000".parse().unwrap())
-            .with_memoryd_image("custom/memoryd:1");
+            .with_memoryd_image("custom/memoryd:1")
+            .with_image_pull_secrets(["registry-pull".into()]);
         assert!(rt.memoryd_fuse);
         assert!(rt.owner.is_some());
         assert_eq!(rt.rendezvous, Some("127.0.0.1:7000".parse().unwrap()));
         assert_eq!(rt.memoryd_image, "custom/memoryd:1");
+        assert_eq!(
+            rt.pod("s1", &plan_with_memory(vec![]))
+                .spec
+                .unwrap()
+                .image_pull_secrets
+                .unwrap()[0]
+                .name,
+            "registry-pull"
+        );
         // pod() threads the builder state into build_pod and the Api handle builds.
         let pod = rt.pod("s1", &plan_with_memory(vec![]));
         assert!(pod.metadata.name.is_some());
@@ -1338,7 +1372,7 @@ mod tests {
                 mount_path: "/workspace/.mnt/b".into(),
             },
         ]);
-        let pod = build_pod("run-1", &plan, &None, "memoryd:9", None, false);
+        let pod = build_pod("run-1", &plan, &None, "memoryd:9", None, false, &[]);
         let spec = pod.spec.unwrap();
 
         // agent + one memoryd sidecar per memory store.
@@ -1416,7 +1450,7 @@ mod tests {
                 credential_file_path: None,
             },
         ];
-        let spec = build_pod("run-9", &plan, &None, "m", None, false)
+        let spec = build_pod("run-9", &plan, &None, "m", None, false, &[])
             .spec
             .unwrap();
 
@@ -1460,7 +1494,7 @@ mod tests {
             credential_file_path: Some("/acp-config/auth.json".into()),
         }];
 
-        let pod = build_pod("oauth", &plan, &None, "memoryd", None, false);
+        let pod = build_pod("oauth", &plan, &None, "memoryd", None, false, &[]);
         let spec = pod.spec.unwrap();
         let init = spec
             .init_containers
@@ -1552,7 +1586,9 @@ mod tests {
             ("AWAKEN_ACP_GATEWAY_URL".into(), "http://gw.internal".into()),
             ("HTTPS_PROXY".into(), "http://gw.internal:8888".into()),
         ];
-        let spec = build_pod("r", &plan, &None, "m", None, false).spec.unwrap();
+        let spec = build_pod("r", &plan, &None, "m", None, false, &[])
+            .spec
+            .unwrap();
         let env = spec.containers[0].env.clone().unwrap();
         assert!(env.iter().any(|e| e.name == "AWAKEN_ACP_GATEWAY_URL"));
         assert!(
@@ -1563,7 +1599,15 @@ mod tests {
 
     #[test]
     fn build_pod_without_memory_mounts_is_a_single_container() {
-        let pod = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None, false);
+        let pod = build_pod(
+            "r",
+            &plan_with_memory(Vec::new()),
+            &None,
+            "m",
+            None,
+            false,
+            &[],
+        );
         let spec = pod.spec.unwrap();
         // No memoryd sidecar, but the agent still gets the three writable-rootfs
         // emptyDirs (workspace, outputs, and /tmp).
@@ -1587,7 +1631,9 @@ mod tests {
             store_id: "s1".into(),
             mount_path: "/workspace/.mnt/a".into(),
         }]);
-        let spec = build_pod("r", &plan, &None, "m", None, false).spec.unwrap();
+        let spec = build_pod("r", &plan, &None, "m", None, false, &[])
+            .spec
+            .unwrap();
         let sc = memoryd_sidecar(&spec);
         assert!(sc.args.as_ref().unwrap().iter().any(|arg| arg == "copy"));
         assert!(
@@ -1603,7 +1649,9 @@ mod tests {
             mount_path: "/workspace/.mnt/a".into(),
         }]);
         // FUSE opt-in: the sidecar is told fuse mode and granted SYS_ADMIN for /dev/fuse.
-        let spec = build_pod("r", &plan, &None, "m", None, true).spec.unwrap();
+        let spec = build_pod("r", &plan, &None, "m", None, true, &[])
+            .spec
+            .unwrap();
         let sc = memoryd_sidecar(&spec);
         assert!(sc.args.as_ref().unwrap().iter().any(|arg| arg == "fuse"));
         let caps = sc
@@ -1618,9 +1666,17 @@ mod tests {
 
     #[test]
     fn build_pod_hardens_the_untrusted_agent() {
-        let spec = build_pod("r", &plan_with_memory(Vec::new()), &None, "m", None, false)
-            .spec
-            .unwrap();
+        let spec = build_pod(
+            "r",
+            &plan_with_memory(Vec::new()),
+            &None,
+            "m",
+            None,
+            false,
+            &[],
+        )
+        .spec
+        .unwrap();
         // No SA token → the agent cannot reach the kube API.
         assert_eq!(spec.automount_service_account_token, Some(false));
         let sc = spec.containers[0].security_context.as_ref().unwrap();
@@ -1642,11 +1698,11 @@ mod tests {
     fn build_pod_injects_the_reverse_dial_rendezvous() {
         let plan = plan_with_memory(Vec::new());
         // Without a rendezvous, no such env.
-        let no_rv = build_pod("r", &plan, &None, "m", None, false);
+        let no_rv = build_pod("r", &plan, &None, "m", None, false, &[]);
         let env0 = no_rv.spec.unwrap().containers[0].env.clone().unwrap();
         assert!(env0.iter().all(|e| e.name != "AWAKEN_ACP_RENDEZVOUS"));
         // With one, the agent is told where to dial out.
-        let with_rv = build_pod("r", &plan, &None, "m", Some("10.0.0.5:9000"), false);
+        let with_rv = build_pod("r", &plan, &None, "m", Some("10.0.0.5:9000"), false, &[]);
         let env1 = with_rv.spec.unwrap().containers[0].env.clone().unwrap();
         assert!(
             env1.iter().any(|e| e.name == "AWAKEN_ACP_RENDEZVOUS"
@@ -1685,7 +1741,7 @@ mod tests {
         // capability remains false until an installed policy is verified.
         let mut plan = plan_with_memory(Vec::new());
         plan.network = crate::NetworkMode::None;
-        let pod = build_pod("r", &plan, &None, "m", None, false);
+        let pod = build_pod("r", &plan, &None, "m", None, false, &[]);
         let labels = pod.metadata.labels.unwrap();
         assert_eq!(
             labels.get("awaken-egress").map(String::as_str),
@@ -1693,7 +1749,7 @@ mod tests {
         );
 
         plan.network = crate::NetworkMode::Open;
-        let open = build_pod("r", &plan, &None, "m", None, false);
+        let open = build_pod("r", &plan, &None, "m", None, false, &[]);
         assert_eq!(
             open.metadata
                 .labels
@@ -1706,7 +1762,7 @@ mod tests {
         // No-network policy is also `restricted`, never `open` — a fail-open label
         // here would let a NetworkPolicy grant egress to a pod that asked for none.
         plan.network = crate::NetworkMode::None;
-        let denied = build_pod("r", &plan, &None, "m", None, false);
+        let denied = build_pod("r", &plan, &None, "m", None, false, &[]);
         assert_eq!(
             denied
                 .metadata

@@ -38,19 +38,28 @@ if ! k3d cluster list 2>/dev/null | grep -q "^${CLUSTER}\b"; then
 fi
 k3d kubeconfig merge "${CLUSTER}" --output "$KUBECONFIG_FILE" --overwrite >/dev/null
 export KUBECONFIG="$KUBECONFIG_FILE"
+if [ "$(uname -s)" = "Darwin" ]; then
+  # k3d may emit host.docker.internal on Docker Desktop. That address is for
+  # containers reaching the host and can time out when kubectl itself runs on
+  # the host. Use the load balancer's published loopback port instead.
+  api_endpoint="$(docker port "k3d-${CLUSTER}-serverlb" 6443/tcp | head -n 1)"
+  api_port="${api_endpoint##*:}"
+  kubectl config set-cluster "k3d-${CLUSTER}" \
+    --server="https://127.0.0.1:${api_port}" >/dev/null
+fi
 # The Docker container name is stable, but the Kubernetes Node object registers
 # asynchronously and its name is an implementation detail. Wait until at least one
 # Node exists, then wait for the actual object rather than assuming both names match.
 node_registered=0
 for _ in $(seq 1 60); do
-  if kubectl get nodes -o name 2>/dev/null | grep -q '^node/'; then
+  if kubectl --request-timeout=5s get nodes -o name 2>/dev/null | grep -q '^node/'; then
     node_registered=1
     break
   fi
   sleep 2
 done
 [ "$node_registered" = 1 ] || { echo "k3d node never registered" >&2; exit 1; }
-kubectl wait --for=condition=Ready nodes --all --timeout=120s
+kubectl --request-timeout=10s wait --for=condition=Ready nodes --all --timeout=120s
 
 # Load the pause image + a flattened busybox as the fixture. The node has no registry
 # egress here, and a multi-arch `docker save` can miss a blob for containerd — flatten

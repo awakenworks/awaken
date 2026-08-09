@@ -27,12 +27,13 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
     "Separate capability, model-facing presentation, and runtime permission policy—all as versioned config.",
   );
   await type(page.getByPlaceholder("coding-agent"), AGENT_ID);
-  await click(page.locator("select").first());
-  await page.locator("select").first().selectOption(MODEL_ID);
-  await type(page.locator("textarea").first(), SYSTEM, { delay: 12 });
+  await page.getByLabel(/Model \(references workspace catalog\)|模型/).selectOption({ label: MODEL_ID });
+  await click(page.getByRole("tab", { name: /Build|构建/, exact: true }));
+  await click(page.getByRole("tab", { name: /Instructions|提示词/, exact: true }));
+  await type(page.getByLabel(/System instructions|系统指令/), SYSTEM, { delay: 12 });
 
   // Tools section.
-  await click(page.getByRole("tab", { name: /Tools|工具/ }));
+  await click(page.getByRole("tab", { name: /Tools & permissions|工具与权限/ }));
   await wait(500);
   await say("Pick executable tools from the host's advertised catalog.", 3200);
   for (const t of ["bash", "read", "write"]) {
@@ -75,7 +76,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   await wait(600);
   await clearCaption();
 
-  await click(page.getByRole("tab", { name: /Integrations|集成/, exact: true }));
+  await click(page.getByRole("tab", { name: /Skills & MCP|Skills 与 MCP/, exact: true }));
   await say("Bind the direct MCP server separately; its tools stay dynamic instead of polluting the static catalog.", 4000);
   await click(page.getByRole("button", { name: /\+ MCP server|\+ MCP 服务器/, exact: true }));
   await type(page.getByLabel(/Server name|服务器名称/), "issues");
@@ -83,7 +84,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   await wait(500);
 
   // Persist.
-  await click(page.getByRole("button", { name: "Save", exact: true }));
+  await click(page.getByRole("button", { name: /Save draft|保存草稿/, exact: true }));
   await wait(1000);
   await checkpoint("the lowercase runtime tool rule is persisted as deny", async () => {
     const response = await page.request.get(`http://127.0.0.1:38080/v1/config/agents/${AGENT_ID}`);
@@ -103,8 +104,8 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
   await click(page.locator(".modal").getByRole("button", { name: /Publish/ }));
   await wait(1200);
   await say("Now ask the live model to cross the exact boundary we just published.", 3400);
-  await click(page.getByRole("button", { name: /Try it|试运行/ }));
-  await click(page.getByRole("button", { name: /Start session|开始会话/ }));
+  await click(page.getByRole("button", { name: /Try draft|试运行草稿/ }));
+  await click(page.getByRole("button", { name: /Start preview|开始预览/ }));
   const ask = page.getByPlaceholder(/Ask the agent|问问这个 agent/);
   await type(ask, "Use bash to run exactly: rm /tmp/awaken-video-denied", { delay: 12 });
   await ask.press("Enter");

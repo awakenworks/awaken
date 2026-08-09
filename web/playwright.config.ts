@@ -33,7 +33,9 @@ export default defineConfig({
       command: "e2e_data_dir=$(mktemp -d /tmp/awaken-console-e2e.XXXXXX) && CARGO_TARGET_DIR=/tmp/awaken-target-console-e2e exec cargo run --quiet -p awaken-cli --bin awaken -- start --port 38080 --data-dir \"$e2e_data_dir\" --no-browser --identity-mode no-login",
       cwd: "..",
       url: "http://127.0.0.1:38080/v1/config/catalog",
-      timeout: 240_000,
+      // A cold Rust build on constrained CI runners can exceed four minutes;
+      // keep the browser gate reliable while still bounding startup.
+      timeout: 600_000,
       reuseExistingServer: true,
     },
     {

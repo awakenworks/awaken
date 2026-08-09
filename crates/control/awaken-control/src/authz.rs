@@ -845,6 +845,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     },
     RoutePolicyDescriptor {
+        prefix: "/v1/config/workspace-context",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
         prefix: "/v1/config/credential-pools",
         policy: RouteFamilyPolicy::Scoped {
             read: APIKEY_READ,
@@ -923,6 +930,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     },
     RoutePolicyDescriptor {
         prefix: "/v1/config/agents",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/config/agent-previews",
         policy: RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
@@ -1192,10 +1206,13 @@ pub async fn cloud_management_guard(
 }
 
 /// Resource-plane PEP for embedded IAM. This layer is applied by the outer
-/// composition root, not by File/Memory/Skill services: it authenticates, asks the
-/// shared IAM PDP, and stamps only the trusted Workspace for inner ownership and
-/// data-invariant checks. Routes outside the resource families pass through so
-/// their own protocol-specific PEP can remain independent.
+/// composition root, not by File/Memory/Skill services: it authenticates either
+/// an explicit service token or the same HttpOnly local-console session accepted
+/// by the management PEP, asks the shared IAM PDP, and stamps only the trusted
+/// Workspace for inner ownership and data-invariant checks. The browser session
+/// is never converted into, or exposed as, a long-lived API token. Routes outside
+/// the resource families pass through so their protocol-specific PEP remains
+/// independent.
 pub async fn resource_guard(
     State(authz): State<Arc<ManagementAuthz>>,
     mut req: Request,
@@ -1205,14 +1222,16 @@ pub async fn resource_guard(
     else {
         return next.run(req).await;
     };
-    let Some(presented) = bearer_token(req.headers()) else {
-        return unauthorized("missing resource API token (Authorization: Bearer or x-api-key)");
-    };
-    let (principal, workspace) = match authz.authenticate(&presented) {
+    let authenticated = bearer_token(req.headers())
+        .map(|presented| authz.authenticate(&presented))
+        .unwrap_or_else(|| authz.authenticate_browser(req.headers()));
+    let (principal, workspace) = match authenticated {
         Ok(identity) => identity,
         Err(AuthReject::Expired) => return unauthorized("API token is expired"),
         Err(AuthReject::Revoked) => return unauthorized("API token is revoked"),
-        Err(AuthReject::Invalid) => return unauthorized("invalid API token"),
+        Err(AuthReject::Invalid) => {
+            return unauthorized("invalid API token or local browser session");
+        }
     };
     if let Some(tenancy) = req
         .extensions()

@@ -3289,8 +3289,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .unwrap()
             .server
             .unwrap()
-            .bearer
-            .as_ref()
+            .bearer()
             .map(|secret| secret.expose_secret()),
         Some("published-mcp-token")
     );
@@ -3375,7 +3374,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         projection
             .server
             .as_ref()
-            .and_then(|server| server.bearer.as_ref())
+            .and_then(|server| server.bearer())
             .map(|secret| secret.expose_secret()),
         Some("published-mcp-token"),
         "H14 retained material"
@@ -3513,7 +3512,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         acp_host
             .mcp_projection(&generation("mcp-acp-anonymous"))
             .and_then(|projection| projection.server)
-            .is_some_and(|server| server.bearer.is_none()),
+            .is_some_and(|server| server.bearer().is_none()),
         "H13"
     );
 }
@@ -3672,16 +3671,19 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
         },
         server: Some(McpTransportMaterial {
             name: "docs".into(),
-            url: format!("https://mcp-{number}.example.test"),
             prompts_as_skills: false,
-            bearer: Some(awaken_agent_contract::RedactedString::new(secret)),
-            refresh: None,
+            transport: crate::mcp::McpTransportMaterialKind::Http {
+                url: format!("https://mcp-{number}.example.test"),
+                bearer: Some(awaken_agent_contract::RedactedString::new(secret)),
+                refresh: None,
+            },
         }),
         native_wiring: Some(McpWiring {
             plugins: Vec::new(),
             tool_ids: vec![format!("docs-generation-{number}")],
             skill_registries: Vec::new(),
         }),
+        mcp_process: None,
         state: McpProjectionState::Staged,
     };
     let relay = crate::mcp_relay::McpRelay::start().await.unwrap();
@@ -3804,10 +3806,12 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
     };
     let server = McpTransportMaterial {
         name: "docs".into(),
-        url: "https://mcp.example.test".into(),
         prompts_as_skills: false,
-        bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
-        refresh: None,
+        transport: crate::mcp::McpTransportMaterialKind::Http {
+            url: "https://mcp.example.test".into(),
+            bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
+            refresh: None,
+        },
     };
     let projection = McpGenerationProjection {
         generation: generation.clone(),
@@ -3825,6 +3829,7 @@ async fn authenticated_acp_publication_requires_the_exact_staged_relay_route() {
         // ACP has no in-process MCP connection. This is the stable transport
         // discriminator used by the private Host projection.
         native_wiring: None,
+        mcp_process: None,
         state: McpProjectionState::Staged,
     };
 
@@ -3897,10 +3902,12 @@ async fn worker_authority_loss_revokes_every_session_projection() {
     };
     let server = McpTransportMaterial {
         name: "docs".into(),
-        url: "https://mcp.example.test".into(),
         prompts_as_skills: false,
-        bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
-        refresh: None,
+        transport: crate::mcp::McpTransportMaterialKind::Http {
+            url: "https://mcp.example.test".into(),
+            bearer: Some(awaken_agent_contract::RedactedString::new("secret")),
+            refresh: None,
+        },
     };
     host.insert_mcp_projection(McpGenerationProjection {
         generation: generation.clone(),
@@ -3916,6 +3923,7 @@ async fn worker_authority_loss_revokes_every_session_projection() {
         },
         server: Some(server.clone()),
         native_wiring: Some(McpWiring::empty()),
+        mcp_process: None,
         state: McpProjectionState::Staged,
     })
     .unwrap();
