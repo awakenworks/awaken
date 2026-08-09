@@ -71,6 +71,7 @@ awaken-memory-store = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+awaken-tool-relay = { workspace = true, features = ["test-support"] }
 # hand-role integration test: drive the real hand with a real ToolCall over a socket.
 awaken-runtime-contract = { workspace = true }
 # memoryd-role integration test: seed + assert a sqlite-backed store across a copy cycle.

@@ -3,11 +3,26 @@
 //! Provider-backed and hosted compositions use their own injected resolvers.
 //! This adapter exists only for the one-host-executor scenario path.
 
-pub(super) fn local_test_process_options() -> super::ProcessAssemblyOptions {
+pub(super) fn local_test_process_options(
+    stores: &super::ProcessStores,
+) -> super::ProcessAssemblyOptions {
     let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
     deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+    let work = stores
+        .coordinator
+        .as_ref()
+        .expect("local test composition owns Managed Execution")
+        .environment_work
+        .clone();
     super::ProcessAssemblyOptions {
         deployment: Some(deployment),
+        executable_agent_wiring: Some(
+            super::executable_agent_registration::ExecutableAgentWiring::local(),
+        ),
+        executable_environment_wiring: Some(
+            super::executable_environment_registration::ExecutableEnvironmentWiring::local(work)
+                .expect("compose local executable Environment wiring"),
+        ),
         ..Default::default()
     }
 }

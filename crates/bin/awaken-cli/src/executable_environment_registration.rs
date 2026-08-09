@@ -221,3 +221,24 @@ pub(crate) fn local_test_wiring() -> ExecutableEnvironmentWiring {
     ExecutableEnvironmentWiring::local(Arc::new(awaken_work_store::InMemoryWorkQueue::new()))
         .expect("compose test executable Environment wiring")
 }
+
+/// Require the process-selected Environment boundary. Local AllInOne remains
+/// supported through an explicit [`ExecutableEnvironmentWiring::local`] value.
+pub(crate) fn require_process_wiring(
+    wiring: Option<ExecutableEnvironmentWiring>,
+) -> ExecutableEnvironmentWiring {
+    wiring.expect("runtime process requires executable Environment wiring")
+}
+
+#[cfg(test)]
+mod composition_tests {
+    #[test]
+    #[should_panic(expected = "runtime process requires executable Environment wiring")]
+    fn missing_wiring_never_allocates_a_parallel_catalog_or_queue() {
+        // Cause/effect decision table: E1 explicit local wiring -> catalog shares
+        // the caller's WorkQueue; E2 explicit distributed wiring -> durable
+        // catalog/queue; E3 missing wiring -> composition failure. Positive E1/E2
+        // are covered by role assembly; this test owns E3.
+        let _ = super::require_process_wiring(None);
+    }
+}

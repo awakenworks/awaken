@@ -65,6 +65,7 @@ pub(crate) use session_update::SessionUpdateCommand;
 mod sessions;
 mod threads;
 mod types;
+mod work_dispatch;
 
 pub use error::StateError;
 
@@ -1064,6 +1065,7 @@ mod tests {
         let environment = awaken_session_contract::EnvironmentSnapshot {
             environment_id: "env_local".into(),
             revision: awaken_environment_contract::EnvironmentRevision(1),
+            self_hosted: false,
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
             sandbox: serde_json::json!({"isolation": "namespace"}),
             sandbox_provisioning: Default::default(),
@@ -1201,6 +1203,20 @@ mod tests {
 
         async fn get(&self, session_id: &str) -> Option<PersistedSession> {
             self.inner.get(session_id).await
+        }
+
+        async fn reconcilable_sessions(
+            &self,
+        ) -> Vec<awaken_session_contract::ScopedPersistedSession> {
+            self.inner.reconcilable_sessions().await
+        }
+
+        async fn idempotency_receipt(
+            &self,
+            session_id: &str,
+            key: &str,
+        ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
+            self.inner.idempotency_receipt(session_id, key).await
         }
 
         async fn owner(&self, session_id: &str) -> Option<String> {

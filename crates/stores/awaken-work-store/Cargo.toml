@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Volatile executable specifications and fixtures are opt-in. Product builds have
+# no process-local WorkQueue implementation to select accidentally.
+test-support = []
+
 [dependencies]
 # The WorkQueue port + its neutral vocabulary this crate implements a durable backend
 # for (SQLite embedded / Postgres distributed, at parity).
@@ -20,6 +25,14 @@ awaken-scoped-migration-sqlite.workspace = true
 # Property-based verification of the shared lease/reclaim + poll-window algorithm (ADR-0059).
 proptest = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[test]]
+name = "work_queue_conformance"
+required-features = ["test-support"]
+
+[[test]]
+name = "work_queue_properties"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

@@ -93,3 +93,34 @@ proptest! {
         prop_assert_eq!(book.workers_polling("env", 1_000), n as i64);
     }
 }
+
+#[test]
+fn poll_window_is_exact_and_overflow_safe() {
+    // Cause/effect graph: C1 observation is before/equal/after the poll; C2 elapsed
+    // time is below/equal to the window; C3 the timestamp is near u64::MAX.
+    // Effects: E1 worker counts as live; E2 worker expires; E3 no arithmetic panic.
+    // Constraint: elapsed time is meaningful only when observation >= poll.
+    //
+    // | Rule | observation       | elapsed       | near MAX | result |
+    // | T1   | before poll       | n/a           | no       | live   |
+    // | T2   | after/equal       | WINDOW - 1    | no       | live   |
+    // | T3   | after/equal       | WINDOW        | no       | expired|
+    // | T4   | after/equal       | 1             | yes      | live   |
+    let book = LeaseBook::default();
+    book.record_poll("clock", "worker", 100);
+    assert_eq!(book.workers_polling("clock", 99), 1, "T1/E1");
+    assert_eq!(
+        book.workers_polling("clock", 100 + POLLER_WINDOW_MS - 1),
+        1,
+        "T2/E1"
+    );
+    assert_eq!(
+        book.workers_polling("clock", 100 + POLLER_WINDOW_MS),
+        0,
+        "T3/E2"
+    );
+
+    let near_limit = LeaseBook::default();
+    near_limit.record_poll("clock", "worker", u64::MAX - 1);
+    assert_eq!(near_limit.workers_polling("clock", u64::MAX), 1, "T4/E1/E3");
+}

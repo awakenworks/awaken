@@ -100,6 +100,11 @@ pub struct SessionBaselineFingerprint(pub String);
 pub struct EnvironmentSnapshot {
     pub environment_id: String,
     pub revision: EnvironmentRevision,
+    /// Whether execution is delegated through the external Worker WorkQueue.
+    /// This placement fact is frozen with the Environment revision so recovery
+    /// never reopens today's mutable executable catalog.
+    #[serde(default)]
+    pub self_hosted: bool,
     pub config_fingerprint: EnvironmentFingerprint,
     /// Canonicalized, network-free sandbox requirement. `network` is the only
     /// reachability authority in this snapshot.
@@ -503,6 +508,7 @@ mod tests {
         EnvironmentSnapshot {
             environment_id: "env_a".into(),
             revision: EnvironmentRevision(revision),
+            self_hosted: false,
             config_fingerprint: EnvironmentFingerprint(format!("config-{revision}")),
             sandbox: serde_json::json!({}),
             sandbox_provisioning: Default::default(),
@@ -518,6 +524,26 @@ mod tests {
                 resource_holder: PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker"),
             },
         }
+    }
+
+    #[test]
+    fn legacy_environment_snapshot_defaults_to_local_placement() {
+        // Cause/effect decision table for persisted compatibility:
+        // P1 explicit self_hosted=true -> external Worker reconciliation;
+        // P2 explicit false -> local execution; P3 legacy field absent -> false.
+        // P3 must fail closed against manufacturing new external work for rows
+        // written before placement became a frozen fact.
+        let mut encoded =
+            serde_json::to_value(environment(1, SessionNetworkPolicy::Unrestricted)).unwrap();
+        encoded.as_object_mut().unwrap().remove("self_hosted");
+        let decoded: EnvironmentSnapshot = serde_json::from_value(encoded).unwrap();
+        assert!(!decoded.self_hosted, "P3");
+
+        let mut explicit = environment(1, SessionNetworkPolicy::Unrestricted);
+        explicit.self_hosted = true;
+        let decoded: EnvironmentSnapshot =
+            serde_json::from_value(serde_json::to_value(explicit).unwrap()).unwrap();
+        assert!(decoded.self_hosted, "P1");
     }
 
     fn baseline_inputs(environment: EnvironmentSnapshot) -> SessionBaselineInputs {

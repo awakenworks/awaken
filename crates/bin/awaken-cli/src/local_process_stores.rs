@@ -3,6 +3,7 @@
 use super::*;
 
 /// Ephemeral deployment stores: everything in process memory (dev / e2e default).
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn in_memory_process_stores() -> ProcessStores {
     let sessions = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()

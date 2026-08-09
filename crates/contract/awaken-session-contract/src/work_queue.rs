@@ -358,23 +358,34 @@ pub enum WorkQueueError {
 /// `None`, which the route maps to a `work not found` 404.
 #[async_trait]
 pub trait WorkQueue: Send + Sync {
-    /// Enqueue a `session` work item; returns the new work id.
-    async fn enqueue_session(&self, env_id: &str, session_id: &str) -> String;
+    /// Ensure one `session` work item exists for `(env_id, session_id)` and
+    /// return its canonical work id. Replays are idempotent so a durable Session
+    /// reconciliation loop can safely close a commit-before-dispatch crash gap.
+    async fn enqueue_session(
+        &self,
+        env_id: &str,
+        session_id: &str,
+    ) -> Result<String, WorkQueueError>;
     /// Seed a `healthcheck` work item (its inner id is the work id); returns it.
-    async fn enqueue_healthcheck(&self, env_id: &str) -> String;
+    async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
     /// Return the one healthcheck for an Environment, creating it when absent.
     /// This convergence operation is safe to replay after an Environment create
     /// committed but the caller lost the response.
     async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
     /// All work items in `env_id`, ascending by id (enqueue order).
-    async fn list(&self, env_id: &str) -> Vec<WorkItem>;
+    async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError>;
     /// The work item under `wid` when it belongs to `env_id`.
-    async fn get(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
+    async fn get(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Poll as `worker_id` at wall time `now_ms`: first reclaim any `active` item
     /// whose lease has lapsed (its worker went away), then lease the oldest queued
     /// item (queued→active) when none is actively leased. `None` when the queue is
     /// empty or one is still live-leased. The poll is recorded for `workers_polling`.
-    async fn claim(&self, env_id: &str, worker_id: &str, now_ms: u64) -> Option<WorkItem>;
+    async fn claim(
+        &self,
+        env_id: &str,
+        worker_id: &str,
+        now_ms: u64,
+    ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Claim with an optional caller-requested reclaim age. Backends that cannot
     /// tune lease clocks may conservatively delegate to [`Self::claim`].
     async fn claim_with_reclaim(
@@ -383,12 +394,12 @@ pub trait WorkQueue: Send + Sync {
         worker_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
-    ) -> Option<WorkItem> {
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
         let _ = reclaim_older_than_ms;
         self.claim(env_id, worker_id, now_ms).await
     }
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
-    async fn ack(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
+    async fn ack(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Atomically compare the preceding heartbeat and, when it matches, record a
     /// new heartbeat at `now_ms` and extend the lease.
     async fn heartbeat(
@@ -398,18 +409,18 @@ pub trait WorkQueue: Send + Sync {
         worker_id: &str,
         now_ms: u64,
         heartbeat: LeaseHeartbeat,
-    ) -> HeartbeatResult;
+    ) -> Result<HeartbeatResult, WorkQueueError>;
     /// Request a stop (→stopped).
-    async fn stop(&self, env_id: &str, wid: &str) -> Option<WorkItem>;
+    async fn stop(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Merge a metadata patch (each present key upserts).
     async fn update_metadata(
         &self,
         env_id: &str,
         wid: &str,
         patch: BTreeMap<String, String>,
-    ) -> Option<WorkItem>;
+    ) -> Result<Option<WorkItem>, WorkQueueError>;
     /// Queue stats for `env_id` as of `now_ms` (for the `workers_polling` window).
-    async fn stats(&self, env_id: &str, now_ms: u64) -> QueueStats;
+    async fn stats(&self, env_id: &str, now_ms: u64) -> Result<QueueStats, WorkQueueError>;
     /// Drop all work for `env_id` (on environment delete).
     async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError>;
 }

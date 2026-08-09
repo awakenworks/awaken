@@ -645,17 +645,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     session: decode(row).expect("decode managed session"),
                 }
             })
-            .filter(|record| {
-                let session = &record.session;
-                session.status == "deleted"
-                    || session.resources.needs_reconciliation()
-                    || (session.status != "idle" && session.resources.has_active())
-                    || session.mcp.needs_reconciliation()
-                    || !matches!(
-                        session.environment,
-                        awaken_session_contract::SessionEnvironmentState::Unmaterialized
-                    )
-            })
+            .filter(|record| record.session.needs_reconciliation())
             .collect()
     }
 
@@ -1064,17 +1054,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             })
             .expect("decode managed session"),
         })
-        .filter(|record| {
-            let session = &record.session;
-            session.status == "deleted"
-                || session.resources.needs_reconciliation()
-                || (session.status != "idle" && session.resources.has_active())
-                || session.mcp.needs_reconciliation()
-                || !matches!(
-                    session.environment,
-                    awaken_session_contract::SessionEnvironmentState::Unmaterialized
-                )
-        })
+        .filter(|record| record.session.needs_reconciliation())
         .collect()
     }
 
@@ -1182,6 +1162,7 @@ mod tests {
                     environment: EnvironmentSnapshot {
                         environment_id: "env_local".into(),
                         revision: awaken_session_contract::EnvironmentRevision(1),
+                        self_hosted: false,
                         config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
                         sandbox: serde_json::json!({}),
                         sandbox_provisioning: Default::default(),

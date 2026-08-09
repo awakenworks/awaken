@@ -7,38 +7,43 @@
 //! Open-tier semantics: the API shape is complete and usable, but a single-machine
 //! build leases work to **one** worker at a time — `poll` hands out a queued item
 //! only when no item in the environment is already `active`. Multi-worker
-//! fan-out (many concurrent leases) is the managed scaling boundary; here the
-//! queue is one in-process store. Every new environment is seeded with one
-//! `healthcheck` work item so the queue is exercisable end to end.
+//! fan-out (many concurrent leases) is the managed scaling boundary. Product
+//! composition injects a durable SQLite/PostgreSQL queue; only explicit test-support
+//! composition uses the reference in-memory queue. Every new environment is seeded
+//! with one `healthcheck` work item so the queue is exercisable end to end.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use axum::extract::{Path, Query, RawQuery, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 #[cfg(test)]
 use serde_json::json;
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::env_registry::InMemoryEnvRegistry;
 use crate::env_registry::{
     EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
-    EnvironmentPackagesMutation, InMemoryEnvRegistry,
+    EnvironmentPackagesMutation,
 };
 use crate::routes::ManagedJson;
 use crate::types::environment::{
     CloudNetworkingParams, CloudNetworkingUpdateParams, DeletedEnvironment, Environment,
     EnvironmentConfigParams, EnvironmentConfigUpdateParams, EnvironmentCreateParams,
-    EnvironmentUpdateParams, PackagesUpdateParams, Work, WorkHeartbeat, WorkQueueStats,
-    WorkUpdateParams,
+    EnvironmentUpdateParams, PackagesUpdateParams,
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 use awaken_environment_application::{
     EnvironmentApplication, EnvironmentApplicationError, default_environment_registration,
 };
+#[cfg(any(test, feature = "test-support"))]
 use awaken_work_store::InMemoryWorkQueue;
 
-use crate::work_queue::{HeartbeatResult, LeaseHeartbeat, WorkQueue};
+use crate::work_queue::WorkQueue;
+#[cfg(test)]
+use crate::work_queue::{HeartbeatResult, LeaseHeartbeat};
 use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
     ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationSource,
@@ -46,6 +51,7 @@ use awaken_executable_environment_contract::{
 
 mod registration;
 pub use registration::CoordinatorEnvironmentRegistrar;
+mod work_routes;
 
 /// Control-owned Environment definitions, immutable revision history, policy
 /// versions, and publication application.
@@ -307,11 +313,16 @@ impl EnvironmentExecutionState {
     /// Enqueue a `session` work item for `session_id` on `env_id`'s queue — the way
     /// the control plane dispatches a session assigned to a self-hosted environment,
     /// so a worker polling the environment can claim and run it. Returns the work id.
-    pub async fn enqueue_session_work(&self, env_id: &str, session_id: &str) -> String {
+    pub async fn enqueue_session_work(
+        &self,
+        env_id: &str,
+        session_id: &str,
+    ) -> Result<String, crate::work_queue::WorkQueueError> {
         self.work.enqueue_session(env_id, session_id).await
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Default for EnvironmentExecutionState {
     fn default() -> Self {
         let catalog =
@@ -323,6 +334,7 @@ impl Default for EnvironmentExecutionState {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Default for EnvironmentState {
     fn default() -> Self {
         let envs: Arc<dyn EnvRegistry> = Arc::new(InMemoryEnvRegistry::new());
@@ -349,6 +361,9 @@ impl Default for EnvironmentState {
 }
 
 impl EnvironmentState {
+    /// Volatile all-in-one fixture. Product composition must call
+    /// [`EnvironmentState::with_stores`] with explicitly selected stores.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -459,7 +474,11 @@ impl EnvironmentState {
         self.execution.is_self_hosted(environment_id).await
     }
 
-    pub async fn enqueue_session_work(&self, environment_id: &str, session_id: &str) -> String {
+    pub async fn enqueue_session_work(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+    ) -> Result<String, crate::work_queue::WorkQueueError> {
         self.execution
             .enqueue_session_work(environment_id, session_id)
             .await
@@ -572,8 +591,10 @@ async fn snapshot_from_registration(
         }
         None => None,
     };
+    let self_hosted = item.is_self_hosted();
     let config_fingerprint = awaken_session_contract::EnvironmentFingerprint(
         awaken_session_contract::stable_fingerprint(&(
+            self_hosted,
             &sandbox,
             &sandbox_provisioning,
             &packages,
@@ -585,6 +606,7 @@ async fn snapshot_from_registration(
     Ok(Some(awaken_session_contract::EnvironmentSnapshot {
         environment_id: item.id.clone(),
         revision: item.revision,
+        self_hosted,
         config_fingerprint,
         sandbox,
         sandbox_provisioning,
@@ -683,19 +705,31 @@ pub fn environment_authoring_router(state: Arc<EnvironmentAuthoringState>) -> Ro
 /// Mount Coordinator-owned work coordination routes.
 pub fn environment_work_router(state: Arc<EnvironmentExecutionState>) -> Router {
     Router::new()
-        .route("/v1/environments/{id}/work", get(list_work))
-        .route("/v1/environments/{id}/work/poll", get(poll_work))
-        .route("/v1/environments/{id}/work/stats", get(work_stats))
+        .route("/v1/environments/{id}/work", get(work_routes::list_work))
+        .route(
+            "/v1/environments/{id}/work/poll",
+            get(work_routes::poll_work),
+        )
+        .route(
+            "/v1/environments/{id}/work/stats",
+            get(work_routes::work_stats),
+        )
         .route(
             "/v1/environments/{id}/work/{wid}",
-            get(retrieve_work).post(update_work),
+            get(work_routes::retrieve_work).post(work_routes::update_work),
         )
-        .route("/v1/environments/{id}/work/{wid}/ack", post(ack_work))
+        .route(
+            "/v1/environments/{id}/work/{wid}/ack",
+            post(work_routes::ack_work),
+        )
         .route(
             "/v1/environments/{id}/work/{wid}/heartbeat",
-            post(heartbeat_work),
+            post(work_routes::heartbeat_work),
         )
-        .route("/v1/environments/{id}/work/{wid}/stop", post(stop_work))
+        .route(
+            "/v1/environments/{id}/work/{wid}/stop",
+            post(work_routes::stop_work),
+        )
         .with_state(state)
 }
 
@@ -1009,260 +1043,119 @@ async fn archive_env(
     Ok(Json(crate::env_registry::project_env(&item)))
 }
 
-// ---- Work routes -----------------------------------------------------------
-
-async fn require_env(state: &EnvironmentExecutionState, id: &str) -> Result<(), WireError> {
-    let registration = state
-        .execution_source
-        .current_registration(id)
-        .await
-        .map_err(|error| {
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse::new("api_error", error.to_string())),
-            )
-        })?;
-    if registration.is_some() {
-        Ok(())
-    } else {
-        Err(not_found("environment"))
-    }
-}
-
-/// `GET /v1/environments/:id/work` — the environment's work items.
-async fn list_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
-    Path(id): Path<String>,
-    Query(page): Query<PageQuery>,
-) -> Result<Json<Page<Work>>, WireError> {
-    require_env(&state, &id).await?;
-    let data: Vec<Work> = state
-        .work
-        .list(&id)
-        .await
-        .iter()
-        .map(crate::work_queue::project_work)
-        .collect();
-    Ok(Json(paginate(data, &page, |w| w.id.as_str())))
-}
-
-/// `GET /v1/environments/:id/work/poll` — lease the next queued item to the
-/// single worker. Open-tier cap: returns `null` when an item is already `active`
-/// in this environment (one lease at a time) or the queue is empty.
-async fn poll_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    RawQuery(raw): RawQuery,
-) -> Result<Json<Option<Work>>, WireError> {
-    require_env(&state, &id).await?;
-    let poll = parse_poll_params(raw.as_deref())?;
-    // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
-    // the query string. Long polling repeatedly drives the same authoritative
-    // atomic claim; it does not introduce a second queue or lease registry.
-    let worker_id = worker_id(&headers);
-    let started = tokio::time::Instant::now();
-    loop {
-        let claimed = state
-            .work
-            .claim_with_reclaim(&id, worker_id, now_ms(), poll.reclaim_older_than_ms)
-            .await;
-        if let Some(work) = claimed {
-            return Ok(Json(Some(crate::work_queue::project_work(&work))));
-        }
-        let Some(wait) = poll.block_ms else {
-            return Ok(Json(None));
-        };
-        if started.elapsed() >= wait {
-            return Ok(Json(None));
-        }
-        tokio::time::sleep(
-            wait.saturating_sub(started.elapsed())
-                .min(std::time::Duration::from_millis(20)),
-        )
-        .await;
-    }
-}
-
-/// Parsed poll timing. `None` means the caller explicitly sent `block_ms=null`
-/// (serialized by the official SDK as an empty query value); omission uses the
-/// documented 999 ms default.
-struct PollParams {
-    block_ms: Option<std::time::Duration>,
-    reclaim_older_than_ms: Option<u64>,
-}
-
-fn parse_poll_params(raw: Option<&str>) -> Result<PollParams, WireError> {
-    let mut block_ms = Some(std::time::Duration::from_millis(999));
-    let mut reclaim_older_than_ms = None;
-    for (key, value) in form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
-            "block_ms" if value.is_empty() => block_ms = None,
-            "block_ms" => {
-                let millis = value.parse::<u64>().map_err(|_| {
-                    bad_request("block_ms must be null or an integer from 1 through 999")
-                })?;
-                if !(1..=999).contains(&millis) {
-                    return Err(bad_request(
-                        "block_ms must be null or an integer from 1 through 999",
-                    ));
-                }
-                block_ms = Some(std::time::Duration::from_millis(millis));
-            }
-            "reclaim_older_than_ms" if value.is_empty() => reclaim_older_than_ms = None,
-            "reclaim_older_than_ms" => {
-                reclaim_older_than_ms = Some(value.parse::<u64>().map_err(|_| {
-                    bad_request("reclaim_older_than_ms must be a non-negative integer")
-                })?);
-            }
-            _ => {}
-        }
-    }
-    Ok(PollParams {
-        block_ms,
-        reclaim_older_than_ms,
-    })
-}
-
-#[derive(serde::Deserialize)]
-struct HeartbeatParams {
-    desired_ttl_seconds: Option<u64>,
-    expected_last_heartbeat: Option<String>,
-}
-
-/// `GET /v1/environments/:id/work/stats` — the queue's depth + pending count.
-async fn work_stats(
-    State(state): State<Arc<EnvironmentExecutionState>>,
-    Path(id): Path<String>,
-) -> Result<Json<WorkQueueStats>, WireError> {
-    require_env(&state, &id).await?;
-    let s = state.work.stats(&id, now_ms()).await;
-    Ok(Json(WorkQueueStats {
-        object_type: "work_queue_stats",
-        depth: s.depth,
-        pending: s.pending,
-        oldest_queued_at: s.oldest_queued_at,
-        workers_polling: s.workers_polling,
-    }))
-}
-
-async fn retrieve_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
-    Path((id, wid)): Path<(String, String)>,
-) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id).await?;
-    let work = state
-        .work
-        .get(&id, &wid)
-        .await
-        .ok_or_else(|| not_found("work"))?;
-    Ok(Json(crate::work_queue::project_work(&work)))
-}
-
-async fn update_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
-    Path((id, wid)): Path<(String, String)>,
-    ManagedJson(params): ManagedJson<WorkUpdateParams>,
-) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id).await?;
-    let work = state
-        .work
-        .update_metadata(&id, &wid, params.metadata.unwrap_or_default())
-        .await
-        .ok_or_else(|| not_found("work"))?;
-    Ok(Json(crate::work_queue::project_work(&work)))
-}
-
-/// `POST …/work/:wid/ack` — the worker acknowledges it picked up the item.
-async fn ack_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
-    Path((id, wid)): Path<(String, String)>,
-) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id).await?;
-    let work = state
-        .work
-        .ack(&id, &wid)
-        .await
-        .ok_or_else(|| not_found("work"))?;
-    Ok(Json(crate::work_queue::project_work(&work)))
-}
-
-/// `POST …/work/:wid/heartbeat` — extend the lease; returns the TTL.
-async fn heartbeat_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
-    Path((id, wid)): Path<(String, String)>,
-    headers: HeaderMap,
-    Query(params): Query<HeartbeatParams>,
-) -> Result<Json<WorkHeartbeat>, WireError> {
-    require_env(&state, &id).await?;
-    let command = LeaseHeartbeat {
-        condition: crate::work_queue::HeartbeatCondition::from_wire(
-            params.expected_last_heartbeat.as_deref(),
-        ),
-        desired_ttl_seconds: params.desired_ttl_seconds,
-    };
-    let hb = match state
-        .work
-        .heartbeat(&id, &wid, worker_id(&headers), now_ms(), command)
-        .await
-    {
-        HeartbeatResult::Accepted(receipt) => receipt,
-        HeartbeatResult::PreconditionFailed => {
-            return Err((
-                StatusCode::PRECONDITION_FAILED,
-                Json(ErrorResponse::new(
-                    "precondition_error",
-                    "expected_last_heartbeat does not match",
-                )),
-            ));
-        }
-        HeartbeatResult::NotFound => return Err(not_found("work")),
-    };
-    Ok(Json(WorkHeartbeat {
-        object_type: "work_heartbeat",
-        last_heartbeat: hb.last_heartbeat,
-        lease_extended: hb.lease_extended,
-        state: hb.state,
-        ttl_seconds: hb.ttl_seconds,
-    }))
-}
-
-/// The Managed worker identity carried consistently on poll and worker-owned
-/// lease mutations. It is compared atomically with the claim owner by WorkQueue.
-fn worker_id(headers: &HeaderMap) -> &str {
-    headers
-        .get("anthropic-worker-id")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-}
-
-/// Wall-clock now in epoch ms — read only at this HTTP edge and passed into the
-/// (clock-free) work queue, so the queue's lease/poll bookkeeping is deterministic
-/// under test while production uses real time.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// `POST …/work/:wid/stop` — request the worker stop the item.
-async fn stop_work(
-    State(state): State<Arc<EnvironmentExecutionState>>,
-    Path((id, wid)): Path<(String, String)>,
-) -> Result<Json<Work>, WireError> {
-    require_env(&state, &id).await?;
-    let work = state
-        .work
-        .stop(&id, &wid)
-        .await
-        .ok_or_else(|| not_found("work"))?;
-    Ok(Json(crate::work_queue::project_work(&work)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct UnavailableWorkQueue;
+
+    fn unavailable_work<T>() -> Result<T, crate::work_queue::WorkQueueError> {
+        Err(crate::work_queue::WorkQueueError::Storage(
+            "injected work queue outage".into(),
+        ))
+    }
+
+    #[async_trait::async_trait]
+    impl WorkQueue for UnavailableWorkQueue {
+        async fn enqueue_session(
+            &self,
+            _env_id: &str,
+            _session_id: &str,
+        ) -> Result<String, crate::work_queue::WorkQueueError> {
+            unavailable_work()
+        }
+
+        async fn enqueue_healthcheck(
+            &self,
+            _env_id: &str,
+        ) -> Result<String, crate::work_queue::WorkQueueError> {
+            unavailable_work()
+        }
+
+        async fn ensure_healthcheck(
+            &self,
+            _env_id: &str,
+        ) -> Result<String, crate::work_queue::WorkQueueError> {
+            unavailable_work()
+        }
+
+        async fn list(
+            &self,
+            _env_id: &str,
+        ) -> Result<Vec<crate::work_queue::WorkItem>, crate::work_queue::WorkQueueError> {
+            unavailable_work()
+        }
+
+        async fn get(
+            &self,
+            _env_id: &str,
+            _wid: &str,
+        ) -> Result<Option<crate::work_queue::WorkItem>, crate::work_queue::WorkQueueError>
+        {
+            unavailable_work()
+        }
+
+        async fn claim(
+            &self,
+            _env_id: &str,
+            _worker_id: &str,
+            _now_ms: u64,
+        ) -> Result<Option<crate::work_queue::WorkItem>, crate::work_queue::WorkQueueError>
+        {
+            unavailable_work()
+        }
+
+        async fn ack(
+            &self,
+            _env_id: &str,
+            _wid: &str,
+        ) -> Result<Option<crate::work_queue::WorkItem>, crate::work_queue::WorkQueueError>
+        {
+            unavailable_work()
+        }
+
+        async fn heartbeat(
+            &self,
+            _env_id: &str,
+            _wid: &str,
+            _worker_id: &str,
+            _now_ms: u64,
+            _heartbeat: LeaseHeartbeat,
+        ) -> Result<HeartbeatResult, crate::work_queue::WorkQueueError> {
+            unavailable_work()
+        }
+
+        async fn stop(
+            &self,
+            _env_id: &str,
+            _wid: &str,
+        ) -> Result<Option<crate::work_queue::WorkItem>, crate::work_queue::WorkQueueError>
+        {
+            unavailable_work()
+        }
+
+        async fn update_metadata(
+            &self,
+            _env_id: &str,
+            _wid: &str,
+            _patch: std::collections::BTreeMap<String, String>,
+        ) -> Result<Option<crate::work_queue::WorkItem>, crate::work_queue::WorkQueueError>
+        {
+            unavailable_work()
+        }
+
+        async fn stats(
+            &self,
+            _env_id: &str,
+            _now_ms: u64,
+        ) -> Result<crate::work_queue::QueueStats, crate::work_queue::WorkQueueError> {
+            unavailable_work()
+        }
+
+        async fn remove_env(&self, _env_id: &str) -> Result<(), crate::work_queue::WorkQueueError> {
+            unavailable_work()
+        }
+    }
 
     struct FailingRegistrationSource;
 
@@ -1370,6 +1263,100 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "F2/E2");
+    }
+
+    #[tokio::test]
+    async fn work_queue_outages_are_unavailable_not_empty_or_missing() {
+        // Cause/effect graph: C1 the executable Environment exists; C2 the queue
+        // operation succeeds with an empty/absent value; C3 the queue storage
+        // operation fails. Effects: E1 C2 list/poll return 200 and item lookup or
+        // mutation returns 404; E2 C3 always returns 503 and never masquerades as
+        // an empty queue, a missing work item, or a heartbeat precondition error.
+        //
+        // | Rule | Environment | queue result | read/poll | item mutation |
+        // | W1 | exists | empty/None | 200 | 404 |
+        // | W2 | exists | Storage | 503 | 503 |
+        // | W3 | missing | not called | 404 | 404 |
+        // W1/W3 are owned by the ordinary work-route suite. This test exercises
+        // W2 for every HTTP operation and the direct dispatch boundary.
+        use awaken_executable_environment_catalog::ExecutableEnvironmentCatalog;
+        use tower::ServiceExt as _;
+
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        catalog
+            .install_seed(default_environment_registration())
+            .expect("install local Environment");
+        let state = Arc::new(EnvironmentExecutionState::new(
+            Arc::new(UnavailableWorkQueue),
+            catalog,
+        ));
+        assert!(
+            matches!(
+                state.enqueue_session_work("env_local", "session-a").await,
+                Err(crate::work_queue::WorkQueueError::Storage(_))
+            ),
+            "W2 direct dispatch"
+        );
+        let router = environment_work_router(state);
+        for (rule, method, uri, body) in [
+            ("W2-list", "GET", "/v1/environments/env_local/work", ""),
+            (
+                "W2-poll",
+                "GET",
+                "/v1/environments/env_local/work/poll?block_ms=",
+                "",
+            ),
+            (
+                "W2-stats",
+                "GET",
+                "/v1/environments/env_local/work/stats",
+                "",
+            ),
+            (
+                "W2-get",
+                "GET",
+                "/v1/environments/env_local/work/work-a",
+                "",
+            ),
+            (
+                "W2-update",
+                "POST",
+                "/v1/environments/env_local/work/work-a",
+                "{}",
+            ),
+            (
+                "W2-ack",
+                "POST",
+                "/v1/environments/env_local/work/work-a/ack",
+                "",
+            ),
+            (
+                "W2-heartbeat",
+                "POST",
+                "/v1/environments/env_local/work/work-a/heartbeat",
+                "",
+            ),
+            (
+                "W2-stop",
+                "POST",
+                "/v1/environments/env_local/work/work-a/stop",
+                "",
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{rule}");
+        }
     }
 
     async fn create_definition(
@@ -1485,6 +1472,7 @@ mod tests {
         // | S4   | missing/archived custom | any | - | None |
         // | S5   | implicit env_local | native/ACP | - | canonical local snapshot |
         // | S6   | active empty limited allowlist | any | - | network None |
+        // | S7   | self-hosted | any | - | frozen external-Worker placement |
         // An exact sandbox-policy reference, when present, belongs to the authored
         // Environment revision and the registration carries the resolved body.
         let state = EnvironmentState::new();
@@ -1498,6 +1486,7 @@ mod tests {
         )
         .await;
         let native = state.snapshot(&item.id, None).await.unwrap().expect("S1");
+        assert!(!native.self_hosted, "S1 cloud placement");
         assert_eq!(
             native.network,
             awaken_session_contract::SessionNetworkPolicy::Allowlist {
@@ -1601,6 +1590,21 @@ mod tests {
                 .network,
             awaken_session_contract::SessionNetworkPolicy::None,
             "S6"
+        );
+        let worker = create_definition(
+            &state,
+            "worker-placement",
+            config(json!({"type": "self_hosted"})),
+        )
+        .await;
+        assert!(
+            state
+                .snapshot(&worker.id, None)
+                .await
+                .unwrap()
+                .expect("S7")
+                .self_hosted,
+            "S7"
         );
     }
 

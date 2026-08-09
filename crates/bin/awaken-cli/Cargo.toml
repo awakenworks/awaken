@@ -106,6 +106,13 @@ base64 = "0.22"
 url.workspace = true
 
 [features]
+# Volatile composition helpers used by integration/scenario harnesses. The default
+# product library and binary cannot link the process-local WorkQueue backend.
+test-support = [
+    "awaken-work-store/test-support",
+    "awaken-protocol-managed/test-support",
+    "awaken-coordinator/test-support",
+]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
 container-docker = ["awaken-runtime-host/container-docker"]
@@ -113,6 +120,8 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-work-store = { workspace = true, features = ["test-support"] }
+awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 # The management integration tests moved here from awaken-coordinator (they drive
 # build_all_in_one_router* over this composition root).
 awaken-scenario-host = { workspace = true }
@@ -127,6 +136,30 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "deployment_sessions"
+required-features = ["test-support"]
+
+[[test]]
+name = "management_surface"
+required-features = ["test-support"]
+
+[[test]]
+name = "mcp_sessions"
+required-features = ["test-support"]
+
+[[test]]
+name = "snapshot_export_offline"
+required-features = ["test-support"]
+
+[[test]]
+name = "tenancy_isolation_matrix"
+required-features = ["test-support"]
+
+[[test]]
+name = "workspace_path_addressing"
+required-features = ["test-support"]
 
 [lints]
 workspace = true

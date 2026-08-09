@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use awaken_connection_plan::{ChannelFactory, ConnectionPlan, TokioChannelFactory};
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_sandbox::hand::{HandBind, serve};
-use awaken_tool_relay::{RemoteToolExecutor, wire::HandResult};
+use awaken_sandbox::hand::{HandBind, serve_with_operation_ledger};
+use awaken_tool_relay::{FsOperationLedger, RemoteToolExecutor, wire::HandResult};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_hand_role_runs_a_real_tool_over_a_unix_socket() {
@@ -20,10 +20,15 @@ async fn the_hand_role_runs_a_real_tool_over_a_unix_socket() {
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let sock = dir.join("hand.sock");
     let sock_str = sock.to_string_lossy().into_owned();
+    let ledger = std::sync::Arc::new(
+        FsOperationLedger::open(dir.join("ledger")).expect("open isolated Hand ledger"),
+    );
 
     // Start the hand role (the same code path `awaken-sandbox hand --unix <path>` runs).
     let serve_path = sock_str.clone();
-    let hand = tokio::spawn(async move { serve(HandBind::Unix(serve_path)).await });
+    let hand = tokio::spawn(async move {
+        serve_with_operation_ledger(HandBind::Unix(serve_path), ledger).await
+    });
 
     // Brain side: dial the unix socket, retrying while the hand binds.
     let mut channel = None;

@@ -58,13 +58,9 @@ pub(super) async fn assemble_runtime_process_router(
             .unwrap_or_else(|error| panic!("restore Deployment state: {error}"));
     let agent_archive_cascade =
         deployment_state.clone() as Arc<dyn awaken_protocol_managed::AgentArchiveCascade>;
-    let executable_environment_wiring =
-        assembly.executable_environment_wiring.unwrap_or_else(|| {
-            executable_environment_registration::ExecutableEnvironmentWiring::local(
-                coordinator_stores.environment_work.clone(),
-            )
-            .expect("compose local executable Environment catalog")
-        });
+    let executable_environment_wiring = executable_environment_registration::require_process_wiring(
+        assembly.executable_environment_wiring,
+    );
     let executable_environment_catalog = executable_environment_wiring.catalog;
     let executable_environment_registrar = executable_environment_wiring.registrar;
     let executable_environment_projection_refresher =
@@ -442,15 +438,17 @@ pub(super) async fn assemble_runtime_process_router(
     if let Some(credentials) = credential_materializer {
         managed_host = managed_host.with_credential_materializer(credentials);
     }
-    let mut managed_state = ManagedState::new_with_mcp(managed_host)
-        .with_credential_source(credential_source)
-        .with_environments(environment_execution.clone())
-        .with_resource_catalog(resource_catalog.clone())
-        .with_resource_purge_scheduler(resource_application.purge_scheduler())
-        // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
-        // published agent's model sees the authoritative config-plane truth (M2).
-        .with_config_source(executable_agent_catalog.clone())
-        .with_session_repo(sessions.clone());
+    let mut managed_state = ManagedState::from_required_ports_with_mcp(
+        managed_host,
+        sessions.clone(),
+        environment_execution.clone(),
+    )
+    .with_credential_source(credential_source)
+    .with_resource_catalog(resource_catalog.clone())
+    .with_resource_purge_scheduler(resource_application.purge_scheduler())
+    // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
+    // published agent's model sees the authoritative config-plane truth (M2).
+    .with_config_source(executable_agent_catalog.clone());
     managed_state = managed_state.with_lifecycle_sink(webhook_sink);
     let managed_state = Arc::new(managed_state);
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
@@ -473,11 +471,8 @@ pub(super) async fn assemble_runtime_process_router(
             ),
         ),
     };
-    let registration_router = executable_projection_refresh::layer(
-        executable_agent_private_router.merge(executable_environment_private_router),
-        executable_agent_projection_refresher,
-        executable_environment_projection_refresher,
-    );
+    let registration_router =
+        executable_agent_private_router.merge(executable_environment_private_router);
     let resource_ports = resource_application.ports();
     let resource_management_router =
         awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
@@ -514,7 +509,11 @@ pub(super) async fn assemble_runtime_process_router(
         deployment_iam,
         deployment_remote_iam,
     );
-    let mut data = coordinator.router.merge(coordinator_management);
+    let mut data = executable_projection_refresh::layer(
+        coordinator.router.merge(coordinator_management),
+        executable_agent_projection_refresher,
+        executable_environment_projection_refresher,
+    );
     if let Some(iam) = resource_iam {
         data = data.layer(axum::middleware::from_fn_with_state(
             iam,

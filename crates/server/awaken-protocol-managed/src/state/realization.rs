@@ -772,6 +772,7 @@ impl ManagedState {
         Some(runtime.spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             interval.tick().await;
+            state.reconcile_work_dispatches().await;
             loop {
                 interval.tick().await;
                 let now = now_unix_ms();
@@ -787,6 +788,7 @@ impl ManagedState {
                         "Session environment residency reconciliation remains pending"
                     );
                 }
+                state.reconcile_work_dispatches().await;
             }
         }))
     }
@@ -898,6 +900,7 @@ mod tests {
             environment: EnvironmentSnapshot {
                 environment_id: "env".into(),
                 revision: awaken_environment_contract::EnvironmentRevision(1),
+                self_hosted: false,
                 config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
                 sandbox: serde_json::json!({}),
                 sandbox_provisioning: Default::default(),
