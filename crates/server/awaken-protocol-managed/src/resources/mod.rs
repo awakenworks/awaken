@@ -7,7 +7,13 @@ use awaken_resource_contract::{
 };
 use axum::Router;
 
-use crate::{files_router, memory_stores_router, skills_router};
+pub use files::files_router;
+pub use memory_stores::memory_stores_router;
+pub use skills::skills_router;
+
+mod files;
+mod memory_stores;
+mod skills;
 
 pub struct ResourcesRouterInput {
     pub files: Arc<dyn FileApplicationService>,

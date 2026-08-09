@@ -36,10 +36,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! k3d_require_tools; then
-  echo "k3d/kubectl/docker unavailable; skipping ADR-0071 distributed E2E"
-  exit 0
-fi
+k3d_admit_or_exit "ADR-0071 distributed E2E"
 
 start_public_endpoint() {
   if [ -n "$API_PF" ]; then
@@ -206,8 +203,10 @@ ok "Pod loss and an in-flight Worker crash preserved exactly-once terminal respo
 log "8/10 stop one K3D agent node and verify public continuity"
 # Cause/effect decision table:
 # N1 hard node stop + Ready still True -> no business write during the detection window;
-# N2 Ready False/Unknown + 15-second NoExecute toleration -> failed role endpoints
-# are evicted and replacement Pods become eligible on healthy nodes;
+# N2 Ready False/Unknown -> failed role endpoints are evicted; N2b a StatefulSet
+# Worker object can remain Terminating while its kubelet is unreachable, so after
+# the node fence proves that process cannot execute, force-removing only that stale
+# API object permits the same lease-fenced ordinal to restart on a healthy node;
 # N3 the surviving spread CoreDNS replica resolves replacement dependencies and
 # every application role becomes Ready again;
 # N4 stable public GETs -> issue the non-idempotent Event exactly once;
@@ -235,6 +234,16 @@ for _ in $(seq 1 120); do
 done
 [ "${NODE_READY:-True}" != "True" ] \
   || { err "stopped node remained Ready=True beyond its detection deadline"; exit 1; }
+# A Deployment can create a differently named replacement while the unreachable
+# Pod object terminates. A StatefulSet cannot create the same ordinal until that
+# object disappears. This is safe only after the Node Ready fence above: the old
+# Worker process is physically stopped, and any later kubelet return is also
+# rejected by the durable Worker generation/Run lease before effects.
+while read -r failed_worker failed_node; do
+  [ "$failed_node" != "$STOPPED_NODE" ] || kubectl -n "$NS" delete pod "$failed_worker" \
+    --grace-period=0 --force >/dev/null 2>&1
+done < <(kubectl -n "$NS" get pod -l app=worker \
+  -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeName --no-headers)
 # Wait for that canonical Kubernetes state transition before reconnecting the
 # black-box client; the public API assertions below still use no private route.
 # `kubectl port-forward service/...` selects one backing Pod when it starts. If

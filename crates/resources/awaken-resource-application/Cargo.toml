@@ -11,8 +11,9 @@ authority = "resource"
 
 [dependencies]
 async-trait.workspace = true
-awaken-file-application.workspace = true
 awaken-resource-contract.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 awaken-file-store = { workspace = true, features = ["test-support"] }

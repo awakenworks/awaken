@@ -4,6 +4,6 @@
 
 pub(crate) use awaken_session_contract::{
     AgentCapabilities, CustomTool, DelegatedRun, LiveInboxSnapshot, OutcomeIteration,
-    OutcomeReport, RunError, RunErrorKind, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
+    OutcomeReport, RunError, RunErrorKind, SessionRuntime, SessionUsage, StepOutcome,
     ToolPermissionDecision,
 };

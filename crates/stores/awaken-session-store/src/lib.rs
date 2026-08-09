@@ -1192,6 +1192,7 @@ mod tests {
                             ),
                         },
                     },
+                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: SessionMcpAuthoringContext::default(),
                     agent_id: "coder".into(),
                     toolsets: Vec::new(),

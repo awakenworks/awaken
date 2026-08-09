@@ -69,32 +69,20 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
         &self,
         session_id: &str,
         projection: &awaken_session_contract::FrozenSessionProjection,
-        _lease: &SessionRealizationLease,
+        lease: &SessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), RunError> {
         if !prepare_session {
             return Ok(());
         }
-        let baseline = &projection.baseline;
         self.runtime
-            .prepare_session(
-                session_id,
-                SessionInit {
-                    workspace_id: projection.workspace_id.clone(),
-                    agent_id: baseline.agent_id.clone(),
-                    delegate_ids: baseline.delegate_ids.clone(),
-                    toolsets: Some(projection.toolsets.clone()),
-                    resource_revision: projection.resource_revision,
-                    resources: projection.resources.clone(),
-                    model: Some(baseline.execution_model_ref.clone()),
-                    runtime: baseline.runtime.clone(),
-                    environment: baseline.environment.clone(),
-                },
-            )
+            .install_session_realization_lease(session_id, lease.clone());
+        self.runtime
+            .prepare_session(session_id, projection.session_init())
             .await?;
         if let Some(binding) = self.environment_binding {
             self.runtime
-                .restore_session_environment(&baseline.agent_id, session_id, binding)
+                .restore_session_environment(&projection.baseline.agent_id, session_id, binding)
                 .await?;
         }
         Ok(())
@@ -102,6 +90,24 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
 }
 
 impl ManagedState {
+    /// Install the frozen facts required to construct a durable Run dispatch,
+    /// without acquiring the Session realization lease. In a Worker-only
+    /// placement the physical projection is owned exclusively by the claim-time
+    /// realization driver.
+    pub(super) async fn install_dispatch_projection(
+        &self,
+        owner_scope: &str,
+        session: &PersistedSession,
+    ) -> Result<(), StateError> {
+        let projection = Self::frozen_session_projection(owner_scope.to_string(), session)
+            .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?;
+        self.application
+            .runtime()
+            .prepare_session(&session.session_id, projection.session_init())
+            .await
+            .map_err(StateError::Run)
+    }
+
     fn realization_stage_requests(
         owner_scope: &str,
         session: &PersistedSession,
@@ -685,7 +691,10 @@ impl ManagedState {
             .begin_session_realization(BeginSessionRealization {
                 session_id: session_id.to_string(),
                 target: awaken_session_contract::SessionRealizationTarget {
-                    owner: "managed-runtime".into(),
+                    // A process incarnation is the physical local owner. A
+                    // deployment-wide constant would let two active replicas
+                    // immediately fence each other while both sandboxes live.
+                    owner: self.application.runtime_incarnation().to_string(),
                     runtime_incarnation: self.application.runtime_incarnation().to_string(),
                     lease_expires_at_unix_ms,
                     renew_existing_lease: false,
@@ -765,7 +774,7 @@ impl ManagedState {
                 continue;
             };
             if scoped.session.status == "deleted"
-                || lease.owner != "managed-runtime"
+                || lease.owner != self.application.runtime_incarnation()
                 || lease.runtime_incarnation != self.application.runtime_incarnation()
                 || lease.expires_at_unix_ms > renew_before
                 || !scoped
@@ -978,6 +987,7 @@ mod tests {
                     resource_holder: holder(),
                 },
             },
+            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
             model: "model".into(),

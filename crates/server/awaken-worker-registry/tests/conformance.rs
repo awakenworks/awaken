@@ -217,9 +217,9 @@ async fn postgres_registry_conforms_when_configured() {
         eprintln!("AWAKEN_TEST_POSTGRES_URL not set; skipping Postgres registry conformance");
         return;
     };
-    PostgresWorkerDirectory::connect(&url).await.unwrap();
+    PostgresWorkerDirectory::connect(&url, 5).await.unwrap();
     let store = Arc::new(
-        PostgresWorkerDirectory::connect_existing(&url)
+        PostgresWorkerDirectory::connect_existing(&url, 5)
             .await
             .unwrap(),
     );

@@ -1,8 +1,8 @@
-//! Anti-corruption layer (ADR-0043 / G16) between the public Anthropic Managed
+//! Vault anti-corruption layer (ADR-0043 / G16) between the public Anthropic Managed
 //! Agents wire (`@anthropic-ai/sdk`, mirrored by `awaken-protocol-managed`) and
 //! the neutral credential/catalog domain. The wire keeps Anthropic's snake_case
 //! tags (`environment_variable`/`static_bearer`/`mcp_oauth`); the domain keeps
-//! neutral names. This crate is the only place the two vocabularies meet.
+//! neutral names. This module is the only place the two vocabularies meet.
 //!
 //! Scope: the `environment_variable`, `static_bearer`, and `mcp_oauth` credential
 //! mappings (secret-in create params ← wire; secret-free projection → wire). Every
@@ -13,10 +13,7 @@
 #![forbid(unsafe_code)]
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_vault::{CredentialCreateParams, CredentialKind, CredentialSource};
-
-/// The Managed Agents beta wire header this bridge targets.
-pub const MANAGED_BETA: &str = "managed-agents-2026-04-01";
+use awaken_credential_vault::{CredentialCreateParams, CredentialKind};
 
 /// The `environment_variable` create params as they arrive on the Managed wire
 /// (`BetaManagedAgentsEnvironmentVariableCreateParams`). `secret_value` is
@@ -50,7 +47,6 @@ pub fn env_var_to_create_params(
 /// echoed back — the ACL consumes it into the domain. The `mcp_server_url` stays
 /// on the wire-side record (the neutral domain row does not model MCP bindings).
 pub struct WireStaticBearerCreate {
-    pub mcp_server_url: String,
     pub token: String,
 }
 
@@ -81,7 +77,6 @@ pub fn static_bearer_to_create_params(
 /// (`BetaManagedAgentsMCPOAuthCreateParams`), reduced to the secret axis the
 /// domain cares about. `access_token` and `refresh_token` are write-only.
 pub struct WireMcpOauthCreate {
-    pub mcp_server_url: String,
     pub access_token: String,
     /// The refresh token from the wire `refresh` object, if one was supplied.
     pub refresh_token: Option<String>,
@@ -120,39 +115,16 @@ pub fn mcp_oauth_to_create_params(
     }
 }
 
-/// The secret-free wire projection of a credential (`ManagedCredential` shape):
-/// id + type + the resolved auth kind. Never carries secret material.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct ManagedCredentialView {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub object_type: &'static str,
-    /// The wire auth-kind tag.
-    pub auth_type: &'static str,
-    /// The environment-variable name (non-secret), when applicable.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret_name: Option<String>,
-}
-
-/// Project a domain [`CredentialSource`] to its secret-free wire view. The wire
-/// keeps Anthropic's `environment_variable` tag for a vault/env credential.
-#[must_use]
-pub fn to_managed_view(source: &CredentialSource) -> ManagedCredentialView {
-    ManagedCredentialView {
-        id: source.id.0.clone(),
-        object_type: "credential",
-        auth_type: "environment_variable",
-        secret_name: source.env_key.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_credential_vault::{InMemorySecretStore, create_source, materialize};
 
     #[tokio::test]
-    async fn wire_env_var_round_trips_secret_in_secret_free_out() {
+    async fn wire_env_var_seals_secret_off_the_domain_row() {
+        // Cause/effect rule V1: an environment-variable wire secret crosses the
+        // ACL -> the persisted domain row contains no plaintext, while the
+        // authorized materialization seam returns the exact original value.
         let store = InMemorySecretStore::new();
         let params = env_var_to_create_params(
             "ws1",
@@ -164,12 +136,9 @@ mod tests {
         );
         let source = create_source(params, &store).await.unwrap();
 
-        // The wire projection is secret-free and keeps Anthropic's tags.
-        let view = to_managed_view(&source);
-        let json = serde_json::to_string(&view).unwrap();
+        let json = serde_json::to_string(&source).unwrap();
         assert!(!json.contains("sk-from-the-wire"));
-        assert!(json.contains("environment_variable"));
-        assert_eq!(view.secret_name.as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(source.env_key.as_deref(), Some("ANTHROPIC_API_KEY"));
 
         // But the secret materializes back at the seam.
         assert_eq!(
@@ -184,7 +153,6 @@ mod tests {
         let params = static_bearer_to_create_params(
             "vlt_1",
             WireStaticBearerCreate {
-                mcp_server_url: "https://mcp.example.com/sse".into(),
                 token: "brr-from-the-wire".into(), // awaken-allow: secret
             },
         );
@@ -208,7 +176,6 @@ mod tests {
         let bridged = mcp_oauth_to_create_params(
             "vlt_1",
             WireMcpOauthCreate {
-                mcp_server_url: "https://mcp.example.com/sse".into(),
                 access_token: "at-from-the-wire".into(), // awaken-allow: secret
                 refresh_token: Some("rt-from-the-wire".into()),
             },
@@ -234,41 +201,11 @@ mod tests {
         let bridged = mcp_oauth_to_create_params(
             "vlt_1",
             WireMcpOauthCreate {
-                mcp_server_url: "https://mcp.example.com/sse".into(),
                 access_token: "at2".into(),
                 refresh_token: None,
             },
         );
         assert!(bridged.refresh_secret.is_none());
-    }
-
-    #[test]
-    fn managed_view_omits_secret_name_when_the_credential_has_no_env_key() {
-        // A URL-bound credential (static_bearer / mcp_oauth) has no `env_key`, so
-        // the wire projection must omit `secret_name` entirely — not emit null.
-        let source = CredentialSource {
-            id: awaken_credential_contract::CredentialSourceId("cred_1".into()),
-            workspace_id: "ws1".into(),
-            kind: CredentialKind::Vault,
-            provider_id: None,
-            protocol_endpoint_id: None,
-            env_key: None,
-            material_ref: None,
-            auxiliary_material_refs: Default::default(),
-            oauth_command: None,
-            worker_local_binding: None,
-            status: awaken_credential_vault::CredentialStatus::Active,
-            version: 1,
-        };
-        let view = to_managed_view(&source);
-        assert!(view.secret_name.is_none());
-        let json = serde_json::to_string(&view).unwrap();
-        assert!(
-            !json.contains("secret_name"),
-            "absent field is omitted: {json}"
-        );
-        assert!(json.contains("environment_variable"));
-        assert!(json.contains("\"type\":\"credential\""));
     }
 
     #[test]

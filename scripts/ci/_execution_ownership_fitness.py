@@ -18,6 +18,18 @@ RETIRED_EXECUTION_PATHS = {
     "ExecutionShape": "environment realization has one Session/backend decision path",
 }
 
+# Deployment/test compositions are architecture-bearing too. These process-wide
+# selectors were removed by ADR-0073 because they create a Host-global Hand beside
+# the Worker-owned SessionEnvironment. Historical ADR text may still name them;
+# executable fixtures may not.
+RETIRED_DEPLOYMENT_SELECTORS = {
+    "AWAKEN_REMOTE_HAND": "the Worker-owned SessionEnvironment is the only Hand owner",
+    "AWAKEN_REMOTE_HAND_UNIX": "the Worker-owned SessionEnvironment is the only Hand owner",
+    "AWAKEN_REMOTE_HAND_LISTEN": "the Worker-owned SessionEnvironment is the only Hand owner",
+    "AWAKEN_REMOTE_HAND_NATS": "the Worker-owned SessionEnvironment is the only Hand owner",
+}
+EXECUTABLE_FIXTURE_ROOTS = ("deploy", "e2e", "scripts")
+
 ROUTE_OWNER_FILES = (
     "crates/control/awaken-admin-config-api/src/router.rs",
     "crates/control/awaken-config-service/src/capabilities.rs",
@@ -26,10 +38,10 @@ ROUTE_OWNER_FILES = (
     "crates/control/awaken-control/src/admin_assistant.rs",
     "crates/control/awaken-control/src/data_subject.rs",
     "crates/control/awaken-control/src/lib.rs",
-    "crates/server/awaken-protocol-managed-resources/src/files.rs",
-    "crates/server/awaken-protocol-managed-resources/src/memory_stores.rs",
-    "crates/server/awaken-protocol-managed-resources/src/models.rs",
-    "crates/server/awaken-protocol-managed-resources/src/skills.rs",
+    "crates/server/awaken-protocol-managed/src/resources/files.rs",
+    "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
+    "crates/server/awaken-protocol-managed/src/control/models.rs",
+    "crates/server/awaken-protocol-managed/src/resources/skills.rs",
     "crates/server/awaken-protocol-a2a/src/router.rs",
     "crates/server/awaken-protocol-ag-ui/src/router.rs",
     "crates/server/awaken-protocol-ai-sdk/src/router.rs",
@@ -52,7 +64,6 @@ ROUTE_OWNER_FILES = (
 # prevents a new router source from silently escaping the ownership inventory.
 PUBLIC_ROUTE_ROOTS = (
     "crates/control",
-    "crates/server/awaken-protocol-managed-resources/src",
     "crates/server/awaken-protocol-a2a/src",
     "crates/server/awaken-protocol-ag-ui/src",
     "crates/server/awaken-protocol-ai-sdk/src",
@@ -169,6 +180,17 @@ def duplicate_tool_registry_violations(sources: dict[str, str]) -> list[str]:
     return errors
 
 
+def retired_deployment_selector_violations(sources: dict[str, str]) -> list[str]:
+    errors: list[str] = []
+    for relative, text in sources.items():
+        for selector, owner in RETIRED_DEPLOYMENT_SELECTORS.items():
+            if re.search(rf"\b{re.escape(selector)}\b", text):
+                errors.append(
+                    f"{relative}: retired deployment selector {selector!r}; {owner}"
+                )
+    return errors
+
+
 def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     rust_sources: dict[str, str] = {}
@@ -181,6 +203,18 @@ def check_all(repo_root: Path) -> list[str]:
                     f"{path.relative_to(repo_root)}: retired execution path {symbol!r}; {owner}"
                 )
     errors.extend(duplicate_tool_registry_violations(rust_sources))
+
+    fixture_sources: dict[str, str] = {}
+    for relative_root in EXECUTABLE_FIXTURE_ROOTS:
+        root = repo_root / relative_root
+        for path in sorted(candidate for candidate in root.glob("**/*") if candidate.is_file()):
+            if path == Path(__file__) or "node_modules" in path.parts:
+                continue
+            try:
+                fixture_sources[str(path.relative_to(repo_root))] = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+    errors.extend(retired_deployment_selector_violations(fixture_sources))
 
     registered = set(ROUTE_OWNER_FILES)
     discovered: set[str] = set()
@@ -242,3 +276,11 @@ def selftest() -> None:
         "\nlet x: HashMap<String, Arc<dyn RawTool>>;"
     )
     assert duplicate_tool_registry_violations(sources), "registry R2"
+
+    # Deployment selector decision table: D1 current Worker/Environment config
+    # contains no retired selector -> accept; D2 any executable fixture revives a
+    # Host-global Hand coordinate -> reject before the stale topology can ship.
+    assert retired_deployment_selector_violations({"deploy/current.yaml": "worker: true"}) == [], "D1"
+    assert retired_deployment_selector_violations(
+        {"deploy/stale.yaml": "AWAKEN_REMOTE_HAND=hand:9000"}
+    ), "D2"

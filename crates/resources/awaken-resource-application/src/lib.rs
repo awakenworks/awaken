@@ -6,13 +6,16 @@
 
 use std::sync::Arc;
 
-use awaken_file_application::FileApplication;
+mod files;
 use awaken_resource_contract::{
     ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
     MemoryStoreApplicationService, MemoryStoreConfigVersion, MemoryStoreDefinition,
     PutResourcePurgeOutcome, ResourceCatalog, ResourceComponent, ResourceKind,
     ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeScheduler,
     ResourceState, ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
+};
+pub use files::{
+    CreateFileCommand, FileApplication, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES,
 };
 
 #[derive(Clone)]

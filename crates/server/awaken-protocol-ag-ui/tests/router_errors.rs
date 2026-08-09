@@ -59,12 +59,21 @@ async fn post_frames(
     path: &str,
     body: impl Into<String>,
 ) -> Vec<Value> {
+    post_frames_with_content_type(runtime, path, body, "application/json").await
+}
+
+async fn post_frames_with_content_type(
+    runtime: Arc<dyn RunApplication>,
+    path: &str,
+    body: impl Into<String>,
+    content_type: &str,
+) -> Vec<Value> {
     let response = awaken_protocol_ag_ui::router::router(runtime)
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(path)
-                .header("content-type", "application/json")
+                .header("content-type", content_type)
                 .body(Body::from(body.into()))
                 .unwrap(),
         )
@@ -76,6 +85,50 @@ async fn post_frames(
         .filter_map(|l| l.strip_prefix("data: "))
         .map(|d| serde_json::from_str(d).unwrap())
         .collect()
+}
+
+#[tokio::test]
+async fn request_decode_failures_are_single_structured_sse_errors() {
+    // AG-UI request-admission cause/effect table: C1 JSON syntax is valid; C2
+    // typed fields match the schema; C3 Content-Type is JSON. Effects: E1 input
+    // reaches run admission; E2 one unbracketed RUN_ERROR SSE is returned; E3 no
+    // RUN_STARTED/RUN_FINISHED and no submitted body value is reflected.
+    // R1 C1+C2+C3 -> E1 (covered by successful router tests); R2 !C1 -> E2+E3;
+    // R3 C1+!C2+C3 -> E2+E3; R4 C1+C2+!C3 -> E2+E3. Decode rejection has no
+    // Runtime classification, so the optional code is absent by contract.
+    for (rule, content_type, body) in [
+        ("R2", "application/json", r#"{"threadId":"secret-marker""#),
+        ("R3", "application/json", r#"{"threadId":7,"messages":[]}"#),
+        (
+            "R4",
+            "text/plain",
+            r#"{"threadId":"secret-marker","messages":[]}"#,
+        ),
+    ] {
+        let frames = post_frames_with_content_type(
+            Arc::new(NoAwaitingRuntime),
+            "/v1/ag-ui",
+            body,
+            content_type,
+        )
+        .await;
+        assert_eq!(
+            frame_types(&frames),
+            vec!["RUN_ERROR"],
+            "{rule}: {frames:?}"
+        );
+        assert!(
+            frames[0]["message"].as_str().is_some_and(|m| !m.is_empty()),
+            "{rule}"
+        );
+        assert!(frames[0].get("code").is_none(), "{rule}: {frames:?}");
+        assert!(
+            !serde_json::to_string(&frames)
+                .unwrap()
+                .contains("secret-marker"),
+            "{rule}/E3"
+        );
+    }
 }
 
 async fn frames(body: Value) -> Vec<Value> {

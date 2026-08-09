@@ -5,7 +5,7 @@ use std::sync::Arc;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_executable_agent_contract::ExecutableAgentInventorySource;
 use awaken_model_catalog::{Offering, OfferingStatus, ProviderCatalog, repo::CatalogRepo};
-use awaken_protocol_managed_resources::{ModelDirectory, ModelDirectoryFuture, ModelEntry};
+use awaken_protocol_managed::{ModelDirectory, ModelDirectoryFuture, ModelEntry};
 
 pub struct CatalogModelDirectory {
     catalog: Arc<dyn CatalogRepo>,
@@ -431,9 +431,7 @@ mod tests {
         // already covered by the same route and lookup function.
         let id = "anyrouter/qwen/qwen3-235b";
         let app =
-            awaken_protocol_managed_resources::models_router(Arc::new(vec![ModelEntry::new(
-                id, "Qwen 3",
-            )]));
+            awaken_protocol_managed::models_router(Arc::new(vec![ModelEntry::new(id, "Qwen 3")]));
         let response = app
             .oneshot(
                 axum::http::Request::builder()

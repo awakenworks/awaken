@@ -33,10 +33,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! k3d_require_tools; then
-  echo "k8s container e2e requires k3d, kubectl, and a reachable Docker daemon" >&2
-  exit 1
-fi
+k3d_admit_or_exit "Kubernetes container E2E" 1
 
 # Prepare the exact offline fixtures before starting the disposable cluster. The
 # shared harness remains the sole owner of cluster policy and image import.

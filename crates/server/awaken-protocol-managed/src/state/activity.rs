@@ -95,7 +95,7 @@ mod tests {
     /// A1 C1=>E1; A2 C1+C2+!C3=>E2; A3 C1+C3=>E3.
     #[tokio::test]
     async fn epoch_prevents_a_stale_turn_from_idling_a_newer_turn() {
-        let state = ManagedState::new(crate::state::tests::RehydrateFake::default());
+        let state = ManagedState::new(crate::state::test_support::RehydrateFake::default());
         let request = serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap();
         let session = state.create_session(request, None).await.unwrap();
 

@@ -453,6 +453,34 @@ impl crate::SharedHost {
         interrupted
     }
 
+    /// Install the protocol-neutral Runtime coordinates derived from one frozen
+    /// Session projection. Managed local preparation and claimed Worker replay
+    /// share this single lowering path; neither may independently reconstruct a
+    /// different workspace, Agent, model, backend, Environment, or tool surface.
+    pub(crate) fn project_session_init(
+        &self,
+        thread: &str,
+        init: &awaken_session_contract::SessionInit,
+    ) -> Result<(), crate::HostError> {
+        // Validate the only fallible coordinate before publishing the remaining
+        // fields, so a conflicting Environment cannot leave a partial update.
+        self.install_environment_projection(thread, &init.environment)?;
+        self.register_thread_workspace(thread, &init.workspace_id);
+        self.register_thread_agent_projection(thread, &init.agent_id);
+        if let Some(model) = &init.model {
+            self.register_thread_model(thread, model);
+        }
+        if let Some(backend_ref) = &init.runtime {
+            self.register_thread_backend_projection(thread, backend_ref);
+        }
+        self.register_thread_delegates(thread, init.delegate_ids.clone());
+        self.session_slots.update(thread, |slot| {
+            slot.agent_id = Some(init.agent_id.clone());
+            slot.toolsets = init.toolsets.clone();
+        });
+        Ok(())
+    }
+
     pub(crate) async fn install_frozen_session_projection(
         &self,
         thread: &str,
@@ -464,11 +492,6 @@ impl crate::SharedHost {
                 "frozen Session baseline fingerprint must not be empty",
             ));
         }
-        if projection.baseline.application.is_none() {
-            return Err(crate::HostError::internal(
-                "application contribution returned a baseline without its durable receipt",
-            ));
-        }
         let has_mcp_projection = projection.mcp.iter().any(|attachment| {
             !matches!(
                 attachment.state,
@@ -477,6 +500,7 @@ impl crate::SharedHost {
             )
         });
         let baseline = decode_baseline_projection(&projection.baseline)?;
+        let init = projection.session_init();
 
         if let Some(existing) = self
             .session_slots
@@ -504,10 +528,9 @@ impl crate::SharedHost {
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))?;
             }
+            self.project_session_init(thread, &init)?;
             self.session_slots.update(thread, |slot| {
                 slot.has_mcp_projection = has_mcp_projection;
-                slot.agent_id = Some(baseline.agent_id.clone());
-                slot.toolsets = Some(projection.toolsets.clone());
             });
             return Ok(());
         }
@@ -526,6 +549,7 @@ impl crate::SharedHost {
         }
 
         validate_baseline_projection(&baseline, &built_in_mounts)?;
+        self.project_session_init(thread, &init)?;
         if projection.resources != awaken_session_contract::ResolvedSessionResources::default() {
             let manifest = awaken_session_contract::SessionResourceManifest::at_revision(
                 projection.workspace_id.clone(),
@@ -539,17 +563,7 @@ impl crate::SharedHost {
         self.session_slots.update(thread, |slot| {
             slot.baseline = Some(baseline);
             slot.has_mcp_projection = has_mcp_projection;
-            slot.agent_id = Some(projection.baseline.agent_id.clone());
-            slot.toolsets = Some(projection.toolsets);
         });
-        self.install_environment_projection(thread, &projection.baseline.environment)?;
-        self.register_thread_workspace(thread, &projection.workspace_id);
-        self.register_thread_agent_projection(thread, &projection.baseline.agent_id);
-        self.register_thread_model(thread, &projection.baseline.execution_model_ref);
-        if let Some(backend_ref) = &projection.baseline.runtime {
-            self.register_thread_backend_projection(thread, backend_ref);
-        }
-        self.register_thread_delegates(thread, projection.baseline.delegate_ids);
         Ok(())
     }
 

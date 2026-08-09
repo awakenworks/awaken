@@ -1,4 +1,4 @@
-//! Resources-owned application service for logical Files.
+//! Logical File commands owned by the canonical Resources application.
 //!
 //! This is the sole command path which coordinates immutable bytes, public File
 //! metadata, Workspace/reference ownership, quotas, and logical deletion. HTTP,

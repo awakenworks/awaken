@@ -76,6 +76,7 @@ impl awaken_session_contract::ApplicationSessionContributionApi
                         resource_holder: holder,
                     },
                 },
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "agent".into(),
                 model: "model".into(),

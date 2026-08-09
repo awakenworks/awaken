@@ -62,6 +62,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
             awaken_session_contract::SessionBaseline::compile(
                 awaken_session_contract::SessionBaselineInputs {
                     environment,
+                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: Default::default(),
                     agent_id: "assistant".into(),
                     model: "kimi".into(),

@@ -42,6 +42,14 @@ pub(super) async fn assemble_runtime_process_router(
     ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
     let content_capture_ceiling = assembly.content_capture_ceiling;
     let deployment = assembly.deployment;
+    let session_execution_placement = if deployment
+        .as_ref()
+        .is_some_and(|deployment| deployment.disable_local_pool)
+    {
+        awaken_session_application::SessionExecutionPlacement::RegisteredWorker
+    } else {
+        awaken_session_application::SessionExecutionPlacement::LocalWorker
+    };
     let cloud_api_base_url = assembly.cloud_api_base_url;
     let model_supply = assembly.model_supply.clone();
     let cloud_models_enabled = model_supply.cloud_models_enabled;
@@ -461,17 +469,24 @@ pub(super) async fn assemble_runtime_process_router(
     if let Some(credentials) = credential_materializer {
         managed_host = managed_host.with_credential_materializer(credentials);
     }
-    let mut managed_state = ManagedState::from_required_ports_with_mcp(
-        managed_host,
-        sessions.clone(),
-        environment_execution.clone(),
-    )
-    .with_credential_source(credential_source)
-    .with_resource_catalog(resource_catalog.clone())
-    .with_resource_purge_scheduler(resource_application.purge_scheduler())
-    // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
-    // published agent's model sees the authoritative config-plane truth (M2).
-    .with_config_source(executable_agent_catalog.clone());
+    let managed_host = Arc::new(managed_host);
+    let session_application =
+        awaken_session_application::SessionApplication::new_with_configuration(
+            managed_host.clone(),
+            managed_host,
+            sessions.clone(),
+            environment_execution.clone(),
+            awaken_session_application::SessionApplicationConfiguration {
+                execution_placement: session_execution_placement,
+            },
+        );
+    let mut managed_state = ManagedState::from_application(session_application)
+        .with_credential_source(credential_source)
+        .with_resource_catalog(resource_catalog.clone())
+        .with_resource_purge_scheduler(resource_application.purge_scheduler())
+        // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
+        // published agent's model sees the authoritative config-plane truth (M2).
+        .with_config_source(executable_agent_catalog.clone());
     managed_state = managed_state.with_lifecycle_sink(webhook_sink);
     let managed_state = Arc::new(managed_state);
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat

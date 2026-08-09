@@ -448,6 +448,7 @@ mod tests {
                         resource_holder: holder,
                     },
                 },
+                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 agent_id: "agent".into(),
                 model: "model".into(),
                 execution_model_ref: "model".into(),
