@@ -31,6 +31,15 @@ pub struct DelegatedRun {
     pub status: DelegationStatus,
 }
 
+/// Stable view of the runtime-owned delegation authority after the parent Run
+/// has crossed a terminal fence and reached quiescence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DelegatedRunSnapshot {
+    pub delegated_runs: Vec<DelegatedRun>,
+    /// Monotonic committed-state position from which `delegated_runs` was rebuilt.
+    pub watermark: u64,
+}
+
 /// The result of running one settled step (a new turn, or a resume).
 ///
 /// `state` reuses the run's sole lifecycle authority instead of storing a second
@@ -357,6 +366,17 @@ pub trait McpAttachmentRealizer: Send + Sync {
         ))
     }
 
+    async fn publish_mcp_generation_receipt(
+        &self,
+        generation: crate::McpGenerationRef,
+    ) -> Result<crate::McpProjectionReceipt, RunError> {
+        self.publish_mcp_generation(generation.clone()).await?;
+        Ok(crate::McpProjectionReceipt::new(
+            generation,
+            crate::McpProjectionEffectKind::Publish,
+        ))
+    }
+
     /// Hide and dispose one exact generation idempotently.
     async fn drain_mcp_generation(
         &self,
@@ -365,6 +385,17 @@ pub trait McpAttachmentRealizer: Send + Sync {
         Err(RunError::classified(
             "mcp_runtime_unsupported",
             "runtime does not support generation-fenced MCP drain",
+        ))
+    }
+
+    async fn drain_mcp_generation_receipt(
+        &self,
+        generation: crate::McpGenerationRef,
+    ) -> Result<crate::McpProjectionReceipt, RunError> {
+        self.drain_mcp_generation(generation.clone()).await?;
+        Ok(crate::McpProjectionReceipt::new(
+            generation,
+            crate::McpProjectionEffectKind::Drain,
         ))
     }
 }
@@ -389,6 +420,19 @@ pub trait SessionRuntime: Send + Sync {
     /// restart; the runtime relationship registry remains the sole authority.
     async fn delegated_runs(&self, _thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
         Ok(Vec::new())
+    }
+
+    /// Stop the parent Run, wait until it can no longer commit a delegation, and
+    /// then read the complete child set from durable runtime authority.
+    async fn quiesce_terminal_delegations(
+        &self,
+        thread: &str,
+    ) -> Result<DelegatedRunSnapshot, RunError> {
+        self.interrupt(thread).await?;
+        Ok(DelegatedRunSnapshot {
+            delegated_runs: self.delegated_runs(thread).await?,
+            watermark: 0,
+        })
     }
 
     /// Run one user turn on `thread` to its first pause or end. `content` is the
@@ -596,6 +640,23 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
+    /// Execute the exact durable terminal cleanup intent and return evidence for
+    /// that same intent. Recovery calls this entry again with the same effect id.
+    /// The compatibility default preserves hosts without substrate lifecycle.
+    async fn execute_terminal_cleanup(
+        &self,
+        intent: crate::SessionTerminalCleanupIntent,
+    ) -> Result<crate::SessionTerminalCleanupReceipt, RunError> {
+        self.end_session(&intent.thread_id).await?;
+        Ok(crate::SessionTerminalCleanupReceipt::new(
+            &intent,
+            Vec::new(),
+            true,
+            true,
+            true,
+        ))
+    }
+
     /// Interrupt the run in flight on `thread` (a `user.interrupt`): cancel it so
     /// an in-progress outcome ends `interrupted`. A no-op when nothing is running.
     async fn interrupt(&self, _thread: &str) -> Result<(), RunError> {
@@ -678,16 +739,11 @@ pub trait SessionEnvironmentBindingSink: Send + Sync {
     /// Whether this sink owns a durable aggregate for `session_id`. Internal
     /// runtime threads (graders, forks) deliberately have no Managed Session
     /// aggregate and must not be forced through this persistence boundary.
-    async fn owns(&self, _session_id: &str) -> bool {
-        true
+    async fn owns(&self, _session_id: &str) -> Result<bool, RunError> {
+        Ok(true)
     }
 
-    async fn persist(
-        &self,
-        session_id: &str,
-        binding: &str,
-        realization: Option<&crate::SessionRealizationLease>,
-    ) -> Result<(), RunError>;
+    async fn persist(&self, receipt: crate::SessionEnvironmentReceipt) -> Result<(), RunError>;
 }
 
 /// A runtime failure. `kind` classifies who is at fault so the router can map it

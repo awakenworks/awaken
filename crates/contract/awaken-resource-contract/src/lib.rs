@@ -36,8 +36,8 @@ pub use catalog::{
 };
 pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
 pub use execution::{
-    ArtifactPublication, ArtifactPublicationError, ArtifactPublisher, FileContentSource,
-    FileContentSourceError, MemoryMaterializationReferenceEncoder,
+    ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
+    FileContentSource, FileContentSourceError, MemoryMaterializationReferenceEncoder,
     MemoryMaterializationReferenceError, RepositoryBindingVerifier, RepositoryBindingVerifierError,
     UnavailableArtifactPublisher, UnavailableFileContentSource,
 };

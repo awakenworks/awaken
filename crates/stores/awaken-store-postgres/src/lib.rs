@@ -40,12 +40,38 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_store_schema::StoredU64;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use sqlx::types::Json;
 use sqlx::{Postgres, Transaction};
 
 pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
+
+fn encode_authority(value: u64) -> Result<i64, Error> {
+    StoredU64::try_from(value)
+        .map(StoredU64::database_value)
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
+
+fn decode_authority(value: i64) -> Result<u64, Error> {
+    StoredU64::try_from(value)
+        .map(StoredU64::domain_value)
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
+
+fn increment_authority(value: u64) -> Result<u64, Error> {
+    StoredU64::try_from(value)
+        .and_then(|value| value.checked_add(1))
+        .map(StoredU64::domain_value)
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
+
+fn event_authority(sequence: u64, offset: usize) -> Result<StoredU64, Error> {
+    StoredU64::try_from(sequence)
+        .and_then(|value| value.checked_scale_and_offset(1_000, offset))
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
 
 /// Bundle id for the Postgres-only commit-sequence object. Scoped so it never
 /// collides with the portable commit schema (`awaken.runtime_commit`) or the
@@ -379,7 +405,12 @@ impl CommitCoordinator for PostgresCommitCoordinator {
             .map_err(|err| Error::Rejected(err.to_string()))?;
         let current_version = lock_thread_version(&mut tx, &commit.thread_id).await?;
         let (next, committed_events) = append_commit(&mut tx, &commit).await?;
-        set_thread_version(&mut tx, &commit.thread_id, current_version + 1).await?;
+        set_thread_version(
+            &mut tx,
+            &commit.thread_id,
+            increment_authority(current_version)?,
+        )
+        .await?;
         tx.commit().await.map_err(reject)?;
         let mut projection = lock(&self.projection)?;
         advance_projection(&mut projection, commit, next, committed_events);
@@ -420,14 +451,15 @@ impl OperationCoordinator for PostgresCommitCoordinator {
         .fetch_one(&mut *tx)
         .await
         .map_err(reject)?;
-        if current_ordinal as u64 != operation.operation_id.ordinal {
+        let current_ordinal = decode_authority(current_ordinal)?;
+        if current_ordinal != operation.operation_id.ordinal {
             return Err(Error::Rejected(format!(
                 "commit operation ordinal conflict: expected {}, current {}",
                 operation.operation_id.ordinal, current_ordinal
             )));
         }
         let (next, committed_events) = append_commit(&mut tx, &operation.commit).await?;
-        let thread_version = current_version + 1;
+        let thread_version = increment_authority(current_version)?;
         set_thread_version(&mut tx, &operation.commit.thread_id, thread_version).await?;
         sqlx::query(&format!(
             "INSERT INTO {NS}_commit_receipt \
@@ -438,8 +470,8 @@ impl OperationCoordinator for PostgresCommitCoordinator {
         .bind(operation_ordinal)
         .bind(&operation.commit.thread_id.0)
         .bind(&operation.payload_hash.0)
-        .bind(next as i64)
-        .bind(thread_version as i64)
+        .bind(encode_authority(next)?)
+        .bind(encode_authority(thread_version)?)
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
@@ -485,7 +517,7 @@ async fn lock_thread_version(
     .execute(&mut **tx)
     .await
     .map_err(reject)?;
-    Ok(committed.max(0) as u64)
+    decode_authority(committed)
 }
 
 async fn set_thread_version(
@@ -497,7 +529,7 @@ async fn set_thread_version(
         "UPDATE {NS}_thread_version SET version = $2 WHERE thread_id = $1"
     ))
     .bind(&thread_id.0)
-    .bind(version as i64)
+    .bind(encode_authority(version)?)
     .execute(&mut **tx)
     .await
     .map_err(reject)?;
@@ -514,7 +546,7 @@ async fn load_receipt(
          WHERE operation_run_id = $1 AND operation_ordinal = $2"
     ))
     .bind(&operation.operation_id.run_id.0)
-    .bind(operation.operation_id.ordinal as i64)
+    .bind(encode_authority(operation.operation_id.ordinal)?)
     .fetch_optional(&mut **tx)
     .await
     .map_err(reject)?;
@@ -530,8 +562,10 @@ async fn load_receipt(
     }
     Ok(Some(CommitReceipt {
         operation_id: operation.operation_id.clone(),
-        commit_sequence: row.try_get::<i64, _>("commit_sequence").map_err(reject)? as u64,
-        thread_version: row.try_get::<i64, _>("thread_version").map_err(reject)? as u64,
+        commit_sequence: decode_authority(
+            row.try_get::<i64, _>("commit_sequence").map_err(reject)?,
+        )?,
+        thread_version: decode_authority(row.try_get::<i64, _>("thread_version").map_err(reject)?)?,
         payload_hash: CommitPayloadHash(payload_hash),
         duplicate: true,
     }))
@@ -566,11 +600,11 @@ async fn append_commit(
         .fetch_one(&mut **tx)
         .await
         .map_err(reject)?;
-    let next = next as u64;
+    let next = decode_authority(next)?;
     sqlx::query(&format!(
         "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES ($1, $2, $3, $4)"
     ))
-    .bind(next as i64)
+    .bind(encode_authority(next)?)
     .bind(&thread_id.0)
     .bind(&run_id.0)
     .bind(Json(&run_state))
@@ -582,7 +616,7 @@ async fn append_commit(
         sqlx::query(&format!(
             "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
         ))
-        .bind(next as i64)
+        .bind(encode_authority(next)?)
         .bind(&thread_id.0)
         .bind(Json(message))
         .execute(&mut **tx)
@@ -593,7 +627,7 @@ async fn append_commit(
         sqlx::query(&format!(
             "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES ($1, $2, $3)"
         ))
-        .bind(next as i64)
+        .bind(encode_authority(next)?)
         .bind(&thread_id.0)
         .bind(Json(command))
         .execute(&mut **tx)
@@ -602,11 +636,11 @@ async fn append_commit(
     }
     let mut committed_events = Vec::with_capacity(commit.events.len());
     for (offset, draft) in commit.events.iter().enumerate() {
-        let sequence = next * 1_000 + offset as u64;
+        let sequence = event_authority(next, offset)?;
         sqlx::query(&format!(
             "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES ($1, $2, $3, $4)"
         ))
-        .bind(sequence as i64)
+        .bind(sequence.database_value())
         .bind(&run_id.0)
         .bind(Json(&draft.kind))
         .bind(Json(&draft.payload))
@@ -614,7 +648,7 @@ async fn append_commit(
         .await
         .map_err(reject)?;
         committed_events.push(EventRecord {
-            sequence,
+            sequence: sequence.domain_value(),
             run_id: run_id.clone(),
             kind: draft.kind.clone(),
             payload: draft.payload.clone(),
@@ -881,9 +915,12 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             messages,
             state: committed_state,
             resume_tickets,
-            thread_version: thread_version.max(0) as u64,
-            store_cursor: store_cursor.max(0) as u64,
-            next_commit_ordinal: next_commit_ordinal.max(0) as u64,
+            thread_version: decode_authority(thread_version)
+                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+            store_cursor: decode_authority(store_cursor)
+                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+            next_commit_ordinal: decode_authority(next_commit_ordinal)
+                .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
         })
     }
 }
@@ -1002,7 +1039,9 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     ))
     .fetch_one(pool)
     .await?;
-    projection.sequence = sequence.max(0) as u64;
+    projection.sequence = StoredU64::try_from(sequence)
+        .map_err(|error| sqlx::Error::Decode(Box::new(error)))?
+        .domain_value();
 
     let message_rows = sqlx::query(&format!(
         "SELECT thread_id, data FROM {NS}_message ORDER BY id"
@@ -1062,7 +1101,9 @@ async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
             row.try_get::<Json<awaken_agent_contract::audit::kind::Kind>, _>("kind")?;
         let Json(payload) = row.try_get::<Json<serde_json::Value>, _>("payload")?;
         projection.events.push(EventRecord {
-            sequence: sequence as u64,
+            sequence: StoredU64::try_from(sequence)
+                .map_err(|error| sqlx::Error::Decode(Box::new(error)))?
+                .domain_value(),
             run_id: RunId(run_id),
             kind,
             payload,

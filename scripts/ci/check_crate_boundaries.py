@@ -16,6 +16,8 @@ import _migration_fitness
 import _provider_env_fitness
 import _resource_plane_fitness
 import _runtime_secret_boundary
+import _session_effect_fitness
+import _session_state_ownership_fitness
 import _service_data_ownership_fitness
 import _crate_boundary_workspace
 from _crate_boundary_workspace import architecture_fitness_specs, dependency_fitness_specs, text_files
@@ -123,6 +125,8 @@ def main() -> int:
     _arch_fitness.selftest()
     _coordinator_authority_fitness.selftest()
     _migration_fitness.selftest()
+    _session_effect_fitness.selftest()
+    _session_state_ownership_fitness.selftest()
     _service_data_ownership_fitness.selftest()
     _execution_ownership_fitness.selftest()
     _managed_protocol_boundary.selftest()
@@ -137,6 +141,8 @@ def main() -> int:
         + _arch_fitness.check_all(architecture_fitness_specs())
         + _coordinator_authority_fitness.check_all(REPO_ROOT, CRATES)
         + _migration_fitness.check_all(REPO_ROOT)
+        + _session_effect_fitness.check_all(REPO_ROOT)
+        + _session_state_ownership_fitness.check_all(REPO_ROOT)
         + _service_data_ownership_fitness.check_all(REPO_ROOT)
         + _execution_ownership_fitness.check_all(REPO_ROOT)
         + _managed_protocol_boundary.check_managed_route_inventory(REPO_ROOT)

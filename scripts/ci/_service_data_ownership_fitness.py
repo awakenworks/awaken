@@ -42,7 +42,7 @@ ENV_STORE_SQLITE_SOURCE = "crates/stores/awaken-env-store/src/lib.rs"
 SANDBOX_POLICY_STORE_SOURCE = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
 ENV_IMAGE_BUILD_SOURCE = "crates/server/awaken-environment-image-build/src/lib.rs"
 ENV_IMAGE_BUILD_SQLITE_SOURCE = "crates/server/awaken-environment-image-build/src/sqlite.rs"
-SESSION_STORE_SOURCE = "crates/stores/awaken-session-store/src/lib.rs"
+SESSION_STORE_SQLITE_SOURCE = "crates/stores/awaken-session-store/src/sqlite.rs"
 WORK_STORE_SOURCE = "crates/stores/awaken-work-store/src/lib.rs"
 COMMIT_SQLITE_SOURCE = "crates/stores/awaken-store-sqlite/src/lib.rs"
 FILE_SQLITE_SOURCE = "crates/resources/awaken-file-store/src/sqlite.rs"
@@ -266,7 +266,7 @@ NON_PRODUCT_APIS = (
     ),
     (
         "SqliteManagedSessionRepository::open_in_memory",
-        SESSION_STORE_SOURCE,
+        SESSION_STORE_SQLITE_SOURCE,
         r"\bpub\s+fn\s+open_in_memory\b",
         TEST_SUPPORT_GATE,
     ),
@@ -1123,7 +1123,7 @@ def selftest() -> None:
         + "pub use in_memory::InMemoryEnvironmentImageBuildStore;",
         ENV_IMAGE_BUILD_SQLITE_SOURCE: any_gate
         + "pub fn open_in_memory_environment_image_build_store() {}",
-        SESSION_STORE_SOURCE: any_gate + "pub fn open_in_memory() {}",
+        SESSION_STORE_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         WORK_STORE_SOURCE: any_gate
         + "pub use inmem::InMemoryWorkQueue;\n"
         + any_gate

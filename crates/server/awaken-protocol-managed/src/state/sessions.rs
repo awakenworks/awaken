@@ -87,7 +87,7 @@ impl ManagedState {
         self.ensure_session(session_id).await?;
         let owner = self
             .resolve_owner(session_id)
-            .await
+            .await?
             .ok_or(StateError::NotFound)?;
         if owner != workspace_id {
             return Err(StateError::NotFound);
@@ -105,18 +105,16 @@ impl ManagedState {
         thread_id: &str,
         agent_id: &str,
     ) -> Result<(), StateError> {
-        if self
-            .application
-            .session_repository()
-            .get(thread_id)
-            .await
-            .is_some()
-        {
-            // A durable row does not imply that this process has reconstructed
-            // the runtime projection.  Reuse the authoritative restart path so
-            // resources and the exact Environment snapshot are restored before
-            // a non-Managed adapter is allowed to execute the next turn.
-            return self.ensure_session(thread_id).await;
+        match self.application.session_repository().get(thread_id).await {
+            Ok(_) => {
+                // A durable row does not imply that this process has reconstructed
+                // the runtime projection.  Reuse the authoritative restart path so
+                // resources and the exact Environment snapshot are restored before
+                // a non-Managed adapter is allowed to execute the next turn.
+                return self.ensure_session(thread_id).await;
+            }
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {}
+            Err(error) => return Err(StateError::from(error)),
         }
         let request = serde_json::from_value(serde_json::json!({"agent": agent_id}))
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
@@ -132,31 +130,28 @@ impl ManagedState {
             // Concurrent first turns share the explicit protocol thread id. The
             // durable create fence chooses one winner; every loser adopts that
             // exact committed Session through the normal recovery seam.
-            Err(StateError::Conflict)
-                if self
-                    .application
-                    .session_repository()
-                    .get(thread_id)
-                    .await
-                    .is_some() =>
-            {
-                self.ensure_session(thread_id).await
+            Err(StateError::Conflict) => {
+                match self.application.session_repository().get(thread_id).await {
+                    Ok(_) => self.ensure_session(thread_id).await,
+                    Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                        Err(StateError::Conflict)
+                    }
+                    Err(error) => Err(StateError::from(error)),
+                }
             }
             Err(error) => Err(error),
         }
     }
 
-    pub(super) const fn wire_session_status(lifecycle: SessionLifecycleState) -> SessionStatus {
-        match lifecycle {
-            SessionLifecycleState::Preparing => SessionStatus::Preparing,
-            SessionLifecycleState::Activating => SessionStatus::Activating,
-            SessionLifecycleState::ActivationFailed => SessionStatus::Failed,
-            SessionLifecycleState::Running => SessionStatus::Running,
-            SessionLifecycleState::Rescheduling => SessionStatus::Rescheduling,
-            SessionLifecycleState::Idle => SessionStatus::Idle,
-            SessionLifecycleState::Terminated | SessionLifecycleState::Deleted => {
-                SessionStatus::Terminated
-            }
+    pub(super) const fn wire_session_status(execution: SessionExecutionState) -> SessionStatus {
+        match execution {
+            SessionExecutionState::Preparing => SessionStatus::Preparing,
+            SessionExecutionState::Activating => SessionStatus::Activating,
+            SessionExecutionState::ActivationFailed => SessionStatus::Failed,
+            SessionExecutionState::Running => SessionStatus::Running,
+            SessionExecutionState::Rescheduling => SessionStatus::Rescheduling,
+            SessionExecutionState::Idle => SessionStatus::Idle,
+            SessionExecutionState::Terminated => SessionStatus::Terminated,
         }
     }
 
@@ -172,11 +167,11 @@ impl ManagedState {
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
             return Ok(());
         };
-        record.session.status = Self::wire_session_status(persisted.lifecycle);
+        record.session.status = Self::wire_session_status(persisted.execution);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
-        record.session.archived_at = persisted.archived_at.clone();
+        record.session.archived_at = persisted.archived_at().map(str::to_owned);
         record.session.agent.tools = crate::project::managed_tools(&persisted.tools);
         record.session.agent.mcp_servers = mcp_servers;
         record.resource_state = persisted.resources.clone();
@@ -373,14 +368,13 @@ impl ManagedState {
                         sequence,
                     ))
                 );
-                if !self.application.runtime().owns_thread(&candidate).await
-                    && self
-                        .application
-                        .session_repository()
-                        .get(&candidate)
-                        .await
-                        .is_none()
-                {
+                let repository_absent =
+                    match self.application.session_repository().get(&candidate).await {
+                        Err(awaken_session_contract::SessionRepositoryError::NotFound) => true,
+                        Ok(_) => false,
+                        Err(error) => return Err(StateError::from(error)),
+                    };
+                if !self.application.runtime().owns_thread(&candidate).await && repository_absent {
                     break candidate;
                 }
             },
@@ -704,8 +698,9 @@ impl ManagedState {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            lifecycle: SessionLifecycleState::Preparing,
-            archived_at: None,
+            execution: SessionExecutionState::Preparing,
+            disposition: Default::default(),
+            terminal_cleanup: Default::default(),
         };
         // The activation intent and owner fence commit before Host/worker IO.
         persisted = self.create_session_root(&owner_scope, persisted).await?;
@@ -744,7 +739,7 @@ impl ManagedState {
                 Err(error) => {
                     let _ = self
                         .application
-                        .release_terminal_resources(&owner_scope, &id, &[])
+                        .release_terminal_resources(&owner_scope, &id)
                         .await;
                     return Err(error);
                 }
@@ -795,7 +790,7 @@ impl ManagedState {
             // A registered-Worker placement remains preparing until its claimed
             // realization acknowledges the exact frozen projection; hardcoding
             // non-Application creation to idle created a second, unsafe status.
-            status: Self::wire_session_status(persisted.lifecycle),
+            status: Self::wire_session_status(persisted.execution),
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
@@ -905,14 +900,20 @@ impl ManagedState {
     /// durable store (cross-process, after a restart lost the index). `None` when
     /// no backend knows the session — a genuinely unknown id, where the guard
     /// falls through and the handler's own `NotFound` answers.
-    pub async fn resolve_owner(&self, session_id: &str) -> Option<String> {
+    pub async fn resolve_owner(&self, session_id: &str) -> Result<Option<String>, StateError> {
         if let Some(scope) = self.owner_scope(session_id) {
-            return Some(scope);
+            return Ok(Some(scope));
         }
-        self.application
+        match self
+            .application
             .session_repository()
             .owner(session_id)
             .await
+        {
+            Ok(owner) => Ok(Some(owner)),
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => Ok(None),
+            Err(error) => Err(StateError::from(error)),
+        }
     }
 
     /// A session object reconstructed for a rehydrated (post-restart) session.
@@ -956,6 +957,7 @@ impl ManagedState {
                         )
                     });
                 let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
+                let archived_at = p.archived_at().map(str::to_owned);
                 (
                     agent_id,
                     model,
@@ -964,8 +966,8 @@ impl ManagedState {
                     p.metadata,
                     project::managed_tools(&p.tools),
                     mcp_servers,
-                    Self::wire_session_status(p.lifecycle),
-                    p.archived_at,
+                    Self::wire_session_status(p.execution),
+                    archived_at,
                 )
             }
             None => (
@@ -1026,19 +1028,16 @@ impl ManagedState {
             .session_repository()
             .get(id)
             .await
-            .filter(|session| {
-                !matches!(
-                    session.lifecycle,
-                    SessionLifecycleState::Deleted | SessionLifecycleState::ActivationFailed
-                )
-            })
-            .ok_or(StateError::NotFound)?;
+            .map_err(StateError::from)?;
+        if persisted.is_hidden() {
+            return Err(StateError::NotFound);
+        }
         let owner_scope = self
             .application
             .session_repository()
             .owner(id)
             .await
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+            .map_err(StateError::from)?;
         let delegated_runs = self
             .application
             .runtime()
@@ -1084,7 +1083,7 @@ impl ManagedState {
             .get(id)
             .await
             .map(|session| session.revision)
-            .ok_or(StateError::NotFound)
+            .map_err(StateError::from)
     }
 
     /// `GET /v1/sessions` — every session, ascending id (deterministic).
@@ -1128,22 +1127,13 @@ impl ManagedState {
     /// is a 404 (delete removes the session; it does not tombstone it as archive
     /// does).
     pub async fn delete_session(&self, id: &str) -> Result<(), StateError> {
-        // Snapshot before the durable commit, but do not remove the visible record
-        // until the repository has atomically stored the terminal state, cleanup
-        // intent, and outbox fact. The row becomes a tombstone only after every
-        // external cleanup succeeds; until then it is hidden application state for
-        // the ResourceReclaimer.
-        let child_thread_ids = {
-            let sessions = self.sessions.lock().unwrap();
-            sessions
-                .get(id)
-                .ok_or(StateError::NotFound)?
-                .child_threads
-                .iter()
-                .map(|thread| thread.id.clone())
-                .collect::<Vec<_>>()
-        };
-        let owner = self.resolve_owner(id).await;
+        // A terminal command must work after a process restart without realizing
+        // the soon-to-be-released Environment or MCP attachments.
+        self.ensure_session_for_terminal_cleanup(id).await?;
+        // Do not remove the visible record until the repository has atomically
+        // stored the terminal fence and outbox fact. Child cleanup targets are
+        // frozen later from durable Runtime delegation authority.
+        let owner = self.resolve_owner(id).await?;
         let deleted_fact = lifecycle_fact(
             format!("session:{id}:deleted"),
             id,
@@ -1176,7 +1166,7 @@ impl ManagedState {
         // regardless, so a dispose failure must not resurrect a deleted session.
         if let Err(error) = self
             .application
-            .release_terminal_resources(&transition.owner_scope, id, &child_thread_ids)
+            .release_terminal_resources(&transition.owner_scope, id)
             .await
         {
             tracing::warn!(
@@ -1208,16 +1198,7 @@ impl ManagedState {
     /// re-archive returns the same terminal record without a second event.
     pub async fn archive_session(&self, id: &str) -> Result<Session, StateError> {
         self.ensure_session_for_terminal_cleanup(id).await?;
-        let child_thread_ids = {
-            let sessions = self.sessions.lock().unwrap();
-            let record = sessions.get(id).ok_or(StateError::NotFound)?;
-            record
-                .child_threads
-                .iter()
-                .map(|thread| thread.id.clone())
-                .collect::<Vec<_>>()
-        };
-        let owner = self.resolve_owner(id).await;
+        let owner = self.resolve_owner(id).await?;
         let terminated_fact = lifecycle_fact(
             format!("session:{id}:terminated"),
             id,
@@ -1248,21 +1229,20 @@ impl ManagedState {
         // sandbox — but only on the transition, so a re-archive (idempotent) does
         // not re-dispose. The record survives as a tombstone; only the sandbox goes.
         let release_required = newly_terminated
-            || self
-                .application
-                .session_repository()
-                .get(id)
-                .await
-                .is_some_and(|persisted| {
+            || match self.application.session_repository().get(id).await {
+                Ok(persisted) => {
                     persisted.resources.pending.is_some()
                         || persisted.resources.activations.iter().any(|activation| {
                             activation.state == awaken_session_contract::ActivationState::Active
                         })
-                });
+                }
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => false,
+                Err(error) => return Err(StateError::from(error)),
+            };
         if release_required
             && let Err(error) = self
                 .application
-                .release_terminal_resources(&transition.owner_scope, id, &child_thread_ids)
+                .release_terminal_resources(&transition.owner_scope, id)
                 .await
         {
             return Err(StateError::Run(RunError::internal(format!(

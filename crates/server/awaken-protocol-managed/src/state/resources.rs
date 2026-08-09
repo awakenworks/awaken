@@ -90,13 +90,13 @@ impl ManagedState {
         body: crate::types::resource::ResourceAddParams,
     ) -> Result<crate::types::resource::SessionResource, StateError> {
         let parsed = body.into_resource_input().to_parsed_input();
-        let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
+        let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let persisted = self
             .application
             .session_repository()
             .get(id)
             .await
-            .ok_or(StateError::NotFound)?;
+            .map_err(StateError::from)?;
         let current = persisted.resources.desired().clone();
         if matches!(parsed.target, ParsedInputTarget::File(_))
             && current
@@ -168,7 +168,7 @@ impl ManagedState {
         resource_id: &str,
         patch: crate::types::resource::ResourceUpdateParams,
     ) -> Result<crate::types::resource::SessionResource, StateError> {
-        let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
+        let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
             .application
@@ -192,14 +192,14 @@ impl ManagedState {
     }
 
     pub async fn delete_resource(&self, id: &str, resource_id: &str) -> Result<(), StateError> {
-        let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
+        let owner_scope = self.resolve_owner(id).await?.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
             .application
             .session_repository()
             .get(id)
             .await
-            .ok_or(StateError::NotFound)?;
+            .map_err(StateError::from)?;
         let input = persisted
             .resources
             .active

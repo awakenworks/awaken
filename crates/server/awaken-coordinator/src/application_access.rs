@@ -88,13 +88,24 @@ async fn create(
         .any(|operation| operation == "thread.run");
     let mut thread_bindings = HashMap::new();
     for requested in &request.thread_bindings {
-        let owner = state.sessions.owner(&requested.managed_session_id).await;
-        if owner.as_deref() != Some(workspace_id.as_str()) {
+        let owner = match state.sessions.owner(&requested.managed_session_id).await {
+            Ok(owner) => owner,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                return problem(StatusCode::NOT_FOUND, "bound Managed Session not found");
+            }
+            Err(error) => {
+                return problem(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!("Managed Session repository unavailable: {error}"),
+                );
+            }
+        };
+        if owner != workspace_id {
             return problem(StatusCode::NOT_FOUND, "bound Managed Session not found");
         }
-        let session = match state.sessions.try_get(&requested.managed_session_id).await {
-            Ok(Some(session)) => session,
-            Ok(None) => {
+        let session = match state.sessions.get(&requested.managed_session_id).await {
+            Ok(session) => session,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
                 return problem(StatusCode::NOT_FOUND, "bound Managed Session not found");
             }
             Err(error) => {
@@ -274,9 +285,11 @@ mod tests {
             awaken_session_contract::SessionRevision,
             awaken_session_contract::SessionRepositoryError,
         > {
-            Err(awaken_session_contract::SessionRepositoryError::Storage(
-                "read-only TestSessions".into(),
-            ))
+            Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "read-only TestSessions".into(),
+                ),
+            )
         }
 
         async fn commit_mutation(
@@ -287,41 +300,72 @@ mod tests {
             awaken_session_contract::SessionMutationResult,
             awaken_session_contract::SessionRepositoryError,
         > {
-            Err(awaken_session_contract::SessionRepositoryError::Storage(
-                "read-only TestSessions".into(),
-            ))
+            Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "read-only TestSessions".into(),
+                ),
+            )
         }
 
-        async fn append_lifecycle(&self, _fact: ManagedLifecycleFact) {}
-
-        async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
-            Vec::new()
+        async fn append_lifecycle(
+            &self,
+            _fact: ManagedLifecycleFact,
+        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+            Ok(())
         }
 
-        async fn complete_lifecycle(&self, _fact_id: &str) {}
+        async fn pending_lifecycle(
+            &self,
+        ) -> Result<Vec<ManagedLifecycleFact>, awaken_session_contract::SessionRepositoryError>
+        {
+            Ok(Vec::new())
+        }
 
-        async fn get(&self, session_id: &str) -> Option<PersistedSession> {
+        async fn complete_lifecycle(
+            &self,
+            _fact_id: &str,
+        ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
+            Ok(())
+        }
+
+        async fn get(
+            &self,
+            session_id: &str,
+        ) -> Result<PersistedSession, awaken_session_contract::SessionRepositoryError> {
             self.rows
                 .get(session_id)
                 .map(|(_, session)| session.clone())
+                .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
         }
 
         async fn reconcilable_sessions(
             &self,
-        ) -> Vec<awaken_session_contract::ScopedPersistedSession> {
-            Vec::new()
+        ) -> Result<
+            Vec<awaken_session_contract::ScopedPersistedSession>,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            Ok(Vec::new())
         }
 
         async fn idempotency_receipt(
             &self,
             _session_id: &str,
             _key: &str,
-        ) -> Option<awaken_session_contract::SessionIdempotencyReceipt> {
-            None
+        ) -> Result<
+            Option<awaken_session_contract::SessionIdempotencyReceipt>,
+            awaken_session_contract::SessionRepositoryError,
+        > {
+            Ok(None)
         }
 
-        async fn owner(&self, session_id: &str) -> Option<String> {
-            self.rows.get(session_id).map(|(owner, _)| owner.clone())
+        async fn owner(
+            &self,
+            session_id: &str,
+        ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
+            self.rows
+                .get(session_id)
+                .map(|(owner, _)| owner.clone())
+                .ok_or(awaken_session_contract::SessionRepositoryError::NotFound)
         }
     }
 
@@ -378,8 +422,9 @@ mod tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            lifecycle: status.parse().expect("fixture lifecycle state"),
-            archived_at: None,
+            execution: status.parse().expect("fixture execution state"),
+            disposition: Default::default(),
+            terminal_cleanup: Default::default(),
         }
     }
 

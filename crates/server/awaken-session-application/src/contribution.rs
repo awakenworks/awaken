@@ -9,7 +9,20 @@ use awaken_session_contract::{
 
 use super::{
     McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionApplication, SessionMutationError,
+    mutation::repository_failure,
 };
+
+fn contribution_mutation(error: SessionMutationError) -> ApplicationSessionContributionFailure {
+    match error {
+        SessionMutationError::NotFound => ApplicationSessionContributionFailure::NotFound,
+        SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
+            ApplicationSessionContributionFailure::Conflict
+        }
+        SessionMutationError::Unavailable(message) => {
+            ApplicationSessionContributionFailure::Unavailable(message)
+        }
+    }
+}
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -164,14 +177,15 @@ impl ApplicationSessionContributionApi for SessionApplication {
         let owner_scope = self
             .owner(&contribution.session_id)
             .await
-            .ok_or(ApplicationSessionContributionFailure::NotFound)?;
+            .map_err(contribution_mutation)?;
 
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let mut session = self
                 .session_repository()
                 .get(&contribution.session_id)
                 .await
-                .ok_or(ApplicationSessionContributionFailure::NotFound)?;
+                .map_err(repository_failure)
+                .map_err(contribution_mutation)?;
             let intent = match &mut session.baseline {
                 SessionBaselineState::Frozen(baseline) => {
                     let receipt = baseline

@@ -43,10 +43,12 @@ pub struct VisibleMcpServer {
 #[serde(transparent)]
 pub struct SessionRevision(pub u64);
 
-/// The one durable logical state of a Managed Session aggregate.
+/// The durable execution state of a Managed Session aggregate.
 ///
-/// Runtime handles, leases, protocol DTOs, and notification delivery are
-/// projections or effects of this value; none is a second lifecycle authority.
+/// Retention and public visibility are deliberately owned by
+/// [`SessionDisposition`]. Keeping the axes orthogonal allows an activation
+/// failure or archived Session to be deleted without pretending that deletion
+/// is another execution transition.
 #[derive(
     Clone,
     Copy,
@@ -61,7 +63,7 @@ pub struct SessionRevision(pub u64);
     serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum SessionLifecycleState {
+pub enum SessionExecutionState {
     Preparing,
     Activating,
     ActivationFailed,
@@ -70,10 +72,9 @@ pub enum SessionLifecycleState {
     #[default]
     Idle,
     Terminated,
-    Deleted,
 }
 
-impl SessionLifecycleState {
+impl SessionExecutionState {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -84,16 +85,12 @@ impl SessionLifecycleState {
             Self::Rescheduling => "rescheduling",
             Self::Idle => "idle",
             Self::Terminated => "terminated",
-            Self::Deleted => "deleted",
         }
     }
 
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(
-            self,
-            Self::ActivationFailed | Self::Terminated | Self::Deleted
-        )
+        matches!(self, Self::ActivationFailed | Self::Terminated)
     }
 
     /// Whether the canonical Session state machine admits `next`.
@@ -110,7 +107,7 @@ impl SessionLifecycleState {
             return false;
         }
         match next {
-            Self::Terminated | Self::Deleted => true,
+            Self::Terminated => true,
             Self::ActivationFailed => !matches!(self, Self::Idle),
             Self::Activating => {
                 matches!(self, Self::Preparing | Self::Running | Self::Rescheduling)
@@ -126,25 +123,25 @@ impl SessionLifecycleState {
     }
 }
 
-impl std::fmt::Display for SessionLifecycleState {
+impl std::fmt::Display for SessionExecutionState {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
     }
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
-#[error("unknown Session lifecycle state `{0}`")]
-pub struct SessionLifecycleStateError(pub String);
+#[error("unknown Session execution state `{0}`")]
+pub struct SessionExecutionStateError(pub String);
 
 #[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
-#[error("invalid Session lifecycle transition from `{from}` to `{to}`")]
-pub struct SessionLifecycleTransitionError {
-    pub from: SessionLifecycleState,
-    pub to: SessionLifecycleState,
+#[error("invalid Session execution transition from `{from}` to `{to}`")]
+pub struct SessionExecutionTransitionError {
+    pub from: SessionExecutionState,
+    pub to: SessionExecutionState,
 }
 
-impl std::str::FromStr for SessionLifecycleState {
-    type Err = SessionLifecycleStateError;
+impl std::str::FromStr for SessionExecutionState {
+    type Err = SessionExecutionStateError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
@@ -155,10 +152,52 @@ impl std::str::FromStr for SessionLifecycleState {
             "rescheduling" => Ok(Self::Rescheduling),
             "idle" => Ok(Self::Idle),
             "terminated" => Ok(Self::Terminated),
-            "deleted" => Ok(Self::Deleted),
-            other => Err(SessionLifecycleStateError(other.to_string())),
+            other => Err(SessionExecutionStateError(other.to_string())),
         }
     }
+}
+
+/// Durable retention and public-visibility state of one Session.
+///
+/// `Deleting` is committed before physical cleanup starts. `Deleted` is retained
+/// for imported historical rows and compact tombstone projections; ordinary new
+/// deletions remove the aggregate only after cleanup receipts are committed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum SessionDisposition {
+    #[default]
+    Active,
+    Archived {
+        archived_at: String,
+    },
+    Deleting,
+    Deleted,
+}
+
+impl SessionDisposition {
+    #[must_use]
+    pub const fn denies_activity(&self) -> bool {
+        !matches!(self, Self::Active)
+    }
+
+    #[must_use]
+    pub const fn is_hidden(&self) -> bool {
+        matches!(self, Self::Deleting | Self::Deleted)
+    }
+
+    #[must_use]
+    pub fn archived_at(&self) -> Option<&str> {
+        match self {
+            Self::Archived { archived_at } => Some(archived_at),
+            Self::Active | Self::Deleting | Self::Deleted => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum SessionDispositionTransitionError {
+    #[error("cannot archive a Session while deletion is in progress or complete")]
+    ArchiveAfterDelete,
 }
 
 /// Durable owner fence for all process-local Session projections. Runtime and
@@ -178,7 +217,8 @@ pub struct SessionRealizationLease {
 pub struct PersistedSession {
     pub session_id: String,
     /// The one optimistic-concurrency fence for baseline, Resource, MCP,
-    /// environment and lifecycle mutations. New, not-yet-inserted values use 0.
+    /// environment, execution, and disposition mutations. New, not-yet-inserted
+    /// values use 0.
     #[serde(default)]
     pub revision: SessionRevision,
     /// The only immutable configuration authority. A preparation intent is
@@ -190,9 +230,9 @@ pub struct PersistedSession {
     /// public protocol tool unions are projections and never persistence truth.
     #[serde(default)]
     pub tools: crate::SessionToolConfiguration,
-    /// Monotonic root-CAS fence for overlapping driving events. Lifecycle status
-    /// remains the one durable logical state; this scalar only prevents a stale
-    /// completion from settling a newer turn.
+    /// Monotonic root-CAS fence for overlapping driving events. Execution and
+    /// disposition remain the durable logical state; this scalar only prevents
+    /// a stale completion from settling a newer turn.
     #[serde(default)]
     pub activity_epoch: u64,
     /// Durable, secret-free execution-environment phase. Opaque bindings are
@@ -209,39 +249,106 @@ pub struct PersistedSession {
     /// Continuing Session projection ownership; no process-local slot is an
     /// authority for this lease.
     pub realization: Option<SessionRealizationLease>,
-    /// The only durable logical lifecycle authority. The retained serialized key
-    /// keeps historical aggregate JSON and database fixtures readable.
+    /// The only durable execution-state authority. The retained serialized key
+    /// keeps historical aggregate JSON readable through the store codec.
     #[serde(rename = "status", alias = "lifecycle")]
-    pub lifecycle: SessionLifecycleState,
-    pub archived_at: Option<String>,
+    pub execution: SessionExecutionState,
+    /// Retention/public-visibility is independent from execution progress.
+    #[serde(default)]
+    pub disposition: SessionDisposition,
+    /// Durable intent/receipt state for terminal Runtime effects. Resource,
+    /// Environment, artifact, and process cleanup project from this one fact.
+    #[serde(default)]
+    pub terminal_cleanup: crate::SessionTerminalCleanupState,
 }
 
 impl PersistedSession {
-    /// Apply the sole durable Session lifecycle transition function.
+    /// Apply the sole durable Session execution transition function.
     ///
     /// Returns `false` for an idempotent replay and leaves the aggregate
     /// untouched when the transition is invalid.
-    pub fn transition_lifecycle(
+    pub fn transition_execution(
         &mut self,
-        next: SessionLifecycleState,
-    ) -> Result<bool, SessionLifecycleTransitionError> {
-        let from = self.lifecycle;
+        next: SessionExecutionState,
+    ) -> Result<bool, SessionExecutionTransitionError> {
+        let from = self.execution;
         if !from.can_transition_to(next) {
-            return Err(SessionLifecycleTransitionError { from, to: next });
+            return Err(SessionExecutionTransitionError { from, to: next });
         }
         if from == next {
             return Ok(false);
         }
-        self.lifecycle = next;
+        self.execution = next;
         Ok(true)
     }
 
-    /// Whether the root Session lifecycle forbids every new realization effect.
+    /// Archive one visible Session while terminating further execution.
+    pub fn archive(
+        &mut self,
+        archived_at: impl Into<String>,
+    ) -> Result<bool, SessionDispositionTransitionError> {
+        match self.disposition {
+            SessionDisposition::Deleting | SessionDisposition::Deleted => {
+                return Err(SessionDispositionTransitionError::ArchiveAfterDelete);
+            }
+            SessionDisposition::Archived { .. } => return Ok(false),
+            SessionDisposition::Active => {}
+        }
+        if !self.execution.is_terminal() {
+            self.execution = SessionExecutionState::Terminated;
+        }
+        self.terminal_cleanup.request(&self.session_id);
+        self.disposition = SessionDisposition::Archived {
+            archived_at: archived_at.into(),
+        };
+        Ok(true)
+    }
+
+    /// Commit the hidden deletion phase before any external cleanup. Archived
+    /// and activation-failed Sessions remain deletable because disposition is an
+    /// orthogonal state axis.
+    pub fn request_delete(&mut self) -> bool {
+        if matches!(
+            self.disposition,
+            SessionDisposition::Deleting | SessionDisposition::Deleted
+        ) {
+            return false;
+        }
+        if !self.execution.is_terminal() {
+            self.execution = SessionExecutionState::Terminated;
+        }
+        self.terminal_cleanup.request(&self.session_id);
+        self.disposition = SessionDisposition::Deleting;
+        true
+    }
+
+    /// Whether the root Session state forbids every new realization effect.
     /// Keep this classification on the aggregate so API rehydration, MCP recovery,
     /// and later reconcilers cannot grow different terminal-status lists.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        self.lifecycle.is_terminal()
+        self.execution.is_terminal() || self.disposition.denies_activity()
+    }
+
+    #[must_use]
+    pub const fn is_hidden(&self) -> bool {
+        self.disposition.is_hidden()
+    }
+
+    /// Whether an ordinary protocol read may expose this aggregate.
+    ///
+    /// `ActivationFailed` is the durable recovery record for an initial
+    /// realization that never became a live Session. Retaining it lets an
+    /// operator retry or delete the failed intent, but it must not turn a failed
+    /// create into a subsequently visible resource after projection-cache loss.
+    #[must_use]
+    pub const fn is_publicly_readable(&self) -> bool {
+        !self.is_hidden() && !matches!(self.execution, SessionExecutionState::ActivationFailed)
+    }
+
+    #[must_use]
+    pub fn archived_at(&self) -> Option<&str> {
+        self.disposition.archived_at()
     }
 
     /// Whether the Resource convergence driver owns work for this Session.
@@ -252,8 +359,10 @@ impl PersistedSession {
     /// reconcilers from recreating lifecycle status lists with string comparisons.
     #[must_use]
     pub fn needs_resource_reconciliation(&self) -> bool {
-        self.lifecycle == SessionLifecycleState::Deleted
-            || self.resources.needs_reconciliation()
+        matches!(
+            self.disposition,
+            SessionDisposition::Deleting | SessionDisposition::Deleted
+        ) || self.resources.needs_reconciliation()
             || (self.is_terminal() && self.resources.has_active())
     }
 
@@ -269,6 +378,7 @@ impl PersistedSession {
                 self.environment,
                 crate::SessionEnvironmentState::Unmaterialized
             )
+            || self.terminal_cleanup.needs_reconciliation()
             || self.needs_work_dispatch()
     }
 
@@ -428,17 +538,50 @@ pub enum SessionMutationValidationError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SessionRepositoryError {
-    #[error("Session repository rejected invalid mutation: {0}")]
-    InvalidMutation(String),
+pub enum SessionRepositoryConflict {
     #[error("Session already exists")]
     AlreadyExists,
     #[error("Session was deleted")]
     Tombstoned,
     #[error("Session idempotency key was reused with another payload")]
     IdempotencyMismatch,
-    #[error("Session repository storage failed: {0}")]
-    Storage(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SessionRepositoryError {
+    #[error("Session was not found")]
+    NotFound,
+    #[error("Session repository is unavailable: {0}")]
+    Unavailable(String),
+    #[error("Session repository contains corrupt durable state: {0}")]
+    Corrupt(String),
+    #[error("Session repository conflict: {0}")]
+    Conflict(SessionRepositoryConflict),
+    #[error("Session repository rejected invalid mutation: {0}")]
+    InvalidMutation(String),
+}
+
+/// Closed supervisor policy for persistence failures. Retryable outages remain
+/// pending; corrupt durable truth is isolated for operator repair; command and
+/// concurrency failures are returned without background replay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRepositoryRecoveryAction {
+    Retry,
+    Quarantine,
+    Reject,
+}
+
+impl SessionRepositoryError {
+    #[must_use]
+    pub const fn recovery_action(&self) -> SessionRepositoryRecoveryAction {
+        match self {
+            Self::Unavailable(_) => SessionRepositoryRecoveryAction::Retry,
+            Self::Corrupt(_) => SessionRepositoryRecoveryAction::Quarantine,
+            Self::NotFound | Self::Conflict(_) | Self::InvalidMutation(_) => {
+                SessionRepositoryRecoveryAction::Reject
+            }
+        }
+    }
 }
 
 impl SessionMutation {
@@ -506,43 +649,27 @@ pub trait ManagedSessionRepository: Send + Sync {
     ) -> Result<SessionMutationResult, SessionRepositoryError>;
 
     /// Commit a lifecycle transition fact idempotently by stable id.
-    async fn append_lifecycle(&self, fact: ManagedLifecycleFact);
-
-    async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact>;
-
-    async fn try_pending_lifecycle(
+    async fn append_lifecycle(
         &self,
-    ) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
-        Ok(self.pending_lifecycle().await)
-    }
+        fact: ManagedLifecycleFact,
+    ) -> Result<(), SessionRepositoryError>;
 
-    async fn complete_lifecycle(&self, fact_id: &str);
+    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError>;
 
-    /// The stored configuration for `session_id`, if any.
-    async fn get(&self, session_id: &str) -> Option<PersistedSession>;
+    async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError>;
 
-    /// Fallible read for callers that must distinguish absence from unavailable
-    /// or corrupt durable state. Durable adapters override this; the default
-    /// preserves compatibility for simple in-memory/test implementations.
-    async fn try_get(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
-        Ok(self.get(session_id).await)
-    }
+    /// The stored configuration for `session_id`. Absence is the typed
+    /// [`SessionRepositoryError::NotFound`] case, never a storage fallback.
+    async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError>;
 
     /// Sessions carrying any durable Resource, MCP, environment, or WorkQueue
     /// projection reconciliation work.
     /// Implementations preserve the intrinsic Workspace partition in the same
     /// row scan; application coordinators filter by their owned state machine.
     /// One index avoids parallel per-feature recovery registries and scans.
-    async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession>;
-
-    async fn try_reconcilable_sessions(
+    async fn reconcilable_sessions(
         &self,
-    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError> {
-        Ok(self.reconcilable_sessions().await)
-    }
+    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError>;
 
     /// Durable application-command receipt. This is a read of the same
     /// idempotency table written atomically by `create`/`commit_mutation`, not a
@@ -551,10 +678,10 @@ pub trait ManagedSessionRepository: Send + Sync {
         &self,
         session_id: &str,
         key: &str,
-    ) -> Option<SessionIdempotencyReceipt>;
+    ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError>;
 
-    /// The atomically persisted owner scope of `session_id`, if the row exists.
-    async fn owner(&self, session_id: &str) -> Option<String>;
+    /// The atomically persisted owner scope of `session_id`.
+    async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError>;
 }
 
 // In-memory and durable adapters live outward in `awaken-session-store`.
@@ -643,13 +770,14 @@ mod mutation_tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            lifecycle: SessionLifecycleState::Idle,
-            archived_at: None,
+            execution: SessionExecutionState::Idle,
+            disposition: SessionDisposition::Active,
+            terminal_cleanup: Default::default(),
         }
     }
 
     #[test]
-    fn lifecycle_state_preserves_the_historical_key_and_rejects_unknown_truth() {
+    fn execution_state_preserves_the_historical_key_and_rejects_unknown_truth() {
         let value = serde_json::to_value(session("session-1", SessionRevision(1))).unwrap();
         assert_eq!(value.get("status"), Some(&serde_json::json!("idle")));
         assert!(value.get("lifecycle").is_none());
@@ -664,14 +792,38 @@ mod mutation_tests {
         assert_eq!(
             serde_json::from_value::<PersistedSession>(aliased)
                 .unwrap()
-                .lifecycle,
-            SessionLifecycleState::Idle
+                .execution,
+            SessionExecutionState::Idle
         );
     }
 
     #[test]
-    fn lifecycle_transition_decision_table_fails_closed() {
-        use SessionLifecycleState as State;
+    fn repository_failure_policy_is_closed_and_exhaustive() {
+        use SessionRepositoryError as Error;
+        use SessionRepositoryRecoveryAction as Action;
+
+        assert_eq!(
+            Error::Unavailable("db offline".into()).recovery_action(),
+            Action::Retry
+        );
+        assert_eq!(
+            Error::Corrupt("negative revision".into()).recovery_action(),
+            Action::Quarantine
+        );
+        assert_eq!(Error::NotFound.recovery_action(), Action::Reject);
+        assert_eq!(
+            Error::Conflict(SessionRepositoryConflict::AlreadyExists).recovery_action(),
+            Action::Reject
+        );
+        assert_eq!(
+            Error::InvalidMutation("bad revision".into()).recovery_action(),
+            Action::Reject
+        );
+    }
+
+    #[test]
+    fn execution_transition_decision_table_fails_closed() {
+        use SessionExecutionState as State;
 
         let states = [
             State::Preparing,
@@ -681,14 +833,13 @@ mod mutation_tests {
             State::Rescheduling,
             State::Idle,
             State::Terminated,
-            State::Deleted,
         ];
         for from in states {
             for to in states {
                 let expected = from == to
                     || (!from.is_terminal()
                         && match to {
-                            State::Terminated | State::Deleted => true,
+                            State::Terminated => true,
                             State::ActivationFailed => from != State::Idle,
                             State::Activating => matches!(
                                 from,
@@ -710,19 +861,38 @@ mod mutation_tests {
         }
 
         let mut value = session("session-1", SessionRevision(1));
-        assert_eq!(value.transition_lifecycle(State::Idle), Ok(false));
-        assert_eq!(value.transition_lifecycle(State::Running), Ok(true));
-        assert_eq!(value.lifecycle, State::Running);
-        assert_eq!(value.transition_lifecycle(State::Terminated), Ok(true));
+        assert_eq!(value.transition_execution(State::Idle), Ok(false));
+        assert_eq!(value.transition_execution(State::Running), Ok(true));
+        assert_eq!(value.execution, State::Running);
+        assert_eq!(value.transition_execution(State::Terminated), Ok(true));
         let terminal = value.clone();
         assert_eq!(
-            value.transition_lifecycle(State::Idle),
-            Err(SessionLifecycleTransitionError {
+            value.transition_execution(State::Idle),
+            Err(SessionExecutionTransitionError {
                 from: State::Terminated,
                 to: State::Idle,
             })
         );
         assert_eq!(value, terminal, "rejected transition must be atomic");
+    }
+
+    #[test]
+    fn disposition_is_orthogonal_to_execution_and_delete_is_idempotent() {
+        let mut archived = session("archived", SessionRevision(1));
+        assert_eq!(archived.archive("2026-08-08T00:00:00Z"), Ok(true));
+        assert_eq!(archived.execution, SessionExecutionState::Terminated);
+        assert_eq!(archived.archived_at(), Some("2026-08-08T00:00:00Z"));
+        assert!(archived.request_delete());
+        assert!(archived.is_hidden());
+        assert!(!archived.request_delete(), "delete replay is idempotent");
+
+        let mut failed = session("failed", SessionRevision(1));
+        failed.execution = SessionExecutionState::ActivationFailed;
+        assert!(failed.is_terminal());
+        assert!(!failed.is_publicly_readable());
+        assert!(failed.request_delete(), "failed Sessions remain deletable");
+        assert_eq!(failed.execution, SessionExecutionState::ActivationFailed);
+        assert!(matches!(failed.disposition, SessionDisposition::Deleting));
     }
 
     /// Cause graph: lifecycle fact -> terminal classification -> realization and
@@ -741,20 +911,97 @@ mod mutation_tests {
     /// | L8 | deleted | false | false | true | true |
     /// | L9 | activation_failed | false | true | true | true |
     #[test]
-    fn terminal_lifecycle_classification_follows_the_decision_table() {
-        for (rule, status, pending, active, terminal, resource_reconcile) in [
-            ("L1", "preparing", false, true, false, false),
-            ("L2", "running", false, true, false, false),
-            ("L3", "rescheduling", false, true, false, false),
-            ("L4", "idle", false, true, false, false),
-            ("L5", "idle", true, false, false, true),
-            ("L6", "terminated", false, true, true, true),
-            ("L7", "terminated", false, false, true, false),
-            ("L8", "deleted", false, false, true, true),
-            ("L9", "activation_failed", false, true, true, true),
+    fn terminal_state_classification_follows_the_decision_table() {
+        for (rule, status, disposition, pending, active, terminal, resource_reconcile) in [
+            (
+                "L1",
+                "preparing",
+                SessionDisposition::Active,
+                false,
+                true,
+                false,
+                false,
+            ),
+            (
+                "L2",
+                "running",
+                SessionDisposition::Active,
+                false,
+                true,
+                false,
+                false,
+            ),
+            (
+                "L3",
+                "rescheduling",
+                SessionDisposition::Active,
+                false,
+                true,
+                false,
+                false,
+            ),
+            (
+                "L4",
+                "idle",
+                SessionDisposition::Active,
+                false,
+                true,
+                false,
+                false,
+            ),
+            (
+                "L5",
+                "idle",
+                SessionDisposition::Active,
+                true,
+                false,
+                false,
+                true,
+            ),
+            (
+                "L6",
+                "terminated",
+                SessionDisposition::Archived {
+                    archived_at: "at".into(),
+                },
+                false,
+                true,
+                true,
+                true,
+            ),
+            (
+                "L7",
+                "terminated",
+                SessionDisposition::Archived {
+                    archived_at: "at".into(),
+                },
+                false,
+                false,
+                true,
+                false,
+            ),
+            (
+                "L8",
+                "terminated",
+                SessionDisposition::Deleting,
+                false,
+                false,
+                true,
+                true,
+            ),
+            (
+                "L9",
+                "activation_failed",
+                SessionDisposition::Active,
+                false,
+                true,
+                true,
+                true,
+            ),
         ] {
             let mut value = session("session-1", SessionRevision(1));
-            value.lifecycle = status.parse().expect("fixture lifecycle state");
+            value.execution = status.parse().expect("fixture execution state");
+            value.disposition = disposition;
             let desired = crate::ResolvedSessionResources {
                 inputs: vec![crate::ResolvedInput {
                     binding_id: awaken_resource_contract::BindingId::from("input-1"),

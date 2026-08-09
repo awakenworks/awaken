@@ -39,7 +39,7 @@ fn bundle_applies_on_real_sqlite() {
         .expect("runner")
         .run_bundle(&conn, &bundle)
         .expect("apply bundle on sqlite");
-    assert_eq!(applied.len(), 8, "all eight migrations applied");
+    assert_eq!(applied.len(), 9, "all nine migrations applied");
 
     for table in TABLES {
         let count: i64 = conn
@@ -89,6 +89,14 @@ fn bundle_applies_on_real_sqlite() {
         updated_at.is_some_and(|s| !s.is_empty()),
         "{{now}} default (CURRENT_TIMESTAMP) populated updated_at"
     );
+    assert!(
+        conn.execute(
+            "INSERT INTO runtime_commit (sequence, thread_id, run_id, phase) VALUES (-1,'t','r-negative','\"Running\"')",
+            [],
+        )
+        .is_err(),
+        "negative SQLite authority is rejected by the forward-compatible constraint trigger"
+    );
 }
 
 /// Column name → declared type for a SQLite table, via `PRAGMA table_info`.
@@ -108,7 +116,7 @@ fn column_types_sqlite(
 }
 
 // Forward migration: applying only v1 first, then the full bundle, applies exactly
-// the v2..=8 delta (the ledger skips the already-applied v1). This proves a store
+// the v2..=9 delta (the ledger skips the already-applied v1). This proves a store
 // opened at an older schema version migrates forward to the current one, applying
 // only the new specs — the real upgrade path.
 #[test]
@@ -129,13 +137,13 @@ fn bundle_migrates_forward_v1_to_full() {
     assert_eq!(first.len(), 1, "only v1 applied on the first pass");
     assert_eq!(first[0].version, 1);
 
-    // Re-run with the full bundle: v1 is already recorded, so only v2..=8 apply.
+    // Re-run with the full bundle: v1 is already recorded, so only v2..=9 apply.
     let delta = runner.run_bundle(&conn, &full).expect("apply forward");
     let versions: Vec<i64> = delta.iter().map(|m| m.version).collect();
     assert_eq!(
         versions,
-        vec![2, 3, 4, 5, 6, 7, 8],
-        "forward migration applied exactly the v2..=8 delta"
+        vec![2, 3, 4, 5, 6, 7, 8, 9],
+        "forward migration applied exactly the v2..=9 delta"
     );
 
     // All eight tables now exist.
@@ -202,7 +210,7 @@ async fn bundle_applies_on_real_postgres() {
             .run_bundle(&bundle)
             .await
             .expect("apply bundle on postgres");
-    assert_eq!(applied.len(), 8, "all eight migrations applied");
+    assert_eq!(applied.len(), 9, "all nine migrations applied");
 
     // Column types rendered to Postgres forms (information_schema.columns).
     let legacy_phase_type: String = sqlx::query(
@@ -262,6 +270,16 @@ async fn bundle_applies_on_real_postgres() {
     .await
     .expect("read updated_at presence");
     assert!(has_ts, "{{now}} default populated updated_at on Postgres");
+
+    assert!(
+        sqlx::query(
+            "INSERT INTO runtime_commit (sequence, thread_id, run_id, phase) VALUES (-1,'t','r-negative','\"Running\"'::jsonb)",
+        )
+        .execute(&pool)
+        .await
+        .is_err(),
+        "negative Postgres authority is rejected by CHECK"
+    );
 
     pool.close().await;
 }

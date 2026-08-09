@@ -3,11 +3,13 @@
 use std::collections::BTreeMap;
 
 use awaken_session_contract::{
-    IdempotencyRecord, McpAttachmentState, PersistedSession, RunError, SessionLifecycleState,
+    IdempotencyRecord, McpAttachmentState, PersistedSession, RunError, SessionExecutionState,
     SessionRevision, SessionToolConfiguration, realization_lease_is_live_at, stable_fingerprint,
 };
 
-use super::{McpAttachmentCandidate, SessionApplication, SessionMutationError};
+use super::{
+    McpAttachmentCandidate, SessionApplication, SessionMutationError, mutation::repository_failure,
+};
 
 /// Protocol-neutral mutable Session command.
 #[derive(Clone, Debug)]
@@ -136,6 +138,8 @@ impl SessionApplication {
                 .session_repository()
                 .idempotency_receipt(session_id, &record.key)
                 .await
+                .map_err(repository_failure)
+                .map_err(SessionUpdateError::mutation)?
         {
             if receipt.payload_hash != record.payload_hash {
                 return Err(SessionUpdateError::IdempotencyMismatch);
@@ -144,7 +148,8 @@ impl SessionApplication {
                 .session_repository()
                 .get(session_id)
                 .await
-                .ok_or(SessionUpdateError::NotFound)?;
+                .map_err(repository_failure)
+                .map_err(SessionUpdateError::mutation)?;
             let outcome = SessionUpdateOutcome {
                 session,
                 command_revision: receipt.committed_revision,
@@ -209,13 +214,14 @@ impl SessionApplication {
         let owner_scope = self
             .owner(session_id)
             .await
-            .ok_or(SessionUpdateError::NotFound)?;
+            .map_err(SessionUpdateError::mutation)?;
         let mut session = self
             .session_repository()
             .get(session_id)
             .await
-            .ok_or(SessionUpdateError::NotFound)?;
-        if session.lifecycle != SessionLifecycleState::Idle {
+            .map_err(repository_failure)
+            .map_err(SessionUpdateError::mutation)?;
+        if session.execution != SessionExecutionState::Idle {
             return Err(SessionUpdateError::NotIdle);
         }
         if command
@@ -359,6 +365,8 @@ impl SessionApplication {
             self.session_repository()
                 .idempotency_receipt(session_id, &key)
                 .await
+                .map_err(repository_failure)
+                .map_err(SessionUpdateError::mutation)?
                 .ok_or_else(|| {
                     SessionUpdateError::Unavailable(
                         "replayed Session update has no idempotency receipt".into(),

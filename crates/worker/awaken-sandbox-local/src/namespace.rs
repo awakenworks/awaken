@@ -145,11 +145,23 @@ impl NamespaceToolShell {
         } else {
             bubblewrap_tool_argv(&input)
         };
-        rendered
+        let rendered = rendered
             .iter()
             .map(|token| crate::sh_squote(token))
             .collect::<Vec<_>>()
-            .join(" ")
+            .join(" ");
+        if cfg!(target_os = "macos") {
+            // Seatbelt confines the host filesystem but does not provide a mount
+            // namespace or change the child's working directory. Keep native tools
+            // on the same runtime-path contract as spawned Namespace processes:
+            // PWD and AWAKEN_PROJECT_DIR both identify the realized workspace.
+            format!(
+                "cd {} && {rendered}",
+                crate::sh_squote(&self.host_workspace.to_string_lossy())
+            )
+        } else {
+            rendered
+        }
     }
 }
 
@@ -1744,7 +1756,10 @@ mod tests {
         let rendered = shell.wrap_command("printf '%s' ok > \"$AWAKEN_OUTPUTS_DIR/out\"");
 
         if cfg!(target_os = "macos") {
-            assert!(rendered.starts_with("'sandbox-exec'"));
+            assert!(
+                rendered.starts_with("cd '/host/session/workspace' && 'sandbox-exec'"),
+                "N1/E1: {rendered}"
+            );
             assert!(rendered.contains("/host/session/workspace"), "N1/E1");
             assert!(rendered.contains("/host/session/outputs"), "N1/E1");
         } else {

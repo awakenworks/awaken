@@ -26,6 +26,7 @@ mod session;
 mod session_realization;
 mod session_repo;
 mod skill_execution;
+mod terminal_cleanup;
 mod tool_configuration;
 pub mod work_queue;
 
@@ -74,14 +75,17 @@ pub use dream::{
     DreamPolicyApplicationError, DreamPolicyConfig, DreamPolicyRecord, DreamProcessFailure,
     DreamProcessRecord, DreamProcessStore, DreamProcessStoreError, DreamStatus, DreamUsage,
 };
-pub use environment::SessionEnvironmentState;
+pub use environment::{
+    SessionEnvironmentEffectKind, SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
+    SessionEnvironmentState,
+};
 pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleFactSink};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
     McpAttachmentState, McpDesiredSetFingerprint, McpGeneration, McpGenerationRef,
-    McpRealizationClaim, McpRealizationReceipt, McpRealizationReceiptError, McpReplacementPlan,
-    McpSetRevision, McpTarget, McpTargetError, McpTargetIdentity, SessionMcpAttachment,
-    SessionMcpAttachmentSet, StageMcpAttachment,
+    McpProjectionEffectKind, McpProjectionReceipt, McpRealizationClaim, McpRealizationReceipt,
+    McpRealizationReceiptError, McpReplacementPlan, McpSetRevision, McpTarget, McpTargetError,
+    McpTargetIdentity, SessionMcpAttachment, SessionMcpAttachmentSet, StageMcpAttachment,
 };
 pub use mcp_probe::{McpProbe, McpProbeStatus};
 pub use resource::{
@@ -97,11 +101,11 @@ pub use run_application::{
     blocks_text, epoch_millis_to_rfc3339, paginate_history,
 };
 pub use session::{
-    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxApplication,
-    LiveInboxApplicationError, LiveInboxEntry, LiveInboxError, LiveInboxSnapshot,
-    McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind,
-    SessionEnvironmentBindingSink, SessionInit, SessionRuntime, SessionUsage, StepOutcome,
-    ToolPermissionDecision,
+    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, DelegatedRunSnapshot,
+    LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
+    LiveInboxSnapshot, McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError,
+    RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionRuntime, SessionUsage,
+    StepOutcome, ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationSessionControl,
@@ -113,10 +117,15 @@ pub use session_realization::{
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
-    SessionIdempotencyReceipt, SessionLifecycleState, SessionLifecycleStateError,
-    SessionLifecycleTransitionError, SessionMutation, SessionMutationPayload,
-    SessionMutationResult, SessionMutationValidationError, SessionRealizationLease,
-    SessionRepositoryError, SessionRevision, SessionTombstone, VisibleMcpServer,
+    SessionDisposition, SessionDispositionTransitionError, SessionExecutionState,
+    SessionExecutionStateError, SessionExecutionTransitionError, SessionIdempotencyReceipt,
+    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
+    SessionRealizationLease, SessionRepositoryConflict, SessionRepositoryError,
+    SessionRepositoryRecoveryAction, SessionRevision, SessionTombstone, VisibleMcpServer,
 };
 pub use skill_execution::{SkillBundleSource, SkillBundleSourceError, validate_skill_bundle};
+pub use terminal_cleanup::{
+    SessionTerminalCleanupError, SessionTerminalCleanupIntent, SessionTerminalCleanupReceipt,
+    SessionTerminalCleanupState,
+};
 pub use tool_configuration::SessionToolConfiguration;

@@ -63,7 +63,8 @@ struct PersistedSession {
     resources: SessionResourceState,
     mcp: SessionMcpAttachmentSet,
     realization: Option<SessionRealizationLease>,
-    lifecycle: SessionLifecycleState,
+    execution: SessionExecutionState,
+    disposition: SessionDisposition,
 }
 
 enum SessionBaselineState {
@@ -114,6 +115,14 @@ struct EnvironmentSnapshot {
     credential_realization: CredentialRealizationProfile,
 }
 ```
+
+`SessionExecutionState` owns preparation, activation, activity, failure, and
+termination. `SessionDisposition` independently owns active, archived, deleting,
+and deleted visibility. The Session application is the only command owner for
+both axes; stores perform compatibility decoding and root-CAS persistence, while
+protocols derive `status` and `archived_at`. Thread/Run `RunState`, Host slots,
+and physical cleanup state remain separate bounded-context facts and must not be
+folded into either Session enum.
 
 The opaque ownership scope remains beside the serialized aggregate in the
 repository row/`ScopedPersistedSession` envelope defined by ADR-0051. It is not
@@ -808,6 +817,30 @@ disposed. These are the only crash recovery interpretations.
 Session lease replacement/expiry, revocation, or revision mismatch hides the
 attachment and rejects new effects before cleanup. Cleanup retries cannot restore
 visibility or select a weaker credential realization.
+
+### Domain-owned external-effect protocols
+
+Session realization deliberately does not introduce one universal effect or
+transaction facade. Each bounded context retains its own command and receipt
+vocabulary while following the same causal order:
+
+1. Environment create/adopt emits a `SessionEnvironmentReceipt` under the exact
+   realization lease before a live binding is published.
+2. MCP stages with `McpRealizationReceipt`; the safe-boundary publish and drain
+   projections return and verify `McpProjectionReceipt` for the exact generation.
+3. Terminal archive/delete/recovery commits `SessionTerminalCleanupState::Requested`,
+   durably retains every root/child Runtime identity, invokes the same per-thread
+   cleanup intent on every retry, and commits `Completed` only after Repository,
+   Skill, and artifact settlement plus Environment disposal. Resource settlement
+   and removal of the authoritative Environment binding share that root CAS.
+4. Artifact harvest authors `(effect_id, content_id)` while the Sandbox and claim
+   are still live. Resources verifies the bytes and idempotency identity, returns
+   `ArtifactPublicationReceipt`, and Runtime verifies it before disposal.
+
+This keeps the design small: the shared rule is an invariant and execution order,
+not a god interface. Environment owns bindings, Session owns terminal intent,
+MCP owns generations, and Resources owns File records. Fresh execution and
+recovery reuse the same domain-specific entry points.
 
 The local composition runs one Managed realization-lease supervisor. A remote
 Worker couples renewal to its authenticated registry heartbeat; Control caps the

@@ -511,17 +511,19 @@ pub async fn session_scope_guard(
             .get::<WorkspaceScope>()
             .map(|w| w.0.clone())
             .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
-        if let Some(owner) = state.resolve_owner(&id).await
-            && owner != request_scope
-        {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new(
-                    "not_found_error",
-                    format!("session `{id}` not found"),
-                )),
-            )
-                .into_response();
+        match state.resolve_owner(&id).await {
+            Ok(Some(owner)) if owner != request_scope => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse::new(
+                        "not_found_error",
+                        format!("session `{id}` not found"),
+                    )),
+                )
+                    .into_response();
+            }
+            Err(error) => return error_response(error).into_response(),
+            Ok(Some(_)) | Ok(None) => {}
         }
     }
     next.run(request).await
