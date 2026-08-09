@@ -677,7 +677,20 @@ async fn renewal_loop<S: Dispatch + 'static>(
             _ = tokio::time::sleep(interval) => {
                 let now = clock.now_ms();
                 for run_id in admission.active_runs.snapshot() {
-                    let _ = store.renew_lease(&run_id, &owner, lease_ms, now).await;
+                    match store.renew_lease(&run_id, &owner, lease_ms, now).await {
+                        Ok(true) => {}
+                        Ok(false) => tracing::warn!(
+                            run_id = %run_id.0,
+                            %owner,
+                            "dispatch lease renewal lost ownership"
+                        ),
+                        Err(error) => tracing::warn!(
+                            run_id = %run_id.0,
+                            %owner,
+                            %error,
+                            "dispatch lease renewal failed"
+                        ),
+                    }
                 }
             }
         }

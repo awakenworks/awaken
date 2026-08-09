@@ -478,7 +478,7 @@ mod tests {
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct AdoptionModel;
 
@@ -822,6 +822,7 @@ mod tests {
         phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
         projection: Arc<std::sync::Mutex<Option<awaken_session_contract::FrozenSessionProjection>>>,
         mcp_stage: Option<awaken_session_contract::StageMcpAttachment>,
+        fail_begin: Arc<AtomicBool>,
     }
 
     #[derive(Default)]
@@ -989,6 +990,9 @@ mod tests {
             awaken_session_contract::SessionRealizationControlFailure,
         > {
             self.phases.lock().unwrap().push("begin");
+            if self.fail_begin.load(Ordering::SeqCst) {
+                return Err(awaken_session_contract::SessionRealizationControlFailure::NotReady);
+            }
             let projection = self
                 .projection
                 .lock()
@@ -1117,6 +1121,7 @@ mod tests {
         // | W4 | T | success + initial MCP | installed | stage/activate/publish/ack |
         // | W5 | T | initial MCP stage fails | installed | fail; no publish/environment |
         // | W6 | T | active MCP lease due | installed | same canonical driver renews generation |
+        // | W7 | T | renewal loses Session authority | installed | revoke only that Session; Worker remains healthy |
         for (rule, install_contributor, with_initial_mcp, fail_mcp_stage) in [
             ("W1", true, false, false),
             ("W2", false, false, false),
@@ -1132,6 +1137,7 @@ mod tests {
             let contribution_calls = Arc::new(AtomicUsize::new(0));
             let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
             let projection = Arc::new(std::sync::Mutex::new(None));
+            let fail_begin = Arc::new(AtomicBool::new(false));
             let host = SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_store_dir(storage.path())
                 .with_dispatch_store(dispatch.clone())
@@ -1177,6 +1183,7 @@ mod tests {
                     phases: phases.clone(),
                     projection,
                     mcp_stage,
+                    fail_begin: fail_begin.clone(),
                 }))
             } else {
                 host
@@ -1215,6 +1222,18 @@ mod tests {
                     1,
                     "W6"
                 );
+                fail_begin.store(true, Ordering::SeqCst);
+                assert_eq!(
+                    host.renew_due_session_realizations(
+                        initial_mcp_expiry + 1_000,
+                        initial_mcp_expiry + 2_000,
+                    )
+                    .await
+                    .expect("W7 isolates the rejected Session renewal"),
+                    0,
+                    "W7"
+                );
+                assert!(!host.session_slots.contains(&thread), "W7");
             }
 
             assert_eq!(calls.load(Ordering::SeqCst), 1, "{rule}");
@@ -1235,6 +1254,7 @@ mod tests {
                     "begin",
                     "activate",
                     "acknowledge",
+                    "begin",
                 ]
             } else if install_contributor {
                 &["contribute", "activate", "acknowledge"]
@@ -1258,7 +1278,7 @@ mod tests {
             );
             assert_eq!(
                 host.session_environment(&thread).await.is_some(),
-                succeeds,
+                succeeds && rule != "W4",
                 "{rule}"
             );
         }
