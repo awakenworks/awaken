@@ -916,7 +916,12 @@ fn mount_with_managed_over_and_models(
             dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
             worker_authenticator.clone(),
         )
-        .with_worker_directory(worker_directory.clone()),
+        .with_worker_directory(worker_directory.clone())
+        .with_application_sessions(
+            managed_state
+                .session_application()
+                .session_repository_handle(),
+        ),
     ));
     let file_application = host
         .file_application()

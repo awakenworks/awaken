@@ -35,6 +35,7 @@ pub struct WorkerFileContentService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
+    application_sessions: Option<Arc<dyn awaken_session_contract::ManagedSessionRepository>>,
 }
 
 impl WorkerFileContentService {
@@ -49,12 +50,25 @@ impl WorkerFileContentService {
             dispatch,
             authenticator,
             directory: None,
+            application_sessions: None,
         }
     }
 
     #[must_use]
     pub fn with_worker_directory(mut self, directory: Arc<dyn WorkerDirectory>) -> Self {
         self.directory = Some(directory);
+        self
+    }
+
+    /// Install the durable Session authority used when an application
+    /// contribution freezes resources after the Run was enqueued. The live
+    /// claim and exact realization lease still fence every read.
+    #[must_use]
+    pub fn with_application_sessions(
+        mut self,
+        sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    ) -> Self {
+        self.application_sessions = Some(sessions);
         self
     }
 }
@@ -190,6 +204,11 @@ async fn read_file_content(
             )
         })
     });
+    let file_is_frozen = if file_is_frozen {
+        true
+    } else {
+        application_session_file_is_frozen(&service, dispatch, &request, unix_now_ms()).await
+    };
     if !scope_matches || !file_is_frozen {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -207,6 +226,48 @@ async fn read_file_content(
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
+}
+
+async fn application_session_file_is_frozen(
+    service: &WorkerFileContentService,
+    dispatch: &awaken_run_ingress_contract::RunDispatch,
+    request: &FileContentRequest,
+    now_ms: u64,
+) -> bool {
+    let (Some(sessions), Some(session_id), Some(identity)) = (
+        service.application_sessions.as_ref(),
+        dispatch.session_thread_id.as_ref(),
+        request.identity.as_ref(),
+    ) else {
+        return false;
+    };
+    let Ok(owner_scope) = sessions.owner(&session_id.0).await else {
+        return false;
+    };
+    if owner_scope != request.workspace_id {
+        return false;
+    }
+    let Ok(session) = sessions.get(&session_id.0).await else {
+        return false;
+    };
+    let lease_matches = session.realization.as_ref().is_some_and(|lease| {
+        lease.owner == identity.worker_id
+            && lease.runtime_incarnation == identity.lease_owner()
+            && awaken_session_contract::realization_lease_is_live_at(
+                lease.expires_at_unix_ms,
+                now_ms,
+            )
+    });
+    session.frozen_baseline().is_some()
+        && !session.is_terminal()
+        && lease_matches
+        && session.resources.desired().inputs.iter().any(|input| {
+            matches!(
+                &input.source,
+                awaken_session_contract::ResolvedInputSource::File { file_id }
+                    if file_id.as_str() == request.file_id
+            )
+        })
 }
 
 fn unix_now_ms() -> u64 {

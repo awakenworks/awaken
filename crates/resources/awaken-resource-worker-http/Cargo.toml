@@ -27,12 +27,15 @@ serde_json.workspace = true
 test-support = []
 
 [dev-dependencies]
+awaken-credential-contract.workspace = true
+awaken-environment-contract.workspace = true
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-resource-application.workspace = true
 awaken-resource-store = { workspace = true, features = ["sqlite", "test-support"] }
 awaken-run-ingress = { workspace = true, features = ["test-support"] }
 awaken-run-ingress-testkit.workspace = true
+awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-store-inmem.workspace = true
 awaken-tenancy.workspace = true

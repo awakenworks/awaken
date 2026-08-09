@@ -206,6 +206,13 @@ impl SessionApplication {
         self.sessions_repo.as_ref()
     }
 
+    /// Clone the durable aggregate port for Coordinator-side claim-fenced
+    /// transports that must authorize a projection frozen after dispatch.
+    #[must_use]
+    pub fn session_repository_handle(&self) -> Arc<dyn ManagedSessionRepository> {
+        self.sessions_repo.clone()
+    }
+
     #[must_use]
     pub fn runtime_incarnation(&self) -> &str {
         &self.runtime_incarnation

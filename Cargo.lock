@@ -1648,6 +1648,8 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-contract",
+ "awaken-credential-contract",
+ "awaken-environment-contract",
  "awaken-file-store",
  "awaken-memory-store",
  "awaken-resource-application",
@@ -1657,6 +1659,7 @@ dependencies = [
  "awaken-run-ingress-contract",
  "awaken-run-ingress-testkit",
  "awaken-session-contract",
+ "awaken-session-store",
  "awaken-skill-store",
  "awaken-store-inmem",
  "awaken-tenancy",

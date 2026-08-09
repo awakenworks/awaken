@@ -163,6 +163,7 @@ pub fn awaken_session_application::SessionApplication::requires_external_realiza
 pub async fn awaken_session_application::SessionApplication::resolve_session_environment(&self, core::option::Option<&str>, core::option::Option<&awaken_executable_agent_contract::session_profile::ExecutableAgentEnvironment>, core::option::Option<&str>, &[awaken_agent_contract::mcp_target::McpTarget]) -> core::result::Result<awaken_session_application::ResolvedSessionEnvironment, awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::runtime_incarnation(&self) -> &str
 pub fn awaken_session_application::SessionApplication::runtime_placement(&self) -> awaken_session_contract::baseline::SessionRuntimePlacement
+pub fn awaken_session_application::SessionApplication::session_repository_handle(&self) -> alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
 pub fn awaken_session_application::SessionApplication::set_config_source(&mut self, alloc::sync::Arc<dyn awaken_executable_agent_contract::session_profile::ExecutableAgentProfileSource>)
 pub fn awaken_session_application::SessionApplication::set_credential_source(&mut self, alloc::sync::Arc<dyn awaken_session_application::SessionCredentialSource>)
 pub fn awaken_session_application::SessionApplication::set_lifecycle_sink(&mut self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::SessionLifecycleFactSink>)

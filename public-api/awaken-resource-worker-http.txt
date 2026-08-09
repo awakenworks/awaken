@@ -54,6 +54,7 @@ pub fn awaken_resource_worker_http::WorkerArtifactPublicationService::new(alloc:
 pub struct awaken_resource_worker_http::WorkerFileContentService
 impl awaken_resource_worker_http::WorkerFileContentService
 pub fn awaken_resource_worker_http::WorkerFileContentService::new(alloc::sync::Arc<dyn awaken_resource_contract::execution::FileContentSource<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<dyn awaken_run_ingress_contract::dispatch::DispatchQueue>, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
+pub fn awaken_resource_worker_http::WorkerFileContentService::with_application_sessions(self, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>) -> Self
 pub fn awaken_resource_worker_http::WorkerFileContentService::with_worker_directory(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>) -> Self
 pub struct awaken_resource_worker_http::WorkerMemoryService
 impl awaken_resource_worker_http::WorkerMemoryService

@@ -13,6 +13,7 @@ use awaken_resource_worker_http::{WorkerFileContentService, worker_file_content_
 use awaken_run_ingress::{
     DispatchQueue as _, MemoryDispatchStore, RunClaim, RunDispatch, WorkerIdentity,
 };
+use awaken_session_contract::ManagedSessionRepository as _;
 use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream};
 
 fn resources(file_id: &str) -> awaken_session_contract::ResolvedSessionResources {
@@ -50,6 +51,90 @@ async fn claimed_dispatch(
         .unwrap()
         .unwrap();
     RunClaim::from(&claimed.lease)
+}
+
+async fn claimed_application_dispatch(
+    dispatch: &Arc<MemoryDispatchStore>,
+    owner: &str,
+    session_id: &str,
+) -> RunClaim {
+    let request = RunDispatch::new(support::activation(session_id))
+        .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+            awaken_tenancy::ScopeId::from("workspace-file"),
+        ))
+        .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()));
+    dispatch.enqueue(request).await.unwrap();
+    let claimed = dispatch
+        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .await
+        .unwrap()
+        .unwrap();
+    RunClaim::from(&claimed.lease)
+}
+
+fn frozen_application_session(
+    session_id: &str,
+    file_id: &str,
+    identity: &WorkerIdentity,
+) -> awaken_session_contract::PersistedSession {
+    let environment = awaken_session_contract::EnvironmentSnapshot {
+        environment_id: "env-worker".into(),
+        revision: awaken_environment_contract::EnvironmentRevision(1),
+        self_hosted: true,
+        config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-1".into()),
+        sandbox: serde_json::json!({}),
+        sandbox_provisioning: Default::default(),
+        packages: Default::default(),
+        prepared_image: None,
+        network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+        credential_realization:
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
+    };
+    let mut resource_state = awaken_session_contract::SessionResourceState::default();
+    resource_state
+        .prepare(session_id, resources(file_id))
+        .expect("prepare application Session resources");
+    awaken_session_contract::PersistedSession {
+        session_id: session_id.into(),
+        revision: Default::default(),
+        baseline: awaken_session_contract::SessionBaselineState::Frozen(
+            awaken_session_contract::SessionBaseline::compile(
+                awaken_session_contract::SessionBaselineInputs {
+                    environment,
+                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+                    mcp_authoring: Default::default(),
+                    agent_id: "agent".into(),
+                    model: "model".into(),
+                    runtime: None,
+                    application: Some(awaken_session_contract::ApplicationContributionReceipt {
+                        plan_fingerprint: "plan".into(),
+                        input_fingerprint: "input".into(),
+                    }),
+                    delegate_ids: Vec::new(),
+                    toolsets: Vec::new(),
+                    mounts: Vec::new(),
+                    env: Vec::new(),
+                    prompts: Vec::new(),
+                },
+            ),
+        ),
+        title: None,
+        metadata: Default::default(),
+        tools: Default::default(),
+        activity_epoch: 0,
+        environment: Default::default(),
+        mcp: Default::default(),
+        resources: resource_state,
+        realization: Some(awaken_session_contract::SessionRealizationLease {
+            owner: identity.worker_id.clone(),
+            runtime_incarnation: identity.lease_owner(),
+            epoch: 1,
+            expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
+        }),
+        execution: awaken_session_contract::SessionExecutionState::Running,
+        disposition: Default::default(),
+        terminal_cleanup: Default::default(),
+    }
 }
 
 /// Cause/effect decision table:
@@ -249,6 +334,90 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
         .await
         .expect_err("F9 missing blob must fail closed");
     assert!(broken.to_string().contains("503"), "F9: {broken}");
+}
+
+/// An application contribution can freeze its Session Resource generation only
+/// after the durable Run was enqueued. The Coordinator must therefore authorize
+/// that exact generation from the durable Session aggregate, while preserving
+/// the same claim, Workspace, Worker-incarnation, realization-lease, and File
+/// fences used by an inline dispatch envelope.
+#[tokio::test]
+async fn application_session_file_content_uses_its_claimed_frozen_generation() {
+    let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let digest = store.put(b"application-file").await.unwrap();
+    store
+        .create_file(awaken_resource_contract::FileRecord {
+            id: "file-application".into(),
+            workspace_id: "workspace-file".into(),
+            blob_id: digest.clone(),
+            filename: "input.bin".into(),
+            mime_type: "application/octet-stream".into(),
+            size_bytes: 16,
+            created_at: "2026-08-10T00:00:00Z".into(),
+            downloadable: false,
+            scope_id: None,
+            logical_path: None,
+            harvest_key: None,
+            deleted: false,
+        })
+        .await
+        .unwrap();
+    let (directory, identity) = support::ready_worker("worker-application-file").await;
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let claim = claimed_application_dispatch(
+        &dispatch,
+        &identity.lease_owner(),
+        "session-application-file",
+    )
+    .await;
+    let sessions =
+        Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let session =
+        frozen_application_session("session-application-file", "file-application", &identity);
+    sessions
+        .create(
+            "workspace-file",
+            session,
+            awaken_session_contract::IdempotencyRecord {
+                key: "create:session-application-file".into(),
+                payload_hash: "payload:session-application-file".into(),
+            },
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let application = Arc::new(awaken_resource_application::FileApplication::new(
+        store.clone(),
+        store,
+        lifecycle,
+    ));
+    let service = Arc::new(
+        WorkerFileContentService::new(
+            Arc::new(ApplicationFileContentSource::new(application)),
+            dispatch,
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory)
+        .with_application_sessions(sessions),
+    );
+    let address = support::serve(worker_file_content_router(service)).await;
+    let source = HttpFileContentSource::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
+    );
+
+    let exact = source
+        .read("workspace-file", "file-application", Some(&claim))
+        .await
+        .expect("frozen application File read")
+        .expect("existing application File");
+    assert_eq!(exact, (digest, b"application-file".to_vec()));
+
+    let unfrozen = source
+        .read("workspace-file", "file-other", Some(&claim))
+        .await
+        .expect_err("a File outside the frozen generation must be denied");
+    assert!(unfrozen.to_string().contains("403"), "{unfrozen}");
 }
 
 /// Cause/effect rationale: a remote source without the exact claim has no
