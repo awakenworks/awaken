@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+mod execution_sources;
 mod files;
 use awaken_resource_contract::{
     ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
@@ -14,9 +15,12 @@ use awaken_resource_contract::{
     ResourceLifecycleRepository, ResourcePurgeError, ResourcePurgeIntent, ResourcePurgeScheduler,
     ResourceState, ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
 };
-pub use files::{
-    CreateFileCommand, FileApplication, MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES,
+pub use awaken_resource_contract::{MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES};
+pub use execution_sources::{
+    ApplicationArtifactPublisher, ApplicationFileContentSource, CatalogRepositoryBindingVerifier,
+    StoreSkillBundleSource,
 };
+pub use files::{CreateFileCommand, FileApplication};
 
 #[derive(Clone)]
 pub struct ResourcesApplication {
@@ -54,6 +58,27 @@ impl ResourcesApplication {
     #[must_use]
     pub fn files(&self) -> Arc<dyn FileApplicationService> {
         self.files.clone()
+    }
+
+    #[must_use]
+    pub fn file_content_source<C: Sync + 'static>(
+        &self,
+    ) -> Arc<dyn awaken_resource_contract::FileContentSource<C>> {
+        Arc::new(ApplicationFileContentSource::new(self.files.clone()))
+    }
+
+    #[must_use]
+    pub fn artifact_publisher<C: Send + Sync + 'static>(
+        &self,
+    ) -> Arc<dyn awaken_resource_contract::ArtifactPublisher<C>> {
+        Arc::new(ApplicationArtifactPublisher::new(self.files.clone()))
+    }
+
+    #[must_use]
+    pub fn skill_bundle_source<C: Sync + 'static>(
+        &self,
+    ) -> Arc<dyn awaken_session_contract::SkillBundleSource<C>> {
+        Arc::new(StoreSkillBundleSource::new(self.ports.skill_store()))
     }
 
     #[must_use]

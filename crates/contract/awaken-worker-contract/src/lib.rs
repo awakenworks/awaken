@@ -14,7 +14,8 @@ pub use awaken_credential_contract::{
     CredentialObservationState as WorkerCredentialState, CredentialRef as WorkerCredentialRevision,
 };
 use awaken_provisioning_contract::{
-    IsolationClass, ResourceLimits, SandboxCapabilities, SandboxRequirements,
+    IsolationClass, ResourceLimits, SandboxCapabilities, SandboxCapacityShapeId,
+    SandboxRequirements,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -514,7 +515,7 @@ pub struct WorkerSnapshot {
     /// Exact mount-less Environment shapes currently ready in this incarnation's
     /// never-used capacity. These are ephemeral receipts, not capabilities.
     #[serde(default)]
-    pub warm_environment_shapes: BTreeSet<String>,
+    pub warm_environment_shapes: BTreeSet<SandboxCapacityShapeId>,
     /// Latest non-secret credential observations reported by this incarnation.
     /// The set is deliberately outside the immutable manifest: local login or
     /// revocation may change while the worker process remains alive.
@@ -620,7 +621,7 @@ pub struct WorkerHeartbeat {
     pub ready: bool,
     pub in_flight: u32,
     #[serde(default)]
-    pub warm_environment_shapes: BTreeSet<String>,
+    pub warm_environment_shapes: BTreeSet<SandboxCapacityShapeId>,
     /// Exact worker-private credential revisions currently materializable.
     /// No secret, local path, environment name, or broker token crosses here.
     #[serde(default)]
@@ -784,10 +785,10 @@ impl PlacementPolicy for LeastLoadedPolicy {
             .attributes
             .get(PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE);
         workers.sort_by(|left, right| {
-            let left_warm =
-                preferred.is_some_and(|shape| left.warm_environment_shapes.contains(shape));
-            let right_warm =
-                preferred.is_some_and(|shape| right.warm_environment_shapes.contains(shape));
+            let left_warm = preferred
+                .is_some_and(|shape| left.warm_environment_shapes.contains(shape.as_str()));
+            let right_warm = preferred
+                .is_some_and(|shape| right.warm_environment_shapes.contains(shape.as_str()));
             right_warm.cmp(&left_warm).then_with(|| {
                 left.in_flight
                     .cmp(&right.in_flight)
@@ -797,8 +798,8 @@ impl PlacementPolicy for LeastLoadedPolicy {
         Ok(workers
             .into_iter()
             .map(|worker| {
-                let warm =
-                    preferred.is_some_and(|shape| worker.warm_environment_shapes.contains(shape));
+                let warm = preferred
+                    .is_some_and(|shape| worker.warm_environment_shapes.contains(shape.as_str()));
                 RankedWorker {
                     identity: worker.identity,
                     score: if warm { 1_000_000 } else { 0 } - i64::from(worker.in_flight),

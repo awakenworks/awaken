@@ -92,6 +92,42 @@ async function postJson(pathname, body, worker = WORKER) {
   return { status: res.status, json, text };
 }
 
+async function postArtifact(claim, logicalPath) {
+  // The empty-input BLAKE3 vector is pinned by awaken-resource-contract. Using
+  // it here avoids introducing a second JavaScript digest implementation while
+  // still proving that the real HTTP adapter verifies the canonical content id.
+  const metadata = {
+    claim: {
+      run_id: claim.lease.run_id,
+      owner: claim.lease.owner,
+      epoch: claim.lease.epoch,
+    },
+    identity: workerIdentity,
+    workspace_id: claim.request.execution_scope,
+    session_id: claim.request.session_thread_id,
+    logical_path: logicalPath,
+    mime_type: 'application/octet-stream',
+    content_id: 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262',
+  };
+  const response = await fetch(`${BASE}/v1/worker/resources/files/artifacts`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/octet-stream',
+      'x-awaken-worker-id': WORKER,
+      'x-awaken-artifact-publication': Buffer.from(JSON.stringify(metadata)).toString('base64url'),
+    },
+    body: Buffer.alloc(0),
+  });
+  const text = await response.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = null;
+  }
+  return { status: response.status, json, text };
+}
+
 async function registerReadyWorker() {
   const registration = await postJson('/v1/worker/register', {
     registration: {
@@ -350,6 +386,32 @@ async function main() {
     assert.ok(!JSON.stringify(grant).includes('provider-key'), 'claim contains no provider credential');
     pass('secret-free published model candidate survives durable dispatch without a provider key');
 
+    // Remote artifact-publication FMECA / cause-effect decision table:
+    // C1 the registered incarnation is authenticated; C2 the claim owner/epoch
+    // is live; C3 Workspace and Session equal the frozen dispatch; C4 the body
+    // matches the canonical content id. E1 persists one downloadable scoped File;
+    // E2 an identical at-least-once delivery returns the same File; E3 a final
+    // claim rejects every late publication before the Resource application.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // | A1 | yes | live | exact | exact | E1 |
+    // | A2 | yes | same live claim | exact | same | E2 |
+    // | A3 | yes | settled | exact | exact | E3 (409) |
+    //
+    // Auth/incarnation, cross-scope, path, digest, and Resource-outage negative
+    // partitions are owned by the same adapter's Rust A1-A12 table; duplicating
+    // them here would add no process-boundary interaction. This scenario owns
+    // the live/final claim transition over the real server binary.
+    const artifact = await postArtifact(grant, 'reports/worker-result.bin');
+    assert.equal(artifact.status, 200, `live claim publishes an artifact: ${artifact.text}`);
+    assert.equal(artifact.json?.scope_id, grant.request.session_thread_id);
+    assert.equal(artifact.json?.logical_path, 'reports/worker-result.bin');
+    assert.equal(artifact.json?.downloadable, true);
+    const artifactReplay = await postArtifact(grant, 'reports/worker-result.bin');
+    assert.equal(artifactReplay.status, 200, `artifact replay is accepted: ${artifactReplay.text}`);
+    assert.equal(artifactReplay.json?.id, artifact.json?.id, 'same claim/path/bytes has one File effect');
+    pass('live remote claim publishes one idempotent claim-fenced File');
+
     // A different authenticated worker cannot commit the claim. The owner-bound
     // request is rejected before thread facts are applied.
     const commit = threadCommit(
@@ -389,6 +451,8 @@ async function main() {
       consumed: [],
     });
     assert.equal(grantSettle.json?.settled, true, `grant dispatch settled: ${grantSettle.text}`);
+    const lateArtifact = await postArtifact(grant, 'reports/late-result.bin');
+    assert.equal(lateArtifact.status, 409, `settled claim rejects a late artifact: ${lateArtifact.text}`);
     const stale = await postJson('/v1/worker/dispatch/settle', {
       run_id: grant.lease.run_id,
       epoch: grant.lease.epoch,
@@ -396,7 +460,7 @@ async function main() {
       consumed: [],
     });
     assert.equal(stale.json?.settled, false, 'a final/stale epoch cannot settle twice');
-    pass('dispatch transport fences stale duplicate settlement after the final outcome');
+    pass('dispatch transport fences stale settlement and late artifact publication after the final outcome');
   } finally {
     await stopServer(server);
   }

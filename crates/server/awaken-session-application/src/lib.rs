@@ -23,6 +23,7 @@ use awaken_session_contract::{
 mod mutation;
 pub use mutation::SessionMutationError;
 mod activity;
+mod live_inbox;
 pub use activity::SessionActivityError;
 mod contribution;
 mod credentials;

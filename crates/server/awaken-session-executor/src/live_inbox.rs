@@ -51,10 +51,10 @@ impl SessionCtx {
     }
 
     /// The live inbox an offer queues into. A durable session steers through the
-    /// persistent per-session inbox its worker drains at boundaries (ADR-0054 P2) —
-    /// always present, so steer reaches a queued/awaiting/in-flight worker run. A
-    /// direct session uses the in-flight attempt's slot: `None` when no native turn
-    /// is running.
+    /// process-local per-session inbox its co-located worker drains at boundaries
+    /// (ADR-0054 P2). The caller must first prove that an attempt is active and
+    /// locally reachable; this helper deliberately does not turn the best-effort
+    /// queue into durable pending input. A direct session uses the attempt slot.
     pub(crate) fn live_inbox(&self) -> Option<LiveInbox> {
         if let Some(ingress) = &self.durable_ingress {
             return Some(ingress.live_inbox().clone());
@@ -72,9 +72,23 @@ impl SharedHost {
     /// running. A pure lookup — never materializes a session — so wire
     /// handlers can probe without side effects.
     pub async fn live_inbox(&self, thread: &str) -> Option<LiveInbox> {
+        // A coordinator-only process and a registered Worker do not share memory.
+        // Advertising this process's durable-ingress inbox would accept steer that
+        // the remote attempt can never observe. Fail closed so the caller uses the
+        // ordinary durable Session event path instead.
+        if !self.runs_local_dispatch_pool() {
+            return None;
+        }
         self.session_slots
             .read(thread, |slot| {
-                slot.runtime.as_ref().and_then(|ctx| ctx.live_inbox())
+                slot.runtime.as_ref().and_then(|ctx| {
+                    let active = ctx
+                        .active_run
+                        .lock()
+                        .expect("active run mutex poisoned")
+                        .is_some();
+                    active.then(|| ctx.live_inbox()).flatten()
+                })
             })
             .flatten()
     }

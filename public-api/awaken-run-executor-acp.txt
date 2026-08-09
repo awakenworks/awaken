@@ -109,6 +109,7 @@ pub awaken_run_executor_acp::AcpCli::discovery: awaken_run_executor_acp::AcpDisc
 pub awaken_run_executor_acp::AcpCli::display_name: &'static str
 pub awaken_run_executor_acp::AcpCli::env: &'static [(&'static str, &'static str)]
 pub awaken_run_executor_acp::AcpCli::id: &'static str
+pub awaken_run_executor_acp::AcpCli::image_requirements: &'static [awaken_run_executor_acp::AcpImageRequirement]
 pub awaken_run_executor_acp::AcpCli::managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery
 pub awaken_run_executor_acp::AcpCli::managed_model_interface: awaken_run_executor_acp::ManagedModelInterface
 pub awaken_run_executor_acp::AcpCli::managed_provider_config: core::option::Option<awaken_run_executor_acp::ManagedProviderConfigDelivery>
@@ -131,6 +132,9 @@ pub struct awaken_run_executor_acp::AcpDiscoverySpec
 pub awaken_run_executor_acp::AcpDiscoverySpec::install_remediation: &'static str
 pub awaken_run_executor_acp::AcpDiscoverySpec::login: awaken_run_executor_acp::AcpLoginProbe
 pub awaken_run_executor_acp::AcpDiscoverySpec::version: awaken_run_executor_acp::AcpProbeCommand
+pub struct awaken_run_executor_acp::AcpImageRequirement
+pub awaken_run_executor_acp::AcpImageRequirement::manager: &'static str
+pub awaken_run_executor_acp::AcpImageRequirement::requirement: &'static str
 pub struct awaken_run_executor_acp::AcpLaunch
 pub awaken_run_executor_acp::AcpLaunch::argv: alloc::vec::Vec<alloc::string::String>
 pub awaken_run_executor_acp::AcpLaunch::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
@@ -290,6 +294,7 @@ pub fn awaken_run_executor_acp::NoSessionHome::harvest<'life0, 'life1, 'life2, '
 pub fn awaken_run_executor_acp::NoSessionHome::restore<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_run_executor_acp::SessionHomeKey, &'life2 awaken_run_executor_acp::SessionHomePlan) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = ()> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_run_executor_acp::acp_cli(&str) -> core::option::Option<&'static awaken_run_executor_acp::AcpCli>
 pub fn awaken_run_executor_acp::admit_mcp_injection(awaken_run_executor_acp::AcpLaunchIdentity, &awaken_run_executor_acp::McpInjection) -> core::result::Result<(), awaken_run_executor_acp::OpenError>
+pub fn awaken_run_executor_acp::image_runtime_contract_json() -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub fn awaken_run_executor_acp::known_acp_clis() -> &'static [awaken_run_executor_acp::AcpCli]
 pub fn awaken_run_executor_acp::mcp_injection(&awaken_run_executor_acp::AcpCli, &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::mcp_injection_from_servers(&awaken_run_executor_acp::AcpCli, &[awaken_runtime_contract::resolved::AcpMcpServer]) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>

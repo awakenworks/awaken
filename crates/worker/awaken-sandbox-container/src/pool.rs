@@ -3,7 +3,8 @@
 //! reuse. A pool keeps up to `size` **empty live environments** ready per container
 //! shape; a matching Session binds one and execs its own Native/ACP processes.
 //!
-//! Safety: only **mount-less** specs are pooled ([`pool_key`] returns `None`
+//! Safety: only **mount-less** specs are pooled ([`pc::SandboxCapacityShapeId::from_spec`]
+//! returns `None`
 //! otherwise) — a per-session mount bakes session-specific bytes into the container
 //! at create, so a pre-warmed container could not serve a different session. Each
 //! physical warm container is fresh (never ran a prior session) and serves exactly
@@ -38,33 +39,6 @@ fn next_warm_scope() -> String {
         std::process::id(),
         WARM_SEQ.fetch_add(1, Ordering::Relaxed)
     )
-}
-
-/// The container shape two sessions must share for a warm container to be
-/// substitutable, or `None` when the spec is not poolable (it declares mounts). The
-/// key excludes only `scope` (the per-session logical id) and `extra.command` (the
-/// attempt process, spawned after the environment exists). Every other current and
-/// future field participates through the serialized normalized spec — including the
-/// rootfs/image declaration in `extra.environment`, provider-specific `extra` fields,
-/// isolation, network, limits, base env, outputs, and lease policy. This deliberately
-/// defaults new fields to **not reusable** until two requests are exactly equivalent,
-/// instead of maintaining an allowlist that can silently miss a creation-time field.
-/// A mount-less environment of the same shape is reusable; anything with a mount is
-/// not.
-#[must_use]
-pub fn pool_key(spec: &pc::SandboxSpec) -> Option<String> {
-    if !spec.mounts.is_empty() {
-        return None;
-    }
-    let mut normalized = spec.clone();
-    normalized.scope.clear();
-    if let Some(serde_json::Value::Object(extra)) = normalized.extra.as_mut() {
-        extra.remove("command");
-        if extra.is_empty() {
-            normalized.extra = None;
-        }
-    }
-    serde_json::to_string(&normalized).ok()
 }
 
 /// One shape's warm capacity: the template spec to replenish from and the ready set.
@@ -115,10 +89,10 @@ pub struct WarmContainerPool<R: ContainerRuntime> {
     size: usize,
     total_size: usize,
     idle_ttl: Duration,
-    warm: Arc<Mutex<HashMap<String, WarmEntry<R>>>>,
+    warm: Arc<Mutex<HashMap<pc::SandboxCapacityShapeId, WarmEntry<R>>>>,
     /// Serialize explicit startup warmup per exact shape. Adaptive replenishment
     /// still remains off-path; its cap check disposes any concurrent excess.
-    prewarm_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    prewarm_gates: Mutex<HashMap<pc::SandboxCapacityShapeId, Arc<tokio::sync::Mutex<()>>>>,
     /// Set by [`shutdown`](Self::shutdown) so in-flight replenishment stops adding
     /// containers after the drain — otherwise a replenish that lands mid-drain would
     /// leak a warm container past teardown.
@@ -193,7 +167,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
         if target == 0 {
             return Ok(self.ready_len(spec));
         }
-        let Some(key) = pool_key(spec) else {
+        let Some(key) = pc::SandboxCapacityShapeId::from_spec(spec) else {
             return Ok(0);
         };
         let gate = self
@@ -290,7 +264,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// How many warm containers are ready for `spec`'s shape (0 when not poolable).
     #[must_use]
     pub fn ready_len(&self, spec: &pc::SandboxSpec) -> usize {
-        pool_key(spec)
+        pc::SandboxCapacityShapeId::from_spec(spec)
             .and_then(|k| {
                 self.warm
                     .lock()
@@ -304,7 +278,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// Remove one exact unused shape without closing the pool. A subsequent
     /// current demand can recreate it through the same prewarm path.
     pub async fn discard(&self, spec: &pc::SandboxSpec) {
-        let Some(key) = pool_key(spec) else {
+        let Some(key) = pc::SandboxCapacityShapeId::from_spec(spec) else {
             return;
         };
         let ready = self
@@ -358,7 +332,7 @@ impl<R: ContainerRuntime + 'static> WarmContainerPool<R> {
     /// Replenish `key` back to `size` off the request path (bounded). Concurrent
     /// replenishers for the same key may briefly overshoot; the cap check discards
     /// (and disposes) the excess, so the steady state is exactly `size`.
-    fn spawn_replenish(&self, key: String) {
+    fn spawn_replenish(&self, key: pc::SandboxCapacityShapeId) {
         if self.size == 0 || self.closed.load(Ordering::SeqCst) {
             return;
         }
@@ -496,7 +470,7 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironmentProvider for WarmContain
         &self,
         spec: &pc::SandboxSpec,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
-        let Some(key) = pool_key(spec) else {
+        let Some(key) = pc::SandboxCapacityShapeId::from_spec(spec) else {
             return self.inner.create_environment(spec).await;
         };
         let warm = {
@@ -735,6 +709,52 @@ mod tests {
         pool.shutdown().await;
     }
 
+    #[tokio::test]
+    async fn unified_plan_targets_do_not_create_then_evict_capacity() {
+        // FMECA: independent default/Environment producers each see a valid
+        // per-shape target but oversubscribe the real global pool, causing an
+        // immediate create→evict cycle (S6,O6,D4,RPN144). Cause graph:
+        // C1=Environment demand; C2=default demand; C3=global budget one;
+        // C4=global budget two. Effects: E1=Environment gets the sole priority
+        // slot; E2=both get one slot; E3=no just-created container is removed.
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // | P1   | 1  | 1  | 1  | 0  | E1,E3  |
+        // | P2   | 1  | 1  | 0  | 1  | E2,E3  |
+        let environment = spec("environment", &[]);
+        let mut default = spec("default", &[]);
+        default.network = pc::NetworkPolicy::Unrestricted;
+
+        let runtime_one = Arc::new(RecordingRuntime::ready());
+        let pool_one = WarmContainerPool::with_limits(
+            Arc::new(ContainerProvider::new(runtime_one.clone(), "agent:test")),
+            1,
+            1,
+            Duration::from_secs(300),
+        );
+        // The Worker plan assigns Environment first and therefore emits no
+        // default target once the single global slot is exhausted.
+        assert_eq!(pool_one.prewarm(&environment, 1).await.unwrap(), 1, "P1");
+        assert_eq!(pool_one.ready_len(&default), 0, "P1 E1");
+        assert_eq!(runtime_one.creates.load(Ordering::SeqCst), 1, "P1");
+        assert_eq!(runtime_one.removes.load(Ordering::SeqCst), 0, "P1 E3");
+        pool_one.shutdown().await;
+
+        let runtime_two = Arc::new(RecordingRuntime::ready());
+        let pool_two = WarmContainerPool::with_limits(
+            Arc::new(ContainerProvider::new(runtime_two.clone(), "agent:test")),
+            1,
+            2,
+            Duration::from_secs(300),
+        );
+        assert_eq!(pool_two.prewarm(&environment, 1).await.unwrap(), 1, "P2");
+        assert_eq!(pool_two.prewarm(&default, 1).await.unwrap(), 1, "P2");
+        assert_eq!(pool_two.ready_len(&environment), 1, "P2 E2");
+        assert_eq!(pool_two.ready_len(&default), 1, "P2 E2");
+        assert_eq!(runtime_two.creates.load(Ordering::SeqCst), 2, "P2");
+        assert_eq!(runtime_two.removes.load(Ordering::SeqCst), 0, "P2 E3");
+        pool_two.shutdown().await;
+    }
+
     /// Cause/effect design:
     /// C1=spec contains any creation-time mount. E1=shape is non-poolable,
     /// E2=no container is created, E3=reported capacity is zero. This preserves
@@ -747,9 +767,10 @@ mod tests {
         mounted.mounts.push(pc::MountRequirement {
             mount_id: "cache".into(),
             source: pc::MountSource::CacheVolume {
-                host_path: "/tmp/cache".into(),
+                location: pc::CacheVolumeLocation::HostPath {
+                    path: "/tmp/cache".into(),
+                },
                 key: "cache-v1".into(),
-                persistent_volume_claim: None,
             },
             mount_path: "/workspace/cache".into(),
             access: pc::MountAccess::ReadWrite,
@@ -841,156 +862,10 @@ mod tests {
         // so a warm container for one can serve the other.
         let a = spec("thread-a", &["agent", "--acp"]);
         let b = spec("thread-b", &["agent", "--acp"]);
-        assert_eq!(pool_key(&a), pool_key(&b));
-        assert!(pool_key(&a).is_some());
-    }
-
-    #[test]
-    fn a_different_shape_gets_a_different_key() {
-        let base = spec("t", &["agent", "--acp"]);
-        // Attempt commands do not change the empty environment shape.
-        assert_eq!(pool_key(&base), pool_key(&spec("t", &["other"])));
-        // Different network.
-        let mut net = spec("t", &["agent", "--acp"]);
-        net.network = pc::NetworkPolicy::Unrestricted;
-        assert_ne!(pool_key(&base), pool_key(&net));
-        // Different limits.
-        let mut lim = spec("t", &["agent", "--acp"]);
-        lim.limits = pc::ResourceLimits {
-            memory_bytes: Some(1 << 20),
-            ..Default::default()
-        };
-        assert_ne!(pool_key(&base), pool_key(&lim));
-
-        // Different base environment.
-        let mut env = base.clone();
-        env.env.push(pc::EnvVar {
-            name: "MODE".into(),
-            value: pc::EnvValue::Inline {
-                value: "strict".into(),
-            },
-            visibility: pc::EnvVisibility::Process,
-        });
-        assert_ne!(pool_key(&base), pool_key(&env));
-
-        // Different artifact root, isolation requirement, or lease policy.
-        let mut outputs = base.clone();
-        outputs.outputs_path = "/different/outputs".into();
-        assert_ne!(pool_key(&base), pool_key(&outputs));
-        let mut isolation = base.clone();
-        isolation.isolation = pc::IsolationClass::Namespace;
-        assert_ne!(pool_key(&base), pool_key(&isolation));
-        let mut lease = base.clone();
-        lease.lease_ttl_secs = Some(60);
-        assert_ne!(pool_key(&base), pool_key(&lease));
-    }
-
-    #[test]
-    fn rootfs_and_every_provider_extra_field_partition_warm_capacity() {
-        let base = spec("thread-a", &["agent", "--acp"]);
-
-        let mut image = spec("thread-b", &["different-attempt"]);
-        image.extra = Some(serde_json::json!({
-            "command": ["different-attempt"],
-            "environment": { "kind": "image", "reference": "agent:v2" }
-        }));
-        assert_ne!(pool_key(&base), pool_key(&image));
-
-        let mut other_image = image.clone();
-        other_image.extra.as_mut().unwrap()["environment"]["reference"] =
-            serde_json::json!("agent:v3");
-        assert_ne!(pool_key(&image), pool_key(&other_image));
-
-        let mut private_root = image.clone();
-        private_root.extra = Some(serde_json::json!({
-            "environment": {
-                "kind": "isolated_root",
-                "base": { "source": "dir", "path_template": "/roots/agent" },
-                "writable_base": false
-            }
-        }));
-        assert_ne!(pool_key(&image), pool_key(&private_root));
-
-        let mut seccomp = image.clone();
-        seccomp.extra.as_mut().unwrap()["seccomp_profile"] = serde_json::json!("strict-v1");
-        assert_ne!(pool_key(&image), pool_key(&seccomp));
-    }
-
-    #[test]
-    fn scope_and_attempt_command_are_the_only_ignored_fields() {
-        let mut a = spec("thread-a", &["agent", "--acp"]);
-        a.extra.as_mut().unwrap()["environment"] =
-            serde_json::json!({ "kind": "image", "reference": "agent:v2" });
-        let mut b = a.clone();
-        b.scope = "thread-b".into();
-        b.extra.as_mut().unwrap()["command"] = serde_json::json!(["other", "attempt"]);
-        assert_eq!(pool_key(&a), pool_key(&b));
-    }
-
-    #[test]
-    fn a_spec_with_a_mount_is_not_poolable() {
-        // A per-session mount bakes session bytes at create — never pool it.
-        let mut m = spec("t", &["agent", "--acp"]);
-        m.mounts = vec![pc::MountRequirement {
-            mount_id: "m".into(),
-            source: pc::MountSource::Inline {
-                contents: "x".into(),
-            },
-            mount_path: "/x".into(),
-            access: pc::MountAccess::ReadOnly,
-            lifetime: pc::MountLifetime::PerRun,
-            required: true,
-        }];
-        assert_eq!(pool_key(&m), None);
-    }
-
-    #[test]
-    fn pool_key_is_none_for_every_mount_source_kind() {
-        // No cross-session contamination: ANY declared mount — regardless of source kind
-        // — makes a spec non-poolable, because every kind either bakes session-specific
-        // bytes (File/Resource/Secret/Inline/Other) or binds a session-specific store /
-        // host path (MemoryStore/CacheVolume) into the container at create. A warm
-        // container pre-built without those could never serve a different session.
-        let sources = [
-            pc::MountSource::File {
-                file_id: "f".into(),
-                content_hash: None,
-            },
-            pc::MountSource::Resource {
-                resource_id: "r".into(),
-                content_hash: None,
-            },
-            pc::MountSource::Secret {
-                reference: "broker://k".into(),
-                content_hash: None,
-            },
-            pc::MountSource::MemoryStore {
-                store_id: "s".into(),
-                materialization_reference: None,
-                write_consistency: pc::MemoryWriteConsistency::ProviderDefault,
-            },
-            pc::MountSource::Inline {
-                contents: "x".into(),
-            },
-            pc::MountSource::CacheVolume {
-                host_path: "/cache".into(),
-                key: "k".into(),
-                persistent_volume_claim: None,
-            },
-            pc::MountSource::Other(serde_json::json!({ "content": "x" })),
-        ];
-        for source in sources {
-            let mut m = spec("t", &["agent", "--acp"]);
-            let label = format!("{source:?}");
-            m.mounts = vec![pc::MountRequirement {
-                mount_id: "m".into(),
-                source,
-                mount_path: "/x".into(),
-                access: pc::MountAccess::ReadOnly,
-                lifetime: pc::MountLifetime::PerRun,
-                required: true,
-            }];
-            assert_eq!(pool_key(&m), None, "a {label} mount must not be poolable");
-        }
+        assert_eq!(
+            pc::SandboxCapacityShapeId::from_spec(&a),
+            pc::SandboxCapacityShapeId::from_spec(&b)
+        );
+        assert!(pc::SandboxCapacityShapeId::from_spec(&a).is_some());
     }
 }

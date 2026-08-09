@@ -430,9 +430,10 @@ async fn unsupported_cache_and_limits_fail_closed() {
     cache.mounts.push(pc::MountRequirement {
         mount_id: "cache".into(),
         source: pc::MountSource::CacheVolume {
-            host_path: tmp.path().join("cache").to_string_lossy().into_owned(),
+            location: pc::CacheVolumeLocation::HostPath {
+                path: tmp.path().join("cache").to_string_lossy().into_owned(),
+            },
             key: "cache-key".into(),
-            persistent_volume_claim: None,
         },
         mount_path: "/workspace/cache".into(),
         access: pc::MountAccess::ReadWrite,

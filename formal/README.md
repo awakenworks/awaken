@@ -135,7 +135,8 @@ production logic.
   `WorkerDrain.tla`, and `WorkerCredentialLiveness.tla` cover memory
   generation/rename/conditional-delete safety,
   immutable Skill pin retention and validation, cross-protocol result
-  correlation, and the local-admission-before-remote-registry drain fence.
+  correlation, the local-admission-before-remote-registry drain fence, and
+  sequence-fenced credential observations that cannot roll back after rotation.
 - `AuditCommit.tla` and `ConfigActivation.tla` cover transactional durable audit,
   replay fencing, and generation-fenced publication installation.
 - `InferenceAccessPublication.tla` covers immutable access publication and
@@ -245,7 +246,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | MemoryCAS | 3,511 | 563 | 11 |
 | ToolResultProtocol | 213 | 56 | 9 |
 | WorkerDrain | 44 | 26 | 11 |
-| WorkerCredentialLiveness | 44,775 | 5,304 | 16 |
+| WorkerCredentialLiveness | 753,391 | 17,784 | 16 |
 | AuditCommit | 10 | 6 | 4 |
 | ConfigActivation | 85 | 35 | 9 |
 | InferenceAccessPublication | 466 | 234 | 9 |

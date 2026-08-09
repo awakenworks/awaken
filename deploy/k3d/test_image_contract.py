@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Static contract for the combined K3D product runtime image."""
 
-import json
 from pathlib import Path
 
 
@@ -36,25 +35,18 @@ def main() -> None:
         in sandbox_build
     )
     assert sandbox_build.count("  build_image ") == 2
-    # C7 an ACP wrapper can be present while the coding CLI it delegates to is
-    # absent; C8 a runtime can use more than one package manager requirement.
-    # E4 every runtime declares all installed packages and all executables that
-    # must survive into the final image. Rule I4: C7+C8 => E4, enforced both at
-    # installation and again by the production handshake verifier.
+    # C7 the catalog changes package/argv/auth facts; C8 Docker consumes an ACP
+    # contract. E4 build.sh generates the contract from the Rust catalog and
+    # passes that exact ephemeral file to Docker; E5 the installer/verifier consume
+    # all generated requirements/executables. I4 C7+C8=>E4+E5. Exact row content
+    # is owned by the Rust generator test, avoiding a second JSON source of truth.
     sandbox = Path(__file__).parent.parent / "images" / "sandbox"
-    runtime_contract = json.loads((sandbox / "acp-runtimes.json").read_text())
-    runtimes = {runtime["id"]: runtime for runtime in runtime_contract["runtimes"]}
-    assert set(runtimes) == {"claude", "codex", "gemini", "opencode", "hermes"}
-    for runtime in runtimes.values():
-        assert runtime["requirements"], f"{runtime['id']} has no package requirements"
-        assert runtime["executables"], f"{runtime['id']} has no executable contract"
-        assert all(
-            item["manager"] in {"npm", "pip"} and item["requirement"]
-            for item in runtime["requirements"]
-        )
-    assert {"claude-agent-acp", "claude"} <= set(runtimes["claude"]["executables"])
-    assert {"codex-acp", "codex"} <= set(runtimes["codex"]["executables"])
-    assert {"hermes-acp", "hermes"} <= set(runtimes["hermes"]["executables"])
+    sandbox_dockerfile = (sandbox / "Dockerfile").read_text()
+    assert "--example image_runtime_contract" in sandbox_build
+    assert sandbox_build.count("--build-arg ACP_RUNTIME_CONTRACT=") == 2
+    assert "ARG ACP_RUNTIME_CONTRACT=" in sandbox_dockerfile
+    assert "COPY ${ACP_RUNTIME_CONTRACT}" in sandbox_dockerfile
+    assert not (sandbox / "acp-runtimes.json").exists()
     installer = (sandbox / "install-acp-runtimes.py").read_text()
     verifier = (sandbox / "verify-acp-runtimes.py").read_text()
     for source in (installer, verifier):

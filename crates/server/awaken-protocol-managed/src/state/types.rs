@@ -5,6 +5,6 @@
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use awaken_session_contract::SessionRuntime;
 pub(crate) use awaken_session_contract::{
-    AgentCapabilities, CustomTool, DelegatedRun, LiveInboxSnapshot, OutcomeIteration,
-    OutcomeReport, RunError, RunErrorKind, SessionUsage, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, CustomTool, DelegatedRun, OutcomeIteration, OutcomeReport, RunError,
+    RunErrorKind, SessionUsage, StepOutcome, ToolPermissionDecision,
 };

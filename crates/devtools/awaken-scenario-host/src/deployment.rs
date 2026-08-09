@@ -90,7 +90,12 @@ pub(crate) fn resource_host_with_deployment(
         extraction_repository,
         deployment,
     )
-    .with_file_application(resources.files());
+    .with_file_application(
+        resources.files(),
+        resources.file_content_source(),
+        resources.artifact_publisher(),
+    )
+    .with_skill_bundle_source(resources.skill_bundle_source());
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());

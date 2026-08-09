@@ -402,7 +402,12 @@ pub(super) async fn assemble_runtime_process_router(
         None => unreachable!("product runtime assembly requires a resolved deployment"),
     };
     host_builder = host_builder
-        .with_file_application(resource_application.files())
+        .with_file_application(
+            resource_application.files(),
+            resource_application.file_content_source(),
+            resource_application.artifact_publisher(),
+        )
+        .with_skill_bundle_source(resource_application.skill_bundle_source())
         .with_local_workspace(platform_workspace.clone())
         .with_web_search_provider_registry(web_search_providers)
         .with_acp_tool_exporter(Arc::new(
@@ -478,8 +483,13 @@ pub(super) async fn assemble_runtime_process_router(
             }
         }
     });
-    let mut managed_host =
-        ManagedHost::new(host.clone()).with_resource_validator(resource_catalog.clone());
+    let mut managed_host = ManagedHost::new(host.clone())
+        .with_resource_validator(resource_catalog.clone())
+        .with_repository_binding_verifier(Arc::new(
+            awaken_resource_application::CatalogRepositoryBindingVerifier::new(
+                resource_catalog.clone(),
+            ),
+        ));
     if let Some(credentials) = credential_materializer {
         managed_host = managed_host.with_credential_materializer(credentials);
     }

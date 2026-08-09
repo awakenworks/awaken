@@ -663,14 +663,18 @@ mod tests {
         // desired (S5 O4 D2, RPN40). The catalog is the sole desired-state owner,
         // and image readiness is a non-blocking filter.
         // Cause graph: C1=current; C2=self-hosted; C3=packages; C4=image ready;
-        // C5=new revision supersedes old. Effects: E1=emit snapshot; E2=omit;
-        // E3=prepared image pinned; E4=only new revision emitted.
-        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
-        // | W1   | 1  | 1  | -  | -  | 0  | E2     |
-        // | W2   | 1  | 0  | 0  | -  | 0  | E1     |
-        // | W3   | 1  | 0  | 1  | 0  | 0  | E2     |
-        // | W4   | 1  | 0  | 1  | 1  | 0  | E1,E3  |
-        // | W5   | -  | 0  | 0  | -  | 1  | E1,E4  |
+        // C5=new revision supersedes old; C6=old frozen Session resolves exact
+        // history while the new image is pending. Effects: E1=emit snapshot;
+        // E2=omit; E3=prepared image pinned; E4=only new revision emitted;
+        // E5=old exact frozen snapshot remains executable during the warm gap.
+        // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
+        // | W1   | 1  | 1  | -  | -  | 0  | 0  | E2     |
+        // | W2   | 1  | 0  | 0  | -  | 0  | 0  | E1     |
+        // | W3   | 1  | 0  | 1  | 0  | 0  | 0  | E2     |
+        // | W4   | 1  | 0  | 1  | 1  | 0  | 0  | E1,E3  |
+        // | W5   | -  | 0  | 0  | -  | 1  | 0  | E1,E4  |
+        // | W6   | 1  | 0  | 1  | 0  | 1  | 1  | E2,E5  |
+        // | W7   | 1  | 0  | 1  | 1  | 1  | 1  | E1,E3,E4,E5 |
         let (catalog, _, registrar, _) = fixture();
         registrar
             .register(registration("external", 1, EnvironmentConfig::SelfHosted))
@@ -734,6 +738,11 @@ mod tests {
             Some("registry/env@sha256:ready"),
             "W4"
         );
+        let frozen_packaged_v1 = application
+            .snapshot_exact("packaged", 1, None)
+            .await
+            .unwrap()
+            .expect("W4 exact frozen snapshot");
         registrar
             .register(registration(
                 "plain",
@@ -763,6 +772,66 @@ mod tests {
                 .collect::<Vec<_>>(),
             [2],
             "W5"
+        );
+
+        registrar
+            .register(registration(
+                "packaged",
+                2,
+                EnvironmentConfig::Cloud {
+                    networking: Default::default(),
+                    packages: EnvironmentPackages {
+                        npm: vec!["tsx@next".into()],
+                        ..Default::default()
+                    },
+                },
+            ))
+            .await
+            .unwrap();
+        readiness.0.store(false, Ordering::SeqCst);
+        let rollout_pending =
+            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+                &application,
+            )
+            .await
+            .unwrap();
+        assert!(
+            rollout_pending
+                .iter()
+                .all(|snapshot| snapshot.environment_id != "packaged"),
+            "W6 pending current shape is not warmed"
+        );
+        assert_eq!(
+            application
+                .snapshot_exact("packaged", 1, None)
+                .await
+                .unwrap(),
+            Some(frozen_packaged_v1.clone()),
+            "W6 E5 old frozen Session remains exact"
+        );
+        readiness.0.store(true, Ordering::SeqCst);
+        let rollout_ready =
+            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+                &application,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rollout_ready
+                .iter()
+                .filter(|snapshot| snapshot.environment_id == "packaged")
+                .map(|snapshot| snapshot.revision.0)
+                .collect::<Vec<_>>(),
+            [2],
+            "W7 only ready current revision becomes desired"
+        );
+        assert_eq!(
+            application
+                .snapshot_exact("packaged", 1, None)
+                .await
+                .unwrap(),
+            Some(frozen_packaged_v1),
+            "W7 E5"
         );
     }
 

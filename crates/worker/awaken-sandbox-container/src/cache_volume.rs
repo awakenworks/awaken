@@ -11,27 +11,19 @@ pub(crate) fn bind_source_ref(
     mount_path: &str,
     persistent_volume_claims: bool,
 ) -> Option<Result<String, String>> {
-    let pc::MountSource::CacheVolume {
-        host_path,
-        persistent_volume_claim,
-        ..
-    } = source
-    else {
+    let pc::MountSource::CacheVolume { location, .. } = source else {
         return None;
     };
-    Some(if persistent_volume_claims {
-        persistent_volume_claim
-            .as_deref()
-            .filter(|claim| !claim.trim().is_empty())
-            .map(|claim| format!("{PVC_BIND_REF_PREFIX}{claim}"))
-            .ok_or_else(|| {
-                format!("Kubernetes CacheVolume `{mount_path}` requires persistent_volume_claim")
-            })
-    } else if host_path.trim().is_empty() {
-        Err(format!(
-            "container CacheVolume `{mount_path}` requires host_path"
-        ))
-    } else {
-        Ok(host_path.clone())
+    Some(match (persistent_volume_claims, location) {
+        (true, pc::CacheVolumeLocation::PersistentVolumeClaim { claim_name }) => {
+            Ok(format!("{PVC_BIND_REF_PREFIX}{claim_name}"))
+        }
+        (false, pc::CacheVolumeLocation::HostPath { path }) => Ok(path.clone()),
+        (true, pc::CacheVolumeLocation::HostPath { .. }) => Err(format!(
+            "Kubernetes CacheVolume `{mount_path}` requires a persistent volume claim"
+        )),
+        (false, pc::CacheVolumeLocation::PersistentVolumeClaim { .. }) => Err(format!(
+            "container CacheVolume `{mount_path}` requires a host path"
+        )),
     })
 }

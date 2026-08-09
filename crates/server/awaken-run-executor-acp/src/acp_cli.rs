@@ -15,8 +15,10 @@ use awaken_runtime_contract::{
 };
 
 mod catalog;
+mod image_contract;
 mod managed_delivery;
 pub use catalog::known_acp_clis;
+pub use image_contract::{AcpImageRequirement, image_runtime_contract_json};
 use managed_delivery::project_acp_session;
 pub use managed_delivery::{
     CredentialArtifactCodec, CredentialArtifactSpec, ManagedCredentialDelivery,
@@ -219,6 +221,9 @@ pub struct AcpCli {
     pub acquisition: AcpAcquisition,
     /// Host installation, version, and provider-owned login probes.
     pub discovery: AcpDiscoverySpec,
+    /// Exact packages required by the production execution image. The image
+    /// contract generator combines this with the row's canonical argv/auth data.
+    pub image_requirements: &'static [AcpImageRequirement],
     /// Equivalent argv for a worker image where the adapter is preinstalled. Keeping
     /// this in the catalog row avoids both runtime package downloads and adapter
     /// branches in the container mechanism.
@@ -849,84 +854,6 @@ pub(crate) fn legacy_config_file_cli() -> AcpCli {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[derive(serde::Deserialize)]
-    struct ImageRuntimeContract {
-        schema_version: u64,
-        runtimes: Vec<ImageRuntime>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct ImageRuntime {
-        id: String,
-        requirements: Vec<ImageRequirement>,
-        executables: Vec<String>,
-        probe_argv: Vec<String>,
-        auth_method_id: Option<String>,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct ImageRequirement {
-        manager: String,
-        requirement: String,
-    }
-
-    #[test]
-    fn production_image_contract_covers_every_acp_catalog_row_exactly() {
-        // Cause/effect decision table:
-        // I1 every catalog row has one image row -> the Worker can probe it;
-        // I2 image argv/auth equals the catalog -> build-time proof matches startup;
-        // I3 host-installed wrappers use the same exact package -> local and
-        // container execution cannot silently negotiate different adapter code.
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../deploy/images/sandbox/acp-runtimes.json");
-        let contract: ImageRuntimeContract = serde_json::from_str(
-            &std::fs::read_to_string(path).expect("read production ACP image contract"),
-        )
-        .expect("parse production ACP image contract");
-        assert_eq!(contract.schema_version, 1);
-        assert_eq!(contract.runtimes.len(), known_acp_clis().len(), "I1");
-
-        for cli in known_acp_clis() {
-            let image = contract
-                .runtimes
-                .iter()
-                .find(|runtime| runtime.id == cli.id)
-                .unwrap_or_else(|| panic!("I1: missing image runtime {}", cli.id));
-            assert_eq!(
-                image.probe_argv,
-                cli.container_probe_argv.unwrap_or(cli.container_argv),
-                "I2: {}",
-                cli.id
-            );
-            assert_eq!(
-                image.auth_method_id.as_deref(),
-                cli.capability_probe_auth_method_id,
-                "I2: {}",
-                cli.id
-            );
-            assert!(!image.executables.is_empty(), "I2: {}", cli.id);
-            assert!(!image.requirements.is_empty(), "I2: {}", cli.id);
-            for requirement in &image.requirements {
-                assert!(matches!(requirement.manager.as_str(), "npm" | "pip"));
-                assert!(
-                    !requirement.requirement.contains("@latest")
-                        && !requirement.requirement.ends_with("=="),
-                    "I2: {} image requirement must be exact",
-                    cli.id
-                );
-            }
-            if let AcpAcquisition::PinnedNpmWrapper { package, .. } = cli.acquisition {
-                assert!(
-                    image.requirements.iter().any(|requirement| {
-                        requirement.manager == "npm" && requirement.requirement == package
-                    }),
-                    "I3: {}",
-                    cli.id
-                );
-            }
-        }
-    }
 
     #[test]
     fn each_executor_row_owns_its_model_api_dialect_capability() {

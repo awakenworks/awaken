@@ -5,10 +5,12 @@
 //!
 //! Cause/effect design for the Credential Vault port adapters: C1 in-memory,
 //! C2 SQLite, C3 Postgres, C4 mutation interrupted before publication, C5
-//! mutation replayed. E1 identical repository semantics, E2 durable intent is
-//! visible for compensation, E3 replay is idempotent. Rules: R1 C1|C2|C3 -> E1;
-//! R2 C2|C3+C4 -> E2; R3 C2|C3+C4+C5 -> E3. Shared helpers keep the behavior
-//! contract authoritative while concrete storage lives in this crate.
+//! mutation replayed, C6 credential rotation races a stale revision. E1
+//! identical repository semantics, E2 durable intent is visible for
+//! compensation, E3 replay is idempotent, E4 only the exact `before` revision
+//! can publish. Rules: R1 C1|C2|C3 -> E1; R2 C2|C3+C4 -> E2;
+//! R3 C2|C3+C4+C5 -> E3; R4 C1|C2|C3+C6 -> E4. Shared helpers keep the
+//! behavior contract authoritative while concrete storage lives in this crate.
 
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
@@ -16,7 +18,7 @@ use awaken_credential_vault::repo::{
 };
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember,
-    CredentialSource, CredentialStatus, SelectionPolicy, WorkerLocalBinding,
+    CredentialSource, CredentialStatus, SecretRef, SelectionPolicy, WorkerLocalBinding,
 };
 
 fn source(id: &str, ws: &str) -> CredentialSource {
@@ -248,6 +250,55 @@ async fn completing_unpublished_mutation_is_idempotent(repo: &dyn CredentialRepo
     ));
 }
 
+/// Durable rotation FMECA/decision table. C1 current row equals the intent's
+/// `before`; C2 apply is retried after publication; C3 a delayed writer carries
+/// the retired `before` revision. Effects: E1 atomically install the higher row
+/// while retaining the WAL; E2 idempotent replay; E3 conflict without changing
+/// the committed row or its material reference. Rules R6 C1=>E1; R7 C1+C2=>E2;
+/// R8 C3=>E3. The same rules run on in-memory, SQLite, and live Postgres.
+async fn rotation_publication_is_revision_cas_and_idempotent(repo: &dyn CredentialRepo) {
+    let mut before = source("cred:rotation-cas", "ws");
+    before.material_ref = Some(SecretRef("sec:rotation:r1:primary".into()));
+    repo.put(before.clone()).await.unwrap();
+
+    let mut after = before.clone();
+    after.version = 2;
+    after.material_ref = Some(SecretRef("sec:rotation:r2:primary".into()));
+    let exact = CredentialMutationIntent {
+        before: Some(before.clone()),
+        after: after.clone(),
+    };
+    repo.begin_mutation(exact.clone()).await.unwrap();
+    repo.apply_mutation(&exact).await.unwrap();
+    assert_eq!(repo.get(&after.id).await.unwrap(), after, "R6");
+    assert_eq!(
+        repo.pending_mutations().await.unwrap(),
+        vec![exact.clone()],
+        "R6"
+    );
+    repo.apply_mutation(&exact).await.unwrap();
+    assert_eq!(repo.get(&after.id).await.unwrap(), after, "R7");
+    repo.complete_mutation(&after.id).await.unwrap();
+
+    let mut stale_after = before.clone();
+    stale_after.version = 2;
+    stale_after.material_ref = Some(SecretRef("sec:rotation:stale:primary".into()));
+    let stale = CredentialMutationIntent {
+        before: Some(before),
+        after: stale_after,
+    };
+    repo.begin_mutation(stale.clone()).await.unwrap();
+    assert!(
+        matches!(
+            repo.apply_mutation(&stale).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "R8"
+    );
+    assert_eq!(repo.get(&after.id).await.unwrap(), after, "R8");
+    repo.complete_mutation(&after.id).await.unwrap();
+}
+
 // CONTRACT: `CredentialRepo::get` is a deliberate unscoped by-id PRIMITIVE — it is
 // keyed by source id only, while `list` is the workspace-scoped enumeration face.
 // Tenant isolation for secret *materialization* is enforced one layer up, in
@@ -279,6 +330,7 @@ async fn run_all(make: impl Fn() -> Box<dyn CredentialRepo>) {
     worker_local_registration_is_atomic_idempotent_and_secret_free(&*make()).await;
     mutation_wal_publish_and_completion_are_idempotent(&*make()).await;
     completing_unpublished_mutation_is_idempotent(&*make()).await;
+    rotation_publication_is_revision_cas_and_idempotent(&*make()).await;
     get_is_an_unscoped_by_id_primitive(&*make()).await;
 }
 
@@ -363,6 +415,10 @@ mod postgres {
         .await;
         completing_unpublished_mutation_is_idempotent(&repo("t_cred_abort_intent").await.unwrap())
             .await;
+        rotation_publication_is_revision_cas_and_idempotent(
+            &repo("t_cred_rotation_cas").await.unwrap(),
+        )
+        .await;
         get_is_an_unscoped_by_id_primitive(&repo("t_cred_xtenant").await.unwrap()).await;
     }
 

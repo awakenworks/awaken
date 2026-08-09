@@ -47,6 +47,16 @@ const CLAUDE: AcpCli = AcpCli {
         },
         install_remediation: "Install Claude Code and Node.js/npm, then rerun discovery.",
     },
+    image_requirements: &[
+        AcpImageRequirement {
+            manager: "npm",
+            requirement: "@agentclientprotocol/claude-agent-acp@0.64.2",
+        },
+        AcpImageRequirement {
+            manager: "npm",
+            requirement: "@anthropic-ai/claude-code@2.1.221",
+        },
+    ],
     container_argv: &["claude-agent-acp"],
     container_probe_argv: None,
     capability_probe_auth_method_id: None,
@@ -123,6 +133,16 @@ const CODEX: AcpCli = AcpCli {
         },
         install_remediation: "Install Codex and Node.js/npm, then rerun discovery.",
     },
+    image_requirements: &[
+        AcpImageRequirement {
+            manager: "npm",
+            requirement: "@agentclientprotocol/codex-acp@1.1.9",
+        },
+        AcpImageRequirement {
+            manager: "npm",
+            requirement: "@openai/codex@0.146.0",
+        },
+    ],
     container_argv: &["codex-acp"],
     container_probe_argv: Some(&[
         "/usr/bin/env",
@@ -201,6 +221,10 @@ const GEMINI: AcpCli = AcpCli {
         },
         install_remediation: "Install Gemini CLI, then rerun discovery.",
     },
+    image_requirements: &[AcpImageRequirement {
+        manager: "npm",
+        requirement: "@google/gemini-cli@0.53.1",
+    }],
     container_argv: &["gemini", "--acp"],
     container_probe_argv: Some(&[
         "/usr/bin/env",
@@ -279,6 +303,10 @@ const OPENCODE: AcpCli = AcpCli {
         },
         install_remediation: "Install OpenCode, then rerun discovery.",
     },
+    image_requirements: &[AcpImageRequirement {
+        manager: "npm",
+        requirement: "opencode-ai@1.18.12",
+    }],
     container_argv: &["opencode", "acp"],
     container_probe_argv: None,
     capability_probe_auth_method_id: None,
@@ -344,6 +372,10 @@ const HERMES: AcpCli = AcpCli {
         },
         install_remediation: "Install hermes-agent with its ACP extra, then rerun discovery.",
     },
+    image_requirements: &[AcpImageRequirement {
+        manager: "pip",
+        requirement: "hermes-agent[acp,bedrock]==0.19.0",
+    }],
     container_argv: &["hermes-acp"],
     container_probe_argv: Some(&[
         "/usr/bin/env",
