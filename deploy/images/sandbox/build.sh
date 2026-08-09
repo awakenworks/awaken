@@ -51,6 +51,14 @@ if [[ ${1:-} == --self-test ]]; then
   exit 0
 fi
 
+ensure_existing=none
+if [[ ${1:-} == --ensure || ${1:-} == --ensure-hand ]]; then
+  ensure_existing=${1#--ensure}
+  ensure_existing=${ensure_existing#-}
+  ensure_existing=${ensure_existing:-full}
+  shift
+fi
+
 repo=$(cd "$(dirname "$0")/../../.." && pwd)
 image=${1:-awaken-sandbox:local}
 # `${2-all}` intentionally distinguishes an omitted runtime set (the complete
@@ -80,6 +88,38 @@ build_image() {
     run_with_deadline "$build_timeout_seconds" "$engine" build "$@"
   fi
 }
+
+# Image-availability FMECA decision table. C1=the selected tag exists;
+# C2=it carries the production environment label; C3=its real Hand entry point
+# starts; C4=curl exists. E1=reuse exactly that image; E2=build through this
+# authoritative script, then require the same acceptance checks.
+#
+# | Rule | mode | C1 | C2 | C3 | C4 | Effect |
+# |---|---|---|---|---|---|---|
+# | I1 | build | - | - | - | - | E2, then full acceptance |
+# | I2 | ensure | T | T | T | T | E1 |
+# | I3 | ensure | otherwise | | | | E2, then full acceptance |
+# | I4 | ensure-hand | T | - | T | - | E1 for the Hand-only E2E fixture |
+# | I5 | ensure-hand | otherwise | | | | E2, then full acceptance |
+accept_hand() {
+  run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null
+}
+
+accept_image() {
+  [[ $($engine image inspect --format '{{index .Config.Labels "org.awaken.environment-packages"}}' "$image" 2>/dev/null) == 1 ]] || return 1
+  accept_hand || return 1
+  run_with_deadline "$operation_timeout_seconds" \
+    "$engine" run --rm --entrypoint /bin/sh "$image" -c \
+    'command -v curl >/dev/null && curl --version >/dev/null'
+}
+
+if { [[ $ensure_existing == full ]] && accept_image; } \
+  || { [[ $ensure_existing == hand ]] && accept_hand; }; then
+  echo "reusing accepted sandbox image: $image"
+  exit 0
+fi
+
 staged="$repo/deploy/images/sandbox/.awaken-sandbox.bin"
 cleanup() { rm -f "$staged"; }
 trap cleanup EXIT
@@ -100,11 +140,7 @@ fi
 # executable by that UID. Effect E1 the real image can start its hand-capable
 # binary. Rule B1 C1+C2+C3=>E1; a staging regression fails the build here instead
 # of surfacing later as a closed Session hand channel.
-run_with_deadline "$operation_timeout_seconds" \
-  "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null
-run_with_deadline "$operation_timeout_seconds" \
-  "$engine" run --rm --entrypoint /bin/sh "$image" -c \
-  'command -v curl >/dev/null && curl --version >/dev/null'
+accept_image
 
 # Perform the production prompt-free initialize + session/new handshake, not
 # merely `command -v`. Independent adapters are probed concurrently by the

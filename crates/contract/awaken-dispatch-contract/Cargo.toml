@@ -12,6 +12,7 @@ authority = "durable-run-ingress"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
+awaken-session-contract.workspace = true
 awaken-tenancy.workspace = true
 awaken-worker-contract.workspace = true
 async-trait.workspace = true

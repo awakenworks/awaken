@@ -238,7 +238,7 @@ impl SessionRealizationControl for ManagedState {
         command: BeginSessionRealization,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
         validate_target(&command)?;
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             let (owner_scope, mut session) =
                 self.session_for_realization(&command.session_id).await?;
             let now = now_unix_ms();
@@ -374,7 +374,12 @@ impl SessionRealizationControl for ManagedState {
                 Ok(session) => {
                     return Self::next_action(owner_scope, &session, needs_assignment);
                 }
-                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => continue,
+                Err(StateError::Conflict)
+                    if attempt + 1
+                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
+                    continue;
+                }
                 Err(StateError::Conflict) => {
                     return Err(SessionRealizationControlFailure::Conflict);
                 }

@@ -98,11 +98,22 @@ pub(super) async fn reap_terminal_pod(api: &Api<Pod>, name: &str) -> Result<(), 
 }
 
 fn terminal_pod_preconditions(pod: &Pod) -> Option<Preconditions> {
-    let terminal = pod
+    let terminal_phase = pod
         .status
         .as_ref()
         .and_then(|status| status.phase.as_deref())
         .is_some_and(|phase| matches!(phase, "Failed" | "Succeeded"));
+    // The input projector and other service sidecars may keep the Pod phase
+    // `Running` after the workload-owning agent has terminated. For this adapter
+    // the agent is the lifecycle root, so its terminated state is equally terminal.
+    let terminal_agent = pod
+        .status
+        .as_ref()
+        .and_then(|status| status.container_statuses.as_ref())
+        .and_then(|statuses| statuses.iter().find(|status| status.name == "agent"))
+        .and_then(|status| status.state.as_ref())
+        .is_some_and(|state| state.terminated.is_some());
+    let terminal = terminal_phase || terminal_agent;
     if !terminal || pod.metadata.deletion_timestamp.is_some() {
         return None;
     }
@@ -453,10 +464,11 @@ mod tests {
 
     #[test]
     fn only_terminal_pods_are_safe_to_replace_with_identity_preconditions() {
-        /* Recovery decision table. R1 Pending/Running => preserve; R2 a Pod
+        /* Recovery decision table. R1 Pending/Running with a live agent => preserve; R2 a Pod
          * already being deleted => preserve; R3 Failed/Succeeded with complete
-         * UID/resourceVersion => replace under that exact fence; R4 terminal but
-         * missing either identity coordinate => preserve. This covers the
+         * UID/resourceVersion, or Running with a terminated lifecycle-root agent,
+         * => replace under that exact fence; R4 terminal but missing either identity
+         * coordinate => preserve. This covers the
          * DiskPressure eviction that previously left deterministic names stuck
          * behind `different realization` forever without permitting an unfenced
          * same-name deletion. */
@@ -484,6 +496,23 @@ mod tests {
                 "R3 {phase}"
             );
         }
+
+        let mut sidecar_held_running = pod("Running", false, None);
+        sidecar_held_running.metadata.uid = Some("terminated-agent-uid".into());
+        sidecar_held_running.metadata.resource_version = Some("21414".into());
+        sidecar_held_running
+            .status
+            .as_mut()
+            .unwrap()
+            .container_statuses = Some(vec![sidecar("agent", false, None, Some(0))]);
+        assert_eq!(
+            terminal_pod_preconditions(&sidecar_held_running),
+            Some(Preconditions {
+                uid: Some("terminated-agent-uid".into()),
+                resource_version: Some("21414".into()),
+            }),
+            "R3 a live sidecar cannot keep a terminated agent realization adoptable"
+        );
 
         for missing in ["uid", "resourceVersion"] {
             let mut terminal = pod("Failed", false, None);

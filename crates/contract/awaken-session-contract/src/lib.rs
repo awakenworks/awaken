@@ -12,6 +12,7 @@
 
 mod agent_config;
 mod application_contribution;
+mod application_provisioning;
 mod baseline;
 mod dream;
 mod environment;
@@ -43,6 +44,9 @@ pub use application_contribution::{
     ApplicationSessionContribution, ApplicationSessionContributionApi,
     ApplicationSessionContributionFailure, ApplicationSessionContributionReceipt,
     FrozenSessionProjection,
+};
+pub use application_provisioning::{
+    ApplicationSessionProvisionError, ApplicationSessionProvisioner,
 };
 pub use awaken_agent_contract::stable_fingerprint;
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};

@@ -19,6 +19,9 @@ use awaken_session_contract::{
     SandboxProvisioning, SessionEnvironmentBindingSink, SessionLifecycleSink, SessionRuntime,
 };
 
+mod mutation;
+pub use mutation::SessionMutationError;
+
 /// Secret-free credential selection used while compiling a Session.
 #[async_trait::async_trait]
 pub trait SessionCredentialSource: Send + Sync {
@@ -499,6 +502,62 @@ mod tests {
 
     use super::*;
 
+    struct NoopRuntime;
+
+    #[async_trait::async_trait]
+    impl SessionRuntime for NoopRuntime {
+        async fn run(
+            &self,
+            _agent: &str,
+            _thread: &str,
+            _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+            Err(RunError::internal("unused test runtime"))
+        }
+
+        async fn resume(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _decision: awaken_session_contract::ToolPermissionDecision,
+        ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+            Err(RunError::internal("unused test runtime"))
+        }
+
+        async fn resume_custom(
+            &self,
+            _thread: &str,
+            _tool_use_id: &str,
+            _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+            _is_error: bool,
+        ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+            Err(RunError::internal("unused test runtime"))
+        }
+
+        async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+            Err(RunError::internal("unused test runtime"))
+        }
+
+        async fn define_outcome(
+            &self,
+            _thread: &str,
+            _description: &str,
+            _rubric: &str,
+            _max_iterations: u32,
+        ) -> Result<awaken_session_contract::OutcomeReport, RunError> {
+            Err(RunError::internal("unused test runtime"))
+        }
+
+        fn model(&self) -> String {
+            "unused".into()
+        }
+    }
+
+    struct NoopMcpRealizer;
+
+    #[async_trait::async_trait]
+    impl McpAttachmentRealizer for NoopMcpRealizer {}
+
     #[derive(Default)]
     struct RecordingEnvironmentSource {
         dispatched: Mutex<BTreeSet<String>>,
@@ -624,6 +683,98 @@ mod tests {
         )
         .await
         .expect("persist fixture");
+    }
+
+    fn application(
+        repo: Arc<dyn ManagedSessionRepository>,
+        environments: Arc<dyn SessionEnvironmentSource>,
+    ) -> SessionApplication {
+        SessionApplication::new(
+            Arc::new(NoopRuntime),
+            Arc::new(NoopMcpRealizer),
+            repo,
+            environments,
+        )
+    }
+
+    #[tokio::test]
+    async fn root_mutation_cause_effect_decision_table() {
+        // Cause-effect graph: C1 expected revision is current; C2 idempotency key
+        // and payload hash replay exactly; C3 expected revision is stale; C4 an
+        // existing key is reused with another hash. Effects: E1 apply once and
+        // advance revision; E2 replay current truth without another advance; E3
+        // conflict; E4 idempotency mismatch. No interface adapter owns a second
+        // CAS or retry algorithm.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | M1 | yes | no | no | no | E1 applied |
+        // | M2 | no | yes | no | no | E2 replayed |
+        // | M3 | no | no | yes | no | E3 conflict |
+        // | M4 | no | no | no | yes | E4 mismatch |
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        create(repo.as_ref(), persisted("mutation", false, false, "idle")).await;
+        let app = application(
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+        let original = repo.get("mutation").await.expect("fixture");
+        let mut candidate = original.clone();
+        candidate.title = Some("applied".into());
+        let payload = awaken_session_contract::SessionMutationPayload::Replace(candidate.clone());
+        let record = awaken_session_contract::IdempotencyRecord {
+            key: "mutation:one".into(),
+            payload_hash: payload.stable_hash(),
+        };
+
+        let (applied, changed) = app
+            .commit_session_snapshot_with_record(
+                "workspace",
+                candidate.clone(),
+                record.clone(),
+                Vec::new(),
+            )
+            .await
+            .expect("M1");
+        assert!(changed, "M1");
+        assert!(applied.revision > original.revision, "M1");
+
+        let (replayed, changed) = app
+            .commit_session_snapshot_with_record(
+                "workspace",
+                candidate.clone(),
+                record.clone(),
+                Vec::new(),
+            )
+            .await
+            .expect("M2");
+        assert!(!changed, "M2");
+        assert_eq!(replayed.revision, applied.revision, "M2");
+
+        let stale = app
+            .commit_session_snapshot("workspace", candidate.clone(), "stale", Vec::new())
+            .await;
+        assert_eq!(stale, Err(SessionMutationError::Conflict), "M3");
+
+        let mismatch = app
+            .commit_session_snapshot_with_record(
+                "workspace",
+                candidate,
+                awaken_session_contract::IdempotencyRecord {
+                    key: record.key,
+                    payload_hash: "another-payload".into(),
+                },
+                Vec::new(),
+            )
+            .await;
+        assert_eq!(
+            mismatch,
+            Err(SessionMutationError::IdempotencyMismatch),
+            "M4"
+        );
     }
 
     #[test]

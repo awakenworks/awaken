@@ -87,7 +87,13 @@ fi
 
 # ── Layer 4: real Kubernetes (k3d) — G1 pod tier ─────────────────────────────
 step "G1 k8s pod tier against a real k3d cluster"
-if [ "${AWAKEN_SKIP_K8S:-0}" = 1 ]; then
+if [ "$substrates_only" -eq 1 ]; then
+  # The release graph already ran the canonical cluster owner immediately
+  # before this suite. Re-running the same k8s_it/k8s_e2e binaries here created
+  # a second image-loading implementation and made success depend on that owner
+  # leaking its disposable cluster. Keep one source of truth.
+  echo "DELEGATED: k8s substrate is owned by k8s_container_e2e.sh"
+elif [ "${AWAKEN_SKIP_K8S:-0}" = 1 ]; then
   skip "AWAKEN_SKIP_K8S=1"
 elif command -v kubectl >/dev/null 2>&1 && kubectl get nodes >/dev/null 2>&1; then
   # A Pod can land on any schedulable node. Import the exact fixture images into

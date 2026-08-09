@@ -283,7 +283,7 @@ impl ApplicationSessionContributionApi for ManagedState {
             .await
             .ok_or(ApplicationSessionContributionFailure::NotFound)?;
 
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+        for attempt in 0..awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS {
             let mut session = self
                 .application
                 .session_repository()
@@ -336,7 +336,12 @@ impl ApplicationSessionContributionApi for ManagedState {
                         projection: Self::frozen_session_projection(owner_scope.clone(), &session)?,
                     });
                 }
-                Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => continue,
+                Err(StateError::Conflict)
+                    if attempt + 1
+                        < awaken_session_application::SessionApplication::ROOT_CAS_ATTEMPTS =>
+                {
+                    continue;
+                }
                 Err(StateError::Conflict) => {
                     return Err(ApplicationSessionContributionFailure::Conflict);
                 }

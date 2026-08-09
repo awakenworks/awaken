@@ -233,12 +233,14 @@ impl AwakenMcpHost {
                 format!("blocked: {reason}"),
             ))),
             GateOutcome::SetResult(output) => Some(call_result(&output)),
-            GateOutcome::RequireConfirmation { .. } | GateOutcome::Schedule { .. } => {
-                Some(call_result(&ToolOutput::error(
-                    call.call_id.clone(),
-                    "tool call requires out-of-band approval, which is not available to an external MCP client",
-                )))
-            }
+            GateOutcome::RequireConfirmation { .. } => Some(call_result(&ToolOutput::error(
+                call.call_id.clone(),
+                "tool call requires approval, but this MCP transport has no authenticated client-request channel",
+            ))),
+            GateOutcome::Schedule { .. } => Some(call_result(&ToolOutput::error(
+                call.call_id.clone(),
+                "tool call requires a durable scheduled-action owner, which an external MCP call does not provide",
+            ))),
         }
     }
 }
@@ -667,8 +669,9 @@ mod tests {
 
     #[tokio::test]
     async fn gate_schedule_fails_closed_like_suspend() {
-        // Schedule awaits a *run*; an external MCP client has none, so — like
-        // Suspend — it fails closed as a model-visible refusal (distinct enum arm).
+        // MCP gate FMECA rule MG5: C1=gate returns Schedule;
+        // C2=external call has no durable Run owner. E1=tool is not invoked;
+        // E2=model-visible error identifies the missing scheduled-action owner.
         let source = StaticExports::new(vec![McpExportedTool::plain(
             descriptor("echo"),
             Arc::new(EchoTool),
@@ -683,7 +686,53 @@ mod tests {
             result["content"][0]["text"]
                 .as_str()
                 .unwrap()
-                .contains("out-of-band approval")
+                .contains("durable scheduled-action owner")
+        );
+    }
+
+    struct ConfirmGate;
+
+    #[async_trait]
+    impl ToolGateHook for ConfirmGate {
+        async fn gate(&self, _ctx: &ToolCall, _state: &Store) -> GateOutcome {
+            GateOutcome::RequireConfirmation {
+                correlation_id: "approval-1".to_string(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_confirmation_fails_closed_without_an_authenticated_request_channel() {
+        // MCP gate cause-effect graph: C1=gate requires confirmation;
+        // C2=transport can send a correlated client request; C3=that request is
+        // bound to an authenticated principal. E1=invoke only after an explicit
+        // allow; E2=otherwise return a model-visible refusal without invocation.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // |---|---|---|---|---|
+        // | MG1 | F | - | - | ordinary gate outcome |
+        // | MG2 | T | T | T | future elicitation decision, then E1/E2 |
+        // | MG3 | T | F | - | E2: unavailable channel |
+        // | MG4 | T | T | F | E2: unauthenticated response |
+        //
+        // The current stdio and HTTP adapters occupy MG3: NotifySink is
+        // intentionally one-way. Advertising elicitation or executing here
+        // would create an unauthenticated parallel approval authority.
+        let source = StaticExports::new(vec![McpExportedTool::plain(
+            descriptor("echo"),
+            Arc::new(EchoTool),
+        )]);
+        let service = McpToolService::new("test-server", "0.0.0", Arc::new(source))
+            .with_gate(Arc::new(ConfirmGate));
+        let result = handle(&service, "tools/call", json!({ "name": "echo" }))
+            .await
+            .expect("missing approval channel is a model-visible refusal");
+        assert_eq!(result["isError"], true);
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("no authenticated client-request channel")
         );
     }
 

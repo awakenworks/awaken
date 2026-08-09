@@ -68,6 +68,14 @@ async function noteOccurrences(base, thread, note) {
   return JSON.stringify(hist.items).split(note).length - 1;
 }
 
+// A2A authorization has one typed representation. Cause/effect rule XC-R1:
+// pending built-in + DataPart allow=true -> resume; pending built-in + text ->
+// invalid params and no state change (covered by a2a_hitl_decision_e2e.mjs).
+const approvalPart = (note) => ({
+  kind: 'data',
+  data: { type: 'tool-approval', allow: true, note },
+});
+
 async function main() {
   await withServer('probe', PORT, async (base) => {
     // --- The DENY thread: await on AI-SDK, cancel via A2A -------------------
@@ -95,7 +103,7 @@ async function main() {
         contextId: denyThread,
         role: 'user',
         kind: 'message',
-        parts: [{ kind: 'text', text: 'approve after rejected guessed cancel' }],
+        parts: [approvalPart('approve after rejected guessed cancel')],
       },
     });
     assert.equal(resumed?.status?.state, 'completed', 'the awaiting run remained resumable');
@@ -110,7 +118,7 @@ async function main() {
         contextId: allowThread,
         role: 'user',
         kind: 'message',
-        parts: [{ kind: 'text', text: 'approve' }],
+        parts: [approvalPart('allow baseline')],
       },
     });
     assert.equal(approved?.status?.state, 'completed', `A2A message/send approved the awaiting run (got ${approved?.status?.state})`);
