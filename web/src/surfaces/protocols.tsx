@@ -60,8 +60,8 @@ export default function ProtocolsSurface() {
         <h2>{app.t("Connect once, choose the client protocol", "一次部署，按客户端选择协议")}</h2>
         <p className="mut">
           {app.t(
-            "All adapters drive the same durable thread runtime. A thread started through one protocol can be observed through another without duplicating Agent logic.",
-            "所有适配器驱动同一个持久化 thread 运行时。通过一种协议启动的 thread 可由另一种协议观察，无需复制 Agent 逻辑。",
+            "Every protocol uses the same Agent and Session records. Choose the protocol that fits your client without rebuilding the Agent.",
+            "所有协议共用同一套 Agent 和 Session 记录。只需按客户端选择协议，无需重新构建 Agent。",
           )}
         </p>
       </Card>
@@ -106,8 +106,8 @@ export default function ProtocolsSurface() {
         <h3>{app.t("Frontend integration · Vercel AI SDK", "前端集成 · Vercel AI SDK")}</h3>
         <p className="mut">
           {app.t(
-            "Return only access_token and the bound external thread id to the browser. A replacement token continues the conversation only when it carries the same explicit Managed Session binding.",
-            "只把 access_token 和已绑定的外部 thread id 返回浏览器。轮换令牌只有携带相同 Managed Session 显式绑定时才会继续同一对话。",
+            "Return only the short-lived access token and the bound conversation id to the browser. To continue the same conversation after renewal, bind the new token to the same Managed Session.",
+            "只把短期访问令牌和已绑定的对话 ID 返回浏览器。令牌续期后如需继续同一对话，请将新令牌绑定到同一个 Managed Session。",
           )}
         </p>
         <pre className="code-block"><code>{FRONTEND_AI_SDK}</code></pre>

@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router";
 import { AssistantPanel } from "../../surfaces/assistant";
-import { titleForPath } from "../../lib/navigation/paths";
+import { assistantContextForLocation } from "../../lib/assistant-guidance";
 import { useApp } from "../../lib/app-state";
 import {
   AGENT_DRAFT_CHANGED_EVENT,
@@ -73,8 +73,7 @@ export default function AssistantFab() {
   if (!location.pathname.startsWith("/w/")) return null;
   const { wsId, targetAgentId: routeTargetAgentId } = routeContext(location.pathname);
   const targetAgentId = repair?.id ?? routeTargetAgentId;
-  // The current page's name, so a how-to question defaults to explaining this surface.
-  const surfaceHint = targetAgentId ? undefined : titleForPath(location.pathname).title || undefined;
+  const surfaceContext = assistantContextForLocation(location.pathname, location.search);
 
   return (
     <>
@@ -91,13 +90,13 @@ export default function AssistantFab() {
             </button>
           </header>
           <div className="assistant-fab-body">
-            {/* Remount the panel per (workspace, target) so a fresh session picks up the
-                current context — cheap, and keeps "refining X" honest as you navigate. */}
+            {/* Keep one conversation while navigating. Every message receives the
+                latest route/Agent context, so follow-up questions retain continuity. */}
             <AssistantPanel
-              key={`${wsId}:${targetAgentId ?? surfaceHint ?? ""}`}
+              key={wsId}
               wsId={wsId}
               targetAgentId={targetAgentId}
-              surfaceHint={surfaceHint}
+              surfaceContext={surfaceContext}
               autoMessage={repair ? { id: repair.requestId, text: repair.message } : undefined}
               onAgentChanged={(changedId, paths) => {
                 window.dispatchEvent(new CustomEvent(AGENT_DRAFT_CHANGED_EVENT, { detail: { id: changedId, paths } }));
@@ -116,7 +115,7 @@ export default function AssistantFab() {
           if (open) close();
           else setOpen(true);
         }}
-        title={app.t("Draft or refine an agent with AI", "用 AI 起草或修改 agent")}
+        title={app.t("Ask a question or complete a Console task", "提问或完成 Console 任务")}
         aria-label={app.t("Admin Assistant", "控制台助手")}
       >
         {open ? "✕" : "✦"}

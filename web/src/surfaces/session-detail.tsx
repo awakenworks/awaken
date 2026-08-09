@@ -10,6 +10,7 @@ import Transcript from "../components/session/Transcript";
 import TraceView from "../components/session/TraceView";
 import SessionFiles from "../components/session/SessionFiles";
 import SessionIntegrations from "../components/session/SessionIntegrations";
+import SessionThreads from "../components/session/SessionThreads";
 import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
 import { api, ws } from "../lib/api/client";
 import type { InboundEvent, SendEventsResponse, Session } from "../lib/api/types";
@@ -31,7 +32,7 @@ export default function SessionDetailSurface() {
   // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
-  const [view, setView] = useState<"chat" | "inputs" | "artifacts" | "integrations" | "trace">("chat");
+  const [view, setView] = useState<"chat" | "collaboration" | "inputs" | "artifacts" | "integrations" | "trace">("chat");
   const [controlResult, setControlResult] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -79,12 +80,21 @@ export default function SessionDetailSurface() {
     });
     if (approved) archive.mutate();
   };
+  const interruptSession = async () => {
+    const approved = await confirm({
+      title: app.t("Stop the current run?", "停止当前运行？"),
+      body: app.t("The current model turn is interrupted. The conversation and completed work remain available, and you can send a new message afterwards.", "当前模型回合会被中断；对话与已完成工作仍会保留，之后可以继续发送新消息。"),
+      confirmLabel: app.t("Stop run", "停止运行"),
+      danger: true,
+    });
+    if (approved) control.mutate([{ type: "user.interrupt" }]);
+  };
 
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <span>
-          <Link to={`/w/${wsId}/sessions`}>‹ Sessions</Link>{" "}
+          <Link to={`/w/${wsId}/sessions`}>‹ {app.t("Sessions", "会话")}</Link>{" "}
           <code style={{ marginLeft: 8 }}>{sid}</code>{" "}
           {session.data?.title && <strong style={{ marginLeft: 6 }}>{session.data.title}</strong>}
           {session.data?.archived_at && (
@@ -101,15 +111,15 @@ export default function SessionDetailSurface() {
               setRenaming(true);
             }}
           >
-            ✎ {app.t("rename", "重命名")}
+            ✎ {app.t("Rename", "重命名")}
           </Button>
           {!session.data?.archived_at && (
             <Button variant="ghost" disabled={archive.isPending} onClick={() => void archiveSession()}>
-              ⌫ {archive.isPending ? app.t("archiving…", "正在归档…") : app.t("archive", "归档")}
+              ⌫ {archive.isPending ? app.t("Archiving…", "正在归档…") : app.t("Archive", "归档")}
             </Button>
           )}
-          <Button variant="danger" onClick={() => control.mutate([{ type: "user.interrupt" }])}>
-            ⏹ interrupt
+          <Button variant="danger" disabled={session.data?.status !== "running" || control.isPending} onClick={() => void interruptSession()}>
+            ⏹ {app.t("Stop run", "停止运行")}
           </Button>
         </span>
       </div>
@@ -129,13 +139,14 @@ export default function SessionDetailSurface() {
 
       {controlResult && <div className={`banner ${control.isError ? "err" : "info"}`}>{controlResult}</div>}
 
-      <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+      <div className="session-detail-layout" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
         <div style={{ flex: 1.8, minWidth: 0 }}>
           {session.error instanceof Error && <div className="err">{session.error.message}</div>}
           <Segmented
             className="segmented"
             options={[
               { value: "chat", label: app.t("Chat", "对话") },
+              { value: "collaboration", label: app.t("Child runs", "子运行") },
               { value: "inputs", label: app.t("Inputs", "输入") },
               { value: "artifacts", label: app.t("Artifacts", "产物") },
               { value: "integrations", label: app.t("Integrations", "集成") },
@@ -145,13 +156,14 @@ export default function SessionDetailSurface() {
             onChange={setView}
           />
           {view === "chat" && <Transcript base={base} queryKey={eventsKey} modelOverride />}
+          {view === "collaboration" && <SessionThreads base={base} workspaceId={wsId} />}
           {view === "inputs" && <SessionFiles base={base} sid={sid} view="inputs" />}
           {view === "artifacts" && <SessionFiles base={base} sid={sid} view="artifacts" />}
           {view === "integrations" && <SessionIntegrations session={session.data} />}
           {view === "trace" && <TraceView base={base} queryKey={eventsKey} />}
         </div>
 
-        <aside style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
+        <aside className="session-detail-aside" style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
           <Card style={{ padding: "12px 14px" }}>
             <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
               Agent
@@ -163,8 +175,7 @@ export default function SessionDetailSurface() {
                   {modelText(session.data.agent.model) && <code>{modelText(session.data.agent.model)}</code>}
                 </div>
                 <div className="mut" style={{ marginTop: 8, fontSize: 12 }}>
-                  tools {session.data.agent.tools?.length ?? 0} · skills {session.data.agent.skills?.length ?? 0} · mcp{" "}
-                  {session.data.agent.mcp_servers?.length ?? 0}
+                  {app.t("Tools", "工具")} {session.data.agent.tools?.length ?? 0} · Skills {session.data.agent.skills?.length ?? 0} · MCP {session.data.agent.mcp_servers?.length ?? 0}
                 </div>
               </>
             ) : (
@@ -176,26 +187,18 @@ export default function SessionDetailSurface() {
               {app.t("Properties", "属性")}
             </h2>
             <div className="mut" style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 4 }}>
-              <span>created {session.data?.created_at ?? "—"}</span>
-              <span>status {session.data?.status ?? "—"}</span>
-              <span>env {session.data?.environment_id ?? "—"}</span>
+              <span>{app.t("Created", "创建时间")} {session.data?.created_at ? new Date(session.data.created_at).toLocaleString() : "—"}</span>
+              <span>{app.t("Status", "状态")} {session.data?.status === "running" ? app.t("running", "运行中") : session.data?.status === "idle" ? app.t("idle", "空闲") : session.data?.status ?? "—"}</span>
+              <span>{app.t("Environment", "运行环境")} {session.data?.environment_id ?? app.t("Default", "默认")}</span>
               {/* Runtime provenance: which backend actually executed this run (native vs an
                   ACP CLI), read off the session metadata the environment stamped at create. */}
               <span className="row" style={{ gap: 6, alignItems: "center" }}>
-                runtime
+                {app.t("Runtime", "运行时")}
                 <Pill tone={session.data?.metadata?.["awaken.runtime"] ? "agent" : "neutral"}>
-                  {session.data?.metadata?.["awaken.runtime"] ?? "native"}
+                  {session.data?.metadata?.["awaken.runtime"] ?? app.t("Awaken native", "Awaken 原生")}
                 </Pill>
               </span>
             </div>
-          </Card>
-          <Card style={{ padding: "12px 14px" }}>
-            <h2 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--fg3)" }}>
-              Durable ops
-            </h2>
-            <span className="mut" style={{ fontSize: 12 }}>
-              {app.t("Enabled only under AWAKEN_INGRESS=durable.", "仅在 AWAKEN_INGRESS=durable 下可用。")}
-            </span>
           </Card>
         </aside>
       </div>

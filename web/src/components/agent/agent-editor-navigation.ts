@@ -4,7 +4,7 @@ export type AdvancedSection = "orchestration" | "extensions" | "source" | "relea
 
 export function stageForPath(path: string): AuthorStage {
   const top = path.split(".")[0];
-  if (["multiagent", "metadata", "recovery_policies", "compaction"].includes(top)) {
+  if (["multiagent", "delegation_limits", "metadata", "recovery_policies", "compaction"].includes(top)) {
     return "advanced";
   }
   if (top === "plugin_config") {
@@ -26,7 +26,7 @@ export function builderSectionForPath(path: string): BuilderSection {
 
 export function advancedSectionForPath(path: string): AdvancedSection {
   const top = path.split(".")[0];
-  if (top === "multiagent" || top === "metadata" || path.includes("state_machine")) {
+  if (top === "multiagent" || top === "delegation_limits" || top === "metadata" || path.includes("state_machine")) {
     return "orchestration";
   }
   if (top === "recovery_policies" || top === "compaction" || top === "plugin_config") {

@@ -1,5 +1,4 @@
 import { useNavigate, useParams } from "react-router";
-import { getWorkspace } from "../lib/api/client";
 import { useApp } from "../lib/app-state";
 import { Card } from "../components/ui";
 import { useConfigCapabilities } from "../lib/useConfigCapabilities";
@@ -25,10 +24,7 @@ export default function SettingsSurface() {
       <div className="banner info">
         <span>⚑</span>
         <span>
-          {app.t("Workspace scope", "工作区作用域")} · <code>{wsId}</code> ·{" "}
-          {getWorkspace()
-            ? app.t("explicit management path", "显式管理路径")
-            : app.t("local flat API", "本地扁平 API")}
+          {app.t("Changes made from the linked pages apply to Workspace", "通过下方页面进行的配置只作用于工作区")} · <code>{wsId}</code>
         </span>
       </div>
       <div className="settings-grid">
@@ -43,7 +39,7 @@ export default function SettingsSurface() {
             ),
           )}
           {byokEnabled && link(app.t("Inference credentials", "推理凭证"), `${base}/credentials`, app.t("Secret-free source status and Claude setup token", "无秘密状态及 Claude setup token"))}
-          {link(app.t("Environments", "运行环境"), `${base}/environments`, app.t("Execution placement and networking", "执行位置与网络"))}
+          {link(app.t("Environments", "运行环境"), `${base}/environments`, app.t("Packages, placement, networking, limits, and Sandbox timing", "软件包、运行位置、网络、资源限制和 Sandbox 时机"))}
           {link(app.t("Runtime secrets", "运行秘密"), `${base}/vaults`, app.t("Tool and integration secrets; not model credentials", "工具与集成秘密，不含模型凭证"))}
         </Card>
       </div>

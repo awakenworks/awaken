@@ -38,9 +38,13 @@ export type ResolvedCandidatesView = Contract.ResolvedCandidatesView;
 
 export interface IamTokenView {
   id: string;
-  name?: string;
+  prefix?: string;
+  principal_id?: string;
   role?: string;
   workspace_id?: string;
+  created_at?: string;
+  expires_at?: string;
+  revoked_at?: string;
   [k: string]: unknown;
 }
 
@@ -56,7 +60,7 @@ export interface SessionAgent {
   tools?: unknown[];
   mcp_servers?: unknown[];
   skills?: unknown[];
-  multiagent?: unknown;
+  multiagent?: MultiagentConfig | null;
 }
 /** Accumulated token usage for a session (zero until the first turn commits). */
 export interface SessionUsage {
@@ -194,6 +198,15 @@ export type { FileArtifact, FileListResponse } from "./file-types";
 export type EnvNetworking =
   | { type: "unrestricted" }
   | { type: "limited"; allowed_hosts?: string[]; allow_package_managers?: boolean; allow_mcp_servers?: boolean };
+export interface EnvironmentPackages {
+  type?: "packages";
+  apt?: string[];
+  cargo?: string[];
+  gem?: string[];
+  go?: string[];
+  npm?: string[];
+  pip?: string[];
+}
 
 /** A sandbox mount made visible inside the isolated worker. */
 export interface SandboxMount {
@@ -216,6 +229,7 @@ export interface SandboxConfig {
 export interface EnvironmentConfig {
   type: "cloud" | "self_hosted";
   networking?: EnvNetworking;
+  packages?: EnvironmentPackages;
 }
 export interface Environment {
   id: string;
@@ -253,46 +267,6 @@ export interface WorkQueueStats {
   pending: number;
   oldest_queued_at?: string | null;
   workers_polling: number;
-}
-
-// ---- memory stores ----
-
-export interface MemoryStore {
-  id: string;
-  type: "memory_store";
-  name: string;
-  description?: string | null;
-  metadata: Record<string, string>;
-  archived_at?: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface MemoryEntry {
-  id: string;
-  type: "memory";
-  memory_store_id: string;
-  memory_version_id: string;
-  path: string;
-  content?: string | null;
-  content_sha256: string;
-  content_size_bytes: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface MemoryVersion {
-  id: string;
-  type: "memory_version";
-  memory_id: string;
-  memory_store_id: string;
-  operation: "created" | "modified" | "deleted";
-  path: string;
-  content?: string | null;
-  content_sha256?: string | null;
-  content_size_bytes?: number | null;
-  created_at: string;
-  redacted_at?: string | null;
 }
 
 // ---- Agent default inputs (ADR-0063) ---------------------------------------
@@ -398,7 +372,7 @@ export interface Agent {
   tools: unknown[];
   mcp_servers: unknown[];
   skills: unknown[];
-  multiagent?: unknown;
+  multiagent?: MultiagentConfig;
   metadata: Record<string, string>;
   version: number;
   status: "published" | "disabled" | "archived";
@@ -417,6 +391,23 @@ export interface Agent {
 /** Internally tagged on `kind` (snake_case), mirroring the Rust ContextPolicy. */
 export type ContextPolicy = { kind: "keep_all" } | { kind: "keep_last"; keep_last: number };
 
+/** The closed Managed Agents coordinator roster accepted by the config plane. */
+export type MultiagentTarget =
+  | string
+  | { type: "agent"; id: string; version?: number }
+  | { type: "self" };
+export interface MultiagentConfig {
+  type: "coordinator";
+  agents: MultiagentTarget[];
+}
+
+/** Run-scoped safety budget frozen into each published Agent revision. */
+export interface DelegationLimits {
+  max_depth: number;
+  max_parallel: number;
+  max_total: number;
+}
+
 export interface AgentConfig {
   id: string;
   /** Optimistic-concurrency revision returned by the config plane. */
@@ -431,7 +422,9 @@ export interface AgentConfig {
   tools: string[];
   mcp_servers: unknown[];
   skills: unknown[];
-  multiagent?: unknown;
+  multiagent?: MultiagentConfig | null;
+  /** Omitted means the backend compatibility default (8 / 8 / 64). */
+  delegation_limits?: DelegationLimits;
   /** Logical deployment Hand id; transport remains typed deployment config. */
   hand?: string | null;
   disabled_at?: string | null;
@@ -465,6 +458,44 @@ export type AgentConfigItem = AgentConfig & { published?: boolean };
 export interface AgentConfigList {
   data: AgentConfigItem[];
 }
+
+export interface SessionThreadAgent {
+  id: string;
+  type: "agent";
+  version: number;
+  model: string | { id: string };
+  name: string;
+  description?: string | null;
+  tools: unknown[];
+  mcp_servers: unknown[];
+  skills: unknown[];
+}
+export interface SessionThreadUsage {
+  cache_read_input_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation?: {
+    ephemeral_1h_input_tokens?: number;
+    ephemeral_5m_input_tokens?: number;
+  };
+}
+export interface SessionThread {
+  id: string;
+  type: "session_thread";
+  session_id: string;
+  parent_thread_id: string | null;
+  agent: SessionThreadAgent;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string | null;
+  status: "running" | "idle" | "rescheduling" | "terminated";
+  stats?: {
+    active_seconds?: number;
+    duration_seconds?: number;
+    startup_seconds?: number;
+  } | null;
+  usage?: SessionThreadUsage | null;
+}
 /** One validation problem from `/validate`, field-routed by the config domain (compile).
  * `path` is the config field the issue is about (`""` = whole config). */
 export interface ValidationIssue {
@@ -483,80 +514,15 @@ export interface PublishResult {
   installed: boolean;
 }
 
-// ---- capabilities (GET /v1/capabilities) ----
-// Host-level facts the editor authors data-driven: tool descriptors (with their
-// JSON-Schema params) and installable plugins (with per-plugin config schema).
-export interface ToolCap {
-  id: string;
-  description: string;
-  parameters: Record<string, unknown>;
-}
-export interface PluginCap {
-  id: string;
-  config_sections: string[];
-  config_schema: Record<string, unknown>;
-}
-/** An always-on policy (not an installable plugin) whose `plugin_config` section
- * shapes a run — e.g. the permission gate. Rendered by a dedicated editor. */
-export interface PolicyCap {
-  id: string;
-  config_section: string;
-  config_schema: Record<string, unknown>;
-}
-/** An execution backend an environment can bind (the "where/how it runs" axis).
- * `awaken` = native; `acp:<cli>` routes to an ACP CLI adapter. */
-export interface RuntimeCap {
-  id: string;
-  label: string;
-  kind: "native" | "acp";
-  cli?: string | null;
-  description: string;
-  local?: {
-    detected: boolean;
-    version?: string | null;
-    login_state?: string | null;
-    reason_code?: string | null;
-    remediation?: string | null;
-    negotiated?: {
-      modes: Array<{
-        native_id: string;
-        name: string;
-        description?: string | null;
-        current: boolean;
-      }>;
-      config_options: Array<{
-        native_id: string;
-        name: string;
-        description?: string | null;
-        current_value: string;
-        choices: Array<{
-          native_value: string;
-          name: string;
-          description?: string | null;
-        }>;
-      }>;
-    } | null;
-  } | null;
-}
-/** A one-click sandbox starting point over `sandbox.config_schema`. */
-export interface SandboxPreset {
-  id: string;
-  label: string;
-  description: string;
-  spec: SandboxConfig;
-}
-export interface SandboxCapability {
-  config_schema: Record<string, unknown>;
-  presets: SandboxPreset[];
-}
-export interface Capabilities {
-  runtime_version: string;
-  tools: ToolCap[];
-  plugins: PluginCap[];
-  policies?: PolicyCap[];
-  runtimes?: RuntimeCap[];
-  sandbox?: SandboxCapability;
-}
+export type {
+  Capabilities,
+  PluginCap,
+  PolicyCap,
+  RuntimeCap,
+  SandboxCapability,
+  SandboxPreset,
+  ToolCap,
+} from "./capability-types";
 
 // ---- permission policy (the `permission` plugin_config section) ----
 export type PermissionBehavior = "allow" | "ask" | "deny";
@@ -571,3 +537,19 @@ export interface PermissionConfig {
 }
 
 export type { Vault, VaultCredential, VaultCredentialAuth } from "./vault-types";
+export type { MemoryEntry, MemoryStore, MemoryVersion } from "./memory-types";
+export type {
+  Dream,
+  DreamCapability,
+  DreamInput,
+  DreamModelConfig,
+  DreamOutput,
+  DreamPage,
+  DreamPolicy,
+  DreamPolicyConfig,
+  DreamStatus,
+  DreamUsage,
+  ManagedModel,
+  ManagedModelPage,
+  PlatformCapabilities,
+} from "./dream-types";

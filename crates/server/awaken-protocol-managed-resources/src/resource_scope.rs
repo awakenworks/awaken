@@ -25,8 +25,12 @@ where
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        match parts.extensions.get::<WorkspaceScope>() {
-            Some(scope) if !scope.0.trim().is_empty() => Ok(Self(scope.0.clone())),
+        match parts
+            .extensions
+            .get::<WorkspaceScope>()
+            .and_then(WorkspaceScope::non_empty)
+        {
+            Some(scope) => Ok(Self(scope.to_owned())),
             _ => Err((
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({ "error": "workspace not found" })),

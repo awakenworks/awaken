@@ -880,6 +880,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     },
     RoutePolicyDescriptor {
+        prefix: "/v1/config/provider-descriptors",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
         prefix: "/v1/config/executable-models",
         policy: RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
@@ -1000,6 +1007,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     },
     RoutePolicyDescriptor {
         prefix: "/v1/awaken/environments",
+        policy: RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    },
+    RoutePolicyDescriptor {
+        prefix: "/v1/awaken/memory-stores",
         policy: RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,

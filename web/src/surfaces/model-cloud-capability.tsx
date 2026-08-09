@@ -30,8 +30,8 @@ export function cloudModelUiState(
 
 export function CloudModelBadge({ state }: { state: CloudModelUiState }) {
   const app = useApp();
-  if (state === "local") return <Pill tone="neutral">Local · BYOK</Pill>;
-  if (state === "managed") return <Pill tone="agent">Awaken Cloud · Managed</Pill>;
+  if (state === "local") return <Pill tone="neutral">{app.t("Local · your API keys", "本地 · 自带 API Key")}</Pill>;
+  if (state === "managed") return <Pill tone="agent">{app.t("Awaken Cloud · Managed", "Awaken Cloud · 托管")}</Pill>;
   if (state === "ready") return <Pill tone="agent">Awaken Cloud</Pill>;
   if (state === "sign_in_required") {
     return <Pill tone="neutral">{app.t("Cloud · sign in required", "云端 · 需要登录")}</Pill>;

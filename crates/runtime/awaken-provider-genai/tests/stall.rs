@@ -1,6 +1,6 @@
-//! A provider stream that goes silent mid-turn must surface as a retryable
-//! `Timeout`, not hang the run: the overall call timeout only guards opening
-//! the stream, so a per-event idle timeout has to cover the consumption loop.
+//! An incomplete provider stream must surface as a retryable `Timeout`, not hang
+//! the run. The per-event idle bound owns silent stalls; the fixed total call
+//! deadline owns streams that stay active forever without completing a turn.
 
 use std::time::Duration;
 
@@ -49,6 +49,46 @@ async fn spawn_stalling_server() -> String {
     format!("http://{addr}/")
 }
 
+/// An Anthropic-shaped endpoint that never completes, but keeps sending no-op
+/// protocol heartbeats quickly enough that an idle-only timeout cannot fire.
+async fn spawn_heartbeating_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
+                let start = concat!(
+                    "event: message_start\n",
+                    "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",",
+                    "\"type\":\"message\",\"role\":\"assistant\",\"content\":[],",
+                    "\"model\":\"m\",\"stop_reason\":null,\"stop_sequence\":null,",
+                    "\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(start.as_bytes()).await;
+                let _ = socket.flush().await;
+                loop {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    if socket
+                        .write_all(b"event: ping\ndata: {\"type\":\"ping\"}\n\n")
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    let _ = socket.flush().await;
+                }
+            });
+        }
+    });
+    format!("http://{addr}/")
+}
+
 struct NullSink;
 
 #[async_trait::async_trait]
@@ -56,13 +96,8 @@ impl DeltaSink for NullSink {
     async fn on_text(&self, _chunk: &str) {}
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stalled_stream_times_out_as_a_retryable_timeout() {
-    let base_url = spawn_stalling_server().await;
-    let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
-        .with_idle_timeout(Duration::from_millis(300));
-
-    let request = ChatRequest {
+fn request() -> ChatRequest {
+    ChatRequest {
         model_binding: ModelBinding {
             provider_identity_ref: "p".to_string(),
             model_ref: "claude-test".to_string(),
@@ -74,17 +109,56 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
             content: vec![ContentBlock::text("hi")],
         }],
         tools: Vec::new(),
-    };
+    }
+}
+
+/*
+ * Stream deadline cause/effect decision table. Causes: C1 the response stream
+ * opens; C2 no terminal event arrives; C3 no event arrives within the idle
+ * window; C4 no-op events do arrive below the idle window; C5 the fixed total
+ * deadline expires. Effects: E1 return a retryable timeout naming an idle
+ * stall; E2 return a retryable timeout naming the total deadline; E3 never
+ * leave the inference future pending. Constraints: C3 and C4 are exclusive;
+ * C2 is required for either timeout. Rules: S1 C1+C2+C3=>E1+E3;
+ * S2 C1+C2+C4+C5=>E2+E3.
+ */
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stalled_stream_times_out_as_a_retryable_timeout() {
+    let base_url = spawn_stalling_server().await;
+    let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
+        .with_idle_timeout(Duration::from_millis(300));
 
     // Without the idle timeout the consumption loop would hang forever; the
     // 5s guard turns that hang into a test failure.
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        executor.infer_streaming(request, &NullSink),
+        executor.infer_streaming(request(), &NullSink),
     )
     .await
     .expect("the idle timeout fires instead of hanging");
     let err = result.expect_err("a stalled stream is an error, not a turn");
     assert_eq!(err.code(), "timeout");
     assert!(err.is_retryable(), "a stall is worth retrying");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
+    let base_url = spawn_heartbeating_server().await;
+    let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
+        .with_timeout(Duration::from_millis(300))
+        .with_idle_timeout(Duration::from_secs(5));
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        executor.infer_streaming(request(), &NullSink),
+    )
+    .await
+    .expect("the fixed call deadline fires instead of hanging");
+    let err = result.expect_err("an unfinished stream is not a completed turn");
+    assert_eq!(err.code(), "timeout");
+    assert!(err.to_string().contains("total timeout"), "got: {err}");
+    assert!(
+        err.is_retryable(),
+        "a total stream timeout is worth retrying"
+    );
 }

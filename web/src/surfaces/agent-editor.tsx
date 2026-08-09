@@ -1,15 +1,19 @@
 // Agent authoring is progressively disclosed as Quickstart → Build → Advanced.
 // The three stages edit one lossless draft; Save/Validate/Try/Publish remain global.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
-import AgentAdvanced from "../components/agent/AgentAdvanced";
-import AgentBuilder from "../components/agent/AgentBuilder";
 import AgentEditorHeader from "../components/agent/AgentEditorHeader";
+import {
+  AgentEditorStageNavigation,
+  AgentValidationIssues,
+  AttachedAgentContext,
+  BLANK_AGENT_CONFIG,
+} from "../components/agent/AgentEditorChrome";
+import AgentEditorStages from "../components/agent/AgentEditorStages";
 import AgentPublicationModals, {
   type QuickRunIntent,
 } from "../components/agent/AgentPublicationModals";
-import AgentQuickstart from "../components/agent/AgentQuickstart";
 import {
   advancedSectionForPath,
   builderSectionForPath,
@@ -22,7 +26,6 @@ import { useAgentDraftReview } from "../components/agent/useAgentDraftReview";
 import ReadinessPanel from "../components/app/ReadinessPanel";
 import SandboxPane from "../components/session/SandboxPane";
 import Drawer from "../components/ui/Drawer";
-import { Button } from "../components/ui";
 import { useToast } from "../components/ui/Toast";
 import {
   api,
@@ -42,28 +45,21 @@ import type {
   ValidationIssue,
   ValidationResult,
 } from "../lib/api/types";
-import { labelForPath } from "../lib/config-diff";
 import { shouldEnableMemoryExtraction } from "../lib/agent-memory-binding";
+import {
+  AUXILIARY_PARENT_KEY,
+  AUXILIARY_ROLE_KEY,
+  agentTarget,
+  delegateTargetView,
+  withRoster,
+} from "../lib/agent-collaboration";
 import { useApp } from "../lib/app-state";
 import { useCapabilities } from "../lib/useCapabilities";
 import { useModels } from "../lib/useModels";
 import { useUnsavedGuard } from "../lib/useUnsavedGuard";
 import ModelsSurface from "./models";
 
-const BLANK: AgentConfig = {
-  id: "",
-  name: "",
-  model: { mode: "auto" },
-  system: "You are a helpful coding agent.",
-  metadata: {},
-  tools: [],
-  mcp_servers: [],
-  skills: [],
-  max_steps: 8,
-  plugins: [],
-  plugin_config: {},
-  context_policy: { kind: "keep_all" },
-};
+const BLANK = BLANK_AGENT_CONFIG;
 
 export default function AgentEditorSurface() {
   const app = useApp();
@@ -72,6 +68,8 @@ export default function AgentEditorSurface() {
   const toast = useToast();
   const { ws: wsId = "default", id = "new" } = useParams();
   const [searchParams] = useSearchParams();
+  const parentAgentId = searchParams.get("parent")?.trim() ?? "";
+  const attachAuxiliaryId = searchParams.get("attach")?.trim() ?? "";
   const isNew = id === "new";
   const [stage, setStage] = useState<AuthorStage>(() => {
     const requested = searchParams.get("stage");
@@ -103,6 +101,9 @@ export default function AgentEditorSurface() {
   const [manageModels, setManageModels] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(null);
   const [quickRunSessionId, setQuickRunSessionId] = useState<string | null>(null);
+  const importedMemory = useRef("");
+  const attachedAuxiliary = useRef("");
+  const previousRouteId = useRef(id);
   const hasUnsavedChanges = dirty || resourcesDirty;
   useUnsavedGuard(
     hasUnsavedChanges,
@@ -199,15 +200,100 @@ export default function AgentEditorSurface() {
   });
 
   useEffect(() => {
+    if (previousRouteId.current === id) return;
+    previousRouteId.current = id;
+    const requestedStage = searchParams.get("stage");
+    const requestedSection = searchParams.get("section");
+    setStage(requestedStage === "build" || requestedStage === "advanced" ? requestedStage : "quickstart");
+    setBuilderSection(["instructions", "tools", "integrations", "knowledge"].includes(requestedSection ?? "")
+      ? requestedSection as BuilderSection
+      : "instructions");
+    setAdvancedSection(["orchestration", "extensions", "source", "release"].includes(requestedSection ?? "")
+      ? requestedSection as AdvancedSection
+      : "orchestration");
+    setIssues([]);
+    setRawValid(true);
+    setIntegrationsValid(true);
+    setResourceInputs([]);
+    setResourceRevision(0);
+    setResourcesDirty(false);
+    importedMemory.current = "";
+    attachedAuxiliary.current = "";
+    review.reset();
+    if (id === "new") {
+      setCfg(BLANK);
+      setDirty(false);
+    }
+  }, [id, review, searchParams]);
+
+  useEffect(() => {
     if (!existing.data) return;
     const { published: _published, ...rest } = existing.data;
-    setCfg({ ...BLANK, ...rest });
-    setDirty(false);
+    const auxiliary = Boolean(rest.metadata?.[AUXILIARY_PARENT_KEY]);
+    const needsDefaultAuxiliary = !auxiliary && rest.multiagent == null;
+    setCfg({
+      ...BLANK,
+      ...rest,
+      multiagent: auxiliary ? rest.multiagent : rest.multiagent ?? BLANK.multiagent,
+      delegation_limits: auxiliary
+        ? rest.delegation_limits
+        : rest.delegation_limits ?? BLANK.delegation_limits,
+    });
+    setDirty(needsDefaultAuxiliary);
     review.reset();
     setIntegrationsValid(true);
   // Review reset is intentionally tied to a newly hydrated server Draft.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existing.data]);
+  useEffect(() => {
+    if (!isNew || !parentAgentId) return;
+    setCfg((current) => ({
+      ...current,
+      name: current.name || app.t("Specialist", "专属辅助 Agent"),
+      description: current.description || app.t(
+        `Attached specialist owned by ${parentAgentId}.`,
+        `归属于 ${parentAgentId} 的专属辅助 Agent。`,
+      ),
+      metadata: {
+        ...current.metadata,
+        [AUXILIARY_PARENT_KEY]: parentAgentId,
+        [AUXILIARY_ROLE_KEY]: "auxiliary",
+      },
+      multiagent: undefined,
+      delegation_limits: undefined,
+    }));
+    setDirty(true);
+  }, [app, isNew, parentAgentId]);
+  useEffect(() => {
+    if (!attachAuxiliaryId || !existing.data || attachedAuxiliary.current === attachAuxiliaryId) return;
+    setCfg((current) => {
+      const roster = current.multiagent?.agents ?? [{ type: "self" } as const];
+      if (roster.some((target) => delegateTargetView(target, current.id).id === attachAuxiliaryId)) return current;
+      const self = roster.filter((target) => typeof target !== "string" && target.type === "self");
+      const specialists = roster.filter((target) => typeof target === "string" || target.type !== "self");
+      return { ...current, multiagent: withRoster([...specialists, agentTarget(attachAuxiliaryId), ...self]) };
+    });
+    setDirty(true);
+    setStage("advanced");
+    setAdvancedSection("orchestration");
+    attachedAuxiliary.current = attachAuxiliaryId;
+    toast.info(app.t(
+      "Published specialist added to this Agent's draft. Review and publish the parent to activate it.",
+      "已发布的专属辅助 Agent 已加入当前主 Agent 草稿；请审阅并发布主 Agent 以启用。",
+    ));
+  }, [app, attachAuxiliaryId, existing.data, toast]);
+  useEffect(() => {
+    if (!isNew || searchParams.get("template") !== "dream") return;
+    setCfg((current) => current.id ? current : {
+      ...current,
+      id: "awaken_builtin_dream_agent",
+      name: "Dream Agent",
+      description: "System Agent used to curate durable memories from frozen Session evidence.",
+      system: "Curate durable, evidence-backed memory. Preserve newer facts, merge duplicates, and never infer secrets.",
+      metadata: { ...current.metadata, "awaken.system_agent": "dream" },
+    });
+    setDirty(true);
+  }, [isNew, searchParams]);
   useEffect(() => {
     if (existingResources.data && !resourcesDirty) {
       setResourceInputs(existingResources.data.inputs);
@@ -215,11 +301,35 @@ export default function AgentEditorSurface() {
     }
   }, [existingResources.data, resourcesDirty]);
   useEffect(() => {
+    const memoryStoreId = searchParams.get("memory_store") ?? "";
+    if (!memoryStoreId || importedMemory.current === memoryStoreId) return;
+    if (!isNew && existingResources.isLoading) return;
+    if (resourceInputs.some((binding) => binding.target.kind === "memory_store" && binding.target.id === memoryStoreId)) {
+      importedMemory.current = memoryStoreId;
+      return;
+    }
+    const safeId = memoryStoreId.replace(/[^a-zA-Z0-9_-]/g, "-");
+    setResourceInputs((current) => [...current, {
+      binding_id: `dream-output-${safeId}`,
+      target: { kind: "memory_store", id: memoryStoreId },
+      mount_path: `/mnt/memory/${safeId}`,
+      access: "read_write",
+      instructions: "Review and use this Dream output as curated durable memory.",
+    }]);
+    setResourcesDirty(true);
+    setCfg((current) => current.plugins.includes("memory") ? current : { ...current, plugins: [...current.plugins, "memory"] });
+    setDirty(true);
+    setStage("build");
+    setBuilderSection("knowledge");
+    importedMemory.current = memoryStoreId;
+    toast.ok(app.t("Dream output added to the Agent resource draft.", "Dream 输出已加入 Agent 资源草稿。"));
+  }, [app, existingResources.isLoading, isNew, resourceInputs, searchParams, toast]);
+  useEffect(() => {
     if (savedId && !dirty) {
-      nav(`/w/${wsId}/agents/${savedId}`, { replace: true });
+      nav(`/w/${wsId}/agents/${savedId}${parentAgentId ? `?parent=${encodeURIComponent(parentAgentId)}` : ""}`, { replace: true });
       setSavedId(null);
     }
-  }, [savedId, dirty, wsId, nav]);
+  }, [savedId, dirty, wsId, nav, parentAgentId]);
   useEffect(() => {
     if (quickRunSessionId && !dirty && !resourcesDirty) {
       nav(`/w/${wsId}/sessions/${quickRunSessionId}`);
@@ -296,7 +406,9 @@ export default function AgentEditorSurface() {
       void qc.invalidateQueries({ queryKey: ["config-agents"] });
       void qc.invalidateQueries({ queryKey: ["config-agent", wsId, id] });
       review.markReady();
-      if (isNew) nav(`/w/${wsId}/agents/${targetId()}`, { replace: true });
+      if (parentAgentId) {
+        nav(`/w/${wsId}/agents/${parentAgentId}?stage=advanced&section=orchestration&attach=${encodeURIComponent(targetId())}`, { replace: true });
+      } else if (isNew) nav(`/w/${wsId}/agents/${targetId()}`, { replace: true });
     },
     onError: (error) => toast.err(error instanceof Error ? error.message : "error"),
   });
@@ -361,29 +473,6 @@ export default function AgentEditorSurface() {
       || path.startsWith(`${candidate}.`));
   const stageChanged = (candidate: AuthorStage) => review.changedPaths.some((path) =>
     stageForPath(path) === candidate);
-  const stages: Array<{ key: AuthorStage; label: string; zh: string; description: string; descriptionZh: string }> = [
-    {
-      key: "quickstart",
-      label: "Quickstart",
-      zh: "快速开始",
-      description: "Template to first real run",
-      descriptionZh: "从模板到首次真实运行",
-    },
-    {
-      key: "build",
-      label: "Build",
-      zh: "构建",
-      description: "Prompt, capabilities and knowledge",
-      descriptionZh: "提示词、能力与知识",
-    },
-    {
-      key: "advanced",
-      label: "Advanced",
-      zh: "高级",
-      description: "Orchestration, plugins and source",
-      descriptionZh: "编排、Plugin 与原始配置",
-    },
-  ];
   const resourcesError = existingResources.error instanceof Error
     && !isAbsent(existingResources.error)
     ? existingResources.error
@@ -400,128 +489,50 @@ export default function AgentEditorSurface() {
         validatePending={validate.isPending}
         savePending={save.isPending}
         publishPending={publish.isPending}
-        onBack={() => nav(`/w/${wsId}/agents`)}
+        onBack={() => nav(parentAgentId
+          ? `/w/${wsId}/agents/${parentAgentId}?stage=advanced&section=orchestration`
+          : `/w/${wsId}/agents`)}
         onValidate={() => validate.mutate()}
         onSave={() => save.mutate()}
         onPublish={() => void review.preparePublish(publish.isPending)}
       />
+      <AttachedAgentContext
+        parentId={parentAgentId}
+        onBack={() => nav(`/w/${wsId}/agents/${parentAgentId}?stage=advanced&section=orchestration`)}
+      />
       <ReadinessPanel compact />
 
-      <div className="author-stage-nav" role="tablist" aria-label={app.t("Authoring stages", "创作阶段")}>
-        {stages.map((item, index) => (
-          <button
-            key={item.key}
-            className="author-stage-button"
-            role="tab"
-            aria-label={app.t(item.label, item.zh)}
-            aria-selected={stage === item.key}
-            data-active={stage === item.key}
-            onClick={() => setStage(item.key)}
-          >
-            <span className="author-stage-index">{index + 1}</span>
-            <span>
-              <strong>{app.t(item.label, item.zh)}</strong>
-              <small>{app.t(item.description, item.descriptionZh)}</small>
-            </span>
-            {stageChanged(item.key) && <span className="agent-change-dot">✦</span>}
-          </button>
-        ))}
-        <Button variant="ghost" onClick={() => setShowSandbox(true)}>
-          ▷ {app.t("Try draft", "试运行草稿")}
-        </Button>
-      </div>
-
-      {issues.length > 0 && (
-        <div className="banner warn issue-banner">
-          {issues.map((issue, index) => (
-            <div className="row" key={`${issue.path}-${index}`} style={{ justifyContent: "space-between" }}>
-              <span>
-                <strong>{labelForPath(issue.path) || app.t("Config", "配置")}</strong>
-                {" — "}
-                {issue.message}
-              </span>
-              <Button variant="ghost" onClick={() => routeIssue(issue.path)}>
-                {app.t("Open field →", "打开对应字段 →")}
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
+      <AgentEditorStageNavigation
+        stage={stage}
+        changed={stageChanged}
+        onChange={setStage}
+        onTry={() => setShowSandbox(true)}
+      />
+      <AgentValidationIssues issues={issues} onOpen={routeIssue} />
 
       <div className="agent-editor">
-        {stage === "quickstart" && (
-          <AgentQuickstart
-            config={cfg}
-            readyModels={models}
-            allModels={allModels}
-            runtimes={caps.data?.runtimes ?? []}
-            availableTools={(caps.data?.tools ?? []).map((tool) => tool.id)}
-            availablePlugins={(caps.data?.plugins ?? []).map((plugin) => plugin.id)}
-            canRun={canSave && modelIsRunnable}
-            idEditable={isNew}
-            published={existing.data?.published === true}
-            runPending={quickRun.isPending}
-            onPatch={patch}
-            onManageModels={() => setManageModels(true)}
-            onReviewRun={(environmentId, task) => {
-              quickRun.reset();
-              setQuickRunIntent({ environmentId, task });
-            }}
-          />
-        )}
-        {stage === "build" && (
-          <AgentBuilder
-            section={builderSection}
-            config={cfg}
-            isNew={isNew}
-            readyModels={models}
-            allModels={allModels}
-            runtimes={caps.data?.runtimes ?? []}
-            tools={caps.data?.tools ?? []}
-            plugins={caps.data?.plugins ?? []}
-            policies={caps.data?.policies ?? []}
-            credentials={credentials.data ?? []}
-            resources={resourceInputs}
-            resourcesError={resourcesError}
-            changed={changed}
-            onSectionChange={setBuilderSection}
-            onPatch={patch}
-            onManageModels={() => setManageModels(true)}
-            onResourcesChange={(inputs) => {
-              if (shouldEnableMemoryExtraction(resourceInputs, inputs, cfg.plugins)) {
-                patch({ plugins: [...cfg.plugins, "memory"] });
-                toast.info(app.t(
-                  "Memory settings enabled for the newly bound store.",
-                  "已为新绑定的记忆库启用 Memory 设置。",
-                ));
-              }
-              setResourceInputs(inputs);
-              setResourcesDirty(true);
-              review.onManualEdit(["resources"]);
-            }}
-            onRetryResources={() => void existingResources.refetch()}
-            onValidityChange={setIntegrationsValid}
-          />
-        )}
-        {stage === "advanced" && (
-          <AgentAdvanced
-            section={advancedSection}
-            config={cfg}
-            baseline={baseline}
-            resources={resourceInputs}
-            plugins={caps.data?.plugins ?? []}
-            credentials={credentials.data ?? []}
-            resourceRevision={resourceRevision}
-            published={existing.data?.published === true}
-            publishPending={publish.isPending}
-            changed={changed}
-            onSectionChange={setAdvancedSection}
-            onPatch={patch}
-            onRawChange={replaceRaw}
-            onValidityChange={setRawValid}
-            onPublish={() => void review.preparePublish(publish.isPending)}
-          />
-        )}
+        <AgentEditorStages
+          stage={stage} builderSection={builderSection} advancedSection={advancedSection}
+          config={cfg} baseline={baseline} resources={resourceInputs} resourcesError={resourcesError}
+          resourceRevision={resourceRevision} isNew={isNew} published={existing.data?.published === true}
+          canRun={canSave && modelIsRunnable} runPending={quickRun.isPending} publishPending={publish.isPending}
+          readyModels={models} allModels={allModels} runtimes={caps.data?.runtimes ?? []}
+          tools={caps.data?.tools ?? []} plugins={caps.data?.plugins ?? []} policies={caps.data?.policies ?? []}
+          credentials={credentials.data ?? []} changed={changed} onPatch={patch} onRawChange={replaceRaw}
+          onManageModels={() => setManageModels(true)}
+          onReviewRun={(environmentId, task) => { quickRun.reset(); setQuickRunIntent({ environmentId, task }); }}
+          onBuilderSectionChange={setBuilderSection} onAdvancedSectionChange={setAdvancedSection}
+          onResourcesChange={(inputs) => {
+            if (shouldEnableMemoryExtraction(resourceInputs, inputs, cfg.plugins)) {
+              patch({ plugins: [...cfg.plugins, "memory"] });
+              toast.info(app.t("Memory settings enabled for the newly bound store.", "已为新绑定的记忆库启用 Memory 设置。"));
+            }
+            setResourceInputs(inputs); setResourcesDirty(true); review.onManualEdit(["resources"]);
+          }}
+          onRetryResources={() => void existingResources.refetch()}
+          onIntegrationsValidityChange={setIntegrationsValid} onRawValidityChange={setRawValid}
+          onPublish={() => void review.preparePublish(publish.isPending)}
+        />
       </div>
 
       {manageModels && (

@@ -3,12 +3,14 @@
 // via a `resources[]` entry.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { api, ws } from "../lib/api/client";
 import type { MemoryStore, Page } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { Button, Card, EmptyState, Modal, Pill, SkeletonRows, TextField, useConfirm, useToast } from "../components/ui";
+import { Button, Card, EmptyState, Modal, Pill, Segmented, SkeletonRows, TextField, useConfirm, useToast } from "../components/ui";
 import MemoryStoreDrawer from "../components/memory/MemoryStoreDrawer";
+import DreamList from "../components/memory/DreamList";
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const app = useApp();
@@ -58,6 +60,8 @@ export default function MemorySurface() {
   const toast = useToast();
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<MemoryStore | null>(null);
+  const [surface, setSurface] = useState<"stores" | "dreams">("stores");
+  const [searchParams, setSearchParams] = useSearchParams();
   const stores = useQuery({
     queryKey: ["memory-stores"],
     queryFn: () => api.get<Page<MemoryStore>>(ws("/v1/memory_stores")),
@@ -80,21 +84,34 @@ export default function MemorySurface() {
     onError: (cause) => toast.err(cause instanceof Error ? cause.message : String(cause)),
   });
   const rows = stores.data?.data ?? [];
+  useEffect(() => {
+    const requested = searchParams.get("store");
+    if (requested && rows.length) {
+      const store = rows.find((candidate) => candidate.id === requested);
+      if (store) setSelected(store);
+    }
+  }, [rows, searchParams]);
 
   return (
     <>
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <span className="mut">
+        <span className="row">
+          <Segmented value={surface} onChange={setSurface} options={[
+            { value: "stores", label: app.t("Stores", "记忆库") },
+            { value: "dreams", label: "Dreams" },
+          ]} />
+          <span className="mut">
           {app.t(
-            "Workspace-scoped persistent memory that survives across sessions. A session mounts one via a resources[] entry.",
-            "工作区级别的持久化记忆,跨会话保留。会话通过 resources[] 条目挂载其一。",
+            surface === "stores" ? "Editable content shared across selected Agent Sessions." : "Review the source, evidence, status, and output of each consolidation run.",
+            surface === "stores" ? "可供指定 Agent 会话共享和编辑的持久内容。" : "检查每次整理任务的来源、证据、状态和输出。",
           )}
+          </span>
         </span>
-        <Button variant="primary" onClick={() => setCreating(true)}>
+        {surface === "stores" && <Button variant="primary" onClick={() => setCreating(true)}>
           + {app.t("New memory store", "新建记忆库")}
-        </Button>
+        </Button>}
       </div>
-      {stores.error instanceof Error ? (
+      {surface === "dreams" ? <DreamList /> : stores.error instanceof Error ? (
         <Card>
           <EmptyState
             title={app.t("Memory stores could not be loaded", "记忆库加载失败")}
@@ -173,7 +190,7 @@ export default function MemorySurface() {
         </table>
       </Card>}
       {creating && <CreateModal onClose={() => setCreating(false)} />}
-      {selected && <MemoryStoreDrawer store={selected} onClose={() => setSelected(null)} />}
+      {selected && <MemoryStoreDrawer store={selected} onClose={() => { setSelected(null); if (searchParams.has("store")) { const next = new URLSearchParams(searchParams); next.delete("store"); setSearchParams(next, { replace: true }); } }} />}
     </>
   );
 }

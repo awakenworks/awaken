@@ -68,7 +68,7 @@ test("Sandbox answers for real via config-plane credential (no env)", async ({ p
   // Author + publish an agent bound to that model, via the console.
   await page.goto("/w/default/agents/new");
   await page.getByPlaceholder("coding-agent").fill(id);
-  await page.getByLabel("Model (references workspace catalog)").selectOption({ label: "gemini-2.5-flash" });
+  await page.getByLabel("Model", { exact: true }).selectOption({ label: "gemini-2.5-flash" });
   await page.getByRole("tab", { name: "Build", exact: true }).click();
   await page.getByRole("tab", { name: "Instructions", exact: true }).click();
   await page.getByLabel("System instructions").fill("You are a terse assistant. Answer in one short sentence.");

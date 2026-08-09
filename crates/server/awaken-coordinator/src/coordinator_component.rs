@@ -129,6 +129,9 @@ pub async fn build_coordinator_component(
     )?;
     let data = data.merge(registration_router);
     let management_router = awaken_protocol_managed::deployments_router(deployment_state.clone())
+        .merge(awaken_protocol_awaken::dream_policy_router(
+            dream_application.clone(),
+        ))
         .merge(awaken_protocol_managed::environment_work_router(
             environments,
         ))

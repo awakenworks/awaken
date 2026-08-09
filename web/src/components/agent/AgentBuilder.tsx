@@ -232,8 +232,8 @@ export default function AgentBuilder({
           <div className="field">
             <label>{app.t("Executable tools", "可执行工具")}</label>
             <span className="mut">{app.t(
-              "Choose host tools. Runtime-discovered MCP tools are presented by canonical id below.",
-              "选择 Host 工具。运行时发现的 MCP 工具可在下方按规范 id 配置。",
+              "Choose the tools this Agent may call. Tools supplied by connected MCP servers also appear here after discovery.",
+              "选择此 Agent 可以调用的工具。已连接 MCP Server 提供的工具在发现后也会显示在这里。",
             )}</span>
             <CheckPicker
               options={[

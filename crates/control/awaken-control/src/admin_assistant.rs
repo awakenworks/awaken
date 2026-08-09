@@ -23,6 +23,78 @@ use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
+use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use serde_json::{Value, json};
+
+#[derive(Clone)]
+struct AdminAssistantLifecycleState {
+    plane: ConfigPlane,
+    execution_workspace: String,
+    model_selection: Option<ModelSelection>,
+}
+
+/// Idempotent operator-facing recovery for the reserved Assistant publication.
+/// Startup already attempts the same ordinary publication path; this route closes
+/// the setup-after-startup loop when a runnable model becomes available later.
+pub fn admin_assistant_lifecycle_router(
+    plane: ConfigPlane,
+    execution_workspace: impl Into<String>,
+    model_selection: Option<ModelSelection>,
+) -> Router {
+    Router::new()
+        .route(
+            "/v1/config/agents/__admin_assistant/ensure",
+            post(ensure_admin_assistant),
+        )
+        .with_state(AdminAssistantLifecycleState {
+            plane,
+            execution_workspace: execution_workspace.into(),
+            model_selection,
+        })
+}
+
+async fn ensure_admin_assistant(
+    State(state): State<AdminAssistantLifecycleState>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let had_startup_selection = state.model_selection.is_some();
+    let selection = state.model_selection.unwrap_or_default();
+    let first =
+        seed_admin_assistant(&state.plane, &state.execution_workspace, selection.clone()).await;
+    // A Worker-local ACP binding can become stale after startup, while a provider
+    // connection added in the Console is immediately visible to Auto resolution.
+    // Preserve an explicit usable selection first, then close that recovery loop.
+    let result = if first.is_err() && selection != ModelSelection::Auto {
+        seed_admin_assistant(
+            &state.plane,
+            &state.execution_workspace,
+            ModelSelection::Auto,
+        )
+        .await
+    } else {
+        first
+    };
+    result
+        .map(|()| Json(json!({ "status": "ready", "agent_id": ADMIN_ASSISTANT_AGENT_ID })))
+        .map_err(|error| {
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "code": if had_startup_selection {
+                        "assistant_publication_pending"
+                    } else {
+                        "assistant_model_unavailable"
+                    },
+                    "title": if had_startup_selection {
+                        "Assistant publication pending"
+                    } else {
+                        "Assistant model unavailable"
+                    },
+                    "detail": error.clone(),
+                    "message": error,
+                })),
+            )
+        })
+}
 
 /// Publish the management assistant into the reserved scope through the ordinary
 /// publish path (D1/D2), via the scope edge ([`ConfigPlane`]). Idempotent —
@@ -720,6 +792,92 @@ mod tests {
         // It carries the admin tool descriptors (nameable because it published in
         // the reserved scope): capabilities/draft/patch/validate/explain + draft-environment.
         assert_eq!(spec.tool_descriptors.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_ensure_publishes_after_setup_becomes_available() {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let tools = Arc::new(ScopedToolCatalog::new(
+            Vec::new(),
+            RESERVED_ADMIN_SCOPE,
+            awaken_admin_assistant::admin_tool_descriptors(),
+        ));
+        let (service, executable) = test_config_service_with_catalog();
+        let plane = ConfigPlane::new(Arc::new(service), store, tools);
+        let state = AdminAssistantLifecycleState {
+            plane,
+            execution_workspace: "workspace-live".into(),
+            model_selection: Some(ModelSelection::Auto),
+        };
+
+        let Json(result) = ensure_admin_assistant(State(state)).await.expect("ensure");
+        assert_eq!(result["status"], "ready");
+        assert!(
+            executable
+                .current("workspace-live", ADMIN_ASSISTANT_AGENT_ID)
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_ensure_reports_the_model_prerequisite() {
+        let plane = ConfigPlane::new(
+            Arc::new(test_config_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(StaticToolCatalog(Vec::new())),
+        );
+        let state = AdminAssistantLifecycleState {
+            plane,
+            execution_workspace: DEFAULT_SCOPE.into(),
+            model_selection: None,
+        };
+
+        let (status, Json(problem)) = ensure_admin_assistant(State(state))
+            .await
+            .expect_err("an empty live catalog must fail closed");
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(problem["code"], "assistant_model_unavailable");
+        assert!(
+            problem["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert_eq!(problem["detail"], problem["message"]);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_ensure_recovers_from_a_stale_startup_backend() {
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let tools = Arc::new(ScopedToolCatalog::new(
+            Vec::new(),
+            RESERVED_ADMIN_SCOPE,
+            awaken_admin_assistant::admin_tool_descriptors(),
+        ));
+        let (service, executable) = test_config_service_with_catalog();
+        let plane = ConfigPlane::new(Arc::new(service), store, tools);
+        let state = AdminAssistantLifecycleState {
+            plane,
+            execution_workspace: "workspace-recovered".into(),
+            model_selection: Some(ModelSelection::BackendDefault {
+                backend_ref: "acp:stale".into(),
+                configuration: Default::default(),
+            }),
+        };
+
+        let Json(result) = ensure_admin_assistant(State(state))
+            .await
+            .expect("auto fallback");
+        assert_eq!(result["status"], "ready");
+        assert_eq!(
+            executable
+                .current("workspace-recovered", ADMIN_ASSISTANT_AGENT_ID)
+                .expect("installed through current provider catalog")
+                .snapshot
+                .resolved_spec
+                .model_binding
+                .model_ref,
+            "m-1",
+        );
     }
 
     #[tokio::test]

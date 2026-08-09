@@ -353,6 +353,10 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
         Some(MODEL_SUPPLY_READ)
     );
     assert_eq!(
+        action_for(&get, "/v1/config/provider-descriptors"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
         action_for(&post, "/v1/config/provider-connections"),
         Some(MODEL_SUPPLY_CONNECT)
     );
@@ -473,6 +477,14 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
             "/v1/awaken/environments/env_1/sandbox-execution-policy"
         ),
         Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        action_for(&get, "/v1/awaken/memory-stores/mem_1/dream-policy"),
+        Some(WORKSPACE_READ)
+    );
+    assert_eq!(
+        action_for(&put, "/v1/awaken/memory-stores/mem_1/dream-policy"),
+        Some(WORKSPACE_WRITE)
     );
     // An unknown bounded family still fails closed.
     assert_eq!(action_for(&get, "/v1/unknown"), None);

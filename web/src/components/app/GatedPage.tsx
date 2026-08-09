@@ -5,7 +5,7 @@
 
 import { useGate } from "../../lib/useGate";
 import { useApp } from "../../lib/app-state";
-import { Card, JsonInspector } from "../ui";
+import { Card } from "../ui";
 import Gate from "./Gate";
 
 export default function GatedPage({
@@ -31,13 +31,13 @@ export default function GatedPage({
       <Gate state={state} endpoint={endpoint} note={note}>
         {(data) => (
           <>
-            <p className="hint">
+            <p className="hint" role="status">
               {app.t(
-                `Backend face is live (${path}). Raw payload below — a dedicated UI is pending.`,
-                `后端面已就绪(${path})。下方为原始数据 —— 专用 UI 待建。`,
+                `This optional capability is enabled at ${path}, but this Console version does not yet provide a safe guided workflow for it. Use the API documentation instead of editing raw data here.`,
+                `可选能力已在 ${path} 启用，但当前 Console 尚未提供安全的引导式流程。请使用 API 文档，不要在此直接编辑原始数据。`,
               )}
             </p>
-            <JsonInspector value={data} />
+            <span className="sr-only">{JSON.stringify(data)}</span>
           </>
         )}
       </Gate>

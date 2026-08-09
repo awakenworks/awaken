@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::admin_assistant::{
     CatalogCapabilityReader, ConfigServiceDraftStore, ConfigServiceDraftValidator,
-    HostResourceInventory, seed_admin_assistant,
+    HostResourceInventory, admin_assistant_lifecycle_router, seed_admin_assistant,
 };
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
@@ -212,6 +212,8 @@ pub struct ControlRouterInput {
     pub agent_archive_cascade: Option<Arc<dyn AgentArchiveCascade>>,
     /// The config authoring plane (scope edge over the config service).
     pub plane: ConfigPlane,
+    /// Model selection used to publish or recover the reserved Console Assistant.
+    pub assistant_model_selection: Option<awaken_config_store::ModelSelection>,
     /// The host's global tool descriptors, for `GET /v1/capabilities`.
     pub global_tools: Vec<ToolDescriptor>,
     /// The exact installable plugin catalog composed by the runtime host.
@@ -253,6 +255,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         agent_repository,
         agent_archive_cascade,
         plane,
+        assistant_model_selection,
         global_tools,
         plugins,
         runtimes,
@@ -314,6 +317,11 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
     // rich `AgentConfig` here and `publish` compiles + installs it so sessions run it.
     let audit_plane = plane.management_audit_plane();
+    let assistant_lifecycle = crate::admin_assistant_lifecycle_router(
+        plane.clone(),
+        platform_workspace.clone(),
+        assistant_model_selection,
+    );
     let config_plane = config_router(plane);
     // `/v1/agents` projects the config plane it hosts: an agent published via
     // `/v1/config/agents` is retrievable as a managed-wire projection of that single
@@ -355,6 +363,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         .merge(user_profiles)
         .merge(agents)
         .merge(config_plane)
+        .merge(assistant_lifecycle)
         .merge(workspace_context)
         .merge(capabilities)
         .merge(environment_router);

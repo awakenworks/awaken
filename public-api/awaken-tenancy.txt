@@ -40,5 +40,7 @@ pub fn awaken_tenancy::VerifiedExecutionScope::into_ref(self) -> awaken_tenancy:
 impl core::convert::AsRef<awaken_tenancy::ExecutionScopeRef> for awaken_tenancy::VerifiedExecutionScope
 pub fn awaken_tenancy::VerifiedExecutionScope::as_ref(&self) -> &awaken_tenancy::ExecutionScopeRef
 pub struct awaken_tenancy::WorkspaceScope(pub alloc::string::String)
+impl awaken_tenancy::WorkspaceScope
+pub fn awaken_tenancy::WorkspaceScope::non_empty(&self) -> core::option::Option<&str>
 pub const awaken_tenancy::DEFAULT_WORKSPACE_ID: &str
 pub fn awaken_tenancy::resolve_scope(&awaken_tenancy::Authority, &[awaken_tenancy::ScopeClaim]) -> core::result::Result<awaken_tenancy::ScopeId, awaken_tenancy::ScopeRejection>
