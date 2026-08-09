@@ -80,7 +80,7 @@ proptest! {
     fn remove_env_purges_everything(n in 1usize..8) {
         let q = InMemoryWorkQueue::new();
         for i in 0..n { block(q.enqueue_session("env", &format!("s{i}"))); }
-        block(q.remove_env("env"));
+        block(q.remove_env("env")).unwrap();
         prop_assert!(block(q.list("env")).is_empty());
         prop_assert!(block(q.claim("env", "w", 0)).is_none());
     }

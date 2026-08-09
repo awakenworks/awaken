@@ -361,6 +361,9 @@ impl EnvRegistry for SqliteEnvRegistry {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("begin immediate");
         let mut item = Self::read(&tx, id)?;
+        if item.archived_at.is_some() {
+            return None;
+        }
         item.apply(patch);
         tx.execute(
             "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
@@ -604,6 +607,9 @@ impl EnvRegistry for PostgresEnvRegistry {
         .await
         .expect("lock env row")?;
         let mut item = pg_row(&row);
+        if item.archived_at.is_some() {
+            return None;
+        }
         item.apply(patch);
         sqlx::query(
             "UPDATE env_registry_env SET name = $1, description = $2, metadata_json = $3, \

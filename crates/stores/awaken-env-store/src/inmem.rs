@@ -118,6 +118,9 @@ impl EnvRegistry for InMemoryEnvRegistry {
     async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem> {
         let mut envs = self.envs.lock().unwrap();
         let item = envs.get_mut(id)?;
+        if item.archived_at.is_some() {
+            return None;
+        }
         item.apply(patch);
         let item = item.clone();
         self.revisions

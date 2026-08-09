@@ -563,7 +563,8 @@ async fn agent_default_environment_requires_the_exact_revision() {
     let revision = environments
         .snapshot(&environment_id, None)
         .await
-        .unwrap()
+        .expect("Environment snapshot query succeeds")
+        .expect("created Environment has an executable snapshot")
         .revision
         .0;
     let runtime = AcceptingFake::default();

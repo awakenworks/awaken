@@ -141,7 +141,7 @@ async fn remove_env_purges<Q: WorkQueue>(q: &Q) {
     for i in 0..3 {
         q.enqueue_session("env", &format!("s{i}")).await;
     }
-    q.remove_env("env").await;
+    q.remove_env("env").await.unwrap();
     assert!(
         q.list("env").await.is_empty(),
         "list empty after remove_env"

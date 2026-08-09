@@ -93,7 +93,7 @@ impl ManagedState {
         >,
         published_backend_ref: Option<&str>,
         mcp_targets: &[awaken_session_contract::McpTarget],
-    ) -> Result<(String, awaken_session_contract::EnvironmentSnapshot), StateError> {
+    ) -> Result<(String, awaken_session_contract::EnvironmentSnapshot, bool), StateError> {
         let environment_id = requested_environment_id
             .map(str::to_owned)
             .or_else(|| published_environment.map(|binding| binding.environment_id.clone()))
@@ -101,7 +101,7 @@ impl ManagedState {
         let snapshot = match (requested_environment_id, published_environment) {
             (None, Some(binding)) => {
                 self.environments
-                    .snapshot_exact_for_session(
+                    .resolve_exact_for_session(
                         &binding.environment_id,
                         binding.revision,
                         published_backend_ref,
@@ -111,7 +111,11 @@ impl ManagedState {
             }
             _ => {
                 self.environments
-                    .snapshot_for_session(&environment_id, published_backend_ref, mcp_targets)
+                    .resolve_current_for_session(
+                        &environment_id,
+                        published_backend_ref,
+                        mcp_targets,
+                    )
                     .await
             }
         }
@@ -122,10 +126,10 @@ impl ManagedState {
             )))
         })?;
         super::sandbox_provisioning::validate_sandbox_provisioning_runtime(
-            snapshot.sandbox_provisioning,
+            snapshot.snapshot.sandbox_provisioning,
             published_backend_ref,
         )
         .map_err(StateError::Run)?;
-        Ok((environment_id, snapshot))
+        Ok((environment_id, snapshot.snapshot, snapshot.self_hosted))
     }
 }

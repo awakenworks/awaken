@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use awaken_session_contract::work_queue::{
     HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats, WorkItem, WorkPayload,
-    WorkQueue, WorkState,
+    WorkQueue, WorkQueueError, WorkState,
 };
 
 use super::heartbeat_at;
@@ -221,11 +221,9 @@ impl WorkQueue for InMemoryWorkQueue {
         id
     }
 
-    async fn ensure_healthcheck(&self, env_id: &str) -> String {
-        if let Some(existing) = self
-            .works
-            .lock()
-            .unwrap()
+    async fn ensure_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError> {
+        let mut works = self.works.lock().unwrap();
+        if let Some(existing) = works
             .values()
             .find(|work| {
                 work.environment_id == env_id
@@ -233,9 +231,25 @@ impl WorkQueue for InMemoryWorkQueue {
             })
             .map(|work| work.id.clone())
         {
-            return existing;
+            return Ok(existing);
         }
-        self.enqueue_healthcheck(env_id).await
+        let id = self.next_id();
+        works.insert(
+            id.clone(),
+            WorkItem {
+                id: id.clone(),
+                environment_id: env_id.to_string(),
+                data: WorkPayload::HealthCheck { id: id.clone() },
+                metadata: BTreeMap::new(),
+                state: WorkState::Queued,
+                acknowledged_at: None,
+                latest_heartbeat_at: None,
+                started_at: None,
+                stop_requested_at: None,
+                stopped_at: None,
+            },
+        );
+        Ok(id)
     }
 
     async fn list(&self, env_id: &str) -> Vec<WorkItem> {
@@ -416,7 +430,7 @@ impl WorkQueue for InMemoryWorkQueue {
         }
     }
 
-    async fn remove_env(&self, env_id: &str) {
+    async fn remove_env(&self, env_id: &str) -> Result<(), WorkQueueError> {
         let mut works = self.works.lock().unwrap();
         let ids: Vec<String> = works
             .values()
@@ -425,6 +439,7 @@ impl WorkQueue for InMemoryWorkQueue {
             .collect();
         works.retain(|_, w| w.environment_id != env_id);
         self.book.forget_env(env_id, &ids);
+        Ok(())
     }
 }
 
@@ -458,6 +473,38 @@ mod tests {
         let w = q.get("env_a", &id).await.expect("seeded");
         assert_eq!(w.state, WorkState::Queued);
         assert!(matches!(w.data, WorkPayload::HealthCheck { id: ref d } if *d == id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_healthcheck_convergence_has_one_canonical_work_item() {
+        // Cause/effect graph: C1 the Environment is registered concurrently; C2
+        // no healthcheck exists initially; C3 every caller uses ensure rather
+        // than unconditional enqueue. Effects: E1 every caller receives the same
+        // identity and E2 the queue contains exactly one probe.
+        //
+        // | Rule | existing | concurrent ensures | identities | queue rows |
+        // | T1 | no | 32 | one canonical id | 1 |
+        // | T2 | yes | replay | same canonical id | 1 |
+        let queue = std::sync::Arc::new(q());
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let queue = queue.clone();
+            tasks.push(tokio::spawn(async move {
+                queue.ensure_healthcheck("env_a").await.expect("T1")
+            }));
+        }
+        let mut ids = Vec::new();
+        for task in tasks {
+            ids.push(task.await.expect("join T1"));
+        }
+        assert!(ids.iter().all(|id| id == &ids[0]), "T1");
+        assert_eq!(queue.list("env_a").await.len(), 1, "T1");
+        assert_eq!(
+            queue.ensure_healthcheck("env_a").await.expect("T2"),
+            ids[0],
+            "T2"
+        );
+        assert_eq!(queue.list("env_a").await.len(), 1, "T2");
     }
 
     #[tokio::test]
@@ -655,7 +702,7 @@ mod tests {
             .await
             .expect("patched");
         assert_eq!(up.metadata.get("k").map(String::as_str), Some("v"));
-        q.remove_env("env_a").await;
+        q.remove_env("env_a").await.unwrap();
         assert!(
             q.get("env_a", &id).await.is_none(),
             "env delete purges work"

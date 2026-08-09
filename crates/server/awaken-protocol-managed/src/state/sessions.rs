@@ -808,7 +808,7 @@ impl ManagedState {
             .iter()
             .map(|draft| draft.target.clone())
             .collect::<Vec<_>>();
-        let (environment_id, environment) = self
+        let (environment_id, environment, self_hosted_environment) = self
             .resolve_session_environment(
                 req.environment_id.as_deref(),
                 agent_environment,
@@ -1081,7 +1081,7 @@ impl ManagedState {
         // Dispatch only after the active activation and Session lifecycle fact are
         // durable. A worker can never claim a work item whose resource intent is
         // still merely Prepared.
-        if !application_required && self.environments.is_self_hosted(&environment_id).await {
+        if !application_required && self_hosted_environment {
             self.environments
                 .enqueue_session_work(&environment_id, &id)
                 .await;
