@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[package.metadata.awaken]
+context = "runtime"
+layer = "infrastructure"
+authority = "ext-skills"
+
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true

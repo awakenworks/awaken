@@ -1,8 +1,8 @@
 //! Pure projection from one immutable publication into the existing neutral
 //! Session configuration view carried by executable registration.
 
+use awaken_agent_config::ModelSelection;
 use awaken_config_resolver::AgentInputConfig;
-use awaken_config_store::ModelSelection;
 use awaken_executable_agent_contract::{
     ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentSessionProfile,
 };

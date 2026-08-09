@@ -18,7 +18,7 @@ async fn startup_reconciliation_reuses_registration_and_keeps_latest_current() {
     let mut v2 = agent_config("warm-agent");
     v2.instructions = "version two".into();
     v2.model_binding = ModelSelection::Target {
-        target: awaken_config_store::ModelTarget {
+        target: awaken_agent_config::ModelTarget {
             model_id: "m-first".into(),
             provider_id: Some("openai".into()),
             protocol_endpoint_id: None,

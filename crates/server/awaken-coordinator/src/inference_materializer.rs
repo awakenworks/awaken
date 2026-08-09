@@ -360,11 +360,11 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_config_service::{ModelPublicationResolver, ResolvedPublicationModels};
-    use awaken_config_store::ModelSelection;
     use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialError, CredentialKind, CredentialStatus,
@@ -1053,7 +1053,7 @@ mod tests {
 
         let mut old = p
             .credentials
-            .get(&awaken_credential_vault::CredentialSourceId(pinned_id))
+            .get(&awaken_credential_contract::CredentialSourceId(pinned_id))
             .await
             .unwrap();
         old.status = CredentialStatus::Disabled;
@@ -1271,8 +1271,9 @@ mod tests {
         else {
             panic!("primary must carry its credential pin")
         };
-        let primary_id =
-            awaken_credential_vault::CredentialSourceId(primary_credential.credential.id.clone());
+        let primary_id = awaken_credential_contract::CredentialSourceId(
+            primary_credential.credential.id.clone(),
+        );
         let mut primary_row = p.credentials.get(&primary_id).await.unwrap();
         primary_row.status = CredentialStatus::Disabled;
         p.credentials.put(primary_row).await.unwrap();

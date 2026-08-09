@@ -3,6 +3,11 @@ name = "awaken-ext-state-machine"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
+
+[package.metadata.awaken]
+context = "runtime"
+layer = "infrastructure"
+authority = "ext-state-machine"
 description = "Stateful tool-call ordering constraints (loadable FSM DSL) for Awaken"
 
 [dependencies]

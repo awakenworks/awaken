@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-package-class = "contract"
-authority = "coordinator"
+context = "coordinator"
+layer = "contract"
+authority = "environment-realization"
 
 [dependencies]
 async-trait.workspace = true

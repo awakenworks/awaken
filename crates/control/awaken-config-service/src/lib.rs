@@ -28,15 +28,14 @@ mod registration_reconciliation;
 mod service_access;
 mod service_wiring;
 mod tool_catalog;
-mod web_search_publication;
 
 pub use binding_resolver::{
     ConfigServiceReconciler, ModelPublicationResolver, PublicationBindingReconciler,
     PublicationResolutionError, ResolvedPublicationModels,
 };
 pub use capabilities::{
-    LocalRuntimeCapability, RuntimeCapability, RuntimeCapabilitySource, capabilities_router,
-    capabilities_router_with_source, sandbox_execution_policy_capability,
+    LocalRuntimeCapability, PolicyCapability, RuntimeCapability, RuntimeCapabilitySource,
+    capabilities_router, capabilities_router_with_source, sandbox_execution_policy_capability,
     static_runtime_capabilities,
 };
 pub use config_plane::ConfigPlane;
@@ -51,4 +50,3 @@ pub use publication::{PublishError, ValidationIssue};
 pub use tool_catalog::{
     RESERVED_ADMIN_SCOPE, ScopedToolCatalog, StaticToolCatalog, ToolCatalogSource,
 };
-pub use web_search_publication::WebSearchPublicationResolver;

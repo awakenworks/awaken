@@ -23,6 +23,7 @@ use std::convert::Infallible;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use awaken_mcp_server_core::{NotifySink, NullSink};
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -34,7 +35,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
 
-use crate::service::{McpToolService, NotifySink, NullSink};
+use crate::service::McpToolService;
 
 /// The session header of the Streamable HTTP transport.
 const SESSION_HEADER: &str = "Mcp-Session-Id";

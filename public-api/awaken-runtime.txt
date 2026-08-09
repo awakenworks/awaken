@@ -16,6 +16,7 @@ pub fn awaken_runtime::DirectRunIngress::cancel<'life0, 'life1, 'async_trait>(&'
 pub fn awaken_runtime::DirectRunIngress::resume<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::resume::ResumeCommand, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_runtime::DirectRunIngress::start<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::activation::RunActivation, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_runtime_contract::execution::Result<awaken_agent_contract::agent::run::RunState>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_runtime::LlmRetryPolicy
+pub awaken_runtime::LlmRetryPolicy::attempt_timeout: core::time::Duration
 pub awaken_runtime::LlmRetryPolicy::backoff_base_ms: u64
 pub awaken_runtime::LlmRetryPolicy::max_retries: usize
 pub awaken_runtime::LlmRetryPolicy::overloaded_backoff_base_ms: u64

@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "infrastructure"
+authority = "executable-agent-catalog"
+
 [dependencies]
 awaken-executable-agent-contract.workspace = true
 awaken-durable-projection.workspace = true

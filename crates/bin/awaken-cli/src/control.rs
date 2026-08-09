@@ -77,9 +77,9 @@ pub async fn build_control_router_with_publication_resolver(
     resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
 ) -> Result<Router, String> {
     let providers = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
-    let publication_resolver = Arc::new(awaken_config_service::WebSearchPublicationResolver::new(
-        providers.clone(),
-    ));
+    let publication_resolver = Arc::new(
+        crate::web_search_publication::WebSearchPublicationResolver::new(providers.clone()),
+    );
     build_control_router_with_publication_resolver_and_web_search(
         deployment,
         key,

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use awaken_config_store::{AgentConfig, ModelSelection, compile_resolved};
+use awaken_agent_config::{AgentConfig, ModelSelection, compile_resolved};
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_examples::prelude::*;
 

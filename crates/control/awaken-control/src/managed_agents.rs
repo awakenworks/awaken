@@ -7,13 +7,13 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use awaken_agent_config::{
+    AgentConfig, AgentConfigRevision, AgentKind, AgentLifecycle, ConfigWrite, ModelSelection,
+    MultiagentConfig, MultiagentTarget,
+};
 use awaken_agent_contract::AgentSkillBinding;
 use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
-};
-use awaken_config_store::{
-    AgentConfig, AgentConfigRevision, AgentKind, AgentLifecycle, ConfigWrite, ModelSelection,
-    MultiagentConfig, MultiagentTarget,
 };
 use awaken_protocol_managed::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentMcpServer, AgentSkill, AgentStatus,
@@ -83,7 +83,7 @@ impl ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         agent_id: &str,
         source_revision: u64,
-    ) -> Result<Option<awaken_config_store::StoredPublication>, ManagedAgentError> {
+    ) -> Result<Option<awaken_agent_config::StoredPublication>, ManagedAgentError> {
         let direct = self
             .plane
             .publication_at_revision(&Self::scope(workspace_id), agent_id, source_revision)
@@ -1034,10 +1034,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
 mod tests {
     use std::sync::Arc;
 
+    use awaken_agent_config::ModelSelection;
     use awaken_config_service::{
         ConfigService, ModelPublicationResolver, ResolvedPublicationModels, StaticToolCatalog,
     };
-    use awaken_config_store::{ModelSelection, SqliteConfigStore};
+    use awaken_config_store::SqliteConfigStore;
     use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
     use awaken_runtime_contract::resolved::ModelBinding;

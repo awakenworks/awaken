@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use awaken_agent_config::ModelSelection;
 use awaken_config_resolver::{
     ExecutorModelCapability, InferenceProfile, InferenceProfileStore, ModelTarget,
     derive_vendor_pool, get_workspace_profile, select_offering, validate_executor_offering,
@@ -15,7 +16,6 @@ use awaken_config_resolver::{
 use awaken_config_service::{
     ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
 };
-use awaken_config_store::ModelSelection;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
@@ -571,12 +571,13 @@ mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
     use awaken_config_resolver::{InMemoryProfileStore, ProfileCandidate};
+    use awaken_credential_contract::CredentialSourceId;
     use awaken_credential_vault::repo::{
         InMemoryCredentialRepo, ensure_worker_local, enter_credential, enter_credential_idempotent,
     };
     use awaken_credential_vault::{
         CredentialCreateParams, CredentialPool, CredentialPoolId, CredentialPoolMember,
-        CredentialSourceId, InMemorySecretStore, SelectionPolicy, WorkerLocalBinding,
+        InMemorySecretStore, SelectionPolicy, WorkerLocalBinding,
     };
     use awaken_model_catalog::{
         ApiDialect, ModelAttributes, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,

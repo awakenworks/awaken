@@ -9,7 +9,7 @@
 //! boundary for wire types.
 //! Protocol lifecycle and Streamable HTTP decisions live in the runtime-neutral
 //! `awaken-mcp-server-core`; this crate is only the awaken RawTool/Store/gate
-//! anti-corruption adapter plus compatibility facade.
+//! anti-corruption adapter.
 //!
 //! Design rules:
 //!
@@ -44,5 +44,5 @@ pub use export::{
     McpExportedTool, ProgressRawTool, SharedExports, StaticExports, ToolExec, ToolExportSource,
 };
 pub use http::{McpHttpConfig, router};
-pub use service::{AwakenMcpContext, McpToolService, NotifySink, NullSink};
+pub use service::{AwakenMcpContext, McpToolService};
 pub use stdio::McpStdioServer;

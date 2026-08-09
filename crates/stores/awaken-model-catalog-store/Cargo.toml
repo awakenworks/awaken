@@ -1,0 +1,41 @@
+[package]
+name = "awaken-model-catalog-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "control"
+layer = "infrastructure"
+authority = "model-catalog"
+
+[dependencies]
+awaken-model-catalog.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rusqlite = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
+awaken-scoped-migration = { workspace = true, features = ["postgres"] }
+awaken-scoped-migration-sqlite.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tempfile = "3"
+rusqlite.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+
+[features]
+default = []
+test-support = ["awaken-model-catalog/test-support"]
+sqlite = ["dep:rusqlite", "dep:tokio"]
+postgres = ["dep:sqlx"]
+
+[[test]]
+name = "repo_conformance"
+required-features = ["test-support"]
+
+[lints]
+workspace = true

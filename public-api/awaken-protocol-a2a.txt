@@ -1,7 +1,4 @@
 pub mod awaken_protocol_a2a
-pub use awaken_protocol_a2a::AuthChallenge
-pub use awaken_protocol_a2a::Credential
-pub use awaken_protocol_a2a::CredentialRefresher
 pub mod awaken_protocol_a2a::client
 pub enum awaken_protocol_a2a::client::ClientError
 pub awaken_protocol_a2a::client::ClientError::Decode(alloc::string::String)

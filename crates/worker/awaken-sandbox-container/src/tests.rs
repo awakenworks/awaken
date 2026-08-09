@@ -540,6 +540,7 @@ struct FakeState {
     fail_create: bool,
     refreshed_credential: Option<Vec<u8>>,
     live_credential: Option<Vec<u8>>,
+    live_credential_error: Option<String>,
     credential_source: Option<std::path::PathBuf>,
     spawned: Vec<(String, Vec<String>)>,
     runtime_path_observations: Vec<(
@@ -613,6 +614,11 @@ impl FakeRuntime {
         self
     }
 
+    fn failing_live_credential(self, message: &str) -> Self {
+        self.st.lock().unwrap().live_credential_error = Some(message.into());
+        self
+    }
+
     fn with_live_input_projection(self) -> Self {
         self.st.lock().unwrap().live_input_projection = true;
         self
@@ -653,7 +659,11 @@ impl ContainerRuntime for FakeRuntime {
         _container_id: &str,
         _path: &str,
     ) -> Result<Option<Vec<u8>>, RuntimeError> {
-        Ok(self.st.lock().unwrap().live_credential.clone())
+        let state = self.st.lock().unwrap();
+        match &state.live_credential_error {
+            Some(error) => Err(RuntimeError::Backend(error.clone())),
+            None => Ok(state.live_credential.clone()),
+        }
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
@@ -832,6 +842,7 @@ impl ContainerRuntime for FakeRuntime {
 struct RecordingSecretBroker {
     current: Mutex<Vec<u8>>,
     writes: Mutex<Vec<Vec<u8>>>,
+    reject_writeback: AtomicBool,
 }
 
 #[async_trait]
@@ -845,10 +856,30 @@ impl pc::SecretBroker for RecordingSecretBroker {
     }
 
     async fn write_back(&self, _reference: &str, bytes: Vec<u8>) -> Result<(), pc::SandboxError> {
+        if self.reject_writeback.load(Ordering::SeqCst) {
+            return Err(pc::SandboxError::new("injected write-back rejection"));
+        }
         *self.current.lock().unwrap() = bytes.clone();
         self.writes.lock().unwrap().push(bytes);
         Ok(())
     }
+}
+
+fn writable_credential_spec(scope: &str) -> pc::SandboxSpec {
+    let mut sandbox_spec = spec(scope);
+    sandbox_spec.network = pc::NetworkPolicy::Unrestricted;
+    sandbox_spec.mounts = vec![pc::MountRequirement {
+        mount_id: "native-auth".into(),
+        source: pc::MountSource::Secret {
+            reference: "credential://acp/native/claude".into(),
+            content_hash: None,
+        },
+        mount_path: "/acp-config/.credentials.json".into(),
+        access: pc::MountAccess::ReadWrite,
+        lifetime: pc::MountLifetime::Durable,
+        required: true,
+    }];
+    sandbox_spec
 }
 
 fn provider_without_broker(runtime: Arc<FakeRuntime>) -> ContainerProvider<FakeRuntime> {
@@ -1513,26 +1544,83 @@ async fn remote_runtime_harvests_live_credential_when_signalled_attempt_finishes
     *broker.current.lock().unwrap() = br#"{"claudeAiOauth":{"accessToken":"old"}}"#.to_vec();
     let provider =
         ContainerProvider::new(rt.clone(), "agent:latest").with_secret_broker(broker.clone());
-    let mut spec = spec("remote-credential-refresh");
-    spec.network = pc::NetworkPolicy::Unrestricted;
-    spec.mounts = vec![pc::MountRequirement {
-        mount_id: "native-auth".into(),
-        source: pc::MountSource::Secret {
-            reference: "credential://acp/native/claude".into(),
-            content_hash: None,
-        },
-        mount_path: "/acp-config/.credentials.json".into(),
-        access: pc::MountAccess::ReadWrite,
-        lifetime: pc::MountLifetime::Durable,
-        required: true,
-    }];
-
-    let session = provider.open_agent(&spec).await.unwrap();
+    let session = provider
+        .open_agent(&writable_credential_spec("remote-credential-refresh"))
+        .await
+        .unwrap();
     session.process.signal(pc::Signal::Term).await.unwrap();
     session.process.wait().await.unwrap();
     assert_eq!(
         broker.writes.lock().unwrap().as_slice(),
         &[refreshed.to_vec()]
+    );
+}
+
+#[tokio::test]
+async fn failed_remote_credential_harvest_blocks_writeback_and_environment_removal() {
+    // Environment-disposal FMECA graph. C1 a durable writable credential exists;
+    // C2 the remote runtime proves a successful read; C3 the broker accepts the
+    // replacement; C4 environment removal follows. Effects: E1 one write-back then
+    // removal; E2 any C2/C3 failure returns an error, records no authoritative write,
+    // and preserves the environment for a retry. Rules: D1 C1+C2+C3=>E1 (covered by
+    // the preceding success test); D2 C1+!C2=>E2; D3 C1+C2+!C3=>E2.
+    let runtime = Arc::new(FakeRuntime::default().failing_live_credential("remote cat failed"));
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = b"authoritative-old".to_vec();
+    let provider =
+        ContainerProvider::new(runtime.clone(), "agent:latest").with_secret_broker(broker.clone());
+    let sandbox = provider
+        .create(&writable_credential_spec(
+            "failed-remote-credential-harvest",
+        ))
+        .await
+        .unwrap();
+    assert!(
+        sandbox.dispose().await.is_err(),
+        "D2 read failure propagates"
+    );
+    assert!(
+        broker.writes.lock().unwrap().is_empty(),
+        "D2 no stale write"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-failed-remote-credential-harvest"),
+        Some(&true),
+        "D2 preserve the environment until credential harvest can retry"
+    );
+
+    let runtime = Arc::new(FakeRuntime::default().with_live_credential(b"rotated"));
+    let broker = Arc::new(RecordingSecretBroker::default());
+    *broker.current.lock().unwrap() = b"authoritative-old".to_vec();
+    broker.reject_writeback.store(true, Ordering::SeqCst);
+    let provider =
+        ContainerProvider::new(runtime.clone(), "agent:latest").with_secret_broker(broker.clone());
+    let sandbox = provider
+        .create(&writable_credential_spec("rejected-credential-writeback"))
+        .await
+        .unwrap();
+    assert!(
+        sandbox.dispose().await.is_err(),
+        "D3 broker rejection propagates"
+    );
+    assert!(
+        broker.writes.lock().unwrap().is_empty(),
+        "D3 no partial write"
+    );
+    assert_eq!(
+        runtime
+            .st
+            .lock()
+            .unwrap()
+            .alive
+            .get("cid-rejected-credential-writeback"),
+        Some(&true),
+        "D3 preserve the environment until broker recovery"
     );
 }
 

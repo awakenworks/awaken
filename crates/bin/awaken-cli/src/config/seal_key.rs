@@ -43,7 +43,7 @@ impl SealKeySource {
                 .map_err(|error| format!("read seal key {}: {error}", path.display()))?,
             Self::LocalFile(path) => read_or_create_local_key(path)?,
         };
-        awaken_credential_vault::parse_seal_key(value.trim())
+        awaken_credential_store::parse_seal_key(value.trim())
             .map_err(|reason| format!("invalid control-plane seal key: {reason}"))
     }
 }

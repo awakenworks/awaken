@@ -8,10 +8,10 @@
 //! Runtime consumes compiled configuration and never edits authoring records.
 use std::sync::Arc;
 
-use awaken_config_resolver::AgentInputBindingRepository;
-use awaken_config_store::{
+use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, ConfigRegistry, ConfigWrite, StoredPublication,
 };
+use awaken_config_resolver::AgentInputBindingRepository;
 use awaken_executable_agent_contract::{ExecutableAgentRegistrar, ExecutableAgentRegistration};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
@@ -29,9 +29,9 @@ use crate::config_routes::{get_config, publish, put_config, request_scope, valid
 #[cfg(test)]
 use crate::tool_catalog::{RESERVED_ADMIN_SCOPE, ToolCatalogSource};
 #[cfg(test)]
-use awaken_config_store::DEFAULT_SCOPE;
+use awaken_agent_config::DEFAULT_SCOPE;
 #[cfg(test)]
-use awaken_config_store::ScopedConfigRegistry;
+use awaken_agent_config::ScopedConfigRegistry;
 #[cfg(test)]
 use awaken_executable_agent_contract::ExecutableAgentWithdrawal;
 #[cfg(test)]
@@ -47,7 +47,7 @@ use serde_json::json;
 ///
 /// **Authorization-free by design (ADR-0051/0052).** The already-scoped authoring
 /// collaborators — a scope-bound [`ConfigRegistry`] (via
-/// [`awaken_config_store::ScopedConfig`]) and the
+/// [`awaken_agent_config::ScopedConfig`]) and the
 /// namespace's resolved tool catalog (`&[ToolDescriptor]`) — are passed in per call
 /// by the edge ([`crate::ConfigPlane`] and router handlers). Publication also receives one
 /// trusted execution Workspace coordinate for registration. It receives no principal,
@@ -74,7 +74,7 @@ struct PreparedPublication {
 
 impl ConfigService {
     /// Store a config draft (upsert by id) in the caller-supplied scope-bound
-    /// `registry` (a [`awaken_config_store::ScopedConfig`] the edge bound to the
+    /// `registry` (a [`awaken_agent_config::ScopedConfig`] the edge bound to the
     /// request scope).
     pub async fn put(
         &self,
@@ -108,7 +108,7 @@ impl ConfigService {
             .await
             .map_err(|error| error.to_string())?;
         let invalid = current.as_ref().is_some_and(|stored| {
-            use awaken_config_store::AgentLifecycle::{Archived, Disabled, Published};
+            use awaken_agent_config::AgentLifecycle::{Archived, Disabled, Published};
             match (stored.lifecycle(), config.lifecycle()) {
                 (Published, _) | (Disabled, Archived) => false,
                 (Disabled | Archived, _) => stored != config,
@@ -173,7 +173,7 @@ impl ConfigService {
         if expected_source_revision.is_some_and(|expected| expected != versioned.revision) {
             return Err(PublishError::StaleRevision(Some(versioned.revision)));
         }
-        if versioned.config.lifecycle() != awaken_config_store::AgentLifecycle::Published {
+        if versioned.config.lifecycle() != awaken_agent_config::AgentLifecycle::Published {
             return Err(PublishError::Unavailable(id.to_string()));
         }
         let source_revision = versioned.revision;
@@ -227,7 +227,7 @@ impl ConfigService {
             metadata.resolution = awaken_runtime_contract::ResolutionManifest::new(inputs)
                 .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
         }
-        let snapshot = awaken_config_store::compile_published(
+        let snapshot = awaken_agent_config::compile_published(
             &resolved.config,
             catalog,
             metadata,
@@ -370,10 +370,11 @@ impl ConfigService {
 #[cfg(test)]
 pub(crate) mod resource_prompt_tests {
     use super::*;
+    use awaken_agent_config::{ConfigStoreError, ModelSelection, ScopedConfig};
     use awaken_config_resolver::{
         AgentInputConfig, BindingId, InputBinding, InputResourceId, MemoryStoreId, ResourceAccess,
     };
-    use awaken_config_store::{ConfigStoreError, ModelSelection, ScopedConfig, SqliteConfigStore};
+    use awaken_config_store::SqliteConfigStore;
     use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_executable_agent_contract::{
         ExecutableAgentRegistrationError, ExecutableAgentRegistrationOutcome,
@@ -397,7 +398,7 @@ pub(crate) mod resource_prompt_tests {
             instructions: "be helpful".to_string(),
             max_steps: 8,
             delegation_limits: Default::default(),
-            model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+            model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
             inference: Default::default(),
             tool_ids: vec![],
             model_fallbacks: Vec::new(),
@@ -955,7 +956,7 @@ pub(crate) mod resource_prompt_tests {
         // Agent OVERRIDE (under budget) is honored verbatim, in BOTH realizations.
         let mut cfg2 = agent_config("a2");
         cfg2.model_binding = pin();
-        cfg2.compaction = Some(awaken_config_store::CompactionStrategy {
+        cfg2.compaction = Some(awaken_agent_config::CompactionStrategy {
             window: Some(90_000),
             keep_recent: None,
         });
@@ -1249,7 +1250,7 @@ pub(crate) mod resource_prompt_tests {
         let scope = ScopeId::from(DEFAULT_SCOPE);
         let mut config = agent_config("managed-target");
         config.model_binding = ModelSelection::Target {
-            target: awaken_config_store::ModelTarget {
+            target: awaken_agent_config::ModelTarget {
                 model_id: "m-first".into(),
                 provider_id: Some("openai".into()),
                 protocol_endpoint_id: None,

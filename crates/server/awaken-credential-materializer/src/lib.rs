@@ -12,10 +12,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::CredentialRepo;
-use awaken_credential_vault::{
-    CredentialSource, CredentialSourceId, CredentialStatus, SecretRef, SecretStore,
-};
+use awaken_credential_vault::{CredentialSource, CredentialStatus, SecretRef, SecretStore};
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::{
     AttemptCredentialBinding, CredentialAccess, CredentialAdmissionError,

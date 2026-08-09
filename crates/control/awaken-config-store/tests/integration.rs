@@ -6,15 +6,16 @@
 
 use std::sync::Arc;
 
+use awaken_agent_config::{
+    AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE,
+    ManagementAuditRecord, ManagementEffect, ModelSelection, PublicationState, ScopeId,
+    ScopedConfig, ScopedConfigRegistry, StoredPublication, compile_resolved,
+};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_config_store::{
-    AgentConfig, AuditedConfigWrite, ConfigRegistry, ConfigWrite, DEFAULT_SCOPE,
-    ManagementAuditRecord, ManagementEffect, ModelSelection, PublicationState, ScopeId,
-    ScopedConfig, ScopedConfigRegistry, SqliteConfigStore, StoredPublication, compile_resolved,
-};
+use awaken_config_store::SqliteConfigStore;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -27,7 +28,7 @@ use awaken_store_inmem::MemoryCommitCoordinator;
 fn compile(
     config: &AgentConfig,
     tools: &[ToolDescriptor],
-) -> Result<awaken_config_store::ExecutableAgentSnapshot, awaken_config_store::CompileError> {
+) -> Result<awaken_agent_config::ExecutableAgentSnapshot, awaken_agent_config::CompileError> {
     compile_resolved(config, tools, AgentSnapshotMetadata::default())
 }
 
@@ -49,7 +50,7 @@ fn agent_config() -> AgentConfig {
         instructions: "be helpful".to_string(),
         max_steps: 8,
         delegation_limits: Default::default(),
-        model_binding: awaken_config_store::ModelSelection::pinned("p", "m", "b"),
+        model_binding: awaken_agent_config::ModelSelection::pinned("p", "m", "b"),
         inference: Default::default(),
         tool_ids: vec!["echo".to_string()],
         model_fallbacks: Vec::new(),

@@ -16,7 +16,7 @@ use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 
 /// The reserved scope the management assistant lives in (ADR-0052 D2). It is a
-/// distinct owner from [`awaken_config_store::DEFAULT_SCOPE`] so, in a multi-tenant
+/// distinct owner from [`awaken_agent_config::DEFAULT_SCOPE`] so, in a multi-tenant
 /// deployment, the admin tools are invisible to tenant scopes; a self-hosted single
 /// org may still seed the assistant here without any tenant colliding with it.
 pub const RESERVED_ADMIN_SCOPE: &str = "__admin";

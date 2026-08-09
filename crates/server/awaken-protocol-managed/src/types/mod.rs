@@ -35,7 +35,6 @@
 
 pub mod agent;
 pub mod deployment;
-pub mod dream;
 pub mod environment;
 pub(crate) mod initial_event;
 pub mod page;
@@ -45,6 +44,5 @@ pub mod session;
 pub mod user_profile;
 pub mod vault;
 
-pub use dream::*;
 pub use page::{Page, PageQuery, paginate, paginate_by};
 pub use session::*;

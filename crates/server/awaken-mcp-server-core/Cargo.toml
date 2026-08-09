@@ -3,6 +3,11 @@ name = "awaken-mcp-server-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+layer = "interface"
+authority = "mcp-server-core"
 description = "Runtime-neutral MCP server lifecycle, dispatch, and Streamable HTTP semantics"
 
 [dependencies]

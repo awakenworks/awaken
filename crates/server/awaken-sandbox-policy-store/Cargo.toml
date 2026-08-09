@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "worker"
+layer = "infrastructure"
+authority = "sandbox-policy"
+
 [dependencies]
 awaken-provisioning-contract.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }

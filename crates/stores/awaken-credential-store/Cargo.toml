@@ -1,0 +1,51 @@
+[package]
+name = "awaken-credential-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "control"
+layer = "infrastructure"
+authority = "credential-vault"
+
+[dependencies]
+awaken-credential-vault.workspace = true
+awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chacha20poly1305 = { version = "0.10", optional = true }
+rusqlite = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "json"], optional = true }
+awaken-scoped-migration = { workspace = true, features = ["postgres"] }
+awaken-scoped-migration-sqlite.workspace = true
+
+[dev-dependencies]
+awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
+awaken-credential-vault = { workspace = true, features = ["test-support", "oauth-command"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process"] }
+tempfile = "3"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
+
+[features]
+default = []
+test-support = ["awaken-credential-vault/test-support"]
+sealed-aead = ["dep:chacha20poly1305"]
+sqlite = ["dep:rusqlite", "dep:tokio"]
+postgres = ["dep:sqlx"]
+
+[[test]]
+name = "key_rotation"
+required-features = ["test-support", "sealed-aead"]
+
+[[test]]
+name = "repo_conformance"
+required-features = ["test-support"]
+
+[lints]
+workspace = true

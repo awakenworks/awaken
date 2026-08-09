@@ -17,7 +17,11 @@ impl ManagedState {
     /// stores and the Runtime Host are wired. It scans only Session application
     /// state; authorization principals and policy objects never cross this seam.
     pub async fn reconcile_resource_activations(&self) -> usize {
-        let pending = self.sessions_repo.reconcilable_sessions().await;
+        let pending = self
+            .application
+            .session_repository()
+            .reconcilable_sessions()
+            .await;
         let mut settled = 0;
         for record in pending {
             let owner_scope = record.workspace_id;
@@ -93,14 +97,14 @@ impl ManagedState {
             }
             return Ok(());
         }
-        let vaults = self.credential_source.as_ref().ok_or_else(|| {
+        let vaults = self.application.credential_source().ok_or_else(|| {
             StateError::Run(RunError::bad_request(
                 "Repository credential requires a configured credential vault",
             ))
         })?;
         let access = vaults
             .credential_access_for_source(
-                &awaken_credential_vault::CredentialSourceId(binding.to_string()),
+                &awaken_credential_contract::CredentialSourceId(binding.to_string()),
                 owner_scope,
                 awaken_session_contract::repository_transport_credential_usage(),
                 awaken_credential_contract::CredentialExecutionPolicy::exact(
@@ -175,7 +179,8 @@ impl ManagedState {
                 Ok(session) => return Ok(session),
                 Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     session = self
-                        .sessions_repo
+                        .application
+                        .session_repository()
                         .get(&session_id)
                         .await
                         .ok_or(StateError::NotFound)?;
@@ -212,7 +217,8 @@ impl ManagedState {
             {
                 Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     current = self
-                        .sessions_repo
+                        .application
+                        .session_repository()
                         .get(&current.session_id)
                         .await
                         .ok_or(StateError::NotFound)?;
@@ -233,7 +239,8 @@ impl ManagedState {
     ) -> Result<PersistedSession, StateError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let mut current = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .get(session_id)
                 .await
                 .ok_or(StateError::NotFound)?;
@@ -295,7 +302,8 @@ impl ManagedState {
         let resource_revision = persisted.resources.revision;
 
         if let Err(error) = self
-            .runtime
+            .application
+            .runtime()
             .apply_session_inputs(&session_id, owner_scope, resource_revision, &desired)
             .await
         {
@@ -303,7 +311,8 @@ impl ManagedState {
             // If rollback also fails, retain the pending transition for the
             // ResourceReclaimer instead of pretending either generation won.
             let settlement = match self
-                .runtime
+                .application
+                .runtime()
                 .apply_session_inputs(
                     &session_id,
                     owner_scope,
@@ -392,7 +401,8 @@ impl ManagedState {
         let parsed = body.into_resource_input().to_parsed_input();
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let persisted = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
@@ -467,13 +477,17 @@ impl ManagedState {
     ) -> Result<crate::types::resource::SessionResource, StateError> {
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
-        let ingress = self.repository_credential_ingress.as_ref().ok_or_else(|| {
-            StateError::Run(RunError::bad_request(
-                "repository authorization requires a configured credential Vault",
-            ))
-        })?;
+        let ingress = self
+            .application
+            .repository_credential_ingress()
+            .ok_or_else(|| {
+                StateError::Run(RunError::bad_request(
+                    "repository authorization requires a configured credential Vault",
+                ))
+            })?;
         let mut persisted = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
@@ -496,7 +510,7 @@ impl ManagedState {
             })?;
         ingress
             .rotate_repository_token(
-                &awaken_credential_vault::CredentialSourceId(binding.clone()),
+                &awaken_credential_contract::CredentialSourceId(binding.clone()),
                 &owner_scope,
                 patch.authorization_token.into_redacted(),
             )
@@ -545,7 +559,8 @@ impl ManagedState {
                 }
                 Err(StateError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     persisted = self
-                        .sessions_repo
+                        .application
+                        .session_repository()
                         .get(id)
                         .await
                         .ok_or(StateError::NotFound)?;
@@ -560,7 +575,8 @@ impl ManagedState {
         let owner_scope = self.resolve_owner(id).await.ok_or(StateError::NotFound)?;
         let binding_id = resource_binding_id(id, resource_id).ok_or(StateError::NotFound)?;
         let persisted = self
-            .sessions_repo
+            .application
+            .session_repository()
             .get(id)
             .await
             .ok_or(StateError::NotFound)?;
@@ -586,7 +602,7 @@ impl ManagedState {
         self.activate_inputs(persisted, &owner_scope, next).await?;
         if let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
             removed.source
-            && let Some(catalog) = &self.resource_catalog
+            && let Some(catalog) = &self.application.resource_catalog()
         {
             catalog
                 .set_repository_state(

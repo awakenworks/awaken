@@ -7,12 +7,14 @@ impl ManagedState {
     pub(crate) async fn begin_session_activity(&self, session_id: &str) -> Result<u64, StateError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .owner(session_id)
                 .await
                 .ok_or(StateError::NotFound)?;
             let mut session = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .get(session_id)
                 .await
                 .ok_or(StateError::NotFound)?;
@@ -41,12 +43,14 @@ impl ManagedState {
     ) -> Result<(), StateError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .owner(session_id)
                 .await
                 .ok_or(StateError::NotFound)?;
             let mut session = self
-                .sessions_repo
+                .application
+                .session_repository()
                 .get(session_id)
                 .await
                 .ok_or(StateError::NotFound)?;
@@ -88,7 +92,12 @@ mod tests {
         let first = state.begin_session_activity(&session.id).await.unwrap();
         let second = state.begin_session_activity(&session.id).await.unwrap();
         assert_eq!(second, first + 1);
-        let active = state.sessions_repo.get(&session.id).await.unwrap();
+        let active = state
+            .application
+            .session_repository()
+            .get(&session.id)
+            .await
+            .unwrap();
         assert_eq!(active.status, "running");
         assert_eq!(active.activity_epoch, second);
 
@@ -96,7 +105,12 @@ mod tests {
             .settle_session_activity(&session.id, first)
             .await
             .unwrap();
-        let still_active = state.sessions_repo.get(&session.id).await.unwrap();
+        let still_active = state
+            .application
+            .session_repository()
+            .get(&session.id)
+            .await
+            .unwrap();
         assert_eq!(still_active.activity_epoch, active.activity_epoch);
         assert_eq!(still_active.status, "running");
 
@@ -104,7 +118,12 @@ mod tests {
             .settle_session_activity(&session.id, second)
             .await
             .unwrap();
-        let idle = state.sessions_repo.get(&session.id).await.unwrap();
+        let idle = state
+            .application
+            .session_repository()
+            .get(&session.id)
+            .await
+            .unwrap();
         assert_eq!(idle.status, "idle");
         assert_eq!(idle.activity_epoch, second);
     }

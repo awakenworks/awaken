@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "coordinator"
+layer = "infrastructure"
+authority = "run-ingress"
+
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true

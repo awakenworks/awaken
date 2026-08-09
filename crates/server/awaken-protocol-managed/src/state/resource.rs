@@ -83,7 +83,7 @@ impl ManagedState {
                 let ParsedInputTarget::MemoryStore(memory_store_id) = &resource.target else {
                     unreachable!("only MemoryStore inputs derive a Managed mount path")
                 };
-                let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
+                let catalog = self.application.resource_catalog().ok_or_else(|| {
                     StateError::Run(RunError::bad_request(
                         "memory resources require a configured Resource Catalog",
                     ))
@@ -109,7 +109,7 @@ impl ManagedState {
                 initial_commit,
             } = &resource.target
             {
-                let catalog = self.resource_catalog.as_ref().ok_or_else(|| {
+                let catalog = self.application.resource_catalog().ok_or_else(|| {
                     StateError::Run(RunError::bad_request(
                         "repository resources require a configured Resource Catalog",
                     ))
@@ -117,7 +117,7 @@ impl ManagedState {
                 let repository_id = format!("managed:{session_id}:repository:{index}");
                 let credential_binding = match authorization_token.clone() {
                     Some(token) => {
-                        let ingress = self.repository_credential_ingress.as_ref().ok_or_else(|| {
+                        let ingress = self.application.repository_credential_ingress().ok_or_else(|| {
                             StateError::Run(RunError::bad_request(
                                 "repository authorization requires a configured credential Vault",
                             ))
@@ -125,7 +125,7 @@ impl ManagedState {
                         Some(
                             ingress
                                 .enter_repository_token(
-                                    awaken_credential_vault::CredentialSourceId(format!(
+                                    awaken_credential_contract::CredentialSourceId(format!(
                                         "managed:{session_id}:repository:{index}:credential"
                                     )),
                                     owner_scope,

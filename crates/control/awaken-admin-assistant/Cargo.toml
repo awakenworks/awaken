@@ -4,13 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[package.metadata.awaken]
+context = "control"
+layer = "application"
+authority = "admin-assistant"
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 tracing = "0.1"
 awaken-runtime-contract.workspace = true
-awaken-config-store.workspace = true
+awaken-agent-config.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
