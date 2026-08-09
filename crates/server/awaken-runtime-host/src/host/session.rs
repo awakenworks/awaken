@@ -221,6 +221,7 @@ impl SharedHost {
         &self,
         thread: &str,
         env: &crate::session_environment::SessionEnvironment,
+        kind: awaken_session_contract::SessionEnvironmentEffectKind,
     ) -> Result<(), HostError> {
         let binding = serde_json::to_string(&env.handle())
             .map_err(|error| HostError::internal(error.to_string()))?;
@@ -230,20 +231,29 @@ impl SharedHost {
             .expect("environment binding sink lock poisoned")
             .clone();
         if let Some(sink) = sink {
-            if !sink.owns(thread).await {
+            if !sink
+                .owns(thread)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?
+            {
                 return Ok(());
             }
             let realization = self
                 .session_slots
                 .read(thread, |slot| slot.realization_lease.clone())
                 .flatten();
-            sink.persist(thread, &binding, realization.as_ref())
-                .await
-                .map_err(|error| {
-                    HostError::internal(format!(
-                        "persist Session environment binding before use: {error}"
-                    ))
-                })?;
+            sink.persist(awaken_session_contract::SessionEnvironmentReceipt::new(
+                thread,
+                kind,
+                binding,
+                realization,
+            ))
+            .await
+            .map_err(|error| {
+                HostError::internal(format!(
+                    "persist Session environment binding before use: {error}"
+                ))
+            })?;
         }
         Ok(())
     }
@@ -334,7 +344,11 @@ impl SharedHost {
             }
         };
         if let Err(error) = self
-            .persist_environment_before_publish(thread, environment.as_ref())
+            .persist_environment_before_publish(
+                thread,
+                environment.as_ref(),
+                awaken_session_contract::SessionEnvironmentEffectKind::Create,
+            )
             .await
         {
             // Once the durable claim owns this handle, keep the physical
@@ -691,7 +705,11 @@ impl SharedHost {
                 return Err(error);
             }
             if let Err(error) = self
-                .persist_environment_before_publish(thread, env.as_ref())
+                .persist_environment_before_publish(
+                    thread,
+                    env.as_ref(),
+                    awaken_session_contract::SessionEnvironmentEffectKind::Create,
+                )
                 .await
             {
                 let _ = env.dispose().await;
@@ -704,8 +722,12 @@ impl SharedHost {
                 // A dispatch-owned sandbox may be adopted after a crash between
                 // dispatch binding and Session aggregate persistence. Repair the
                 // aggregate before publishing the adopted wrapper to this runtime.
-                self.persist_environment_before_publish(thread, env.as_ref())
-                    .await?;
+                self.persist_environment_before_publish(
+                    thread,
+                    env.as_ref(),
+                    awaken_session_contract::SessionEnvironmentEffectKind::Adopt,
+                )
+                .await?;
             }
             self.session_slots
                 .update(thread, |slot| slot.environment = Some(env.clone()));

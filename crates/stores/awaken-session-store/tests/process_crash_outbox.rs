@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
-    SessionLifecycleState, SessionMutationPayload,
+    SessionExecutionState, SessionMutationPayload,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -62,8 +62,9 @@ fn session() -> PersistedSession {
         mcp: Default::default(),
         resources: Default::default(),
         realization: None,
-        lifecycle: SessionLifecycleState::Idle,
-        archived_at: None,
+        execution: SessionExecutionState::Idle,
+        disposition: Default::default(),
+        terminal_cleanup: Default::default(),
     }
 }
 
@@ -130,9 +131,9 @@ async fn session_commit_survives_process_kill_before_notification() {
     let repo = SqliteManagedSessionRepository::open(db.to_str().unwrap()).unwrap();
     let mut expected = session();
     expected.revision = awaken_session_contract::SessionRevision(1);
-    assert_eq!(repo.get("sesn_process_crash").await, Some(expected));
-    assert_eq!(repo.pending_lifecycle().await, vec![fact()]);
-    repo.complete_lifecycle(&fact().id).await;
-    repo.complete_lifecycle(&fact().id).await;
-    assert!(repo.pending_lifecycle().await.is_empty());
+    assert_eq!(repo.get("sesn_process_crash").await, Ok(expected));
+    assert_eq!(repo.pending_lifecycle().await.unwrap(), vec![fact()]);
+    repo.complete_lifecycle(&fact().id).await.unwrap();
+    repo.complete_lifecycle(&fact().id).await.unwrap();
+    assert!(repo.pending_lifecycle().await.unwrap().is_empty());
 }

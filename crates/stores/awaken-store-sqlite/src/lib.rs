@@ -43,9 +43,47 @@ use awaken_agent_contract::thread::read::recovery::{
 };
 use awaken_agent_contract::thread::read::run_store::RunStore;
 use awaken_agent_contract::thread::read::thread_reader::ThreadReader;
+use awaken_store_schema::StoredU64;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 pub use awaken_store_schema::{COMMIT_BUNDLE_ID as BUNDLE_ID, commit_bundle};
+
+fn encode_authority(value: u64) -> Result<i64, Error> {
+    StoredU64::try_from(value)
+        .map(StoredU64::database_value)
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
+
+fn decode_authority(value: i64) -> Result<u64, Error> {
+    StoredU64::try_from(value)
+        .map(StoredU64::domain_value)
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
+
+fn increment_authority(value: u64) -> Result<u64, Error> {
+    StoredU64::try_from(value)
+        .and_then(|value| value.checked_add(1))
+        .map(StoredU64::domain_value)
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
+
+fn event_authority(sequence: u64, offset: usize) -> Result<StoredU64, Error> {
+    StoredU64::try_from(sequence)
+        .and_then(|value| value.checked_scale_and_offset(1_000, offset))
+        .map_err(|error| Error::Rejected(error.to_string()))
+}
+
+fn sqlite_authority(value: i64) -> Result<u64, rusqlite::Error> {
+    StoredU64::try_from(value)
+        .map(StoredU64::domain_value)
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Integer,
+                Box::new(error),
+            )
+        })
+}
 
 /// Errors from constructing or migrating the store. Commit-time failures use the
 /// neutral [`Coordinator`] error.
@@ -204,7 +242,7 @@ impl CommitCoordinator for SqliteCommitCoordinator {
         .await
         .map_err(|err| Error::Rejected(err.to_string()))??;
         let mut projection = lock(&self.projection)?;
-        advance_projection(&mut projection, commit, next);
+        advance_projection(&mut projection, commit, next)?;
         Ok(CommitRecord { sequence: next })
     }
 }
@@ -231,7 +269,7 @@ impl OperationCoordinator for SqliteCommitCoordinator {
             OperationWrite::Duplicate(receipt) => Ok(receipt),
             OperationWrite::Applied(receipt) => {
                 let mut projection = lock(&self.projection)?;
-                advance_projection(&mut projection, operation.commit, receipt.commit_sequence);
+                advance_projection(&mut projection, operation.commit, receipt.commit_sequence)?;
                 Ok(receipt)
             }
         }
@@ -505,9 +543,15 @@ impl RunRecoverySource for SqliteCommitCoordinator {
             messages,
             state,
             resume_tickets,
-            thread_version: thread_version.max(0) as u64,
-            store_cursor: store_cursor.max(0) as u64,
-            next_commit_ordinal: next_commit_ordinal.max(0) as u64,
+            thread_version: StoredU64::try_from(thread_version)
+                .map(StoredU64::domain_value)
+                .map_err(recovery_reject)?,
+            store_cursor: StoredU64::try_from(store_cursor)
+                .map(StoredU64::domain_value)
+                .map_err(recovery_reject)?,
+            next_commit_ordinal: StoredU64::try_from(next_commit_ordinal)
+                .map(StoredU64::domain_value)
+                .map_err(recovery_reject)?,
         })
     }
 }
@@ -557,21 +601,30 @@ fn write_commit(conn: &mut Connection, commit: &ThreadCommit) -> Result<u64, Err
         .map_err(reject)?;
     validate_transition_tx(&tx, commit)?;
     ensure_thread_version(&tx, &commit.thread_id)?;
-    let next: i64 = tx
+    let current: i64 = tx
         .query_row(
-            &format!("SELECT COALESCE(MAX(sequence), 0) + 1 FROM {NS}_commit"),
+            &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
             [],
             |row| row.get(0),
         )
         .map_err(reject)?;
-    write_commit_rows(&tx, next as u64, commit)?;
+    let next = increment_authority(decode_authority(current)?)?;
+    write_commit_rows(&tx, next, commit)?;
+    let current_version: i64 = tx
+        .query_row(
+            &format!("SELECT version FROM {NS}_thread_version WHERE thread_id = ?1"),
+            params![&commit.thread_id.0],
+            |row| row.get(0),
+        )
+        .map_err(reject)?;
+    let next_version = increment_authority(decode_authority(current_version)?)?;
     tx.execute(
-        &format!("UPDATE {NS}_thread_version SET version = version + 1 WHERE thread_id = ?1"),
-        params![&commit.thread_id.0],
+        &format!("UPDATE {NS}_thread_version SET version = ?2 WHERE thread_id = ?1"),
+        params![&commit.thread_id.0, encode_authority(next_version)?],
     )
     .map_err(reject)?;
     tx.commit().map_err(reject)?;
-    Ok(next as u64)
+    Ok(next)
 }
 
 fn write_operation(
@@ -616,8 +669,8 @@ fn write_operation(
         }
         return Ok(OperationWrite::Duplicate(CommitReceipt {
             operation_id: operation.operation_id.clone(),
-            commit_sequence: commit_sequence as u64,
-            thread_version: thread_version as u64,
+            commit_sequence: decode_authority(commit_sequence)?,
+            thread_version: decode_authority(thread_version)?,
             payload_hash: CommitPayloadHash(payload_hash),
             duplicate: true,
         }));
@@ -631,7 +684,8 @@ fn write_operation(
             |row| row.get(0),
         )
         .map_err(reject)?;
-    if current_version as u64 != operation.expected_thread_version {
+    let current_version = decode_authority(current_version)?;
+    if current_version != operation.expected_thread_version {
         return Err(Error::Rejected(format!(
             "thread version conflict: expected {}, current {}",
             operation.expected_thread_version, current_version
@@ -644,22 +698,24 @@ fn write_operation(
             |row| row.get(0),
         )
         .map_err(reject)?;
-    if current_ordinal as u64 != operation.operation_id.ordinal {
+    let current_ordinal = decode_authority(current_ordinal)?;
+    if current_ordinal != operation.operation_id.ordinal {
         return Err(Error::Rejected(format!(
             "commit operation ordinal conflict: expected {}, current {}",
             operation.operation_id.ordinal, current_ordinal
         )));
     }
     validate_transition_tx(&tx, &operation.commit)?;
-    let next: i64 = tx
+    let current_sequence: i64 = tx
         .query_row(
-            &format!("SELECT COALESCE(MAX(sequence), 0) + 1 FROM {NS}_commit"),
+            &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
             [],
             |row| row.get(0),
         )
         .map_err(reject)?;
-    write_commit_rows(&tx, next as u64, &operation.commit)?;
-    let thread_version = current_version + 1;
+    let next = increment_authority(decode_authority(current_sequence)?)?;
+    write_commit_rows(&tx, next, &operation.commit)?;
+    let thread_version = increment_authority(current_version)?;
     tx.execute(
         &format!("UPDATE {NS}_thread_version SET version = ?2 WHERE thread_id = ?1"),
         params![&operation.commit.thread_id.0, thread_version],
@@ -676,16 +732,16 @@ fn write_operation(
             operation_ordinal,
             &operation.commit.thread_id.0,
             &operation.payload_hash.0,
-            next,
-            thread_version
+            encode_authority(next)?,
+            encode_authority(thread_version)?
         ],
     )
     .map_err(reject)?;
     tx.commit().map_err(reject)?;
     Ok(OperationWrite::Applied(CommitReceipt {
         operation_id: operation.operation_id.clone(),
-        commit_sequence: next as u64,
-        thread_version: thread_version as u64,
+        commit_sequence: next,
+        thread_version,
         payload_hash: operation.payload_hash.clone(),
         duplicate: false,
     }))
@@ -748,7 +804,7 @@ fn write_commit_rows(
         &format!(
             "INSERT INTO {p}_commit (sequence, thread_id, run_id, phase) VALUES (?1,?2,?3,?4)"
         ),
-        params![next as i64, thread_id, run_id, state_json],
+        params![encode_authority(next)?, thread_id, run_id, state_json],
     )
     .map_err(reject)?;
 
@@ -757,7 +813,7 @@ fn write_commit_rows(
             &format!(
                 "INSERT INTO {p}_message (commit_sequence, thread_id, data) VALUES (?1,?2,?3)"
             ),
-            params![next as i64, thread_id, json(message)?],
+            params![encode_authority(next)?, thread_id, json(message)?],
         )
         .map_err(reject)?;
     }
@@ -767,19 +823,19 @@ fn write_commit_rows(
             &format!(
                 "INSERT INTO {p}_state_command (commit_sequence, thread_id, data) VALUES (?1,?2,?3)"
             ),
-            params![next as i64, thread_id, json(command)?],
+            params![encode_authority(next)?, thread_id, json(command)?],
         )
         .map_err(reject)?;
     }
 
     for (offset, draft) in commit.events.iter().enumerate() {
-        let sequence = next * 1_000 + offset as u64;
+        let sequence = event_authority(next, offset)?;
         tx.execute(
             &format!(
                 "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES (?1,?2,?3,?4)"
             ),
             params![
-                sequence as i64,
+                sequence.database_value(),
                 run_id,
                 json(&draft.kind)?,
                 json(&draft.payload)?
@@ -823,7 +879,11 @@ fn write_commit_rows(
     Ok(())
 }
 
-fn advance_projection(projection: &mut Projection, commit: ThreadCommit, sequence: u64) {
+fn advance_projection(
+    projection: &mut Projection,
+    commit: ThreadCommit,
+    sequence: u64,
+) -> Result<(), Error> {
     let run_state = commit.run_state();
     let run_id = commit.run_id().clone();
     let thread_id = commit.thread_id.clone();
@@ -831,14 +891,16 @@ fn advance_projection(projection: &mut Projection, commit: ThreadCommit, sequenc
     let awaiting = matches!((&resume_ticket, &run_state), (Some(_), RunState::Awaiting));
 
     projection.sequence = projection.sequence.max(sequence);
-    *projection
+    let thread_version = projection
         .thread_versions
         .entry(thread_id.clone())
-        .or_default() += 1;
-    *projection
+        .or_default();
+    *thread_version = increment_authority(*thread_version)?;
+    let run_commit_count = projection
         .run_commit_counts
         .entry(run_id.clone())
-        .or_default() += 1;
+        .or_default();
+    *run_commit_count = increment_authority(*run_commit_count)?;
     for message in commit.messages {
         projection.messages.push((thread_id.clone(), message));
     }
@@ -847,7 +909,7 @@ fn advance_projection(projection: &mut Projection, commit: ThreadCommit, sequenc
     }
     for (offset, draft) in commit.events.into_iter().enumerate() {
         projection.events.push(EventRecord {
-            sequence: sequence * 1_000 + offset as u64,
+            sequence: event_authority(sequence, offset)?.domain_value(),
             run_id: run_id.clone(),
             kind: draft.kind,
             payload: draft.payload,
@@ -869,6 +931,7 @@ fn advance_projection(projection: &mut Projection, commit: ThreadCommit, sequenc
     } else {
         projection.resume_tickets.remove(&run_id);
     }
+    Ok(())
 }
 
 /// Rebuild the read projection from the committed log in SQLite.
@@ -877,7 +940,8 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
         &format!("SELECT COALESCE(MAX(sequence), 0) FROM {NS}_commit"),
         [],
         |row| row.get::<_, i64>(0),
-    )? as u64;
+    )?;
+    let sequence = sqlite_authority(sequence)?;
     let mut projection = Projection {
         sequence,
         ..Default::default()
@@ -925,14 +989,34 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
     for row in rows {
         let (run_id, thread_id, state_json) = row?;
         if let Ok(state) = serde_json::from_str::<RunState>(&state_json) {
-            *projection
+            let thread_version = projection
                 .thread_versions
                 .entry(ThreadId(thread_id.clone()))
-                .or_default() += 1;
-            *projection
+                .or_default();
+            *thread_version = StoredU64::try_from(*thread_version)
+                .and_then(|value| value.checked_add(1))
+                .map(StoredU64::domain_value)
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?;
+            let run_commit_count = projection
                 .run_commit_counts
                 .entry(RunId(run_id.clone()))
-                .or_default() += 1;
+                .or_default();
+            *run_commit_count = StoredU64::try_from(*run_commit_count)
+                .and_then(|value| value.checked_add(1))
+                .map(StoredU64::domain_value)
+                .map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })?;
             let record = RunRecord {
                 id: RunId(run_id.clone()),
                 thread_id: ThreadId(thread_id.clone()),
@@ -965,7 +1049,7 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
             serde_json::from_str::<serde_json::Value>(&payload),
         ) {
             projection.events.push(EventRecord {
-                sequence: sequence as u64,
+                sequence: sqlite_authority(sequence)?,
                 run_id: RunId(run_id),
                 kind,
                 payload,

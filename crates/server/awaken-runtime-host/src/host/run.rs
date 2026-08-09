@@ -93,10 +93,21 @@ impl SharedHost {
     /// Rebuild the neutral child-Run projection from the one durable owner:
     /// `RunDelegations` entries committed in each parent Run's ordinary state log.
     pub async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, HostError> {
+        self.delegated_run_snapshot(thread)
+            .await
+            .map(|snapshot| snapshot.delegated_runs)
+    }
+
+    async fn delegated_run_snapshot(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
         let commit = self.commit_for_read(thread).await?;
         let commands = commit.committed_state(&ThreadId(thread.to_string()));
+        let watermark = u64::try_from(commands.len())
+            .map_err(|_| HostError::internal("delegation watermark exceeds u64"))?;
         let mut stores: HashMap<RunId, Store> = HashMap::new();
-        for command in commands {
+        for command in &commands {
             let Some(run_id) = command
                 .run_id
                 .clone()
@@ -104,7 +115,7 @@ impl SharedHost {
             else {
                 continue;
             };
-            stores.entry(run_id).or_default().apply(&command);
+            stores.entry(run_id).or_default().apply(command);
         }
         let mut projected = Vec::new();
         for store in stores.values() {
@@ -114,7 +125,84 @@ impl SharedHost {
         }
         projected.sort_by(|left, right| left.run_id.0.cmp(&right.run_id.0));
         projected.dedup_by(|left, right| left.run_id == right.run_id);
-        Ok(projected)
+        Ok(awaken_session_contract::DelegatedRunSnapshot {
+            delegated_runs: projected,
+            watermark,
+        })
+    }
+
+    /// Fence the parent Runtime at its durable dispatch authority, wait for any
+    /// foreground projection to observe settlement, and only then read the child
+    /// registry plus its committed-state watermark.
+    pub async fn quiesce_terminal_delegations(
+        &self,
+        thread: &str,
+    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
+        // Terminal control is deliberately Environment-free. A cold projection
+        // must never materialize the sandbox, MCP connections, or current Agent
+        // configuration merely to tear the Session down.
+        let resident = self
+            .session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten();
+        if let Some(ctx) = &resident
+            && let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref()
+        {
+            token.cancel();
+        }
+        if self.deployment.durable {
+            let store = self.dispatch_store()?;
+            let thread_id = ThreadId(thread.to_string());
+            let dispatches = store
+                .list_dispatches()
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            for dispatch in dispatches.into_iter().filter(|dispatch| {
+                dispatch.thread_id == thread_id
+                    && matches!(
+                        dispatch.state,
+                        awaken_run_ingress_contract::DispatchState::Pending
+                            | awaken_run_ingress_contract::DispatchState::Leased
+                            | awaken_run_ingress_contract::DispatchState::Awaiting
+                    )
+            }) {
+                if let Some(pool) = self.dispatch_pool.get() {
+                    // A local pool can synchronously drive the cancellation
+                    // receipt. A Coordinator without a pool still commits the
+                    // epoch-advancing cancellation below; its ordinary recovery
+                    // worker settles the already-fenced row.
+                    pool.cancel(&dispatch.run_id)
+                        .await
+                        .map_err(|error| HostError::internal(error.to_string()))?;
+                } else {
+                    store
+                        .cancel(&dispatch.run_id)
+                        .await
+                        .map_err(|error| HostError::internal(error.to_string()))?;
+                }
+            }
+        }
+
+        if let Some(ctx) = resident {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if ctx
+                    .active_run
+                    .lock()
+                    .expect("active run mutex poisoned")
+                    .is_none()
+                {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(HostError::internal(format!(
+                        "terminal quiescence timed out for Thread `{thread}`"
+                    )));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+        self.delegated_run_snapshot(thread).await
     }
 
     /// Durable committed-truth lifecycle feed for the partition containing
@@ -401,17 +489,24 @@ impl SharedHost {
         activation.data_subject_id = data_subject_id;
         let executor = crate::run_exec::BoundRunExecutor::new(self, ctx.clone())
             .with_supersede(supersede)
-            .with_stream_sink(sink);
-        let state = awaken_runtime_contract::execution::RunExecutor::execute(
+            .with_stream_sink(sink)
+            .retain_active_until_settled();
+        let state = match awaken_runtime_contract::execution::RunExecutor::execute(
             &executor,
             activation,
             awaken_runtime_contract::RuntimeRunContext::new(),
         )
         .await
-        .map_err(|error| HostError::internal(error.to_string()))?;
+        {
+            Ok(state) => state,
+            Err(error) => {
+                Self::clear_active_run(&ctx, &run_id);
+                return Err(HostError::internal(error.to_string()));
+            }
+        };
         let mut st = ctx.state.lock().await;
         let result = self
-            .finish_step(&ctx, &mut st, run_id, state, before, thread)
+            .finish_active_step(&ctx, &mut st, run_id, state, before, thread)
             .await?;
         Ok(result)
     }
@@ -425,21 +520,22 @@ impl SharedHost {
         activation: RunActivation,
         command: ResumeCommand,
     ) -> Result<RunState, HostError> {
-        if ctx.durable {
-            return self.resume_durable_foreground(ctx, command).await;
-        }
         let run_id = activation.run_id.clone();
         *ctx.active_run.lock().expect("active run mutex poisoned") = Some(run_id.clone());
+        if ctx.durable {
+            let result = self.resume_durable_foreground(ctx, command).await;
+            if result.is_err() {
+                Self::clear_active_run(ctx, &run_id);
+            }
+            return result;
+        }
         // Direct execution rematerializes an attempt-scoped executor (and a fresh
         // grant when brokered). Durable execution returned above and resumes only
         // through the dispatch worker's claimed path.
         let context = self.native_attempt_context(ctx, &activation).await?;
         let result = ctx.ingress.resume(activation, command, context).await;
-        {
-            let mut active = ctx.active_run.lock().expect("active run mutex poisoned");
-            if active.as_ref() == Some(&run_id) {
-                *active = None;
-            }
+        if result.is_err() {
+            Self::clear_active_run(ctx, &run_id);
         }
         result.map_err(|error| HostError::internal(error.to_string()))
     }
@@ -652,7 +748,7 @@ impl SharedHost {
             let state = self.drive_resume(&ctx, activation, command).await?;
             let mut st = ctx.state.lock().await;
             let result = self
-                .finish_step(&ctx, &mut st, run_id, state, before, thread)
+                .finish_active_step(&ctx, &mut st, run_id, state, before, thread)
                 .await?;
             return Ok(result);
         }
@@ -711,7 +807,7 @@ impl SharedHost {
             let state = self.drive_resume(&ctx, activation, command).await?;
             let mut st = ctx.state.lock().await;
             let result = self
-                .finish_step(&ctx, &mut st, run_id, state, before, thread)
+                .finish_active_step(&ctx, &mut st, run_id, state, before, thread)
                 .await?;
             return Ok(result);
         }
@@ -745,9 +841,33 @@ impl SharedHost {
         let state = self.drive_resume(&ctx, activation, command).await?;
         let mut st = ctx.state.lock().await;
         let result = self
-            .finish_step(&ctx, &mut st, run_id, state, before, thread)
+            .finish_active_step(&ctx, &mut st, run_id, state, before, thread)
             .await?;
         Ok(result)
+    }
+
+    fn clear_active_run(ctx: &SessionCtx, run_id: &RunId) {
+        let mut active = ctx.active_run.lock().expect("active run mutex poisoned");
+        if active.as_ref() == Some(run_id) {
+            *active = None;
+        }
+    }
+
+    async fn finish_active_step(
+        &self,
+        ctx: &SessionCtx,
+        st: &mut SessionState,
+        run_id: RunId,
+        state: RunState,
+        before: usize,
+        thread: &str,
+    ) -> Result<RunResult, HostError> {
+        let active_run = run_id.clone();
+        let result = self
+            .finish_step(ctx, st, run_id, state, before, thread)
+            .await;
+        Self::clear_active_run(ctx, &active_run);
+        result
     }
 
     /// Reuse the canonical claim-recovery snapshot as the exact thread read for

@@ -1,14 +1,14 @@
 //! Durable terminal Session transitions.
 
-use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionLifecycleState};
+use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionDisposition};
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError,
-    resource_reconciliation::mutation_failure,
+    mutation::repository_failure, resource_reconciliation::mutation_failure,
 };
 
 #[derive(Clone, Debug)]
-pub struct SessionLifecycleTransition {
+pub struct SessionDispositionMutation {
     pub owner_scope: String,
     pub session: PersistedSession,
     pub transitioned: bool,
@@ -23,37 +23,33 @@ impl SessionApplication {
         session_id: &str,
         archived_at: &str,
         fact: ManagedLifecycleFact,
-    ) -> Result<SessionLifecycleTransition, SessionMutationError> {
+    ) -> Result<SessionDispositionMutation, SessionMutationError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self
-                .owner(session_id)
-                .await
-                .ok_or(SessionMutationError::NotFound)?;
+            let owner_scope = self.owner(session_id).await?;
             let mut session = self
                 .session_repository()
                 .get(session_id)
                 .await
-                .ok_or(SessionMutationError::NotFound)?;
-            if session.lifecycle == SessionLifecycleState::Terminated {
-                return Ok(SessionLifecycleTransition {
+                .map_err(repository_failure)?;
+            if matches!(session.disposition, SessionDisposition::Archived { .. }) {
+                return Ok(SessionDispositionMutation {
                     owner_scope,
                     session,
                     transitioned: false,
                 });
             }
-            if session.is_terminal() {
+            if session.is_hidden() {
                 return Err(SessionMutationError::NotFound);
             }
             session
-                .transition_lifecycle(SessionLifecycleState::Terminated)
+                .archive(archived_at)
                 .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
-            session.archived_at = Some(archived_at.into());
             match self
                 .commit_session_snapshot(&owner_scope, session, "archive", vec![fact.clone()])
                 .await
             {
                 Ok(session) => {
-                    return Ok(SessionLifecycleTransition {
+                    return Ok(SessionDispositionMutation {
                         owner_scope,
                         session,
                         transitioned: true,
@@ -73,30 +69,26 @@ impl SessionApplication {
         &self,
         session_id: &str,
         fact: ManagedLifecycleFact,
-    ) -> Result<SessionLifecycleTransition, SessionPreparationError> {
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            let owner_scope = self
-                .owner(session_id)
-                .await
-                .ok_or(SessionPreparationError::NotFound)?;
+            let owner_scope = self.owner(session_id).await.map_err(mutation_failure)?;
             let mut session = self
                 .session_repository()
                 .get(session_id)
                 .await
-                .ok_or(SessionPreparationError::NotFound)?;
-            if session.lifecycle == SessionLifecycleState::Deleted {
-                return Ok(SessionLifecycleTransition {
+                .map_err(repository_failure)
+                .map_err(mutation_failure)?;
+            if matches!(
+                session.disposition,
+                SessionDisposition::Deleting | SessionDisposition::Deleted
+            ) {
+                return Ok(SessionDispositionMutation {
                     owner_scope,
                     session,
                     transitioned: false,
                 });
             }
-            if session.is_terminal() {
-                return Err(SessionPreparationError::NotFound);
-            }
-            session
-                .transition_lifecycle(SessionLifecycleState::Deleted)
-                .map_err(|error| SessionPreparationError::Unavailable(error.to_string()))?;
+            session.request_delete();
             if session.resources.pending.is_none() {
                 session
                     .resources
@@ -108,7 +100,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(session) => {
-                    return Ok(SessionLifecycleTransition {
+                    return Ok(SessionDispositionMutation {
                         owner_scope,
                         session,
                         transitioned: true,

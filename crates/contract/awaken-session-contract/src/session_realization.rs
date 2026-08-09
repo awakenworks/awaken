@@ -221,6 +221,38 @@ pub enum SessionRealizationDriveError {
 /// Local and remote topology adapters share this algorithm. They may differ in
 /// how a frozen projection is installed and how MCP effects are transported,
 /// but cannot acquire a second ordering, cleanup, receipt, or failure path.
+async fn publish_mcp_projection(
+    mcp: &dyn McpAttachmentRealizer,
+    generation: &crate::McpGenerationRef,
+) -> Result<(), RunError> {
+    let receipt = mcp
+        .publish_mcp_generation_receipt(generation.clone())
+        .await?;
+    receipt
+        .verify(generation, crate::McpProjectionEffectKind::Publish)
+        .map_err(|_| {
+            RunError::classified(
+                "mcp_receipt_mismatch",
+                "Runtime returned a receipt for another MCP publication",
+            )
+        })
+}
+
+async fn drain_mcp_projection(
+    mcp: &dyn McpAttachmentRealizer,
+    generation: &crate::McpGenerationRef,
+) -> Result<(), RunError> {
+    let receipt = mcp.drain_mcp_generation_receipt(generation.clone()).await?;
+    receipt
+        .verify(generation, crate::McpProjectionEffectKind::Drain)
+        .map_err(|_| {
+            RunError::classified(
+                "mcp_receipt_mismatch",
+                "Runtime returned a receipt for another MCP drain",
+            )
+        })
+}
+
 pub async fn drive_session_realization(
     session_id: &str,
     control: &dyn SessionRealizationControl,
@@ -277,7 +309,7 @@ pub async fn drive_session_realization(
                 .await;
                 if let Err(error) = effect {
                     for receipt in &receipts {
-                        let _ = mcp.drain_mcp_generation(receipt.generation.clone()).await;
+                        let _ = drain_mcp_projection(mcp, &receipt.generation).await;
                     }
                     let _ = control
                         .fail_session_realization(FailSessionRealization {
@@ -303,7 +335,7 @@ pub async fn drive_session_realization(
                     Ok(next) => next,
                     Err(error) => {
                         for receipt in receipts {
-                            let _ = mcp.drain_mcp_generation(receipt.generation).await;
+                            let _ = drain_mcp_projection(mcp, &receipt.generation).await;
                         }
                         return Err(error.into());
                     }
@@ -312,10 +344,10 @@ pub async fn drive_session_realization(
             SessionRealizationAction::Publish { publish, drain } => {
                 let effect = async {
                     for generation in &publish {
-                        mcp.publish_mcp_generation(generation.clone()).await?;
+                        publish_mcp_projection(mcp, generation).await?;
                     }
                     for generation in &drain {
-                        mcp.drain_mcp_generation(generation.clone()).await?;
+                        drain_mcp_projection(mcp, generation).await?;
                     }
                     Ok::<(), RunError>(())
                 }

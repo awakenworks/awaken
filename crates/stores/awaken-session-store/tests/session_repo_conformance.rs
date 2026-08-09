@@ -13,7 +13,7 @@ use awaken_deployment_contract::{
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, McpAttachmentDraft,
     McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession,
-    SessionLifecycleState, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionRepositoryError, SessionRevision, SessionTombstone,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -108,8 +108,9 @@ fn session(id: &str, title: &str) -> PersistedSession {
             .unwrap(),
         ),
         realization: None,
-        lifecycle: SessionLifecycleState::Idle,
-        archived_at: None,
+        execution: SessionExecutionState::Idle,
+        disposition: Default::default(),
+        terminal_cleanup: Default::default(),
     }
 }
 
@@ -184,14 +185,17 @@ async fn save_get_round_trips<R: ManagedSessionRepository>(r: &R) {
     let want = create_session(r, "default", session("sesn_1", "hello"), Vec::new()).await;
     assert_eq!(
         r.get("sesn_1").await,
-        Some(want),
+        Ok(want),
         "the full aggregate must round-trip"
     );
 }
 
-/// Absent id → None (no fabrication, fail-closed read).
+/// Absent id → typed NotFound (no fabrication, fail-closed read).
 async fn absent_id_reads_none<R: ManagedSessionRepository>(r: &R) {
-    assert!(r.get("never-saved").await.is_none());
+    assert_eq!(
+        r.get("never-saved").await,
+        Err(SessionRepositoryError::NotFound)
+    );
 }
 
 /// Idempotent upsert: saving the same id twice keeps the latest, not two rows.
@@ -205,18 +209,15 @@ async fn save_is_idempotent_upsert<R: ManagedSessionRepository>(r: &R) {
         Vec::new(),
     )
     .await;
-    assert_eq!(
-        r.get("sesn_1").await.and_then(|s| s.title),
-        Some("second".into())
-    );
+    assert_eq!(r.get("sesn_1").await.unwrap().title, Some("second".into()));
 }
 
 /// A visible row and its owner are one write: no backend may expose the row with
 /// a missing or stale scope after aggregate creation or replacement returns.
 async fn ownership_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r: &R) {
     create_session(r, "ws_a", session("sesn_owned", "owned"), Vec::new()).await;
-    assert!(r.get("sesn_owned").await.is_some());
-    assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_a"));
+    assert!(r.get("sesn_owned").await.is_ok());
+    assert_eq!(r.owner("sesn_owned").await.as_deref(), Ok("ws_a"));
 
     replace_session(
         r,
@@ -226,9 +227,9 @@ async fn ownership_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r:
         Vec::new(),
     )
     .await;
-    assert_eq!(r.owner("sesn_owned").await.as_deref(), Some("ws_a"));
+    assert_eq!(r.owner("sesn_owned").await.as_deref(), Ok("ws_a"));
     assert_eq!(
-        r.get("sesn_owned").await.and_then(|s| s.title),
+        r.get("sesn_owned").await.unwrap().title,
         Some("updated".into())
     );
 }
@@ -236,7 +237,10 @@ async fn ownership_is_one_atomic_repository_fact<R: ManagedSessionRepository>(r:
 /// Binding is a narrow update: it fails closed for an unknown id and changes no
 /// other aggregate field for a known Session.
 async fn environment_state_is_atomic_and_non_destructive<R: ManagedSessionRepository>(r: &R) {
-    assert!(r.get("unknown").await.is_none());
+    assert_eq!(
+        r.get("unknown").await,
+        Err(SessionRepositoryError::NotFound)
+    );
     let want = session("sesn_bound", "unchanged");
     create_session(r, "ws_a", want.clone(), Vec::new()).await;
     let mut bound = want.clone();
@@ -252,7 +256,7 @@ async fn environment_state_is_atomic_and_non_destructive<R: ManagedSessionReposi
     got.environment = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
     got.revision = Default::default();
     assert_eq!(got, want, "binding update preserves every other field");
-    assert_eq!(r.owner("sesn_bound").await.as_deref(), Some("ws_a"));
+    assert_eq!(r.owner("sesn_bound").await.as_deref(), Ok("ws_a"));
 }
 
 /// The lifecycle fact is committed in the same repository transaction as the
@@ -266,26 +270,25 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
         vec![created.clone()],
     )
     .await;
-    assert!(r.get("sesn_lifecycle").await.is_some());
-    assert_eq!(r.owner("sesn_lifecycle").await.as_deref(), Some("ws_a"));
-    assert_eq!(r.pending_lifecycle().await, vec![created.clone()]);
+    assert!(r.get("sesn_lifecycle").await.is_ok());
+    assert_eq!(r.owner("sesn_lifecycle").await.as_deref(), Ok("ws_a"));
+    assert_eq!(r.pending_lifecycle().await.unwrap(), vec![created.clone()]);
 
     // Stable event identity makes an enqueue retry a no-op.
-    r.append_lifecycle(created.clone()).await;
-    assert_eq!(r.pending_lifecycle().await, vec![created.clone()]);
-    r.complete_lifecycle(&created.id).await;
-    assert!(r.pending_lifecycle().await.is_empty());
+    r.append_lifecycle(created.clone()).await.unwrap();
+    assert_eq!(r.pending_lifecycle().await.unwrap(), vec![created.clone()]);
+    r.complete_lifecycle(&created.id).await.unwrap();
+    assert!(r.pending_lifecycle().await.unwrap().is_empty());
 
     let archived = fact("evt:archive", "sesn_lifecycle", "session.archived");
     let mut archive = r.get("sesn_lifecycle").await.unwrap();
-    archive.lifecycle = SessionLifecycleState::Terminated;
-    archive.archived_at = Some("2026-07-19T00:00:00Z".into());
+    archive.archive("2026-07-19T00:00:00Z").unwrap();
     replace_session(r, "ws_a", archive, "test:archive", vec![archived.clone()]).await;
     let durable = r.get("sesn_lifecycle").await.expect("archived session");
-    assert_eq!(durable.lifecycle, SessionLifecycleState::Terminated);
-    assert_eq!(durable.archived_at.as_deref(), Some("2026-07-19T00:00:00Z"));
-    assert_eq!(r.pending_lifecycle().await, vec![archived.clone()]);
-    r.complete_lifecycle(&archived.id).await;
+    assert_eq!(durable.execution, SessionExecutionState::Terminated);
+    assert_eq!(durable.archived_at(), Some("2026-07-19T00:00:00Z"));
+    assert_eq!(r.pending_lifecycle().await.unwrap(), vec![archived.clone()]);
+    r.complete_lifecycle(&archived.id).await.unwrap();
 
     let deleted = fact("evt:delete", "sesn_lifecycle", "session.deleted");
     let current = r.get("sesn_lifecycle").await.unwrap();
@@ -308,8 +311,11 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
         .unwrap(),
         SessionMutationResult::Applied { .. }
     ));
-    assert!(r.get("sesn_lifecycle").await.is_none());
-    assert_eq!(r.pending_lifecycle().await, vec![deleted]);
+    assert_eq!(
+        r.get("sesn_lifecycle").await,
+        Err(SessionRepositoryError::NotFound)
+    );
+    assert_eq!(r.pending_lifecycle().await.unwrap(), vec![deleted]);
 }
 
 /// Reconciliation-index cause/effect rules: C1=Resource/MCP durable work is
@@ -339,7 +345,7 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
     pending = create_session(r, "ws_a", pending, Vec::new()).await;
 
     assert_eq!(
-        r.reconcilable_sessions().await,
+        r.reconcilable_sessions().await.unwrap(),
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending.clone(),
@@ -349,14 +355,14 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
     pending.resources.start_attempt().unwrap();
     pending.resources.commit().unwrap();
     pending = replace_session(r, "ws_a", pending, "test:resource-active", Vec::new()).await;
-    let indexed = r.reconcilable_sessions().await;
+    let indexed = r.reconcilable_sessions().await.unwrap();
     assert_eq!(indexed.len(), 1, "active MCP remains restart work");
     assert!(indexed[0].session.mcp.needs_reconciliation());
 
     pending.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Failed;
     pending = replace_session(r, "ws_a", pending, "test:mcp-failed", Vec::new()).await;
     assert_eq!(
-        r.reconcilable_sessions().await,
+        r.reconcilable_sessions().await.unwrap(),
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending.clone(),
@@ -364,17 +370,17 @@ async fn pending_resource_activation_index_is_durable<R: ManagedSessionRepositor
         "I2/E4: active Resource retention remains recoverable"
     );
 
-    pending.lifecycle = SessionLifecycleState::Terminated;
+    pending.execution = SessionExecutionState::Terminated;
     pending
         .resources
         .complete_terminal_release("conformance cleanup");
     pending = replace_session(r, "ws_a", pending, "test:resource-released", Vec::new()).await;
-    assert!(r.reconcilable_sessions().await.is_empty());
+    assert!(r.reconcilable_sessions().await.unwrap().is_empty());
 
     pending.environment.set_resident("worker-owned-binding");
     pending = replace_session(r, "ws_a", pending, "test:resident-environment", Vec::new()).await;
     assert_eq!(
-        r.reconcilable_sessions().await,
+        r.reconcilable_sessions().await.unwrap(),
         vec![ScopedPersistedSession {
             workspace_id: "ws_a".into(),
             session: pending,
@@ -447,10 +453,10 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
         assert_eq!(created, SessionRevision(1));
         assert_eq!(
             repo.idempotency_receipt(&id, "create").await,
-            Some(awaken_session_contract::SessionIdempotencyReceipt {
+            Ok(Some(awaken_session_contract::SessionIdempotencyReceipt {
                 payload_hash: create_record.payload_hash.clone(),
                 committed_revision: SessionRevision(1),
-            }),
+            })),
             "the decision table reads the same atomic receipt it writes"
         );
 
@@ -479,7 +485,12 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
                     )
                     .await
                     .unwrap_err();
-                assert_eq!(error, SessionRepositoryError::IdempotencyMismatch);
+                assert_eq!(
+                    error,
+                    SessionRepositoryError::Conflict(
+                        awaken_session_contract::SessionRepositoryConflict::IdempotencyMismatch
+                    )
+                );
             }
             CasRule::Replace
             | CasRule::ReplaceReplay
@@ -560,7 +571,7 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
                         new_revision: SessionRevision(2)
                     }
                 );
-                assert!(repo.get(&id).await.is_none());
+                assert_eq!(repo.get(&id).await, Err(SessionRepositoryError::NotFound));
                 if matches!(rule, CasRule::DeleteReplay) {
                     assert_eq!(
                         repo.commit_mutation("ws_a", mutation).await.unwrap(),
@@ -627,7 +638,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
     // | D4   | create            | T  | T  | -       | E3 reject   |
     // | D5   | scheduler at r    | -  | -  | current | E4          |
     // | D6   | scheduler at r-1  | -  | -  | stale   | E5          |
-    let baseline_facts = repo.pending_lifecycle().await.len();
+    let baseline_facts = repo.pending_lifecycle().await.unwrap().len();
     let created = deployment_record("depl_cas", 0, false);
     assert_eq!(
         repo.write_deployment(
@@ -679,7 +690,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         1,
         "D3/E2"
     );
-    let facts = repo.pending_lifecycle().await;
+    let facts = repo.pending_lifecycle().await.unwrap();
     assert_eq!(facts.len(), baseline_facts + 2, "D1/D3 lifecycle atomicity");
     assert!(
         facts.iter().all(|fact| fact.id != "invalid-jump"),

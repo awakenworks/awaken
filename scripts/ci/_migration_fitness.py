@@ -6,6 +6,9 @@ from pathlib import Path
 
 
 VERSIONED_SQL = re.compile(r"^V[0-9]{4}__[a-z0-9_]+\.sql$")
+DIALECT_SQL = re.compile(
+    r"^(?P<identity>V[0-9]{4}__[a-z0-9_]+)\.(?P<dialect>postgres|sqlite)\.sql$"
+)
 DDL = re.compile(
     r"\b(?:CREATE\s+(?:TABLE|INDEX|SEQUENCE|FUNCTION|TRIGGER|VIEW)|"
     r"ALTER\s+TABLE|DROP\s+(?:TABLE|INDEX|SEQUENCE|FUNCTION|TRIGGER|VIEW))\b",
@@ -62,13 +65,50 @@ def check_all(repo_root: Path) -> list[str]:
     errors: list[str] = []
     crates = repo_root / "crates"
 
+    dialect_groups: dict[tuple[Path, str], dict[str, Path]] = {}
     for path in sorted(crates.rglob("*.sql")):
+        dialect = DIALECT_SQL.fullmatch(path.name)
+        if path.parent.name == "migrations" and dialect:
+            key = (path.parent, dialect.group("identity"))
+            dialect_groups.setdefault(key, {})[dialect.group("dialect")] = path
+            continue
         if path.parent.name != "migrations" or not VERSIONED_SQL.fullmatch(path.name):
             errors.append(
                 f"{path.relative_to(repo_root)}: SQL schema file is not a versioned "
-                "migrations/Vdddd__slug.sql authority"
+                "migrations/Vdddd__slug.sql authority or a paired dialect migration"
             )
             continue
+
+    for (directory, identity), pair in sorted(dialect_groups.items()):
+        missing = {"postgres", "sqlite"}.difference(pair)
+        if missing:
+            present = next(iter(pair.values()))
+            errors.append(
+                f"{present.relative_to(repo_root)}: dialect migration {identity} is missing "
+                f"{', '.join(sorted(missing))} sibling"
+            )
+            continue
+        postgres = pair["postgres"]
+        sqlite = pair["sqlite"]
+        include_postgres = f'include_str!("migrations/{postgres.name}")'
+        include_sqlite = f'include_str!("migrations/{sqlite.name}")'
+        owners = []
+        for source_path in sorted(directory.parent.rglob("*.rs")):
+            source = _production_rust(source_path.read_text(encoding="utf-8"))
+            if include_postgres in source or include_sqlite in source:
+                owners.append((source_path, source))
+        exact_owners = [
+            source_path
+            for source_path, source in owners
+            if include_postgres in source
+            and include_sqlite in source
+            and "Migration::per_dialect" in _migration_declarations(source)
+        ]
+        if len(exact_owners) != 1:
+            errors.append(
+                f"{postgres.relative_to(repo_root)}: paired dialect migration {identity} must "
+                "be included together by exactly one Migration::per_dialect declaration"
+            )
 
     for path in sorted(crates.rglob("*.rs")):
         if "tests" in path.parts:
@@ -92,7 +132,8 @@ def selftest() -> None:
     runtime idempotent DML after an inline bundle declaration -> ignored; M7 a
     published-legacy constructor owns historical DDL. Constructor tests in
     awaken-scoped-migration own the separate SQL-policy decision table; M8
-    unrelated code before an inline bundle -> does not change its identity.
+    unrelated code before an inline bundle -> does not change its identity; M9
+    only an exact Postgres/SQLite dialect suffix carries one shared identity.
     """
     assert VERSIONED_SQL.fullmatch("V0001__catalog.sql")  # M1
     assert not VERSIONED_SQL.fullmatch("catalog.sql")  # M2
@@ -116,3 +157,8 @@ pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     assert _migration_declarations(published) == _migration_declarations(
         "#[cfg(feature = \"test-support\")]\nuse fixture::Store;\n" + published
     )  # M8
+    postgres = DIALECT_SQL.fullmatch("V0025__nonnegative_authority.postgres.sql")
+    sqlite = DIALECT_SQL.fullmatch("V0025__nonnegative_authority.sqlite.sql")
+    assert postgres and sqlite
+    assert postgres.group("identity") == sqlite.group("identity")  # M9
+    assert not DIALECT_SQL.fullmatch("V0025__nonnegative_authority.mysql.sql")

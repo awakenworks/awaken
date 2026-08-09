@@ -84,15 +84,18 @@ impl ManagedState {
         launch_fingerprint: &str,
         workspace_id: &str,
     ) -> Result<Option<Session>, StateError> {
-        let Some(persisted) = self.application.session_repository().get(session_id).await else {
-            return Ok(None);
+        let persisted = match self.application.session_repository().get(session_id).await {
+            Ok(persisted) => persisted,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
+            Err(error) => return Err(StateError::from(error)),
         };
         let owner = self
             .application
             .session_repository()
             .owner(session_id)
-            .await;
-        if owner.as_deref() != Some(workspace_id)
+            .await
+            .map_err(StateError::from)?;
+        if owner != workspace_id
             || persisted
                 .metadata
                 .get("awaken.deployment_run_id")

@@ -408,7 +408,7 @@ async fn reconcile_work_dispatches(
     environments: &dyn SessionEnvironmentSource,
 ) -> WorkDispatchReconciliation {
     let mut report = WorkDispatchReconciliation::default();
-    let sessions = match sessions.try_reconcilable_sessions().await {
+    let sessions = match sessions.reconcilable_sessions().await {
         Ok(sessions) => sessions,
         Err(error) => {
             report.failures.push(WorkDispatchFailure {
@@ -452,41 +452,43 @@ impl RepositoryEnvironmentBindingSink {
 
 #[async_trait::async_trait]
 impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
-    async fn owns(&self, session_id: &str) -> bool {
-        self.repo.owner(session_id).await.is_some()
+    async fn owns(&self, session_id: &str) -> Result<bool, RunError> {
+        match self.repo.owner(session_id).await {
+            Ok(_) => Ok(true),
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => Ok(false),
+            Err(error) => Err(RunError::internal(error.to_string())),
+        }
     }
 
     async fn persist(
         &self,
-        session_id: &str,
-        binding: &str,
-        realization: Option<&awaken_session_contract::SessionRealizationLease>,
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
     ) -> Result<(), RunError> {
+        receipt
+            .verify()
+            .map_err(|error| RunError::internal(error.to_string()))?;
+        let session_id = receipt.session_id.as_str();
+        let binding = receipt.binding.as_str();
         const CAS_ATTEMPTS: usize = 3;
         for attempt in 0..CAS_ATTEMPTS {
-            let owner = self.repo.owner(session_id).await.ok_or_else(|| {
-                RunError::internal(format!("Session `{session_id}` is not durable"))
-            })?;
+            let owner = self
+                .repo
+                .owner(session_id)
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?;
             let mut session = self
                 .repo
-                .try_get(session_id)
+                .get(session_id)
                 .await
-                .map_err(|error| RunError::internal(error.to_string()))?
-                .ok_or_else(|| {
-                    RunError::internal(format!("Session `{session_id}` is not durable"))
-                })?;
-            // An exact replay has no side effect to fence. This is required when a
-            // claimed Run adopts an already-durable environment after its original
-            // realization owner crashed. Any attempt to change the binding still
-            // passes through the realization lease below.
-            if session.environment.binding() == Some(binding) {
-                return Ok(());
-            }
+                .map_err(|error| RunError::internal(error.to_string()))?;
             let now_unix_ms = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
                 .unwrap_or_default();
-            let realization_is_current = match (session.realization.as_ref(), realization) {
+            let realization_is_current = match (
+                session.realization.as_ref(),
+                receipt.realization.as_ref(),
+            ) {
                 (Some(current), Some(asserted)) => {
                     awaken_session_contract::realization_lease_authorizes(
                         current,
@@ -503,7 +505,15 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                     "Session environment binding was fenced by another realization owner",
                 ));
             }
-            session.environment.set_resident(binding);
+            // Even an equal-binding replay must prove the current owner. Once
+            // authorized, an exact receipt is a no-write replay; an adoption of
+            // the same substrate under a newer lease commits the newer evidence.
+            if session.environment.binding() == Some(binding)
+                && session.environment.effect_id() == Some(receipt.effect_id.as_str())
+            {
+                return Ok(());
+            }
+            session.environment.apply_receipt(&receipt);
             let expected_revision = session.revision;
             let payload = awaken_session_contract::SessionMutationPayload::Replace(session);
             let payload_hash = payload.stable_hash();

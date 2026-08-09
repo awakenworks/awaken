@@ -209,8 +209,9 @@ mod tests {
             mcp,
             resources,
             realization: None,
-            lifecycle: SessionLifecycleState::Preparing,
-            archived_at: None,
+            execution: SessionExecutionState::Preparing,
+            disposition: Default::default(),
+            terminal_cleanup: Default::default(),
         }
     }
 
@@ -504,7 +505,7 @@ mod tests {
             .expect("Q10");
         assert_eq!(complete.action, SessionRealizationAction::Complete, "Q10");
         let after_ack = repo.get("session-phase").await.unwrap();
-        assert_eq!(after_ack.lifecycle, SessionLifecycleState::Idle, "Q10");
+        assert_eq!(after_ack.execution, SessionExecutionState::Idle, "Q10");
         assert!(after_ack.mcp.attachments[0].publication_acknowledged, "Q10");
 
         let ack_replay = state
@@ -683,8 +684,8 @@ mod tests {
             .expect("Q16 scoped failure");
         let after_mcp_failure = repo.get("session-phase").await.unwrap();
         assert_eq!(
-            after_mcp_failure.lifecycle,
-            SessionLifecycleState::Idle,
+            after_mcp_failure.execution,
+            SessionExecutionState::Idle,
             "Q16"
         );
         assert_eq!(after_mcp_failure.resources.pending, Some(desired), "Q16");
@@ -933,8 +934,8 @@ mod tests {
             .await
             .expect("F2 acknowledge");
         assert_eq!(
-            empty_repo.get("session-empty").await.unwrap().lifecycle,
-            SessionLifecycleState::Idle,
+            empty_repo.get("session-empty").await.unwrap().execution,
+            SessionExecutionState::Idle,
             "F2"
         );
 
@@ -960,8 +961,8 @@ mod tests {
             .expect("F3");
         let after_failure = failed_repo.get("session-failed").await.unwrap();
         assert_eq!(
-            after_failure.lifecycle,
-            SessionLifecycleState::ActivationFailed,
+            after_failure.execution,
+            SessionExecutionState::ActivationFailed,
             "F3"
         );
         assert_eq!(

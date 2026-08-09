@@ -1036,8 +1036,9 @@ mod runtime_session_store_tests {
             mcp: Default::default(),
             resources: Default::default(),
             realization: None,
-            lifecycle: awaken_session_contract::SessionLifecycleState::Idle,
-            archived_at: None,
+            execution: awaken_session_contract::SessionExecutionState::Idle,
+            disposition: Default::default(),
+            terminal_cleanup: Default::default(),
         }
     }
 
@@ -1074,7 +1075,7 @@ mod runtime_session_store_tests {
             .expect("test composition owns Managed Execution");
         assert_eq!(
             execution.sessions.owner("sesn-restart").await.as_deref(),
-            Some("workspace-a")
+            Ok("workspace-a")
         );
         assert_eq!(
             execution

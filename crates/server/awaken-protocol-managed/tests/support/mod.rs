@@ -191,29 +191,38 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
                 .inner
                 .get(mutation.payload.session_id())
                 .await
-                .map_or(Default::default(), |session| session.revision);
+                .map(|session| session.revision)
+                .or_else(|error| match error {
+                    SessionRepositoryError::NotFound => Ok(Default::default()),
+                    error => Err(error),
+                })?;
             return Ok(SessionMutationResult::Conflict { current_revision });
         }
         self.inner.commit_mutation(owner_scope, mutation).await
     }
 
-    async fn append_lifecycle(&self, fact: ManagedLifecycleFact) {
-        self.inner.append_lifecycle(fact).await;
+    async fn append_lifecycle(
+        &self,
+        fact: ManagedLifecycleFact,
+    ) -> Result<(), SessionRepositoryError> {
+        self.inner.append_lifecycle(fact).await
     }
 
-    async fn pending_lifecycle(&self) -> Vec<ManagedLifecycleFact> {
+    async fn pending_lifecycle(&self) -> Result<Vec<ManagedLifecycleFact>, SessionRepositoryError> {
         self.inner.pending_lifecycle().await
     }
 
-    async fn complete_lifecycle(&self, fact_id: &str) {
-        self.inner.complete_lifecycle(fact_id).await;
+    async fn complete_lifecycle(&self, fact_id: &str) -> Result<(), SessionRepositoryError> {
+        self.inner.complete_lifecycle(fact_id).await
     }
 
-    async fn get(&self, session_id: &str) -> Option<PersistedSession> {
+    async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError> {
         self.inner.get(session_id).await
     }
 
-    async fn reconcilable_sessions(&self) -> Vec<ScopedPersistedSession> {
+    async fn reconcilable_sessions(
+        &self,
+    ) -> Result<Vec<ScopedPersistedSession>, SessionRepositoryError> {
         self.inner.reconcilable_sessions().await
     }
 
@@ -221,11 +230,11 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         &self,
         session_id: &str,
         key: &str,
-    ) -> Option<SessionIdempotencyReceipt> {
+    ) -> Result<Option<SessionIdempotencyReceipt>, SessionRepositoryError> {
         self.inner.idempotency_receipt(session_id, key).await
     }
 
-    async fn owner(&self, session_id: &str) -> Option<String> {
+    async fn owner(&self, session_id: &str) -> Result<String, SessionRepositoryError> {
         self.inner.owner(session_id).await
     }
 }

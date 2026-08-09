@@ -8,7 +8,7 @@ use awaken_credential_contract::{
 use awaken_session_contract::{
     EnvironmentFingerprint, EnvironmentSnapshot, McpAttachmentDraft, McpAttachmentOrigin,
     McpAttachmentState, McpTarget, PersistedSession, ResolvedSessionResources, SessionBaseline,
-    SessionBaselineState, SessionLifecycleState, SessionMcpAttachmentSet,
+    SessionBaselineState, SessionDisposition, SessionExecutionState, SessionMcpAttachmentSet,
     SessionMcpAuthoringContext, SessionNetworkPolicy, SessionResourceState, SessionRevision,
 };
 
@@ -75,6 +75,31 @@ fn decode_resource_state(data: &str) -> Result<SessionResourceState, serde_json:
     serde_json::from_value(value)
 }
 
+fn legacy_session_state(
+    status: &str,
+    archived_at: Option<String>,
+) -> Result<(SessionExecutionState, SessionDisposition), serde_json::Error> {
+    let (execution, disposition) = match status {
+        "deleted" => (
+            SessionExecutionState::Terminated,
+            SessionDisposition::Deleted,
+        ),
+        "terminated" if archived_at.is_some() => (
+            SessionExecutionState::Terminated,
+            SessionDisposition::Archived {
+                archived_at: archived_at.expect("checked above"),
+            },
+        ),
+        other => (
+            other.parse::<SessionExecutionState>().map_err(|error| {
+                <serde_json::Error as serde::de::Error>::custom(error.to_string())
+            })?,
+            SessionDisposition::Active,
+        ),
+    };
+    Ok((execution, disposition))
+}
+
 pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_json::Error> {
     let revision = SessionRevision(u64::try_from(row.revision).map_err(|_| {
         serde_json::Error::io(std::io::Error::new(
@@ -84,10 +109,45 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
     })?);
     if let Some(aggregate_json) = row.aggregate_json {
         let mut value: serde_json::Value = serde_json::from_str(&aggregate_json)?;
+        // Split the former one-dimensional lifecycle into execution and
+        // retention exactly once. Historical `deleted` is a retention state;
+        // historical `terminated + archived_at` is an archived Session.
+        if value.get("disposition").is_none() {
+            let object = value.as_object_mut().ok_or_else(|| {
+                serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Session aggregate must be an object",
+                ))
+            })?;
+            let status_key = if object.contains_key("status") {
+                "status"
+            } else {
+                "lifecycle"
+            };
+            let status = object
+                .get(status_key)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Session aggregate has no lifecycle state",
+                    ))
+                })?
+                .to_string();
+            let archived_at = object
+                .remove("archived_at")
+                .and_then(|value| value.as_str().map(str::to_owned));
+            let (execution, disposition) = legacy_session_state(&status, archived_at)?;
+            object.insert(status_key.into(), serde_json::json!(execution.as_str()));
+            object.insert(
+                "disposition".into(),
+                serde_json::to_value(disposition).expect("Session disposition serializes"),
+            );
+        }
         // Collapse the former parallel activity state to its only independent
-        // fact: the monotonic overlapping-turn fence. Public `status` remains
-        // authoritative for logical lifecycle; physical Hand residency is local
-        // Runtime Host state.
+        // fact: the monotonic overlapping-turn fence. The aggregate execution
+        // state remains authoritative; physical Hand residency is local Runtime
+        // Host state.
         if value.get("activity_epoch").is_none() {
             let epoch = value
                 .as_object_mut()
@@ -113,7 +173,10 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
                 .and_then(|object| object.remove("environment_binding"));
             let environment = match legacy_binding {
                 Some(serde_json::Value::String(binding)) => {
-                    awaken_session_contract::SessionEnvironmentState::Resident { binding }
+                    awaken_session_contract::SessionEnvironmentState::Resident {
+                        binding,
+                        effect_id: None,
+                    }
                 }
                 _ => awaken_session_contract::SessionEnvironmentState::Unmaterialized,
             };
@@ -260,6 +323,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
     for attachment in &mut mcp.attachments {
         attachment.state = McpAttachmentState::Active;
     }
+    let (execution, disposition) = legacy_session_state(&row.status, row.archived_at)?;
     Ok(PersistedSession {
         session_id: row.session_id,
         revision,
@@ -270,16 +334,17 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         activity_epoch: 0,
         environment: row.environment_binding.map_or(
             awaken_session_contract::SessionEnvironmentState::Unmaterialized,
-            |binding| awaken_session_contract::SessionEnvironmentState::Resident { binding },
+            |binding| awaken_session_contract::SessionEnvironmentState::Resident {
+                binding,
+                effect_id: None,
+            },
         ),
         mcp,
         resources,
         realization: None,
-        lifecycle: row
-            .status
-            .parse::<SessionLifecycleState>()
-            .map_err(|error| <serde_json::Error as serde::de::Error>::custom(error.to_string()))?,
-        archived_at: row.archived_at,
+        execution,
+        disposition,
+        terminal_cleanup: Default::default(),
     })
 }
 
@@ -330,6 +395,7 @@ fn legacy_credential_access(
 #[cfg(test)]
 mod tests {
     use awaken_session_contract::ManagedSessionRepository as _;
+    use awaken_session_contract::{SessionDisposition, SessionExecutionState};
     use rusqlite::params;
 
     use crate::{SqliteManagedSessionRepository, tests::create_fixture, tests::sample};
@@ -380,5 +446,53 @@ mod tests {
             ),
             "M3"
         );
+    }
+
+    /// Historical status and archive columns are decoded into the two current
+    /// axes once. A deleted row must never become executable, while a terminated
+    /// row without an archive timestamp remains an active terminal Session.
+    #[tokio::test]
+    async fn legacy_lifecycle_migrates_to_execution_and_disposition() {
+        let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+        for (id, status, archived_at) in [
+            (
+                "legacy-archived",
+                "terminated",
+                Some("2026-08-08T00:00:00Z"),
+            ),
+            ("legacy-deleted", "deleted", None),
+            ("legacy-terminal", "terminated", None),
+        ] {
+            create_fixture(&repo, "default", sample(id), Vec::new()).await;
+            let mut legacy = serde_json::to_value(sample(id)).unwrap();
+            let object = legacy.as_object_mut().unwrap();
+            object.remove("disposition");
+            object.insert("status".into(), serde_json::json!(status));
+            object.insert("archived_at".into(), serde_json::json!(archived_at));
+            repo.conn
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE managed_session SET aggregate_json = ?2 WHERE session_id = ?1",
+                    params![id, serde_json::to_string(&legacy).unwrap()],
+                )
+                .unwrap();
+        }
+
+        let archived = repo.get("legacy-archived").await.unwrap();
+        assert_eq!(archived.execution, SessionExecutionState::Terminated);
+        assert!(matches!(
+            archived.disposition,
+            SessionDisposition::Archived { ref archived_at }
+                if archived_at == "2026-08-08T00:00:00Z"
+        ));
+
+        let deleted = repo.get("legacy-deleted").await.unwrap();
+        assert_eq!(deleted.execution, SessionExecutionState::Terminated);
+        assert!(matches!(deleted.disposition, SessionDisposition::Deleted));
+
+        let terminal = repo.get("legacy-terminal").await.unwrap();
+        assert_eq!(terminal.execution, SessionExecutionState::Terminated);
+        assert!(matches!(terminal.disposition, SessionDisposition::Active));
     }
 }

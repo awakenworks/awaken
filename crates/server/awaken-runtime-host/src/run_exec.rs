@@ -252,6 +252,7 @@ pub(crate) struct BoundRunExecutor<'a> {
     sink: Option<Arc<dyn StreamSink>>,
     cancellation_mirror:
         Option<Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>>,
+    release_active_on_return: bool,
 }
 
 impl<'a> BoundRunExecutor<'a> {
@@ -262,6 +263,7 @@ impl<'a> BoundRunExecutor<'a> {
             supersede: false,
             sink: None,
             cancellation_mirror: None,
+            release_active_on_return: true,
         }
     }
 
@@ -280,6 +282,14 @@ impl<'a> BoundRunExecutor<'a> {
         mirror: Arc<std::sync::Mutex<Option<awaken_runtime_contract::CancellationToken>>>,
     ) -> Self {
         self.cancellation_mirror = Some(mirror);
+        self
+    }
+
+    /// Keep the foreground identity installed until the caller has projected the
+    /// committed terminal/awaiting step. Terminal quiescence treats an empty slot
+    /// as proof that no parent delegation commit remains in flight.
+    pub(crate) fn retain_active_until_settled(mut self) -> Self {
+        self.release_active_on_return = false;
         self
     }
 }
@@ -315,13 +325,15 @@ impl RunExecutor for BoundRunExecutor<'_> {
             )
             .await
             .map_err(|error| ExecutionError::Execution(error.to_string()));
-        let mut active_run = self
-            .ctx
-            .active_run
-            .lock()
-            .expect("active run mutex poisoned");
-        if active_run.as_ref() == Some(&run_id) {
-            *active_run = None;
+        if self.release_active_on_return {
+            let mut active_run = self
+                .ctx
+                .active_run
+                .lock()
+                .expect("active run mutex poisoned");
+            if active_run.as_ref() == Some(&run_id) {
+                *active_run = None;
+            }
         }
         result
     }
@@ -744,7 +756,7 @@ mod tests {
                 awaken_run_ingress::RunClaim,
             >,
         ) -> Result<
-            awaken_resource_contract::FileRecord,
+            awaken_resource_contract::ArtifactPublicationReceipt,
             awaken_resource_contract::ArtifactPublicationError,
         > {
             self.claims

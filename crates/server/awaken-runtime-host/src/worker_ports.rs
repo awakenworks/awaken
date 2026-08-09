@@ -72,7 +72,7 @@ mod tests {
                 awaken_run_ingress::RunClaim,
             >,
         ) -> Result<
-            awaken_resource_contract::FileRecord,
+            awaken_resource_contract::ArtifactPublicationReceipt,
             awaken_resource_contract::ArtifactPublicationError,
         > {
             Err(awaken_resource_contract::ArtifactPublicationError::new(

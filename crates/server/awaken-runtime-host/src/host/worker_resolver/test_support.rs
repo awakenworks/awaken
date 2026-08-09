@@ -107,9 +107,7 @@ pub(super) struct ToggleBindingSink {
 impl awaken_session_contract::SessionEnvironmentBindingSink for ToggleBindingSink {
     async fn persist(
         &self,
-        _session_id: &str,
-        _binding: &str,
-        _realization: Option<&awaken_session_contract::SessionRealizationLease>,
+        _receipt: awaken_session_contract::SessionEnvironmentReceipt,
     ) -> Result<(), awaken_session_contract::RunError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail.load(Ordering::SeqCst) {

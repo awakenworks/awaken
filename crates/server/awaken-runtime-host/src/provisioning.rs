@@ -8,10 +8,10 @@ use std::sync::Arc;
 
 use crate::host::SharedHost;
 use awaken_provisioning_contract as pc;
-#[cfg(test)]
-use awaken_resource_contract::FileCatalogError;
 use awaken_resource_contract::FileStore;
-use awaken_resource_contract::{FileCatalog, FileRecord, ResourcePurgeError};
+use awaken_resource_contract::{FileCatalog, ResourcePurgeError};
+#[cfg(test)]
+use awaken_resource_contract::{FileCatalogError, FileRecord};
 use awaken_run_ingress::{Clock as _, DispatchQueue as _};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
@@ -419,27 +419,34 @@ impl SharedHost {
     /// Managed Agents model — branch/commit/push/PR via MCP tools) is SKIPPED here: pushing
     /// host-side too would double-write or conflict with the agent's own pushes. Host-push
     /// remains only the fallback for a repo with no GitHub MCP (e.g. a non-MCP CLI). A no-op
-    /// for a thread with no repos, no live env, or nothing the agent committed. Best-effort.
-    pub async fn publish_thread_repositories(&self, thread: &str) {
+    /// for a thread with no repos, no live env, or nothing the agent committed.
+    /// A transport failure keeps terminal cleanup pending so the live checkout
+    /// remains available for the same idempotent Git publication retry.
+    pub async fn publish_thread_repositories(
+        &self,
+        thread: &str,
+    ) -> Result<(), ResourcePurgeError> {
         let env = self.session_environment(thread).await;
         let repositories = self
             .session_slots
             .read(thread, |slot| slot.resources.repositories.clone())
             .unwrap_or_default();
         let Some(env) = env else {
-            return;
+            return Ok(());
         };
         for repository in repositories {
             if repository.plan.access == pc::MountAccess::ReadOnly {
                 continue;
             }
-            let _ = pc::RepositoryRealizer::publish_repository(
+            pc::RepositoryRealizer::publish_repository(
                 env.as_ref(),
                 &repository.plan,
                 repository.credential.as_ref(),
             )
-            .await;
+            .await
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
         }
+        Ok(())
     }
 
     /// Harvest a thread's run-authored skills into the durable catalog (ADR-0036 D6/D8,
@@ -449,16 +456,16 @@ impl SharedHost {
     /// next one that opens against the same catalog. A no-op for a thread with no live
     /// environment or a host with no durable skill store (nothing to persist into).
     /// Idempotent: a re-scanned delivered skill puts identical bytes back under the same id.
-    pub async fn harvest_thread_skills(&self, thread: &str) {
+    pub async fn harvest_thread_skills(&self, thread: &str) -> Result<(), ResourcePurgeError> {
         if !self.skills.has_store() {
-            return;
+            return Ok(());
         }
         let env = self.session_environment(thread).await;
         let Some(env) = env else {
-            return;
+            return Ok(());
         };
         let workspace = self.thread_workspace(thread);
-        self.persist_authored_skills(&workspace, env.as_ref()).await;
+        self.persist_authored_skills(&workspace, env.as_ref()).await
     }
 
     /// Scan a live environment's workspace skill dir and persist each authored skill to the
@@ -468,12 +475,17 @@ impl SharedHost {
         &self,
         workspace: &str,
         env: &crate::session_environment::SessionEnvironment,
-    ) {
+    ) -> Result<(), ResourcePurgeError> {
         for skill in env.scan_skill_dir(crate::skills::DEFAULT_SKILLS_SUBDIR) {
-            self.skills
+            if let Some(result) = self
+                .skills
                 .persist_authored(workspace, &skill.id, &skill.content)
-                .await;
+                .await
+            {
+                result.map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            }
         }
+        Ok(())
     }
 
     /// Persist every Agent-authored output before the environment can be disposed.
@@ -482,7 +494,7 @@ impl SharedHost {
     pub async fn harvest_thread_artifacts(
         &self,
         thread: &str,
-    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+    ) -> Result<Vec<awaken_resource_contract::ArtifactPublicationReceipt>, ResourcePurgeError> {
         self.artifact_harvester().harvest(thread).await
     }
 }
@@ -513,7 +525,7 @@ impl ArtifactHarvester {
     pub(crate) async fn harvest(
         &self,
         thread: &str,
-    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+    ) -> Result<Vec<awaken_resource_contract::ArtifactPublicationReceipt>, ResourcePurgeError> {
         let claim = self.current_claim(thread);
         self.harvest_with_claim(thread, claim).await
     }
@@ -522,7 +534,7 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
         claim: Option<awaken_run_ingress::RunClaim>,
-    ) -> Result<Vec<FileRecord>, ResourcePurgeError> {
+    ) -> Result<Vec<awaken_resource_contract::ArtifactPublicationReceipt>, ResourcePurgeError> {
         let _local_guard = match (&claim, &self.local_claim_fence) {
             (Some(claim), Some(Ok(dispatch))) => {
                 let guard = dispatch
@@ -580,19 +592,33 @@ impl ArtifactHarvester {
                 .unwrap_or(artifact.path.trim_start_matches('/'))
                 .to_string();
             let mime_type = mime_type_for_path(&logical_path).to_string();
-            let record = self
+            let effect_id = awaken_resource_contract::harvest_idempotency_key(
+                thread,
+                &logical_path,
+                &content_id,
+            );
+            let publication = awaken_resource_contract::ArtifactPublication {
+                effect_id,
+                workspace_id: workspace.clone(),
+                session_id: thread.to_string(),
+                logical_path,
+                mime_type,
+                content_id,
+                bytes,
+                fence: claim.clone(),
+            };
+            publication
+                .verify()
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            let receipt = self
                 .publisher
-                .publish(awaken_resource_contract::ArtifactPublication {
-                    workspace_id: workspace.clone(),
-                    session_id: thread.to_string(),
-                    logical_path,
-                    mime_type,
-                    bytes,
-                    fence: claim.clone(),
-                })
+                .publish(publication.clone())
                 .await
                 .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-            out.push(record);
+            receipt
+                .verify(&publication)
+                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            out.push(receipt);
         }
         Ok(out)
     }
@@ -843,8 +869,8 @@ mod provisioning_registry_tests {
                 ..Default::default()
             },
         );
-        host.publish_thread_repositories("t").await; // no env → no publish
-        host.harvest_thread_skills("t").await; // no env / no store → no persist
+        host.publish_thread_repositories("t").await.unwrap(); // no env → no publish
+        host.harvest_thread_skills("t").await.unwrap(); // no env / no store → no persist
         assert!(host.harvest_thread_artifacts("t").await.unwrap().is_empty());
         assert!(
             host.harvest_thread_artifacts("never-seen")
@@ -891,9 +917,9 @@ mod provisioning_registry_tests {
             .await
             .unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(retry[0].id, first[0].id);
-        assert!(first[0].id.starts_with("file_"));
-        assert!(first[0].downloadable);
+        assert_eq!(retry[0].record.id, first[0].record.id);
+        assert!(first[0].record.id.starts_with("file_"));
+        assert!(first[0].record.downloadable);
 
         crate::ManagedHost::new(host.clone())
             .end_session("session-artifacts")
@@ -1057,7 +1083,8 @@ mod provisioning_registry_tests {
                 .is_empty()
         );
         host.persist_authored_skills(host.local_workspace(), &env)
-            .await;
+            .await
+            .unwrap();
         let ids = host
             .skills
             .definitions(host.local_workspace())

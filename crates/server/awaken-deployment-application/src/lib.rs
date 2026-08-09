@@ -1640,7 +1640,8 @@ mod tests {
         let facts = awaken_session_contract::ManagedSessionRepository::pending_lifecycle(
             repository.as_ref(),
         )
-        .await;
+        .await
+        .expect("Session lifecycle outbox");
         assert!(
             facts
                 .iter()

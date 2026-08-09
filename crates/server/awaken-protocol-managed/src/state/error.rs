@@ -29,3 +29,12 @@ pub enum StateError {
     #[error(transparent)]
     LiveInbox(#[from] LiveInboxError),
 }
+
+impl From<awaken_session_contract::SessionRepositoryError> for StateError {
+    fn from(error: awaken_session_contract::SessionRepositoryError) -> Self {
+        match error {
+            awaken_session_contract::SessionRepositoryError::NotFound => Self::NotFound,
+            error => Self::Run(RunError::internal(error.to_string())),
+        }
+    }
+}

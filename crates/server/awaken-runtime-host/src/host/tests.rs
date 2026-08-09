@@ -3252,14 +3252,14 @@ struct BindingOrderSink {
 impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink {
     async fn persist(
         &self,
-        session_id: &str,
-        _binding: &str,
-        _realization: Option<&awaken_session_contract::SessionRealizationLease>,
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
     ) -> Result<(), awaken_session_contract::RunError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let host = self.host.upgrade().expect("host remains live");
         self.observed_before_publish.store(
-            host.session_environment(session_id).await.is_none(),
+            host.session_environment(&receipt.session_id)
+                .await
+                .is_none(),
             Ordering::SeqCst,
         );
         if self.fail {
@@ -7257,6 +7257,27 @@ async fn end_session_disposes_the_threads_sandbox() {
         .end_session("never-existed")
         .await
         .expect("end_session is a no-op for an unknown thread");
+}
+
+#[tokio::test]
+async fn terminal_quiescence_never_materializes_a_cold_environment() {
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+
+    let snapshot = host
+        .quiesce_terminal_delegations("cold-terminal")
+        .await
+        .expect("cold terminal fence reads committed truth");
+
+    assert!(snapshot.delegated_runs.is_empty());
+    assert_eq!(snapshot.watermark, 0);
+    assert!(
+        host.session_slots
+            .read("cold-terminal", |slot| {
+                slot.runtime.is_none() && slot.environment.is_none()
+            })
+            .unwrap_or(true),
+        "terminal control may allocate a lock slot but not a Runtime or Environment projection"
+    );
 }
 
 #[tokio::test]

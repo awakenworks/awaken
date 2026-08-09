@@ -1,8 +1,8 @@
 //! Durable activity fencing for overlapping Session turns.
 
-use awaken_session_contract::{PersistedSession, SessionLifecycleState};
+use awaken_session_contract::{PersistedSession, SessionExecutionState};
 
-use super::{SessionApplication, SessionMutationError};
+use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
 /// Failure from a Session activity transition.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -43,12 +43,13 @@ impl SessionApplication {
             let owner_scope = self
                 .owner(session_id)
                 .await
-                .ok_or(SessionActivityError::NotFound)?;
+                .map_err(SessionActivityError::mutation)?;
             let mut session = self
                 .session_repository()
                 .get(session_id)
                 .await
-                .ok_or(SessionActivityError::NotFound)?;
+                .map_err(repository_failure)
+                .map_err(SessionActivityError::mutation)?;
             if session.is_terminal() {
                 return Err(SessionActivityError::Terminal);
             }
@@ -61,9 +62,9 @@ impl SessionApplication {
             // stronger realization phase until it converges: replacing it with
             // `running` would let a failed Stage look like an ordinary turn and
             // a later settlement could erase `activation_failed` back to idle.
-            if session.lifecycle == SessionLifecycleState::Idle {
+            if session.execution == SessionExecutionState::Idle {
                 session
-                    .transition_lifecycle(SessionLifecycleState::Running)
+                    .transition_execution(SessionExecutionState::Running)
                     .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
             }
             match self
@@ -91,12 +92,13 @@ impl SessionApplication {
             let owner_scope = self
                 .owner(session_id)
                 .await
-                .ok_or(SessionActivityError::NotFound)?;
+                .map_err(SessionActivityError::mutation)?;
             let mut session = self
                 .session_repository()
                 .get(session_id)
                 .await
-                .ok_or(SessionActivityError::NotFound)?;
+                .map_err(repository_failure)
+                .map_err(SessionActivityError::mutation)?;
             if session.is_terminal() || session.activity_epoch != expected_epoch {
                 return Ok(session);
             }
@@ -104,11 +106,11 @@ impl SessionApplication {
             // transition. Initial realization may still be preparing/activating,
             // or may have failed terminally on another process while this event
             // was queued; settlement must not overwrite either authority.
-            if session.lifecycle != SessionLifecycleState::Running {
+            if session.execution != SessionExecutionState::Running {
                 return Ok(session);
             }
             session
-                .transition_lifecycle(SessionLifecycleState::Idle)
+                .transition_execution(SessionExecutionState::Idle)
                 .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
             match self
                 .commit_session_snapshot(&owner_scope, session, "settle-activity", Vec::new())

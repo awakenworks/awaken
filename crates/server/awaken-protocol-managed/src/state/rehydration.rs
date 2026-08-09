@@ -16,13 +16,19 @@ impl ManagedState {
         // runtime history. Opening a thread constructs its context; doing that first
         // would transiently resolve today's Agent/Skill configuration and could both
         // drift from the Session pin and mutate its sandbox before the pin is known.
-        let persisted = self.application.session_repository().get(id).await;
-        let owner_scope = self
-            .application
-            .session_repository()
-            .owner(id)
-            .await
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        let persisted = match self.application.session_repository().get(id).await {
+            Ok(session) if session.is_publicly_readable() => Some(session),
+            Ok(_) => return Err(StateError::NotFound),
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => None,
+            Err(error) => return Err(StateError::from(error)),
+        };
+        let owner_scope = match self.application.session_repository().owner(id).await {
+            Ok(owner) => owner,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                DEFAULT_SCOPE.to_string()
+            }
+            Err(error) => return Err(StateError::from(error)),
+        };
         let mut persisted = match persisted {
             Some(session) => Some(
                 self.application
@@ -32,14 +38,11 @@ impl ManagedState {
             ),
             None => None,
         };
-        // Terminated Sessions remain readable tombstones; deleted and failed
-        // activation rows are hidden from the public read model.
-        if persisted.as_ref().is_some_and(|session| {
-            matches!(
-                session.lifecycle,
-                SessionLifecycleState::Deleted | SessionLifecycleState::ActivationFailed
-            )
-        }) {
+        // Archived Sessions remain readable; deletion phases are hidden from the
+        // public read model. Initial activation failure was rejected by the
+        // visibility guard above but remains durable and deletable through the
+        // terminal-command reconstruction path.
+        if persisted.as_ref().is_some_and(PersistedSession::is_hidden) {
             return Err(StateError::NotFound);
         }
         if let Some(session) = persisted.clone() {

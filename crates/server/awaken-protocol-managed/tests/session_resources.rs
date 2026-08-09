@@ -293,7 +293,11 @@ async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
         assert_eq!(status, expected, "{rule}");
         if expected == StatusCode::BAD_REQUEST {
             assert!(prepared.lock().unwrap().is_empty(), "{rule}");
-            assert!(repo.get("sesn_0").await.is_none(), "{rule}");
+            assert_eq!(
+                repo.get("sesn_0").await,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound),
+                "{rule}"
+            );
         } else {
             assert_eq!(prepared.lock().unwrap().len(), 1, "{rule}");
         }
@@ -925,7 +929,10 @@ async fn create_rejects_different_names_for_one_canonical_mcp_target_before_inse
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(prepared.lock().unwrap().is_empty());
-    assert!(repo.get("sesn_0").await.is_none());
+    assert_eq!(
+        repo.get("sesn_0").await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
+    );
 }
 
 async fn app_with_session() -> (Router, String) {

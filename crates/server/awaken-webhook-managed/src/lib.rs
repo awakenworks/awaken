@@ -221,7 +221,7 @@ impl WebhookLifecycleFactSink {
         draining: &Arc<tokio::sync::Mutex<()>>,
     ) {
         let _guard = draining.lock().await;
-        let rows = match session_outbox.try_pending_lifecycle().await {
+        let rows = match session_outbox.pending_lifecycle().await {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!(%error, "Session lifecycle outbox remains pending");
@@ -229,8 +229,10 @@ impl WebhookLifecycleFactSink {
             }
         };
         for row in rows {
-            if delivery.deliver(&row).await.is_ok() {
-                session_outbox.complete_lifecycle(&row.id).await;
+            if delivery.deliver(&row).await.is_ok()
+                && let Err(error) = session_outbox.complete_lifecycle(&row.id).await
+            {
+                tracing::warn!(fact_id = %row.id, %error, "Session lifecycle receipt remains pending");
             }
         }
     }
@@ -244,7 +246,8 @@ impl SessionLifecycleFactSink for WebhookLifecycleFactSink {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        self.session_outbox
+        if let Err(error) = self
+            .session_outbox
             .append_lifecycle(ManagedLifecycleFact {
                 id: format!("event_{n}"),
                 object_id: session_id.to_string(),
@@ -252,7 +255,11 @@ impl SessionLifecycleFactSink for WebhookLifecycleFactSink {
                 event_type: event_type.to_string(),
                 timestamp: now,
             })
-            .await;
+            .await
+        {
+            tracing::warn!(session_id, %error, "Session lifecycle fact could not be persisted");
+            return;
+        }
         self.spawn_drain();
     }
 

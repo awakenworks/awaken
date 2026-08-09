@@ -8,13 +8,13 @@ use awaken_resource_contract::{
 };
 use awaken_session_contract::{
     ActivationState, ManagedLifecycleFact, PersistedSession, ResolvedInputSource, RunError,
-    SessionLifecycleState, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
     SessionRevision, SessionTombstone,
 };
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError, SessionReconciliation,
-    SessionReconciliationFailure,
+    SessionReconciliationFailure, mutation::repository_failure,
 };
 
 #[derive(Clone)]
@@ -99,7 +99,7 @@ impl ResourcePurgeGuard for SessionResourcePurgeGuard {
         let mut blockers = std::collections::BTreeSet::new();
         let sessions = self
             .sessions
-            .try_reconcilable_sessions()
+            .reconcilable_sessions()
             .await
             .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
         for scoped in sessions {
@@ -142,6 +142,12 @@ pub(crate) fn mutation_failure(error: SessionMutationError) -> SessionPreparatio
         ),
         SessionMutationError::Unavailable(message) => SessionPreparationError::Unavailable(message),
     }
+}
+
+fn repository_preparation(
+    error: awaken_session_contract::SessionRepositoryError,
+) -> SessionPreparationError {
+    mutation_failure(repository_failure(error))
 }
 
 pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError {
@@ -230,21 +236,24 @@ impl SessionApplication {
     pub(crate) async fn repair_resource_references(&self, owner_scope: &str, session_id: &str) {
         let authoritative = self.session_repository().get(session_id).await;
         let repair = match authoritative {
-            Some(session) => {
+            Ok(session) => {
                 self.synchronize_resource_references(owner_scope, &session)
                     .await
             }
-            None => match &self.resource_references {
-                Some(references) => references
-                    .replace_references(
-                        ResourceReferenceKind::SessionBinding,
-                        session_id,
-                        Vec::new(),
-                    )
-                    .await
-                    .map_err(internal),
-                None => Ok(()),
-            },
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                match &self.resource_references {
+                    Some(references) => references
+                        .replace_references(
+                            ResourceReferenceKind::SessionBinding,
+                            session_id,
+                            Vec::new(),
+                        )
+                        .await
+                        .map_err(internal),
+                    None => Ok(()),
+                }
+            }
+            Err(error) => Err(repository_preparation(error)),
         };
         if let Err(error) = repair {
             tracing::warn!(
@@ -268,7 +277,7 @@ impl SessionApplication {
             .session_repository()
             .get(session_id)
             .await
-            .ok_or(SessionPreparationError::NotFound)?;
+            .map_err(repository_preparation)?;
         let desired = persisted
             .resources
             .desired()
@@ -297,7 +306,7 @@ impl SessionApplication {
             .session_repository()
             .get(session_id)
             .await
-            .ok_or(SessionPreparationError::NotFound)?;
+            .map_err(repository_preparation)?;
         let (desired, removed) =
             persisted
                 .resources
@@ -343,7 +352,7 @@ impl SessionApplication {
             .session_repository()
             .get(session_id)
             .await
-            .ok_or(SessionPreparationError::NotFound)?;
+            .map_err(repository_preparation)?;
         let credential_source = persisted
             .resources
             .active
@@ -402,7 +411,7 @@ impl SessionApplication {
                         .session_repository()
                         .get(session_id)
                         .await
-                        .ok_or(SessionPreparationError::NotFound)?;
+                        .map_err(repository_preparation)?;
                 }
                 Err(error) => return Err(mutation_failure(error)),
             }
@@ -438,7 +447,7 @@ impl SessionApplication {
                         .session_repository()
                         .get(&current.session_id)
                         .await
-                        .ok_or(SessionPreparationError::NotFound)?;
+                        .map_err(repository_preparation)?;
                 }
                 result => return result.map_err(mutation_failure),
             }
@@ -478,7 +487,7 @@ impl SessionApplication {
                         .session_repository()
                         .get(&current.session_id)
                         .await
-                        .ok_or(SessionPreparationError::NotFound)?;
+                        .map_err(repository_preparation)?;
                 }
                 result => return result.map_err(mutation_failure),
             }
@@ -499,7 +508,7 @@ impl SessionApplication {
                 .session_repository()
                 .get(session_id)
                 .await
-                .ok_or(SessionPreparationError::NotFound)?;
+                .map_err(repository_preparation)?;
             if current.resources.revision != resource_revision
                 || current.resources.pending.as_ref() != Some(desired)
             {
@@ -635,7 +644,7 @@ impl SessionApplication {
     /// Reconcile every local durable Resource projection requiring convergence.
     pub async fn reconcile_resource_activations(&self) -> SessionReconciliation {
         let mut report = SessionReconciliation::default();
-        let sessions = match self.session_repository().try_reconcilable_sessions().await {
+        let sessions = match self.session_repository().reconcilable_sessions().await {
             Ok(sessions) => sessions,
             Err(error) => {
                 report.failures.push(SessionReconciliationFailure {
@@ -691,10 +700,10 @@ impl SessionApplication {
             return Ok(session);
         }
         let session_id = session.session_id.clone();
-        if session.lifecycle != SessionLifecycleState::Idle && !session.is_terminal() {
+        if session.execution != SessionExecutionState::Idle && !session.is_terminal() {
             return Ok(session);
         }
-        if session.lifecycle == SessionLifecycleState::Idle {
+        if session.execution == SessionExecutionState::Idle && !session.is_terminal() {
             if let Some(desired) = session.resources.pending.clone() {
                 session.resources.start_attempt().map_err(internal)?;
                 session = self
@@ -782,7 +791,7 @@ impl SessionApplication {
         }
 
         match self
-            .release_terminal_resources(owner_scope, &session_id, &[])
+            .release_terminal_resources(owner_scope, &session_id)
             .await?
         {
             Some(session) => Ok(session),
@@ -791,20 +800,77 @@ impl SessionApplication {
     }
 
     /// The sole terminal cleanup implementation shared by archive/delete edges
-    /// and background recovery. Every supplied child Runtime is attempted even
-    /// when another teardown fails; durable release completion commits only when
-    /// all external effects succeed.
+    /// and background recovery. The target set comes only from the Runtime's
+    /// durable delegation authority after the terminal fence has stopped the
+    /// parent; protocol projections are never accepted as cleanup authority.
+    /// Every frozen child Runtime is attempted even when another teardown fails;
+    /// durable completion commits only when all external effects succeed.
     pub async fn release_terminal_resources(
         &self,
         owner_scope: &str,
         session_id: &str,
-        child_thread_ids: &[String],
     ) -> Result<Option<PersistedSession>, SessionPreparationError> {
-        let Some(mut session) = self.session_repository().get(session_id).await else {
-            return Ok(None);
+        let mut session = match self.session_repository().get(session_id).await {
+            Ok(session) => session,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
+            Err(error) => return Err(repository_preparation(error)),
         };
+        if session.terminal_cleanup.is_completed() {
+            if session.is_hidden() {
+                self.tombstone_session_snapshot(
+                    owner_scope,
+                    &session,
+                    deleted_lifecycle_fact(session_id, owner_scope),
+                )
+                .await
+                .map_err(mutation_failure)?;
+                return Ok(None);
+            }
+            return Ok(Some(session));
+        }
+        // Phase 1 is a durable admission fence. It must win before interrupting
+        // the parent, otherwise a concurrent Run/Delegation can be admitted
+        // after the cleanup target snapshot.
+        if session.terminal_cleanup.request(session_id) {
+            session = self
+                .commit_resource_snapshot(
+                    owner_scope,
+                    session,
+                    "terminal-cleanup-fence",
+                    Vec::new(),
+                )
+                .await
+                .map_err(mutation_failure)?;
+        }
+
+        // Phase 2 interrupts and waits for the parent to settle, then freezes the
+        // complete durable delegated-Run set and its committed watermark. A retry
+        // after this commit reuses exactly these targets.
+        let mut intent_changed = false;
+        if session.terminal_cleanup.is_fenced() {
+            let snapshot = self
+                .runtime()
+                .quiesce_terminal_delegations(session_id)
+                .await
+                .map_err(SessionPreparationError::Rejected)?;
+            intent_changed = session
+                .terminal_cleanup
+                .freeze_targets(
+                    session_id,
+                    snapshot
+                        .delegated_runs
+                        .into_iter()
+                        .map(|delegated| delegated.run_id.0),
+                    snapshot.watermark,
+                )
+                .map_err(internal)?;
+        }
         if session.resources.pending.is_none() {
+            let before = session.resources.clone();
             session.resources.begin_release().map_err(internal)?;
+            intent_changed |= session.resources != before;
+        }
+        if intent_changed {
             session = self
                 .commit_resource_snapshot(
                     owner_scope,
@@ -816,30 +882,60 @@ impl SessionApplication {
                 .map_err(mutation_failure)?;
         }
 
-        let mut threads = std::collections::BTreeSet::from([session_id.to_string()]);
-        threads.extend(child_thread_ids.iter().cloned());
-        let mut teardown_error = None;
-        for thread in threads {
-            if let Err(error) = self.runtime().end_session(&thread).await {
-                tracing::warn!(
-                    session = session_id,
-                    thread = %thread,
-                    error = ?error,
-                    "Session terminal Runtime teardown remains pending"
-                );
-                teardown_error.get_or_insert(error);
+        if session.terminal_cleanup.is_requested() {
+            let threads = session
+                .terminal_cleanup
+                .thread_ids()
+                .cloned()
+                .ok_or_else(|| internal("Session terminal cleanup thread intent disappeared"))?;
+            let mut teardown_error = None;
+            let mut receipts = Vec::with_capacity(threads.len());
+            for thread in threads {
+                let intent = session
+                    .terminal_cleanup
+                    .intent_for(session_id, &thread)
+                    .ok_or_else(|| internal("Session terminal cleanup intent disappeared"))?;
+                match self
+                    .runtime()
+                    .execute_terminal_cleanup(intent.clone())
+                    .await
+                {
+                    Ok(receipt) => match receipt.verify(&intent) {
+                        Ok(()) => receipts.push(receipt),
+                        Err(error) => {
+                            teardown_error.get_or_insert(RunError::internal(format!(
+                                "Session terminal cleanup receipt mismatch: {error}"
+                            )));
+                        }
+                    },
+                    Err(error) => {
+                        tracing::warn!(
+                            session = session_id,
+                            thread = %thread,
+                            effect_id = %intent.effect_id,
+                            error = ?error,
+                            "Session terminal Runtime teardown remains pending"
+                        );
+                        teardown_error.get_or_insert(error);
+                    }
+                }
             }
-        }
-        if let Some(error) = teardown_error {
-            return Err(SessionPreparationError::Rejected(error));
-        }
-        if !self
-            .retire_session_repositories(owner_scope, session_id, &session.resources)
-            .await
-        {
-            return Err(internal(
-                "Session-scoped Repository cleanup remains pending",
-            ));
+            if let Some(error) = teardown_error {
+                return Err(SessionPreparationError::Rejected(error));
+            }
+            if !self
+                .retire_session_repositories(owner_scope, session_id, &session.resources)
+                .await
+            {
+                return Err(internal(
+                    "Session-scoped Repository cleanup remains pending",
+                ));
+            }
+            session
+                .terminal_cleanup
+                .complete(session_id, &receipts)
+                .map_err(internal)?;
+            session.environment = awaken_session_contract::SessionEnvironmentState::Unmaterialized;
         }
         session
             .resources
@@ -853,7 +949,7 @@ impl SessionApplication {
             )
             .await
             .map_err(mutation_failure)?;
-        if session.lifecycle == SessionLifecycleState::Deleted {
+        if session.is_hidden() {
             self.tombstone_session_snapshot(
                 owner_scope,
                 &session,

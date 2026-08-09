@@ -3,8 +3,9 @@
 use std::sync::Arc;
 
 use awaken_resource_contract::{
-    ArtifactPublication, ArtifactPublicationError, ArtifactPublisher, FileApplicationService,
-    MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError, content_id, harvest_idempotency_key,
+    ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
+    FileApplicationService, MAX_MANAGED_FILE_SIZE_BYTES, ResourcePurgeError, content_id,
+    harvest_idempotency_key,
 };
 use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
@@ -37,6 +38,7 @@ pub struct ArtifactPublicationRequest {
     pub logical_path: String,
     pub mime_type: String,
     pub content_id: String,
+    pub effect_id: String,
 }
 
 /// Worker-side peer of the claim-fenced artifact HTTP endpoint.
@@ -57,18 +59,20 @@ impl ArtifactPublisher<RunClaim> for HttpArtifactPublisher {
     async fn publish(
         &self,
         publication: ArtifactPublication<RunClaim>,
-    ) -> Result<awaken_resource_contract::FileRecord, ArtifactPublicationError> {
-        let claim = publication.fence.ok_or_else(|| {
+    ) -> Result<ArtifactPublicationReceipt, ArtifactPublicationError> {
+        publication.verify()?;
+        let claim = publication.fence.clone().ok_or_else(|| {
             ArtifactPublicationError::new("remote artifact publication requires a dispatch claim")
         })?;
         let metadata = ArtifactPublicationRequest {
             claim,
             identity: self.upstream.worker_identity().cloned(),
-            workspace_id: publication.workspace_id,
-            session_id: publication.session_id,
-            logical_path: publication.logical_path,
-            mime_type: publication.mime_type,
-            content_id: content_id(&publication.bytes),
+            workspace_id: publication.workspace_id.clone(),
+            session_id: publication.session_id.clone(),
+            logical_path: publication.logical_path.clone(),
+            mime_type: publication.mime_type.clone(),
+            content_id: publication.content_id.clone(),
+            effect_id: publication.effect_id.clone(),
         };
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
             serde_json::to_vec(&metadata)
@@ -83,7 +87,7 @@ impl ArtifactPublisher<RunClaim> for HttpArtifactPublisher {
             ))
             .header(ARTIFACT_METADATA_HEADER, encoded)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(publication.bytes);
+            .body(publication.bytes.clone());
         let request = self
             .upstream
             .authorize_request("POST", ARTIFACT_PUBLICATION_PATH, request)
@@ -98,10 +102,12 @@ impl ArtifactPublisher<RunClaim> for HttpArtifactPublisher {
                 "artifact authority returned HTTP {status}"
             )));
         }
-        response
-            .json::<awaken_resource_contract::FileRecord>()
+        let receipt = response
+            .json::<ArtifactPublicationReceipt>()
             .await
-            .map_err(|error| ArtifactPublicationError::new(error.to_string()))
+            .map_err(|error| ArtifactPublicationError::new(error.to_string()))?;
+        receipt.verify(&publication)?;
+        Ok(receipt)
     }
 }
 
@@ -168,6 +174,7 @@ fn valid_metadata(metadata: &ArtifactPublicationRequest) -> bool {
         && !metadata.mime_type.trim().is_empty()
         && metadata.mime_type.len() <= 255
         && !metadata.content_id.trim().is_empty()
+        && !metadata.effect_id.trim().is_empty()
 }
 
 async fn publish_artifact(
@@ -209,11 +216,14 @@ async fn publish_artifact(
     if !scope_matches || !session_matches {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let key = harvest_idempotency_key(
+    let expected_effect_id = harvest_idempotency_key(
         &metadata.session_id,
         &metadata.logical_path,
         &metadata.content_id,
     );
+    if metadata.effect_id != expected_effect_id {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     match service
         .application
         .create_artifact(
@@ -222,11 +232,19 @@ async fn publish_artifact(
             metadata.logical_path,
             metadata.mime_type,
             &bytes,
-            key,
+            metadata.effect_id.clone(),
         )
         .await
     {
-        Ok(record) => (StatusCode::OK, Json(record)).into_response(),
+        Ok(record) => (
+            StatusCode::OK,
+            Json(ArtifactPublicationReceipt {
+                effect_id: metadata.effect_id,
+                content_id: metadata.content_id,
+                record,
+            }),
+        )
+            .into_response(),
         Err(error) => application_error_status(&error).into_response(),
     }
 }
@@ -267,6 +285,7 @@ mod tests {
             logical_path: path.into(),
             mime_type: "text/plain".into(),
             content_id: "digest".into(),
+            effect_id: awaken_resource_contract::harvest_idempotency_key("session", path, "digest"),
         }
     }
 

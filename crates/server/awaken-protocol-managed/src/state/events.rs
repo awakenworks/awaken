@@ -1013,7 +1013,7 @@ impl ManagedState {
             .session_repository()
             .get(session_id)
             .await
-            .ok_or(StateError::NotFound)?;
+            .map_err(StateError::from)?;
         self.refresh_cached_projection(&persisted)?;
         let initial_cursor = self
             .sessions
