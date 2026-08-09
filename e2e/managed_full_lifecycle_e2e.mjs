@@ -144,7 +144,7 @@ async function main() {
 
       // ── 2. CREATE A SESSION THAT ASSOCIATES EVERYTHING ─────────────────────
 
-      const session = await client.beta.sessions.create({
+      const resourceSession = await client.beta.sessions.create({
         agent: {
           id: agent.id,
           type: 'agent_with_overrides',
@@ -164,25 +164,50 @@ async function main() {
         ],
         betas: BETAS,
       });
-      assert.equal(session.type, 'session');
-      assert.equal(session.agent.id, agent.id, 'session is associated with the created agent');
+      assert.equal(resourceSession.type, 'session');
+      assert.equal(resourceSession.agent.id, agent.id, 'session is associated with the created agent');
       assert.deepEqual(
-        session.agent.tools,
+        resourceSession.agent.tools,
         agent.tools,
-        `session freezes the Agent tool policy: ${JSON.stringify(session.agent.tools)}`,
+        `session freezes the Agent tool policy: ${JSON.stringify(resourceSession.agent.tools)}`,
       );
-      assert.equal(session.environment_id, env.id, 'session is pinned to the environment');
-      assert.ok((session.vault_ids ?? []).includes(vault.id), 'session carries the vault binding');
-      pass(`session created + associated: ${session.id}`);
+      assert.equal(resourceSession.environment_id, env.id, 'session is pinned to the environment');
+      assert.ok((resourceSession.vault_ids ?? []).includes(vault.id), 'session carries the vault binding');
+      pass(`resource session created + associated: ${resourceSession.id}`);
 
       // The complete create-time snapshot is backfilled; live add remains the
       // official file-only subresource operation.
-      const resources = await drain(client.beta.sessions.resources.list(session.id, { betas: BETAS }));
+      const resources = await drain(client.beta.sessions.resources.list(resourceSession.id, { betas: BETAS }));
       const resTypes = resources.map((r) => r.type).sort();
       for (const want of ['file', 'github_repository', 'memory_store']) {
         assert.ok(resTypes.includes(want), `resources.list carries a ${want} (got ${resTypes})`);
       }
       pass(`session resources associated: ${resTypes.join(', ')}`);
+
+      // Local is explicitly selected by the generic deterministic harness and
+      // cannot enforce a read-only File mount. Execution must fail closed rather
+      // than silently weakening the resource contract.
+      await assert.rejects(
+        () => send(client, resourceSession.id, 'must fail closed'),
+        (error) => error.status === 500 && error.message.includes('does not enforce read-only'),
+      );
+      pass('local execution rejects the read-only resource session fail-closed');
+
+      // The execution half of this broad API lifecycle has no mount requirement;
+      // dedicated sandbox provisioning tests exercise actual resource mounts on
+      // backends that can enforce them.
+      const session = await client.beta.sessions.create({
+        agent: {
+          id: agent.id,
+          type: 'agent_with_overrides',
+          mcp_servers: [{ name: 'calc', type: 'url', url: fixture.url }],
+          tools: [calcToolset()],
+        },
+        environment_id: env.id,
+        vault_ids: [vault.id],
+        betas: BETAS,
+      });
+      pass(`execution session created without unenforceable mounts: ${session.id}`);
 
       // ── 3. RUN ─────────────────────────────────────────────────────────────
 

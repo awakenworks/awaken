@@ -5,12 +5,19 @@
 //! kernel shared by model, MCP and resource adapters; adapters realize an exact
 //! admitted plan and never choose a different holder after failure.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 pub use awaken_agent_contract::StructuredCredentialMaterial;
 use serde::{Deserialize, Deserializer, Serialize};
+
+mod realization_capabilities;
+pub use realization_capabilities::{
+    ACP_CREDENTIAL_CONSUMER_PREFIX, CREDENTIAL_REALIZATION_CAPABILITY_PREFIX,
+    CredentialRealizationCapabilities, CredentialRealizationKind,
+    PRIVATE_SECRET_FILE_MATERIAL_TYPE, PROCESS_SECRET_ENVIRONMENT_MATERIAL_TYPE,
+};
 
 /// Stable built-in trust domains used by the self-hosted execution profile.
 /// Hosted deployments publish their own opaque domains instead.
@@ -667,155 +674,6 @@ impl CredentialAccess {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialRealizationKind {
-    ProcessSecretEnvironment,
-    PrivateSecretFile,
-    WorkerProviderAdapter,
-    WorkerRelay,
-    /// A trusted downstream platform adapter consumes the exact published
-    /// credential reference without exposing provider plaintext to the Worker
-    /// or workload.
-    PlatformProviderAdapter,
-}
-
-/// Installed last-mile capabilities.  This is evidence, not preference policy.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CredentialRealizationCapabilities {
-    pub holders: BTreeSet<PlaintextHolder>,
-    pub material_sources: BTreeSet<CredentialMaterialSource>,
-    pub realization_kinds: BTreeSet<CredentialRealizationKind>,
-    #[serde(default)]
-    pub recipient_bound_envelopes: bool,
-    /// Installed external consumers and the namespaced material types each one
-    /// accepts. This is execution evidence, not an extension preference.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub extension_consumers: BTreeMap<String, BTreeSet<String>>,
-    /// Independent adapter profiles installed in one process/Worker.
-    ///
-    /// Keeping profiles separate is security-significant: flattening a Native
-    /// Worker-holder profile and an ACP Workload-holder profile into three unions
-    /// would synthesize holder/source/realization combinations that no adapter
-    /// actually implements. Legacy single-profile declarations leave this empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub alternatives: Vec<CredentialRealizationCapabilities>,
-}
-
-/// WorkerManifest capability namespace for one canonical credential realization
-/// evidence payload. The Worker contract remains credential-domain agnostic; the
-/// publishing and consuming contexts own this codec.
-pub const CREDENTIAL_REALIZATION_CAPABILITY_PREFIX: &str = "credential-realization.awaken.dev/v1:";
-
-impl CredentialRealizationCapabilities {
-    /// Merge evidence from independently installed adapters on the same Worker.
-    /// This describes the Worker's complete claim surface; the selected backend
-    /// must still perform its own exact route and binding validation before it
-    /// opens material.
-    pub fn merge(&mut self, other: &Self) {
-        self.holders.extend(other.holders.iter().cloned());
-        self.material_sources
-            .extend(other.material_sources.iter().copied());
-        self.realization_kinds
-            .extend(other.realization_kinds.iter().copied());
-        self.recipient_bound_envelopes |= other.recipient_bound_envelopes;
-        for (consumer, material_types) in &other.extension_consumers {
-            self.extension_consumers
-                .entry(consumer.clone())
-                .or_default()
-                .extend(material_types.iter().cloned());
-        }
-    }
-
-    /// Whether this adapter/provider advertises no credential realization at all.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.holders.is_empty()
-            && self.material_sources.is_empty()
-            && self.realization_kinds.is_empty()
-            && !self.recipient_bound_envelopes
-            && self.extension_consumers.is_empty()
-            && self.alternatives.iter().all(Self::is_empty)
-    }
-
-    /// Compose independent adapter evidence without creating a Cartesian-product
-    /// capability. Nested compositions are flattened and empty profiles discarded.
-    #[must_use]
-    pub fn alternatives(
-        profiles: impl IntoIterator<Item = CredentialRealizationCapabilities>,
-    ) -> Self {
-        let mut alternatives = Vec::new();
-        for mut profile in profiles {
-            alternatives.append(&mut profile.alternatives);
-            if !profile.is_empty() {
-                alternatives.push(profile);
-            }
-        }
-        Self {
-            alternatives,
-            ..Self::default()
-        }
-    }
-
-    fn supports(
-        &self,
-        holder: &PlaintextHolder,
-        source: CredentialMaterialSource,
-        realization: CredentialRealizationKind,
-        envelope: bool,
-    ) -> bool {
-        (self.holders.contains(holder)
-            && self.material_sources.contains(&source)
-            && self.realization_kinds.contains(&realization)
-            && (!envelope || self.recipient_bound_envelopes))
-            || self
-                .alternatives
-                .iter()
-                .any(|profile| profile.supports(holder, source, realization, envelope))
-    }
-
-    fn supports_extension(&self, consumer_id: &str, material_type: &str) -> bool {
-        self.extension_consumers
-            .get(consumer_id)
-            .is_some_and(|types| types.contains(material_type))
-            || self
-                .alternatives
-                .iter()
-                .any(|profile| profile.supports_extension(consumer_id, material_type))
-    }
-
-    /// Encode this evidence as one canonical Worker capability. Empty evidence
-    /// emits no capability.
-    pub fn manifest_capability(&self) -> Result<Option<String>, serde_json::Error> {
-        if self.is_empty() {
-            return Ok(None);
-        }
-        serde_json::to_string(self).map(|payload| {
-            Some(format!(
-                "{CREDENTIAL_REALIZATION_CAPABILITY_PREFIX}{payload}"
-            ))
-        })
-    }
-
-    /// Decode the unique credential realization capability from an otherwise
-    /// domain-neutral Worker capability set. Multiple declarations fail closed.
-    pub fn from_manifest_capabilities(capabilities: &BTreeSet<String>) -> Result<Self, String> {
-        let mut encoded = capabilities.iter().filter_map(|capability| {
-            capability.strip_prefix(CREDENTIAL_REALIZATION_CAPABILITY_PREFIX)
-        });
-        let Some(payload) = encoded.next() else {
-            return Ok(Self::default());
-        };
-        if encoded.next().is_some() {
-            return Err(
-                "Worker manifest declares multiple credential realization capabilities".to_string(),
-            );
-        }
-        serde_json::from_str(payload)
-            .map_err(|error| format!("invalid credential realization capability: {error}"))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialRealizationPlan {
     pub credential: CredentialRef,
@@ -1107,6 +965,7 @@ pub trait CredentialMaterialResolver: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     /// Cause-effect graph for the credential evidence codec:
     ///

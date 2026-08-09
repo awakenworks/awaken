@@ -244,12 +244,12 @@ pub struct awaken_session_executor::PublishedAcpLaunchResolver
 impl awaken_session_executor::PublishedAcpLaunchResolver
 pub fn awaken_session_executor::PublishedAcpLaunchResolver::new(awaken_run_executor_acp::acp_cli::AcpCli, core::option::Option<std::path::PathBuf>, awaken_credential_materializer::PinnedCredentialMaterializer) -> Self
 impl awaken_run_executor_acp::subprocess::LaunchResolver for awaken_session_executor::PublishedAcpLaunchResolver
-pub fn awaken_session_executor::PublishedAcpLaunchResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::CredentialRealizationCapabilities
+pub fn awaken_session_executor::PublishedAcpLaunchResolver::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
 pub fn awaken_session_executor::PublishedAcpLaunchResolver::extra_env(&self, &awaken_runtime_contract::activation::RunActivation) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, awaken_run_executor_acp::OpenError>
 pub fn awaken_session_executor::PublishedAcpLaunchResolver::model(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_run_executor_acp::acp_cli::ResolvedModel, awaken_run_executor_acp::OpenError>
 pub fn awaken_session_executor::PublishedAcpLaunchResolver::secret_broker(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SecretBroker>>
 pub struct awaken_session_executor::RemoteAttemptInstallation
-pub awaken_session_executor::RemoteAttemptInstallation::credential_realization: awaken_credential_contract::CredentialRealizationCapabilities
+pub awaken_session_executor::RemoteAttemptInstallation::credential_realization: awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
 pub awaken_session_executor::RemoteAttemptInstallation::executor: alloc::sync::Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>
 pub struct awaken_session_executor::RemoteClaimedRunCommit
 impl awaken_session_executor::RemoteClaimedRunCommit
@@ -460,7 +460,7 @@ pub fn awaken_session_executor::WorkerDispatchService::new(alloc::sync::Arc<dyn 
 pub fn awaken_session_executor::WorkerDispatchService::with_application_session_control(self, alloc::sync::Arc<dyn awaken_session_contract::session_realization::ApplicationSessionControl>) -> Self
 pub fn awaken_session_executor::WorkerDispatchService::with_checkpoint_store(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
 pub fn awaken_session_executor::WorkerDispatchService::with_completion_sink(self, alloc::sync::Arc<dyn awaken_dispatch::pool::CompletionSink>) -> Self
-pub fn awaken_session_executor::WorkerDispatchService::with_local_credential_capabilities(self, awaken_credential_contract::CredentialRealizationCapabilities) -> Self
+pub fn awaken_session_executor::WorkerDispatchService::with_local_credential_capabilities(self, awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities) -> Self
 pub fn awaken_session_executor::WorkerDispatchService::with_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> Self
 pub fn awaken_session_executor::WorkerDispatchService::with_recovery_source(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>) -> Self
 pub fn awaken_session_executor::WorkerDispatchService::with_stream_sink(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> Self
@@ -498,7 +498,7 @@ pub fn awaken_session_executor::StoreFileContentSource::read<'life0, 'life1, 'li
 pub trait awaken_session_executor::HandExecutorFactory: core::marker::Send + core::marker::Sync
 pub fn awaken_session_executor::HandExecutorFactory::bind(&self, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, &str) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>
 pub trait awaken_session_executor::InferenceExecutorMaterializer: core::marker::Send + core::marker::Sync
-pub fn awaken_session_executor::InferenceExecutorMaterializer::credential_realization_capabilities(&self) -> awaken_credential_contract::CredentialRealizationCapabilities
+pub fn awaken_session_executor::InferenceExecutorMaterializer::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
 pub fn awaken_session_executor::InferenceExecutorMaterializer::materialize(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, alloc::string::String>
 pub fn awaken_session_executor::InferenceExecutorMaterializer::materialize_pinned(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub fn awaken_session_executor::InferenceExecutorMaterializer::supported_access_schemes(&self) -> &'static [&'static str]

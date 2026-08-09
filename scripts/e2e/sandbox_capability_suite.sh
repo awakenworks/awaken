@@ -90,22 +90,25 @@ step "G1 k8s pod tier against a real k3d cluster"
 if [ "${AWAKEN_SKIP_K8S:-0}" = 1 ]; then
   skip "AWAKEN_SKIP_K8S=1"
 elif command -v kubectl >/dev/null 2>&1 && kubectl get nodes >/dev/null 2>&1; then
-  run "k8s:k8s_it" cargo test -q -p awaken-sandbox-container --features k8s --test k8s_it
-  # Ensure the busybox `nc` fixture (awaken-bb:1) exists in the node's containerd, so
-  # the process-as-container Pod can start (the node has no registry egress here).
-  NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
-  if [ -n "$NODE" ] && docker info >/dev/null 2>&1; then
-    if ! docker exec "$NODE" crictl images 2>/dev/null | grep -q awaken-bb; then
-      docker pull rancher/mirrored-pause:3.6 >/dev/null 2>&1 || true
-      docker save rancher/mirrored-pause:3.6 | docker exec -i "$NODE" ctr -n k8s.io images import - >/dev/null 2>&1 || true
-      docker rm -f awaken-bb-tmp >/dev/null 2>&1 || true
-      docker run --name awaken-bb-tmp busybox:latest true >/dev/null 2>&1 || true
-      docker commit awaken-bb-tmp awaken-bb:1 >/dev/null 2>&1 && docker rm -f awaken-bb-tmp >/dev/null 2>&1
-      docker save awaken-bb:1 | docker exec -i "$NODE" ctr -n k8s.io images import - >/dev/null 2>&1 || true
-    fi
-    run "k8s:k8s_e2e" env AWAKEN_K8S_E2E=1 cargo test -q -p awaken-sandbox-container --features k8s --test k8s_e2e
+  # A Pod can land on any schedulable node. Import the exact fixture images into
+  # every node before either test so registry egress is not part of the sandbox
+  # contract. The hand smoke image is built above and contains the real runtime.
+  read -r -a NODES <<<"$(kubectl get nodes -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)"
+  if [ "${#NODES[@]}" -gt 0 ] && docker info >/dev/null 2>&1; then
+    docker rm -f awaken-bb-tmp >/dev/null 2>&1 || true
+    docker run --name awaken-bb-tmp busybox:latest true >/dev/null 2>&1
+    docker commit awaken-bb-tmp awaken-bb:1 >/dev/null
+    docker rm -f awaken-bb-tmp >/dev/null 2>&1 || true
+    k8s_hand_image=awaken-sandbox-hand-k8s:test
+    docker tag awaken-sandbox-hand-smoke:test "$k8s_hand_image"
+    for NODE in "${NODES[@]}"; do
+      docker save awaken-bb:1 | docker exec -i "$NODE" ctr -n k8s.io images import - >/dev/null
+      docker save "$k8s_hand_image" | docker exec -i "$NODE" ctr -n k8s.io images import - >/dev/null
+    done
+    run "k8s:k8s_it" cargo test -q -p awaken-sandbox-container --features k8s --test k8s_it
+    run "k8s:k8s_e2e" env AWAKEN_K8S_E2E=1 AWAKEN_K8S_SESSION_IMAGE="$k8s_hand_image" cargo test -q -p awaken-sandbox-container --features k8s --test k8s_e2e
   else
-    skip "k8s_e2e: cannot resolve the k3d node to load the awaken-bb:1 fixture"
+    skip "k8s: cannot resolve every node needed for fixture image loading"
   fi
 else
   skip "no reachable k8s cluster (configure kubectl for a k3d cluster)"

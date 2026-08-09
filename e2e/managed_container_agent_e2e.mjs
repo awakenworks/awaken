@@ -232,7 +232,7 @@ async function exercisePackageManagerMatrix(client, { registryOnly = false } = {
     }, true, {
       packages: { [testCase.manager]: testCase.requirements },
       proveImageReuse: registryOnly,
-      proofCommands: [testCase.proof],
+      proofCommands: ['test -x /usr/local/bin/awaken-sandbox', testCase.proof],
     });
     console.log(`  ok: ${testCase.manager} installed ${testCase.requirements.join(', ')}`);
   }
@@ -269,7 +269,10 @@ async function exercisePodmanRootfsMatrix(client) {
   }, true, {
     packages: { npm: ['cowsay@1.6.0'] },
     proveImageReuse: true,
-    proofCommands: ['cowsay AWAKEN | grep AWAKEN'],
+    proofCommands: [
+      'test -x /usr/local/bin/awaken-sandbox',
+      'cowsay AWAKEN | grep AWAKEN',
+    ],
   });
   await exerciseContainerEnvironment(client, 'scope-fallback', {
     environment: { kind: 'scope' },
@@ -422,7 +425,13 @@ function ensurePackageFixtureImage() {
   );
   const containerfilePath = `${context}/Containerfile`;
   fs.writeFileSync(containerfilePath, containerfile);
-  const result = spawnSync(ENGINE, ['build', '--tag', PACKAGE_BASE_IMAGE, '--file', containerfilePath, context], {
+  // A selected docker-container buildx builder cannot resolve daemon-local base
+  // images and does not automatically load its result. Use Docker's local driver
+  // explicitly; Podman already builds against and writes to its local image store.
+  const buildArgs = ENGINE === 'docker'
+    ? ['buildx', 'build', '--builder', 'default', '--load']
+    : ['build'];
+  const result = spawnSync(ENGINE, [...buildArgs, '--tag', PACKAGE_BASE_IMAGE, '--file', containerfilePath, context], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: ENGINE_TIMEOUT_MS,

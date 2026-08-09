@@ -373,7 +373,7 @@ impl PinnedCredentialMaterializer {
         let Some((access, binding)) = Self::claimed_provider_binding(candidate, context)? else {
             return Ok(None);
         };
-        if binding.selected_realization_kind != CredentialRealizationKind::WorkerProviderAdapter {
+        if binding.selected_realization_kind != CredentialRealizationKind::PrivateSecretFile {
             return Ok(None);
         }
         let Some(artifact) = delivery.credential_artifact(access.refresh.is_some()) else {
@@ -939,7 +939,7 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
                 .materialize_claimed_provider_material(
                     &pending.candidate,
                     &pending.context,
-                    CredentialRealizationKind::WorkerProviderAdapter,
+                    CredentialRealizationKind::PrivateSecretFile,
                 )
                 .await
                 .and_then(|material| {

@@ -49,6 +49,7 @@ const CODEX_EXACT_AGENT = 'local-codex-exact';
 const GEMINI_EXACT_AGENT = 'local-gemini-exact';
 const BETAS = ['managed-agents-2026-04-01'];
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let adminToken = '';
 
 function awakenBin() {
   const output = execSync(
@@ -140,24 +141,28 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-[ "$package" = "@agentclientprotocol/codex-acp@1.1.7" ] || exit 21
+[ "$package" = "@agentclientprotocol/codex-acp@1.1.9" ] || exit 21
 /bin/mkdir -p "$prefix/node_modules/.bin" || exit 22
 /bin/cat > "$prefix/node_modules/.bin/codex-acp" <<'WRAPPER'
 #!/bin/sh
 auth=missing
 [ -f "$HOME/.codex/auth.json" ] && auth=present
 while IFS= read -r line; do
+  id=$(/bin/sed 's/.*"id"://;s/,.*//;s/}.*//' <<EOF
+$line
+EOF
+)
   case "$line" in
     *'"method":"initialize"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}' ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id" ;;
     *'"method":"session/new"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"local-codex-session","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[{"value":"codex-exact","name":"Codex Exact"}]}]}}' ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"local-codex-session","configOptions":[{"id":"model","name":"Model","type":"select","currentValue":"default","options":[{"value":"codex-exact","name":"Codex Exact"}]}]}}\n' "$id" ;;
     *'"method":"session/set_config_option"'*)
       model=codex-exact
-      printf '%s\n' '{"jsonrpc":"2.0","id":6,"result":{"configOptions":[]}}' ;;
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[]}}\n' "$id" ;;
     *'"method":"session/prompt"'*)
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"local-codex-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"LOCAL_ACP home=%s auth=%s model=%s"}}}}\n' "$HOME" "$auth" "\${model:-default}"
-      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
       exit 0 ;;
   esac
 done
@@ -223,7 +228,10 @@ async function stop(child) {
 async function request(method, route, body) {
   const response = await fetch(`http://127.0.0.1:${PORT}${route}`, {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      authorization: `Bearer ${adminToken}`,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const value = await response.json().catch(() => ({}));
@@ -248,12 +256,22 @@ async function assertPublicationRejected(id, model, reason) {
   assert.match(JSON.stringify(published.value), reason);
 }
 
+async function assertAuthoringRejected(id, model, reason) {
+  const authored = await request('PUT', `/v1/config/agents/${id}`, {
+    name: id,
+    model,
+    tools: [],
+  });
+  assert.equal(authored.response.status, 400, JSON.stringify(authored.value));
+  assert.match(JSON.stringify(authored.value), reason);
+}
+
 async function runLocalTurn(
   agent = AGENT,
   expected = `LOCAL_ACP home=${HOST_HOME} auth=present`,
 ) {
   const client = new Anthropic({
-    apiKey: 'local-e2e-dummy', // awaken-allow: secret (local server ignores it)
+    apiKey: adminToken,
     baseURL: `http://127.0.0.1:${PORT}`,
   });
   const session = await client.beta.sessions.create({
@@ -366,11 +384,12 @@ async function main() {
   let server = start(binary, CONFIG);
   try {
     await ready(server);
+    adminToken = fs.readFileSync(path.join(DATA, 'admin-token'), 'utf8').trim();
     const codex = await capability('codex');
     assert.equal(codex.local.detected, true, 'L1');
     assert.equal(codex.local.login_state, 'available', 'L1');
     assert.deepEqual(fs.readFileSync(NPM_LOG, 'utf8').trim().split('\n'), [
-      '@agentclientprotocol/codex-acp@1.1.7',
+      '@agentclientprotocol/codex-acp@1.1.9',
     ]);
 
     let result = await request('PUT', `/v1/config/agents/${AGENT}`, {
@@ -418,14 +437,14 @@ async function main() {
       { mode: 'backend_default', backend_ref: 'acp:unknown' },
       /is not in the executable catalog/,
     );
-    await assertPublicationRejected(
+    await assertAuthoringRejected(
       'local-blank-exact',
-      { id: '', backend_ref: 'acp:codex' },
-      /incoherent Exact backend model selection/,
+      { mode: 'backend_exact', model_ref: '', backend_ref: 'acp:codex' },
+      /backend-exact model requires a non-empty model_ref/,
     );
     await assertPublicationRejected(
       'local-unsupported-exact',
-      { id: 'opencode-exact', backend_ref: 'acp:opencode' },
+      { mode: 'backend_exact', model_ref: 'opencode-exact', backend_ref: 'acp:opencode' },
       /cannot guarantee an exact model selection/,
     );
     await assertPublicationRejected(
@@ -450,13 +469,13 @@ async function main() {
       [
         CODEX_EXACT_AGENT,
         'Local Codex exact',
-        { id: 'codex-exact', backend_ref: 'acp:codex' },
+        { mode: 'backend_exact', model_ref: 'codex-exact', backend_ref: 'acp:codex' },
         'model=codex-exact',
       ],
       [
         GEMINI_EXACT_AGENT,
         'Local Gemini exact',
-        { id: 'gemini-exact', backend_ref: 'acp:gemini' },
+        { mode: 'backend_exact', model_ref: 'gemini-exact', backend_ref: 'acp:gemini' },
         'LOCAL_GEMINI model=gemini-exact',
       ],
     ]) {
@@ -481,6 +500,7 @@ async function main() {
   server = start(binary, CONFIG);
   try {
     await ready(server);
+    adminToken = fs.readFileSync(path.join(DATA, 'admin-token'), 'utf8').trim();
     assert.equal((await capability('codex')).local.detected, true, 'L2');
     await runLocalTurn();
     assert.equal(fs.readFileSync(NPM_LOG, 'utf8').trim().split('\n').length, 1, 'L2');
@@ -493,6 +513,7 @@ async function main() {
   server = start(binary, FAILURE_CONFIG);
   try {
     await ready(server);
+    adminToken = fs.readFileSync(path.join(FAILURE_DATA, 'admin-token'), 'utf8').trim();
     const codex = await capability('codex');
     assert.equal(codex.local.detected, false, 'L3');
     assert.equal(codex.local.login_state, 'probe_failed', 'L3');

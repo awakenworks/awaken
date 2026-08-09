@@ -391,7 +391,7 @@ impl CatalogModelPublicationResolver {
             {
                 Some(
                     self.credentials
-                        .get_pool(&credential_pool_id)
+                        .get_pool(credential_pool_id)
                         .await
                         .map_err(|error| {
                             PublicationResolutionError::CredentialInventoryUnavailable(
@@ -716,7 +716,16 @@ mod tests {
         catalog
     }
 
-    async fn resolver(models: &[&str]) -> CatalogModelPublicationResolver {
+    fn catalog_with_dialect(models: &[&str], dialect: ApiDialect) -> ProviderCatalog {
+        let mut catalog = catalog(models);
+        catalog.endpoints.get_mut("ep1").unwrap().dialect = dialect;
+        for offering in &mut catalog.offerings {
+            offering.dialect = dialect;
+        }
+        catalog
+    }
+
+    async fn resolver_for_catalog(catalog: ProviderCatalog) -> CatalogModelPublicationResolver {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         enter_credential(
             CredentialCreateParams {
@@ -732,7 +741,11 @@ mod tests {
         )
         .await
         .unwrap();
-        CatalogModelPublicationResolver::new(catalog(models), credentials)
+        CatalogModelPublicationResolver::new(catalog, credentials)
+    }
+
+    async fn resolver(models: &[&str]) -> CatalogModelPublicationResolver {
+        resolver_for_catalog(catalog(models)).await
     }
 
     #[tokio::test]
@@ -1371,7 +1384,12 @@ mod tests {
         // P1 provider Target + ACP -> Provider/Vault on exact ACP backend
         // P2 BackendExact          -> BackendOwned/CLI login
         // P3 unqualified Target    -> canonical native provider binding
-        let resolver = resolver(&["primary"]).await.with_worker_observations(
+        let resolver = resolver_for_catalog(catalog_with_dialect(
+            &["primary"],
+            ApiDialect::OpenAiResponses,
+        ))
+        .await
+        .with_worker_observations(
             verified_acp_worker("provider-managed", "acp:codex", "sha256:codex-provider").await,
         );
         let managed = resolver
@@ -1488,7 +1506,12 @@ mod tests {
                 }],
             }],
         };
-        let resolver = resolver(&["primary"]).await.with_worker_observations(
+        let resolver = resolver_for_catalog(catalog_with_dialect(
+            &["primary"],
+            ApiDialect::OpenAiResponses,
+        ))
+        .await
+        .with_worker_observations(
             verified_acp_worker_with_negotiated(
                 "provider-managed",
                 "acp:codex",

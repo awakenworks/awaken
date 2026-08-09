@@ -28,7 +28,7 @@ trap cleanup EXIT
 docker rm -f "$name" >/dev/null 2>&1 || true
 
 deploy/images/sandbox/stage-binary.sh "$staged" hand
-docker build -q -f deploy/images/sandbox/Dockerfile.hand-smoke \
+docker buildx build --load -q -f deploy/images/sandbox/Dockerfile.hand-smoke \
   --build-arg BIN="$staged" -t awaken-sandbox-hand-smoke:test . >/dev/null
 
 # Run the REAL hand under --network none with the rendezvous bind-mount.

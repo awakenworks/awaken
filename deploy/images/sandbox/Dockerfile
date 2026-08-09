@@ -1,13 +1,13 @@
 # awaken-sandbox — the EXECUTION-plane image (the sandbox side, opposite the control
 # plane). It runs as the process-as-container agent: the ENTRYPOINT is the
 # `awaken-sandbox acp` stdio<->TCP bridge, and the container `Cmd` is the ACP CLI argv
-# (`command_of(spec)`, e.g. `npx -y @agentclientprotocol/claude-agent-acp@0.44`). The
+# (`command_of(spec)`, e.g. `claude-agent-acp`). The
 # bridge spawns that CLI and pipes its stdio to the port the host dials (8080).
 #
 # ALL supported ACP CLIs are PRE-BAKED (never pulled at runtime): an egress-fenced pod
 # (network=None/Allowlist) cannot `npm install`, so the adapter versions MUST be baked
 # here and MUST match the MAJOR.MINOR pinned in
-# crates/server/awaken-run-executor-acp/src/acp_cli.rs (claude 0.44, codex 1.1).
+# crates/server/awaken-run-executor-acp/src/acp_cli.rs.
 #
 # Build (binary is built ON THE HOST, then staged into the Docker context):
 #   deploy/images/sandbox/build.sh ghcr.io/awaken/sandbox:<ver>
@@ -26,22 +26,28 @@ RUN apt-get update \
       ca-certificates cargo curl git golang-go python3 python3-venv ripgrep ruby tini \
     && python3 -m venv /opt/awaken-python \
     && rm -rf /var/lib/apt/lists/*
-ENV PATH="/opt/awaken-python/bin:${PATH}"
+ENV HOME="/home/agent" \
+    PATH="/opt/awaken-python/bin:${PATH}"
 
 # The E2E harness checks this capability label before reusing a locally cached
 # base image, preventing an older image without the package runtimes from being
 # mistaken for a complete Environment base.
-LABEL org.awaken.environment-packages="1"
+LABEL org.awaken.environment-packages="1" \
+      org.awaken.acp-runtime-contract="1"
 
-# Pre-bake the ACP adapters + native CLIs. Pin every version (no @latest) so an
-# egress-fenced launch is reproducible and the wire codec is a known quantity. Keep
-# these in lockstep with acp_cli.rs. A worker image may deliberately narrow this list
-# (for example a Codex-only pool) through the build arg; the default remains complete.
-ARG ACP_NPM_PACKAGES="@agentclientprotocol/claude-agent-acp@0.44 @agentclientprotocol/codex-acp@1.1 @google/gemini-cli@0.11 opencode-ai@0.6"
-RUN if [ -n "${ACP_NPM_PACKAGES}" ]; then \
-      npm install -g --no-audit --no-fund ${ACP_NPM_PACKAGES}; \
-    fi \
+# Pre-bake every catalogued ACP adapter/native CLI from one immutable contract.
+# `all` is the production default; a deliberately specialized Worker pool may
+# pass a comma-separated subset, while an empty value creates a transport-only
+# hermetic test fixture. No Session startup installs or downloads an Agent.
+ARG ACP_RUNTIME_IDS=all
+COPY deploy/images/sandbox/acp-runtimes.json /usr/local/share/awaken/acp-runtimes.json
+COPY deploy/images/sandbox/install-acp-runtimes.py /tmp/install-acp-runtimes.py
+RUN /usr/bin/python3 /tmp/install-acp-runtimes.py \
+      /usr/local/share/awaken/acp-runtimes.json "${ACP_RUNTIME_IDS}" \
+    && rm -f /tmp/install-acp-runtimes.py \
     && npm cache clean --force
+COPY deploy/images/sandbox/verify-acp-runtimes.py /usr/local/bin/awaken-verify-acp-runtimes
+RUN chmod 0755 /usr/local/bin/awaken-verify-acp-runtimes
 
 # The execution-plane binary (host-built with `hand`) supplies both the ACP bridge
 # entrypoint and the Session's attached `hand --stdio` exec process.
@@ -51,7 +57,7 @@ COPY ${BIN} /usr/local/bin/awaken-sandbox
 # Non-root; the workspace + outputs are tmpfs mounts the pod spec provides.
 RUN useradd -u 10001 -m agent \
     && mkdir -p /workspace /mnt/session/outputs \
-    && chown -R agent /workspace /mnt/session/outputs
+    && chown -R agent /home/agent /workspace /mnt/session/outputs
 USER 10001
 WORKDIR /workspace
 

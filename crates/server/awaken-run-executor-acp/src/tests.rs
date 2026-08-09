@@ -138,6 +138,7 @@ impl AgentChannelSource for ScriptedSource {
             codec: awaken_protocol_acp::Codec::Newline,
             workspace_cwd: None,
             mcp_session_servers: Vec::new(),
+            session_model: None,
             session_mode: None,
             session_config_options: Vec::new(),
             expected_capability: None,
@@ -705,6 +706,33 @@ async fn contiguous_acp_text_chunks_commit_as_one_message_but_tools_break_the_st
 }
 
 #[tokio::test]
+async fn acp_message_id_change_preserves_distinct_assistant_messages() {
+    // Cause/effect table: C1 adjacent chunks without ids remain one legacy
+    // stream; C2 a new ACP message id starts another message; C3 repeated id
+    // continues it. Effects: E1 diagnostics and deliverables stay distinct,
+    // while E2 token chunks for one deliverable remain coalesced.
+    let e = exec(vec![
+        r#"{"type":"message","text":"diagnostic"}"#.into(),
+        r#"{"type":"message","text":"deliver","message_id":"026a96a1-698c-472e-9a08-ef52a4530f79"}"#.into(),
+        r#"{"type":"message","text":"able","message_id":"026a96a1-698c-472e-9a08-ef52a4530f79"}"#.into(),
+        r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+    ]);
+    let coord = Arc::new(RecordingCoordinator::default());
+    e.execute(
+        activation(),
+        RuntimeRunContext::new().with_commit(coord.clone()),
+    )
+    .await
+    .unwrap();
+
+    let commits = coord.commits.lock().unwrap();
+    let messages = &commits[0].messages;
+    assert_eq!(messages.len(), 3, "input, diagnostic, then deliverable");
+    assert_eq!(messages[1].text_content(), "diagnostic", "E1");
+    assert_eq!(messages[2].text_content(), "deliverable", "E2");
+}
+
+#[tokio::test]
 async fn live_inbox_steer_folds_into_a_relaunched_turn() {
     // ADR-0054 P4: a steer message queued on the run's live inbox is drained at the
     // turn boundary, folded (re-identified) into the transcript, and drives a second
@@ -946,6 +974,7 @@ async fn a_session_persisted_in_one_dir_is_recovered_in_another_through_the_exec
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: Some("/workspace".to_string()),
                 mcp_session_servers: Vec::new(),
+                session_model: None,
                 session_mode: None,
                 session_config_options: Vec::new(),
                 expected_capability: None,
@@ -1311,6 +1340,7 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                 codec: Codec::Acp,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
+                session_model: None,
                 session_mode: None,
                 session_config_options: Vec::new(),
                 expected_capability: None,
@@ -1816,6 +1846,7 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
+                session_model: None,
                 session_mode: None,
                 session_config_options: Vec::new(),
                 expected_capability: None,
@@ -2340,6 +2371,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
+                session_model: None,
                 session_mode: None,
                 session_config_options: Vec::new(),
                 expected_capability: None,
@@ -2462,6 +2494,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
                 codec: awaken_protocol_acp::Codec::Newline,
                 workspace_cwd: None,
                 mcp_session_servers: Vec::new(),
+                session_model: None,
                 session_mode: None,
                 session_config_options: Vec::new(),
                 expected_capability: None,
@@ -2658,7 +2691,8 @@ const PONG_ECHO: &str = "while IFS= read -r line; do \
       case \"$line\" in \
         *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{},\"authMethods\":[{\"id\":\"api-key\",\"name\":\"API key\"}]}}';; \
         *'\"id\":5'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{}}';; \
-        *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
+        *'\"id\":6'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{}}';; \
+        *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\",\"models\":{\"currentModelId\":\"default\",\"availableModels\":[]}}}';; \
         *'\"id\":3'*) \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"pong\"}}}}'; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \

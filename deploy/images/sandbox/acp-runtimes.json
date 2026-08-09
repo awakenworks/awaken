@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "runtimes": [
+    {
+      "id": "claude",
+      "requirements": [
+        {"manager": "npm", "requirement": "@agentclientprotocol/claude-agent-acp@0.64.2"},
+        {"manager": "npm", "requirement": "@anthropic-ai/claude-code@2.1.221"}
+      ],
+      "executables": ["claude-agent-acp", "claude"],
+      "probe_argv": ["claude-agent-acp"],
+      "auth_method_id": null
+    },
+    {
+      "id": "codex",
+      "requirements": [
+        {"manager": "npm", "requirement": "@agentclientprotocol/codex-acp@1.1.9"},
+        {"manager": "npm", "requirement": "@openai/codex@0.146.0"}
+      ],
+      "executables": ["codex-acp", "codex"],
+      "probe_argv": [
+        "/usr/bin/env",
+        "OPENAI_API_KEY=awaken-capability-probe",
+        "codex-acp"
+      ],
+      "auth_method_id": "api-key"
+    },
+    {
+      "id": "gemini",
+      "requirements": [
+        {"manager": "npm", "requirement": "@google/gemini-cli@0.53.1"}
+      ],
+      "executables": ["gemini"],
+      "probe_argv": [
+        "/usr/bin/env",
+        "GEMINI_API_KEY=awaken-capability-probe",
+        "gemini",
+        "--acp"
+      ],
+      "auth_method_id": null
+    },
+    {
+      "id": "opencode",
+      "requirements": [
+        {"manager": "npm", "requirement": "opencode-ai@1.18.12"}
+      ],
+      "executables": ["opencode"],
+      "probe_argv": ["opencode", "acp"],
+      "auth_method_id": null
+    },
+    {
+      "id": "hermes",
+      "requirements": [
+        {"manager": "pip", "requirement": "hermes-agent[acp,bedrock]==0.19.0"}
+      ],
+      "executables": ["hermes-acp", "hermes"],
+      "probe_argv": [
+        "/usr/bin/env",
+        "DEEPSEEK_API_KEY=awaken-capability-probe",
+        "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1",
+        "HERMES_MODEL=deepseek-v4-flash",
+        "hermes-acp"
+      ],
+      "auth_method_id": null
+    }
+  ]
+}

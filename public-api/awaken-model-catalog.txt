@@ -84,6 +84,7 @@ pub struct awaken_model_catalog::DefaultProtocolEndpoint
 pub awaken_model_catalog::DefaultProtocolEndpoint::base_url: alloc::string::String
 pub awaken_model_catalog::DefaultProtocolEndpoint::dialect: awaken_model_catalog::ApiDialect
 pub awaken_model_catalog::DefaultProtocolEndpoint::model_discovery_base_url: core::option::Option<alloc::string::String>
+pub awaken_model_catalog::DefaultProtocolEndpoint::supported_model_ids: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_model_catalog::DiscoveredModel
 pub awaken_model_catalog::DiscoveredModel::model_id: alloc::string::String
 pub awaken_model_catalog::DiscoveredModel::upstream_model: core::option::Option<alloc::string::String>

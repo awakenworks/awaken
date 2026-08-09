@@ -16,7 +16,7 @@ awaken-agent-channel.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-credential-vault.workspace = true
 async-trait.workspace = true
-tokio = { workspace = true, features = ["io-util", "process", "time"] }
+tokio = { workspace = true, features = ["io-util", "process", "rt", "sync", "time"] }
 
 [dev-dependencies]
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
