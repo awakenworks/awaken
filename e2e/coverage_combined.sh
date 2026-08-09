@@ -16,6 +16,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+source scripts/ci/_deadline.sh
 export CARGO_TARGET_DIR="${COV_DIR:-/tmp/awaken-combined-cov}"
 rm -rf "$CARGO_TARGET_DIR"
 eval "$(cargo llvm-cov show-env --sh)"
@@ -27,7 +28,7 @@ echo "[2/3] instrumented bins + the TS e2e suite"
 cargo build --quiet -p awaken-scenario-host --bin awaken-scenario-host
 cargo build --quiet -p awaken-cli --bin awaken
 cd e2e
-for f in *_e2e.mjs; do env timeout 150 node "$f" >/dev/null 2>&1 && echo "ok" || echo "miss"; done \
+for f in *_e2e.mjs; do run_with_deadline 150 env node "$f" >/dev/null 2>&1 && echo "ok" || echo "miss"; done \
   | sort | uniq -c
 cd "$ROOT"
 
