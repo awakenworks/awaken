@@ -844,6 +844,7 @@ mod tests {
             packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
+            requests: Default::default(),
             limits: Default::default(),
             lease_ttl_secs: Some(60),
             extra: None,

@@ -30,27 +30,42 @@ pub(super) fn hardened_security_context() -> SecurityContext {
     }
 }
 
-/// The Pod container's native CPU, memory, and ephemeral-storage limits.
-pub(super) fn pod_resources(limits: &pc::ResourceLimits) -> Option<ResourceRequirements> {
-    if !limits.is_set() {
+/// The Pod container's native CPU, memory, and ephemeral-storage reservations
+/// and limits. Kubernetes scheduling consumes requests; cgroups enforce limits.
+pub(super) fn pod_resources(
+    requests: &pc::ResourceRequests,
+    limits: &pc::ResourceLimits,
+) -> Option<ResourceRequirements> {
+    if !requests.is_set() && !limits.is_set() {
         return None;
     }
-    let mut projected = BTreeMap::new();
+    let mut projected_requests = BTreeMap::new();
+    if let Some(cpu) = requests.cpu_millis {
+        projected_requests.insert("cpu".to_string(), Quantity(format!("{cpu}m")));
+    }
+    if let Some(memory) = requests.memory_bytes {
+        projected_requests.insert("memory".to_string(), Quantity(memory.to_string()));
+    }
+    if let Some(disk) = requests.disk_bytes {
+        projected_requests.insert("ephemeral-storage".to_string(), Quantity(disk.to_string()));
+    }
+    let mut projected_limits = BTreeMap::new();
     if let Some(cpu) = limits.cpu_millis {
-        projected.insert("cpu".to_string(), Quantity(format!("{cpu}m")));
+        projected_limits.insert("cpu".to_string(), Quantity(format!("{cpu}m")));
     }
     if let Some(memory) = limits.memory_bytes {
-        projected.insert("memory".to_string(), Quantity(memory.to_string()));
+        projected_limits.insert("memory".to_string(), Quantity(memory.to_string()));
     }
     if let Some(disk) = limits.disk_bytes {
-        projected.insert("ephemeral-storage".to_string(), Quantity(disk.to_string()));
+        projected_limits.insert("ephemeral-storage".to_string(), Quantity(disk.to_string()));
     }
-    if projected.is_empty() {
+    if projected_requests.is_empty() && projected_limits.is_empty() {
         return None;
     }
     Some(ResourceRequirements {
-        limits: Some(projected),
-        ..Default::default()
+        requests: (!projected_requests.is_empty()).then_some(projected_requests),
+        limits: (!projected_limits.is_empty()).then_some(projected_limits),
+        claims: None,
     })
 }
 

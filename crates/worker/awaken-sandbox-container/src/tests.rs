@@ -58,6 +58,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: pc::ResourceLimits {
             cpu_millis: Some(2000),
             memory_bytes: Some(1 << 30),
@@ -1704,6 +1705,7 @@ async fn durable_writable_secret_is_materialized_and_written_back_after_process_
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({"command": ["agent"]})),
@@ -1868,6 +1870,7 @@ fn file_mount_spec(scope: &str, source: pc::MountSource, required: bool) -> pc::
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/out".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: None,

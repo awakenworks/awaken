@@ -197,6 +197,7 @@ async fn podman_materializes_inline_content_through_the_provider() {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
@@ -261,6 +262,7 @@ async fn podman_separates_container_environment_from_cli_environment() {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
@@ -312,6 +314,7 @@ async fn podman_peer_adoption_renews_reaper_ownership() {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
@@ -378,6 +381,7 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({

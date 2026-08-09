@@ -147,6 +147,7 @@ impl CacheVolumeInitializer for SandboxCacheVolumeInitializer {
             // admits only Open mode unless an external NetworkPolicy is proven.
             network: pc::NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
+            requests: Default::default(),
             limits: Default::default(),
             lease_ttl_secs: None,
             extra: None,
@@ -672,6 +673,7 @@ mod tests {
             packages: Default::default(),
             network: pc::NetworkPolicy::Unrestricted,
             outputs_path: "/mnt/session/outputs".into(),
+            requests: Default::default(),
             limits: Default::default(),
             lease_ttl_secs: None,
             extra: None,

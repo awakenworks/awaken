@@ -8,7 +8,7 @@ use crate::sandbox::SandboxCapabilities;
 use crate::spec::SandboxSpec;
 use crate::vocab::{
     EnvVar, EnvVisibility, MountAccess, MountRequirement, NetworkPolicy, PackageRequirements,
-    RESERVED_ENV_KEYS, ResourceLimits,
+    RESERVED_ENV_KEYS, ResourceLimits, ResourceRequests,
 };
 
 /// A validated, normalized plan ready to hand to [`crate::SandboxProvider::create`].
@@ -20,6 +20,8 @@ pub struct EnvironmentPlan {
     pub packages: PackageRequirements,
     pub network: NetworkPolicy,
     pub outputs_path: String,
+    /// Scheduler reservation carried unchanged to infrastructure adapters.
+    pub requests: ResourceRequests,
     /// The resource caps to enforce — carried forward so a provider realizes exactly
     /// what was admitted (and never a silently-dropped cap).
     pub limits: ResourceLimits,
@@ -42,6 +44,8 @@ pub enum PrepareError {
     PackageProvisioningUnsupported,
     #[error("resource limits requested but backend cannot enforce them")]
     ResourceLimitsUnsupported,
+    #[error("resource request exceeds its {0} limit")]
+    ResourceRequestExceedsLimit(&'static str),
     #[error("env key {0:?} is reserved by the runtime")]
     ReservedEnvKey(String),
     #[error("outputs_path must be an absolute sandbox path")]
@@ -112,6 +116,9 @@ pub fn prepare_environment(
     if spec.limits.is_set() && !caps.resource_limits {
         return Err(PrepareError::ResourceLimitsUnsupported);
     }
+    if let Some(resource) = spec.requests.first_limit_violation(&spec.limits) {
+        return Err(PrepareError::ResourceRequestExceedsLimit(resource));
+    }
 
     Ok(EnvironmentPlan {
         scope: spec.scope.clone(),
@@ -120,6 +127,7 @@ pub fn prepare_environment(
         packages: spec.packages.clone(),
         network: spec.network.clone(),
         outputs_path: spec.outputs_path.clone(),
+        requests: spec.requests.clone(),
         limits: spec.limits.clone(),
     })
 }
@@ -172,6 +180,7 @@ mod tests {
                 hosts: vec!["api.anthropic.com".into()],
             },
             outputs_path: "/mnt/session/outputs".into(),
+            requests: Default::default(),
             limits: Default::default(),
             lease_ttl_secs: None,
             extra: None,
@@ -415,5 +424,28 @@ mod tests {
         let plan = prepare_environment(&s, &caps(IsolationClass::Container)).unwrap();
         assert_eq!(plan.limits.cpu_millis, Some(1500));
         assert_eq!(plan.limits.pids, Some(128));
+    }
+
+    #[test]
+    fn requests_are_preserved_but_cannot_exceed_matching_limits() {
+        // Cause/effect table: C1 request set, C2 matching limit set, C3 request <=
+        // limit. R1 C1+!C2 => preserve request; R2 C1+C2+C3 => preserve both;
+        // R3 C1+C2+!C3 => ResourceRequestExceedsLimit. This distinguishes the
+        // scheduler reservation from the independently enforced cap.
+        let mut request_only = spec();
+        request_only.requests.cpu_millis = Some(500);
+        let plan = prepare_environment(&request_only, &caps(IsolationClass::Container)).unwrap();
+        assert_eq!(plan.requests.cpu_millis, Some(500));
+        assert_eq!(plan.limits.cpu_millis, None);
+
+        let mut bounded = request_only;
+        bounded.limits.cpu_millis = Some(1_000);
+        assert!(prepare_environment(&bounded, &caps(IsolationClass::Container)).is_ok());
+
+        bounded.requests.cpu_millis = Some(1_001);
+        assert_eq!(
+            prepare_environment(&bounded, &caps(IsolationClass::Container)),
+            Err(PrepareError::ResourceRequestExceedsLimit("cpu"))
+        );
     }
 }

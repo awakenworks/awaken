@@ -51,6 +51,7 @@ fn spec(tier: Tier, scope: &str) -> pc::SandboxSpec {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: Default::default(),
         lease_ttl_secs: None,
         extra: None,

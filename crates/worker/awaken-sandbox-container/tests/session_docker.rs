@@ -42,6 +42,7 @@ async fn native_acp_and_hand_share_one_production_container() {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
         extra: None,

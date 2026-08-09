@@ -510,10 +510,68 @@ impl NetworkPolicy {
     }
 }
 
-// ── Resource limits ───────────────────────────────────────────────────────────
+// ── Resource requests and limits ──────────────────────────────────────────────
 
-/// Best-effort resource caps. A backend that cannot enforce a field ignores it
-/// (and reports `resource_limits = false` in its capabilities).
+/// Provider-neutral resources reserved for one sandbox by an infrastructure
+/// scheduler. Requests are placement demand, not enforcement caps or billing
+/// units; [`ResourceLimits`] remains the independent runtime ceiling.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceRequests {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_millis: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_bytes: Option<u64>,
+}
+
+impl ResourceRequests {
+    #[must_use]
+    pub fn is_set(&self) -> bool {
+        self.cpu_millis.is_some() || self.memory_bytes.is_some() || self.disk_bytes.is_some()
+    }
+
+    /// Whether one per-sandbox allocatable ceiling can satisfy this request.
+    /// A missing ceiling is unknown and therefore cannot satisfy a set request.
+    #[must_use]
+    pub fn fits_within(&self, capacity: &ResourceLimits) -> bool {
+        self.cpu_millis
+            .is_none_or(|required| capacity.cpu_millis.is_some_and(|value| value >= required))
+            && self
+                .memory_bytes
+                .is_none_or(|required| capacity.memory_bytes.is_some_and(|value| value >= required))
+            && self
+                .disk_bytes
+                .is_none_or(|required| capacity.disk_bytes.is_some_and(|value| value >= required))
+    }
+
+    /// Return the first request whose explicit limit is smaller.
+    #[must_use]
+    pub fn first_limit_violation(&self, limits: &ResourceLimits) -> Option<&'static str> {
+        if self
+            .cpu_millis
+            .zip(limits.cpu_millis)
+            .is_some_and(|(request, limit)| request > limit)
+        {
+            return Some("cpu");
+        }
+        if self
+            .memory_bytes
+            .zip(limits.memory_bytes)
+            .is_some_and(|(request, limit)| request > limit)
+        {
+            return Some("memory");
+        }
+        self.disk_bytes
+            .zip(limits.disk_bytes)
+            .is_some_and(|(request, limit)| request > limit)
+            .then_some("disk")
+    }
+}
+
+/// Enforceable resource caps. A backend that cannot enforce requested limits
+/// reports `resource_limits = false` and fails admission rather than ignoring
+/// them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -779,6 +837,44 @@ mod tests {
         ] {
             assert!(limits.is_set(), "any single cap set makes is_set() true");
         }
+    }
+
+    #[test]
+    fn resource_requests_require_every_set_axis_to_fit_an_explicit_ceiling() {
+        // Cause/effect decision table: C1 request axis is set; C2 matching ceiling
+        // exists; C3 ceiling >= request. R1 !C1 => fit; R2 C1+C2+C3 => fit;
+        // R3 C1+!C2 and R4 C1+C2+!C3 => reject. CPU, memory and disk share the
+        // same conjunctive rule, exercised once each below.
+        let requests = ResourceRequests {
+            cpu_millis: Some(500),
+            memory_bytes: Some(1024),
+            disk_bytes: Some(2048),
+        };
+        assert!(requests.fits_within(&ResourceLimits {
+            cpu_millis: Some(500),
+            memory_bytes: Some(2048),
+            disk_bytes: Some(4096),
+            pids: None,
+        }));
+        assert!(!requests.fits_within(&ResourceLimits {
+            cpu_millis: Some(499),
+            memory_bytes: Some(2048),
+            disk_bytes: Some(4096),
+            pids: None,
+        }));
+        assert!(!requests.fits_within(&ResourceLimits {
+            cpu_millis: Some(500),
+            memory_bytes: None,
+            disk_bytes: Some(4096),
+            pids: None,
+        }));
+        assert!(!requests.fits_within(&ResourceLimits {
+            cpu_millis: Some(500),
+            memory_bytes: Some(2048),
+            disk_bytes: Some(2047),
+            pids: None,
+        }));
+        assert!(ResourceRequests::default().fits_within(&ResourceLimits::default()));
     }
 
     #[test]

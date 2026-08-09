@@ -127,6 +127,7 @@ pub struct ContainerPlan {
     /// Out-of-band outputs volume mount path (artifacts leave via the volume).
     pub outputs_volume: String,
     pub network: NetworkMode,
+    pub requests: pc::ResourceRequests,
     pub limits: pc::ResourceLimits,
     /// Memory-store mounts, realized as runtime-native writable volumes (NOT binds).
     pub memory_mounts: Vec<MemoryMount>,
@@ -212,6 +213,7 @@ mod planner_tests {
             }],
             outputs_volume: "/mnt/session/outputs".into(),
             network: NetworkMode::None,
+            requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits {
                 cpu_millis: Some(1500),
                 memory_bytes: Some(1 << 30),
@@ -1063,6 +1065,7 @@ pub fn container_plan(
         binds: binds_of(spec),
         outputs_volume: spec.outputs_path.clone(),
         network: egress.network,
+        requests: spec.requests.clone(),
         limits: spec.limits.clone(),
         memory_mounts: memory_mounts_of(spec),
         rootfs: rootfs_of(spec, default_image),

@@ -12,7 +12,7 @@ use crate::sandbox::IsolationClass;
 use crate::sandbox::{SandboxError, SecretBroker};
 use crate::vocab::{
     EnvValue, EnvVar, EnvVisibility, MountRequirement, NetworkPolicy, PackageRequirements,
-    ResourceLimits,
+    ResourceLimits, ResourceRequests,
 };
 
 /// How a process's standard streams are wired.
@@ -339,6 +339,10 @@ pub struct SandboxSpec {
     /// Sandbox-absolute directory the agent writes artifacts to (e.g.
     /// `/mnt/session/outputs`).
     pub outputs_path: String,
+    /// Infrastructure scheduling reservation. This is distinct from the
+    /// enforceable runtime cap below.
+    #[serde(default)]
+    pub requests: ResourceRequests,
     #[serde(default)]
     pub limits: ResourceLimits,
     /// Optional dead-man's-switch: the owner must `renew_lease` within this window
@@ -532,6 +536,7 @@ mod tests {
             packages: Default::default(),
             network: NetworkPolicy::None,
             outputs_path: "/mnt/session/outputs".into(),
+            requests: Default::default(),
             limits: Default::default(),
             lease_ttl_secs: None,
             extra: Some(serde_json::json!({
@@ -646,6 +651,7 @@ pub struct SandboxOverride {
     pub isolation: Option<IsolationClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkPolicy>,
+    pub requests: ResourceRequests,
     pub limits: ResourceLimits,
 }
 
@@ -663,6 +669,9 @@ impl SandboxOverride {
             environment: get("environment").and_then(|v| serde_json::from_value(v).ok()),
             isolation: get("isolation").and_then(|v| serde_json::from_value(v).ok()),
             network: get("network").and_then(|v| serde_json::from_value(v).ok()),
+            requests: get("requests")
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
             limits: get("limits")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
@@ -676,6 +685,7 @@ impl SandboxOverride {
         self.environment.is_none()
             && self.isolation.is_none()
             && self.network.is_none()
+            && !self.requests.is_set()
             && !self.limits.is_set()
     }
 
@@ -700,6 +710,9 @@ impl SandboxOverride {
         if let Some(network) = &self.network {
             spec.network = network.clone();
         }
+        if self.requests.is_set() {
+            spec.requests = self.requests.clone();
+        }
         if self.limits.is_set() {
             spec.limits = self.limits.clone();
         }
@@ -721,6 +734,7 @@ mod sandbox_override_tests {
             packages: Default::default(),
             network: NetworkPolicy::Unrestricted,
             outputs_path: "/outputs".into(),
+            requests: ResourceRequests::default(),
             limits: ResourceLimits::default(),
             lease_ttl_secs: None,
             extra: None,
@@ -735,6 +749,7 @@ mod sandbox_override_tests {
             "isolation": "namespace",
             "mounts": [{ "mount_path": "/work", "access": "read_write" }], // ignored (no source)
             "network": { "mode": "allowlist", "hosts": ["api.github.com"] },
+            "requests": { "cpu_millis": 750, "memory_bytes": 2147483648u64 },
             "limits": { "cpu_millis": 2000, "memory_bytes": 4294967296u64 }
         });
         let over = SandboxOverride::from_config_value(&blob).expect("blob contributes");
@@ -752,6 +767,8 @@ mod sandbox_override_tests {
                 hosts: vec!["api.github.com".into()]
             }
         );
+        assert_eq!(spec.requests.cpu_millis, Some(750));
+        assert_eq!(spec.requests.memory_bytes, Some(2_147_483_648));
         assert_eq!(spec.limits.cpu_millis, Some(2000));
         assert_eq!(spec.limits.memory_bytes, Some(4_294_967_296));
         // Mounts belong to Resources, never to the UI blob.

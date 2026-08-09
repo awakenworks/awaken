@@ -37,6 +37,7 @@ fn spec(scope: &str) -> pc::SandboxSpec {
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": agent_argv() })),

@@ -75,6 +75,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
         packages: Default::default(),
         network: pc::NetworkPolicy::Unrestricted,
         outputs_path: "/mnt/session/outputs".into(),
+        requests: Default::default(),
         limits: pc::ResourceLimits::default(),
         lease_ttl_secs: None,
         extra: None,
