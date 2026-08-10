@@ -23,6 +23,12 @@ const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa998877665544332211
 
 async function request(base, method, route, body, token) {
   const headers = {};
+  // Managed Agents beta admission precedes authentication. Supplying the
+  // required protocol version keeps credential-negative rules on the intended
+  // authentication boundary instead of faulting earlier on wire negotiation.
+  if (route.startsWith('/v1/sessions')) {
+    headers['anthropic-beta'] = 'managed-agents-2026-04-01';
+  }
   if (body !== undefined) headers['content-type'] = 'application/json';
   if (token) headers.authorization = `Bearer ${token}`;
   const response = await fetch(`${base}${route}`, {
@@ -85,6 +91,79 @@ function chat(base, threadId, token) {
   });
 }
 
+async function committedSseTurn(base, threadId, token, inputId, text) {
+  const response = await fetch(`${base}/v1/ai-sdk/threads/${threadId}/runs`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      threadId,
+      messages: [{ id: inputId, role: 'user', parts: [{ type: 'text', text }] }],
+    }),
+  });
+  assert.equal(response.status, 200, 'raw AI SDK run accepted');
+  assert.ok(response.body, 'raw AI SDK run returns an SSE body');
+
+  // Run-completion cause/effect/FMECA rules. C1 the application-token binding
+  // is valid; C2 the exact input MessageId is committed; C3 assistant output
+  // and terminal RunState share that commit; C4 read-after-commit succeeds.
+  // Effects: S1 only C1+C2+C3+C4 emits normal finish; S2 committed history is
+  // already queryable at finish; S3 exactly one [DONE] follows finish. A commit
+  // or verification failure must instead emit error and never normal stop.
+  //
+  // | Rule | C1 | C2 | C3 | C4 | finish | history-at-finish | [DONE] |
+  // | S1   | T  | T  | T  | T  | stop   | input+assistant   | once   |
+  // | S2   | T  | any failed commit proof | error, never stop | n/a | once |
+  // S2 is fault-injected at the Runtime Host receipt and protocol integration
+  // tests; this production E2E owns S1 across the real application-token edge.
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const frames = [];
+  let doneCount = 0;
+  let historyAtFinish;
+  for (;;) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split('\n');
+    buffer = done ? '' : lines.pop();
+    for (const rawLine of lines) {
+      const line = rawLine.trimEnd();
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice('data: '.length);
+      if (data === '[DONE]') {
+        doneCount += 1;
+        continue;
+      }
+      const frame = JSON.parse(data);
+      frames.push(frame);
+      if (frame.type === 'finish' && frame.finishReason === 'stop') {
+        assert.equal(doneCount, 0, 'S1/S3 normal finish precedes [DONE]');
+        historyAtFinish = await request(
+          base,
+          'GET',
+          `/v1/ai-sdk/threads/${threadId}/messages`,
+          undefined,
+          token,
+        );
+      }
+    }
+    if (done) break;
+  }
+  assert.equal(doneCount, 1, 'S1/S3 exactly one [DONE]');
+  assert.ok(
+    frames.some((frame) => frame.type === 'finish' && frame.finishReason === 'stop'),
+    `S1 normal finish: ${JSON.stringify(frames)}`,
+  );
+  assert.ok(!frames.some((frame) => frame.type === 'error'), 'S1 has no error frame');
+  assert.equal(historyAtFinish?.status, 200, historyAtFinish?.text);
+  assert.match(historyAtFinish.text, new RegExp(inputId), 'S1/S2 exact input is committed');
+  assert.match(historyAtFinish.text, new RegExp(text), 'S1/S2 assistant output is committed');
+  return frames;
+}
+
 function assistantText(client) {
   return (client.lastMessage?.parts ?? [])
     .filter((part) => part.type === 'text')
@@ -105,7 +184,7 @@ async function main() {
     const serviceToken = fs.readFileSync(path.join(dir, 'admin-token'), 'utf8').trim();
 
     let response = await request(base, 'GET', '/v1/sessions');
-    assert.equal(response.status, 401);
+    assert.equal(response.status, 401, response.text);
     response = await request(base, 'GET', '/v1/sessions', undefined, serviceToken);
     assert.equal(response.status, 200, response.text);
     pass('Managed Agents requires and accepts the workspace service credential');
@@ -128,6 +207,16 @@ async function main() {
     response = await request(base, 'GET', '/v1/sessions', undefined, projectA.access_token);
     assert.equal(response.status, 401, 'an application token is not a service key');
     pass('service and application credentials cannot be substituted');
+
+    const rawInputId = `app-auth-input-${process.pid}`;
+    await committedSseTurn(
+      base,
+      'shared',
+      projectA.access_token,
+      rawInputId,
+      'raw committed message from project A',
+    );
+    pass('application-token SSE closes only after exact input/output history is committed');
 
     const clientA = chat(base, 'shared', projectA.access_token);
     await clientA.sendMessage({ text: 'message from project A' });

@@ -17,9 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::awaiting::{AwaitReason, ResumeTicket};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-#[cfg(test)]
-use awaken_agent_contract::agent::run::EndCause;
-use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::{Scope, StateKey, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
@@ -125,8 +123,8 @@ mod worker_resolver;
 pub(crate) use completion::CompletionRegistry;
 pub(crate) use session_ctx::{SessionCtx, SessionState};
 pub use types::{
-    HostError, HostErrorKind, HostOutcomeIteration, HostOutcomeReport, HostResume, PendingTool,
-    RunResult,
+    CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeIteration, HostOutcomeReport,
+    HostResume, PendingTool,
 };
 pub(crate) use worker_resolver::HostWorkerResolver;
 

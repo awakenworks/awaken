@@ -215,22 +215,6 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> SessionPreparationError
     SessionPreparationError::Rejected(RunError::internal(error.to_string()))
 }
 
-fn resource_manifest_preparation(error: SessionResourceManifestError) -> SessionPreparationError {
-    match error {
-        SessionResourceManifestError::NotFound => SessionPreparationError::NotFound,
-        SessionResourceManifestError::Conflict
-        | SessionResourceManifestError::IdempotencyMismatch => SessionPreparationError::Conflict,
-        SessionResourceManifestError::Terminal => SessionPreparationError::Rejected(
-            RunError::bad_request("terminal Session resources cannot be replaced"),
-        ),
-        SessionResourceManifestError::Rejected(error) => SessionPreparationError::Rejected(error),
-        SessionResourceManifestError::ProjectionAfterCommit { source, .. } => source,
-        SessionResourceManifestError::Unavailable(message) => {
-            SessionPreparationError::Unavailable(message)
-        }
-    }
-}
-
 fn deleted_lifecycle_fact(session_id: &str, owner_scope: &str) -> ManagedLifecycleFact {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -607,94 +591,6 @@ impl SessionApplication {
                 source,
             }),
         }
-    }
-
-    /// Compatibility item command compiled into the same whole-manifest owner.
-    pub async fn attach_session_input(
-        &self,
-        session_id: &str,
-        _owner_scope: &str,
-        input: awaken_session_contract::ResolvedInput,
-    ) -> Result<PersistedSession, SessionPreparationError> {
-        let persisted = self
-            .session_repository()
-            .get(session_id)
-            .await
-            .map_err(repository_preparation)?;
-        let desired = persisted
-            .resources
-            .desired()
-            .attach(input)
-            .map_err(|error| {
-                SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
-            })?;
-        let fingerprint = stable_fingerprint(&desired);
-        self.replace_session_resource_manifest(
-            session_id,
-            ReplaceSessionResourceManifest {
-                resources: desired,
-                expected_session_revision: None,
-                idempotency_key: None,
-                request_fingerprint: fingerprint,
-            },
-        )
-        .await
-        .map(|outcome| outcome.session)
-        .map_err(resource_manifest_preparation)
-    }
-
-    /// Detach one neutral binding and converge the Runtime. Repository
-    /// definitions are retired only after the durable/Runtime replacement wins.
-    pub async fn detach_session_input(
-        &self,
-        session_id: &str,
-        owner_scope: &str,
-        binding_id: &awaken_resource_contract::BindingId,
-    ) -> Result<PersistedSession, SessionPreparationError> {
-        let persisted = self
-            .session_repository()
-            .get(session_id)
-            .await
-            .map_err(repository_preparation)?;
-        let (desired, removed) =
-            persisted
-                .resources
-                .desired()
-                .detach(binding_id)
-                .map_err(|error| {
-                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
-                })?;
-        let fingerprint = stable_fingerprint(&desired);
-        let committed = self
-            .replace_session_resource_manifest(
-                session_id,
-                ReplaceSessionResourceManifest {
-                    resources: desired,
-                    expected_session_revision: None,
-                    idempotency_key: None,
-                    request_fingerprint: fingerprint,
-                },
-            )
-            .await
-            .map(|outcome| outcome.session)
-            .map_err(resource_manifest_preparation)?;
-        if let ResolvedInputSource::Repository { repository_id, .. } = removed.source
-            && committed.resources.active.inputs.iter().all(|input| {
-                !matches!(
-                    &input.source,
-                    ResolvedInputSource::Repository { repository_id: active, .. }
-                        if active == &repository_id
-                )
-            })
-            && !self
-                .retire_repository(owner_scope, repository_id.as_str())
-                .await
-        {
-            return Err(internal(format!(
-                "Repository `{repository_id}` retirement remains pending"
-            )));
-        }
-        Ok(committed)
     }
 
     /// Rotate and repin one Session-scoped Repository credential through the

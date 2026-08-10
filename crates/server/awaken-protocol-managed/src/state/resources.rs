@@ -290,8 +290,7 @@ impl ManagedState {
             )
             .await?;
         let outcome = self
-            .application
-            .replace_session_resource_manifest(
+            .execute_resource_manifest_command(
                 id,
                 awaken_session_application::ReplaceSessionResourceManifest {
                     resources: desired,
@@ -300,9 +299,7 @@ impl ManagedState {
                     request_fingerprint,
                 },
             )
-            .await
-            .map_err(Self::map_resource_manifest_error)?;
-        self.refresh_cached_projection(&outcome.session)?;
+            .await?;
         Ok((
             Self::resource_manifest_view(&outcome.session),
             outcome.command_revision,
@@ -345,6 +342,37 @@ impl ManagedState {
         }
     }
 
+    /// One protocol-side execution path for complete replacement and the
+    /// compatibility item verbs. If desired truth commits but realization
+    /// fails, refresh the read projection before returning the effect error so
+    /// a retry observes the accepted intent instead of inventing another one.
+    async fn execute_resource_manifest_command(
+        &self,
+        session_id: &str,
+        command: awaken_session_application::ReplaceSessionResourceManifest,
+    ) -> Result<awaken_session_application::SessionResourceManifestOutcome, StateError> {
+        match self
+            .application
+            .replace_session_resource_manifest(session_id, command)
+            .await
+        {
+            Ok(outcome) => {
+                self.refresh_cached_projection(&outcome.session)?;
+                Ok(outcome)
+            }
+            Err(
+                awaken_session_application::SessionResourceManifestError::ProjectionAfterCommit {
+                    outcome,
+                    source,
+                },
+            ) => {
+                self.refresh_cached_projection(&outcome.session)?;
+                Err(Self::map_preparation_error(source))
+            }
+            Err(error) => Err(Self::map_resource_manifest_error(error)),
+        }
+    }
+
     pub fn list_resources(
         &self,
         id: &str,
@@ -373,6 +401,47 @@ impl ManagedState {
             .await
             .map_err(StateError::from)?;
         let current = persisted.resources.desired().clone();
+        let normalized_mount = parsed.mount_path.trim_start_matches('/');
+        if let ParsedInputTarget::File(requested_file) = &parsed.target
+            && let Some(existing) = current.inputs.iter().find(|input| {
+                input.mount_path.trim_start_matches('/') == normalized_mount
+                    && matches!(
+                        &input.source,
+                        awaken_session_contract::ResolvedInputSource::File { file_id }
+                            if file_id == requested_file
+                    )
+            })
+        {
+            // An earlier response may have been lost after desired truth
+            // committed but before realization settled. Re-drive that exact
+            // generation through the canonical Manifest command; never allocate
+            // a second binding or report a misleading mount collision.
+            let existing_binding = existing.binding_id.clone();
+            let outcome = self
+                .execute_resource_manifest_command(
+                    id,
+                    awaken_session_application::ReplaceSessionResourceManifest {
+                        request_fingerprint: awaken_session_contract::stable_fingerprint(&current),
+                        resources: current,
+                        expected_session_revision: None,
+                        idempotency_key: None,
+                    },
+                )
+                .await?;
+            let existing = outcome
+                .session
+                .resources
+                .desired()
+                .inputs
+                .iter()
+                .find(|input| input.binding_id == existing_binding)
+                .ok_or_else(|| {
+                    StateError::Run(RunError::internal(
+                        "replayed Resource binding disappeared after Manifest convergence",
+                    ))
+                })?;
+            return Ok(resolved_resource_dto(id, existing));
+        }
         if matches!(parsed.target, ParsedInputTarget::File(_))
             && current
                 .inputs
@@ -410,12 +479,19 @@ impl ManagedState {
             )
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
         let input = self.resolve_live_file_input(&owner_scope, binding_id, &parsed)?;
-        let committed = self
-            .application
-            .attach_session_input(id, &owner_scope, input.clone())
-            .await
-            .map_err(Self::map_preparation_error)?;
-        self.refresh_cached_projection(&committed)?;
+        let desired = current
+            .attach(input.clone())
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        self.execute_resource_manifest_command(
+            id,
+            awaken_session_application::ReplaceSessionResourceManifest {
+                request_fingerprint: awaken_session_contract::stable_fingerprint(&desired),
+                resources: desired,
+                expected_session_revision: None,
+                idempotency_key: None,
+            },
+        )
+        .await?;
         Ok(resolved_resource_dto(id, &input))
     }
 
@@ -488,12 +564,42 @@ impl ManagedState {
         ) {
             return Err(StateError::Run(RunError::bad_request(MEMORY_CREATE_ONLY)));
         }
-        let committed = self
-            .application
-            .detach_session_input(id, &owner_scope, &binding_id)
-            .await
-            .map_err(Self::map_preparation_error)?;
-        self.refresh_cached_projection(&committed)?;
+        let (desired, removed) = persisted
+            .resources
+            .desired()
+            .detach(&binding_id)
+            .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
+        let outcome = self
+            .execute_resource_manifest_command(
+                id,
+                awaken_session_application::ReplaceSessionResourceManifest {
+                    request_fingerprint: awaken_session_contract::stable_fingerprint(&desired),
+                    resources: desired,
+                    expected_session_revision: None,
+                    idempotency_key: None,
+                },
+            )
+            .await?;
+        if let awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } =
+            removed.source
+            && outcome.session.resources.active.inputs.iter().all(|input| {
+                !matches!(
+                    &input.source,
+                    awaken_session_contract::ResolvedInputSource::Repository {
+                        repository_id: active,
+                        ..
+                    } if active == &repository_id
+                )
+            })
+            && !self
+                .application
+                .retire_repository(&owner_scope, repository_id.as_str())
+                .await
+        {
+            return Err(StateError::Run(RunError::internal(format!(
+                "Repository `{repository_id}` retirement remains pending"
+            ))));
+        }
         Ok(())
     }
 }

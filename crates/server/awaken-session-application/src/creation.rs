@@ -68,80 +68,6 @@ impl SessionCreationError {
 }
 
 impl SessionApplication {
-    async fn await_created_session_ready(
-        &self,
-        session_id: &str,
-        mut last_dispatch_error: Option<String>,
-    ) -> Result<PersistedSession, SessionCreationError> {
-        let deadline = tokio::time::Instant::now() + self.create_readiness_timeout();
-        let mut next_dispatch_retry = tokio::time::Instant::now();
-        loop {
-            let session = self
-                .session_repository()
-                .get(session_id)
-                .await
-                .map_err(super::mutation::repository_failure)
-                .map_err(SessionCreationError::mutation)?;
-            match session.execution {
-                awaken_session_contract::SessionExecutionState::Idle => return Ok(session),
-                awaken_session_contract::SessionExecutionState::ActivationFailed => {
-                    let reason = session
-                        .realization_progress
-                        .last_error
-                        .clone()
-                        .or_else(|| {
-                            session
-                                .mcp
-                                .attachments
-                                .iter()
-                                .rev()
-                                .find_map(|attachment| attachment.last_error.clone())
-                        })
-                        .or_else(|| {
-                            session
-                                .resources
-                                .activations
-                                .iter()
-                                .rev()
-                                .find_map(|activation| activation.last_error.clone())
-                        })
-                        .unwrap_or_else(|| "Session realization failed".to_string());
-                    return Err(SessionCreationError::Rejected(RunError::classified(
-                        "session_activation_failed",
-                        reason,
-                    )));
-                }
-                awaken_session_contract::SessionExecutionState::Terminated => {
-                    return Err(SessionCreationError::Unavailable(
-                        "Session terminated before realization completed".into(),
-                    ));
-                }
-                _ => {}
-            }
-            let now = tokio::time::Instant::now();
-            if now >= deadline {
-                let detail = last_dispatch_error
-                    .map(|error| format!("; last dispatch error: {error}"))
-                    .unwrap_or_default();
-                return Err(SessionCreationError::Unavailable(format!(
-                    "Session readiness timed out while state was `{}`{detail}",
-                    session.execution
-                )));
-            }
-            if now >= next_dispatch_retry {
-                if let Err(error) = self.dispatch_session_work(&session).await {
-                    last_dispatch_error = Some(error.to_string());
-                }
-                next_dispatch_retry = now + std::time::Duration::from_secs(1);
-            }
-            tokio::time::sleep(
-                self.create_readiness_poll_interval()
-                    .min(deadline.saturating_duration_since(now)),
-            )
-            .await;
-        }
-    }
-
     /// Create one Session through the only durable creation protocol.
     pub async fn create_session(
         &self,
@@ -226,15 +152,12 @@ impl SessionApplication {
         // The aggregate is already the authoritative dispatch intent. An
         // ambiguous create failure here could induce a duplicate client create;
         // the canonical reconciler therefore retries this disposable projection.
-        let dispatch_error = self
-            .dispatch_session_work(&persisted)
-            .await
-            .err()
-            .map(|error| error.to_string());
-        if persisted.needs_work_dispatch() {
-            persisted = self
-                .await_created_session_ready(&session_id, dispatch_error)
-                .await?;
+        if let Err(error) = self.dispatch_session_work(&persisted).await {
+            tracing::warn!(
+                session = %session_id,
+                error = ?error,
+                "Session WorkQueue dispatch remains pending after create"
+            );
         }
         Ok(persisted)
     }

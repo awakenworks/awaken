@@ -1,16 +1,18 @@
 use super::*;
 
 #[tokio::test]
-async fn coordinator_only_creation_does_not_report_success_before_worker_acknowledgement() {
+async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_worker_ack() {
     // Cause/effect graph: C1 placement is a registered Worker; C2 the durable
-    // creation intent and dispatch succeed; C3 no Worker acknowledges before
-    // the readiness deadline. Effects: E1 the public create fails unavailable;
-    // E2 the durable aggregate remains Preparing with Worker placement; E3 no
-    // initial-idle lifecycle fact exists; E4 Control performs no local
-    // realization. Decision table: R1 C1+C2+C3 => E1+E2+E3+E4. FMECA: the old
-    // Preparing-as-200 path could advertise readiness while no Worker owned the
-    // demand (severity 9, occurrence 5, detection 7); the readiness barrier
-    // makes that state observable as a retryable failure instead of success.
+    // creation intent and WorkQueue dispatch succeed; C3 that queue has no
+    // physical-realization acknowledgement protocol. Effects: E1 create returns
+    // the truthful Preparing projection; E2 the durable aggregate records Worker
+    // placement; E3 no initial-idle lifecycle fact is fabricated; E4 Control only
+    // prepares the Thread identity. Decision table: R1 C1+C2+C3 => E1+E2+E3+E4.
+    // FMECA: treating enqueue as readiness could admit a Run before realization
+    // (severity 9, occurrence 5, detection 7), while waiting for an acknowledgement
+    // that cannot arrive times out every healthy split-process create (severity 8,
+    // occurrence 10, detection 3). The durable Preparing projection plus strict
+    // Run admission is the single protocol-supported boundary.
     let runtime = EndSessionRecorder::default();
     let prepared = runtime.prepared.clone();
     let runtime = Arc::new(runtime);
@@ -23,29 +25,18 @@ async fn coordinator_only_creation_does_not_report_success_before_worker_acknowl
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement:
                 awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
-            create_readiness_timeout: std::time::Duration::from_millis(20),
-            create_readiness_poll_interval: std::time::Duration::from_millis(1),
             ..Default::default()
         },
     );
     let state = ManagedState::from_application(application);
-    let error = state
+    let created = state
         .create_session(
             serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap(),
             None,
         )
         .await
-        .expect_err("R1/E1 readiness is not acknowledged");
-    assert!(
-        matches!(
-            error,
-            StateError::Run(RunError {
-                kind: awaken_session_contract::RunErrorKind::Unavailable,
-                ..
-            })
-        ),
-        "R1/E1: {error}"
-    );
+        .expect("R1/E1 durable demand is accepted");
+    assert_eq!(created.status, SessionStatus::Preparing, "R1/E1");
     let scan = repo.reconcilable_sessions().await.unwrap();
     assert_eq!(scan.sessions.len(), 1, "R1/E2");
     let persisted = &scan.sessions[0];

@@ -1750,12 +1750,17 @@ async fn failed_live_activation_rolls_back_before_reporting_failure() {
 async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
     // Cause graph: desired apply fails -> prior-manifest compensation fails
     // -> never claim rollback/commit -> durable pending generation remains for
-    // the reconciler. Public projection continues to expose the old active set.
+    // the reconciler. The compatibility item verb and complete PUT share one
+    // manifest command/read projection, so public GET exposes accepted desired
+    // truth even though active remains unchanged.
     //
     // Decision table:
     // | Desired apply | Compensation | Durable state | Public projection |
     // | fail | success | Failed, no pending | old generation |
-    // | fail | fail | Prepared/retryable pending | old generation |
+    // | fail | fail | Prepared/retryable pending | desired generation |
+    // | exact retry | succeeds | Active, same generation | desired generation |
+    // FMECA: the old hidden-pending row had S8/O7/D7 because a client retry
+    // could collide with a binding that the control plane had already accepted.
     let runtime = AcceptingFake::default();
     runtime
         .fail_apply_remaining
@@ -1784,13 +1789,44 @@ async fn failed_activation_and_failed_compensation_remain_durably_retryable() {
         .await;
     assert!(format!("{result:?}").contains("injected activation failure"));
     assert_eq!(applied.lock().unwrap().len(), 2);
-    assert!(state.list_resources(&id).unwrap().is_empty());
+    let resources = state.list_resources(&id).unwrap();
+    assert_eq!(resources.len(), 1, "accepted desired resource is queryable");
+    assert_eq!(
+        serde_json::to_value(&resources[0]).unwrap()["mount_path"],
+        "/retryable.txt"
+    );
     let durable = repo.get(&id).await.unwrap();
     assert!(durable.resources.pending.is_some());
     assert!(durable.resources.needs_reconciliation());
     assert_eq!(
         durable.resources.activations.last().unwrap().state,
         awaken_session_contract::ActivationState::Prepared
+    );
+
+    let revision = durable.resources.revision;
+    let replayed = state
+        .create_resource(
+            &id,
+            serde_json::from_value(json!({
+                "type": "file",
+                "file_id": "file-retryable",
+                "mount_path": "/retryable.txt"
+            }))
+            .unwrap(),
+        )
+        .await
+        .expect("exact accepted intent is a convergent retry");
+    assert_eq!(
+        serde_json::to_value(replayed).unwrap()["mount_path"],
+        "/retryable.txt"
+    );
+    let settled = repo.get(&id).await.unwrap();
+    assert_eq!(settled.resources.revision, revision, "same generation");
+    assert!(settled.resources.pending.is_none(), "retry settled pending");
+    assert_eq!(
+        settled.resources.active.inputs.len(),
+        1,
+        "no duplicate binding"
     );
 }
 

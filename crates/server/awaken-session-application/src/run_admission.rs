@@ -158,7 +158,14 @@ impl SessionApplication {
                 .map_err(|error| {
                     SessionProjectionRecoveryError::Rejected(realization_error(error))
                 })?;
-            let _ = self.dispatch_session_work(&session).await;
+            self.dispatch_session_work(&session)
+                .await
+                .map_err(|error| {
+                    SessionProjectionRecoveryError::Rejected(RunError::unavailable_classified(
+                        "session_work_dispatch_failed",
+                        format!("Session realization work could not be dispatched: {error}"),
+                    ))
+                })?;
             session
         } else {
             self.realize_session(thread_id).await.map_err(|error| {

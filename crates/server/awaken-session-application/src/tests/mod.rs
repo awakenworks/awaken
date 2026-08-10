@@ -427,6 +427,10 @@ impl RecordingEnvironmentSource {
     fn fail_for(&self, session_id: &str) {
         self.failures.lock().unwrap().insert(session_id.into());
     }
+
+    fn recover_for(&self, session_id: &str) {
+        self.failures.lock().unwrap().remove(session_id);
+    }
 }
 
 #[async_trait::async_trait]
@@ -498,7 +502,11 @@ fn persisted(id: &str, self_hosted: bool, application: bool, status: &str) -> Pe
             awaken_session_contract::SessionBaseline::compile(
                 awaken_session_contract::SessionBaselineInputs {
                     environment,
-                    runtime_placement: SessionRuntimePlacement::Local,
+                    runtime_placement: if self_hosted {
+                        SessionRuntimePlacement::Worker
+                    } else {
+                        SessionRuntimePlacement::Local
+                    },
                     mcp_authoring: Default::default(),
                     agent_id: "agent".into(),
                     model: "model".into(),
@@ -617,3 +625,4 @@ fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources
 mod authority;
 mod creation;
 mod realization;
+mod run_admission;

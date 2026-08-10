@@ -1,6 +1,7 @@
 //! Run driving for [`SharedHost`]: the neutral `run`/`resume`/`define_outcome`
 //! entry points, step finalization, queries, and the durable-ops verbs.
 
+use super::types::VerifiedStepProjection;
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -357,7 +358,7 @@ impl SharedHost {
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         self.deliver_run(agent, thread, input, false, None, None)
             .await
     }
@@ -369,7 +370,7 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         self.deliver_run(agent, thread, input, false, None, data_subject_id)
             .await
     }
@@ -383,7 +384,7 @@ impl SharedHost {
         thread: &str,
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         self.deliver_run(agent, thread, input, false, Some(sink), None)
             .await
     }
@@ -396,7 +397,7 @@ impl SharedHost {
         input: Vec<Message>,
         sink: Arc<dyn StreamSink>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         self.deliver_run(agent, thread, input, false, Some(sink), data_subject_id)
             .await
     }
@@ -411,7 +412,7 @@ impl SharedHost {
         agent: Option<&str>,
         thread: &str,
         input: Vec<Message>,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         self.deliver_run(agent, thread, input, true, None, None)
             .await
     }
@@ -424,7 +425,7 @@ impl SharedHost {
         supersede: bool,
         sink: Option<Arc<dyn StreamSink>>,
         data_subject_id: Option<awaken_runtime_contract::DataSubjectId>,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
         let _execution = ctx.execution.lock().await;
         let mut st = ctx.state.lock().await;
@@ -760,7 +761,7 @@ impl SharedHost {
         thread: &str,
         tool_use_id: &str,
         resume: HostResume,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
         let _execution = ctx.execution.lock().await;
         let (run_id, ticket) = ctx
@@ -943,7 +944,7 @@ impl SharedHost {
         state: RunState,
         expectation: StepCommitExpectation<'_>,
         thread: &str,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         let active_run = run_id.clone();
         let result = self
             .finish_step(ctx, st, run_id, state, expectation, thread)
@@ -1032,7 +1033,7 @@ impl SharedHost {
         state: RunState,
         expectation: StepCommitExpectation<'_>,
         thread: &str,
-    ) -> Result<RunResult, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         // Cause/effect: when peer P commits this Run, this Coordinator's local
         // projection is stale but the recovery snapshot contains P's messages,
         // state, and tickets. Project that one committed truth or fail closed;
@@ -1095,15 +1096,18 @@ impl SharedHost {
             .as_ref()
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed) > 0);
         let delegated_runs = project_delegated_runs(delegation_registry.as_ref());
-        Ok(RunResult {
-            run_id,
-            new_messages,
-            state,
-            pending,
-            compacted,
-            rescheduled,
-            delegated_runs,
-        })
+        Ok(CommittedStepReceipt::from_verified(
+            VerifiedStepProjection {
+                run_id,
+                new_messages,
+                state,
+                pending,
+                compacted,
+                rescheduled,
+                delegated_runs,
+            },
+            &committed,
+        ))
     }
 
     /// Fail closed before resuming: the asserted `tool_use_id` must name the
@@ -1185,9 +1189,17 @@ fn verify_committed_step(
             "executor result does not match the committed Run state",
         ));
     }
+    if matches!(returned_state, RunState::Running) {
+        return Err(HostError::internal("committed step proof is not settled"));
+    }
     if committed.messages.len() < before {
         return Err(HostError::internal(
             "committed Thread message prefix moved backwards",
+        ));
+    }
+    if committed.thread_version == 0 || committed.next_commit_ordinal == 0 {
+        return Err(HostError::internal(
+            "committed step proof has no durable commit identity",
         ));
     }
     for expected in expected_input_ids {
@@ -1201,7 +1213,17 @@ fn verify_committed_step(
             )));
         }
     }
-    Ok(committed.messages[before..].to_vec())
+    let suffix = committed.messages[before..].to_vec();
+    if matches!(
+        returned_state,
+        RunState::Ended(EndCause::NaturalEnd | EndCause::Error(_))
+    ) && !suffix.iter().any(|message| message.role == Role::Assistant)
+    {
+        return Err(HostError::internal(
+            "committed terminal step has no assistant output or error explanation",
+        ));
+    }
+    Ok(suffix)
 }
 
 fn recovery_ticket(committed: &RunRecoverySnapshot, run_id: &RunId) -> Option<ResumeTicket> {
@@ -1277,18 +1299,24 @@ mod committed_step_proof_tests {
         // FMECA causes: C1 exact Thread/claimed Run; C2 latest Run identity;
         // C3 committed RunRecord exists; C4 executor/committed state agree;
         // C5 committed message count does not regress; C6 every accepted input
-        // MessageId exists. Effects: E1 project only the committed suffix; E2
-        // fail closed before StepOutcome/SSE completion. Severity is critical:
-        // any false rule would report completion without authoritative history.
+        // MessageId exists; C7 the snapshot carries a nonzero commit identity;
+        // C8 a normal/error terminal step has committed assistant output; C9
+        // the state is settled rather than Running. Effects: E1 issue the
+        // unforgeable receipt and project only the committed suffix; E2 fail
+        // closed before StepOutcome/SSE completion. Severity is critical: any
+        // false rule would report completion without authoritative history.
         //
-        // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effect |
-        // | P1   | T  | T  | T  | T  | T  | T  | E1     |
-        // | P2   | F  | -  | -  | -  | -  | -  | E2     |
-        // | P3   | T  | F  | -  | -  | -  | -  | E2     |
-        // | P4   | T  | T  | F  | -  | -  | -  | E2     |
-        // | P5   | T  | T  | T  | F  | -  | -  | E2     |
-        // | P6   | T  | T  | T  | T  | F  | -  | E2     |
-        // | P7   | T  | T  | T  | T  | T  | F  | E2     |
+        // | Rule | Failed cause | Effect |
+        // | P1   | none         | E1     |
+        // | P2   | C1           | E2     |
+        // | P3   | C2           | E2     |
+        // | P4   | C3           | E2     |
+        // | P5   | C4           | E2     |
+        // | P6   | C5           | E2     |
+        // | P7   | C6           | E2     |
+        // | P8   | C7           | E2     |
+        // | P9   | C8           | E2     |
+        // | P10  | C9           | E2     |
         let thread = ThreadId("thread-proof".into());
         let run = RunId("run-proof".into());
         let state = RunState::Ended(EndCause::NaturalEnd);
@@ -1298,6 +1326,32 @@ mod committed_step_proof_tests {
             verify_committed_step(&snapshot(), &thread, &run, &state, 1, &expected).expect("P1/E1");
         assert_eq!(suffix.len(), 1, "P1/E1");
         assert_eq!(suffix[0].id.0, "output-proof", "P1/E1");
+        let receipt = CommittedStepReceipt::from_verified(
+            VerifiedStepProjection {
+                run_id: run.clone(),
+                new_messages: suffix,
+                state: state.clone(),
+                pending: None,
+                compacted: false,
+                rescheduled: false,
+                delegated_runs: Vec::new(),
+            },
+            &snapshot(),
+        );
+        assert_eq!(receipt.thread_id().0, "thread-proof", "P1/E1");
+        assert_eq!(receipt.commit_sequence(), 1, "P1/E1");
+        assert_eq!(receipt.store_cursor(), 1, "P1/E1");
+        assert_eq!(receipt.operation_ordinal(), 0, "P1/E1");
+        assert_eq!(
+            receipt.first_message_id().map(|id| id.0.as_str()),
+            Some("output-proof"),
+            "P1/E1"
+        );
+        assert_eq!(
+            receipt.last_message_id().map(|id| id.0.as_str()),
+            Some("output-proof"),
+            "P1/E1"
+        );
 
         let mut cases = Vec::new();
         let mut wrong_thread = snapshot();
@@ -1324,6 +1378,22 @@ mod committed_step_proof_tests {
             1,
             vec!["missing-input".into()],
         ));
+        let mut missing_commit_identity = snapshot();
+        missing_commit_identity.thread_version = 0;
+        missing_commit_identity.next_commit_ordinal = 0;
+        cases.push((
+            "P8",
+            missing_commit_identity,
+            state.clone(),
+            1,
+            expected.clone(),
+        ));
+        let mut missing_output = snapshot();
+        missing_output.messages.pop();
+        cases.push(("P9", missing_output, state.clone(), 0, expected.clone()));
+        let mut running = snapshot();
+        running.runs[0].state = RunState::Running;
+        cases.push(("P10", running, RunState::Running, 0, expected.clone()));
         for (rule, snapshot, returned, before, inputs) in cases {
             assert!(
                 verify_committed_step(&snapshot, &thread, &run, &returned, before, &inputs)

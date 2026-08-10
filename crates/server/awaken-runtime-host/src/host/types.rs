@@ -14,9 +14,12 @@ pub struct PendingTool {
     pub client_executed: bool,
 }
 
-/// The neutral result of one step (a turn or a resume): the messages committed
-/// during the step, the resulting state, and the pending tool when the run awaits.
-pub struct RunResult {
+/// Proof that one Host step was read back from the authoritative ThreadCommit
+/// prefix. Public protocols may inspect the projected result fields, but cannot
+/// construct this value because the commit identity is private to the Host.
+/// Consequently a bare executor terminal state cannot cross the application
+/// boundary as a completed step.
+pub struct CommittedStepReceipt {
     pub run_id: RunId,
     pub new_messages: Vec<Message>,
     pub state: RunState,
@@ -29,6 +32,91 @@ pub struct RunResult {
     /// during this turn (auto-recovery), read from the run's reschedule counter.
     pub rescheduled: bool,
     pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
+    proof: CommittedStepProof,
+}
+
+struct CommittedStepProof {
+    thread_id: ThreadId,
+    commit_sequence: u64,
+    store_cursor: u64,
+    operation_ordinal: u64,
+    first_message_id: Option<MessageId>,
+    last_message_id: Option<MessageId>,
+}
+
+pub(super) struct VerifiedStepProjection {
+    pub run_id: RunId,
+    pub new_messages: Vec<Message>,
+    pub state: RunState,
+    pub pending: Option<PendingTool>,
+    pub compacted: bool,
+    pub rescheduled: bool,
+    pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
+}
+
+impl CommittedStepReceipt {
+    /// Construct only after the Run owner has verified the exact Thread, Run,
+    /// input identities, committed lifecycle, and returned message suffix.
+    pub(super) fn from_verified(
+        projected: VerifiedStepProjection,
+        committed: &RunRecoverySnapshot,
+    ) -> Self {
+        let first_message_id = projected
+            .new_messages
+            .first()
+            .map(|message| message.id.clone());
+        let last_message_id = projected
+            .new_messages
+            .last()
+            .map(|message| message.id.clone());
+        Self {
+            run_id: projected.run_id,
+            new_messages: projected.new_messages,
+            state: projected.state,
+            pending: projected.pending,
+            compacted: projected.compacted,
+            rescheduled: projected.rescheduled,
+            delegated_runs: projected.delegated_runs,
+            proof: CommittedStepProof {
+                thread_id: committed.thread_id.clone(),
+                commit_sequence: committed.thread_version,
+                store_cursor: committed.store_cursor,
+                operation_ordinal: committed.next_commit_ordinal - 1,
+                first_message_id,
+                last_message_id,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn thread_id(&self) -> &ThreadId {
+        &self.proof.thread_id
+    }
+
+    #[must_use]
+    pub fn commit_sequence(&self) -> u64 {
+        self.proof.commit_sequence
+    }
+
+    #[must_use]
+    pub fn store_cursor(&self) -> u64 {
+        self.proof.store_cursor
+    }
+
+    #[must_use]
+    pub fn operation_ordinal(&self) -> u64 {
+        self.proof.operation_ordinal
+    }
+
+    #[must_use]
+    pub fn first_message_id(&self) -> Option<&MessageId> {
+        self.proof.first_message_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn last_message_id(&self) -> Option<&MessageId> {
+        self.proof.last_message_id.as_ref()
+    }
 }
 
 /// The neutral resume command: answer a built-in tool's permission gate, or

@@ -33,13 +33,6 @@ pub struct SessionApplicationConfiguration {
     /// incarnation remains separate so a restart can fence its predecessor
     /// without impersonating a different owner.
     pub local_realization_owner: String,
-    /// Maximum time a synchronous ordinary create may wait for its exact Worker
-    /// realization acknowledgement. Application-contribution creates are inert
-    /// and intentionally do not cross this barrier.
-    pub create_readiness_timeout: std::time::Duration,
-    /// Poll cadence for the repository-backed readiness barrier. The aggregate
-    /// remains the authority; this interval is only wake-up policy.
-    pub create_readiness_poll_interval: std::time::Duration,
     /// Maximum fenced assignments allowed for initial Environment
     /// realization before the aggregate enters `activation_failed`.
     pub realization_retry_budget: u32,
@@ -50,8 +43,6 @@ impl Default for SessionApplicationConfiguration {
         Self {
             execution_placement: SessionExecutionPlacement::default(),
             local_realization_owner: "local-runtime".into(),
-            create_readiness_timeout: std::time::Duration::from_secs(120),
-            create_readiness_poll_interval: std::time::Duration::from_millis(25),
             realization_retry_budget: 3,
         }
     }
@@ -80,14 +71,6 @@ pub struct SessionApplication {
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
 
 impl SessionApplication {
-    pub(crate) fn create_readiness_timeout(&self) -> std::time::Duration {
-        self.configuration.create_readiness_timeout
-    }
-
-    pub(crate) fn create_readiness_poll_interval(&self) -> std::time::Duration {
-        self.configuration.create_readiness_poll_interval
-    }
-
     pub(crate) fn realization_retry_budget(&self) -> u32 {
         self.configuration.realization_retry_budget.max(1)
     }
