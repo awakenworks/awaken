@@ -9,6 +9,7 @@ pub use awaken_runtime_contract::CommitOperationId
 pub use awaken_runtime_contract::CommitPayloadHash
 pub use awaken_runtime_contract::CommitReceipt
 pub use awaken_runtime_contract::CommitRecord
+pub use awaken_runtime_contract::CommittedThreadView
 pub use awaken_runtime_contract::ContentBlock
 pub use awaken_runtime_contract::CredentialAccess
 pub use awaken_runtime_contract::CredentialAdmissionError
@@ -50,6 +51,7 @@ pub use awaken_runtime_contract::ResumeTicket
 pub use awaken_runtime_contract::Role
 pub use awaken_runtime_contract::RunDisposition
 pub use awaken_runtime_contract::RunId
+pub use awaken_runtime_contract::RunRecord
 pub use awaken_runtime_contract::RunState
 pub use awaken_runtime_contract::Scope
 pub use awaken_runtime_contract::SealedCredentialEnvelopeRef
@@ -59,7 +61,6 @@ pub use awaken_runtime_contract::Store
 pub use awaken_runtime_contract::StructuredCredentialMaterial
 pub use awaken_runtime_contract::ThreadCommit
 pub use awaken_runtime_contract::ThreadId
-pub use awaken_runtime_contract::ThreadReader
 pub use awaken_runtime_contract::TokenEndpointAuth
 pub use awaken_runtime_contract::TranscriptRange
 pub use awaken_runtime_contract::TranscriptSliceSpec
@@ -1056,7 +1057,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: cor
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
-pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
@@ -1082,7 +1083,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_in
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownership(self, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
-pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_session_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self
@@ -1139,7 +1140,7 @@ pub trait awaken_runtime_contract::terminal::RunTerminalObserver: core::marker::
 pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observe<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::terminal::CommittedTerminalRun) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_contract::terminal::RunTerminalObserver::observer_id(&self) -> &str
 pub async fn awaken_runtime_contract::terminal::deliver_committed_terminal(&[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_runtime_contract::terminal::CommittedTerminalRun) -> alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>
-pub async fn awaken_runtime_contract::terminal::redeliver_committed_terminal(&dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader, &[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>>
+pub async fn awaken_runtime_contract::terminal::redeliver_committed_terminal(&dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &[alloc::sync::Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>], &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<alloc::vec::Vec<awaken_runtime_contract::terminal::RunTerminalDeliveryFailure>>
 pub mod awaken_runtime_contract::tool
 pub enum awaken_runtime_contract::tool::ToolError
 pub awaken_runtime_contract::tool::ToolError::Execution(alloc::string::String)
@@ -1819,7 +1820,7 @@ pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option
 pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
 pub awaken_runtime_contract::RuntimeRunContext::pause: core::option::Option<awaken_runtime_contract::pause::PauseSignal>
-pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>>
+pub awaken_runtime_contract::RuntimeRunContext::reader: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>>
 pub awaken_runtime_contract::RuntimeRunContext::request_context: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::RuntimeRunContext::reschedules: core::option::Option<alloc::sync::Arc<core::sync::atomic::AtomicU32>>
 pub awaken_runtime_contract::RuntimeRunContext::session_plugins: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>>
@@ -1845,7 +1846,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_in
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownership(self, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_pause(self, awaken_runtime_contract::pause::PauseSignal) -> Self
-pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reader(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_reschedules(self, alloc::sync::Arc<core::sync::atomic::AtomicU32>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_session_plugin(self, alloc::sync::Arc<dyn awaken_runtime_contract::Plugin>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_stream_checkpoint(self, alloc::sync::Arc<dyn awaken_agent_contract::stream::checkpoint::StreamCheckpointStore>) -> Self

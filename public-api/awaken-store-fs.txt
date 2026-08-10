@@ -7,18 +7,16 @@ pub fn awaken_store_fs::FsCommitCoordinator::commit<'life0, 'async_trait>(&'life
 impl awaken_agent_contract::thread::commit::coordinator::OperationCoordinator for awaken_store_fs::FsCommitCoordinator
 pub fn awaken_store_fs::FsCommitCoordinator::commit_operation<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl awaken_agent_contract::thread::read::checkpoint::CheckpointReader for awaken_store_fs::FsCommitCoordinator
-pub fn awaken_store_fs::FsCommitCoordinator::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_store_fs::FsCommitCoordinator::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
-pub fn awaken_store_fs::FsCommitCoordinator::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
-impl awaken_agent_contract::thread::read::recovery::RunRecoverySource for awaken_store_fs::FsCommitCoordinator
-pub fn awaken_store_fs::FsCommitCoordinator::recovery_snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl awaken_agent_contract::thread::read::run_store::RunStore for awaken_store_fs::FsCommitCoordinator
-pub fn awaken_store_fs::FsCommitCoordinator::get(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
-impl awaken_agent_contract::thread::read::thread_reader::ThreadReader for awaken_store_fs::FsCommitCoordinator
+impl awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView for awaken_store_fs::FsCommitCoordinator
 pub fn awaken_store_fs::FsCommitCoordinator::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub fn awaken_store_fs::FsCommitCoordinator::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+pub fn awaken_store_fs::FsCommitCoordinator::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_store_fs::FsCommitCoordinator::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_store_fs::FsCommitCoordinator::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub fn awaken_store_fs::FsCommitCoordinator::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
+impl awaken_agent_contract::thread::read::recovery::RunRecoverySource for awaken_store_fs::FsCommitCoordinator
+pub fn awaken_store_fs::FsCommitCoordinator::recovery_snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_store_fs::FsStreamCheckpointStore
 impl awaken_store_fs::FsStreamCheckpointStore
 pub fn awaken_store_fs::FsStreamCheckpointStore::open(impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<Self>
