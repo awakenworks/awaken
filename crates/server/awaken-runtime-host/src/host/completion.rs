@@ -864,7 +864,7 @@ mod completion_tests {
 
         // Cause/effect graph:
         // C1=Native; C2=projected ACP opaque process; C3=trusted BackendOwned ACP;
-        // C4=A2A-only; C5=frozen Environment isolation/network/limits/packages;
+        // C4=A2A-only; C5=frozen Environment isolation/network/requests/limits/packages;
         // C6=prepared image. Effects: E1=one PlacementRequirements.sandbox vector;
         // E2=opaque ACP adds transparent Namespace semantics; E3=A2A adds no local
         // Sandbox demand; E4=image replaces package provisioning with rootfs demand.

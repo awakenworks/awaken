@@ -170,6 +170,7 @@ awaken-scenario-host = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-store-inmem.workspace = true
 awaken-worker-contract = { workspace = true }
+awaken-sandbox-container.workspace = true
 # mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
 awaken-ext-mcp = { workspace = true }
 # management_authz drives a legacy iam.sqlite import: the contract ids + the sqlite driver.
@@ -215,6 +216,10 @@ required-features = ["test-support"]
 [[test]]
 name = "workspace_path_addressing"
 required-features = ["test-support"]
+
+[[test]]
+name = "resource_scheduling"
+required-features = ["test-support", "container-k8s"]
 
 [lints]
 workspace = true
