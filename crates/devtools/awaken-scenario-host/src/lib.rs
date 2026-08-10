@@ -523,9 +523,7 @@ pub async fn build_resolved_real_router() -> Router {
     .await
     .expect("publish model candidate");
     let materializer =
-        awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::new(
-            cred_repo, secrets,
-        );
+        awaken_credential_materializer::CredentialInferenceMaterializer::new(cred_repo, secrets);
     let context = attempt_credential::context(&published.primary);
     let executor = materializer
         .materialize_candidate(&published.primary, &context)
@@ -643,9 +641,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     .await
     .expect("publish OAuth model candidate");
     let materializer =
-        awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::new(
-            cred_repo, secrets,
-        );
+        awaken_credential_materializer::CredentialInferenceMaterializer::new(cred_repo, secrets);
     let context = attempt_credential::context(&published.primary);
     let executor = materializer
         .materialize_candidate(&published.primary, &context)
