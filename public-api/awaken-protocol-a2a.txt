@@ -356,6 +356,10 @@ pub awaken_protocol_a2a::TaskState::Unknown
 pub awaken_protocol_a2a::TaskState::Working
 impl awaken_protocol_a2a::types::TaskState
 pub fn awaken_protocol_a2a::types::TaskState::is_terminal(self) -> bool
+pub struct awaken_protocol_a2a::A2aSecurityProfile
+pub awaken_protocol_a2a::A2aSecurityProfile::accepted_headers: alloc::vec::Vec<awaken_credential_contract::CredentialUsage>
+pub awaken_protocol_a2a::A2aSecurityProfile::anonymous: bool
+pub awaken_protocol_a2a::A2aSecurityProfile::fingerprint: alloc::string::String
 pub struct awaken_protocol_a2a::AgentCard
 pub awaken_protocol_a2a::AgentCard::additional_interfaces: alloc::vec::Vec<awaken_protocol_a2a::types::AgentInterface>
 pub awaken_protocol_a2a::AgentCard::capabilities: awaken_protocol_a2a::types::AgentCapabilities
@@ -482,5 +486,6 @@ pub fn awaken_protocol_a2a::Transport::request<'life0, 'life1, 'life2, 'async_tr
 impl awaken_protocol_a2a::client::Transport for awaken_protocol_a2a::client::HttpTransport
 pub fn awaken_protocol_a2a::client::HttpTransport::request<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::vec::Vec<u8>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::client::Response, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_a2a::agent_card(&str) -> awaken_protocol_a2a::types::AgentCard
+pub fn awaken_protocol_a2a::project_agent_card_security(&awaken_protocol_a2a::types::AgentCard) -> core::result::Result<awaken_protocol_a2a::A2aSecurityProfile, alloc::string::String>
 pub fn awaken_protocol_a2a::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
 pub fn awaken_protocol_a2a::router_with_storage_root(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>, core::option::Option<&std::path::Path>) -> axum::routing::Router

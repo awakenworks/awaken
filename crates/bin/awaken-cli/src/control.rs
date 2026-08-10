@@ -107,6 +107,30 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
 ) -> Result<Router, String> {
+    build_control_assembly_with_publication_resolver_and_web_search(
+        deployment,
+        key,
+        resolver,
+        brokered_catalog,
+        web_search_providers,
+        web_search_publication_resolver,
+    )
+    .await
+    .map(|assembly| assembly.public_router)
+}
+
+/// Hosted control assembly with deployment-owned publication adapters and both
+/// role-owned listener surfaces. The public and private routers remain
+/// separate; embedders must expose the private router only on an internal
+/// listener protected by the configured service authenticator.
+pub async fn build_control_assembly_with_publication_resolver_and_web_search(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+    brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
+    web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
+) -> Result<ProcessAssembly, String> {
     build_control_assembly_with_model_composition(
         deployment,
         key,
@@ -115,7 +139,6 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
         Some((web_search_providers, web_search_publication_resolver)),
     )
     .await
-    .map(|assembly| assembly.public_router)
 }
 
 async fn build_control_assembly_with_model_composition(

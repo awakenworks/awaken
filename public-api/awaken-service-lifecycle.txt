@@ -1,0 +1,18 @@
+pub mod awaken_service_lifecycle
+pub struct awaken_service_lifecycle::ServiceLifecycle
+impl awaken_service_lifecycle::ServiceLifecycle
+pub fn awaken_service_lifecycle::ServiceLifecycle::is_healthy(&self) -> bool
+pub fn awaken_service_lifecycle::ServiceLifecycle::new() -> Self
+pub async fn awaken_service_lifecycle::ServiceLifecycle::shutdown(&self, core::time::Duration) -> core::result::Result<(), awaken_service_lifecycle::ShutdownError>
+pub fn awaken_service_lifecycle::ServiceLifecycle::spawn<F, Fut>(&self, impl core::convert::Into<alloc::string::String>, F) where F: core::ops::function::FnOnce(tokio_util::sync::cancellation_token::CancellationToken) -> Fut + core::marker::Send + 'static, Fut: core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'static
+pub async fn awaken_service_lifecycle::ServiceLifecycle::wait_for_failure(&self) -> core::option::Option<awaken_service_lifecycle::TaskFailure>
+impl core::default::Default for awaken_service_lifecycle::ServiceLifecycle
+pub fn awaken_service_lifecycle::ServiceLifecycle::default() -> Self
+pub struct awaken_service_lifecycle::ShutdownError
+pub awaken_service_lifecycle::ShutdownError::timed_out: alloc::vec::Vec<alloc::string::String>
+impl core::error::Error for awaken_service_lifecycle::ShutdownError
+impl core::fmt::Display for awaken_service_lifecycle::ShutdownError
+pub fn awaken_service_lifecycle::ShutdownError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_service_lifecycle::TaskFailure
+pub awaken_service_lifecycle::TaskFailure::cause: alloc::string::String
+pub awaken_service_lifecycle::TaskFailure::task: alloc::string::String

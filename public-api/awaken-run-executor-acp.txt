@@ -232,7 +232,6 @@ pub awaken_run_executor_acp::ModelDelivery::base_url: &'static str
 pub awaken_run_executor_acp::ModelDelivery::credential_env: &'static [&'static str]
 pub awaken_run_executor_acp::ModelDelivery::model: &'static str
 impl awaken_run_executor_acp::ModelDelivery
-pub fn awaken_run_executor_acp::ModelDelivery::compile_credential_usage(self, core::option::Option<&str>) -> core::result::Result<awaken_credential_contract::CredentialUsage, alloc::string::String>
 pub fn awaken_run_executor_acp::ModelDelivery::default_credential_env(self) -> core::option::Option<&'static str>
 pub fn awaken_run_executor_acp::ModelDelivery::supports_credential_env(self, &str) -> bool
 pub struct awaken_run_executor_acp::NoSessionHome
@@ -302,6 +301,7 @@ pub fn awaken_run_executor_acp::acp_cli(&str) -> core::option::Option<&'static a
 pub fn awaken_run_executor_acp::admit_mcp_injection(awaken_run_executor_acp::AcpLaunchIdentity, &awaken_run_executor_acp::McpInjection) -> core::result::Result<(), awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::image_runtime_contract_json() -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub fn awaken_run_executor_acp::known_acp_clis() -> &'static [awaken_run_executor_acp::AcpCli]
+pub fn awaken_run_executor_acp::known_acp_publication_capabilities() -> alloc::vec::Vec<awaken_acp_contract::AcpPublicationCapability>
 pub fn awaken_run_executor_acp::mcp_injection(&awaken_run_executor_acp::AcpCli, &alloc::collections::btree::map::BTreeMap<alloc::string::String, serde_json::value::Value>) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::mcp_injection_from_servers(&awaken_run_executor_acp::AcpCli, &[awaken_runtime_contract::resolved::AcpMcpServer]) -> core::result::Result<awaken_run_executor_acp::McpInjection, awaken_run_executor_acp::OpenError>
 pub fn awaken_run_executor_acp::project_launch(&awaken_run_executor_acp::AcpCli, &dyn awaken_run_executor_acp::LaunchResolver, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_run_executor_acp::AcpLaunch, awaken_run_executor_acp::OpenError>
