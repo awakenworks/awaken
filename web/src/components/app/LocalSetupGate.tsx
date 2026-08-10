@@ -33,7 +33,7 @@ export default function LocalSetupGate({ children }: { children: ReactNode }) {
         if (active) setState("unavailable");
         return;
       }
-      const entry = hostedSessionEntry(navigation, getToken());
+      const entry = hostedSessionEntry(navigation, getToken(), window.location.href);
       if (entry.kind === "redirect") {
         window.location.replace(entry.url);
         return;

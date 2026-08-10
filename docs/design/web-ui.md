@@ -190,6 +190,8 @@ Repository 是可变资源，只 pin 它们的配置版本，不 pin 内部内�
 - 未提供的后端能力以明确 capability gate 展示，不发明占位领域对象。
 - 可选的托管套件入口只读取 Foundation `SuiteNavigation`；产品 Shell 不推导
   Cloud 域名、不读取 sibling 产品拓扑，也不复制 Cloud 的 Products/Billing 页面。
+  直接访问的当前 URL 只通过 Foundation 生成的规则作为 opaque continuation
+  交回 Hub；Awaken 不校验或持久化它，也不据此构造 OAuth/Workspace 路由。
 
 ## 8. 验收条件
 

@@ -26,7 +26,7 @@ describe("suite navigation projection", () => {
    *
    * Decision table:
    * | rule | hub | product bearer | effect |
-   * | S1 | exact | absent | redirect to the exact opaque hub |
+   * | S1 | exact | absent | redirect to the exact hub with the current deep link |
    * | S2 | exact | present | continue to the hosted product |
    * | S3 | null | absent | continue to standalone local setup |
    * | S4 | null | present | continue; do not reinterpret the credential |
@@ -34,12 +34,12 @@ describe("suite navigation projection", () => {
   it("routes only an unauthenticated hosted browser through the suite hub", () => {
     const hosted = { hub_url: "https://cloud.example/products" };
     const standalone = { hub_url: null };
-    expect(hostedSessionEntry(hosted, "")).toEqual({
+    expect(hostedSessionEntry(hosted, "", "https://agents.example/w/awaken%3Atenant/sessions/session-1?tab=runs#latest")).toEqual({
       kind: "redirect",
-      url: "https://cloud.example/products",
+      url: "https://cloud.example/products?continue=https%3A%2F%2Fagents.example%2Fw%2Fawaken%253Atenant%2Fsessions%2Fsession-1%3Ftab%3Druns%23latest",
     });
-    expect(hostedSessionEntry(hosted, "product-token")).toEqual({ kind: "continue" });
-    expect(hostedSessionEntry(standalone, "")).toEqual({ kind: "continue" });
-    expect(hostedSessionEntry(standalone, "product-token")).toEqual({ kind: "continue" });
+    expect(hostedSessionEntry(hosted, "product-token", "https://agents.example/w/workspace")).toEqual({ kind: "continue" });
+    expect(hostedSessionEntry(standalone, "", "http://localhost/w/workspace")).toEqual({ kind: "continue" });
+    expect(hostedSessionEntry(standalone, "product-token", "http://localhost/w/workspace")).toEqual({ kind: "continue" });
   });
 });

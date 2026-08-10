@@ -1,28 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api/client";
+import type { SuiteNavigation } from "./generated/suite-navigation";
+
+export {
+  hostedSessionEntry,
+  type HostedSessionEntry,
+  type SuiteNavigation,
+} from "./generated/suite-navigation";
 
 export const SUITE_NAVIGATION_PATH = "/.well-known/awaken-suite-navigation";
-
-export interface SuiteNavigation {
-  readonly hub_url: string | null;
-}
-
-export type HostedSessionEntry =
-  | { readonly kind: "continue" }
-  | { readonly kind: "redirect"; readonly url: string };
-
-/**
- * Decide only whether an unauthenticated hosted browser must return to the
- * suite hub. The hub remains opaque; IAM and Cloud own all login coordinates.
- */
-export function hostedSessionEntry(
-  navigation: SuiteNavigation,
-  sessionBearer: string,
-): HostedSessionEntry {
-  return navigation.hub_url && !sessionBearer
-    ? { kind: "redirect", url: navigation.hub_url }
-    : { kind: "continue" };
-}
 
 export const suiteNavigationQuery = {
   queryKey: ["suite-navigation"] as const,
