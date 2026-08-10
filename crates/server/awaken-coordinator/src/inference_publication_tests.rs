@@ -22,7 +22,6 @@ mod tests {
         ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
     };
     use awaken_runtime_contract::RunActivation;
-    use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
     use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
     use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -31,7 +30,7 @@ mod tests {
     };
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use crate::model_resolver::CatalogModelPublicationResolver;
+    use awaken_control::model_publication::CatalogModelPublicationResolver;
 
     /// Author a catalog with one anthropic offering for `model`, and optionally a
     /// workspace credential `(provider, active)`. The secret is a fake — resolution

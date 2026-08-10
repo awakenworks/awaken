@@ -62,11 +62,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 axum = { version = "0.8", features = ["multipart"] }
-# Runtime MCP relay transport; OAuth repository/material refresh assembly lives
-# in Coordinator and is injected through CredentialRefreshFactory.
+# Runtime MCP relay transport; exact OAuth refresh remains in credential
+# materialization and is injected through CredentialRefreshFactory.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 base64 = "0.22"
-form_urlencoded = "1"
 # Content SHA-256 for the memory_stores memories/versions API (`content_sha256`).
 sha2 = "0.10"
 # Text-level PII scrubbing for the content-capture redactor (ADR-0050 D6).

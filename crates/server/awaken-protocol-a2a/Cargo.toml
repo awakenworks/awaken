@@ -5,12 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-context = "worker"
+context = "shared"
 layer = "interface"
 authority = "protocol-a2a"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-credential-contract.workspace = true
+awaken-runtime-contract.workspace = true
 awaken-credential.workspace = true
 awaken-session-contract.workspace = true
 awaken-outbound-http.workspace = true

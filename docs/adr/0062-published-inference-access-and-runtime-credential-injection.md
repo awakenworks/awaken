@@ -25,7 +25,7 @@ contract. Only endpoint and credential injection/usage differ.
 ### Static view
 
 ```text
-Configuration bounded context
+Control / Configuration bounded context
   AgentDefinition -> AgentPublication -> ExecutableAgentSnapshot
        |                    |                       |
        |              resolve once by              +-- fingerprint includes
@@ -59,9 +59,12 @@ is already covered by the snapshot fingerprint. There is no parallel
 
 The concrete adapters are intentionally separate:
 
-- `CatalogModelPublicationResolver` belongs to configuration publication and
-  depends on `CatalogRepo` plus credential inventory. It has no `SecretStore` or
-  executor dependency and every candidate must have a persisted Catalog offering.
+- `CatalogModelPublicationResolver` is implemented once in `awaken-control` and
+  belongs to configuration publication. It depends on `CatalogRepo`, credential
+  inventory, secret-free ACP publication capabilities, and optional Worker
+  observations. It has no `SecretStore` or executor dependency and every
+  provider candidate must have a persisted Catalog offering. Coordinator never
+  reads either Control repository and owns no publication resolver.
 - `ConfigService` requires exactly one `ModelPublicationResolver` at construction;
   neither `Auto` nor `Pinned` authoring can bypass publication resolution.
 - `CredentialInferenceMaterializer` belongs to execution composition. Its direct
@@ -70,7 +73,7 @@ The concrete adapters are intentionally separate:
   published `Provider` candidates and cannot enumerate or select configuration.
   Its sole implementation lives in `awaken-credential-materializer`; standalone
   Worker and AllInOne composition select features on that implementation, while
-  Coordinator owns no parallel candidate router.
+  Coordinator owns no parallel candidate router or materializer.
 - `PinnedCredentialMaterializer` is the shared worker/host adapter used by both
   native provider execution and ACP provisioning. It verifies the exact published
   Workspace/revision/provider/usage pin before opening persisted material. ACP CLI

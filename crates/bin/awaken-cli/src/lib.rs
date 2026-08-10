@@ -889,16 +889,15 @@ fn publication_model_assembly(
         .control
         .as_ref()
         .expect("model publication requires Control stores");
-    let executor_model_capabilities =
-        Arc::new(awaken_coordinator::model_directory::installed_executor_model_capabilities());
+    let acp_capabilities = Arc::new(awaken_run_executor_acp::known_acp_publication_capabilities());
     match composition {
         PublicationModelComposition::PublishedProviders => PublicationModelAssembly {
             publication_resolver: Arc::new(
-                awaken_coordinator::model_resolver::CatalogModelPublicationResolver::from_repo(
+                awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
                     control.catalog.clone(),
                     control.credentials.clone(),
                 )
-                .with_executor_capabilities(executor_model_capabilities)
+                .with_acp_capabilities(acp_capabilities)
                 .with_profiles(control.profiles.clone())
                 .with_worker_observations(worker_observations)
                 .with_brokered_access(cloud_models_enabled),

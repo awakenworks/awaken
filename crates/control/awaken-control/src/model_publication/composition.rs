@@ -5,6 +5,20 @@ use awaken_model_catalog::ProviderCatalog;
 use awaken_model_catalog::repo::CatalogRepo;
 use std::sync::Arc;
 
+fn executor_capabilities(
+    acp: &[awaken_acp_contract::AcpPublicationCapability],
+) -> Vec<awaken_config_resolver::ExecutorModelCapability> {
+    std::iter::once(awaken_config_resolver::ExecutorModelCapability::native())
+        .chain(acp.iter().map(
+            |capability| awaken_config_resolver::ExecutorModelCapability {
+                backend_ref: capability.backend_ref.clone(),
+                model_api_dialects: capability.model_api_dialects.clone(),
+                available: true,
+            },
+        ))
+        .collect()
+}
+
 #[derive(Clone)]
 pub(super) enum CatalogSource {
     Static(ProviderCatalog),
@@ -25,6 +39,8 @@ impl CatalogModelPublicationResolver {
     /// tests; production composition should use [`Self::from_repo`].
     #[must_use]
     pub fn new(catalog: ProviderCatalog, credentials: Arc<dyn CredentialRepo>) -> Self {
+        let acp_capabilities = Arc::new(Vec::new());
+        let executor_capabilities = Arc::new(executor_capabilities(&acp_capabilities));
         Self {
             source: CatalogSource::Static(catalog),
             credentials,
@@ -32,9 +48,8 @@ impl CatalogModelPublicationResolver {
             brokered_access_enabled: true,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
-            executor_capabilities: Arc::new(
-                crate::model_directory::installed_executor_model_capabilities(),
-            ),
+            executor_capabilities,
+            acp_capabilities,
             credential_selection_sequences: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -44,6 +59,8 @@ impl CatalogModelPublicationResolver {
     /// Resolve against the live catalog repository at publication time.
     #[must_use]
     pub fn from_repo(repo: Arc<dyn CatalogRepo>, credentials: Arc<dyn CredentialRepo>) -> Self {
+        let acp_capabilities = Arc::new(Vec::new());
+        let executor_capabilities = Arc::new(executor_capabilities(&acp_capabilities));
         Self {
             source: CatalogSource::Live(repo),
             credentials,
@@ -51,9 +68,8 @@ impl CatalogModelPublicationResolver {
             brokered_access_enabled: true,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
-            executor_capabilities: Arc::new(
-                crate::model_directory::installed_executor_model_capabilities(),
-            ),
+            executor_capabilities,
+            acp_capabilities,
             credential_selection_sequences: Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -72,21 +88,22 @@ impl CatalogModelPublicationResolver {
     #[must_use]
     pub fn with_worker_observations(
         mut self,
-        workers: Arc<dyn awaken_worker_registry::WorkerObservationSource>,
+        workers: Arc<dyn awaken_worker_contract::WorkerObservationSource>,
     ) -> Self {
         self.workers = Some(workers);
         self
     }
 
-    /// Replace the executor-model planning facts. Product composition uses the
-    /// same snapshot for publication and `/v1/models`; tests may inject a
-    /// smaller matrix to prove fail-closed behavior.
+    /// Install the secret-free static ACP facts projected by the Worker-owned
+    /// executable catalog. An empty projection deliberately supports only the
+    /// native executor and fails closed for authored ACP bindings.
     #[must_use]
-    pub fn with_executor_capabilities(
+    pub fn with_acp_capabilities(
         mut self,
-        capabilities: Arc<Vec<awaken_config_resolver::ExecutorModelCapability>>,
+        capabilities: Arc<Vec<awaken_acp_contract::AcpPublicationCapability>>,
     ) -> Self {
-        self.executor_capabilities = capabilities;
+        self.executor_capabilities = Arc::new(executor_capabilities(&capabilities));
+        self.acp_capabilities = capabilities;
         self
     }
 
