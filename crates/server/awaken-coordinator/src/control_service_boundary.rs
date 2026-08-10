@@ -30,6 +30,7 @@ const MCP_ACCESS_PATH: &str = "/internal/v1/control/credentials/mcp-access";
 const CREDENTIAL_ACCESS_PATH: &str = "/internal/v1/control/credentials/access";
 const WEBHOOK_DELIVER_PATH: &str = "/internal/v1/control/webhooks/deliver";
 const CONSENT_CEILING_PATH: &str = "/internal/v1/control/data-subjects/consent-ceiling";
+pub const CONTROL_SERVICE_ACCESS_PERMISSION: &str = "control:access";
 const IDEMPOTENT_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -145,10 +146,21 @@ async fn require_authorization(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),
+        awaken_service_auth_contract::ServiceAuthorizationRequirement::new(
+            awaken_service_auth_contract::CONTROL_SERVICE_AUDIENCE,
+            CONTROL_SERVICE_ACCESS_PERMISSION,
+        ),
     ) {
-        Ok(true) => next.run(request).await,
-        Ok(false) => StatusCode::UNAUTHORIZED.into_response(),
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(_) => next.run(request).await,
+        Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized) => {
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+        Err(awaken_service_auth_contract::ServiceAuthError::Forbidden) => {
+            StatusCode::FORBIDDEN.into_response()
+        }
+        Err(awaken_service_auth_contract::ServiceAuthError::Unavailable(_)) => {
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
     }
 }
 

@@ -75,10 +75,11 @@ pub(super) async fn build_runtime_process_assembly(
     .await?;
     let worker_authenticator = worker_transport_security::authenticator(deployment)?;
     let control_service = if role == config::Role::Coordinator {
-        let (url, token) = deployment.control_service.coordinator_credentials()?;
+        let (url, token_source) = deployment.control_service.coordinator_credentials()?;
         Some(ControlServicePorts::remote(Arc::new(
-            awaken_coordinator::control_service_boundary::HttpControlServiceClient::new(
-                url, token,
+            awaken_coordinator::control_service_boundary::HttpControlServiceClient::with_token_source(
+                url,
+                token_source,
             )?,
         )))
     } else {
@@ -110,7 +111,7 @@ pub(super) async fn build_runtime_process_assembly(
             worker_directory: Some(worker_directory),
             runtime_authority: Some(persistence.runtime_authority),
             worker_observations: Some(worker_observations),
-            control_service_token: None,
+            control_service_authenticator: None,
             control_service,
         },
         None,

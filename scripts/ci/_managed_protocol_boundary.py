@@ -105,6 +105,7 @@ AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
         ("DELETE", "/v1/awaken/sessions/{}/live-inbox/{}"),
         ("POST", "/v1/awaken/sandbox-execution-policies"),
         ("POST", "/v1/awaken/sandbox-execution-policies/{}/versions"),
+        ("GET", "/v1/awaken/sandbox-execution-policies/{}/versions/{}"),
         ("GET", "/v1/awaken/environments/{}/sandbox-execution-policy"),
         ("POST", "/v1/awaken/environments/{}/sandbox-execution-policy"),
     }
