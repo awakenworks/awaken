@@ -114,7 +114,7 @@ impl CatalogModelPublicationResolver {
                 .first_eligible(|source| {
                     source.status == CredentialStatus::Active
                         && source.is_executable_origin()
-                        && Self::credential_usage(binding, source).is_ok()
+                        && self.credential_usage(binding, source).is_ok()
                 })
                 .map(|source| PublicationAccess::Direct(Some(source)))
                 .ok_or_else(|| match credential_binding {
@@ -136,6 +136,7 @@ impl CatalogModelPublicationResolver {
     }
 
     fn credential_usage(
+        &self,
         binding: &ModelBinding,
         source: &CredentialSource,
     ) -> Result<CredentialUsage, String> {
@@ -145,17 +146,18 @@ impl CatalogModelPublicationResolver {
             }
             return Ok(CredentialUsage::ProviderAdapter);
         };
-        let profile = awaken_run_executor_acp::acp_cli(&cli)
+        let capability = self
+            .acp_capabilities
+            .iter()
+            .find(|capability| capability.backend_ref == binding.backend_ref)
             .ok_or_else(|| format!("ACP backend {cli} is not in the executable catalog"))?;
-        let Some(delivery) = profile.model_delivery else {
-            return Ok(CredentialUsage::ProviderAdapter);
-        };
-        delivery
-            .compile_credential_usage(source.process_secret_environment_hint())
+        capability
+            .credential_usage(source.process_secret_environment_hint())
             .map_err(|error| format!("ACP backend {cli}: {error}"))
     }
 
     pub(super) fn provider_candidate(
+        &self,
         catalog: &ProviderCatalog,
         workspace: &ScopeId,
         binding: ModelBinding,
@@ -189,8 +191,9 @@ impl CatalogModelPublicationResolver {
                             credential.id.0
                         ))
                     })?;
-                    let usage =
-                        Self::credential_usage(&binding, credential).map_err(unavailable)?;
+                    let usage = self
+                        .credential_usage(&binding, credential)
+                        .map_err(unavailable)?;
                     Ok(CredentialAccess::new(
                         CredentialRef {
                             id: credential.id.0.clone(),

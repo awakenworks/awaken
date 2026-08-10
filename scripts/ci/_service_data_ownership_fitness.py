@@ -83,6 +83,10 @@ RUNTIME_PROCESS_ROUTER = "crates/bin/awaken-cli/src/runtime_process_router.rs"
 CREDENTIAL_INFERENCE_SOURCE = (
     "crates/server/awaken-credential-materializer/src/inference.rs"
 )
+CONTROL_MODEL_PUBLICATION = "crates/control/awaken-control/src/model_publication.rs"
+CREDENTIAL_REFRESH_SOURCE = (
+    "crates/server/awaken-credential-materializer/src/oauth_refresh.rs"
+)
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -1098,6 +1102,68 @@ def inference_materializer_authority_violations(
     return errors
 
 
+def control_publication_authority_violations(
+    control_source: str, coordinator_source: str
+) -> list[str]:
+    """Control alone resolves authored model facts into immutable candidates."""
+
+    errors: list[str] = []
+    count = control_source.count("struct CatalogModelPublicationResolver")
+    if count != 1:
+        errors.append(
+            "Control must own exactly one catalog model publication resolver; "
+            f"found {count}"
+        )
+    for forbidden in (
+        "struct CatalogModelPublicationResolver",
+        "impl ModelPublicationResolver for CatalogModelPublicationResolver",
+        "CatalogRepo",
+        "CredentialRepo",
+    ):
+        if forbidden in coordinator_source:
+            errors.append(f"Coordinator reads Control publication authority `{forbidden}`")
+    return errors
+
+
+def coordinator_control_authority_dependency_violations(manifest: dict) -> list[str]:
+    """Coordinator may consume narrow ports, never Control authority adapters."""
+
+    forbidden = {
+        "awaken-admin-config-api",
+        "awaken-config-resolver",
+        "awaken-credential-store",
+        "awaken-model-catalog",
+        "awaken-model-catalog-store",
+    }
+    return [
+        f"Coordinator directly depends on Control authority `{package}`"
+        for package in sorted(_normal_dependencies(manifest) & forbidden)
+    ]
+
+
+def credential_refresh_authority_violations(
+    materializer_source: str, coordinator_source: str
+) -> list[str]:
+    """Exact Vault refresh belongs to the existing credential adapter."""
+
+    errors: list[str] = []
+    for required in (
+        "trait CredentialRefreshFactory",
+        "struct VaultRefreshFactory",
+        "struct VaultRefresher",
+    ):
+        if materializer_source.count(required) != 1:
+            errors.append(f"Credential materializer must own one `{required}`")
+    for forbidden in (
+        "trait CredentialRefreshFactory",
+        "struct VaultRefreshFactory",
+        "struct VaultRefresher",
+    ):
+        if forbidden in coordinator_source:
+            errors.append(f"Coordinator recreates credential refresh authority `{forbidden}`")
+    return errors
+
+
 def selftest() -> None:
     """Cause/effect decision table.
 
@@ -1143,7 +1209,12 @@ def selftest() -> None:
     model directory shared by every topology -> accepted; O40 a direct Control
     catalog directory or duplicate/missing construction path -> rejected; O41
     one candidate router in credential materialization -> accepted; O42 a
-    missing/duplicate router or Coordinator-owned materializer -> rejected.
+    missing/duplicate router or Coordinator-owned materializer -> rejected; O43
+    one Control publication resolver -> accepted; O44 a missing/duplicate
+    resolver or Coordinator Control-store reader -> rejected; O45 one credential
+    refresh adapter -> accepted; O46 missing/duplicate or Coordinator-owned
+    refresh mechanics -> rejected; O47 narrow Coordinator dependencies ->
+    accepted; O48 a direct Control authority adapter -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -1560,6 +1631,28 @@ def selftest() -> None:
         "struct PinnedCandidateExecutor; struct PinnedCandidateExecutor;",
         "struct CredentialInferenceMaterializer; impl InferenceExecutorMaterializer for X {}",
     )  # O42
+    assert control_publication_authority_violations(
+        "struct CatalogModelPublicationResolver;",
+        "pub mod coordinator_component;",
+    ) == []  # O43
+    assert control_publication_authority_violations(
+        "",
+        "struct CatalogModelPublicationResolver; CredentialRepo",
+    )  # O44
+    assert credential_refresh_authority_violations(
+        "trait CredentialRefreshFactory; struct VaultRefreshFactory; struct VaultRefresher;",
+        "pub mod coordinator_component;",
+    ) == []  # O45
+    assert credential_refresh_authority_violations(
+        "trait CredentialRefreshFactory;",
+        "struct VaultRefresher;",
+    )  # O46
+    assert coordinator_control_authority_dependency_violations(
+        {"dependencies": {"awaken-config-service": {"workspace": True}}}
+    ) == []  # O47
+    assert coordinator_control_authority_dependency_violations(
+        {"dependencies": {"awaken-model-catalog": {"workspace": True}}}
+    )  # O48
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -1768,4 +1861,18 @@ def check_all(repo_root: Path) -> list[str]:
         coordinator_production,
     ):
         errors.append(f"Inference materialization: {error}")
+    for error in control_publication_authority_violations(
+        (repo_root / CONTROL_MODEL_PUBLICATION).read_text(encoding="utf-8"),
+        coordinator_production,
+    ):
+        errors.append(f"Control model publication: {error}")
+    for error in credential_refresh_authority_violations(
+        (repo_root / CREDENTIAL_REFRESH_SOURCE).read_text(encoding="utf-8"),
+        coordinator_production,
+    ):
+        errors.append(f"Credential refresh: {error}")
+    for error in coordinator_control_authority_dependency_violations(
+        product_manifests[COORDINATOR_MANIFEST]
+    ):
+        errors.append(f"{COORDINATOR_MANIFEST}: {error}")
     return errors

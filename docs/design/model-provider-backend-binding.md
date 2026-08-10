@@ -8,14 +8,16 @@ different model provider inside the execution loop.
 ## Binding Flow
 
 ```text
-Config Domain model-provider/model records
-  -> ConfigSnapshot
+Control Agent + model-provider/model + credential metadata
+  -> CatalogModelPublicationResolver
+  -> ConfigSnapshot with complete secret-free model candidates
   -> StoredPublication with ExecutableAgentSnapshot
   -> ExecutableAgentRegistrar
   -> Coordinator ExecutableAgentCatalog
   -> ResolvedSpec model-provider/model/backend refs
   -> Session and dispatch freeze the exact snapshot
   -> Worker validates binding and capability profile
+  -> CredentialInferenceMaterializer opens only the exact published access
   -> ResolvedRun / ResolvedExecutionEnv
   -> LlmExecutor invocation
 ```
@@ -165,14 +167,17 @@ Rules:
 Provider access, protocol endpoints, model catalog, and routing are **not** part
 of the agent config nor of the credential vault. They live in the **management
 plane** (mirroring awaken-next ADR-0088), decomposed into domain crates, durable
-`*-store` adapters, and a resolver service (`awaken-model-catalog` owns
-provider/endpoint/offering/model catalog + `InferenceProfile`;
-`awaken-model-catalog-store` implements persistence; `awaken-config-resolver` reads
-the injected port and resolves;
+`*-store` adapters, and one Control publication resolver
+(`awaken-model-catalog` owns provider/endpoint/offering/model catalog +
+`InferenceProfile`; `awaken-model-catalog-store` implements persistence;
+`awaken-config-resolver` supplies the injected repository and deterministic
+selection functions; `awaken-control::model_publication` freezes the result;
 see [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)
 § decomposition): declarative "what exists, where it runs, who runs it,"
-**orthogonal to execution**. Ingress **queries** it to resolve a run; a request never flows
-*through* it, and **execution never depends on it** (ADR-0088 **I4** — the same
+**orthogonal to execution**. Control queries it once while publishing; ingress,
+Coordinator, and Worker consume the immutable result and never query it while
+resolving a run. A request never flows *through* it, and **execution never depends
+on it** (ADR-0088 **I4** — the same
 runtime-unaware boundary as D6/D9 / [ADR-0043](../adr/0043-management-plane-config-credential-model-and-runtime-unaware-secret-seam.md)).
 It has its **own config API**, separate from agent config and from credentials.
 
@@ -276,12 +281,13 @@ while ordinary Provider setup and selection use the dialect as the protocol-
 surface discriminator. Provider descriptors therefore publish dialect/default-
 URL pairs and do not maintain a duplicate endpoint suffix.
 
-**The intersection.** `resolve_inference` picks the `ProtocolEndpoint` by
+**The intersection.** Control publication picks the `ProtocolEndpoint` by
 `Offering(model) ∩ flavor` and an eligible `ProviderIdentity` / credential,
 yielding one `InferenceTriple = (model × identity × provider × flavor)`.
 Model-pool selection and fallback are the `model_pool` axis; the credential is
-resolved to a `MaterializedCredential` (already-resolved value) — it never becomes
-a secret in any spec, preserving G22.
+frozen as an exact, secret-free `CredentialAccess`. The sole
+`CredentialInferenceMaterializer` opens that access only after claim/admission;
+it never becomes a secret in any spec, preserving G22.
 
 ## How the Managed Agents API consumes management-plane Provider/Model
 

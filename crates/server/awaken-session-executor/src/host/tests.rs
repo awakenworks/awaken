@@ -3929,7 +3929,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
 
     struct ExactRefreshFactory;
 
-    impl crate::CredentialRefreshFactory for ExactRefreshFactory {
+    impl awaken_credential_materializer::CredentialRefreshFactory for ExactRefreshFactory {
         fn refresher(
             &self,
             _credential_id: awaken_credential_contract::CredentialSourceId,

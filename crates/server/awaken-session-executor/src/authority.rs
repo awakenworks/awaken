@@ -314,20 +314,3 @@ impl RuntimeAuthority for EphemeralRuntimeAuthority {
             .clone())
     }
 }
-
-/// Coordinator-side factory for one exact credential revision's challenge
-/// recovery. Runtime carries only the resulting MCP transport refresher and
-/// never sees a Credential repository or Secret Store.
-pub trait CredentialRefreshFactory: Send + Sync {
-    fn refresher(
-        &self,
-        credential_id: awaken_credential_contract::CredentialSourceId,
-        access: awaken_runtime_contract::CredentialRefreshAccess,
-    ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher>;
-
-    fn bearer_reloader(
-        &self,
-        credential_id: awaken_credential_contract::CredentialSourceId,
-        credential_revision: u64,
-    ) -> Arc<dyn awaken_ext_mcp::CredentialRefresher>;
-}

@@ -82,8 +82,7 @@ use awaken_session_contract::{
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::authority::EphemeralRuntimeAuthority;
 pub use crate::authority::{
-    CredentialRefreshFactory, LocalCommit, LocalCommitAdapter, LocalCommitQueries,
-    RuntimeAuthority, RuntimeAuthorityError,
+    LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
 };
 pub use crate::host::{CommittedStepReceipt, HostError, HostErrorKind, PendingTool};
 pub use crate::worker_http::respond as respond_host_http;
@@ -98,7 +97,7 @@ pub use crate::host::{
 };
 pub use crate::no_model::{NoModelConfiguredExecutor, UNCONFIGURED_MODEL_REF};
 pub use crate::run_application_host::RunApplicationHost;
-use awaken_credential_materializer::PinnedCredentialMaterializer;
+use awaken_credential_materializer::{CredentialRefreshFactory, PinnedCredentialMaterializer};
 use awaken_resource_contract::{FileContentSource, RepositoryBindingVerifier};
 // ACP launch projection consumes the Session environment selected by the host.
 pub use crate::hub::{ThreadEvent, ThreadEventHub};
@@ -702,8 +701,9 @@ impl ManagedHost {
         self
     }
 
-    /// Install the Coordinator-owned OAuth refresh adapter. The Host retains
-    /// only this factory and never receives Credential/Secret Store handles.
+    /// Install the credential adapter's exact OAuth refresh port. The Host
+    /// retains only this factory and never receives Credential/Secret Store
+    /// handles.
     #[must_use]
     pub fn with_credential_refresh_factory(
         mut self,

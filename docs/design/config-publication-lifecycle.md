@@ -7,14 +7,18 @@ data ownership are decided by [ADR-0071](../adr/0071-distributed-service-boundar
 
 ## Authority Boundary
 
-Control owns mutable Agent configuration, source revisions, compilation, and
-durable `StoredPublication` history. Coordinator owns the rebuildable catalog
-used to resolve executable Agents for new Sessions.
+Control owns mutable Agent configuration, source revisions, catalog/credential-
+backed model-candidate resolution, compilation, and durable `StoredPublication`
+history. Coordinator owns the rebuildable catalog used to resolve executable
+Agents for new Sessions; it never reopens the model Catalog or Credential
+repository.
 
 ```text
 Control authority                         Coordinator projection
 
 AgentConfig revision
+  -> CatalogModelPublicationResolver
+       (Catalog + Credential metadata + secret-free ACP/Worker capability facts)
   -> compile_published
   -> StoredPublication (durable)
   -> ExecutableAgentRegistrar.register
@@ -103,12 +107,18 @@ is secondary to the port contract.
   `awaken-agent-config`, with unchanged `StoredPublication` persistence implemented by
   `awaken-config-store`;
 - `ExecutableAgentSnapshot` and its fingerprinted resolved data;
+- Catalog, credential-inventory, and Worker-observation ports; the Control
+  resolver consumes them without acquiring a SecretStore or execution adapter;
 - the existing publication reconciler trigger and durable publication history.
 
 ### Modified
 
 - `ConfigService::publish` calls `ExecutableAgentRegistrar` after durable
   publication instead of directly mutating a process-local catalog;
+- `CatalogModelPublicationResolver` lives only in `awaken-control`; ACP launch
+  catalog rows are projected once into secret-free publication capabilities, so
+  Control does not depend on Worker launch commands and Coordinator has no
+  parallel resolver;
 - the execution projection is now the Coordinator-owned
   `ExecutableAgentCatalog`; all runtime, Session, Hand, and Resource-reference
   reads use that one catalog;

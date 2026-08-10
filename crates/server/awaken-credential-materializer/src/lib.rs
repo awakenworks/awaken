@@ -10,11 +10,15 @@
 pub mod brokered_inference;
 mod credential_artifact;
 mod inference;
+#[cfg(feature = "authority")]
+mod oauth_refresh;
 mod secret_broker;
 
 pub use inference::{
     CredentialInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,
 };
+#[cfg(feature = "authority")]
+pub use oauth_refresh::{CredentialRefreshFactory, VaultRefreshFactory, VaultRefresher};
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;

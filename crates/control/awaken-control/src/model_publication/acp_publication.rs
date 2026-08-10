@@ -8,7 +8,7 @@ impl CatalogModelPublicationResolver {
         model_selection: BackendModelSelection,
         session_configuration: &awaken_runtime_contract::resolved::AcpSessionConfiguration,
     ) -> Result<ResolvedModelCandidate, PublicationResolutionError> {
-        Self::validate_acp_binding(&binding, model_selection)?;
+        self.validate_acp_binding(&binding, model_selection)?;
         let mut matches = sources.iter().filter(|source| {
             source.status == CredentialStatus::Active
                 && source.kind == CredentialKind::WorkerLocal
@@ -51,7 +51,7 @@ impl CatalogModelPublicationResolver {
         resolved_binding
             .provider_identity_ref
             .clone_from(&source.id.0);
-        let required_credential = awaken_worker_registry::WorkerCredentialRevision {
+        let required_credential = awaken_worker_contract::WorkerCredentialRevision {
             id: source.id.0.clone(),
             revision,
         };
@@ -79,7 +79,7 @@ impl CatalogModelPublicationResolver {
     pub(super) async fn verified_acp_capability(
         &self,
         backend_ref: &str,
-        credential: Option<&awaken_worker_registry::WorkerCredentialRevision>,
+        credential: Option<&awaken_worker_contract::WorkerCredentialRevision>,
         now_ms: u64,
     ) -> Result<
         (

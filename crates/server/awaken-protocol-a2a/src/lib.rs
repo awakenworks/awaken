@@ -19,6 +19,7 @@ pub mod encoder;
 mod extract;
 pub mod request;
 pub mod router;
+mod security;
 mod state;
 mod state_error;
 mod time;
@@ -29,6 +30,7 @@ mod version;
 pub use card::agent_card;
 pub use client::{ClientError, HttpTransport, Response, Transport};
 pub use router::{router, router_with_storage_root};
+pub use security::{A2aSecurityProfile, project_agent_card_security};
 pub use types::{
     AgentCard, AgentInterface, ApiKeyLocation, Artifact, AuthenticationInfo, AuthorizationCodeFlow,
     ClientCredentialsFlow, ImplicitFlow, ListPushNotificationConfigsResponse, OAuthFlows,
