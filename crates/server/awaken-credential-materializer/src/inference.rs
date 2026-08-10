@@ -1,8 +1,14 @@
-//! Worker-side realization of publication-pinned Native provider candidates.
+//! Runtime realization of immutable, publication-pinned model candidates.
+//!
+//! One materializer owns exact candidate validation, fallback routing, direct
+//! provider credential realization, and (when enabled) brokered grant routing.
+//! Configuration catalogs and credential selection never enter this boundary.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(feature = "authority")]
+use awaken_credential_vault::{SecretStore, repo::CredentialRepo};
 use awaken_runtime_contract::ModelBinding;
 use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
@@ -77,25 +83,94 @@ pub fn executor_from_materialized_endpoint(
     ))
 }
 
+/// Worker/host adapter for one immutable candidate set. Direct and brokered
+/// supply differ only at the final realization edge; all candidate fencing and
+/// fallback routing is shared here.
 #[derive(Clone)]
-pub struct DirectInferenceMaterializer {
+pub struct CredentialInferenceMaterializer {
     credentials: PinnedCredentialMaterializer,
+    #[cfg(feature = "brokered")]
+    brokered: Option<Arc<dyn crate::brokered_inference::BrokeredInferenceClient>>,
+    #[cfg(feature = "brokered")]
+    brokered_mode_enabled: bool,
 }
 
-impl DirectInferenceMaterializer {
+impl CredentialInferenceMaterializer {
+    #[cfg(feature = "authority")]
     #[must_use]
-    pub fn new(credentials: PinnedCredentialMaterializer) -> Self {
-        Self { credentials }
+    pub fn new(credentials: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
+        Self::from_pinned(PinnedCredentialMaterializer::new(credentials, secrets))
     }
 
-    pub async fn materialize_candidate(
+    #[must_use]
+    pub fn from_pinned(credentials: PinnedCredentialMaterializer) -> Self {
+        Self {
+            credentials,
+            #[cfg(feature = "brokered")]
+            brokered: None,
+            #[cfg(feature = "brokered")]
+            brokered_mode_enabled: false,
+        }
+    }
+
+    #[cfg(feature = "brokered")]
+    #[must_use]
+    pub fn with_brokered_mode(mut self, enabled: bool) -> Self {
+        self.brokered_mode_enabled = enabled;
+        self
+    }
+
+    #[cfg(feature = "brokered")]
+    #[must_use]
+    pub fn with_brokered_client(
+        mut self,
+        client: Arc<dyn crate::brokered_inference::BrokeredInferenceClient>,
+    ) -> Self {
+        self.brokered = Some(client);
+        self.brokered_mode_enabled = true;
+        self
+    }
+
+    async fn materialize_exact(
         &self,
         candidate: &ResolvedModelCandidate,
         context: &RuntimeRunContext,
+        local_run_correlation: Option<String>,
     ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
-        let ModelProvisioning::Provider { endpoint, .. } = &candidate.provisioning else {
+        let ModelProvisioning::Provider {
+            provider_ref,
+            route_ref,
+            endpoint,
+            ..
+        } = &candidate.provisioning
+        else {
             return Ok(None);
         };
+
+        #[cfg(feature = "brokered")]
+        if route_ref.starts_with(crate::brokered_inference::BROKERED_ROUTE_PREFIX) {
+            if !self.brokered_mode_enabled {
+                return Err("cloud_models_disabled: brokered model supply is disabled".into());
+            }
+            let client = self.brokered.clone().ok_or_else(|| {
+                "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
+                    .to_string()
+            })?;
+            return crate::brokered_inference::BrokeredCandidateExecutor::new(
+                client,
+                provider_ref,
+                &candidate.binding.model_ref,
+                &endpoint.api_dialect,
+                &endpoint.adapter_kind,
+                local_run_correlation,
+                context.ownership.clone(),
+            )
+            .map(|executor| Some(Arc::new(executor) as Arc<dyn LlmExecutor>));
+        }
+
+        #[cfg(not(feature = "brokered"))]
+        let _ = (provider_ref, route_ref, local_run_correlation);
+
         let secret = self
             .credentials
             .materialize_claimed_provider(
@@ -118,6 +193,20 @@ impl DirectInferenceMaterializer {
             inner,
             upstream_model: endpoint.upstream_model.clone(),
         })))
+    }
+
+    /// Realize one complete publication candidate through the exact attempt
+    /// authority. The public helper intentionally collapses failure to absence;
+    /// the runtime trait path below preserves diagnostic errors.
+    pub async fn materialize_candidate(
+        &self,
+        candidate: &ResolvedModelCandidate,
+        context: &RuntimeRunContext,
+    ) -> Option<Arc<dyn LlmExecutor>> {
+        self.materialize_exact(candidate, context, None)
+            .await
+            .ok()
+            .flatten()
     }
 }
 
@@ -150,10 +239,11 @@ impl LlmExecutor for PinnedModelExecutor {
 }
 
 struct PinnedCandidateExecutor {
-    provider: DirectInferenceMaterializer,
+    materializer: CredentialInferenceMaterializer,
     candidates: Vec<ResolvedModelCandidate>,
     realization: Option<awaken_runtime_contract::AttemptCredentialRealization>,
     ownership: Option<Arc<dyn awaken_runtime_contract::AttemptOwnershipVerifier>>,
+    local_run_correlation: Option<String>,
 }
 
 impl PinnedCandidateExecutor {
@@ -171,14 +261,15 @@ impl PinnedCandidateExecutor {
                     requested.model_ref
                 ))
             })?;
-        self.provider
-            .materialize_candidate(
+        self.materializer
+            .materialize_exact(
                 candidate,
                 &RuntimeRunContext {
                     credential_realization: self.realization.clone(),
                     ownership: self.ownership.clone(),
                     ..RuntimeRunContext::new()
                 },
+                self.local_run_correlation.clone(),
             )
             .await
             .map_err(LlmError::Binding)?
@@ -212,8 +303,15 @@ impl LlmExecutor for PinnedCandidateExecutor {
     }
 }
 
-impl InferenceExecutorMaterializer for DirectInferenceMaterializer {
+impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
     fn supported_access_schemes(&self) -> &'static [&'static str] {
+        #[cfg(feature = "brokered")]
+        if self.brokered.is_some() {
+            return &[
+                awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY,
+                crate::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY,
+            ];
+        }
         &[awaken_worker_contract::PROVIDER_CREDENTIAL_SOURCE_CAPABILITY]
     }
 
@@ -292,10 +390,11 @@ impl InferenceExecutorMaterializer for DirectInferenceMaterializer {
             }
         }
         Ok(Some(Arc::new(PinnedCandidateExecutor {
-            provider: self.clone(),
+            materializer: self.clone(),
             candidates,
             realization: context.credential_realization.clone(),
             ownership: context.ownership.clone(),
+            local_run_correlation: Some(activation.run_id.0.clone()),
         })))
     }
 
@@ -309,10 +408,11 @@ impl InferenceExecutorMaterializer for DirectInferenceMaterializer {
             .as_ref()
             .and_then(|realization| realization.binding_for(candidate).ok().flatten());
         Some(Arc::new(PinnedCandidateExecutor {
-            provider: self.clone(),
+            materializer: self.clone(),
             candidates: vec![candidate.clone()],
             realization: context.credential_realization.clone(),
             ownership: context.ownership.clone(),
+            local_run_correlation: None,
         }) as Arc<dyn LlmExecutor>)
         .filter(|_| {
             !matches!(
@@ -331,15 +431,13 @@ mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
 
-    /// Cause/effect graph: C1 dialect is supported, C2 dialect matches adapter,
-    /// C3 adapter is supported, C4 base URL exists, C5 credential exists.
-    /// Effects are E1 exact executor construction or one fail-closed typed error.
-    /// Decision rules exercised here: all causes true -> E1; !C1 -> unsupported
-    /// dialect; C1+!C2 -> mismatch; C1+C2+!C3 -> unsupported adapter; missing C4
-    /// or C5 -> the corresponding missing-material error. These rules cover the
-    /// canonical factory; composition crates deliberately own no parallel map.
     #[test]
     fn provider_executor_factory_decision_table() {
+        // Causes: C1 dialect is supported, C2 dialect matches adapter, C3
+        // adapter is supported, C4 base URL exists, C5 credential exists.
+        // Effects: E1 exact construction or the corresponding fail-closed typed
+        // error. The table enumerates all true plus each single false cause;
+        // composition crates deliberately own no parallel dialect map.
         let credential = RedactedString::new("sk-test");
         for (dialect, adapter) in [
             ("anthropic_messages", "anthropic"),
@@ -356,7 +454,7 @@ mod tests {
                     Some(&credential),
                 )
                 .is_ok(),
-                "supported {dialect}/{adapter} must construct"
+                "all causes true for {dialect}/{adapter} -> E1"
             );
         }
         assert!(matches!(
@@ -380,24 +478,152 @@ mod tests {
         assert!(matches!(
             executor_from_materialized_endpoint(
                 "",
-                "cohere",
+                "unknown",
                 Some("https://provider.invalid"),
                 Some(&credential),
             ),
             Err(ResolvedExecutorError::UnsupportedAdapter(_))
         ));
         assert!(matches!(
-            executor_from_materialized_endpoint("", "openai", None, Some(&credential)),
+            executor_from_materialized_endpoint("open_ai_chat", "openai", None, Some(&credential)),
             Err(ResolvedExecutorError::MissingBaseUrl(_))
         ));
         assert!(matches!(
             executor_from_materialized_endpoint(
-                "",
+                "open_ai_chat",
                 "openai",
                 Some("https://provider.invalid"),
                 None,
             ),
             Err(ResolvedExecutorError::MissingCredential)
         ));
+    }
+
+    #[cfg(feature = "brokered")]
+    struct CurrentOwnership;
+
+    #[cfg(feature = "brokered")]
+    #[async_trait::async_trait]
+    impl awaken_runtime_contract::AttemptOwnershipVerifier for CurrentOwnership {
+        async fn verify_current(
+            &self,
+        ) -> Result<(), awaken_runtime_contract::AttemptOwnershipError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "brokered")]
+    struct NeverGrantClient;
+
+    #[cfg(feature = "brokered")]
+    #[async_trait::async_trait]
+    impl crate::brokered_inference::BrokeredInferenceClient for NeverGrantClient {
+        async fn create_grant(
+            &self,
+            _request: crate::brokered_inference::BrokeredInferenceRequest,
+        ) -> Result<
+            crate::brokered_inference::BrokeredInferenceLease,
+            crate::brokered_inference::BrokeredInferenceError,
+        > {
+            panic!("candidate selection must not acquire a grant")
+        }
+
+        async fn close_grant(
+            &self,
+            _grant_id: &str,
+        ) -> Result<(), crate::brokered_inference::BrokeredInferenceError> {
+            panic!("no grant was acquired")
+        }
+
+        async fn renew_grant(
+            &self,
+            _grant_id: &str,
+        ) -> Result<
+            crate::brokered_inference::BrokeredInferenceLease,
+            crate::brokered_inference::BrokeredInferenceError,
+        > {
+            panic!("no grant was acquired")
+        }
+    }
+
+    #[cfg(feature = "brokered")]
+    fn brokered_candidate(model: &str) -> ResolvedModelCandidate {
+        ResolvedModelCandidate::provider(
+            ModelBinding::new("openai", model, "genai"),
+            "openai@1",
+            "brokered:awaken-cloud:openai:open_ai_responses@7",
+            "workspace-a",
+            None,
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "open_ai_responses".into(),
+                base_url: "https://api.awakenworks.com".into(),
+                upstream_model: model.into(),
+            },
+        )
+    }
+
+    #[cfg(feature = "brokered")]
+    #[tokio::test]
+    async fn brokered_mode_and_candidate_routing_share_one_decision_table() {
+        // Causes: C1 brokered supply is enabled; C2 an authenticated client is
+        // installed; C3 the requested binding is in the publication-pinned set.
+        // Effects: E1 return a lazy exact executor without acquiring a grant;
+        // E2 report disabled; E3 require sign-in; E4 reject an unpinned binding.
+        // Rules: B1=!C1 -> E2; B2=C1&&!C2 -> E3; B3=C1&&C2&&C3 -> E1;
+        // B4=C1&&C2&&!C3 -> E4. Primary and fallback both exercise B3.
+        let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+        let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+        let materializer = CredentialInferenceMaterializer::new(credentials, secrets);
+        let primary = brokered_candidate("model-primary");
+        let fallback = brokered_candidate("model-fallback");
+        let context = RuntimeRunContext::new().with_ownership(Arc::new(CurrentOwnership));
+
+        assert!(
+            materializer
+                .materialize_exact(&primary, &context, None)
+                .await
+                .err()
+                .expect("disabled brokered route must fail")
+                .contains("cloud_models_disabled"),
+            "B1/E2"
+        );
+        assert!(
+            materializer
+                .clone()
+                .with_brokered_mode(true)
+                .materialize_exact(&primary, &context, None)
+                .await
+                .err()
+                .expect("enabled brokered route without a client must fail")
+                .contains("cloud_sign_in_required"),
+            "B2/E3"
+        );
+
+        let materializer = materializer.with_brokered_client(Arc::new(NeverGrantClient));
+        assert!(
+            materializer
+                .supported_access_schemes()
+                .contains(&crate::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY)
+        );
+        let router = PinnedCandidateExecutor {
+            materializer,
+            candidates: vec![primary.clone(), fallback.clone()],
+            realization: None,
+            ownership: context.ownership,
+            local_run_correlation: Some("run-a".into()),
+        };
+        assert!(router.executor_for(&primary.binding).await.is_ok(), "B3/E1");
+        assert!(
+            router.executor_for(&fallback.binding).await.is_ok(),
+            "B3/E1 fallback"
+        );
+        assert!(
+            router
+                .executor_for(&ModelBinding::new("openai", "outside", "genai"))
+                .await
+                .is_err(),
+            "B4/E4"
+        );
     }
 }

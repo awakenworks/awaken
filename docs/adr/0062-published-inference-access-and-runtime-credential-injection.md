@@ -64,9 +64,13 @@ The concrete adapters are intentionally separate:
   executor dependency and every candidate must have a persisted Catalog offering.
 - `ConfigService` requires exactly one `ModelPublicationResolver` at construction;
   neither `Auto` nor `Pinned` authoring can bypass publication resolution.
-- `CredentialInferenceMaterializer` belongs to execution composition and depends
-  only on exact credential lookup and `SecretStore`. It accepts only published
-  `Provider` candidates and cannot enumerate or select configuration.
+- `CredentialInferenceMaterializer` belongs to execution composition. Its direct
+  path depends only on exact credential lookup and `SecretStore`; an explicitly
+  enabled brokered path receives its Cloud client by injection. It accepts only
+  published `Provider` candidates and cannot enumerate or select configuration.
+  Its sole implementation lives in `awaken-credential-materializer`; standalone
+  Worker and AllInOne composition select features on that implementation, while
+  Coordinator owns no parallel candidate router.
 - `PinnedCredentialMaterializer` is the shared worker/host adapter used by both
   native provider execution and ACP provisioning. It verifies the exact published
   Workspace/revision/provider/usage pin before opening persisted material. ACP CLI
