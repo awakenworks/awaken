@@ -18,14 +18,14 @@ pub use inference::{
     CredentialInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,
 };
 #[cfg(feature = "authority")]
-pub use oauth_refresh::{CredentialRefreshFactory, VaultRefreshFactory, VaultRefresher};
+pub use oauth_refresh::{VaultRefreshFactory, VaultRefresher};
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use awaken_agent_contract::RedactedString;
-#[cfg(feature = "authority")]
+use awaken_credential::CredentialRefresher;
 use awaken_credential_contract::CredentialSourceId;
 #[cfg(feature = "authority")]
 use awaken_credential_vault::repo::CredentialRepo;
@@ -36,12 +36,30 @@ use awaken_runtime_contract::{
     AttemptCredentialBinding, CredentialAccess, CredentialAdmissionError,
     CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
     CredentialMaterialResolver, CredentialMaterialSource, CredentialRealizationCapabilities,
-    CredentialRealizationKind, CredentialUsage, PlaintextHolder, ResolvedCredentialMaterial,
+    CredentialRealizationKind, CredentialRefreshAccess, CredentialUsage, PlaintextHolder,
+    ResolvedCredentialMaterial,
 };
 
 const PROCESS_SECRET_REFERENCE_PREFIX: &str = "awaken-process-secret://";
 const CREDENTIAL_ARTIFACT_REFERENCE_PREFIX: &str = "awaken-credential-artifact://";
 const PROCESS_SECRET_TTL_MS: u64 = 60_000;
+
+/// Factory for one exact credential revision's challenge recovery. Runtime
+/// carries only the resulting transport refresher and never receives a
+/// Credential repository or Secret Store.
+pub trait CredentialRefreshFactory: Send + Sync {
+    fn refresher(
+        &self,
+        credential_id: CredentialSourceId,
+        access: CredentialRefreshAccess,
+    ) -> Arc<dyn CredentialRefresher>;
+
+    fn bearer_reloader(
+        &self,
+        credential_id: CredentialSourceId,
+        credential_revision: u64,
+    ) -> Arc<dyn CredentialRefresher>;
+}
 
 #[derive(Clone)]
 struct PendingProcessSecret {
