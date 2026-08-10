@@ -8,7 +8,7 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
     ExecutableEnvironmentWithdrawal, ExecutableEnvironmentWithdrawalOutcome,
 };
-use awaken_service_auth_contract::service_bearer_token_matches;
+use awaken_service_auth_contract::{ServiceBearerTokenSource, ServiceRequestAuthenticator};
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -28,33 +28,48 @@ const RETRY_DELAY: Duration = Duration::from_millis(25);
 #[derive(Clone)]
 struct RegistrationHttpState {
     registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
-    bearer_token: Arc<str>,
+    authenticator: Arc<dyn ServiceRequestAuthenticator>,
 }
 
 pub fn executable_environment_registration_router(
     registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
-    let bearer_token = bearer_token.into();
-    if bearer_token.trim().is_empty() {
-        return Err("executable Environment registration bearer token must not be empty".into());
-    }
-    Ok(Router::new()
+    Ok(
+        executable_environment_registration_router_with_authenticator(
+            registrar,
+            awaken_service_auth_contract::static_token_authenticator(bearer_token)?,
+        ),
+    )
+}
+
+#[must_use]
+pub fn executable_environment_registration_router_with_authenticator(
+    registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
+    authenticator: Arc<dyn ServiceRequestAuthenticator>,
+) -> Router {
+    Router::new()
         .route(EXECUTABLE_ENVIRONMENT_REGISTER_PATH, post(register))
         .route(EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH, post(withdraw))
         .with_state(RegistrationHttpState {
             registrar,
-            bearer_token: Arc::from(bearer_token),
-        }))
+            authenticator,
+        })
 }
 
-fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    service_bearer_token_matches(
+fn authorize(
+    headers: &HeaderMap,
+    authenticator: &dyn ServiceRequestAuthenticator,
+) -> Result<(), StatusCode> {
+    match authenticator.authenticate(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),
-        expected,
-    )
+    ) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(StatusCode::UNAUTHORIZED),
+        Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
 }
 
 async fn register(
@@ -62,8 +77,8 @@ async fn register(
     headers: HeaderMap,
     Json(command): Json<ExecutableEnvironmentRegistration>,
 ) -> impl IntoResponse {
-    if !authorized(&headers, &state.bearer_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(status) = authorize(&headers, state.authenticator.as_ref()) {
+        return status.into_response();
     }
     match state.registrar.register(command).await {
         Ok(outcome) => (
@@ -82,8 +97,8 @@ async fn withdraw(
     headers: HeaderMap,
     Json(command): Json<ExecutableEnvironmentWithdrawal>,
 ) -> impl IntoResponse {
-    if !authorized(&headers, &state.bearer_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(status) = authorize(&headers, state.authenticator.as_ref()) {
+        return status.into_response();
     }
     match state.registrar.withdraw(command).await {
         Ok(outcome) => (
@@ -110,7 +125,7 @@ fn error_response(error: ExecutableEnvironmentRegistrationError) -> axum::respon
 #[derive(Clone)]
 pub struct HttpExecutableEnvironmentRegistrar {
     base_url: String,
-    bearer_token: String,
+    token_source: Arc<dyn ServiceBearerTokenSource>,
     client: reqwest::Client,
 }
 
@@ -119,13 +134,23 @@ impl HttpExecutableEnvironmentRegistrar {
         base_url: impl Into<String>,
         bearer_token: impl Into<String>,
     ) -> Result<Self, ExecutableEnvironmentRegistrationError> {
+        let source = awaken_service_auth_contract::static_token_source(bearer_token)
+            .map_err(ExecutableEnvironmentRegistrationError::Invalid)?;
+        Self::with_token_source(base_url, source)
+    }
+
+    pub fn with_token_source(
+        base_url: impl Into<String>,
+        token_source: Arc<dyn ServiceBearerTokenSource>,
+    ) -> Result<Self, ExecutableEnvironmentRegistrationError> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let bearer_token = bearer_token.into();
-        if base_url.is_empty() || bearer_token.trim().is_empty() {
+        if base_url.is_empty() {
             return Err(ExecutableEnvironmentRegistrationError::Invalid(
                 "Coordinator URL and registration bearer token are required".into(),
             ));
         }
+        awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())
+            .map_err(ExecutableEnvironmentRegistrationError::Invalid)?;
         let parsed = reqwest::Url::parse(&base_url).map_err(|error| {
             ExecutableEnvironmentRegistrationError::Invalid(format!(
                 "invalid Coordinator registration URL: {error}"
@@ -142,7 +167,7 @@ impl HttpExecutableEnvironmentRegistrar {
         }
         Ok(Self {
             base_url,
-            bearer_token,
+            token_source,
             client: reqwest::Client::builder()
                 .no_proxy()
                 .build()
@@ -159,10 +184,14 @@ impl HttpExecutableEnvironmentRegistrar {
     ) -> Result<O, ExecutableEnvironmentRegistrationError> {
         let mut last_unavailable = None;
         for attempt in 1..=IDEMPOTENT_ATTEMPTS {
+            let bearer_token = awaken_service_auth_contract::resolve_service_bearer_token(
+                self.token_source.as_ref(),
+            )
+            .map_err(ExecutableEnvironmentRegistrationError::Unavailable)?;
             let response = self
                 .client
                 .post(format!("{}{}", self.base_url, path))
-                .bearer_auth(&self.bearer_token)
+                .bearer_auth(bearer_token.as_ref())
                 .json(command)
                 .send()
                 .await;
@@ -178,6 +207,14 @@ impl HttpExecutableEnvironmentRegistrar {
                 }
             };
             if response.status() == StatusCode::UNAUTHORIZED {
+                let rotated = awaken_service_auth_contract::service_bearer_token_rotated(
+                    self.token_source.as_ref(),
+                    bearer_token.as_ref(),
+                )
+                .map_err(ExecutableEnvironmentRegistrationError::Unavailable)?;
+                if attempt < IDEMPOTENT_ATTEMPTS && rotated {
+                    continue;
+                }
                 return Err(ExecutableEnvironmentRegistrationError::Invalid(
                     "Coordinator rejected registration credentials".into(),
                 ));

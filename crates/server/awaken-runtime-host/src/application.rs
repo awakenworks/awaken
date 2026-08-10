@@ -23,14 +23,6 @@ fn realization_renewal_is_retired(
         SessionRealizationControlFailure::NotFound | SessionRealizationControlFailure::NotReady => {
             true
         }
-        // The authenticated Worker HTTP transport predates typed error bodies.
-        // Preserve its exact terminal replies until that wire can carry the
-        // closed failure enum without classifying a completed Session as an
-        // unavailable control plane.
-        SessionRealizationControlFailure::Unavailable(detail) => {
-            detail == &SessionRealizationControlFailure::NotFound.to_string()
-                || detail == &SessionRealizationControlFailure::NotReady.to_string()
-        }
         _ => false,
     }
 }
@@ -42,21 +34,25 @@ mod realization_renewal_tests {
 
     #[test]
     fn terminal_session_replies_retire_only_the_stale_local_projection() {
+        // Renewal decision table: N1 NotFound and N2 NotReady prove the local
+        // projection no longer has a renewable frozen Control owner -> retire it
+        // quietly; N3 stale/conflict/invalid and N4 unavailable do not prove a
+        // terminal Control state -> surface diagnostics, but the shared safety
+        // effect still interrupts and revokes only this local Session.
         for error in [
             SessionRealizationControlFailure::NotFound,
             SessionRealizationControlFailure::NotReady,
-            SessionRealizationControlFailure::Unavailable(
-                SessionRealizationControlFailure::NotReady.to_string(),
-            ),
         ] {
             assert!(realization_renewal_is_retired(&error));
         }
-        assert!(!realization_renewal_is_retired(
-            &SessionRealizationControlFailure::StaleOwnership,
-        ));
-        assert!(!realization_renewal_is_retired(
-            &SessionRealizationControlFailure::Unavailable("network unavailable".into()),
-        ));
+        for error in [
+            SessionRealizationControlFailure::StaleOwnership,
+            SessionRealizationControlFailure::Conflict,
+            SessionRealizationControlFailure::Invalid("bad target".into()),
+            SessionRealizationControlFailure::Unavailable("network unavailable".into()),
+        ] {
+            assert!(!realization_renewal_is_retired(&error));
+        }
     }
 }
 
@@ -571,20 +567,19 @@ impl crate::SharedHost {
                 Ok::<bool, crate::HostError>(true)
             }
             .await;
-            match renewal {
-                Ok(true) => renewed += 1,
-                Ok(false) => {
-                    let _ = self.interrupt(session_id).await;
-                    self.revoke_session_realization(session_id).await;
-                }
-                Err(error) => {
-                    eprintln!(
-                        "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
-                    );
-                    let _ = self.interrupt(session_id).await;
-                    self.revoke_session_realization(session_id).await;
-                }
+            if matches!(renewal, Ok(true)) {
+                renewed += 1;
+                continue;
             }
+            if let Err(error) = &renewal {
+                eprintln!(
+                    "Session realization renewal lost authority for `{session_id}`; revoking only that Session: {error}"
+                );
+            }
+            // Every failed renewal has one cleanup path. Expected terminal
+            // retirement differs only in observability, never in side effects.
+            let _ = self.interrupt(session_id).await;
+            self.revoke_session_realization(session_id).await;
         }
         Ok(renewed)
     }

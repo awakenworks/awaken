@@ -244,6 +244,10 @@ mod tests {
 
     #[test]
     fn only_absorbing_application_provisioning_failures_terminalize_the_claim() {
+        // Cause/effect decision table: A1 transient ownership/dependency failure
+        // (Retryable) -> return execution error and preserve the durable claim
+        // for retry; A2 deterministic frozen-input rejection (Terminal) -> mark
+        // terminal resolution so ingress cannot reprovision it forever.
         let retryable = application_provisioning_error(
             "run-retryable",
             awaken_session_contract::ApplicationSessionProvisionError::retryable(

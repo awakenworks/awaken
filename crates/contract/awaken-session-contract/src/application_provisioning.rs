@@ -19,6 +19,13 @@ pub enum ApplicationSessionProvisionFailureKind {
     Terminal,
 }
 
+/// Explicit result of revalidating attempt-scoped material for a frozen Session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationSessionMaterialRefresh {
+    Refreshed,
+    NotRequired,
+}
+
 /// Failure while an embedding application prepares its Session contribution.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("application Session provisioning failed: {message}")]
@@ -28,11 +35,6 @@ pub struct ApplicationSessionProvisionError {
 }
 
 impl ApplicationSessionProvisionError {
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self::retryable(message)
-    }
-
     #[must_use]
     pub fn retryable(message: impl Into<String>) -> Self {
         Self {
@@ -72,12 +74,10 @@ pub trait ApplicationSessionProvisioner: Send + Sync {
     /// Durable baseline input must not be rebuilt or mutated by this operation.
     async fn refresh_frozen(
         &self,
-        _activation: &RunActivation,
-        _session_id: &str,
-        _ownership: Arc<dyn AttemptOwnershipVerifier>,
-    ) -> Result<(), ApplicationSessionProvisionError> {
-        Ok(())
-    }
+        activation: &RunActivation,
+        session_id: &str,
+        ownership: Arc<dyn AttemptOwnershipVerifier>,
+    ) -> Result<ApplicationSessionMaterialRefresh, ApplicationSessionProvisionError>;
 }
 
 #[cfg(test)]
@@ -85,8 +85,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provisioning_failure_disposition_is_explicit_and_retryable_by_default() {
-        let retryable = ApplicationSessionProvisionError::new("transport unavailable");
+    fn provisioning_failure_disposition_is_explicit() {
+        // Cause/effect table: retryable dependency failure -> ordinary resolver
+        // retry; terminal policy/request rejection -> absorbing Run failure. No
+        // unclassified constructor exists, so callers must select one rule.
+        let retryable = ApplicationSessionProvisionError::retryable("transport unavailable");
         let terminal = ApplicationSessionProvisionError::terminal("request rejected");
 
         assert!(!retryable.is_terminal());

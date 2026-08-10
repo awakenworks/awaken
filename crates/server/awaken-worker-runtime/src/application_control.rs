@@ -59,7 +59,6 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlApplica
         self.control
             .begin_session_realization(&self.identity, command)
             .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
     }
 
     async fn activate_session_realization(
@@ -72,7 +71,6 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlApplica
         self.control
             .activate_session_realization(&self.identity, command)
             .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
     }
 
     async fn acknowledge_session_realization(
@@ -85,7 +83,6 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlApplica
         self.control
             .acknowledge_session_realization(&self.identity, command)
             .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
     }
 
     async fn fail_session_realization(
@@ -95,6 +92,5 @@ impl awaken_session_contract::SessionRealizationControl for WorkerControlApplica
         self.control
             .fail_session_realization(&self.identity, command)
             .await
-            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)
     }
 }

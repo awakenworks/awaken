@@ -418,6 +418,48 @@ fn respond(result: Result<Value, HostError>) -> (StatusCode, Json<Value>) {
     }
 }
 
+enum RealizationHttpError {
+    Boundary(HostError),
+    Control(awaken_session_contract::SessionRealizationControlFailure),
+}
+
+impl From<HostError> for RealizationHttpError {
+    fn from(error: HostError) -> Self {
+        Self::Boundary(error)
+    }
+}
+
+impl From<awaken_session_contract::SessionRealizationControlFailure> for RealizationHttpError {
+    fn from(error: awaken_session_contract::SessionRealizationControlFailure) -> Self {
+        Self::Control(error)
+    }
+}
+
+fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCode, Json<Value>) {
+    match result {
+        Ok(value) => (StatusCode::OK, Json(value)),
+        Err(RealizationHttpError::Boundary(error)) => respond(Err(error)),
+        Err(RealizationHttpError::Control(error)) => {
+            use awaken_session_contract::SessionRealizationControlFailure;
+            let status = match &error {
+                SessionRealizationControlFailure::NotFound => StatusCode::NOT_FOUND,
+                SessionRealizationControlFailure::NotReady
+                | SessionRealizationControlFailure::StaleOwnership
+                | SessionRealizationControlFailure::Conflict => StatusCode::CONFLICT,
+                SessionRealizationControlFailure::Invalid(_) => StatusCode::BAD_REQUEST,
+                SessionRealizationControlFailure::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            };
+            (
+                status,
+                Json(json!({
+                    "error": error.to_string(),
+                    "realization_error": error,
+                })),
+            )
+        }
+    }
+}
+
 fn checkpoint_store(
     service: &WorkerDispatchService,
 ) -> Result<&Arc<dyn StreamCheckpointStore>, HostError> {
@@ -641,9 +683,13 @@ async fn begin_session_realization(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<SessionRealizationReq<awaken_session_contract::BeginSessionRealization>>,
 ) -> (StatusCode, Json<Value>) {
-    let result = async {
-        verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
-        let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
+    let result: Result<Value, RealizationHttpError> = async {
+        verify_worker_identity(&worker, &request.identity)
+            .map_err(HostError::bad_request)
+            .map_err(RealizationHttpError::from)?;
+        let authority = claim_authority(&service, &worker, Some(&request.identity), false)
+            .await
+            .map_err(RealizationHttpError::from)?;
         let registry_expiry = authority
             .snapshot
             .as_ref()
@@ -660,18 +706,19 @@ async fn begin_session_realization(
             )
             || target.lease_expires_at_unix_ms > registry_expiry
         {
-            return Err(HostError::bad_request(
+            return Err(RealizationHttpError::from(HostError::bad_request(
                 "Session realization renewal exceeds authenticated Worker authority",
-            ));
+            )));
         }
-        let realization = application_session_control(&service)?
+        let realization = application_session_control(&service)
+            .map_err(RealizationHttpError::from)?
             .begin_session_realization(request.command)
             .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .map_err(RealizationHttpError::from)?;
         Ok(json!({ "realization": realization }))
     }
     .await;
-    respond(result)
+    respond_realization(result)
 }
 
 async fn activate_session_realization(
@@ -679,22 +726,24 @@ async fn activate_session_realization(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<SessionRealizationReq<awaken_session_contract::ActivateSessionRealization>>,
 ) -> (StatusCode, Json<Value>) {
-    let result = async {
+    let result: Result<Value, RealizationHttpError> = async {
         verify_session_realization_authority(
             &service,
             &worker,
             &request.identity,
             &request.command.lease,
         )
-        .await?;
-        let realization = application_session_control(&service)?
+        .await
+        .map_err(RealizationHttpError::from)?;
+        let realization = application_session_control(&service)
+            .map_err(RealizationHttpError::from)?
             .activate_session_realization(request.command)
             .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .map_err(RealizationHttpError::from)?;
         Ok(json!({ "realization": realization }))
     }
     .await;
-    respond(result)
+    respond_realization(result)
 }
 
 async fn acknowledge_session_realization(
@@ -704,22 +753,24 @@ async fn acknowledge_session_realization(
         SessionRealizationReq<awaken_session_contract::AcknowledgeSessionRealization>,
     >,
 ) -> (StatusCode, Json<Value>) {
-    let result = async {
+    let result: Result<Value, RealizationHttpError> = async {
         verify_session_realization_authority(
             &service,
             &worker,
             &request.identity,
             &request.command.lease,
         )
-        .await?;
-        let realization = application_session_control(&service)?
+        .await
+        .map_err(RealizationHttpError::from)?;
+        let realization = application_session_control(&service)
+            .map_err(RealizationHttpError::from)?
             .acknowledge_session_realization(request.command)
             .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .map_err(RealizationHttpError::from)?;
         Ok(json!({ "realization": realization }))
     }
     .await;
-    respond(result)
+    respond_realization(result)
 }
 
 async fn fail_session_realization(
@@ -727,22 +778,24 @@ async fn fail_session_realization(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<SessionRealizationReq<awaken_session_contract::FailSessionRealization>>,
 ) -> (StatusCode, Json<Value>) {
-    let result = async {
+    let result: Result<Value, RealizationHttpError> = async {
         verify_session_realization_authority(
             &service,
             &worker,
             &request.identity,
             &request.command.lease,
         )
-        .await?;
-        application_session_control(&service)?
+        .await
+        .map_err(RealizationHttpError::from)?;
+        application_session_control(&service)
+            .map_err(RealizationHttpError::from)?
             .fail_session_realization(request.command)
             .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .map_err(RealizationHttpError::from)?;
         Ok(json!({ "failed": true }))
     }
     .await;
-    respond(result)
+    respond_realization(result)
 }
 
 async fn claim_is_current(

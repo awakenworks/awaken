@@ -8,7 +8,7 @@ use awaken_executable_agent_contract::{
     ExecutableAgentRegistrationOutcome, ExecutableAgentWithdrawal,
     ExecutableAgentWithdrawalOutcome,
 };
-use awaken_service_auth_contract::service_bearer_token_matches;
+use awaken_service_auth_contract::{ServiceBearerTokenSource, ServiceRequestAuthenticator};
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -26,7 +26,7 @@ const RETRY_DELAY: Duration = Duration::from_millis(25);
 #[derive(Clone)]
 struct RegistrationHttpState {
     registrar: Arc<dyn ExecutableAgentRegistrar>,
-    bearer_token: Arc<str>,
+    authenticator: Arc<dyn ServiceRequestAuthenticator>,
 }
 
 /// Coordinator's private registration surface. The token is mandatory because
@@ -36,18 +36,24 @@ pub fn executable_agent_registration_router(
     registrar: Arc<dyn ExecutableAgentRegistrar>,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
-    let bearer_token = bearer_token.into();
-    if bearer_token.trim().is_empty() {
-        return Err("executable Agent registration bearer token must not be empty".into());
-    }
-    let state = RegistrationHttpState {
+    Ok(executable_agent_registration_router_with_authenticator(
         registrar,
-        bearer_token: Arc::from(bearer_token),
-    };
-    Ok(Router::new()
+        awaken_service_auth_contract::static_token_authenticator(bearer_token)?,
+    ))
+}
+
+#[must_use]
+pub fn executable_agent_registration_router_with_authenticator(
+    registrar: Arc<dyn ExecutableAgentRegistrar>,
+    authenticator: Arc<dyn ServiceRequestAuthenticator>,
+) -> Router {
+    Router::new()
         .route(EXECUTABLE_AGENT_REGISTER_PATH, post(register))
         .route(EXECUTABLE_AGENT_WITHDRAW_PATH, post(withdraw))
-        .with_state(state))
+        .with_state(RegistrationHttpState {
+            registrar,
+            authenticator,
+        })
 }
 
 async fn register(
@@ -55,8 +61,8 @@ async fn register(
     headers: HeaderMap,
     Json(command): Json<ExecutableAgentRegistration>,
 ) -> impl IntoResponse {
-    if !authorized(&headers, &state.bearer_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(status) = authorize(&headers, state.authenticator.as_ref()) {
+        return status.into_response();
     }
     match state.registrar.register(command).await {
         Ok(outcome) => (
@@ -73,8 +79,8 @@ async fn withdraw(
     headers: HeaderMap,
     Json(command): Json<ExecutableAgentWithdrawal>,
 ) -> impl IntoResponse {
-    if !authorized(&headers, &state.bearer_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(status) = authorize(&headers, state.authenticator.as_ref()) {
+        return status.into_response();
     }
     match state.registrar.withdraw(command).await {
         Ok(outcome) => (
@@ -86,13 +92,19 @@ async fn withdraw(
     }
 }
 
-fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    service_bearer_token_matches(
+fn authorize(
+    headers: &HeaderMap,
+    authenticator: &dyn ServiceRequestAuthenticator,
+) -> Result<(), StatusCode> {
+    match authenticator.authenticate(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),
-        expected,
-    )
+    ) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(StatusCode::UNAUTHORIZED),
+        Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
+    }
 }
 
 fn registration_error_response(
@@ -111,7 +123,7 @@ fn registration_error_response(
 #[derive(Clone)]
 pub struct HttpExecutableAgentRegistrar {
     base_url: String,
-    bearer_token: String,
+    token_source: Arc<dyn ServiceBearerTokenSource>,
     client: reqwest::Client,
 }
 
@@ -120,13 +132,23 @@ impl HttpExecutableAgentRegistrar {
         base_url: impl Into<String>,
         bearer_token: impl Into<String>,
     ) -> Result<Self, ExecutableAgentRegistrationError> {
+        let source = awaken_service_auth_contract::static_token_source(bearer_token)
+            .map_err(ExecutableAgentRegistrationError::Invalid)?;
+        Self::with_token_source(base_url, source)
+    }
+
+    pub fn with_token_source(
+        base_url: impl Into<String>,
+        token_source: Arc<dyn ServiceBearerTokenSource>,
+    ) -> Result<Self, ExecutableAgentRegistrationError> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let bearer_token = bearer_token.into();
-        if base_url.is_empty() || bearer_token.trim().is_empty() {
+        if base_url.is_empty() {
             return Err(ExecutableAgentRegistrationError::Invalid(
                 "Coordinator URL and registration bearer token are required".into(),
             ));
         }
+        awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())
+            .map_err(ExecutableAgentRegistrationError::Invalid)?;
         let parsed = reqwest::Url::parse(&base_url).map_err(|error| {
             ExecutableAgentRegistrationError::Invalid(format!(
                 "invalid Coordinator registration URL: {error}"
@@ -143,7 +165,7 @@ impl HttpExecutableAgentRegistrar {
         }
         Ok(Self {
             base_url,
-            bearer_token,
+            token_source,
             client: reqwest::Client::builder()
                 .no_proxy()
                 .build()
@@ -166,10 +188,14 @@ impl HttpExecutableAgentRegistrar {
     ) -> Result<O, ExecutableAgentRegistrationError> {
         let mut last_unavailable = None;
         for attempt in 1..=IDEMPOTENT_ATTEMPTS {
+            let bearer_token = awaken_service_auth_contract::resolve_service_bearer_token(
+                self.token_source.as_ref(),
+            )
+            .map_err(ExecutableAgentRegistrationError::Unavailable)?;
             let response = self
                 .client
                 .post(format!("{}{}", self.base_url, path))
-                .bearer_auth(&self.bearer_token)
+                .bearer_auth(bearer_token.as_ref())
                 .json(command)
                 .send()
                 .await;
@@ -185,6 +211,14 @@ impl HttpExecutableAgentRegistrar {
                 }
             };
             if response.status() == StatusCode::UNAUTHORIZED {
+                let rotated = awaken_service_auth_contract::service_bearer_token_rotated(
+                    self.token_source.as_ref(),
+                    bearer_token.as_ref(),
+                )
+                .map_err(ExecutableAgentRegistrationError::Unavailable)?;
+                if attempt < IDEMPOTENT_ATTEMPTS && rotated {
+                    continue;
+                }
                 return Err(ExecutableAgentRegistrationError::Invalid(
                     "Coordinator rejected registration credentials".into(),
                 ));

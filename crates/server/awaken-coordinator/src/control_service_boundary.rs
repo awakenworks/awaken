@@ -39,7 +39,7 @@ struct ControlServiceState {
     credentials: Arc<dyn SessionCredentialSource>,
     webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
-    bearer_token: Arc<str>,
+    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -92,18 +92,33 @@ pub fn router(
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
-    let bearer_token = bearer_token.into();
-    if bearer_token.trim().is_empty() {
-        return Err("Control service bearer token must not be empty".into());
-    }
+    Ok(router_with_authenticator(
+        audit,
+        credentials,
+        webhooks,
+        consent,
+        awaken_service_auth_contract::static_token_authenticator(bearer_token)?,
+    ))
+}
+
+/// Compose the private Control surface with the process-owned authentication
+/// policy. The router resolves that policy for every request, so token rotation
+/// does not rebuild domain state or route ownership.
+pub fn router_with_authenticator(
+    audit: ManagementAuditPlane,
+    credentials: Arc<dyn SessionCredentialSource>,
+    webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
+    consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
+    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+) -> Router {
     let state = ControlServiceState {
         audit,
         credentials,
         webhooks,
         consent,
-        bearer_token: Arc::from(bearer_token),
+        authenticator,
     };
-    Ok(Router::new()
+    Router::new()
         .route(AUDIT_RECORD_PATH, post(record_audit))
         .route(AUDIT_GET_PATH, post(get_audit))
         .route(AUDIT_COMMIT_PATH, post(commit_audit))
@@ -117,16 +132,7 @@ pub fn router(
             state.clone(),
             require_authorization,
         ))
-        .with_state(state))
-}
-
-fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    awaken_service_auth_contract::service_bearer_token_matches(
-        headers
-            .get(header::AUTHORIZATION)
-            .map(|value| value.as_bytes()),
-        expected,
-    )
+        .with_state(state)
 }
 
 async fn require_authorization(
@@ -135,10 +141,15 @@ async fn require_authorization(
     request: Request,
     next: Next,
 ) -> axum::response::Response {
-    if !authorized(&headers, &state.bearer_token) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    match state.authenticator.authenticate(
+        headers
+            .get(header::AUTHORIZATION)
+            .map(|value| value.as_bytes()),
+    ) {
+        Ok(true) => next.run(request).await,
+        Ok(false) => StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
-    next.run(request).await
 }
 
 fn response<T: Serialize>(result: Result<T, String>) -> axum::response::Response {
@@ -247,7 +258,7 @@ async fn consent_ceiling(
 #[derive(Clone)]
 pub struct HttpControlServiceClient {
     base_url: String,
-    bearer_token: String,
+    token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
     client: reqwest::Client,
 }
 
@@ -256,22 +267,31 @@ impl HttpControlServiceClient {
         base_url: impl Into<String>,
         bearer_token: impl Into<String>,
     ) -> Result<Self, String> {
+        Self::with_token_source(
+            base_url,
+            awaken_service_auth_contract::static_token_source(bearer_token)?,
+        )
+    }
+
+    pub fn with_token_source(
+        base_url: impl Into<String>,
+        token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
+    ) -> Result<Self, String> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let bearer_token = bearer_token.into();
         let parsed = reqwest::Url::parse(&base_url)
             .map_err(|error| format!("invalid Control service URL: {error}"))?;
         if !matches!(parsed.scheme(), "http" | "https")
             || parsed.query().is_some()
             || parsed.fragment().is_some()
-            || bearer_token.trim().is_empty()
         {
             return Err(
                 "Control service requires an http(s) base URL and non-empty bearer token".into(),
             );
         }
+        awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())?;
         Ok(Self {
             base_url,
-            bearer_token,
+            token_source,
             client: reqwest::Client::builder()
                 .no_proxy()
                 .build()
@@ -286,10 +306,13 @@ impl HttpControlServiceClient {
     ) -> Result<O, String> {
         let mut last_error = None;
         for attempt in 1..=IDEMPOTENT_ATTEMPTS {
+            let bearer_token = awaken_service_auth_contract::resolve_service_bearer_token(
+                self.token_source.as_ref(),
+            )?;
             let response = self
                 .client
                 .post(format!("{}{}", self.base_url, path))
-                .bearer_auth(&self.bearer_token)
+                .bearer_auth(bearer_token.as_ref())
                 .json(command)
                 .send()
                 .await;
@@ -305,6 +328,13 @@ impl HttpControlServiceClient {
                 }
             };
             if response.status() == StatusCode::UNAUTHORIZED {
+                let rotated = awaken_service_auth_contract::service_bearer_token_rotated(
+                    self.token_source.as_ref(),
+                    bearer_token.as_ref(),
+                )?;
+                if attempt < IDEMPOTENT_ATTEMPTS && rotated {
+                    continue;
+                }
                 return Err("Control service rejected bearer credentials".into());
             }
             let status = response.status();
@@ -467,7 +497,15 @@ impl awaken_runtime_contract::DataSubjectConsentSource for HttpControlServiceCli
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, RwLock};
+
+    struct RotatingTokenSource(RwLock<Arc<str>>);
+
+    impl awaken_service_auth_contract::ServiceBearerTokenSource for RotatingTokenSource {
+        fn current_token(&self) -> Result<Arc<str>, String> {
+            Ok(self.0.read().expect("token source read").clone())
+        }
+    }
 
     #[derive(Default)]
     struct RecordingDelivery(Mutex<Vec<ManagedLifecycleFact>>);
@@ -512,8 +550,10 @@ mod tests {
         // R3 valid bearer + unknown vault -> false without exposing secret material;
         // R4 invalid bearer -> reject before any authoritative mutation; R5
         // authenticated consent read preserves Control's result; R6 rejected or
-        // unavailable consent reads fail closed to Structured. These rules cover
-        // every boundary authority and the authentication gate.
+        // unavailable consent reads fail closed to Structured; R7 rotating the
+        // injected source makes both router and client accept only the successor
+        // token without reconstruction. These rules cover every boundary
+        // authority and the authentication gate.
         let audit = ManagementAuditPlane::new(Arc::new(
             awaken_config_store::SqliteConfigStore::open_in_memory()
                 .expect("open audit test store"),
@@ -523,14 +563,16 @@ mod tests {
             Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new()),
         ));
         let delivery = Arc::new(RecordingDelivery::default());
-        let app = router(
+        let token_source = Arc::new(RotatingTokenSource(RwLock::new(Arc::from("correct-token"))));
+        let app = router_with_authenticator(
             audit,
             credentials,
             delivery.clone(),
             Arc::new(awaken_runtime_contract::NullResolver),
-            "correct-token",
-        )
-        .unwrap();
+            Arc::new(awaken_service_auth_contract::TokenSourceAuthenticator::new(
+                token_source.clone(),
+            )),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -538,8 +580,11 @@ mod tests {
                 .await
                 .expect("serve test boundary");
         });
-        let client =
-            HttpControlServiceClient::new(format!("http://{address}"), "correct-token").unwrap();
+        let client = HttpControlServiceClient::with_token_source(
+            format!("http://{address}"),
+            token_source.clone(),
+        )
+        .unwrap();
         let scope = ScopeId::from("workspace-a");
         let record = ManagementAuditRecord {
             tool: "http:POST:/v1/sessions".into(),
@@ -598,8 +643,11 @@ mod tests {
             "R5"
         );
 
+        *token_source.0.write().expect("token source write") = Arc::from("next-token");
+        assert!(!client.has_vault("still-missing").await.unwrap(), "R7");
+
         let rejected =
-            HttpControlServiceClient::new(format!("http://{address}"), "wrong-token").unwrap();
+            HttpControlServiceClient::new(format!("http://{address}"), "correct-token").unwrap();
         let mut rejected_record = record;
         rejected_record.call_id = "call-rejected".into();
         assert!(

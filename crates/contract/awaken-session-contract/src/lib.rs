@@ -48,8 +48,8 @@ pub use application_contribution::{
     FrozenSessionProjection,
 };
 pub use application_provisioning::{
-    ApplicationSessionProvisionError, ApplicationSessionProvisionFailureKind,
-    ApplicationSessionProvisioner,
+    ApplicationSessionMaterialRefresh, ApplicationSessionProvisionError,
+    ApplicationSessionProvisionFailureKind, ApplicationSessionProvisioner,
 };
 pub use awaken_agent_contract::stable_fingerprint;
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};

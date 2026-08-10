@@ -4,6 +4,8 @@
 use super::*;
 mod application;
 mod claimed_dispatch;
+#[cfg(test)]
+mod dispatched_mcp_tests;
 mod resolver;
 mod session_realization;
 #[cfg(test)]
@@ -120,120 +122,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn dispatched_mcp_effect_projection_decision_table() {
-        // Cause/effect graph: C1 envelope MCP field absent/present; C2 exact
-        // generation valid/foreign/expired; C3 desired set same/empty/replaced.
-        // Effects: E1 legacy absence leaves process state untouched (owned by
-        // the decoder test above); E2 valid exact input uses the canonical
-        // stage+publish implementation; E3 replay is idempotent; E4 explicit
-        // empty drains the old projection; E5 malformed/failed input performs
-        // no replacement and fails the claimed Run closed.
-        //
-        // | Rule | field | generation | desired | effect |
-        // | R1 | absent | n/a | n/a | legacy/no mutation |
-        // | R2 | present | exact/live | add | one active projection |
-        // | R3 | present | exact/live | same | idempotent one |
-        // | R4 | present | n/a | empty | drain all |
-        // | R5 | present | foreign/expired | replace | reject, retain prior |
-        let legacy = awaken_run_ingress::SessionRuntimeEnvelope::new(
-            serde_json::json!({
-                "environment": deferred_environment(),
-                "toolsets": null
-            })
-            .to_string(),
-        );
-        assert!(
-            crate::provisioning::decode_session_runtime_envelope(&legacy)
-                .expect("R1 legacy envelope")
-                .2
-                .is_none(),
-            "R1"
-        );
-        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
-        let _managed = crate::ManagedHost::new(host.clone());
-        host.register_thread_agent_projection("mcp-dispatch", "agent-a");
-        host.register_thread_backend_projection("mcp-dispatch", "acp:gemini");
-        host.install_environment_projection("mcp-dispatch", &deferred_environment())
-            .expect("install frozen Environment");
-
-        let request = |session: &str, attachment: &str, expiry: u64| {
-            awaken_session_contract::StageMcpAttachment {
-                workspace_id: "workspace-a".into(),
-                generation: awaken_session_contract::McpGenerationRef {
-                    session_id: session.into(),
-                    attachment_id: awaken_session_contract::McpAttachmentId(attachment.into()),
-                    generation: awaken_session_contract::McpGeneration(1),
-                    runtime_incarnation: "control-runtime".into(),
-                    lease_epoch: 1,
-                    lease_expires_at_unix_ms: expiry,
-                },
-                realization_id: format!("realize-{attachment}"),
-                stage_idempotency_key: format!("stage-{attachment}"),
-                name: attachment.into(),
-                target: awaken_session_contract::McpTarget::parse_http(format!(
-                    "https://{attachment}.example.test/mcp"
-                ))
-                .expect("HTTP target"),
-                prompts_as_skills: false,
-                credential: None,
-                selected_plaintext_holder: None,
-            }
-        };
-        let exact = request("mcp-dispatch", "docs", u64::MAX);
-
-        HostWorkerResolver::reconcile_dispatched_mcp(
-            host.as_ref(),
-            "mcp-dispatch",
-            vec![exact.clone()],
-        )
-        .await
-        .expect("R2");
-        assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R2");
-        HostWorkerResolver::reconcile_dispatched_mcp(
-            host.as_ref(),
-            "mcp-dispatch",
-            vec![exact.clone()],
-        )
-        .await
-        .expect("R3");
-        assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R3");
-
-        HostWorkerResolver::reconcile_dispatched_mcp(host.as_ref(), "mcp-dispatch", Vec::new())
-            .await
-            .expect("R4");
-        assert!(host.active_mcp_projections("mcp-dispatch").is_empty(), "R4");
-
-        let retained = request("mcp-dispatch", "retained", u64::MAX);
-        HostWorkerResolver::reconcile_dispatched_mcp(host.as_ref(), "mcp-dispatch", vec![retained])
-            .await
-            .expect("R5 setup");
-        let foreign = request("foreign-session", "replacement", u64::MAX);
-        assert!(
-            HostWorkerResolver::reconcile_dispatched_mcp(
-                host.as_ref(),
-                "mcp-dispatch",
-                vec![foreign],
-            )
-            .await
-            .is_err(),
-            "R5 foreign"
-        );
-        assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R5");
-        let expired = request("mcp-dispatch", "replacement", 0);
-        assert!(
-            HostWorkerResolver::reconcile_dispatched_mcp(
-                host.as_ref(),
-                "mcp-dispatch",
-                vec![expired],
-            )
-            .await
-            .is_err(),
-            "R5 expired"
-        );
-        assert_eq!(host.active_mcp_projections("mcp-dispatch").len(), 1, "R5");
-    }
-
     /// D1-D5: durable lazy placement is fenced by the current dispatch claim.
     /// Brain resolution stays sandbox-free; a replacement claim rejects stale
     /// publication; and a crash gap after dispatch binding is repaired by adoption.
@@ -348,6 +236,7 @@ mod tests {
     struct CountingProvisioner {
         calls: Arc<AtomicUsize>,
         refreshes: Arc<AtomicUsize>,
+        phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
     }
 
     struct RecordingContributor {
@@ -768,9 +657,12 @@ mod tests {
             awaken_session_contract::ApplicationSessionProvisionError,
         > {
             ownership.verify_current().await.map_err(|error| {
-                awaken_session_contract::ApplicationSessionProvisionError::new(error.to_string())
+                awaken_session_contract::ApplicationSessionProvisionError::retryable(
+                    error.to_string(),
+                )
             })?;
             self.calls.fetch_add(1, Ordering::SeqCst);
+            self.phases.lock().unwrap().push("prepare");
             Ok(awaken_session_contract::ApplicationSessionContribution {
                 session_id: session_id.to_owned(),
                 application_fingerprint: format!(
@@ -786,12 +678,18 @@ mod tests {
             _activation: &RunActivation,
             _session_id: &str,
             ownership: Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>,
-        ) -> Result<(), awaken_session_contract::ApplicationSessionProvisionError> {
+        ) -> Result<
+            awaken_session_contract::ApplicationSessionMaterialRefresh,
+            awaken_session_contract::ApplicationSessionProvisionError,
+        > {
             ownership.verify_current().await.map_err(|error| {
-                awaken_session_contract::ApplicationSessionProvisionError::new(error.to_string())
+                awaken_session_contract::ApplicationSessionProvisionError::retryable(
+                    error.to_string(),
+                )
             })?;
             self.refreshes.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            self.phases.lock().unwrap().push("refresh");
+            Ok(awaken_session_contract::ApplicationSessionMaterialRefresh::Refreshed)
         }
     }
 
@@ -966,14 +864,14 @@ mod tests {
         //
         // | Rule | Claim live | Provisioner | Contributor | Effect |
         // |---|---|---|---|---|
-        // | W1 | T | success | installed, exact Agent | receipt then environment |
+        // | W1 | T | success | installed, exact Agent | receipt, realization, then material refresh before Run |
         // | W2 | T | success | missing | reject before environment |
         // | W3 | F | - | any | reject before provisioner |
         // | W4 | T | success + initial MCP + legacy dispatch copy | installed | Control alone stages/activates/publishes/acks, then renews |
         // | W5 | T | initial MCP stage fails | installed | fail; no publish/environment |
         // | W6 | T | active MCP lease due | installed | same canonical driver renews generation |
         // | W7 | T | renewal loses Session authority | installed | revoke local projection, preserve durable Environment; Worker remains healthy |
-        // | W8 | T | Session already frozen | installed | resume projection; refresh only indirect material |
+        // | W8 | T | Session already frozen | installed | refresh before adoption/rebuild and again after realization |
         for (rule, install_contributor, with_initial_mcp, fail_mcp_stage) in [
             ("W1", true, false, false),
             ("W2", false, false, false),
@@ -997,6 +895,7 @@ mod tests {
                 .with_application_session_provisioner(Arc::new(CountingProvisioner {
                     calls: calls.clone(),
                     refreshes: refreshes.clone(),
+                    phases: phases.clone(),
                 }));
             let mcp_realizer = Arc::new(RecordingMcpRealizer::default());
             mcp_realizer
@@ -1148,19 +1047,29 @@ mod tests {
             let succeeds = install_contributor && !fail_mcp_stage;
             assert_eq!(result.is_ok(), succeeds, "{rule}");
             let expected_phases: &[&str] = if fail_mcp_stage {
-                &["contribute", "fail"]
+                &["prepare", "contribute", "fail"]
             } else if rule == "W4" {
                 &[
+                    "prepare",
                     "contribute",
                     "activate",
                     "acknowledge",
+                    "refresh",
                     "begin",
                     "activate",
                     "acknowledge",
                     "begin",
                 ]
             } else if install_contributor {
-                &["contribute", "activate", "acknowledge"]
+                &[
+                    "prepare",
+                    "contribute",
+                    "activate",
+                    "acknowledge",
+                    "refresh",
+                    "refresh",
+                    "refresh",
+                ]
             } else {
                 &[]
             };
@@ -1201,6 +1110,7 @@ mod tests {
         );
         let calls = Arc::new(AtomicUsize::new(0));
         let refreshes = Arc::new(AtomicUsize::new(0));
+        let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_store_dir(storage.path())
@@ -1208,6 +1118,7 @@ mod tests {
                 .with_application_session_provisioner(Arc::new(CountingProvisioner {
                     calls: calls.clone(),
                     refreshes: refreshes.clone(),
+                    phases: phases.clone(),
                 })),
         );
         dispatch
@@ -1236,6 +1147,7 @@ mod tests {
         assert!(resolver.worker_for_claimed(&claimed).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(refreshes.load(Ordering::SeqCst), 0);
+        assert!(phases.lock().unwrap().is_empty());
         assert!(
             host.session_environment("thread-stale-application")
                 .await
