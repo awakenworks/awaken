@@ -662,6 +662,7 @@ dependencies = [
  "awaken-resource-application",
  "awaken-resource-contract",
  "awaken-resource-persistence",
+ "awaken-resource-store",
  "awaken-resource-worker-http",
  "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
@@ -994,9 +995,11 @@ name = "awaken-executable-agent-catalog"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-agent-contract",
  "awaken-durable-projection",
  "awaken-executable-agent-contract",
  "awaken-resource-contract",
+ "awaken-resource-store",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-service-auth-contract",

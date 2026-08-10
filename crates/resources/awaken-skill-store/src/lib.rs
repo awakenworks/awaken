@@ -225,6 +225,17 @@ impl InMemorySkillStore {
 #[async_trait]
 #[cfg(any(test, feature = "test-support"))]
 impl SkillStore for InMemorySkillStore {
+    async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, skills)| skills.values().any(|skill| !skill.deleted))
+            .map(|(workspace_id, _)| workspace_id.clone())
+            .collect())
+    }
+
     async fn create(
         &self,
         definition: SkillDefinition,
@@ -451,6 +462,20 @@ impl FsSkillStore {
             .collect()
     }
 
+    fn decoded(value: &str) -> Result<String, SkillStoreError> {
+        if !value.len().is_multiple_of(2) {
+            return Err(corrupt("malformed encoded Workspace identity"));
+        }
+        let bytes = (0..value.len())
+            .step_by(2)
+            .map(|offset| {
+                u8::from_str_radix(&value[offset..offset + 2], 16)
+                    .map_err(|_| corrupt("malformed encoded Workspace identity"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        String::from_utf8(bytes).map_err(|_| corrupt("Workspace identity is not UTF-8"))
+    }
+
     fn ws_dir(&self, workspace_id: &str) -> PathBuf {
         self.root.join(Self::encoded(workspace_id))
     }
@@ -527,6 +552,30 @@ impl FsSkillStore {
 
 #[async_trait]
 impl SkillStore for FsSkillStore {
+    async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
+        let _guard = self.gate.lock().unwrap();
+        let mut workspaces = Vec::new();
+        for entry in
+            std::fs::read_dir(&self.root).map_err(|error| SkillStoreError::Io(error.to_string()))?
+        {
+            let entry = entry.map_err(|error| SkillStoreError::Io(error.to_string()))?;
+            if entry
+                .file_type()
+                .map_err(|error| SkillStoreError::Io(error.to_string()))?
+                .is_dir()
+            {
+                let encoded = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| corrupt("encoded Workspace directory name is not valid UTF-8"))?;
+                workspaces.push(Self::decoded(&encoded)?);
+            }
+        }
+        workspaces.sort();
+        workspaces.dedup();
+        Ok(workspaces)
+    }
+
     async fn create(
         &self,
         definition: SkillDefinition,

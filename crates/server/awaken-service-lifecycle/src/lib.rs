@@ -43,19 +43,23 @@ struct TaskHandle {
 
 struct Inner {
     cancellation: CancellationToken,
-    accepting: AtomicBool,
     healthy: Arc<AtomicBool>,
     first_failure: Arc<Mutex<Option<TaskFailure>>>,
     failure_tx: mpsc::UnboundedSender<TaskFailure>,
     failure_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<TaskFailure>>,
-    tasks: Mutex<Vec<TaskHandle>>,
+    registry: Mutex<TaskRegistry>,
+}
+
+struct TaskRegistry {
+    accepting: bool,
+    tasks: Vec<TaskHandle>,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
         self.cancellation.cancel();
-        if let Ok(tasks) = self.tasks.get_mut() {
-            for task in tasks.drain(..) {
+        if let Ok(registry) = self.registry.get_mut() {
+            for task in registry.tasks.drain(..) {
                 task.task_abort.abort();
                 task.watcher.abort();
             }
@@ -82,12 +86,14 @@ impl ServiceLifecycle {
         Self {
             inner: Arc::new(Inner {
                 cancellation: CancellationToken::new(),
-                accepting: AtomicBool::new(true),
                 healthy: Arc::new(AtomicBool::new(true)),
                 first_failure: Arc::new(Mutex::new(None)),
                 failure_tx,
                 failure_rx: tokio::sync::Mutex::new(failure_rx),
-                tasks: Mutex::new(Vec::new()),
+                registry: Mutex::new(TaskRegistry {
+                    accepting: true,
+                    tasks: Vec::new(),
+                }),
             }),
         }
     }
@@ -101,10 +107,18 @@ impl ServiceLifecycle {
         F: FnOnce(CancellationToken) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
-        assert!(
-            self.inner.accepting.load(Ordering::Acquire),
-            "cannot add a service task after shutdown began"
-        );
+        // Registration and the shutdown transition share one critical section.
+        // This is the linearization point: a task is either spawned and owned by
+        // the registry, or rejected before its future is constructed.
+        let mut registry = self
+            .inner
+            .registry
+            .lock()
+            .expect("service lifecycle registry lock poisoned");
+        if !registry.accepting {
+            drop(registry);
+            panic!("cannot add a service task after shutdown began");
+        }
         let name = name.into();
         let cancellation = self.inner.cancellation.child_token();
         let task_cancellation = cancellation.clone();
@@ -138,15 +152,11 @@ impl ServiceLifecycle {
                 let _ = failure_tx.send(failure);
             }
         });
-        self.inner
-            .tasks
-            .lock()
-            .expect("service lifecycle task lock poisoned")
-            .push(TaskHandle {
-                name,
-                task_abort,
-                watcher,
-            });
+        registry.tasks.push(TaskHandle {
+            name,
+            task_abort,
+            watcher,
+        });
     }
 
     #[must_use]
@@ -177,15 +187,16 @@ impl ServiceLifecycle {
     /// Broadcast cancellation, join every registered task until one shared
     /// deadline, then abort only the tasks that ignored cooperative shutdown.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), ShutdownError> {
-        self.inner.accepting.store(false, Ordering::Release);
-        self.inner.cancellation.cancel();
-        let tasks = std::mem::take(
-            &mut *self
+        let tasks = {
+            let mut registry = self
                 .inner
-                .tasks
+                .registry
                 .lock()
-                .expect("service lifecycle task lock poisoned"),
-        );
+                .expect("service lifecycle registry lock poisoned");
+            registry.accepting = false;
+            self.inner.cancellation.cancel();
+            std::mem::take(&mut registry.tasks)
+        };
         if tasks.is_empty() {
             return Ok(());
         }

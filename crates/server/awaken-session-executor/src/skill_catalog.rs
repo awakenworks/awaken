@@ -11,10 +11,12 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::{AgentSkillBinding, AgentSkillKind};
 use awaken_ext_skills::SkillSpec;
-use awaken_resource_contract::{SkillDefinition, SkillStore, SkillStoreError, SkillVersion};
+#[cfg(test)]
+use awaken_resource_contract::SkillDefinition;
+use awaken_resource_contract::{SkillStoreError, SkillVersion};
 use awaken_session_contract::{ResolvedSkillBinding, RunError};
 
-use awaken_session_contract::SkillBundleSource;
+use awaken_session_contract::{SkillBundleSource, SkillCatalogApplication};
 
 /// Keep repository failure classification beside the one durable Skill owner so
 /// every create, restore, and live-apply path shares the same closed algebra.
@@ -71,7 +73,9 @@ pub(crate) struct SkillCatalog {
     /// a catalog configured through `/v1/skills` outlives the process. The host reads
     /// the bytes and feeds them to the extension's `SkillSource`, so the runtime stays
     /// store-unaware.
-    store: Option<Arc<dyn SkillStore>>,
+    application: Option<Arc<dyn SkillCatalogApplication>>,
+    #[cfg(any(test, feature = "test-support"))]
+    test_store: Option<Arc<dyn awaken_resource_contract::SkillStore>>,
     /// Exact immutable custom-Skill bytes used during Session realization. A
     /// Coordinator installs the local store adapter; an execution Worker installs
     /// the claim-fenced HTTP adapter and never opens the authoring store.
@@ -90,7 +94,9 @@ impl SkillCatalog {
     pub(crate) fn new() -> Self {
         Self {
             specs: Vec::new(),
-            store: None,
+            application: None,
+            #[cfg(any(test, feature = "test-support"))]
+            test_store: None,
             bundle_source: None,
             cache: Mutex::new(std::collections::BTreeMap::new()),
         }
@@ -102,14 +108,19 @@ impl SkillCatalog {
     }
 
     /// Builder: wire the durable delivered-skill catalog.
-    pub(crate) fn set_store(&mut self, store: Arc<dyn SkillStore>) {
-        #[cfg(test)]
-        {
-            self.bundle_source = Some(Arc::new(
-                awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
-            ));
-        }
-        self.store = Some(store);
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_store(&mut self, store: Arc<dyn awaken_resource_contract::SkillStore>) {
+        self.bundle_source = Some(Arc::new(
+            awaken_resource_application::StoreSkillBundleSource::new(store.clone()),
+        ));
+        self.application = Some(Arc::new(
+            awaken_resource_application::StoreSkillCatalogApplication::new(store.clone()),
+        ));
+        self.test_store = Some(store);
+    }
+
+    pub(crate) fn set_application(&mut self, application: Arc<dyn SkillCatalogApplication>) {
+        self.application = Some(application);
     }
 
     /// Builder: wire only exact custom-Skill bundle reads for an execution Worker.
@@ -126,12 +137,13 @@ impl SkillCatalog {
     }
 
     /// Whether this host has a durable skill catalog wired.
-    pub(crate) fn has_store(&self) -> bool {
-        self.store.is_some()
+    pub(crate) fn has_application(&self) -> bool {
+        self.application.is_some()
     }
 
-    pub(crate) fn store_handle(&self) -> Option<Arc<dyn SkillStore>> {
-        self.store.clone()
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn store_handle(&self) -> Option<Arc<dyn awaken_resource_contract::SkillStore>> {
+        self.test_store.clone()
     }
 
     #[cfg(test)]
@@ -140,7 +152,7 @@ impl SkillCatalog {
         definition: SkillDefinition,
         initial_version: SkillVersion,
     ) -> Option<Result<(), SkillStoreError>> {
-        let store = self.store.as_ref()?;
+        let store = self.test_store.as_ref()?;
         let workspace = definition.workspace_id.clone();
         let result = store.create(definition, initial_version).await;
         if result.is_ok()
@@ -158,7 +170,7 @@ impl SkillCatalog {
         id: &str,
         version: SkillVersion,
     ) -> Option<Result<(), SkillStoreError>> {
-        let store = self.store.as_ref()?;
+        let store = self.test_store.as_ref()?;
         let result = store.append_version(workspace, id, version).await;
         if result.is_ok()
             && let Err(error) = self.reload_cache_in(workspace).await
@@ -177,71 +189,17 @@ impl SkillCatalog {
         raw_id: &str,
         content: &str,
     ) -> Option<Result<(), SkillStoreError>> {
-        let store = self.store.as_ref()?;
-        let id = awaken_resource_contract::skill_stem(raw_id);
-        let existing = match store.definition(workspace, &id).await {
-            Ok(value) => value,
-            Err(error) => return Some(Err(error)),
-        };
-        let next = existing
-            .as_ref()
-            .map_or(1, |definition| definition.latest_version + 1);
-        if let Some(definition) = &existing {
-            match store
-                .version(workspace, &id, definition.latest_version)
-                .await
-            {
-                Ok(Some(latest))
-                    if latest
-                        .skill_md()
-                        .is_some_and(|bytes| bytes == content.as_bytes()) =>
-                {
-                    return Some(Ok(()));
-                }
-                Ok(_) => {}
-                Err(error) => return Some(Err(error)),
-            }
-        }
-        let parsed = awaken_ext_skills::parse_skill_md(&id, content);
-        let files = vec![awaken_resource_contract::SkillBundleFile {
-            path: "SKILL.md".into(),
-            content: content.as_bytes().to_vec(),
-            executable: false,
-        }];
-        let created_unix_nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos().min(u64::MAX as u128) as u64)
-            .unwrap_or_default();
-        let version = SkillVersion {
-            id: format!("skver_{id}_{next}").into(),
-            skill_id: id.clone().into(),
-            version: next,
-            name: parsed.name,
-            description: parsed.description,
-            directory: format!("/skills/{id}"),
-            bundle_sha256: awaken_resource_contract::skill_bundle_sha256(&files),
-            files,
-            created_unix_nanos,
-        };
-        let result = if existing.is_some() {
-            store.append_version(workspace, &id, version).await
-        } else {
-            store
-                .create(
-                    SkillDefinition {
-                        id: id.into(),
-                        workspace_id: workspace.to_string(),
-                        display_title: None,
-                        latest_version: 1,
-                        last_version: 1,
-                        timestamps: awaken_resource_contract::ResourceTimestamps::created(
-                            created_unix_nanos,
-                        ),
-                    },
-                    version,
-                )
-                .await
-        };
+        let application = self.application.as_ref()?;
+        let parsed = awaken_ext_skills::parse_skill_md(raw_id, content);
+        let result = application
+            .publish_authored(
+                workspace,
+                raw_id,
+                &parsed.name,
+                &parsed.description,
+                content,
+            )
+            .await;
         if result.is_ok()
             && let Err(error) = self.reload_cache_in(workspace).await
         {
@@ -250,20 +208,12 @@ impl SkillCatalog {
         Some(result)
     }
 
-    pub(crate) async fn definition(
-        &self,
-        workspace: &str,
-        id: &str,
-    ) -> Option<Result<Option<SkillDefinition>, SkillStoreError>> {
-        Some(self.store.as_ref()?.definition(workspace, id).await)
-    }
-
     #[cfg(test)]
     pub(crate) async fn definitions(
         &self,
         workspace: &str,
     ) -> Result<Vec<SkillDefinition>, SkillStoreError> {
-        match self.store.as_ref() {
+        match self.test_store.as_ref() {
             Some(store) => store.list_definitions(workspace).await,
             None => Ok(Vec::new()),
         }
@@ -282,24 +232,16 @@ impl SkillCatalog {
                 AgentSkillKind::Anthropic => anthropic_skill(&selection.skill_id)
                     .ok_or_else(|| SkillStoreError::NotFound(selection.skill_id.clone()))?,
                 AgentSkillKind::Custom => {
-                    let store = self.store.as_ref().ok_or_else(|| {
-                        SkillStoreError::Storage("no durable Skill repository".into())
-                    })?;
-                    let ordinal = if selection.version == "latest" {
-                        store
-                            .definition(workspace, &selection.skill_id)
-                            .await?
-                            .ok_or_else(|| SkillStoreError::NotFound(selection.skill_id.clone()))?
-                            .latest_version
-                    } else {
-                        selection.version.parse::<u64>().map_err(|_| {
-                            SkillStoreError::Invalid("invalid Skill version selector".into())
+                    let binding = self
+                        .application
+                        .as_ref()
+                        .ok_or_else(|| {
+                            SkillStoreError::Storage("no Skill catalog application".into())
                         })?
-                    };
-                    store
-                        .version(workspace, &selection.skill_id, ordinal)
-                        .await?
-                        .ok_or_else(|| SkillStoreError::NotFound(selection.skill_id.clone()))?
+                        .resolve_custom(workspace, &selection.skill_id, &selection.version)
+                        .await?;
+                    bindings.push(binding);
+                    continue;
                 }
             };
             bindings.push(ResolvedSkillBinding {
@@ -347,22 +289,14 @@ impl SkillCatalog {
         Ok(versions)
     }
 
-    pub(crate) async fn purge(
-        &self,
-        workspace: &str,
-        id: &str,
-    ) -> Option<Result<u64, SkillStoreError>> {
-        Some(self.store.as_ref()?.purge_skill(workspace, id).await)
-    }
-
     /// Refresh the in-memory delivered-catalog snapshot from the async store. Called
     /// on a write and at each session's setup so the sync read paths (advertisement,
     /// run-loop scan) see the current catalog.
     pub(crate) async fn reload_cache_in(&self, workspace: &str) -> Result<(), SkillStoreError> {
-        let Some(store) = self.store.as_ref() else {
+        let Some(application) = self.application.as_ref() else {
             return Ok(());
         };
-        let loaded = store.snapshot_latest_versions(workspace).await;
+        let loaded = application.snapshot_latest(workspace).await;
         match loaded {
             Ok(snapshot) => {
                 self.cache

@@ -24,6 +24,7 @@ pub struct ResourceAuthorities {
     file_catalog: Arc<dyn FileCatalog>,
     memory_repository: Arc<dyn MemoryRepository>,
     skill_store: Arc<dyn SkillStore>,
+    skill_lifecycle: Arc<crate::skill_lifecycle::ReferenceIndexedSkillStore>,
     reclamation: Arc<dyn ResourceReclamationRepository>,
 }
 
@@ -37,12 +38,17 @@ impl ResourceAuthorities {
         skill_store: Arc<dyn SkillStore>,
         reclamation: Arc<dyn ResourceReclamationRepository>,
     ) -> Self {
+        let skill_lifecycle = Arc::new(crate::skill_lifecycle::ReferenceIndexedSkillStore::new(
+            skill_store,
+            reclamation.clone(),
+        ));
         Self {
             resource_catalog,
             file_store,
             file_catalog,
             memory_repository,
-            skill_store,
+            skill_store: skill_lifecycle.clone(),
+            skill_lifecycle,
             reclamation,
         }
     }
@@ -70,6 +76,12 @@ impl ResourceAuthorities {
     #[must_use]
     pub fn skill_store(&self) -> Arc<dyn SkillStore> {
         self.skill_store.clone()
+    }
+
+    pub(crate) fn skill_lifecycle(
+        &self,
+    ) -> Arc<crate::skill_lifecycle::ReferenceIndexedSkillStore> {
+        self.skill_lifecycle.clone()
     }
 
     #[must_use]

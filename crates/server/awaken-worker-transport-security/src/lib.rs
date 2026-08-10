@@ -697,6 +697,8 @@ impl WorkerUpstream {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::builder()
                 .no_proxy()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("the default Worker upstream HTTP client should build"),
             request_authorizer: Arc::new(HeaderWorkerRequestAuthorizer),

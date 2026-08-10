@@ -191,6 +191,8 @@ impl HttpExecutableEnvironmentRegistrar {
             token_source,
             client: reqwest::Client::builder()
                 .no_proxy()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .map_err(|error| {
                     ExecutableEnvironmentRegistrationError::Unavailable(error.to_string())
