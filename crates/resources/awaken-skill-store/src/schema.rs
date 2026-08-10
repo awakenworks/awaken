@@ -1,7 +1,6 @@
 //! The skill-store schema. One portable [`MigrationBundle`] under the
-//! `skill_store` namespace; V2 stores the complete versioned aggregate. V1 is
-//! immutable migration history for databases created before that aggregate. The same
-//! bundle renders on sqlite and postgres — the schema is written once.
+//! `skill_store` namespace; its one table stores the complete versioned aggregate.
+//! The same bundle renders on sqlite and postgres — the schema is written once.
 //!
 //! The DDL is a `.sql` file under `migrations/`, embedded with `include_str!`: the
 //! file name carries the version (`V0001__…` ⇒ version 1) and the first
@@ -13,16 +12,10 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 pub const BUNDLE_ID: &str = "awaken.skill_store";
 
 /// Embedded migration files, in apply order (`(name, contents)`).
-const FILES: &[(&str, &str)] = &[
-    (
-        "V0001__skill.sql",
-        include_str!("migrations/V0001__skill.sql"),
-    ),
-    (
-        "V0002__aggregate.sql",
-        include_str!("migrations/V0002__aggregate.sql"),
-    ),
-];
+const FILES: &[(&str, &str)] = &[(
+    "V0001__aggregate.sql",
+    include_str!("migrations/V0001__aggregate.sql"),
+)];
 
 /// Version from a `Vnnnn__slug.sql` file name (`V0001__…` ⇒ 1); a non-positive
 /// value is rejected by [`Migration::new`], so a mis-named file fails loudly.
@@ -65,12 +58,17 @@ mod tests {
 
     #[test]
     fn skill_store_bundle_lints() {
-        // Cause/effect decision table: an empty ledger applies V1/V2; a published
-        // V1 ledger applies only V2; rewriting V2 as V1 fails ledger verification.
-        // The V1 projection has no adapter and remains only immutable history.
+        // Decision table: S1 empty ledger -> one aggregate baseline; S2 exact V1
+        // receipt -> no SQL; S3 drifted V1 -> fail closed. The common runner owns
+        // S2/S3; this test owns the absence of the retired projection table.
         let bundle = skill_store_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, vec![1, 2]);
+        assert_eq!(versions, vec![1]);
+        assert!(
+            !bundle.migrations()[0]
+                .sql_for(awaken_scoped_migration::Dialect::Sqlite)
+                .contains("_skill ")
+        );
     }
 }

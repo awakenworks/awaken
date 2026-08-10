@@ -66,32 +66,24 @@ pub(super) enum PostgresSchemaMode {
 /// list is also the order in which AllInOne composes the same canonical groups.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MigrationComponent {
+    /// Every Control-owned authority, including Data Subject, Environment, and
+    /// sandbox policy configuration.
     Control,
-    ControlDataSubject,
+    /// Coordinator authorities and its rebuildable executable projections.
     Coordinator,
-    CoordinatorCapturedContent,
+    /// The co-deployed but independently owned Resources application.
     Resources,
-    ExecutableAgentCatalog,
-    ExecutableEnvironmentCatalog,
 }
 
 const ALL_IN_ONE_MIGRATIONS: &[MigrationComponent] = &[
     MigrationComponent::Control,
-    MigrationComponent::ControlDataSubject,
-    MigrationComponent::Coordinator,
-    MigrationComponent::CoordinatorCapturedContent,
     MigrationComponent::Resources,
+    MigrationComponent::Coordinator,
 ];
-const CONTROL_MIGRATIONS: &[MigrationComponent] = &[
-    MigrationComponent::Control,
-    MigrationComponent::ControlDataSubject,
-];
+const CONTROL_MIGRATIONS: &[MigrationComponent] = &[MigrationComponent::Control];
 const COORDINATOR_MIGRATIONS: &[MigrationComponent] = &[
-    MigrationComponent::Coordinator,
-    MigrationComponent::CoordinatorCapturedContent,
     MigrationComponent::Resources,
-    MigrationComponent::ExecutableAgentCatalog,
-    MigrationComponent::ExecutableEnvironmentCatalog,
+    MigrationComponent::Coordinator,
 ];
 const WORKER_MIGRATIONS: &[MigrationComponent] = &[];
 
@@ -124,28 +116,23 @@ mod tests {
     #[test]
     fn migration_manifest_follows_bounded_context_ownership() {
         // Cause/effect decision table:
-        // R1 Control -> Control schemas only.
-        // R2 Coordinator -> Coordinator + co-deployed Resources + its durable
-        // executable Agent and Environment projections.
+        // R1 Control -> one Control migration unit, including every Control
+        // authority schema.
+        // R2 Coordinator -> Coordinator + co-deployed Resources; executable
+        // Agent/Environment projections are internal to the Coordinator unit.
         // R3 Worker -> no authority schema and therefore no database access.
-        // R4 AllInOne -> canonical Control, Coordinator, and Resources groups,
-        // but no second durable executable projection implementation.
+        // R4 AllInOne -> the same three canonical units; local executable
+        // projections remain in memory and never become another manifest unit.
         assert_eq!(
             migration_manifest(config::Role::Control),
-            &[
-                MigrationComponent::Control,
-                MigrationComponent::ControlDataSubject,
-            ],
+            &[MigrationComponent::Control],
             "R1"
         );
         assert_eq!(
             migration_manifest(config::Role::Coordinator),
             &[
-                MigrationComponent::Coordinator,
-                MigrationComponent::CoordinatorCapturedContent,
                 MigrationComponent::Resources,
-                MigrationComponent::ExecutableAgentCatalog,
-                MigrationComponent::ExecutableEnvironmentCatalog,
+                MigrationComponent::Coordinator,
             ],
             "R2"
         );
@@ -154,10 +141,8 @@ mod tests {
             migration_manifest(config::Role::AllInOne),
             &[
                 MigrationComponent::Control,
-                MigrationComponent::ControlDataSubject,
-                MigrationComponent::Coordinator,
-                MigrationComponent::CoordinatorCapturedContent,
                 MigrationComponent::Resources,
+                MigrationComponent::Coordinator,
             ],
             "R4"
         );

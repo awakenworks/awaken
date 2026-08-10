@@ -19,26 +19,12 @@ const NS: &str = "sandbox_execution_policy";
 fn sandbox_policy_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         "awaken.sandbox_execution_policy",
-        vec![
-            Migration::published_legacy(
-                1,
-                "immutable sandbox execution policy versions",
-                "CREATE TABLE IF NOT EXISTS {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version))",
-                "8a7c8879b0530755672ef2a4e9912331c7acfb9071e81a07e4b2722773c637e4",
-            )?,
-            Migration::published_legacy(
-                2,
-                "current sandbox execution policy version",
-                "CREATE TABLE IF NOT EXISTS {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
-                "9945afe967af15a5a43dd52c57782524dfab0bc0408bbc3efef88f18e4926049",
-            )?,
-            Migration::published_legacy(
-                3,
-                "exact environment sandbox execution policy binding",
-                "CREATE TABLE IF NOT EXISTS {prefix}_environment (environment_id TEXT PRIMARY KEY, policy_id TEXT NOT NULL, version BIGINT NOT NULL)",
-                "9d94a82c5084ece33984423bd646e8f9d08de8b78c9067a2c7598a0b3a7b48d1",
-            )?,
-        ],
+        vec![Migration::new(
+            1,
+            "current and immutable sandbox execution policy versions",
+            "CREATE TABLE {prefix}_version (policy_id TEXT NOT NULL, version BIGINT NOT NULL, policy_json TEXT NOT NULL, PRIMARY KEY(policy_id, version)); \
+             CREATE TABLE {prefix}_current (policy_id TEXT PRIMARY KEY, version BIGINT NOT NULL)",
+        )?],
     )
 }
 
@@ -441,13 +427,13 @@ mod tests {
     #[test]
     fn sqlite_schema_has_one_scoped_migration_authority() {
         // Causal graph:
-        // open -> run canonical bundle -> ledger + three published tables -> serve
+        // open -> run canonical bundle -> ledger + two policy tables -> serve
         // reopen -> ledger verifies checksums -> no duplicate schema path
-        // runtime authority moved -> historical V3 table remains inert
+        // Environment binding -> remains in the Control Environment aggregate
         //
         // Decision table:
         // | first open | ledger current | expected effect                  |
-        // | yes        | no             | apply exact published V1-V3      |
+        // | yes        | no             | apply exact current V1 baseline  |
         // | no         | yes            | apply zero pending migrations    |
         // | no         | checksum drift | fail closed                      |
         let dir = tempfile::tempdir().unwrap();
@@ -464,8 +450,8 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(applied, 3);
-        let historical_binding_table: Option<String> = first
+        assert_eq!(applied, 1);
+        let foreign_binding_table: Option<String> = first
             .conn
             .lock()
             .unwrap()
@@ -477,8 +463,8 @@ mod tests {
             .optional()
             .unwrap();
         assert_eq!(
-            historical_binding_table.as_deref(),
-            Some("sandbox_execution_policy_environment")
+            foreign_binding_table, None,
+            "Environment-to-policy binding has one owner in EnvRegistry"
         );
         drop(first);
         let reopened = SqliteSandboxExecutionPolicyStore::open(path).unwrap();
@@ -492,7 +478,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(applied_after_reopen, 3);
+        assert_eq!(applied_after_reopen, 1);
         reopened
             .conn
             .lock()

@@ -2,8 +2,7 @@
 //! the `admin` namespace with its own ledger, covering the aggregates the admin
 //! plane itself authors (inference profiles, webhook endpoints, and resource
 //! bindings) — the catalog/credential domains keep their own bundles. All rows
-//! are **secret-free**. Retired tables remain only as immutable migration history;
-//! no current repository adapter reads or writes them. Its own
+//! are **secret-free**. Its own
 //! bundle prefix is what lets the admin plane be split into its own
 //! database/service (blast-radius isolation).
 //!
@@ -22,52 +21,10 @@ pub const BUNDLE_ID: &str = "awaken.admin";
 /// `(file_name, file_contents)`: the name yields the version, the contents yield
 /// the description (first `-- comment` line) and the SQL body. `include_str!`
 /// resolves relative to this source file, so the `.sql` files ship in the crate.
-const FILES: &[(&str, &str)] = &[
-    (
-        "V0001__inference_profile.sql",
-        include_str!("migrations/V0001__inference_profile.sql"),
-    ),
-    (
-        "V0002__mcp_server.sql",
-        include_str!("migrations/V0002__mcp_server.sql"),
-    ),
-    (
-        "V0003__agent_mcp.sql",
-        include_str!("migrations/V0003__agent_mcp.sql"),
-    ),
-    (
-        "V0004__agent_resource.sql",
-        include_str!("migrations/V0004__agent_resource.sql"),
-    ),
-    (
-        "V0005__webhook.sql",
-        include_str!("migrations/V0005__webhook.sql"),
-    ),
-    (
-        "V0006__memory_store.sql",
-        include_str!("migrations/V0006__memory_store.sql"),
-    ),
-    (
-        "V0007__webhook_outbox.sql",
-        include_str!("migrations/V0007__webhook_outbox.sql"),
-    ),
-    (
-        "V0008__resource_catalog.sql",
-        include_str!("migrations/V0008__resource_catalog.sql"),
-    ),
-    (
-        "V0009__retire_legacy_mcp_config.sql",
-        include_str!("migrations/V0009__retire_legacy_mcp_config.sql"),
-    ),
-    (
-        "V0010__retire_legacy_webhook_outbox.sql",
-        include_str!("migrations/V0010__retire_legacy_webhook_outbox.sql"),
-    ),
-    (
-        "V0011__webhook_mutation_intent.sql",
-        include_str!("migrations/V0011__webhook_mutation_intent.sql"),
-    ),
-];
+const FILES: &[(&str, &str)] = &[(
+    "V0001__control_admin.sql",
+    include_str!("migrations/V0001__control_admin.sql"),
+)];
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0005__…` ⇒ 5). A name
 /// that does not carry a positive version yields `0`, which [`Migration::new`]
@@ -99,18 +56,7 @@ pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
         .map(|(name, contents)| {
             let version = version_of(name);
             let description = description_of(name, contents);
-            let sql = contents.trim();
-            if version == 9 {
-                Migration::published_legacy_with_aliases(
-                    version,
-                    description,
-                    sql,
-                    "43acd8cf624d2d939bff17aadb9c34061bc8f65207007b1c8dd68196a86763c4",
-                    ["987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131"],
-                )
-            } else {
-                Migration::new(version, description, sql)
-            }
+            Migration::new(version, description, contents.trim())
         })
         .collect::<Result<Vec<_>, _>>()?;
     MigrationBundle::new(BUNDLE_ID, migrations)
@@ -118,66 +64,27 @@ pub fn admin_bundle() -> Result<MigrationBundle, MigrationError> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use awaken_scoped_migration::{Dialect, MigrationError, plan};
-
     use super::*;
 
     #[test]
     fn admin_bundle_lints() {
-        // Cause/effect decision table: every predecessor migration is applied in
-        // order (C1), the published V0009 checksum is exact (C2), and the V0010
-        // and V0011 receipts are absent/present (C3). The one canonical bundle
-        // accepts the exact old V0009 receipt, while fresh installs execute its
-        // pinned body (E1); V0010/V0011 execute once and then skip their recorded
-        // receipts (E2); edited bytes, checksum drift, or missing predecessors
-        // fail closed (E3). R1=C1+C2=>E1; R2=R1+C3=>E2;
-        // R3=!C1|!C2=>E3.
+        // Causes: C1 the current Control Admin schema is one registered baseline;
+        // C2 it uses the ordinary deterministic constructor. Effects: E1 lint
+        // succeeds and an empty ledger applies exactly once; E2 schema/checksum
+        // drift fails closed. Rule A1=C1+C2=>E1; the common migration runner owns
+        // replay and E2.
         let bundle = admin_bundle().expect("bundle builds");
         awaken_scoped_migration::lint(std::slice::from_ref(&bundle)).expect("bundle lints");
     }
 
     #[test]
-    fn published_v9_receipts_are_accepted_without_rewriting_the_ledger() {
-        // Cause/effect decision table for the immutable Admin V9 body:
-        // R1 canonical 43acd receipt -> accept and apply nothing; R2 known
-        // 987ffe receipt written by the retired compatibility adapter -> accept
-        // and apply nothing; R3 any other receipt -> checksum mismatch. In all
-        // rules the ledger remains untouched and fresh installs execute only the
-        // canonical historical SQL owned by `admin_bundle`.
-        let bundle = admin_bundle().expect("bundle builds");
-        for receipt in [
-            "43acd8cf624d2d939bff17aadb9c34061bc8f65207007b1c8dd68196a86763c4",
-            "987ffe8ea131956d8b11c59ec8283d880ed97ce89cf02e9e652f61fbc4478131",
-        ] {
-            let applied = BTreeMap::from([(9, receipt.to_string())]);
-            assert!(
-                plan(&bundle, &applied, Dialect::Sqlite)
-                    .unwrap()
-                    .iter()
-                    .all(|migration| migration.version() != 9)
-            );
-        }
-        let unknown = BTreeMap::from([(
-            9,
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-        )]);
-        assert!(matches!(
-            plan(&bundle, &unknown, Dialect::Sqlite).unwrap_err(),
-            MigrationError::ChecksumMismatch { version: 9, .. }
-        ));
-    }
-
-    #[test]
     fn versions_parse_contiguously_from_file_names() {
-        // Cause/effect decision table:
-        // R1 empty ledger + V1..V11 => build the current Control schema.
-        // R2 published prefix + the same V1..V11 => apply only its missing suffix.
-        // R3 published prefix + a rewritten V1 => reject unknown/checksum history.
-        // Retired DDL is ledger compatibility, not a second repository owner.
+        // Decision table: A1 empty ledger + the current baseline -> V1; A2 the
+        // exact V1 receipt -> no pending SQL; A3 an old/mutated receipt -> fail
+        // closed. This assertion owns A1's one-version input; shared runner tests
+        // own A2/A3.
         let bundle = admin_bundle().expect("bundle builds");
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=11).collect::<Vec<_>>());
+        assert_eq!(versions, vec![1]);
     }
 }

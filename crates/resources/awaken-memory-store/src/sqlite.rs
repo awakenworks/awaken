@@ -831,52 +831,50 @@ mod migration_seam_tests {
     use super::*;
 
     #[test]
-    fn published_v1_v2_ledger_upgrades_to_v3() {
-        // Cause/effect decision table:
-        // | starting ledger | canonical bundle | effect                         |
-        // | none            | V1..V3           | all schema versions apply      |
-        // | V1,V2           | V1..V3           | V3 alone applies; data remains |
-        // | V1,V2           | rewritten V1     | rejected as unknown V2         |
-        // This test covers the deployed upgrade rule. The fail-closed rule is
-        // owned by the shared migration runner; here we prove MemoryStore keeps
-        // its published bytes and applies only the missing suffix.
+    fn current_baseline_exposes_only_the_memory_aggregate() {
+        // Causes: C1 empty ledger; C2 current V1/V2 stream; C3 exact replay.
+        // Effects: E1 create heads, versions, and counters only; E2 apply both
+        // versions once; E3 apply nothing. Decision rules M1=C1+C2=>E1+E2;
+        // M2=C3=>E3. Drift rejection is owned by the common runner tests.
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = memory_store_bundle().expect("bundle builds");
-        let published_v1_v2 = awaken_scoped_migration::MigrationBundle::new(
-            crate::schema::BUNDLE_ID,
-            full.migrations()[..2].to_vec(),
-        )
-        .expect("published V1/V2 bundle");
         let runner =
             awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
 
-        let first = runner
-            .run_bundle(&conn, &published_v1_v2)
-            .expect("apply published V1/V2");
+        let first = runner.run_bundle(&conn, &full).expect("M1 apply V1/V2");
         assert_eq!(
             first.iter().map(|m| m.version).collect::<Vec<_>>(),
             vec![1, 2]
         );
-        conn.execute(
-            "INSERT INTO memory_store_memories \
-             (store_id,path,id,ordinal,content,sha,version,created,updated) \
-             VALUES ('s','/kept.md','mem_1',1,X'6B657074','sha',1,1,1)",
-            [],
-        )
-        .expect("seed pre-upgrade memory");
-
-        let delta = runner
-            .run_bundle(&conn, &full)
-            .expect("upgrade through canonical bundle");
-        assert_eq!(delta.iter().map(|m| m.version).collect::<Vec<_>>(), vec![3]);
-        let kept: Vec<u8> = conn
+        let tables = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' \
+                 AND name LIKE 'memory_store_%' \
+                 AND name NOT LIKE 'memory_store_schema_migrations%' ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            tables,
+            [
+                "memory_store_counters",
+                "memory_store_memories",
+                "memory_store_versions"
+            ],
+            "M1/E1"
+        );
+        let retired: i64 = conn
             .query_row(
-                "SELECT content FROM memory_store_memories WHERE path='/kept.md'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memory_store_blob'",
                 [],
                 |row| row.get(0),
             )
-            .expect("read pre-upgrade memory");
-        assert_eq!(kept, b"kept");
+            .unwrap();
+        assert_eq!(retired, 0, "M1/E1");
+        assert!(runner.run_bundle(&conn, &full).expect("M2").is_empty());
     }
 
     /// `over` wraps a connection without migrating; the store only works once the
