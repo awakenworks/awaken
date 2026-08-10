@@ -389,3 +389,17 @@ OAuth coordinate, tenant, or Workspace.
 Awaken still does not construct OAuth URLs or know Cloud product topology. The
 Cloud hub remains responsible for returning through the existing product launch
 capability with the exact Workspace route.
+
+### Amendment (2026-08-10): direct entry carries opaque browser continuation
+
+The direct-entry decision is generated from Foundation beside the shared
+`SuiteNavigation` contract, eliminating the handwritten copy previously kept in
+both Awaken and Flow. For an unauthenticated hosted browser it appends the
+current absolute Awaken URL as an opaque `continue` value on the exact hub; a
+present product bearer and standalone mode continue unchanged.
+
+Awaken does not validate or persist that value, infer a Cloud domain, or
+construct an OAuth route. Cloud accepts it only when the origin and leading
+Workspace path equal the authenticated tenant's current Awaken coordinates,
+then returns through IAM's existing browser PKCE adapter. Invalid or foreign
+continuations stop at Products.
