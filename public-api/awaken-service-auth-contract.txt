@@ -1,2 +1,44 @@
 pub mod awaken_service_auth_contract
+pub enum awaken_service_auth_contract::ServiceAuthError
+pub awaken_service_auth_contract::ServiceAuthError::Forbidden
+pub awaken_service_auth_contract::ServiceAuthError::Unauthorized
+pub awaken_service_auth_contract::ServiceAuthError::Unavailable(alloc::string::String)
+impl core::error::Error for awaken_service_auth_contract::ServiceAuthError
+impl core::fmt::Display for awaken_service_auth_contract::ServiceAuthError
+pub fn awaken_service_auth_contract::ServiceAuthError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_service_auth_contract::AuthenticatedService
+pub awaken_service_auth_contract::AuthenticatedService::principal: alloc::sync::Arc<str>
+impl awaken_service_auth_contract::AuthenticatedService
+pub fn awaken_service_auth_contract::AuthenticatedService::new(impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub struct awaken_service_auth_contract::ServiceAuthorizationRequirement<'a>
+pub awaken_service_auth_contract::ServiceAuthorizationRequirement::audience: &'a str
+pub awaken_service_auth_contract::ServiceAuthorizationRequirement::permission: &'a str
+pub awaken_service_auth_contract::ServiceAuthorizationRequirement::workspace_id: core::option::Option<&'a str>
+impl<'a> awaken_service_auth_contract::ServiceAuthorizationRequirement<'a>
+pub const fn awaken_service_auth_contract::ServiceAuthorizationRequirement<'a>::in_workspace(self, &'a str) -> Self
+pub const fn awaken_service_auth_contract::ServiceAuthorizationRequirement<'a>::new(&'a str, &'a str) -> Self
+pub struct awaken_service_auth_contract::StaticServiceBearerTokenSource(_)
+impl awaken_service_auth_contract::StaticServiceBearerTokenSource
+pub fn awaken_service_auth_contract::StaticServiceBearerTokenSource::new(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
+impl awaken_service_auth_contract::ServiceBearerTokenSource for awaken_service_auth_contract::StaticServiceBearerTokenSource
+pub fn awaken_service_auth_contract::StaticServiceBearerTokenSource::current_token(&self) -> core::result::Result<alloc::sync::Arc<str>, alloc::string::String>
+pub struct awaken_service_auth_contract::TokenSourceAuthenticator
+impl awaken_service_auth_contract::TokenSourceAuthenticator
+pub fn awaken_service_auth_contract::TokenSourceAuthenticator::new(alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>) -> Self
+impl awaken_service_auth_contract::ServiceRequestAuthenticator for awaken_service_auth_contract::TokenSourceAuthenticator
+pub fn awaken_service_auth_contract::TokenSourceAuthenticator::authenticate(&self, core::option::Option<&[u8]>, awaken_service_auth_contract::ServiceAuthorizationRequirement<'_>) -> core::result::Result<awaken_service_auth_contract::AuthenticatedService, awaken_service_auth_contract::ServiceAuthError>
+pub const awaken_service_auth_contract::CONTROL_SERVICE_AUDIENCE: &str
+pub const awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE: &str
+pub trait awaken_service_auth_contract::ServiceBearerTokenSource: core::marker::Send + core::marker::Sync
+pub fn awaken_service_auth_contract::ServiceBearerTokenSource::current_token(&self) -> core::result::Result<alloc::sync::Arc<str>, alloc::string::String>
+impl awaken_service_auth_contract::ServiceBearerTokenSource for awaken_service_auth_contract::StaticServiceBearerTokenSource
+pub fn awaken_service_auth_contract::StaticServiceBearerTokenSource::current_token(&self) -> core::result::Result<alloc::sync::Arc<str>, alloc::string::String>
+pub trait awaken_service_auth_contract::ServiceRequestAuthenticator: core::marker::Send + core::marker::Sync
+pub fn awaken_service_auth_contract::ServiceRequestAuthenticator::authenticate(&self, core::option::Option<&[u8]>, awaken_service_auth_contract::ServiceAuthorizationRequirement<'_>) -> core::result::Result<awaken_service_auth_contract::AuthenticatedService, awaken_service_auth_contract::ServiceAuthError>
+impl awaken_service_auth_contract::ServiceRequestAuthenticator for awaken_service_auth_contract::TokenSourceAuthenticator
+pub fn awaken_service_auth_contract::TokenSourceAuthenticator::authenticate(&self, core::option::Option<&[u8]>, awaken_service_auth_contract::ServiceAuthorizationRequirement<'_>) -> core::result::Result<awaken_service_auth_contract::AuthenticatedService, awaken_service_auth_contract::ServiceAuthError>
+pub fn awaken_service_auth_contract::resolve_service_bearer_token(&dyn awaken_service_auth_contract::ServiceBearerTokenSource) -> core::result::Result<alloc::sync::Arc<str>, alloc::string::String>
 pub fn awaken_service_auth_contract::service_bearer_token_matches(core::option::Option<&[u8]>, &str) -> bool
+pub fn awaken_service_auth_contract::service_bearer_token_rotated(&dyn awaken_service_auth_contract::ServiceBearerTokenSource, &str) -> core::result::Result<bool, alloc::string::String>
+pub fn awaken_service_auth_contract::static_token_authenticator(impl core::convert::Into<alloc::string::String>) -> core::result::Result<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>, alloc::string::String>
+pub fn awaken_service_auth_contract::static_token_source(impl core::convert::Into<alloc::string::String>) -> core::result::Result<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>, alloc::string::String>

@@ -690,10 +690,19 @@ pub enum awaken_agent_contract::thread::read::checkpoint::EventScope
 pub awaken_agent_contract::thread::read::checkpoint::EventScope::All
 pub awaken_agent_contract::thread::read::checkpoint::EventScope::Run(awaken_agent_contract::agent::run::Id)
 pub awaken_agent_contract::thread::read::checkpoint::EventScope::Thread(awaken_agent_contract::agent::thread::Id)
-pub trait awaken_agent_contract::thread::read::checkpoint::CheckpointReader: awaken_agent_contract::thread::read::thread_reader::ThreadReader
-pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub trait awaken_agent_contract::thread::read::checkpoint::CheckpointReader: awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView
 pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
-pub fn awaken_agent_contract::thread::read::checkpoint::CheckpointReader::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub mod awaken_agent_contract::thread::read::committed_thread_view
+pub trait awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView: core::marker::Send + core::marker::Sync
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::transcript_slice(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec) -> core::result::Result<awaken_agent_contract::thread::read::transcript::TranscriptSlice, awaken_agent_contract::thread::read::transcript::TranscriptError>
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::transcript_snapshot(&self, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::read::transcript::TranscriptView) -> awaken_agent_contract::thread::read::transcript::TranscriptSnapshot
+pub fn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::verify_transcript_snapshot(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef) -> core::result::Result<(), awaken_agent_contract::thread::read::transcript::TranscriptError>
 pub mod awaken_agent_contract::thread::read::lifecycle
 pub enum awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind
 pub awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind::Awaiting
@@ -748,18 +757,6 @@ pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::run_id: awak
 pub awaken_agent_contract::thread::read::recovery::RunResumeTicket::ticket: awaken_agent_contract::agent::awaiting::ResumeTicket
 pub trait awaken_agent_contract::thread::read::recovery::RunRecoverySource: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::thread::read::recovery::RunRecoverySource::recovery_snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot, awaken_agent_contract::thread::read::recovery::RecoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub mod awaken_agent_contract::thread::read::run_store
-pub trait awaken_agent_contract::thread::read::run_store::RunStore
-pub fn awaken_agent_contract::thread::read::run_store::RunStore::get(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
-pub mod awaken_agent_contract::thread::read::thread_reader
-pub trait awaken_agent_contract::thread::read::thread_reader::ThreadReader: core::marker::Send + core::marker::Sync
-pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
-pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::committed_state(&self, &awaken_agent_contract::agent::thread::Id) -> alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
-pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::resume_ticket(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::awaiting::ResumeTicket>
-pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::run_state(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::RunState>
-pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::transcript_slice(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec) -> core::result::Result<awaken_agent_contract::thread::read::transcript::TranscriptSlice, awaken_agent_contract::thread::read::transcript::TranscriptError>
-pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::transcript_snapshot(&self, &awaken_agent_contract::agent::thread::Id, awaken_agent_contract::thread::read::transcript::TranscriptView) -> awaken_agent_contract::thread::read::transcript::TranscriptSnapshot
-pub fn awaken_agent_contract::thread::read::thread_reader::ThreadReader::verify_transcript_snapshot(&self, &awaken_agent_contract::thread::read::transcript::TranscriptSnapshotRef) -> core::result::Result<(), awaken_agent_contract::thread::read::transcript::TranscriptError>
 pub mod awaken_agent_contract::thread::read::transcript
 pub enum awaken_agent_contract::thread::read::transcript::TranscriptError
 pub awaken_agent_contract::thread::read::transcript::TranscriptError::InvalidRange
@@ -1070,10 +1067,8 @@ pub awaken_agent_contract::TranscriptSnapshotRef::thread_id: awaken_agent_contra
 pub awaken_agent_contract::TranscriptSnapshotRef::version: u64
 pub awaken_agent_contract::TranscriptSnapshotRef::view: awaken_agent_contract::thread::read::transcript::TranscriptView
 pub const awaken_agent_contract::ANTHROPIC_SKILL_IDS: [&str; 4]
-pub trait awaken_agent_contract::CheckpointReader: awaken_agent_contract::thread::read::thread_reader::ThreadReader
-pub fn awaken_agent_contract::CheckpointReader::latest_run(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
+pub trait awaken_agent_contract::CheckpointReader: awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView
 pub fn awaken_agent_contract::CheckpointReader::list_events(&self, &awaken_agent_contract::thread::read::checkpoint::EventScope, core::option::Option<u64>, usize) -> alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
-pub fn awaken_agent_contract::CheckpointReader::run(&self, &awaken_agent_contract::agent::run::Id) -> core::option::Option<awaken_agent_contract::agent::run::Record>
 pub trait awaken_agent_contract::CommitCoordinator: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::CommitCoordinator::commit<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::staged::ThreadCommit) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::staged::CommitRecord, awaken_agent_contract::thread::commit::coordinator::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_agent_contract::RunLifecycleFeed: core::marker::Send + core::marker::Sync

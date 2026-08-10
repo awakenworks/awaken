@@ -128,6 +128,9 @@ pub awaken_session_contract::ApplicationSessionContributionFailure::Invalid(allo
 pub awaken_session_contract::ApplicationSessionContributionFailure::NotFound
 pub awaken_session_contract::ApplicationSessionContributionFailure::NotRequired
 pub awaken_session_contract::ApplicationSessionContributionFailure::Unavailable(alloc::string::String)
+pub enum awaken_session_contract::ApplicationSessionMaterialRefresh
+pub awaken_session_contract::ApplicationSessionMaterialRefresh::NotRequired
+pub awaken_session_contract::ApplicationSessionMaterialRefresh::Refreshed
 pub enum awaken_session_contract::ApplicationSessionProvisionFailureKind
 pub awaken_session_contract::ApplicationSessionProvisionFailureKind::Retryable
 pub awaken_session_contract::ApplicationSessionProvisionFailureKind::Terminal
@@ -441,7 +444,6 @@ pub fn awaken_session_contract::ApplicationSessionInput::fingerprint(&self) -> a
 pub struct awaken_session_contract::ApplicationSessionProvisionError
 impl awaken_session_contract::ApplicationSessionProvisionError
 pub fn awaken_session_contract::ApplicationSessionProvisionError::is_terminal(&self) -> bool
-pub fn awaken_session_contract::ApplicationSessionProvisionError::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_session_contract::ApplicationSessionProvisionError::retryable(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_session_contract::ApplicationSessionProvisionError::terminal(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_session_contract::BeginSessionRealization
@@ -1014,7 +1016,7 @@ pub trait awaken_session_contract::ApplicationSessionControl: awaken_session_con
 impl<T> awaken_session_contract::ApplicationSessionControl for T where T: awaken_session_contract::ApplicationSessionContributionApi + awaken_session_contract::SessionRealizationControl
 pub trait awaken_session_contract::ApplicationSessionProvisioner: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::ApplicationSessionProvisioner::prepare<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 str, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::ApplicationSessionContribution, awaken_session_contract::ApplicationSessionProvisionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_session_contract::ApplicationSessionProvisioner::refresh_frozen<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 str, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::ApplicationSessionProvisionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_contract::ApplicationSessionProvisioner::refresh_frozen<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::activation::RunActivation, &'life2 str, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::ApplicationSessionMaterialRefresh, awaken_session_contract::ApplicationSessionProvisionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_session_contract::DreamPolicyApplication: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::DreamPolicyApplication::policy(&self, &str, &str) -> core::result::Result<awaken_session_contract::DreamPolicy, awaken_session_contract::DreamPolicyApplicationError>
 pub fn awaken_session_contract::DreamPolicyApplication::set_policy(&self, &str, &str, awaken_session_contract::DreamPolicyConfig) -> core::result::Result<(), awaken_session_contract::DreamPolicyApplicationError>

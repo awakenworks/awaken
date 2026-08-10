@@ -121,7 +121,7 @@ pub awaken_ext_memory::extraction::MemoryTerminalExtractionRequest::terminal_run
 pub awaken_ext_memory::extraction::MemoryTerminalExtractionRequest::workspace_id: alloc::string::String
 pub struct awaken_ext_memory::extraction::MemoryTerminalObserver
 impl awaken_ext_memory::extraction::MemoryTerminalObserver
-pub fn awaken_ext_memory::extraction::MemoryTerminalObserver::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryTerminalExtraction>) -> Self
+pub fn awaken_ext_memory::extraction::MemoryTerminalObserver::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryTerminalExtraction>) -> Self
 impl awaken_runtime_contract::terminal::RunTerminalObserver for awaken_ext_memory::extraction::MemoryTerminalObserver
 pub fn awaken_ext_memory::extraction::MemoryTerminalObserver::observe<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::terminal::CommittedTerminalRun) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_ext_memory::extraction::MemoryTerminalObserver::observer_id(&self) -> &str
@@ -372,7 +372,7 @@ pub awaken_ext_memory::MemoryTerminalExtractionRequest::terminal_run_id: alloc::
 pub awaken_ext_memory::MemoryTerminalExtractionRequest::workspace_id: alloc::string::String
 pub struct awaken_ext_memory::MemoryTerminalObserver
 impl awaken_ext_memory::extraction::MemoryTerminalObserver
-pub fn awaken_ext_memory::extraction::MemoryTerminalObserver::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::thread_reader::ThreadReader>, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryTerminalExtraction>) -> Self
+pub fn awaken_ext_memory::extraction::MemoryTerminalObserver::new(alloc::sync::Arc<dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView>, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryTerminalExtraction>) -> Self
 impl awaken_runtime_contract::terminal::RunTerminalObserver for awaken_ext_memory::extraction::MemoryTerminalObserver
 pub fn awaken_ext_memory::extraction::MemoryTerminalObserver::observe<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::terminal::CommittedTerminalRun) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_runtime_contract::terminal::RunTerminalObserverError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_ext_memory::extraction::MemoryTerminalObserver::observer_id(&self) -> &str
