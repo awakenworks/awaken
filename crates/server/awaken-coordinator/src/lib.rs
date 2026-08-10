@@ -31,7 +31,6 @@ pub mod data_subject_boundary;
 pub mod inference_materializer;
 pub mod mcp_export;
 pub mod model_directory;
-pub mod model_discovery;
 pub mod model_resolver;
 mod oauth_refresh;
 mod runtime_authority;

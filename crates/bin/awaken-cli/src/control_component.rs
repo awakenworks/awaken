@@ -67,9 +67,9 @@ pub(super) async fn control_component_for_process(
         model_publication_resolver,
         plugin_publication_resolvers: vec![web_search_publication_resolver],
         credential_probe: Arc::new(credential_probe::GenaiProbe),
-        model_discovery: Arc::new(
-            awaken_coordinator::model_discovery::GenaiModelDiscovery::new(control.secrets.clone()),
-        ),
+        model_discovery: Arc::new(awaken_control::model_discovery::GenaiModelDiscovery::new(
+            control.secrets.clone(),
+        )),
         brokered_catalog: injected_brokered_catalog.or_else(|| {
             brokered_client
                 .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>)

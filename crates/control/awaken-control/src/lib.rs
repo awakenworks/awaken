@@ -22,6 +22,7 @@ pub mod control_stores;
 mod credential_reference;
 mod data_subject;
 mod managed_agents;
+pub mod model_discovery;
 mod registration_supervisor;
 pub mod worker_stores;
 
