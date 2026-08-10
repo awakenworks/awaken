@@ -392,6 +392,80 @@ async fn spawn_scripted_idempotent_server(
     (format!("http://{address}"), state)
 }
 
+async fn stalled_bind(State(state): State<Arc<ScriptedBindState>>) -> Json<Value> {
+    state.calls.fetch_add(1, Ordering::SeqCst);
+    std::future::pending::<Json<Value>>().await
+}
+
+async fn spawn_stalled_server() -> (String, Arc<ScriptedBindState>) {
+    let state = Arc::new(ScriptedBindState {
+        first_status: StatusCode::OK,
+        calls: AtomicUsize::new(0),
+    });
+    let app = Router::new()
+        .route("/v1/worker/dispatch/bind_sandbox", post(stalled_bind))
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{address}"), state)
+}
+
+#[tokio::test]
+async fn transport_deadline_and_caller_cancellation_bound_body_stalls() {
+    // FMECA cause/effect graph: C1 server accepts then never produces a body;
+    // C2 the transport client has a total request deadline; C3 service shutdown
+    // drops the in-flight future first. Effects: E1 C1+C2 returns a bounded
+    // transport error after only the configured idempotent retries; E2 C1+C3
+    // cancels promptly without waiting for the HTTP deadline. An unbounded Worker
+    // call starves shutdown and lease recovery (S=9,O=5,D=7,RPN=315).
+    // Decision rules: D1=C1+C2+!C3->E1; D2=C1+C3->E2. Authoritative 4xx and
+    // applied-but-lost retry rules remain covered by T3/T2 below.
+    let claim = RunClaim {
+        run_id: RunId("body-stall".into()),
+        owner: "worker-A:1:boot-A".into(),
+        epoch: 1,
+    };
+    let (base, state) = spawn_stalled_server().await;
+    let deadline_client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_millis(25))
+        .build()
+        .unwrap();
+    let queue = HttpDispatchQueue::new(base.clone(), WorkerIdentity::new("worker-A", "boot-A", 1))
+        .with_client(deadline_client);
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            queue.bind_sandbox(&claim, "sandbox-stall"),
+        )
+        .await
+        .expect("D1 deadline bounds all retries")
+        .is_err(),
+        "D1"
+    );
+    assert!(
+        state.calls.load(Ordering::SeqCst) <= 3,
+        "D1 bounded retries"
+    );
+
+    let cancellation_client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let cancelling = HttpDispatchQueue::new(base, WorkerIdentity::new("worker-A", "boot-A", 1))
+        .with_client(cancellation_client);
+    let cancelled = tokio::time::timeout(
+        std::time::Duration::from_millis(30),
+        cancelling.bind_sandbox(&claim, "sandbox-cancel"),
+    )
+    .await;
+    assert!(cancelled.is_err(), "D2 caller cancellation wins promptly");
+}
+
 /// Sandbox-bind transport cause graph:
 /// C1=the exact claim is current; C2=response is ambiguous/5xx; C3=response is
 /// an authoritative 4xx. The same claim + sandbox reference is idempotent, so

@@ -311,6 +311,17 @@ pub(super) async fn prepare_runtime_routers(
     };
     let environment_execution = Arc::new(environment_execution);
     let resource_catalog = resource_authorities.resource_catalog();
+    let indexed_memory_extractions =
+        Arc::new(awaken_coordinator::ReferenceIndexedMemoryExtractions::new(
+            memory_extractions,
+            resource_authorities.reclamation(),
+        ));
+    indexed_memory_extractions
+        .synchronize_recoverable_references()
+        .await
+        .map_err(|error| format!("restore Memory extraction references: {error}"))?;
+    let memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository> =
+        indexed_memory_extractions;
     let (
         control,
         mcp_export,
@@ -410,10 +421,10 @@ pub(super) async fn prepare_runtime_routers(
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
     let mut host_builder = match deployment {
-        Some(deployment) => SharedHost::new_with_resources_and_deployment(
+        Some(deployment) => SharedHost::new_with_runtime_resources_and_deployment(
             model_wiring.executor,
             model_wiring.model_ref,
-            resource_authorities.clone(),
+            resource_authorities.memory_repository(),
             memory_extractions,
             deployment,
         ),
@@ -430,16 +441,25 @@ pub(super) async fn prepare_runtime_routers(
         #[cfg(not(any(test, feature = "test-support")))]
         None => unreachable!("product runtime process requires a resolved deployment"),
     };
+    let local_dispatch = runtime_authority
+        .as_ref()
+        .map(|authority| authority.dispatch_store());
     if let Some(runtime_authority) = runtime_authority {
         host_builder = host_builder.with_runtime_authority(runtime_authority);
     }
+    let artifact_publisher = resource_application.artifact_publisher();
+    let artifact_publisher = local_dispatch.map_or(artifact_publisher.clone(), |dispatch| {
+        Arc::new(awaken_coordinator::ClaimFencedArtifactPublisher::new(
+            artifact_publisher,
+            dispatch,
+        ))
+            as Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>>
+    });
     host_builder = host_builder
-        .with_file_application(
-            resource_application.files(),
-            resource_application.file_content_source(),
-            resource_application.artifact_publisher(),
-        )
+        .with_file_content_source(resource_application.file_content_source())
+        .with_artifact_publisher(artifact_publisher)
         .with_skill_bundle_source(resource_application.skill_bundle_source())
+        .with_skill_catalog_application(resource_application.skill_catalog_application())
         .with_local_workspace(platform_workspace.clone())
         .with_web_search_provider_registry(web_search_providers)
         .with_acp_tool_exporter(Arc::new(
@@ -449,7 +469,6 @@ pub(super) async fn prepare_runtime_routers(
             credential_materializer.clone(),
         ))
         .with_agent_publications(executable_agent_catalog.clone())
-        .with_agent_resource_references(executable_agent_catalog.clone())
         .with_capture_sink(capture_sink)
         .with_data_subject_consent_source(data_subject_consent)
         .with_admin_tools(admin_execs);
@@ -482,20 +501,15 @@ pub(super) async fn prepare_runtime_routers(
         None => host_builder,
     };
     let host = Arc::new(host_builder);
-    let resource_reclamation = Arc::new(awaken_runtime_host::HostResourceReclamation::new(
-        host.clone(),
-        resource_catalog.clone(),
-    ));
     let resource_reclaimer = Arc::new(
         awaken_resource_reclaimer::ResourceReclaimer::new(
             format!("awaken-resource-reclaimer:{}", std::process::id()),
             30_000,
-            host.resource_reclamation()
-                .expect("Resources persistence supplies the lifecycle repository"),
-            resource_reclamation.clone(),
+            resource_authorities.reclamation(),
+            resource_application.physical_cleanup(),
         )
         .expect("construct resource reclaimer")
-        .with_guard(resource_reclamation)
+        .with_guard(resource_application.lifecycle_guard())
         .with_guard(Arc::new(
             awaken_session_application::SessionResourcePurgeGuard::new(
                 sessions.clone(),
@@ -613,6 +627,8 @@ pub(super) async fn prepare_runtime_routers(
             resource_catalog,
             resource_management_router,
             memory_stores: resource_application.memory_stores(),
+            worker_file_application: resource_application.files(),
+            worker_skill_bundles: resource_application.skill_bundle_source(),
             application_access,
             model_inventory,
             dream_process_store,

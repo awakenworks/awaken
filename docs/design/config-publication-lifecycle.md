@@ -120,8 +120,9 @@ is secondary to the port contract.
   Control does not depend on Worker launch commands and Coordinator has no
   parallel resolver;
 - the execution projection is now the Coordinator-owned
-  `ExecutableAgentCatalog`; all runtime, Session, Hand, and Resource-reference
-  reads use that one catalog;
+  `ExecutableAgentCatalog`; Runtime, Session, and Hand reads use that one
+  catalog, while deletion safety uses the Resources-owned atomic reference
+  index populated by the same registrar command path;
 - startup rehydration uses the same `register` port instead of a separate local
   warm-install mechanism;
 - the publish HTTP adapter distinguishes validation/conflict failures from a
@@ -145,8 +146,10 @@ is secondary to the port contract.
   the private Router to the required `internal_bind`; the public Router contains
   no registration, Worker-observation, captured-content erasure, or reverse
   Control-service route, and no merged compatibility surface remains;
-- `AgentResourceReferenceSource`, allowing Resource reclamation to query the
-  same execution projection without depending on Config Service.
+- `ReferenceIndexedExecutableAgentRegistrar`, projecting current Agent bindings
+  into `ResourceReferenceIndex` before catalog exposure. Reclamation therefore
+  uses the same atomic fence as Session and Extraction references and no longer
+  performs a check-then-delete catalog scan.
 
 There is no remaining registration boundary code. Periodic reconciliation is an
 operational optimization; startup recovery and an explicit retry already reuse

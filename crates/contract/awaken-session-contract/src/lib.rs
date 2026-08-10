@@ -138,7 +138,9 @@ pub use session_repo::{
     SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
     SessionRevision, SessionTombstone, VisibleMcpServer,
 };
-pub use skill_execution::{SkillBundleSource, SkillBundleSourceError, validate_skill_bundle};
+pub use skill_execution::{
+    SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, validate_skill_bundle,
+};
 pub use terminal_cleanup::{
     SessionTerminalCleanupError, SessionTerminalCleanupIntent, SessionTerminalCleanupReceipt,
     SessionTerminalCleanupState,

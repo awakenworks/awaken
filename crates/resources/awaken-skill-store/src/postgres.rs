@@ -117,6 +117,15 @@ impl PgSkillStore {
 
 #[async_trait::async_trait]
 impl SkillStore for PgSkillStore {
+    async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
+        sqlx::query_scalar::<_, String>(&format!(
+            "SELECT DISTINCT workspace_id FROM {NS}_aggregate ORDER BY workspace_id"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)
+    }
+
     async fn create(
         &self,
         definition: SkillDefinition,

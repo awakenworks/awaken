@@ -4,15 +4,16 @@
 //! session. Split out of `host.rs` to keep that file under the length limit; these
 //! are the same `SharedHost` (fields are `pub(crate)`).
 
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 
 use crate::host::SharedHost;
 use awaken_provisioning_contract as pc;
-use awaken_resource_contract::FileStore;
-use awaken_resource_contract::{FileCatalog, ResourcePurgeError};
+use awaken_resource_contract::ResourcePurgeError;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_resource_contract::{FileCatalog, FileStore};
 #[cfg(test)]
 use awaken_resource_contract::{FileCatalogError, FileRecord};
-use awaken_run_ingress::{Clock as _, DispatchQueue as _};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 
 /// Anthropic Managed Agents' canonical sandbox-absolute deliverables directory.
@@ -309,14 +310,6 @@ impl SharedHost {
             session_slots: self.session_slots.clone(),
             local_workspace: self.local_workspace.clone(),
             publisher: self.artifact_publisher.clone(),
-            // A local File application shares the Coordinator's dispatch
-            // authority and must hold its epoch guard across publication. A
-            // database-less Worker has no File application; its HTTP publisher
-            // is fenced by the Coordinator-side adapter instead.
-            local_claim_fence: self
-                .file_application
-                .as_ref()
-                .map(|_| self.dispatch_store().map_err(|error| error.to_string())),
         }
     }
 
@@ -381,18 +374,21 @@ impl SharedHost {
     }
 
     /// The content-addressed blob store (Files API, file-resource mounts, artifacts).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn file_store(&self) -> Arc<dyn FileStore> {
         self.file_store.clone()
     }
 
     /// The sole durable logical-file catalog. Public Files identities resolve
     /// through this catalog before their private content-addressed blob is read.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn file_catalog(&self) -> Arc<dyn FileCatalog> {
         self.file_catalog.clone()
     }
 
     /// The sole Resources-owned logical-File command application. Database-less
     /// Workers deliberately return `None`; they may only use `FileContentSource`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn file_application(
         &self,
     ) -> Option<Arc<dyn awaken_resource_contract::FileApplicationService>> {
@@ -467,7 +463,7 @@ impl SharedHost {
     /// environment or a host with no durable skill store (nothing to persist into).
     /// Idempotent: a re-scanned delivered skill puts identical bytes back under the same id.
     pub async fn harvest_thread_skills(&self, thread: &str) -> Result<(), ResourcePurgeError> {
-        if !self.skills.has_store() {
+        if !self.skills.has_application() {
             return Ok(());
         }
         let env = self.session_environment(thread).await;
@@ -522,7 +518,6 @@ pub(crate) struct ArtifactHarvester {
     publisher: std::sync::Arc<
         dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
     >,
-    local_claim_fence: Option<Result<std::sync::Arc<awaken_run_ingress::AnyDispatchStore>, String>>,
 }
 
 impl ArtifactHarvester {
@@ -545,27 +540,6 @@ impl ArtifactHarvester {
         thread: &str,
         claim: Option<awaken_run_ingress::RunClaim>,
     ) -> Result<Vec<awaken_resource_contract::ArtifactPublicationReceipt>, ResourcePurgeError> {
-        let _local_guard = match (&claim, &self.local_claim_fence) {
-            (Some(claim), Some(Ok(dispatch))) => {
-                let guard = dispatch
-                    .lock_commit_epoch(claim)
-                    .await
-                    .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?
-                    .filter(|guard| guard.is_live_at(awaken_run_ingress::SystemClock.now_ms()))
-                    .ok_or_else(|| {
-                        ResourcePurgeError::Storage(
-                            "artifact publication lost its local dispatch claim".into(),
-                        )
-                    })?;
-                Some(guard)
-            }
-            (Some(_), Some(Err(error))) => {
-                return Err(ResourcePurgeError::Storage(format!(
-                    "artifact publication cannot resolve its local dispatch authority: {error}"
-                )));
-            }
-            _ => None,
-        };
         let env = self
             .session_slots
             .read(thread, |slot| slot.environment.clone())

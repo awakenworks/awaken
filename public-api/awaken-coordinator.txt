@@ -125,6 +125,11 @@ pub awaken_coordinator::WorkerTransportBuildError::CheckpointOpen::path: std::pa
 pub awaken_coordinator::WorkerTransportBuildError::Dispatch(alloc::string::String)
 pub awaken_coordinator::WorkerTransportBuildError::MissingCheckpointAuthority
 pub awaken_coordinator::WorkerTransportBuildError::MissingFileApplication
+pub struct awaken_coordinator::ClaimFencedArtifactPublisher
+impl awaken_coordinator::ClaimFencedArtifactPublisher
+pub fn awaken_coordinator::ClaimFencedArtifactPublisher::new(alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>) -> Self
+impl awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim> for awaken_coordinator::ClaimFencedArtifactPublisher
+pub fn awaken_coordinator::ClaimFencedArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::ArtifactPublicationReceipt, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_coordinator::CoordinatorComponent
 pub awaken_coordinator::CoordinatorComponent::management_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::private_router: axum::routing::Router
@@ -149,6 +154,8 @@ pub awaken_coordinator::CoordinatorDependencies::session_application: alloc::syn
 pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
 pub awaken_coordinator::CoordinatorDependencies::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::CoordinatorDependencies::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub awaken_coordinator::CoordinatorDependencies::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
+pub awaken_coordinator::CoordinatorDependencies::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>
 pub struct awaken_coordinator::CoordinatorPersistence
 pub awaken_coordinator::CoordinatorPersistence::runtime_authority: alloc::sync::Arc<dyn awaken_runtime_host::authority::RuntimeAuthority>
 pub awaken_coordinator::CoordinatorPersistence::worker_directory: awaken_coordinator::WorkerDirectoryHandle
@@ -163,6 +170,18 @@ pub awaken_coordinator::ManagedRoutingExtensions::memory_stores: alloc::sync::Ar
 pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: axum::routing::Router
 pub awaken_coordinator::ManagedRoutingExtensions::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
+pub awaken_coordinator::ManagedRoutingExtensions::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
+pub awaken_coordinator::ManagedRoutingExtensions::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>
+pub struct awaken_coordinator::ReferenceIndexedMemoryExtractions
+impl awaken_coordinator::ReferenceIndexedMemoryExtractions
+pub fn awaken_coordinator::ReferenceIndexedMemoryExtractions::new(alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReferenceIndex>) -> Self
+pub async fn awaken_coordinator::ReferenceIndexedMemoryExtractions::synchronize_recoverable_references(&self) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
+impl awaken_ext_memory::extraction::MemoryExtractionRepository for awaken_coordinator::ReferenceIndexedMemoryExtractions
+pub fn awaken_coordinator::ReferenceIndexedMemoryExtractions::compare_and_swap_extraction<'life0, 'async_trait>(&'life0 self, u64, awaken_ext_memory::extraction::MemoryExtractionIntent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_coordinator::ReferenceIndexedMemoryExtractions::extraction_cursor<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_ext_memory::extraction::MemoryExtractionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_coordinator::ReferenceIndexedMemoryExtractions::get_extraction<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_ext_memory::extraction::MemoryExtractionIntent>, awaken_ext_memory::extraction::MemoryExtractionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_coordinator::ReferenceIndexedMemoryExtractions::put_extraction_if_absent<'life0, 'async_trait>(&'life0 self, awaken_ext_memory::extraction::MemoryExtractionIntent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_memory::extraction::PutMemoryExtractionOutcome, awaken_ext_memory::extraction::MemoryExtractionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_coordinator::ReferenceIndexedMemoryExtractions::recoverable_extractions<'life0, 'async_trait>(&'life0 self, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_ext_memory::extraction::MemoryExtractionIntent>, awaken_ext_memory::extraction::MemoryExtractionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_coordinator::a2a_attempt_executor(core::option::Option<awaken_credential_materializer::PinnedCredentialMaterializer>) -> awaken_runtime_host::host::RemoteAttemptInstallation
 pub async fn awaken_coordinator::build_coordinator_component(awaken_coordinator::CoordinatorDependencies) -> core::result::Result<awaken_coordinator::CoordinatorComponent, awaken_coordinator::CoordinatorBuildError>
 pub fn awaken_coordinator::install_platform_memory_data_plane(&awaken_runtime_host::host::SharedHost)

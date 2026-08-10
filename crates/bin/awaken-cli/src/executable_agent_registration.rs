@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use awaken_executable_agent_catalog::{
     ExecutableAgentCatalog, HttpExecutableAgentRegistrar, LocalExecutableAgentRegistrar,
-    PostgresExecutableAgentRegistrar, executable_agent_registration_router_with_authenticator,
+    PostgresExecutableAgentRegistrar, ReferenceIndexedExecutableAgentRegistrar,
+    executable_agent_registration_router_with_authenticator,
 };
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
 use axum::Router;
@@ -17,11 +18,13 @@ pub(crate) async fn for_runtime_role(
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
     captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
+    references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
 ) -> Result<ExecutableAgentWiring, String> {
     match role {
-        Role::AllInOne => Ok(ExecutableAgentWiring::local()),
+        Role::AllInOne => Ok(ExecutableAgentWiring::local_with_references(references)),
         Role::Coordinator => {
-            ExecutableAgentWiring::coordinator(deployment, schema, captured_content).await
+            ExecutableAgentWiring::coordinator(deployment, schema, captured_content, references)
+                .await
         }
         _ => unreachable!("runtime process accepts only AllInOne or Coordinator"),
     }
@@ -50,6 +53,24 @@ impl ExecutableAgentWiring {
         let catalog = Arc::new(ExecutableAgentCatalog::new());
         Self {
             registrar: Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone())),
+            catalog,
+            projection_refresher: None,
+            private_router: Router::new(),
+            coordinator_content_eraser: None,
+        }
+    }
+
+    pub(crate) fn local_with_references(
+        references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
+    ) -> Self {
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let delegate = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
+        Self {
+            registrar: Arc::new(ReferenceIndexedExecutableAgentRegistrar::new(
+                catalog.clone(),
+                delegate,
+                references,
+            )),
             catalog,
             projection_refresher: None,
             private_router: Router::new(),
@@ -101,6 +122,7 @@ impl ExecutableAgentWiring {
         deployment: &ResolvedDeployment,
         schema: PostgresSchemaMode,
         captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
+        references: Arc<dyn awaken_resource_contract::ResourceReferenceIndex>,
     ) -> Result<Self, String> {
         let authenticator = deployment
             .executable_agent_registration
@@ -119,7 +141,17 @@ impl ExecutableAgentWiring {
             }
         }
         .map_err(|error| error.to_string())?;
-        let registrar = Arc::new(registrar);
+        let projection_refresher = Arc::new(registrar);
+        let indexed = Arc::new(ReferenceIndexedExecutableAgentRegistrar::new(
+            catalog.clone(),
+            projection_refresher.clone(),
+            references,
+        ));
+        indexed
+            .synchronize_current_references()
+            .await
+            .map_err(|error| error.to_string())?;
+        let registrar: Arc<dyn ExecutableAgentRegistrar> = indexed;
         let private_router = executable_agent_registration_router_with_authenticator(
             registrar.clone(),
             authenticator.clone(),
@@ -138,7 +170,7 @@ impl ExecutableAgentWiring {
         Ok(Self {
             catalog,
             registrar: registrar.clone(),
-            projection_refresher: Some(registrar),
+            projection_refresher: Some(projection_refresher),
             private_router,
             coordinator_content_eraser: None,
         })

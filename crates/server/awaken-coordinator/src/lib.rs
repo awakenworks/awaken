@@ -23,11 +23,13 @@
 
 pub mod admin;
 pub mod application_access;
+mod artifact_publication;
 pub mod console;
 pub mod control_service_boundary;
 mod coordinator_component;
 mod coordinator_persistence;
 pub mod data_subject_boundary;
+mod extraction_references;
 #[cfg(test)]
 mod inference_publication_tests;
 pub mod mcp_export;
@@ -38,6 +40,7 @@ pub mod worker_placement;
 mod worker_registry;
 pub mod workspace_path;
 
+pub use artifact_publication::ClaimFencedArtifactPublisher;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
     build_coordinator_component, restore_deployment_application,
@@ -48,6 +51,7 @@ pub use coordinator_persistence::{
     CoordinatorPersistence, migrate_postgres_schema as migrate_postgres_coordinator_schema,
     open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
 };
+pub use extraction_references::ReferenceIndexedMemoryExtractions;
 
 use std::sync::Arc;
 
@@ -505,6 +509,12 @@ pub fn mount_with_managed_and_application_access_and_models(
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_catalog.clone());
     let session_application = managed_state.session_application();
+    let worker_file_application = host
+        .file_application()
+        .expect("test-support File application");
+    let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
+        host.skill_store().expect("test-support Skill store"),
+    ));
     let (managed, data, _, _) = mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -518,6 +528,8 @@ pub fn mount_with_managed_and_application_access_and_models(
         ManagedRoutingExtensions {
             resource_management_router: resources,
             memory_stores,
+            worker_file_application,
+            worker_skill_bundles,
             worker_authenticator: Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
@@ -533,6 +545,9 @@ pub fn mount_with_managed_and_application_access_and_models(
 pub struct ManagedRoutingExtensions {
     pub resource_management_router: Router,
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
+    pub worker_file_application: Arc<dyn awaken_resource_contract::FileApplicationService>,
+    pub worker_skill_bundles:
+        Arc<dyn awaken_session_contract::SkillBundleSource<awaken_run_ingress::RunClaim>>,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
@@ -682,6 +697,12 @@ fn mount_with_managed_over(
     let session_application = managed_state.session_application();
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_catalog.clone());
+    let worker_file_application = host
+        .file_application()
+        .expect("test-support File application");
+    let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
+        host.skill_store().expect("test-support Skill store"),
+    ));
     let (managed, public, _worker_private, dreams) = mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -695,6 +716,8 @@ fn mount_with_managed_over(
         ManagedRoutingExtensions {
             resource_management_router: resources,
             memory_stores,
+            worker_file_application,
+            worker_skill_bundles,
             worker_authenticator: Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
@@ -730,6 +753,8 @@ fn mount_with_managed_over_and_models(
     let ManagedRoutingExtensions {
         resource_management_router,
         memory_stores,
+        worker_file_application,
+        worker_skill_bundles,
         worker_authenticator,
         worker_placement_policy,
         worker_directory,
@@ -751,10 +776,10 @@ fn mount_with_managed_over_and_models(
     }
     let dream_worker = Arc::new(dream::BuiltInDreamAgent::new(
         session_application.clone(),
-        host.clone(),
         host.memory_repository(),
         resource_catalog.clone(),
         memory_stores,
+        worker_file_application.clone(),
     ));
     let dream_application = Arc::new(
         awaken_dream_application::DreamApplication::with_store(dream_worker, dream_process_store)
@@ -853,13 +878,10 @@ fn mount_with_managed_over_and_models(
         .with_worker_directory(worker_directory.clone())
         .with_application_sessions(session_application.session_repository_handle()),
     ));
-    let file_application = host
-        .file_application()
-        .ok_or(WorkerTransportBuildError::MissingFileApplication)?;
     let artifact_publication =
         awaken_resource_worker_http::worker_artifact_publication_router(Arc::new(
             awaken_resource_worker_http::WorkerArtifactPublicationService::new(
-                file_application,
+                worker_file_application,
                 dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
                 worker_authenticator.clone(),
                 worker_directory.clone(),
@@ -882,24 +904,20 @@ fn mount_with_managed_over_and_models(
         )
         .with_worker_directory(worker_directory.clone()),
     ));
-    let mut resource_worker = file_content
+    let resource_worker = file_content
         .merge(artifact_publication)
         .merge(memory)
-        .merge(repositories);
-    if let Some(store) = host.skill_store() {
-        resource_worker = resource_worker.merge(
-            awaken_resource_worker_http::worker_skill_bundle_router(Arc::new(
+        .merge(repositories)
+        .merge(awaken_resource_worker_http::worker_skill_bundle_router(
+            Arc::new(
                 awaken_resource_worker_http::WorkerSkillBundleService::new(
-                    Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
-                        store,
-                    )),
+                    worker_skill_bundles,
                     dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
                     worker_authenticator.clone(),
                 )
                 .with_worker_directory(worker_directory.clone()),
-            )),
-        );
-    }
+            ),
+        ));
     let commit = Arc::new(awaken_run_ingress_http::ClaimedCommitHttpService::new(
         Arc::new(awaken_runtime_host::claimed_commit_service(
             dispatch as Arc<dyn awaken_run_ingress::DispatchQueue>,

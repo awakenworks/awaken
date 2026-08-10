@@ -5,6 +5,32 @@ use awaken_resource_contract::{SkillVersion, skill_bundle_sha256};
 
 use crate::ResolvedSkillBinding;
 
+/// Resources application capability needed while freezing and refreshing
+/// Session Skill inputs. It deliberately exposes no SkillStore CRUD/purge port.
+#[async_trait::async_trait]
+pub trait SkillCatalogApplication: Send + Sync {
+    async fn resolve_custom(
+        &self,
+        workspace_id: &str,
+        skill_id: &str,
+        selector: &str,
+    ) -> Result<ResolvedSkillBinding, awaken_resource_contract::SkillStoreError>;
+
+    async fn snapshot_latest(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<SkillVersion>, awaken_resource_contract::SkillStoreError>;
+
+    async fn publish_authored(
+        &self,
+        workspace_id: &str,
+        raw_id: &str,
+        name: &str,
+        description: &str,
+        content: &str,
+    ) -> Result<(), awaken_resource_contract::SkillStoreError>;
+}
+
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("Skill bundle source: {0}")]
 pub struct SkillBundleSourceError(String);

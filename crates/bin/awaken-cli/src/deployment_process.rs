@@ -93,6 +93,13 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
             .expect("Managed Execution owns captured content")
             .captured_content_eraser
             .clone(),
+        stores
+            .coordinator
+            .as_ref()
+            .expect("Managed Execution owns Resources")
+            .resources
+            .authorities()
+            .reclamation(),
     )
     .await?;
     let worker_authenticator = match coordinator_services.worker_authenticator {

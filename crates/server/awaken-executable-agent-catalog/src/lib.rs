@@ -15,7 +15,8 @@ use awaken_executable_agent_contract::{
     ExecutableAgentSessionProfile, ExecutableAgentWithdrawal, ExecutableAgentWithdrawalOutcome,
 };
 use awaken_resource_contract::{
-    AgentResourceReferenceSource, InputResourceId, ResourceKind, ResourceTarget,
+    InputResourceId, ResourceKind, ResourcePurgeError, ResourceReference, ResourceReferenceIndex,
+    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
 };
 use awaken_runtime_contract::snapshot::AgentId;
 use awaken_runtime_contract::{
@@ -275,6 +276,189 @@ pub struct LocalExecutableAgentRegistrar {
     catalog: Arc<ExecutableAgentCatalog>,
 }
 
+/// Projects current Agent bindings into the atomic Resources reference index.
+/// Adds happen before executable exposure; removals happen after withdrawal, so
+/// every crash window is conservative (leak-safe) rather than use-after-purge.
+pub struct ReferenceIndexedExecutableAgentRegistrar {
+    catalog: Arc<ExecutableAgentCatalog>,
+    delegate: Arc<dyn ExecutableAgentRegistrar>,
+    references: Arc<dyn ResourceReferenceIndex>,
+    mutation: tokio::sync::Mutex<()>,
+}
+
+impl ReferenceIndexedExecutableAgentRegistrar {
+    #[must_use]
+    pub fn new(
+        catalog: Arc<ExecutableAgentCatalog>,
+        delegate: Arc<dyn ExecutableAgentRegistrar>,
+        references: Arc<dyn ResourceReferenceIndex>,
+    ) -> Self {
+        Self {
+            catalog,
+            delegate,
+            references,
+            mutation: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    /// Rebuild durable reference rows after the executable command log has
+    /// rehydrated the in-memory catalog. This uses the same holder replacement
+    /// operation as live registration; retries are idempotent.
+    pub async fn synchronize_current_references(
+        &self,
+    ) -> Result<(), ExecutableAgentRegistrationError> {
+        let _mutation = self.mutation.lock().await;
+        let current = {
+            let state = self.catalog.state.read().expect("executable Agent catalog");
+            state
+                .current
+                .iter()
+                .map(|((workspace_id, agent_id), entry)| {
+                    (
+                        workspace_id.clone(),
+                        agent_id.clone(),
+                        entry.registration.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for (workspace_id, agent_id, registration) in current {
+            self.references
+                .replace_references(
+                    ResourceReferenceKind::AgentBinding,
+                    &agent_holder(&workspace_id, &agent_id),
+                    registration
+                        .as_ref()
+                        .map_or_else(Vec::new, agent_reference_records),
+                )
+                .await
+                .map_err(registration_storage)?;
+        }
+        Ok(())
+    }
+}
+
+fn agent_holder(workspace_id: &str, agent_id: &str) -> String {
+    format!("{workspace_id}:{agent_id}")
+}
+
+fn agent_reference_records(
+    registration: &ExecutableAgentRegistration,
+) -> Vec<ResourceReferenceRecord> {
+    let reference_id = agent_holder(&registration.workspace_id, &registration.agent_id);
+    let reference = || ResourceReference {
+        kind: ResourceReferenceKind::AgentBinding,
+        reference_id: reference_id.clone(),
+    };
+    let mut records = registration
+        .session_profile
+        .resources
+        .iter()
+        .map(|binding| {
+            let (kind, id) = match &binding.target {
+                InputResourceId::File(id) => (ResourceKind::File, id.as_str()),
+                InputResourceId::MemoryStore(id) => (ResourceKind::MemoryStore, id.as_str()),
+                InputResourceId::Repository(id) => (ResourceKind::Repository, id.as_str()),
+            };
+            ResourceReferenceRecord {
+                target: ResourceTarget::new(&registration.workspace_id, kind, id),
+                reference: reference(),
+            }
+        })
+        .collect::<Vec<_>>();
+    records.extend(
+        registration
+            .session_profile
+            .skills
+            .iter()
+            .filter_map(|skill| {
+                (skill.kind == awaken_agent_contract::AgentSkillKind::Custom).then(|| {
+                    ResourceReferenceRecord {
+                        target: ResourceTarget::new(
+                            &registration.workspace_id,
+                            ResourceKind::Skill,
+                            &skill.skill_id,
+                        ),
+                        reference: reference(),
+                    }
+                })
+            }),
+    );
+    records.sort();
+    records.dedup();
+    records
+}
+
+fn registration_storage(error: ResourcePurgeError) -> ExecutableAgentRegistrationError {
+    ExecutableAgentRegistrationError::Storage(error.to_string())
+}
+
+#[async_trait]
+impl ExecutableAgentRegistrar for ReferenceIndexedExecutableAgentRegistrar {
+    async fn register(
+        &self,
+        registration: ExecutableAgentRegistration,
+    ) -> Result<ExecutableAgentRegistrationOutcome, ExecutableAgentRegistrationError> {
+        let _mutation = self.mutation.lock().await;
+        let preview = self.catalog.preview_registration(registration.clone())?;
+        let is_current_replay = self
+            .catalog
+            .current(&registration.workspace_id, &registration.agent_id)
+            .as_ref()
+            == Some(&registration);
+        let holder = agent_holder(&registration.workspace_id, &registration.agent_id);
+        let records = agent_reference_records(&registration);
+        if preview == ExecutableAgentRegistrationOutcome::RegisteredCurrent {
+            // Retain the old current publication's rows while adding every new
+            // edge. Only after the delegate exposes the replacement may the
+            // exact replace remove obsolete rows. Every intermediate state is
+            // conservative, including a partial add or failed delegate.
+            for record in &records {
+                self.references
+                    .add_reference(record.clone())
+                    .await
+                    .map_err(registration_storage)?;
+            }
+            let outcome = self.delegate.register(registration).await?;
+            if outcome == ExecutableAgentRegistrationOutcome::RegisteredCurrent {
+                self.references
+                    .replace_references(ResourceReferenceKind::AgentBinding, &holder, records)
+                    .await
+                    .map_err(registration_storage)?;
+            }
+            return Ok(outcome);
+        }
+        if is_current_replay {
+            self.references
+                .replace_references(ResourceReferenceKind::AgentBinding, &holder, records)
+                .await
+                .map_err(registration_storage)?;
+        }
+        self.delegate.register(registration).await
+    }
+
+    async fn withdraw(
+        &self,
+        withdrawal: ExecutableAgentWithdrawal,
+    ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
+        let _mutation = self.mutation.lock().await;
+        let workspace_id = withdrawal.workspace_id.clone();
+        let agent_id = withdrawal.agent_id.clone();
+        let outcome = self.delegate.withdraw(withdrawal).await?;
+        if outcome == ExecutableAgentWithdrawalOutcome::WithdrawnCurrent {
+            self.references
+                .replace_references(
+                    ResourceReferenceKind::AgentBinding,
+                    &agent_holder(&workspace_id, &agent_id),
+                    Vec::new(),
+                )
+                .await
+                .map_err(registration_storage)?;
+        }
+        Ok(outcome)
+    }
+}
+
 impl LocalExecutableAgentRegistrar {
     #[must_use]
     pub fn new(catalog: Arc<ExecutableAgentCatalog>) -> Self {
@@ -349,49 +533,6 @@ impl ExecutableAgentProfileSource for ExecutableAgentCatalog {
     }
 }
 
-impl AgentResourceReferenceSource for ExecutableAgentCatalog {
-    fn agents_referencing(&self, target: &ResourceTarget) -> Vec<String> {
-        let state = self.state.read().expect("executable Agent catalog");
-        let mut agents = state
-            .current
-            .iter()
-            .filter_map(|((workspace, agent_id), entry)| {
-                let registration = entry.registration.as_ref()?;
-                if workspace != &target.workspace_id {
-                    return None;
-                }
-                let bound = match target.kind {
-                    ResourceKind::Skill => registration
-                        .session_profile
-                        .skills
-                        .iter()
-                        .any(|skill| skill.skill_id == target.resource_id),
-                    ResourceKind::File => registration.session_profile.resources.iter().any(|binding| {
-                        matches!(&binding.target, InputResourceId::File(id) if id.as_str() == target.resource_id)
-                    }),
-                    ResourceKind::MemoryStore => registration
-                        .session_profile
-                        .resources
-                        .iter()
-                        .any(|binding| {
-                            matches!(&binding.target, InputResourceId::MemoryStore(id) if id.as_str() == target.resource_id)
-                        }),
-                    ResourceKind::Repository => registration
-                        .session_profile
-                        .resources
-                        .iter()
-                        .any(|binding| {
-                            matches!(&binding.target, InputResourceId::Repository(id) if id.as_str() == target.resource_id)
-                        }),
-                };
-                bound.then(|| agent_id.clone())
-            })
-            .collect::<Vec<_>>();
-        agents.sort();
-        agents
-    }
-}
-
 #[cfg(test)]
 mod test_support {
     use awaken_executable_agent_contract::ExecutableAgentRegistration;
@@ -429,6 +570,173 @@ mod test_support {
 mod tests {
     use super::*;
     use crate::test_support::registration;
+
+    #[tokio::test]
+    async fn agent_reference_projection_is_fenced_monotonic_and_conservative() {
+        use awaken_resource_contract::{
+            BindingId, FileId, InputBinding, InputResourceId, ResourceAccess,
+            ResourceReclamationFence, ResourceReferenceIndex,
+        };
+
+        // FMECA cause/effect graph:
+        // C1 a new current publication binds File/custom Skill; C2 an older
+        // historical publication arrives late; C3 current is withdrawn; C4 a
+        // reclamation fence already owns a target; C5 restart rehydrates the
+        // catalog before the decorator exists. Effects: E1 references exist
+        // before executable exposure; E2 late history cannot replace current
+        // edges; E3 withdrawal removes edges only after exposure ends; E4 a
+        // fenced target rejects publication and remains unavailable. Failure
+        // mode "scan/delete TOCTOU" has S=10,O=4,D=9,RPN=360. Mitigation is the
+        // ResourceReferenceIndex transaction, with stale rows the only permitted
+        // crash residue. Decision rules: R1=C1->E1; R2=C1+C2->E2;
+        // E5 startup synchronization rebuilds active rows. Rules:
+        // R3=C1+C3->E3; R4=C4+C1->E4; R5=C5->E5.
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let store = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+        let delegate = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
+        let registrar =
+            ReferenceIndexedExecutableAgentRegistrar::new(catalog.clone(), delegate, store.clone());
+        let mut current = registration(2, "fp-2");
+        current.session_profile.resources.push(InputBinding {
+            binding_id: BindingId::from("file-binding"),
+            target: InputResourceId::File(FileId::from("file-current")),
+            mount_path: "inputs/current".into(),
+            access: ResourceAccess::ReadOnly,
+            instructions: None,
+        });
+        current
+            .session_profile
+            .skills
+            .push(awaken_agent_contract::AgentSkillBinding::custom(
+                "skill-current",
+            ));
+        registrar.register(current.clone()).await.unwrap();
+        for target in [
+            ResourceTarget::new("workspace-a", ResourceKind::File, "file-current"),
+            ResourceTarget::new("workspace-a", ResourceKind::Skill, "skill-current"),
+        ] {
+            assert_eq!(store.references(&target).await.unwrap().len(), 1, "R1");
+        }
+
+        let mut replacement = registration(3, "fp-3");
+        replacement.session_profile.resources.push(InputBinding {
+            binding_id: BindingId::from("replacement"),
+            target: InputResourceId::File(FileId::from("file-replacement")),
+            mount_path: "inputs/replacement".into(),
+            access: ResourceAccess::ReadOnly,
+            instructions: None,
+        });
+        registrar.register(replacement).await.unwrap();
+        assert!(
+            store
+                .references(&ResourceTarget::new(
+                    "workspace-a",
+                    ResourceKind::File,
+                    "file-current",
+                ))
+                .await
+                .unwrap()
+                .is_empty(),
+            "R1 replacement removes old rows only after exposure"
+        );
+
+        let mut historical = registration(1, "fp-1");
+        historical.session_profile.resources.push(InputBinding {
+            binding_id: BindingId::from("old"),
+            target: InputResourceId::File(FileId::from("file-old")),
+            mount_path: "inputs/old".into(),
+            access: ResourceAccess::ReadOnly,
+            instructions: None,
+        });
+        assert_eq!(
+            registrar.register(historical).await.unwrap(),
+            ExecutableAgentRegistrationOutcome::RegisteredHistorical,
+            "R2"
+        );
+        assert_eq!(
+            store
+                .references(&ResourceTarget::new(
+                    "workspace-a",
+                    ResourceKind::File,
+                    "file-replacement",
+                ))
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "R2"
+        );
+
+        registrar
+            .withdraw(ExecutableAgentWithdrawal {
+                workspace_id: "workspace-a".into(),
+                agent_id: "agent-a".into(),
+                lifecycle_revision: 4,
+            })
+            .await
+            .unwrap();
+        assert!(
+            store
+                .references(&ResourceTarget::new(
+                    "workspace-a",
+                    ResourceKind::File,
+                    "file-replacement",
+                ))
+                .await
+                .unwrap()
+                .is_empty(),
+            "R3"
+        );
+
+        let fenced = ResourceTarget::new("workspace-a", ResourceKind::File, "file-fenced");
+        assert!(matches!(
+            store.acquire_reclamation("purge-1", &fenced).await.unwrap(),
+            awaken_resource_contract::AcquireResourceReclamationOutcome::Acquired
+        ));
+        let mut blocked = registration(5, "fp-5");
+        blocked.session_profile.resources.push(InputBinding {
+            binding_id: BindingId::from("fenced"),
+            target: InputResourceId::File(FileId::from("file-fenced")),
+            mount_path: "inputs/fenced".into(),
+            access: ResourceAccess::ReadOnly,
+            instructions: None,
+        });
+        assert!(
+            matches!(
+                registrar.register(blocked).await,
+                Err(ExecutableAgentRegistrationError::Storage(_))
+            ),
+            "R4"
+        );
+        assert!(catalog.current("workspace-a", "agent-a").is_none(), "R4");
+
+        let restored_catalog = Arc::new(ExecutableAgentCatalog::new());
+        LocalExecutableAgentRegistrar::new(restored_catalog.clone())
+            .register(current)
+            .await
+            .unwrap();
+        let restored_store =
+            Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+        let restored = ReferenceIndexedExecutableAgentRegistrar::new(
+            restored_catalog.clone(),
+            Arc::new(LocalExecutableAgentRegistrar::new(restored_catalog)),
+            restored_store.clone(),
+        );
+        restored.synchronize_current_references().await.unwrap();
+        assert_eq!(
+            restored_store
+                .references(&ResourceTarget::new(
+                    "workspace-a",
+                    ResourceKind::File,
+                    "file-current",
+                ))
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "R5"
+        );
+    }
 
     #[tokio::test]
     async fn registration_is_idempotent_monotonic_and_conflict_checked() {

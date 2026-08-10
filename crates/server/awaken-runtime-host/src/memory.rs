@@ -840,6 +840,7 @@ impl crate::host::SharedHost {
 
     /// The Workspace-scoped Skill aggregate port shared by HTTP authoring and
     /// runtime activation. `None` means this host has no durable Skill plane.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn skill_store(&self) -> Option<Arc<dyn awaken_resource_contract::SkillStore>> {
         self.skills.store_handle()
     }

@@ -32,11 +32,7 @@ RESOURCE_APPLICATION_SOURCES = (
     "crates/server/awaken-protocol-managed/src/state/resource.rs",
     "crates/server/awaken-protocol-managed/src/state/resources.rs",
     "crates/server/awaken-protocol-managed/src/resources/memory_stores.rs",
-    "crates/server/awaken-runtime-host/src/memory_stores.rs",
-    "crates/server/awaken-runtime-host/src/provisioning.rs",
-    "crates/server/awaken-runtime-host/src/resource_reclamation.rs",
     "crates/server/awaken-protocol-managed/src/common/scope.rs",
-    "crates/server/awaken-runtime-host/src/skill_catalog.rs",
     "crates/server/awaken-protocol-managed/src/resources/skills.rs",
 )
 
@@ -216,6 +212,43 @@ def check_all(repo_root: Path, crates: Path) -> list[str]:
 
     selftest()
     errors: list[str] = []
+    runtime_manifest_path = repo_root / "crates/server/awaken-runtime-host/Cargo.toml"
+    runtime_manifest = _load_manifest(runtime_manifest_path)
+    resource_application = runtime_manifest.get("dependencies", {}).get(
+        "awaken-resource-application"
+    )
+    if not isinstance(resource_application, dict) or not resource_application.get("optional"):
+        errors.append(
+            "crates/server/awaken-runtime-host/Cargo.toml: Resources application must be "
+            "test-support-only; product Runtime Host accepts exact execution capabilities"
+        )
+    host_source = (
+        repo_root / "crates/server/awaken-runtime-host/src/host.rs"
+    ).read_text(encoding="utf-8")
+    for field in ("file_store", "file_catalog", "file_application", "resource_reclamation"):
+        pattern = rf'#\[cfg\(any\(test, feature = "test-support"\)\)\]\s+pub\(crate\) {field}:'
+        if re.search(pattern, host_source) is None:
+            errors.append(
+                f"crates/server/awaken-runtime-host/src/host.rs: {field} must not exist in "
+                "the product Runtime Host"
+            )
+    dream_source_path = repo_root / "crates/server/awaken-coordinator/src/dream.rs"
+    dream_source = _without_cfg_test_module(dream_source_path.read_text(encoding="utf-8"))
+    # FMECA cause/effect rules (RPN 240): C1 Dream needs transcript persistence
+    # and C2 product Host hides resource stores -> E1 Coordinator must inject the
+    # exact File application; C3 any `host.file_application()` lookup -> E2 a
+    # feature-unification-only build and a second resource ownership path. R1
+    # accepts the explicit capability; R2 rejects the hidden Host lookup.
+    if "files: Arc<dyn FileApplicationService>" not in dream_source:
+        errors.append(
+            "crates/server/awaken-coordinator/src/dream.rs: Dream must receive the exact "
+            "Resources File application"
+        )
+    if re.search(r"\.host\s*\.file_application\s*\(", dream_source):
+        errors.append(
+            "crates/server/awaken-coordinator/src/dream.rs: Dream must not recover the "
+            "Resources File application through Runtime Host"
+        )
     for crate_name in sorted(RESOURCE_PLANE_CRATES):
         manifest_path = next(crates.glob(f"*/{crate_name}/Cargo.toml"), None)
         if manifest_path is None:

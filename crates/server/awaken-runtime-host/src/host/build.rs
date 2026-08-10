@@ -10,6 +10,31 @@ struct WorkerContentAdapters {
     file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
     memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
 }
+
+struct LocalResourceAdapters {
+    memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+    #[cfg(any(test, feature = "test-support"))]
+    file_store: Arc<dyn awaken_resource_contract::FileStore>,
+    #[cfg(any(test, feature = "test-support"))]
+    file_catalog: Arc<dyn awaken_resource_contract::FileCatalog>,
+    #[cfg(any(test, feature = "test-support"))]
+    skill_store: Arc<dyn awaken_resource_contract::SkillStore>,
+    #[cfg(any(test, feature = "test-support"))]
+    reclamation: Arc<dyn awaken_resource_contract::ResourceReclamationRepository>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl From<awaken_resource_application::ResourceAuthorities> for LocalResourceAdapters {
+    fn from(authorities: awaken_resource_application::ResourceAuthorities) -> Self {
+        Self {
+            memory_repository: authorities.memory_repository(),
+            file_store: authorities.file_store(),
+            file_catalog: authorities.file_catalog(),
+            skill_store: authorities.skill_store(),
+            reclamation: authorities.reclamation(),
+        }
+    }
+}
 use awaken_runtime_contract::delegation::RunDelegationService;
 
 impl SharedHost {
@@ -154,7 +179,7 @@ impl SharedHost {
         Self::build(
             llm,
             model_ref.into(),
-            Some(resources),
+            Some(resources.into()),
             None,
             None,
             crate::deployment_config::DeploymentConfig::ephemeral(),
@@ -163,6 +188,7 @@ impl SharedHost {
 
     /// Construct directly from the process's resolved deployment.
     /// No resource or runtime backend is opened from process-global state first.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new_with_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
@@ -173,7 +199,7 @@ impl SharedHost {
         Self::build(
             llm,
             model_ref.into(),
-            Some(resources),
+            Some(resources.into()),
             None,
             Some(extraction_repository),
             deployment,
@@ -204,10 +230,35 @@ impl SharedHost {
         )
     }
 
+    /// Construct a Coordinator-local Runtime Host from only its execution data
+    /// capability. Resources catalog, File commands, Skill authoring, and
+    /// reclamation remain outside and are injected through narrow applications.
+    pub fn new_with_runtime_resources_and_deployment(
+        llm: Arc<dyn LlmExecutor>,
+        model_ref: impl Into<String>,
+        memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
+        extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
+        deployment: crate::DeploymentConfig,
+    ) -> Self {
+        Self::build(
+            llm,
+            model_ref.into(),
+            None,
+            Some(WorkerContentAdapters {
+                file_content_source: Arc::new(
+                    awaken_resource_contract::UnavailableFileContentSource,
+                ),
+                memory_repository,
+            }),
+            Some(extraction_repository),
+            deployment,
+        )
+    }
+
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
-        resources: Option<awaken_resource_application::ResourceAuthorities>,
+        resources: Option<LocalResourceAdapters>,
         worker_content: Option<WorkerContentAdapters>,
         extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
         deployment: crate::DeploymentConfig,
@@ -224,7 +275,7 @@ impl SharedHost {
         let memory_stores = if let Some(content) = &worker_content {
             crate::memory_stores::MemoryStores::with_repository(content.memory_repository.clone())
         } else if let Some(plane) = &resources {
-            crate::memory_stores::MemoryStores::with_repository(plane.memory_repository())
+            crate::memory_stores::MemoryStores::with_repository(plane.memory_repository.clone())
         } else {
             #[cfg(any(test, feature = "test-support"))]
             {
@@ -256,10 +307,14 @@ impl SharedHost {
             Arc::new(BackgroundRuns::new()),
             extraction_repository,
         ));
-        let mut skills = crate::skill_catalog::SkillCatalog::new();
+        let skills = crate::skill_catalog::SkillCatalog::new();
+        #[cfg(any(test, feature = "test-support"))]
+        let mut skills = skills;
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(plane) = &resources {
-            skills.set_store(plane.skill_store());
+            skills.set_store(plane.skill_store.clone());
         }
+        #[cfg(any(test, feature = "test-support"))]
         let (file_store, file_catalog) = if worker_content.is_some() {
             let files = Arc::new(crate::unavailable_worker::UnavailableWorkerFiles);
             (
@@ -287,14 +342,15 @@ impl SharedHost {
                         )
                     }
                 },
-                |plane| (plane.file_store(), plane.file_catalog()),
+                |plane| (plane.file_store.clone(), plane.file_catalog.clone()),
             )
         };
-        let resource_reclamation = resources.as_ref().map(|plane| plane.reclamation());
+        #[cfg(any(test, feature = "test-support"))]
+        let resource_reclamation = resources.as_ref().map(|plane| plane.reclamation.clone());
         #[cfg(test)]
         let resource_reclamation =
             resource_reclamation.or_else(|| Some(super::tests::test_resource_reclamation()));
-        #[cfg(not(test))]
+        #[cfg(all(not(test), feature = "test-support"))]
         let file_application: Option<
             Arc<dyn awaken_resource_contract::FileApplicationService>,
         > = None;
@@ -389,14 +445,17 @@ impl SharedHost {
             memory,
             compaction: None,
             agent_publications: None,
-            agent_resource_references: None,
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
+            #[cfg(any(test, feature = "test-support"))]
             file_store,
             file_content_source,
+            #[cfg(any(test, feature = "test-support"))]
             file_catalog,
+            #[cfg(any(test, feature = "test-support"))]
             file_application,
             artifact_publisher,
+            #[cfg(any(test, feature = "test-support"))]
             resource_reclamation,
             memory_stores,
             memory_mounter: std::sync::RwLock::new(None),
@@ -601,6 +660,7 @@ impl SharedHost {
     /// Install the one Resources-owned File command application. Runtime stores
     /// only this inward port and cannot construct a parallel implementation.
     #[must_use]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_file_application(
         mut self,
         application: Arc<dyn awaken_resource_contract::FileApplicationService>,
@@ -627,11 +687,15 @@ impl SharedHost {
         // This is the database-less Worker startup edge. Retaining the
         // test-only/local File application here would create a second command
         // path and incorrectly classify the remote publisher as locally fenced.
-        self.file_application = None;
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.file_application = None;
+        }
         self.artifact_publisher = publisher;
         self
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn resource_reclamation(
         &self,
     ) -> Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>> {
@@ -863,15 +927,6 @@ impl SharedHost {
         self
     }
 
-    /// Supply the Coordinator projection of current Agent-to-Resource bindings.
-    pub fn with_agent_resource_references(
-        mut self,
-        source: Arc<dyn awaken_resource_contract::AgentResourceReferenceSource>,
-    ) -> Self {
-        self.agent_resource_references = Some(source);
-        self
-    }
-
     /// Add client-executed tools: those ids are model-visible but unregistered, so
     /// a call awaits and the client supplies the result.
     pub fn with_client_tools(mut self, client_tools: HashSet<String>) -> Self {
@@ -945,6 +1000,16 @@ impl SharedHost {
         source: Arc<dyn awaken_session_contract::SkillBundleSource<awaken_run_ingress::RunClaim>>,
     ) -> Self {
         self.skills.set_bundle_source(source);
+        self
+    }
+
+    /// Install the Resources application capability used to freeze custom Skill
+    /// selections and publish authored bundles. This grants no Store/purge API.
+    pub fn with_skill_catalog_application(
+        mut self,
+        application: Arc<dyn awaken_session_contract::SkillCatalogApplication>,
+    ) -> Self {
+        self.skills.set_application(application);
         self
     }
 

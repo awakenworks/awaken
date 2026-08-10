@@ -122,6 +122,22 @@ impl SqliteSkillStore {
 
 #[async_trait::async_trait]
 impl SkillStore for SqliteSkillStore {
+    async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError> {
+        with_conn(&self.conn, move |conn| {
+            let mut statement = conn
+                .prepare(&format!(
+                    "SELECT DISTINCT workspace_id FROM {NS}_aggregate ORDER BY workspace_id"
+                ))
+                .map_err(storage)?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)
+        })
+        .await
+    }
+
     async fn create(
         &self,
         definition: SkillDefinition,

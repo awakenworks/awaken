@@ -163,6 +163,7 @@ awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
 awaken-provider-genai.workspace = true
 awaken-session-store = { workspace = true, features = ["test-support"] }
+awaken-resource-store = { workspace = true, features = ["test-support"] }
 awaken-scenario-host = { workspace = true }
 awaken-run-ingress = { workspace = true }
 awaken-store-inmem.workspace = true

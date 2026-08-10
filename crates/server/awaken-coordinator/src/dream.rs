@@ -10,16 +10,14 @@ use awaken_provisioning_contract::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
 };
 use awaken_resource_contract::{
-    CreateMemoryStoreCommand, Memory, MemoryRepository, MemoryStoreApplicationService,
-    MemoryStoreId, ResourceCatalog, ResourceState,
+    CreateMemoryStoreCommand, FileApplicationService, Memory, MemoryRepository,
+    MemoryStoreApplicationService, MemoryStoreId, ResourceCatalog, ResourceState,
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_contract::{
     ApplicationSessionContribution, ApplicationSessionContributionApi, ApplicationSessionInput,
     ManagedLifecycleFact, SessionExecutionState, SessionToolConfiguration,
 };
-
-use crate::SharedHost;
 
 const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Dream Agent.
 
@@ -84,26 +82,26 @@ impl ExclusiveMemoryStoreWriterLease {
 
 pub(crate) struct BuiltInDreamAgent {
     sessions: Arc<SessionApplication>,
-    host: Arc<SharedHost>,
     memory: Arc<dyn MemoryRepository>,
     catalog: Arc<dyn ResourceCatalog>,
     stores: Arc<dyn MemoryStoreApplicationService>,
+    files: Arc<dyn FileApplicationService>,
 }
 
 impl BuiltInDreamAgent {
     pub(crate) fn new(
         sessions: Arc<SessionApplication>,
-        host: Arc<SharedHost>,
         memory: Arc<dyn MemoryRepository>,
         catalog: Arc<dyn ResourceCatalog>,
         stores: Arc<dyn MemoryStoreApplicationService>,
+        files: Arc<dyn FileApplicationService>,
     ) -> Self {
         Self {
             sessions,
-            host,
             memory,
             catalog,
             stores,
+            files,
         }
     }
 
@@ -128,11 +126,7 @@ impl BuiltInDreamAgent {
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             let filename = format!("{session_id}.jsonl");
             let file = self
-                .host
-                .file_application()
-                .ok_or_else(|| {
-                    DreamFailure::new("internal_error", "File application is unavailable")
-                })?
+                .files
                 .create_generated_file(
                     &request.workspace_id,
                     filename.clone(),
@@ -288,9 +282,7 @@ impl BuiltInDreamAgent {
 
     async fn delete_transcript_files(&self, workspace_id: &str, file_ids: &[String]) {
         for file_id in file_ids {
-            if let Some(files) = self.host.file_application() {
-                let _ = files.delete(workspace_id, file_id, now_ms()).await;
-            }
+            let _ = self.files.delete(workspace_id, file_id, now_ms()).await;
         }
     }
 }
@@ -493,11 +485,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             for file_id in &preparation.transcript_file_ids {
-                self.host
-                    .file_application()
-                    .ok_or_else(|| {
-                        DreamFailure::new("internal_error", "File application is unavailable")
-                    })?
+                self.files
                     .delete(&request.workspace_id, file_id, now_ms())
                     .await
                     .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;

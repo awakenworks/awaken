@@ -44,12 +44,12 @@ pub use input::{
     SkillId, SkillVersionId,
 };
 pub use lifecycle::{
-    AcquireResourceReclamationOutcome, AgentResourceReferenceSource, PutResourcePurgeOutcome,
-    ResourceKind, ResourcePhysicalReclaimer, ResourcePurgeError, ResourcePurgeEvidence,
-    ResourcePurgeGuard, ResourcePurgeIntent, ResourcePurgeReceipt, ResourcePurgeRepository,
-    ResourcePurgeScheduler, ResourcePurgeStatus, ResourceReclamationFence,
-    ResourceReclamationRepository, ResourceReference, ResourceReferenceIndex,
-    ResourceReferenceKind, ResourceReferenceRecord, ResourceTarget,
+    AcquireResourceReclamationOutcome, PutResourcePurgeOutcome, ResourceKind,
+    ResourcePhysicalReclaimer, ResourcePurgeError, ResourcePurgeEvidence, ResourcePurgeGuard,
+    ResourcePurgeIntent, ResourcePurgeReceipt, ResourcePurgeRepository, ResourcePurgeScheduler,
+    ResourcePurgeStatus, ResourceReclamationFence, ResourceReclamationRepository,
+    ResourceReference, ResourceReferenceIndex, ResourceReferenceKind, ResourceReferenceRecord,
+    ResourceTarget,
 };
 pub use memory_application::{
     CreateMemoryStoreCommand, MemoryStoreApplicationError, MemoryStoreApplicationService,
@@ -460,6 +460,10 @@ pub struct SkillDefinition {
 /// the trusted Workspace and can only observe resources owned by that Workspace.
 #[async_trait]
 pub trait SkillStore: Send + Sync {
+    /// Workspace partitions with persisted Skill aggregates. Used by startup
+    /// lifecycle projection; callers still fetch definitions through the
+    /// Workspace-scoped operation below.
+    async fn workspace_ids(&self) -> Result<Vec<String>, SkillStoreError>;
     /// Atomically create a Skill and its first version.
     async fn create(
         &self,

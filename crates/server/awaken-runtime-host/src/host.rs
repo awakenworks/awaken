@@ -25,8 +25,8 @@ use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::{RunRecoverySnapshot, RunRecoverySource};
 use awaken_ext_skills::{SkillRegistry, SkillSpec};
-use awaken_resource_contract::FileCatalog;
-use awaken_resource_contract::FileStore;
+#[cfg(any(test, feature = "test-support"))]
+use awaken_resource_contract::{FileCatalog, FileStore};
 use awaken_run_ingress::{
     AnyDispatchStore, CompletionSink, DEFAULT_LEASE_MS, DispatchPool, DispatchQueue,
     DispatchServiceConfig, DurableRunIngress, Inbox, PendingInput, RunDispatch, SubmitOptions,
@@ -261,10 +261,6 @@ pub struct SharedHost {
     /// Runtime-only view of immutable Agent publications.
     pub(crate) agent_publications:
         Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,
-    /// Current registered Agent bindings used only as intrinsic Resource
-    /// reclamation evidence.
-    pub(crate) agent_resource_references:
-        Option<Arc<dyn awaken_resource_contract::AgentResourceReferenceSource>>,
     /// The host's loopback MCP relay (α-reference resolver), started lazily on the first
     /// sandboxed ACP session that stages an authenticated MCP server. It holds the real
     /// bearers host-side and injects them when forwarding the sandbox's MCP calls, so the
@@ -277,6 +273,7 @@ pub struct SharedHost {
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. A database-less Worker carries a fail-closed adapter;
     /// immutable claim-scoped reads use `file_content_source` instead.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) file_store: Arc<dyn FileStore>,
     /// Sole per-kind File materialization service. An embedded process points it at
     /// the local catalog/store pair; a database-less Worker replaces it with the
@@ -284,9 +281,12 @@ pub struct SharedHost {
     pub(crate) file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
     /// Logical Files-API truth: public identity, metadata, Workspace visibility,
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) file_catalog: Arc<dyn FileCatalog>,
     /// Full Resources-owned File application retained for local management and
-    /// Coordinator processes. Database-less Workers do not receive this service.
+    /// test-support composition. Product Coordinator and database-less Worker
+    /// processes receive only the narrower content and publication ports.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) file_application: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
     /// Sole Runtime-to-Resources artifact command edge. Embedded deployments
     /// install the local application adapter; database-less Workers install the
@@ -296,6 +296,7 @@ pub struct SharedHost {
     /// Durable workspace ownership projection for content-addressed resources.
     /// Durable resource-plane lifecycle/reference state. It contains intrinsic
     /// Workspace/resource edges only and is independent of the IAM deployment.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) resource_reclamation:
         Option<Arc<dyn awaken_resource_contract::ResourceReclamationRepository>>,
     /// The Resources context's path-addressed Memory backend shared by API,

@@ -933,7 +933,7 @@ impl SharedHost {
             frozen_skill_versions
         } else {
             self.skills
-                .has_store()
+                .has_application()
                 .then(|| self.skills.cache_snapshot_in(&workspace))
         };
         // A published Agent receives exactly its selected Skills. Embedded direct

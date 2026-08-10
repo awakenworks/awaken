@@ -91,3 +91,41 @@ async fn shutdown_is_idempotent_and_aborts_only_after_the_drain_deadline() {
         .await
         .expect("R3 repeated shutdown has no second task set");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn spawn_and_shutdown_have_one_atomic_ownership_boundary() {
+    // FMECA cause/effect graph:
+    // C1 registration linearizes before shutdown; C2 shutdown linearizes first;
+    // C3 a rejected builder would create an observable side effect. Effects:
+    // E1 C1 task is cancelled and joined; E2 C2 registration is rejected; E3
+    // rejected builders are never invoked; E4 no task can be appended after the
+    // shutdown task set was drained. Severity: orphan recurring tasks can mutate
+    // state after process shutdown (S=9); occurrence was scheduler-dependent
+    // (O=4); detection by ordinary tests was weak (D=8), RPN=288.
+    // Mitigation: one mutex is the registration/shutdown linearization point.
+    // Decision rules: R1=C1 -> E1+E4; R2=C2+C3 -> E2+E3+E4.
+    let group = ServiceLifecycle::new();
+    let ran = Arc::new(AtomicBool::new(false));
+    let ran_before = ran.clone();
+    group.spawn("owned", move |cancel| {
+        ran_before.store(true, Ordering::SeqCst);
+        async move {
+            cancel.cancelled().await;
+            Ok(())
+        }
+    });
+    group.shutdown(Duration::from_secs(1)).await.expect("R1");
+    assert!(ran.load(Ordering::SeqCst), "R1: registered future ran");
+
+    let rejected_builder_ran = Arc::new(AtomicBool::new(false));
+    let marker = rejected_builder_ran.clone();
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        group.spawn("late", move |_| {
+            marker.store(true, Ordering::SeqCst);
+            async { Ok(()) }
+        });
+    }));
+    assert!(rejected.is_err(), "R2: late registration rejected");
+    assert!(!rejected_builder_ran.load(Ordering::SeqCst), "R3");
+    group.shutdown(Duration::from_millis(10)).await.expect("R4");
+}

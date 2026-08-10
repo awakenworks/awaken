@@ -53,7 +53,7 @@ impl MemoryStores {
         Self { fs }
     }
 
-    /// The path-addressed CAS store backing the `/memories` endpoints.
+    #[cfg(test)]
     pub(crate) fn fs(&self) -> &Arc<dyn MemoryRepository> {
         &self.fs
     }

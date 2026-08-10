@@ -41,6 +41,9 @@ pub struct CoordinatorDependencies {
     pub resource_management_router: Router,
     /// Exact Resources MemoryStore service shared by HTTP and Dream.
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
+    pub worker_file_application: Arc<dyn awaken_resource_contract::FileApplicationService>,
+    pub worker_skill_bundles:
+        Arc<dyn awaken_session_contract::SkillBundleSource<awaken_run_ingress::RunClaim>>,
     pub application_access: Arc<ApplicationAccessStore>,
     pub model_inventory: Arc<dyn ExecutableAgentInventorySource>,
     pub dream_process_store: Arc<dyn DreamProcessStore>,
@@ -112,6 +115,8 @@ pub async fn build_coordinator_component(
         resource_catalog,
         resource_management_router,
         memory_stores,
+        worker_file_application,
+        worker_skill_bundles,
         application_access,
         model_inventory,
         dream_process_store,
@@ -157,6 +162,8 @@ pub async fn build_coordinator_component(
             crate::ManagedRoutingExtensions {
                 resource_management_router,
                 memory_stores,
+                worker_file_application,
+                worker_skill_bundles,
                 worker_authenticator,
                 worker_placement_policy,
                 worker_directory,
