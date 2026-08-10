@@ -535,7 +535,9 @@ the exact snapshot, source revision, and fingerprint selected before execution.
   and Worker database rejection;
 - stable DeploymentRun-to-Session identity/fingerprint replay through the local
   application port;
-- `AgentResourceReferenceSource` as a narrow read port;
+- `ReferenceIndexedExecutableAgentRegistrar`, which records current Agent
+  bindings in the Resources-owned `ResourceReferenceIndex` before executable
+  exposure and removes them only after withdrawal;
 - `WorkerCredentialFileResolver` as the exact Worker-private
   `CredentialMaterialResolver` adapter for `WorkerReference` and
   recipient-bound projected `ControlPlaneReference` material; Worker role

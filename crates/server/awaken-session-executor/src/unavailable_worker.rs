@@ -5,18 +5,22 @@
 //! These ports make accidental management access observable as an error instead
 //! of silently creating process-local truth.
 
+#[cfg(any(test, feature = "test-support"))]
 use awaken_resource_contract::{
     CreateFileRecordOutcome, FileCatalog, FileCatalogError, FileRecord, FileStore, FileStoreError,
 };
 
+#[cfg(any(test, feature = "test-support"))]
 const FILE_UNAVAILABLE: &str = "File authority is unavailable on an execution Worker";
 const EXTRACTION_UNAVAILABLE: &str =
     "Memory extraction authority is unavailable on an execution Worker";
 
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) struct UnavailableWorkerFiles;
 
 pub(crate) struct UnavailableWorkerExtractions;
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl FileStore for UnavailableWorkerFiles {
     async fn put(&self, _bytes: &[u8]) -> Result<String, FileStoreError> {
@@ -36,6 +40,7 @@ impl FileStore for UnavailableWorkerFiles {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 #[async_trait::async_trait]
 impl FileCatalog for UnavailableWorkerFiles {
     async fn create_file(

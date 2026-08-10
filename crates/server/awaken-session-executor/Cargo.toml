@@ -16,7 +16,7 @@ awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-resource-contract.workspace = true
-awaken-resource-application.workspace = true
+awaken-resource-application = { workspace = true, optional = true }
 awaken-runtime = { workspace = true }
 # Volatile commit/checkpoint reference adapters are available only to explicit
 # test/scenario deployments. Product builds do not link this backend.
@@ -87,6 +87,7 @@ test-support = [
     "dep:awaken-memory-store",
     "dep:awaken-skill-store",
     "dep:awaken-session-store",
+    "dep:awaken-resource-application",
     "dep:awaken-credential-vault",
     "awaken-credential-materializer/authority",
     "awaken-file-store/test-support",
@@ -104,6 +105,7 @@ container-podman = ["awaken-sandbox-container/podman"]
 container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-resource-application.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-file-store = { workspace = true, features = ["test-support"] }
 awaken-memory-store = { workspace = true, features = ["sqlite", "test-support"] }

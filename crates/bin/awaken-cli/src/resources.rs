@@ -12,7 +12,7 @@ pub(super) async fn open_resources_application(
     backend: config::ResourceStoreBackend,
     postgres_schema: PostgresSchemaMode,
 ) -> Result<awaken_resource_application::ResourcesApplication, String> {
-    match backend {
+    let application = match backend {
         config::ResourceStoreBackend::Embedded(root) => {
             awaken_resource_persistence::open_embedded(&root).map_err(|error| error.to_string())
         }
@@ -25,7 +25,12 @@ pub(super) async fn open_resources_application(
         )
         .await
         .map_err(|error| error.to_string()),
-    }
+    }?;
+    application
+        .synchronize_skill_references()
+        .await
+        .map_err(|error| format!("restore Skill lifecycle references: {error}"))?;
+    Ok(application)
 }
 
 #[cfg(test)]

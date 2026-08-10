@@ -656,6 +656,7 @@ mod tests {
     struct RecordingArtifactPublisher {
         inner: Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_dispatch::RunClaim>>,
         claims: Arc<std::sync::Mutex<Vec<Option<awaken_dispatch::RunClaim>>>>,
+        dispatch: Arc<awaken_dispatch::AnyDispatchStore>,
     }
 
     struct ReplacingClaimExecutor {
@@ -761,6 +762,25 @@ mod tests {
             awaken_resource_contract::ArtifactPublicationReceipt,
             awaken_resource_contract::ArtifactPublicationError,
         > {
+            let _guard = if let Some(claim) = publication.fence.as_ref() {
+                Some(
+                    awaken_dispatch::DispatchQueue::lock_commit_epoch(
+                        self.dispatch.as_ref(),
+                        claim,
+                    )
+                    .await
+                    .map_err(|error| {
+                        awaken_resource_contract::ArtifactPublicationError::new(error.to_string())
+                    })?
+                    .ok_or_else(|| {
+                        awaken_resource_contract::ArtifactPublicationError::new(
+                            "artifact publication lost its local dispatch claim",
+                        )
+                    })?,
+                )
+            } else {
+                None
+            };
             self.claims
                 .lock()
                 .expect("recorded claims mutex poisoned")
@@ -913,6 +933,7 @@ mod tests {
         raw_host.artifact_publisher = Arc::new(RecordingArtifactPublisher {
             inner: raw_host.artifact_publisher.clone(),
             claims: claims.clone(),
+            dispatch: dispatch.clone(),
         });
         raw_host.session_slots.update(thread, |slot| {
             slot.dispatch_claim = Some(expected_claim.clone());

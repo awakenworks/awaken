@@ -9,8 +9,10 @@ use std::sync::Arc;
 mod authorities;
 mod execution_sources;
 mod files;
+mod reclamation;
 mod skill_ingest;
 pub use authorities::ResourceAuthorities;
+mod skill_lifecycle;
 use awaken_resource_contract::{
     ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
     MemoryStoreApplicationService, MemoryStoreConfigVersion, MemoryStoreDefinition,
@@ -21,9 +23,10 @@ use awaken_resource_contract::{
 pub use awaken_resource_contract::{MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES};
 pub use execution_sources::{
     ApplicationArtifactPublisher, ApplicationFileContentSource, CatalogRepositoryBindingVerifier,
-    StoreSkillBundleSource,
+    StoreSkillBundleSource, StoreSkillCatalogApplication,
 };
 pub use files::{CreateFileCommand, FileApplication};
+pub use reclamation::{ResourceLifecycleGuard, ResourcePhysicalCleanup};
 pub use skill_ingest::{
     CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_BUNDLE_BYTES, MAX_SKILL_FILE_BYTES,
     MAX_SKILL_FILES, UploadedSkillBundleFile, canonicalize_skill_bundle, normalize_bundle_path,
@@ -35,6 +38,8 @@ pub struct ResourcesApplication {
     files: Arc<FileApplication>,
     memories: Arc<MemoryStoreApplication>,
     purge: Arc<RepositoryPurgeScheduler>,
+    lifecycle_guard: Arc<ResourceLifecycleGuard>,
+    physical_cleanup: Arc<ResourcePhysicalCleanup>,
 }
 
 impl ResourcesApplication {
@@ -51,6 +56,12 @@ impl ResourcesApplication {
             memories: Arc::new(MemoryStoreApplication::new(
                 authorities.resource_catalog(),
                 purge.clone(),
+            )),
+            lifecycle_guard: Arc::new(ResourceLifecycleGuard::new(authorities.resource_catalog())),
+            physical_cleanup: Arc::new(ResourcePhysicalCleanup::new(
+                authorities.file_store(),
+                authorities.memory_repository(),
+                authorities.skill_store(),
             )),
             purge,
             authorities,
@@ -89,6 +100,15 @@ impl ResourcesApplication {
     }
 
     #[must_use]
+    pub fn skill_catalog_application(
+        &self,
+    ) -> Arc<dyn awaken_session_contract::SkillCatalogApplication> {
+        Arc::new(StoreSkillCatalogApplication::new(
+            self.authorities.skill_store(),
+        ))
+    }
+
+    #[must_use]
     pub fn memory_stores(&self) -> Arc<dyn MemoryStoreApplicationService> {
         self.memories.clone()
     }
@@ -96,6 +116,22 @@ impl ResourcesApplication {
     #[must_use]
     pub fn purge_scheduler(&self) -> Arc<dyn ResourcePurgeScheduler> {
         self.purge.clone()
+    }
+
+    pub async fn synchronize_skill_references(
+        &self,
+    ) -> Result<(), awaken_resource_contract::SkillStoreError> {
+        self.authorities.skill_lifecycle().synchronize_all().await
+    }
+
+    #[must_use]
+    pub fn lifecycle_guard(&self) -> Arc<dyn awaken_resource_contract::ResourcePurgeGuard> {
+        self.lifecycle_guard.clone()
+    }
+
+    #[must_use]
+    pub fn physical_cleanup(&self) -> Arc<dyn awaken_resource_contract::ResourcePhysicalReclaimer> {
+        self.physical_cleanup.clone()
     }
 }
 

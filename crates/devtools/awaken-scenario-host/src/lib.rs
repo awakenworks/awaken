@@ -1094,7 +1094,6 @@ pub async fn build_config_router() -> Router {
     let host = resource_host_with_deployment(model, model_ref, deployment).map_host(|host| {
         host.with_local_workspace(platform_workspace.clone())
             .with_agent_publications(executable_agent_catalog.clone())
-            .with_agent_resource_references(executable_agent_catalog.clone())
             .with_admin_tools(admin_execs)
             .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
     });

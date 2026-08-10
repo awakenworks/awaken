@@ -288,7 +288,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{
         Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     use async_trait::async_trait;
@@ -304,6 +304,8 @@ mod tests {
         intents: Mutex<BTreeMap<String, ResourcePurgeIntent>>,
         fences: Mutex<BTreeMap<(ResourceKind, String), String>>,
         fail_acquire: AtomicBool,
+        fail_release: AtomicBool,
+        fail_completed_save: AtomicBool,
     }
 
     #[async_trait]
@@ -337,6 +339,11 @@ mod tests {
             intent_id: &str,
             target: &ResourceTarget,
         ) -> Result<bool, ResourcePurgeError> {
+            if self.fail_release.load(Ordering::SeqCst) {
+                return Err(ResourcePurgeError::Storage(
+                    "injected fence release failure".into(),
+                ));
+            }
             let mut fences = self.fences.lock().unwrap();
             let key = (target.kind, target.resource_id.clone());
             match fences.get(&key) {
@@ -401,6 +408,13 @@ mod tests {
             expected_revision: u64,
             intent: ResourcePurgeIntent,
         ) -> Result<(), ResourcePurgeError> {
+            if intent.status == ResourcePurgeStatus::Completed
+                && self.fail_completed_save.load(Ordering::SeqCst)
+            {
+                return Err(ResourcePurgeError::Storage(
+                    "injected completed save failure".into(),
+                ));
+            }
             let mut rows = self.intents.lock().unwrap();
             let current = rows
                 .get(&intent.intent_id)
@@ -538,6 +552,30 @@ mod tests {
         }
     }
 
+    struct ErrorOnGuardCall {
+        call: AtomicUsize,
+        fail_on: usize,
+    }
+
+    #[async_trait]
+    impl ResourcePurgeGuard for ErrorOnGuardCall {
+        async fn blockers(
+            &self,
+            _target: &ResourceTarget,
+            _config_version: Option<u64>,
+            _now_unix_ms: u64,
+        ) -> Result<Vec<ResourceReference>, ResourcePurgeError> {
+            let call = self.call.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_on {
+                Err(ResourcePurgeError::Storage(format!(
+                    "injected guard failure on call {call}"
+                )))
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+
     #[tokio::test]
     async fn a_late_guard_blocker_releases_the_physical_fence_before_deferring() {
         let repository = Arc::new(MemoryRepository::default());
@@ -647,5 +685,72 @@ mod tests {
             "A2/E3"
         );
         assert_eq!(*physical.0.lock().unwrap(), 1, "A2/E3");
+    }
+
+    #[tokio::test]
+    async fn guard_release_and_terminal_save_failures_converge_without_unsafe_success() {
+        // FMECA cause/effect graph: C1 initial guard read fails; C2 final guard
+        // read fails after fence acquisition; C3 physical purge succeeds but
+        // fence release fails; C4 purge+release succeed but Completed save fails;
+        // C5 the failed dependency recovers. Effects: E1 no purge before two
+        // successful guard reads; E2 C2 releases the fence; E3 C3 retains the
+        // fence and Pending intent; E4 C4 retains a recoverable claimed intent;
+        // E5 C5 repeats only the required idempotent operation and reaches one
+        // durable receipt. Failure modes have S=10,O=3,D=8,RPN=240 (unsafe
+        // deletion/false completion). Decision rules: F1=C1->E1; F2=C2->E1+E2;
+        // F3=C3->E3; F4=C4->E4; F5=(C3|C4)+C5->E5.
+        for fail_on in [1, 2] {
+            let repository = Arc::new(MemoryRepository::default());
+            let physical = Arc::new(Physical::default());
+            let service =
+                ResourceReclaimer::new("worker-a", 100, repository.clone(), physical.clone())
+                    .unwrap()
+                    .with_guard(Arc::new(ErrorOnGuardCall {
+                        call: AtomicUsize::new(0),
+                        fail_on,
+                    }));
+            service.enqueue(intent()).await.unwrap();
+            assert_eq!(
+                service.reconcile(10, 1).await.unwrap().retryable_failures,
+                1
+            );
+            assert_eq!(*physical.0.lock().unwrap(), 0, "F1/F2 E1");
+            assert!(repository.fences.lock().unwrap().is_empty(), "F2 E2");
+        }
+
+        let repository = Arc::new(MemoryRepository::default());
+        repository.fail_release.store(true, Ordering::SeqCst);
+        let physical = Arc::new(Physical::default());
+        let service =
+            ResourceReclaimer::new("worker-a", 100, repository.clone(), physical.clone()).unwrap();
+        service.enqueue(intent()).await.unwrap();
+        assert_eq!(
+            service.reconcile(10, 1).await.unwrap().retryable_failures,
+            1,
+            "F3"
+        );
+        assert_eq!(*physical.0.lock().unwrap(), 1, "F3 physical reached");
+        assert!(!repository.fences.lock().unwrap().is_empty(), "F3 E3");
+        repository.fail_release.store(false, Ordering::SeqCst);
+        assert_eq!(service.reconcile(10, 1).await.unwrap().completed, 1, "F5");
+        assert_eq!(*physical.0.lock().unwrap(), 2, "F5 idempotent replay");
+
+        let repository = Arc::new(MemoryRepository::default());
+        repository.fail_completed_save.store(true, Ordering::SeqCst);
+        let physical = Arc::new(Physical::default());
+        let service =
+            ResourceReclaimer::new("worker-a", 100, repository.clone(), physical.clone()).unwrap();
+        service.enqueue(intent()).await.unwrap();
+        assert!(service.reconcile(10, 1).await.is_err(), "F4");
+        assert_eq!(
+            repository.get("purge-1").await.unwrap().unwrap().status,
+            ResourcePurgeStatus::Claimed,
+            "F4 E4"
+        );
+        repository
+            .fail_completed_save
+            .store(false, Ordering::SeqCst);
+        assert_eq!(service.reconcile(111, 1).await.unwrap().completed, 1, "F5");
+        assert_eq!(*physical.0.lock().unwrap(), 2, "F5 idempotent replay");
     }
 }
