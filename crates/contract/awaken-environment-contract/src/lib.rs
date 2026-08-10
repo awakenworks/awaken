@@ -23,6 +23,17 @@ pub struct CreateEnvironmentCommand {
     pub config: EnvironmentConfig,
 }
 
+/// Control command port for authoring canonical Environment definitions.
+///
+/// Ingress adapters construct this context-owned command directly. The Control
+/// application implements the port, so callers cannot introduce a parallel
+/// Environment draft model or a second translation layer.
+#[async_trait]
+pub trait EnvironmentAuthor: Send + Sync {
+    async fn create_environment(&self, command: CreateEnvironmentCommand)
+    -> Result<String, String>;
+}
+
 impl CreateEnvironmentCommand {
     #[must_use]
     pub fn fingerprint(&self) -> String {

@@ -24,6 +24,7 @@ awaken-deployment-contract.workspace = true
 awaken-config-service = { workspace = true }
 awaken-ext-permission.workspace = true
 awaken-environment-application = { workspace = true }
+awaken-environment-contract.workspace = true
 awaken-admin-assistant = { workspace = true }
 awaken-executable-agent-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
@@ -70,7 +71,6 @@ awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-data-subject-store = { workspace = true, features = ["test-support"] }
-awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-resource-store = { workspace = true, features = ["test-support"] }
 awaken-skill-store = { workspace = true, features = ["test-support"] }

@@ -258,6 +258,7 @@ version = "1.0.0-dev"
 dependencies = [
  "async-trait",
  "awaken-agent-config",
+ "awaken-environment-contract",
  "awaken-runtime-contract",
  "serde",
  "serde_json",
@@ -877,7 +878,6 @@ name = "awaken-environment-application"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
- "awaken-admin-assistant",
  "awaken-env-store",
  "awaken-environment-contract",
  "awaken-executable-environment-contract",

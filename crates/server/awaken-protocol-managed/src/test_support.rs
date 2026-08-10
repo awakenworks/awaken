@@ -30,12 +30,15 @@ pub fn environment_components() -> (
             ),
             work.clone(),
         ));
+    let policies =
+        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());
+    let application = Arc::new(awaken_environment_application::EnvironmentApplication::new(
+        Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+        registrar,
+        Some(policies.clone()),
+    ));
     (
-        Arc::new(EnvironmentAuthoringState::new(
-            Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
-            Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default()),
-            registrar,
-        )),
+        Arc::new(EnvironmentAuthoringState::new(application, policies)),
         Arc::new(EnvironmentExecutionApplication::new(work, catalog)),
     )
 }

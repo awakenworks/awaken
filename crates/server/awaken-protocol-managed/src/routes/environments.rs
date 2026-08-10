@@ -21,7 +21,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 
 use crate::env_registry::{
-    EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
+    EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
     EnvironmentPackagesMutation,
 };
 use crate::routes::ManagedJson;
@@ -32,7 +32,6 @@ use crate::types::environment::{
 };
 use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 use awaken_environment_application::{EnvironmentApplication, EnvironmentApplicationError};
-use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
 mod work_routes;
 
 /// Control-owned Environment definitions, immutable revision history, policy
@@ -45,16 +44,11 @@ pub struct EnvironmentAuthoringState {
 impl EnvironmentAuthoringState {
     #[must_use]
     pub fn new(
-        envs: Arc<dyn EnvRegistry>,
+        application: Arc<EnvironmentApplication>,
         sandbox_policies: Arc<dyn awaken_provisioning_contract::SandboxExecutionPolicyStore>,
-        registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
     ) -> Self {
         Self {
-            application: Arc::new(EnvironmentApplication::new(
-                envs.clone(),
-                registrar,
-                Some(sandbox_policies.clone()),
-            )),
+            application,
             sandbox_policies: Some(sandbox_policies),
         }
     }

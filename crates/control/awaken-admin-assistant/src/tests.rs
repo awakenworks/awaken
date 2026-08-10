@@ -39,17 +39,15 @@ impl CapabilityReader for FakeCaps {
 /// Records the last environment authored, so a test can assert the tool persisted it.
 #[derive(Default)]
 struct FakeEnvAuthor {
-    last: std::sync::Mutex<Option<(String, EnvironmentDraft)>>,
+    commands: std::sync::Mutex<Vec<awaken_environment_contract::CreateEnvironmentCommand>>,
 }
 #[async_trait]
 impl EnvironmentAuthor for FakeEnvAuthor {
-    async fn create(
+    async fn create_environment(
         &self,
-        _command_id: &str,
-        name: &str,
-        config: EnvironmentDraft,
+        command: awaken_environment_contract::CreateEnvironmentCommand,
     ) -> Result<String, String> {
-        *self.last.lock().unwrap() = Some((name.to_string(), config));
+        self.commands.lock().unwrap().push(command);
         Ok("env_test_0".to_string())
     }
 }
@@ -854,16 +852,20 @@ async fn repeated_provider_call_id_in_distinct_runs_does_not_collide() {
 #[tokio::test]
 async fn draft_environment_assembles_and_persists_the_config() {
     // Causal graph:
-    // typed tool arguments -> official Environment union -> EnvironmentAuthor side effect
-    // unknown execution-policy field -X-> EnvironmentAuthor side effect
+    // C1 valid typed arguments -> E1 one canonical CreateEnvironmentCommand
+    // C2 cloud placement -> E2 exact networking/package facts in EnvironmentConfig::Cloud
+    // C3 self-hosted placement without cloud fields -> E3 EnvironmentConfig::SelfHosted
+    // C4 self-hosted plus cloud-only fields -> E4 typed error and zero author calls
+    // C5 malformed/unknown fields -> E4 typed error and zero author calls
+    // C6 successful call -> E5 stable control-prefixed command id and created response
     //
     // Decision table:
-    // | placement   | official options | unknown policy | outcome                 |
-    // | cloud       | present          | absent         | exact cloud config      |
-    // | self_hosted | absent           | absent         | exact self-hosted config|
-    // | self_hosted | present          | absent         | cross-field error; no persist |
-    // | cloud       | malformed/unknown| absent         | typed error; no persist |
-    // | either      | valid/absent      | present        | typed error; no persist |
+    // | rule | placement   | fields            | outcome                              |
+    // | R1   | cloud       | valid cloud       | E1 + E2 + E5                         |
+    // | R2   | self_hosted | none              | E1 + E3 + E5                         |
+    // | R3   | self_hosted | cloud-only        | E4                                   |
+    // | R4   | cloud       | malformed/unknown | E4                                   |
+    // | R5   | either      | unknown top-level | E4                                   |
     let author = Arc::new(FakeEnvAuthor::default());
     let tool = DraftEnvironment {
         author: author.clone(),
@@ -884,12 +886,19 @@ async fn draft_environment_assembles_and_persists_the_config() {
         .await
         .unwrap();
     assert!(!out.is_error, "created ok: {out:?}");
-    let (name, config) = author.last.lock().unwrap().clone().expect("authored");
-    assert_eq!(name, "cloud-box");
-    let config = serde_json::to_value(config).unwrap();
+    let commands = author.commands.lock().unwrap();
+    assert_eq!(commands.len(), 1, "R1 authors exactly one Environment");
+    let command = &commands[0];
+    assert_eq!(command.command_id, "control:c1");
+    assert_eq!(command.name, "cloud-box");
+    assert!(command.description.is_empty());
+    assert!(command.metadata.is_empty());
+    assert_eq!(command.scope, None);
+    let config = serde_json::to_value(&command.config).unwrap();
     assert_eq!(config["type"], "cloud");
     assert_eq!(config["networking"]["type"], "limited");
     assert_eq!(config["packages"]["npm"][0], "typescript");
+    drop(commands);
     let out2 = tool
         .invoke(ToolCall {
             call_id: "c2".into(),
@@ -899,10 +908,16 @@ async fn draft_environment_assembles_and_persists_the_config() {
         .await
         .unwrap();
     assert!(!out2.is_error);
-    let (_, config2) = author.last.lock().unwrap().clone().unwrap();
-    assert_eq!(config2, EnvironmentDraft::SelfHosted);
+    let commands = author.commands.lock().unwrap();
+    assert_eq!(commands.len(), 2, "R2 adds exactly one command");
+    assert_eq!(
+        commands[1].config,
+        awaken_environment_contract::EnvironmentConfig::SelfHosted
+    );
+    assert_eq!(commands[1].command_id, "control:c2");
+    drop(commands);
 
-    *author.last.lock().unwrap() = None;
+    let accepted_calls = author.commands.lock().unwrap().len();
     let rejected = tool
         .invoke(ToolCall {
             call_id: "c3".into(),
@@ -920,7 +935,7 @@ async fn draft_environment_assembles_and_persists_the_config() {
         "unknown policy field must fail typed admission"
     );
     assert!(
-        author.last.lock().unwrap().is_none(),
+        author.commands.lock().unwrap().len() == accepted_calls,
         "rejected wire input must not author an Environment"
     );
 
@@ -962,7 +977,7 @@ async fn draft_environment_assembles_and_persists_the_config() {
             .unwrap();
         assert!(rejected.is_error, "{rule}");
         assert!(
-            author.last.lock().unwrap().is_none(),
+            author.commands.lock().unwrap().len() == accepted_calls,
             "{rule}: rejected input must have no Environment side effect"
         );
     }

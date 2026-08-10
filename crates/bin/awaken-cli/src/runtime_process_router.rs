@@ -192,10 +192,15 @@ pub(super) async fn assemble_runtime_process_router(
                 .control
                 .as_ref()
                 .expect("AllInOne owns Control Environment stores");
+            let application =
+                Arc::new(awaken_environment_application::EnvironmentApplication::new(
+                    control.environments.clone(),
+                    executable_environment_registrar,
+                    Some(control.sandbox_policies.clone()),
+                ));
             let state = Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
-                control.environments.clone(),
+                application,
                 control.sandbox_policies.clone(),
-                executable_environment_registrar,
             ));
             Some(state)
         }
@@ -235,14 +240,10 @@ pub(super) async fn assemble_runtime_process_router(
                     resource_component.skill_store(),
                     &platform_workspace,
                 ))),
-                Arc::new(
-                    awaken_environment_application::EnvironmentApplicationAuthor::new(
-                        environment_authoring
-                            .as_ref()
-                            .expect("AllInOne owns Environment authoring")
-                            .application(),
-                    ),
-                ),
+                environment_authoring
+                    .as_ref()
+                    .expect("AllInOne owns Environment authoring")
+                    .application(),
                 environment_authoring
                     .as_ref()
                     .expect("AllInOne owns Environment authoring")

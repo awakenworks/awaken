@@ -31,6 +31,10 @@ use async_trait::async_trait;
 use awaken_agent_config::{
     AgentConfig, ManagementAuditRecord, ModelSelection, MultiagentConfig, ToolOverride,
 };
+use awaken_environment_contract::{
+    CreateEnvironmentCommand, EnvironmentAuthor, EnvironmentConfig, EnvironmentNetworking,
+    EnvironmentPackages,
+};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::resolved::{ContextPolicy, ToolDescriptor};
 use awaken_runtime_contract::tool::{
@@ -264,73 +268,6 @@ pub trait DraftStore: Send + Sync {
     async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String>;
     /// Read back the agent's resource bindings (empty when none are bound).
     async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String>;
-}
-
-/// A write port over the managed-plane environment registry — the "where/how it runs"
-/// resource, distinct from an agent draft. `admin_draft_environment` persists through
-/// it (the same `POST /v1/environments` the console's New-environment modal drives).
-/// The implementation lives at the composition root and delegates to Control's
-/// canonical Environment authoring application.
-#[async_trait]
-pub trait EnvironmentAuthor: Send + Sync {
-    /// Create an environment from the closed, secret-free authoring command.
-    async fn create(
-        &self,
-        command_id: &str,
-        name: &str,
-        config: EnvironmentDraft,
-    ) -> Result<String, String>;
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum EnvironmentDraft {
-    Cloud {
-        networking: AdminEnvironmentNetworking,
-        packages: AdminEnvironmentPackages,
-    },
-    SelfHosted,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AdminEnvironmentNetworking {
-    #[default]
-    Unrestricted,
-    Limited {
-        #[serde(default)]
-        allowed_hosts: Vec<String>,
-        #[serde(default)]
-        allow_mcp_servers: bool,
-        #[serde(default)]
-        allow_package_managers: bool,
-    },
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AdminEnvironmentPackages {
-    #[serde(rename = "type", default)]
-    pub kind: AdminEnvironmentPackagesKind,
-    #[serde(default)]
-    pub apt: Vec<String>,
-    #[serde(default)]
-    pub cargo: Vec<String>,
-    #[serde(default)]
-    pub gem: Vec<String>,
-    #[serde(default)]
-    pub go: Vec<String>,
-    #[serde(default)]
-    pub npm: Vec<String>,
-    #[serde(default)]
-    pub pip: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AdminEnvironmentPackagesKind {
-    #[default]
-    Packages,
 }
 
 /// A structured record of one mutating management operation (ADR-0052 D6). Read-only
@@ -687,9 +624,9 @@ struct DraftEnvArgs {
     #[serde(default)]
     placement: Option<EnvironmentPlacement>,
     #[serde(default)]
-    networking: Option<AdminEnvironmentNetworking>,
+    networking: Option<EnvironmentNetworking>,
     #[serde(default)]
-    packages: Option<AdminEnvironmentPackages>,
+    packages: Option<EnvironmentPackages>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -712,14 +649,14 @@ impl RawTool for DraftEnvironment {
                 Err(output) => return Ok(output),
             };
         let config = match args.placement.unwrap_or(EnvironmentPlacement::SelfHosted) {
-            EnvironmentPlacement::Cloud => EnvironmentDraft::Cloud {
+            EnvironmentPlacement::Cloud => EnvironmentConfig::Cloud {
                 networking: args.networking.unwrap_or_default(),
                 packages: args.packages.unwrap_or_default(),
             },
             EnvironmentPlacement::SelfHosted
                 if args.networking.is_none() && args.packages.is_none() =>
             {
-                EnvironmentDraft::SelfHosted
+                EnvironmentConfig::SelfHosted
             }
             EnvironmentPlacement::SelfHosted => {
                 return Ok(ToolOutput::error(
@@ -741,7 +678,14 @@ impl RawTool for DraftEnvironment {
         .await?;
         let id = match self
             .author
-            .create(&audit_event.call_id, &args.name, config)
+            .create_environment(CreateEnvironmentCommand {
+                command_id: format!("control:{}", audit_event.call_id),
+                name: args.name,
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config,
+            })
             .await
         {
             Ok(id) => id,

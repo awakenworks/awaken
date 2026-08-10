@@ -5,7 +5,7 @@
 
 use awaken_environment_contract::OBJECT_AT;
 pub(crate) use awaken_environment_contract::{
-    EnvItem, EnvRegistry, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
+    EnvItem, EnvUpdate, EnvironmentConfigMutation, EnvironmentNetworkingMutation,
     EnvironmentPackagesMutation,
 };
 
