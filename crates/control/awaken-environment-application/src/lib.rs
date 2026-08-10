@@ -6,10 +6,9 @@
 
 use std::sync::Arc;
 
-use awaken_admin_assistant::{AdminEnvironmentNetworking, EnvironmentAuthor, EnvironmentDraft};
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, EnvItem, EnvRegistry, EnvUpdate,
-    EnvironmentConfig, EnvironmentRevision, EnvironmentSandboxPolicyRef,
+    EnvironmentAuthor, EnvironmentConfig, EnvironmentRevision, EnvironmentSandboxPolicyRef,
 };
 use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrar, ExecutableEnvironmentRegistration,
@@ -314,73 +313,16 @@ pub fn builtin_local_environment() -> EnvItem {
     }
 }
 
-/// Admin Assistant adapter over the same Control application command path used
-/// by HTTP. It performs only draft-to-domain translation.
-pub struct EnvironmentApplicationAuthor {
-    application: Arc<EnvironmentApplication>,
-}
-
-impl EnvironmentApplicationAuthor {
-    #[must_use]
-    pub fn new(application: Arc<EnvironmentApplication>) -> Self {
-        Self { application }
-    }
-}
-
 #[async_trait::async_trait]
-impl EnvironmentAuthor for EnvironmentApplicationAuthor {
-    async fn create(
+impl EnvironmentAuthor for EnvironmentApplication {
+    async fn create_environment(
         &self,
-        command_id: &str,
-        name: &str,
-        config: EnvironmentDraft,
+        command: CreateEnvironmentCommand,
     ) -> Result<String, String> {
-        self.application
-            .create(CreateEnvironmentCommand {
-                command_id: format!("control:{command_id}"),
-                name: name.to_owned(),
-                description: String::new(),
-                metadata: Default::default(),
-                scope: None,
-                config: canonical_admin_config(config),
-            })
+        EnvironmentApplication::create(self, command)
             .await
             .map(|item| item.id)
             .map_err(|error| error.to_string())
-    }
-}
-
-fn canonical_admin_config(draft: EnvironmentDraft) -> EnvironmentConfig {
-    match draft {
-        EnvironmentDraft::SelfHosted => EnvironmentConfig::SelfHosted,
-        EnvironmentDraft::Cloud {
-            networking,
-            packages,
-        } => EnvironmentConfig::Cloud {
-            networking: match networking {
-                AdminEnvironmentNetworking::Unrestricted => {
-                    awaken_environment_contract::EnvironmentNetworking::Unrestricted
-                }
-                AdminEnvironmentNetworking::Limited {
-                    allowed_hosts,
-                    allow_mcp_servers,
-                    allow_package_managers,
-                } => awaken_environment_contract::EnvironmentNetworking::Limited {
-                    allowed_hosts,
-                    allow_mcp_servers,
-                    allow_package_managers,
-                },
-            },
-            packages: awaken_environment_contract::EnvironmentPackages {
-                kind: awaken_environment_contract::EnvironmentPackagesKind::Packages,
-                apt: packages.apt,
-                cargo: packages.cargo,
-                gem: packages.gem,
-                go: packages.go,
-                npm: packages.npm,
-                pip: packages.pip,
-            },
-        },
     }
 }
 

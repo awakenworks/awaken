@@ -10,7 +10,6 @@ layer = "application"
 authority = "environment"
 
 [dependencies]
-awaken-admin-assistant.workspace = true
 awaken-environment-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
 awaken-provisioning-contract.workspace = true

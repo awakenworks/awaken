@@ -38,11 +38,14 @@ pub(super) fn test_environment_components() -> (
             work.clone(),
         ),
     );
-    let authoring = awaken_protocol_managed::EnvironmentAuthoringState::new(
+    let policies =
+        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default());
+    let application = Arc::new(awaken_environment_application::EnvironmentApplication::new(
         Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
-        Arc::new(awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default()),
         registrar,
-    );
+        Some(policies.clone()),
+    ));
+    let authoring = awaken_protocol_managed::EnvironmentAuthoringState::new(application, policies);
     (
         Arc::new(authoring),
         Arc::new(
