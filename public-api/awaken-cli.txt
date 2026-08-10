@@ -66,15 +66,15 @@ pub awaken_cli::config::ConfigOverrides::role: core::option::Option<awaken_cli::
 pub awaken_cli::config::ConfigOverrides::worker_server: core::option::Option<alloc::string::String>
 pub struct awaken_cli::config::ControlServiceConfig
 impl awaken_cli::config::ControlServiceConfig
-pub fn awaken_cli::config::ControlServiceConfig::control_token(&self) -> core::result::Result<alloc::string::String, alloc::string::String>
-pub fn awaken_cli::config::ControlServiceConfig::coordinator_credentials(&self) -> core::result::Result<(&str, alloc::string::String), alloc::string::String>
+pub fn awaken_cli::config::ControlServiceConfig::control_authenticator(&self) -> core::result::Result<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>, alloc::string::String>
+pub fn awaken_cli::config::ControlServiceConfig::coordinator_credentials(&self) -> core::result::Result<(&str, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>), alloc::string::String>
 pub struct awaken_cli::config::CoordinatorStoreConfig
 pub awaken_cli::config::CoordinatorStoreConfig::captured_content: awaken_control::control_stores::StoreBackend
 pub awaken_cli::config::CoordinatorStoreConfig::sessions: awaken_control::control_stores::StoreBackend
 pub struct awaken_cli::config::ExecutableAgentRegistrationConfig
 impl awaken_cli::config::ExecutableAgentRegistrationConfig
-pub fn awaken_cli::config::ExecutableAgentRegistrationConfig::control_credentials(&self) -> core::result::Result<(&str, alloc::string::String), alloc::string::String>
-pub fn awaken_cli::config::ExecutableAgentRegistrationConfig::coordinator_token(&self) -> core::result::Result<alloc::string::String, alloc::string::String>
+pub fn awaken_cli::config::ExecutableAgentRegistrationConfig::control_credentials(&self) -> core::result::Result<(&str, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>), alloc::string::String>
+pub fn awaken_cli::config::ExecutableAgentRegistrationConfig::coordinator_authenticator(&self) -> core::result::Result<alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>, alloc::string::String>
 pub struct awaken_cli::config::ResolvedDeployment
 pub awaken_cli::config::ResolvedDeployment::admin_listen: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::bind: alloc::string::String
