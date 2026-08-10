@@ -820,6 +820,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             "test.worker",
         );
         let input = awaken_session_contract::ApplicationSessionInput {
+            session_inputs: Vec::new(),
             mounts: with_environment_inputs
                 .then(|| serde_json::to_value(&mount).unwrap())
                 .into_iter()

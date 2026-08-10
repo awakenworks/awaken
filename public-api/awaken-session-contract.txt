@@ -439,6 +439,7 @@ pub awaken_session_contract::ApplicationSessionInput::mcp_inputs: alloc::vec::Ve
 pub awaken_session_contract::ApplicationSessionInput::mounts: alloc::vec::Vec<serde_json::value::Value>
 pub awaken_session_contract::ApplicationSessionInput::network_restriction: core::option::Option<awaken_session_contract::SessionNetworkPolicy>
 pub awaken_session_contract::ApplicationSessionInput::prompts: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_contract::ApplicationSessionInput::session_inputs: alloc::vec::Vec<awaken_session_contract::SessionInputAttachment>
 impl awaken_session_contract::ApplicationSessionInput
 pub fn awaken_session_contract::ApplicationSessionInput::fingerprint(&self) -> alloc::string::String
 pub struct awaken_session_contract::ApplicationSessionProvisionError

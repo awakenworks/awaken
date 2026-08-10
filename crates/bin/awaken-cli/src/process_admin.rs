@@ -17,11 +17,45 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+
+struct ActiveRequestGuard(Arc<DrainController>);
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+struct ActiveResponseBody {
+    inner: Body,
+    _guard: ActiveRequestGuard,
+}
+
+impl http_body::Body for ActiveResponseBody {
+    type Data = bytes::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        http_body::Body::poll_frame(std::pin::Pin::new(&mut self.get_mut().inner), cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        http_body::Body::is_end_stream(&self.inner)
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        http_body::Body::size_hint(&self.inner)
+    }
+}
 
 /// Shared drain + in-flight-connection state for one Coordinator process.
 #[derive(Default)]
@@ -122,15 +156,17 @@ async fn count_active(
     req: Request,
     next: Next,
 ) -> Response {
-    struct Guard(Arc<DrainController>);
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            self.0.active.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
     ctrl.active.fetch_add(1, Ordering::Relaxed);
-    let _guard = Guard(ctrl);
-    next.run(req).await
+    let guard = ActiveRequestGuard(ctrl);
+    let response = next.run(req).await;
+    let (parts, body) = response.into_parts();
+    Response::from_parts(
+        parts,
+        Body::new(ActiveResponseBody {
+            inner: body,
+            _guard: guard,
+        }),
+    )
 }
 
 async fn drain(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
@@ -305,6 +341,38 @@ mod tests {
             .await
             .unwrap();
         (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn active_request_lifetime_includes_the_response_body() {
+        // Cause graph: business request -> increment -> response headers -> body
+        // retained/streamed -> body drop -> decrement. Returning headers must not
+        // decrement a long-lived SSE/AI SDK response prematurely.
+        //
+        // | Rule | Handler/body state | Expected active count |
+        // | C1 | no request | 0 |
+        // | C2 | response returned, body retained | 1 |
+        // | C3 | body consumed or dropped | 0 |
+        //
+        // FMECA (S/O/D, RPN): header-lifetime accounting makes autoscaling miss
+        // all active streams (9/7/8=504); decrement leakage pins a replica active
+        // forever (7/3/5=105). The body-owned RAII guard covers cancellation,
+        // normal completion, and dropped clients with one mechanism.
+        let ctrl = DrainController::new();
+        let app = with_connection_metric(
+            Router::new().route("/business", axum::routing::get(|| async { "ok" })),
+            ctrl.clone(),
+        );
+        assert_eq!(ctrl.active_streams(), 0, "C1");
+
+        let response = app
+            .oneshot(HttpRequest::get("/business").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ctrl.active_streams(), 1, "C2");
+
+        drop(response);
+        assert_eq!(ctrl.active_streams(), 0, "C3");
     }
 
     #[tokio::test]

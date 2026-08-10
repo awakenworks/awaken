@@ -91,6 +91,7 @@ pub awaken_cli::config::ResolvedDeployment::deprecations: alloc::vec::Vec<alloc:
 pub awaken_cli::config::ResolvedDeployment::executable_agent_registration: awaken_cli::config::ExecutableAgentRegistrationConfig
 pub awaken_cli::config::ResolvedDeployment::iam_workspaces: alloc::vec::Vec<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::identity_mode: awaken_control::authz::ManagementIdentityMode
+pub awaken_cli::config::ResolvedDeployment::internal_bind: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::local_acp_observations: alloc::vec::Vec<awaken_acp_application::host_discovery::AcpHostObservation>
 pub awaken_cli::config::ResolvedDeployment::mcp_bearer_token: core::option::Option<alloc::string::String>
 pub awaken_cli::config::ResolvedDeployment::mode: awaken_cli::config::OperatingMode
@@ -166,8 +167,9 @@ impl awaken_cli::PreparedLocalWorker
 pub fn awaken_cli::PreparedLocalWorker::build_worker(self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
 pub struct awaken_cli::ProcessAssembly
 pub awaken_cli::ProcessAssembly::local_setup: core::option::Option<awaken_iam_host::local_browser::LocalSetupHandoff>
+pub awaken_cli::ProcessAssembly::private_router: axum::routing::Router
+pub awaken_cli::ProcessAssembly::public_router: axum::routing::Router
 pub awaken_cli::ProcessAssembly::registration_supervisor: core::option::Option<alloc::sync::Arc<awaken_control::registration_supervisor::StaticRegistrationSupervisor>>
-pub awaken_cli::ProcessAssembly::router: axum::routing::Router
 pub async fn awaken_cli::build_all_in_one_assembly(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::ProcessAssembly, alloc::string::String>
 pub async fn awaken_cli::build_all_in_one_router() -> axum::routing::Router
 pub async fn awaken_cli::build_all_in_one_router_with_deployment(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>

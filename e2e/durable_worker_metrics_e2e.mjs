@@ -27,7 +27,14 @@ import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import { DefaultChatTransport } from 'ai';
 import { Chat } from '@ai-sdk/react';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38310);
 const STORE = `/tmp/awaken-durable-worker-metrics-${process.pid}`;
@@ -72,13 +79,30 @@ async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
   fs.mkdirSync(STORE, { recursive: true });
 
+  // Cause graph: delayed upstream -> foreground handler remains open ->
+  // active_streams > 0 -> scrape observes the gauge -> upstream settles ->
+  // active_streams = 0. A zero-delay echo can finish all handlers before the
+  // first scrape and therefore cannot prove either the positive or drain edge.
+  //
+  // | Rule | Upstream | Work | Expected gauge |
+  // | M1 | idle | none | 0 |
+  // | M2 | deterministically delayed | concurrent durable runs | > 0 |
+  // | M3 | settled after M2 | none | 0 |
+  //
+  // FMECA (S/O/D, RPN): a test stimulus shorter than scrape latency produces a
+  // false failure (4/8/8=256); a fabricated gauge bypasses the durable path
+  // (8/2/9=144). A real delayed provider keeps the production path and makes
+  // the observation window deterministic.
+  const upstream = await startUpstream('echo', { delayMs: 750 });
+
   // A DURABLE server: SESSION_DEPLOYMENT_INGRESS=durable makes the managed host deliver every
   // turn through the persistent dispatch queue driven by the process dispatch pool
   // (enqueue → claim → lease → worker execute → commit). echo is a deterministic
   // in-process stub, so no upstream/API key needed and the run is CI-safe.
-  const { server } = spawnServer('echo', PORT, {
+  const { server } = spawnServer('real', PORT, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
+    ...realServerEnv('echo', upstream),
   });
 
   try {
@@ -180,6 +204,7 @@ async function main() {
     );
   } finally {
     await stopServer(server);
+    upstream.close();
     fs.rmSync(STORE, { recursive: true, force: true });
   }
 }
