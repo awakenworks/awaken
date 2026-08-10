@@ -82,8 +82,8 @@ use process_stores::{
     migration_manifest, role_owns_control_component, role_owns_managed_execution,
 };
 #[cfg(any(test, feature = "test-support"))]
-use resource_component::ephemeral_resource_component;
-use resource_component::open_resource_component;
+use resource_component::ephemeral_resources_application;
+use resource_component::open_resources_application;
 use runtime_process_router::assemble_runtime_process_router;
 pub use service::{ServiceRole, migrate_service, run_service, run_service_binary};
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
@@ -205,7 +205,7 @@ impl ProcessRouterAssembly {
 struct ProcessStoreOpenOptions<'a> {
     control: awaken_control::ControlStoreConfig,
     coordinator: config::CoordinatorStoreConfig,
-    resource_component: Option<awaken_resource_application::ResourceComponent>,
+    resources: Option<awaken_resource_application::ResourcesApplication>,
     workspace_root: std::path::PathBuf,
     seal_key: Option<&'a [u8; 32]>,
     role: config::Role,
@@ -220,7 +220,7 @@ async fn open_process_stores(
     let ProcessStoreOpenOptions {
         control: cfg,
         coordinator: coordinator_cfg,
-        resource_component,
+        resources,
         workspace_root,
         seal_key: key,
         role,
@@ -448,8 +448,8 @@ async fn open_process_stores(
                 }
             };
         Some(CoordinatorStores {
-            resource_component: resource_component
-                .ok_or_else(|| "Coordinator stores require Resources component".to_owned())?,
+            resources: resources
+                .ok_or_else(|| "Coordinator stores require Resources application".to_owned())?,
             sessions,
             deployments,
             memory_extractions,

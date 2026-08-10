@@ -415,11 +415,9 @@ dependencies = [
  "awaken-ext-builtin-tools",
  "awaken-ext-mcp",
  "awaken-ext-memory",
- "awaken-file-store",
  "awaken-iam-client",
  "awaken-iam-contract",
  "awaken-iam-core",
- "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
@@ -430,8 +428,8 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-resource-application",
  "awaken-resource-contract",
+ "awaken-resource-persistence",
  "awaken-resource-reclaimer",
- "awaken-resource-store",
  "awaken-resource-worker-http",
  "awaken-run-executor-acp",
  "awaken-run-ingress",
@@ -446,7 +444,6 @@ dependencies = [
  "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
- "awaken-skill-store",
  "awaken-store-inmem",
  "awaken-tenancy",
  "awaken-webhook-managed",
@@ -635,13 +632,11 @@ dependencies = [
  "awaken-ext-mcp",
  "awaken-ext-memory",
  "awaken-ext-skills",
- "awaken-file-store",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-host",
  "awaken-iam-preset",
  "awaken-iam-server",
- "awaken-memory-store",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
@@ -656,7 +651,7 @@ dependencies = [
  "awaken-provisioning-contract",
  "awaken-resource-application",
  "awaken-resource-contract",
- "awaken-resource-store",
+ "awaken-resource-persistence",
  "awaken-resource-worker-http",
  "awaken-run-executor-a2a",
  "awaken-run-executor-acp",
@@ -671,7 +666,6 @@ dependencies = [
  "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
- "awaken-skill-store",
  "awaken-store-fs",
  "awaken-store-inmem",
  "awaken-store-postgres",
@@ -1616,6 +1610,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awaken-resource-persistence"
+version = "1.0.0-dev"
+dependencies = [
+ "awaken-file-store",
+ "awaken-memory-store",
+ "awaken-resource-application",
+ "awaken-resource-store",
+ "awaken-skill-store",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "awaken-resource-reclaimer"
 version = "1.0.0-dev"
 dependencies = [
@@ -2062,7 +2070,9 @@ dependencies = [
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
  "awaken-provider-genai",
+ "awaken-resource-application",
  "awaken-resource-contract",
+ "awaken-resource-persistence",
  "awaken-resource-store",
  "awaken-run-executor-a2a",
  "awaken-run-executor-acp",

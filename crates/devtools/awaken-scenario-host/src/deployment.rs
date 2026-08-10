@@ -97,10 +97,12 @@ pub(crate) fn resource_host_with_deployment(
     model_ref: impl Into<String>,
     deployment: awaken_runtime_host::DeploymentConfig,
 ) -> SharedHost {
-    let resources = deployment.storage_dir.clone().map_or_else(
-        awaken_coordinator::ephemeral_resources_application,
-        |storage_dir| awaken_coordinator::embedded_resources_application(&storage_dir),
-    );
+    let resources = match deployment.storage_dir.clone() {
+        Some(storage_dir) => awaken_resource_persistence::open_embedded(&storage_dir)
+            .expect("open embedded scenario Resources application"),
+        None => awaken_resource_persistence::ephemeral()
+            .expect("open ephemeral scenario Resources application"),
+    };
     // Resource durability and runtime policy are orthogonal. Even an ephemeral
     // resource application must preserve the caller's complete typed Deployment;
     // rebuilding through the convenience constructor here silently replaced an

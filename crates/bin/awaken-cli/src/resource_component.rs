@@ -1,106 +1,73 @@
-//! Process adapters for the canonical Resources component.
-
-use std::sync::Arc;
+//! Process adapter for the canonical Resources persistence selection.
 
 use super::{PostgresSchemaMode, config};
 
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn ephemeral_resource_component() -> awaken_resource_application::ResourceComponent {
-    awaken_coordinator::ephemeral_resources_application().ports()
+pub(super) fn ephemeral_resources_application() -> awaken_resource_application::ResourcesApplication
+{
+    awaken_resource_persistence::ephemeral().expect("open ephemeral Resources application")
 }
 
-pub(super) async fn open_resource_component(
+pub(super) async fn open_resources_application(
     backend: config::ResourceStoreBackend,
     postgres_schema: PostgresSchemaMode,
-) -> Result<awaken_resource_application::ResourceComponent, String> {
+) -> Result<awaken_resource_application::ResourcesApplication, String> {
     match backend {
         config::ResourceStoreBackend::Embedded(root) => {
-            Ok(awaken_coordinator::embedded_resource_component(&root))
+            awaken_resource_persistence::open_embedded(&root).map_err(|error| error.to_string())
         }
-        config::ResourceStoreBackend::Postgres(url) => {
-            let resources = Arc::new(
-                match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_resource_store::PostgresResourceStore::connect(&url).await
-                    }
-                    PostgresSchemaMode::Verify => {
-                        awaken_resource_store::PostgresResourceStore::connect_existing(&url).await
-                    }
-                }
-                .map_err(|error| format!("connect Resources Postgres: {error}"))?,
-            );
-            let files = Arc::new(
-                match postgres_schema {
-                    PostgresSchemaMode::Migrate => {
-                        awaken_file_store::postgres::PgFileStore::connect(&url).await
-                    }
-                    PostgresSchemaMode::Verify => {
-                        awaken_file_store::postgres::PgFileStore::connect_existing(&url).await
-                    }
-                }
-                .map_err(|error| format!("connect resource file Postgres: {error}"))?,
-            );
-            let memory = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_memory_store::PostgresMemoryRepository::connect(&url).await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_memory_store::PostgresMemoryRepository::connect_existing(&url).await
-                }
-            }
-            .map_err(|error| format!("connect resource memory Postgres: {error}"))?;
-            let skills = match postgres_schema {
-                PostgresSchemaMode::Migrate => {
-                    awaken_skill_store::PgSkillStore::connect(&url).await
-                }
-                PostgresSchemaMode::Verify => {
-                    awaken_skill_store::PgSkillStore::connect_existing(&url).await
-                }
-            }
-            .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
-            Ok(awaken_resource_application::build_resource_component(
-                awaken_resource_application::ResourceDependencies {
-                    resource_catalog: resources.clone(),
-                    file_store: files.clone(),
-                    file_catalog: files,
-                    memory_repository: Arc::new(memory),
-                    skill_store: Arc::new(skills),
-                    reclamation: resources,
-                },
-            ))
-        }
+        config::ResourceStoreBackend::Postgres(url) => awaken_resource_persistence::open_postgres(
+            &url,
+            match postgres_schema {
+                PostgresSchemaMode::Migrate => awaken_resource_persistence::SchemaMode::Migrate,
+                PostgresSchemaMode::Verify => awaken_resource_persistence::SchemaMode::Verify,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[tokio::test]
-    async fn every_local_backend_returns_one_complete_resource_component() {
+    async fn every_local_backend_returns_one_complete_resources_application() {
         // Cause/effect decision table:
-        // R1 ephemeral selection -> the catalog plus all five per-kind/lifecycle
-        // ports exist; R2 embedded selection -> the same six ports exist over one
-        // durable root.
-        // PostgreSQL adapter selection is covered by backend integration suites;
-        // this unit test owns the no-parallel-construction component invariant.
-        let assert_complete = |component: &awaken_resource_application::ResourceComponent| {
+        // R1 ephemeral selection -> one complete application and stable services;
+        // R2 embedded selection -> the same contract over one durable root and
+        // stable services. PostgreSQL Migrate/Verify are covered by adapter
+        // integration suites; this test proves the process adapter never rebuilds
+        // an application after persistence selection.
+        let assert_complete = |application: &awaken_resource_application::ResourcesApplication| {
+            let component = application.ports();
             let _ = component.resource_catalog();
             let _ = component.file_store();
             let _ = component.file_catalog();
             let _ = component.memory_repository();
             let _ = component.skill_store();
             let _ = component.reclamation();
+            assert!(Arc::ptr_eq(
+                &application.memory_stores(),
+                &application.memory_stores()
+            ));
+            assert!(Arc::ptr_eq(
+                &application.purge_scheduler(),
+                &application.purge_scheduler()
+            ));
         };
-        assert_complete(&ephemeral_resource_component());
+        assert_complete(&ephemeral_resources_application());
 
-        let root = tempfile::tempdir().expect("resource component root");
-        let embedded = open_resource_component(
+        let root = tempfile::tempdir().expect("resource application root");
+        let embedded = open_resources_application(
             config::ResourceStoreBackend::Embedded(root.path().to_path_buf()),
             PostgresSchemaMode::Migrate,
         )
         .await
-        .expect("embedded Resources component");
+        .expect("embedded Resources application");
         assert_complete(&embedded);
     }
 }

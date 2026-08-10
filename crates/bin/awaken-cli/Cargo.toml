@@ -54,13 +54,11 @@ awaken-run-ingress = { workspace = true, features = ["durable"] }
 awaken-work-store.workspace = true
 awaken-worker-transport-security.workspace = true
 awaken-sandbox-policy-store = { workspace = true }
-awaken-resource-store = { workspace = true, features = ["postgres"] }
 awaken-resource-reclaimer = { workspace = true }
 awaken-webhook-managed = { workspace = true }
-awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-resource-contract = { workspace = true }
 awaken-resource-application = { workspace = true }
+awaken-resource-persistence.workspace = true
 awaken-session-contract = { workspace = true }
 awaken-service-auth-contract = { workspace = true }
 awaken-session-application.workspace = true
@@ -100,9 +98,6 @@ awaken-config-resolver = { workspace = true }
 awaken-data-subject-application.workspace = true
 awaken-data-subject-store = { workspace = true, features = ["postgres"] }
 awaken-captured-content-store = { workspace = true, features = ["postgres"] }
-# The durable skill catalog: one store shared by the host (delivered skills) and the
-# capability inventory (skill enumeration for the admin assistant).
-awaken-skill-store = { workspace = true, features = ["postgres"] }
 # The management assistant executables the host carries (ADR-0052).
 awaken-admin-assistant = { workspace = true }
 # The opaque scope id the warm-load + reserved-scope seeding are keyed by.
@@ -143,6 +138,7 @@ test-support = [
     "awaken-protocol-managed/test-support",
     "awaken-coordinator/test-support",
     "awaken-runtime-host/test-support",
+    "awaken-resource-persistence/test-support",
 ]
 # Container ACP tiers (AWAKEN_SANDBOX_TIER=docker/podman/k8s): enable the backend a
 # deployment runs its agents on. Off by default — the namespace tier needs no feature.
@@ -151,6 +147,7 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-credential-contract.workspace = true
 awaken-admin-config-api = { workspace = true, features = ["test-support"] }
 awaken-captured-content-store = { workspace = true, features = ["test-support"] }

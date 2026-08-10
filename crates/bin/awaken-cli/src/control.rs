@@ -135,7 +135,7 @@ async fn build_control_assembly_with_model_composition(
         coordinator: deployment.coordinator.clone(),
         // Control receives Resource references through authoring/read ports and
         // opens no File, Memory, Skill-content, or lifecycle authority.
-        resource_component: None,
+        resources: None,
         workspace_root: deployment.data_dir.clone(),
         seal_key: Some(key),
         role: config::Role::Control,

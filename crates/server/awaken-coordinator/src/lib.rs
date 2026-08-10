@@ -73,16 +73,6 @@ pub use awaken_protocol_managed::{
     ResourcesRouterInput, default_models, models_router, resources_router,
 };
 
-/// Build the canonical MemoryStore identity/lifecycle application port for
-/// composition roots that already own the Resources persistence ports.
-pub fn memory_store_application(
-    catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>,
-) -> Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> {
-    Arc::new(awaken_resource_application::MemoryStoreApplication::new(
-        catalog, purge,
-    ))
-}
 pub use awaken_run_ingress_http::durable_ops_router;
 pub use awaken_runtime_host::{
     ExtMcpProbe, HostResume, ManagedHost, NoModelConfiguredExecutor, RunApplicationHost,
@@ -186,92 +176,6 @@ mod platform_memory_projection_tests {
             );
         }
     }
-}
-
-/// Open one embedded resource persistence family for a durable local composition.
-/// Keeping this factory at the data-plane composition edge prevents the runtime
-/// substrate from depending on concrete resource stores and prevents independent
-/// roots from drifting on filenames or backend selection.
-pub fn embedded_resource_component(
-    root: &std::path::Path,
-) -> awaken_resource_application::ResourceComponent {
-    std::fs::create_dir_all(root).expect("create resource-plane directory");
-    let resources = Arc::new(
-        awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
-            .expect("open Resources sqlite"),
-    );
-    let memory = awaken_memory_store::SqliteMemoryRepository::open(
-        root.join("memory_fs.db")
-            .to_str()
-            .expect("resource memory path is valid UTF-8"),
-    )
-    .expect("open resource memory sqlite");
-    let files = Arc::new(
-        awaken_file_store::sqlite::SqliteFileStore::open(
-            root.join("files.db")
-                .to_str()
-                .expect("resource file path is valid UTF-8"),
-        )
-        .expect("open resource file sqlite"),
-    );
-    awaken_resource_application::build_resource_component(
-        awaken_resource_application::ResourceDependencies {
-            resource_catalog: resources.clone(),
-            file_store: files.clone(),
-            file_catalog: files,
-            memory_repository: Arc::new(memory),
-            skill_store: embedded_skill_store(root),
-            reclamation: resources,
-        },
-    )
-}
-
-/// Derive the one embedded Resources application used by HTTP and Runtime.
-pub fn embedded_resources_application(
-    root: &std::path::Path,
-) -> awaken_resource_application::ResourcesApplication {
-    awaken_resource_application::ResourcesApplication::new(embedded_resource_component(root))
-}
-
-/// Hermetic in-memory Resources application for scenario composition.
-#[cfg(feature = "test-support")]
-pub fn ephemeral_resources_application() -> awaken_resource_application::ResourcesApplication {
-    let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
-    let resources = Arc::new(
-        awaken_resource_store::SqliteResourceStore::in_memory()
-            .expect("open ephemeral Resources store"),
-    );
-    awaken_resource_application::ResourcesApplication::new(
-        awaken_resource_application::build_resource_component(
-            awaken_resource_application::ResourceDependencies {
-                resource_catalog: resources.clone(),
-                file_store: files.clone(),
-                file_catalog: files,
-                memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-                skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-                reclamation: resources,
-            },
-        ),
-    )
-}
-
-pub fn resource_purge_scheduler(
-    reclamation: Arc<dyn awaken_resource_contract::ResourceReclamationRepository>,
-) -> Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> {
-    Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
-        reclamation,
-    ))
-}
-
-/// Open only the Skill data adapter needed by the transitional Worker
-/// composition. File and Memory content use claim-fenced network adapters and
-/// therefore are not opened here.
-pub fn embedded_skill_store(
-    root: &std::path::Path,
-) -> Arc<dyn awaken_resource_contract::SkillStore> {
-    let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
-        .expect("open resource skill filesystem store");
-    Arc::new(skills)
 }
 
 struct PinnedA2aTransportResolver {
@@ -530,10 +434,10 @@ pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState
 
 #[cfg(feature = "test-support")]
 fn ephemeral_resource_catalog() -> Arc<dyn awaken_resource_contract::ResourceCatalog> {
-    Arc::new(
-        awaken_resource_store::SqliteResourceStore::in_memory()
-            .expect("open ephemeral Resource Catalog"),
-    )
+    awaken_resource_persistence::ephemeral()
+        .expect("open ephemeral Resources application")
+        .ports()
+        .resource_catalog()
 }
 
 #[cfg(feature = "test-support")]
@@ -606,7 +510,8 @@ pub fn mount_with_managed_and_application_access_and_models(
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_directory: Arc<dyn awaken_protocol_managed::ModelDirectory>,
 ) -> Router {
-    let resources = resource_management_router_from_host(&host, resource_catalog.clone());
+    let (resources, memory_stores) =
+        resource_management_router_from_host(&host, resource_catalog.clone());
     mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -616,6 +521,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         ephemeral_dream_process_store(),
         ManagedRoutingExtensions {
             resource_management_router: resources,
+            memory_stores,
             worker_authenticator: Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
@@ -629,6 +535,7 @@ pub fn mount_with_managed_and_application_access_and_models(
 /// Router-owned services that must move together into the managed data plane.
 pub struct ManagedRoutingExtensions {
     pub resource_management_router: Router,
+    pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
 }
@@ -765,7 +672,8 @@ fn mount_with_managed_over(
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
-    let resources = resource_management_router_from_host(&host, resource_catalog.clone());
+    let (resources, memory_stores) =
+        resource_management_router_from_host(&host, resource_catalog.clone());
     mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -775,6 +683,7 @@ fn mount_with_managed_over(
         ephemeral_dream_process_store(),
         ManagedRoutingExtensions {
             resource_management_router: resources,
+            memory_stores,
             worker_authenticator: Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
@@ -795,6 +704,7 @@ fn mount_with_managed_over_and_models(
 ) -> Result<(Router, Arc<awaken_dream_application::DreamApplication>), WorkerTransportBuildError> {
     let ManagedRoutingExtensions {
         resource_management_router,
+        memory_stores,
         worker_authenticator,
         worker_directory,
     } = routing;
@@ -813,19 +723,12 @@ fn mount_with_managed_over_and_models(
     if host.runs_local_dispatch_pool() {
         host.ensure_dispatch_pool();
     }
-    let dream_memory_stores = Arc::new(awaken_resource_application::MemoryStoreApplication::new(
-        resource_catalog.clone(),
-        resource_purge_scheduler(
-            host.resource_reclamation()
-                .expect("Dream requires resource lifecycle persistence"),
-        ),
-    ));
     let dream_worker = Arc::new(dream::BuiltInDreamAgent::new(
         managed_state.clone(),
         host.clone(),
         host.memory_repository(),
         resource_catalog.clone(),
-        dream_memory_stores,
+        memory_stores,
     ));
     let dream_application = Arc::new(
         awaken_dream_application::DreamApplication::with_store(dream_worker, dream_process_store)
@@ -1030,21 +933,30 @@ fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router
 fn resource_management_router_from_host(
     host: &Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-) -> Router {
-    let purge = resource_purge_scheduler(
-        host.resource_reclamation()
-            .expect("resource management requires lifecycle persistence"),
+) -> (
+    Router,
+    Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
+) {
+    let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> =
+        Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
+            host.resource_reclamation()
+                .expect("resource management requires lifecycle persistence"),
+        ));
+    let memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> = Arc::new(
+        awaken_resource_application::MemoryStoreApplication::new(catalog, purge.clone()),
     );
-    let memory_stores = memory_store_application(catalog, purge.clone());
-    resources_router(ResourcesRouterInput {
-        files: host
-            .file_application()
-            .expect("resource management requires the File application"),
-        memories: host.memory_repository(),
+    (
+        resources_router(ResourcesRouterInput {
+            files: host
+                .file_application()
+                .expect("resource management requires the File application"),
+            memories: host.memory_repository(),
+            memory_stores: memory_stores.clone(),
+            skills: host.skill_store(),
+            purge,
+        }),
         memory_stores,
-        skills: host.skill_store(),
-        purge,
-    })
+    )
 }
 
 pub use awaken_credential_materializer::{

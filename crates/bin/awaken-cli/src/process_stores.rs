@@ -37,7 +37,7 @@ pub(super) struct ControlStores {
 pub(super) struct CoordinatorStores {
     /// Resources is a sibling component. Coordinator mounts its ports but never
     /// opens or receives Control's Resource-authoring/admin store.
-    pub(super) resource_component: awaken_resource_application::ResourceComponent,
+    pub(super) resources: awaken_resource_application::ResourcesApplication,
     /// Durable home for the Managed Session aggregate and lifecycle outbox.
     pub(super) sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
     /// Coordinator-owned Deployment and DeploymentRun view over the same physical

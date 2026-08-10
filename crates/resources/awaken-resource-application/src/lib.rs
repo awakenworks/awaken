@@ -311,14 +311,35 @@ mod tests {
     #[tokio::test]
     async fn memory_store_commands_share_one_lifecycle_owner() {
         // Cause/effect graph and decision table:
-        // C1 absent id + valid create -> E1 one Suspended aggregate at v1;
-        // C2 same deterministic id again -> E2 conflict and original unchanged;
-        // C3 existing id + metadata/state commands -> E3 one updated aggregate;
-        // C4 delete with zero retention -> E4 Deleted plus one durable purge;
-        // C5 unknown id -> E5 NotFound and no aggregate. These rules cover the
-        // HTTP and Dream callers because both drive this same application port.
+        // C0 one Resources composition -> E0 every consumer receives the exact
+        // same MemoryStore and purge service allocations; C1 absent id + valid
+        // create -> E1 one Suspended aggregate at v1; C2 same deterministic id
+        // again -> E2 conflict and original unchanged; C3 existing id +
+        // metadata/state commands -> E3 one updated aggregate; C4 delete with
+        // zero retention -> E4 Deleted plus one durable purge; C5 unknown id ->
+        // E5 NotFound and no aggregate.
+        //
+        // | Rule | composition | command/state | Effect |
+        // | R0   | one         | none          | E0     |
+        // | R1   | one         | create/new    | E1     |
+        // | R2   | one         | create/exists | E2     |
+        // | R3   | one         | update/exists | E3     |
+        // | R4   | one         | delete/exists | E4     |
+        // | R5   | one         | any/missing   | E5     |
+        // HTTP and Dream both drive the same application ports proven by R0.
         let application = application();
         let stores = application.memory_stores();
+        assert!(
+            Arc::ptr_eq(&stores, &application.memory_stores()),
+            "R0: MemoryStore service must not be reconstructed per consumer"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &application.purge_scheduler(),
+                &application.purge_scheduler()
+            ),
+            "R0: reclamation scheduler must not be reconstructed per consumer"
+        );
         let id: awaken_resource_contract::MemoryStoreId = "memory-result".into();
         let created = stores
             .create(CreateMemoryStoreCommand {

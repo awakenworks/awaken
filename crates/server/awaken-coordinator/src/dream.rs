@@ -6,15 +6,14 @@ use std::sync::Arc;
 use awaken_dream_application::{
     DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
 };
-use awaken_memory_store::{Memory, MemoryRepository};
 use awaken_protocol_managed::ManagedState;
 use awaken_protocol_managed::types::{InboundEvent, SendEventsRequest, SessionStatus};
 use awaken_provisioning_contract::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
 };
 use awaken_resource_contract::{
-    CreateMemoryStoreCommand, MemoryStoreApplicationService, MemoryStoreId, ResourceCatalog,
-    ResourceState,
+    CreateMemoryStoreCommand, Memory, MemoryRepository, MemoryStoreApplicationService,
+    MemoryStoreId, ResourceCatalog, ResourceState,
 };
 use awaken_session_contract::{
     ApplicationSessionContribution, ApplicationSessionContributionApi, ApplicationSessionInput,

@@ -22,6 +22,7 @@ CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
 COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
 RESOURCE_COMPONENT = "crates/resources/awaken-resource-application/src/component.rs"
 RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
+RESOURCE_PERSISTENCE = "crates/resources/awaken-resource-persistence/src/lib.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
 RUNTIME_HOST_MANIFEST = "crates/server/awaken-runtime-host/Cargo.toml"
@@ -224,9 +225,9 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
     (
-        "ephemeral_resources_application",
-        COORDINATOR_SOURCE,
-        r"\bpub\s+fn\s+ephemeral_resources_application\b",
+        "awaken_resource_persistence::ephemeral",
+        RESOURCE_PERSISTENCE,
+        r"\bpub\s+fn\s+ephemeral\b",
         FEATURE_TEST_SUPPORT_GATE,
     ),
     (
@@ -724,6 +725,53 @@ def domain_component_violations(
     return errors
 
 
+def coordinator_resource_composition_violations(
+    coordinator_manifest: dict,
+    cli_manifest: dict,
+    source: str,
+    component_source: str,
+) -> list[str]:
+    """Keep Resources persistence/application construction outside Coordinator."""
+
+    errors: list[str] = []
+    for consumer, manifest in (
+        ("Coordinator", coordinator_manifest),
+        ("CLI", cli_manifest),
+    ):
+        dependencies = manifest.get("dependencies", {})
+        for package in (
+            "awaken-file-store",
+            "awaken-memory-store",
+            "awaken-resource-store",
+            "awaken-skill-store",
+        ):
+            if package in dependencies:
+                errors.append(
+                    f"{consumer} directly selects Resources persistence `{package}`"
+                )
+    for forbidden in (
+        "embedded_resource_component",
+        "embedded_resources_application",
+        "ephemeral_resources_application",
+        "awaken_resource_store::",
+        "awaken_file_store::",
+        "awaken_memory_store::",
+        "awaken_skill_store::",
+    ):
+        if forbidden in source:
+            errors.append(f"Coordinator reconstructs Resources through `{forbidden}`")
+    for required in (
+        "pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>",
+        "memory_stores,",
+    ):
+        if required not in component_source:
+            errors.append(
+                "Coordinator component does not propagate the exact Resources service "
+                f"through `{required}`"
+            )
+    return errors
+
+
 def _struct_body(source: str, name: str) -> str:
     match = re.search(rf"\bstruct\s+{re.escape(name)}\s*\{{(.*?)\n\}}", source, re.S)
     return match.group(1) if match else ""
@@ -765,7 +813,7 @@ def process_store_ownership_violations(
         "let opens_control = role_owns_control_component(role);",
         "let coordinator = if role_owns_managed_execution(role)",
         "let manifest = migration_manifest(deployment.role);",
-        "let resource_component = if manifest.contains(&MigrationComponent::Resources)",
+        "let resources = if manifest.contains(&MigrationComponent::Resources)",
     ):
         if required not in cli_source:
             errors.append(f"role-aware store assembly is missing `{required}`")
@@ -1066,6 +1114,25 @@ def selftest() -> None:
         "ResourcePlane",
         "pub struct WorkerNodeBuilder build_worker_component",
     )  # O11 R2/R3/R4 parallel or cross-owner component construction
+    # Resources composition causes/effects:
+    # R1 no concrete store deps/factories + injected MemoryStore service -> accept;
+    # R2 any concrete Resources dependency -> reject cross-context acquisition;
+    # R3 any embedded/ephemeral factory -> reject a second backend selector;
+    # R4 missing injected service -> reject HTTP/Dream parallel construction;
+    # R5 CLI links a concrete store beside persistence bootstrap -> reject.
+    coordinator_resources = (
+        "pub memory_stores: Arc<dyn "
+        "awaken_resource_contract::MemoryStoreApplicationService> memory_stores,"
+    )
+    assert coordinator_resource_composition_violations(
+        {"dependencies": {}}, {"dependencies": {}}, "", coordinator_resources
+    ) == []  # O11a R1
+    assert coordinator_resource_composition_violations(
+        {"dependencies": {"awaken-memory-store": {}}},
+        {"dependencies": {"awaken-skill-store": {}}},
+        "embedded_resource_component awaken_resource_store::",
+        "",
+    )  # O11b R2/R3/R4/R5
     process_stores = (
         "struct ProcessStores { control: Option<ControlStores>, "
         "coordinator: Option<CoordinatorStores>\n}\n"
@@ -1076,7 +1143,7 @@ def selftest() -> None:
         "let opens_control = role_owns_control_component(role); "
         "let coordinator = if role_owns_managed_execution(role) "
         "let manifest = migration_manifest(deployment.role); "
-        "let resource_component = if manifest.contains(&MigrationComponent::Resources)"
+        "let resources = if manifest.contains(&MigrationComponent::Resources)"
     )
     resource_owner = (
         "pub resource_catalog: Arc<dyn ResourceCatalog> "
@@ -1088,7 +1155,7 @@ def selftest() -> None:
     assert process_store_ownership_violations(
         process_stores.replace("catalog: CatalogRepo", "sessions: ManagedSessionRepository"),
         role_aware.replace(
-            "let resource_component = if manifest.contains(&MigrationComponent::Resources)", ""
+            "let resources = if manifest.contains(&MigrationComponent::Resources)", ""
         ),
         resource_owner,
     )  # O14
@@ -1129,8 +1196,9 @@ def selftest() -> None:
         SKILL_SQLITE_SOURCE: any_gate + "pub fn open_in_memory() {}",
         RESOURCE_STORE_SOURCE: any_gate + "pub fn in_memory() {}",
         RUNTIME_MEMORY_STORES: any_gate + "pub(crate) fn open() {}",
+        RESOURCE_PERSISTENCE: feature_gate
+        + "pub fn ephemeral() {}\n",
         COORDINATOR_SOURCE: feature_gate
-        + "pub fn ephemeral_resources_application() {}\n"
         + any_gate
         + "pub use worker_registry::test_directory as test_worker_directory;",
         ENV_STORE_SQLITE_SOURCE: any_gate
@@ -1467,6 +1535,14 @@ def check_all(repo_root: Path) -> list[str]:
                 path.read_text(encoding="utf-8")
                 for path in sorted((repo_root / WORKER_SOURCE).rglob("*.rs"))
             ),
+        )
+    )
+    errors.extend(
+        coordinator_resource_composition_violations(
+            product_manifests[COORDINATOR_MANIFEST],
+            product_manifests[CLI_MANIFEST],
+            (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
+            (repo_root / COORDINATOR_COMPONENT).read_text(encoding="utf-8"),
         )
     )
     errors.extend(

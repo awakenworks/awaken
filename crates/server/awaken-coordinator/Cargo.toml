@@ -48,12 +48,7 @@ awaken-protocol-a2a = { workspace = true }
 awaken-protocol-mcp = { workspace = true }
 awaken-agent-config.workspace = true
 awaken-config-store = { workspace = true }
-# Canonical Memory data plane used by API, mount, recall, extraction, history, and
-# redaction. The composition root selects its durable or ephemeral adapter once.
-awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-skill-store = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-resource-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-resource-persistence = { workspace = true, optional = true }
 awaken-session-store = { workspace = true }
 # Concrete worker adapter is assembled here, outside runtime-host, behind the
 # neutral MemoryMounter port (FUSE where available, copy/harvest otherwise).
@@ -136,6 +131,8 @@ tower-http = { version = "0.6", features = ["fs"] }
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
     "dep:awaken-store-inmem",
+    "dep:awaken-resource-persistence",
+    "awaken-resource-persistence/test-support",
     "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
     "awaken-run-ingress-http/test-support",
@@ -143,12 +140,8 @@ test-support = [
     "awaken-config-resolver/test-support",
     "awaken-config-store/test-support",
     "awaken-credential-vault/test-support",
-    "awaken-file-store/test-support",
-    "awaken-memory-store/test-support",
     "awaken-model-catalog/test-support",
-    "awaken-resource-store/test-support",
     "awaken-session-store/test-support",
-    "awaken-skill-store/test-support",
     "awaken-protocol-managed/test-support",
     "awaken-dream-application/test-support",
     "awaken-runtime-host/test-support",
@@ -178,11 +171,8 @@ awaken-captured-content-store = { workspace = true, features = ["test-support"] 
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
-awaken-memory-store = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
-awaken-resource-store = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
-awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-scenario-host = { workspace = true }
 awaken-run-ingress = { workspace = true }
 awaken-store-inmem.workspace = true

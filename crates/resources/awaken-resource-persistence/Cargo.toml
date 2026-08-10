@@ -1,0 +1,34 @@
+[package]
+name = "awaken-resource-persistence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "resources"
+layer = "bootstrap"
+authority = "resource"
+
+[dependencies]
+awaken-resource-application.workspace = true
+awaken-resource-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-skill-store = { workspace = true, features = ["postgres"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[features]
+default = []
+test-support = [
+    "awaken-resource-store/test-support",
+    "awaken-file-store/test-support",
+    "awaken-memory-store/test-support",
+    "awaken-skill-store/test-support",
+]
+
+[lints]
+workspace = true

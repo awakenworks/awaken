@@ -37,7 +37,7 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
             ),
         }),
         coordinator: Some(CoordinatorStores {
-            resource_component: ephemeral_resource_component(),
+            resources: ephemeral_resources_application(),
             sessions: sessions.clone(),
             deployments: sessions.clone(),
             memory_extractions: sessions.clone(),
@@ -129,7 +129,7 @@ pub(super) async fn open_local_process_stores(
     dir: &std::path::Path,
     key: &[u8; 32],
 ) -> Result<ProcessStores, String> {
-    let resource_component = open_resource_component(
+    let resources = open_resources_application(
         config::ResourceStoreBackend::Embedded(dir.to_path_buf()),
         PostgresSchemaMode::Migrate,
     )
@@ -140,7 +140,7 @@ pub(super) async fn open_local_process_stores(
             sessions: awaken_control::StoreBackend::Sqlite(dir.join("sessions.db")),
             captured_content: awaken_control::StoreBackend::Sqlite(dir.join("captured_content.db")),
         },
-        resource_component: Some(resource_component),
+        resources: Some(resources),
         workspace_root: dir.to_path_buf(),
         seal_key: Some(key),
         role: config::Role::AllInOne,

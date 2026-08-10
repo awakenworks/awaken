@@ -37,12 +37,12 @@ pub(super) async fn build_runtime_process_assembly(
         deployment,
         worker_directory.clone(),
     )?;
-    let resource_component =
-        open_resource_component(deployment.resources.clone(), postgres_schema).await?;
+    let resources =
+        open_resources_application(deployment.resources.clone(), postgres_schema).await?;
     let stores = open_process_stores(ProcessStoreOpenOptions {
         control: deployment.control.clone(),
         coordinator: deployment.coordinator.clone(),
-        resource_component: Some(resource_component),
+        resources: Some(resources),
         workspace_root: deployment.data_dir.clone(),
         seal_key: key,
         role,
@@ -133,9 +133,9 @@ pub async fn migrate_deployment_schema(
     key: Option<&[u8; 32]>,
 ) -> Result<(), String> {
     let manifest = migration_manifest(deployment.role);
-    let resource_component = if manifest.contains(&MigrationComponent::Resources) {
+    let resources = if manifest.contains(&MigrationComponent::Resources) {
         Some(
-            open_resource_component(deployment.resources.clone(), PostgresSchemaMode::Migrate)
+            open_resources_application(deployment.resources.clone(), PostgresSchemaMode::Migrate)
                 .await?,
         )
     } else {
@@ -147,7 +147,7 @@ pub async fn migrate_deployment_schema(
         open_process_stores(ProcessStoreOpenOptions {
             control: deployment.control.clone(),
             coordinator: deployment.coordinator.clone(),
-            resource_component,
+            resources,
             workspace_root: deployment.data_dir.clone(),
             seal_key: key,
             role: deployment.role,

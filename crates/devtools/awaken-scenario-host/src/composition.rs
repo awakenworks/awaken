@@ -362,12 +362,15 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
 pub fn build_unscoped_resource_router() -> Router {
     let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
     let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> =
-        awaken_coordinator::resource_purge_scheduler(
+        Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
             host.resource_reclamation()
                 .expect("scenario resource lifecycle"),
-        );
-    let memory_stores =
-        awaken_coordinator::memory_store_application(scenario_resource_catalog(), purge.clone());
+        ));
+    let memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> =
+        Arc::new(awaken_resource_application::MemoryStoreApplication::new(
+            scenario_resource_catalog(),
+            purge.clone(),
+        ));
     awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput {
         files: host
             .file_application()
