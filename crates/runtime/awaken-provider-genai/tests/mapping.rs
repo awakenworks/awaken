@@ -128,6 +128,38 @@ fn adjacent_tool_results_coalesce_for_anthropic_turn_ordering() {
 }
 
 #[test]
+fn reasoning_only_history_rows_are_not_replayed_as_empty_provider_messages() {
+    let request = ChatRequest {
+        model_binding: binding("deepseek-v4-pro"),
+        inference: Default::default(),
+        messages: vec![
+            ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::text("produce typed output")],
+            },
+            ChatMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::thinking("internal reasoning")],
+            },
+            ChatMessage {
+                role: Role::User,
+                content: vec![ContentBlock::text("repair the typed output")],
+            },
+        ],
+        tools: Vec::new(),
+    };
+
+    let genai = to_genai_request(&request);
+    assert_eq!(genai.messages.len(), 2);
+    assert!(
+        genai
+            .messages
+            .iter()
+            .all(|message| !message.content.parts().is_empty())
+    );
+}
+
+#[test]
 fn image_block_maps_to_a_binary_part() {
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
