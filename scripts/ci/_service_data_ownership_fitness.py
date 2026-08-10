@@ -84,8 +84,9 @@ CREDENTIAL_INFERENCE_SOURCE = (
     "crates/server/awaken-credential-materializer/src/inference.rs"
 )
 CONTROL_MODEL_PUBLICATION = "crates/control/awaken-control/src/model_publication.rs"
-CREDENTIAL_REFRESH_SOURCE = (
-    "crates/server/awaken-credential-materializer/src/oauth_refresh.rs"
+CREDENTIAL_REFRESH_SOURCES = (
+    "crates/server/awaken-credential-materializer/src/lib.rs",
+    "crates/server/awaken-credential-materializer/src/oauth_refresh.rs",
 )
 
 # Exact packages are used instead of broad words such as "resource" or
@@ -1867,7 +1868,10 @@ def check_all(repo_root: Path) -> list[str]:
     ):
         errors.append(f"Control model publication: {error}")
     for error in credential_refresh_authority_violations(
-        (repo_root / CREDENTIAL_REFRESH_SOURCE).read_text(encoding="utf-8"),
+        "\n".join(
+            (repo_root / source).read_text(encoding="utf-8")
+            for source in CREDENTIAL_REFRESH_SOURCES
+        ),
         coordinator_production,
     ):
         errors.append(f"Credential refresh: {error}")

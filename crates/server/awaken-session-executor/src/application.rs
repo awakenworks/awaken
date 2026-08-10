@@ -19,12 +19,10 @@ fn realization_renewal_is_retired(
 ) -> bool {
     use awaken_session_contract::SessionRealizationControlFailure;
 
-    match error {
-        SessionRealizationControlFailure::NotFound | SessionRealizationControlFailure::NotReady => {
-            true
-        }
-        _ => false,
-    }
+    matches!(
+        error,
+        SessionRealizationControlFailure::NotFound | SessionRealizationControlFailure::NotReady
+    )
 }
 
 #[cfg(test)]

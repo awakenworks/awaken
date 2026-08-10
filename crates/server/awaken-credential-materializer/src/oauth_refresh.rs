@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::CredentialRefreshFactory;
 use awaken_agent_contract::RedactedString;
 use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_credential_contract::CredentialSourceId;
@@ -18,23 +19,6 @@ use base64::Engine as _;
 pub struct VaultRefreshFactory {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
-}
-
-/// Factory for one exact credential revision's challenge recovery. Runtime
-/// carries only the resulting transport refresher and never sees a Credential
-/// repository or Secret Store.
-pub trait CredentialRefreshFactory: Send + Sync {
-    fn refresher(
-        &self,
-        credential_id: CredentialSourceId,
-        access: CredentialRefreshAccess,
-    ) -> Arc<dyn CredentialRefresher>;
-
-    fn bearer_reloader(
-        &self,
-        credential_id: CredentialSourceId,
-        credential_revision: u64,
-    ) -> Arc<dyn CredentialRefresher>;
 }
 
 impl VaultRefreshFactory {
