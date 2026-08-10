@@ -7,7 +7,7 @@ use awaken_session_contract::SessionRuntime;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Mutex,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
 fn native_credential_profile() -> awaken_runtime_contract::CredentialRealizationProfile {
@@ -3251,6 +3251,30 @@ struct BindingOrderSink {
     require_realization: bool,
 }
 
+struct MovingRealizationFenceSink {
+    calls: AtomicUsize,
+    accepted_epoch: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionEnvironmentBindingSink for MovingRealizationFenceSink {
+    async fn persist(
+        &self,
+        receipt: awaken_session_contract::SessionEnvironmentReceipt,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let asserted_epoch = receipt.realization.map_or(0, |lease| lease.epoch);
+        if asserted_epoch == self.accepted_epoch.load(Ordering::SeqCst) {
+            Ok(())
+        } else {
+            Err(awaken_session_contract::RunError::classified(
+                "session_realization_stale",
+                "a newer exact realization fence owns the Session",
+            ))
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionEnvironmentBindingSink for BindingOrderSink {
     async fn persist(
@@ -3351,6 +3375,52 @@ async fn recovered_environment_waits_for_replacement_realization_before_publish(
     opening.await.expect("join").expect("R2");
     assert_eq!(sink.calls.load(Ordering::SeqCst), 2, "R2");
     assert!(host.session_environment("binding-restart").await.is_some());
+}
+
+/// Multi-renewal FMECA: C1 a slow environment returns under no projected lease;
+/// C2 Control installs epoch 2, then C3 epoch 3 before the retry commits. E1 each
+/// stale receipt remains fenced, E2 the host follows both exact notifications,
+/// and E3 only epoch 3 can publish the environment. This is scenario-neutral:
+/// the same race applies to container startup, image preparation, and recovery.
+#[tokio::test]
+async fn environment_binding_catches_up_across_multiple_realization_fences() {
+    use awaken_session_contract::SessionRuntime;
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let sink = Arc::new(MovingRealizationFenceSink {
+        calls: AtomicUsize::new(0),
+        accepted_epoch: AtomicU64::new(3),
+    });
+    crate::ManagedHost::new(host.clone()).install_environment_binding_sink(sink.clone());
+
+    let opening = {
+        let host = host.clone();
+        tokio::spawn(async move { host.ctx_for("binding-moving-fence", None).await })
+    };
+    while sink.calls.load(Ordering::SeqCst) < 1 {
+        tokio::task::yield_now().await;
+    }
+    for epoch in [2, 3] {
+        host.install_session_realization_lease(
+            "binding-moving-fence",
+            awaken_session_contract::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker/incarnation".into(),
+                epoch,
+                expires_at_unix_ms: u64::MAX,
+            },
+        );
+        while sink.calls.load(Ordering::SeqCst) < usize::try_from(epoch).unwrap() {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    opening.await.expect("join").expect("epoch 3 commits");
+    assert_eq!(sink.calls.load(Ordering::SeqCst), 3, "E1/E2/E3");
+    assert!(
+        host.session_environment("binding-moving-fence")
+            .await
+            .is_some()
+    );
 }
 
 /// Durable-binding decision table: no binding + no resident Environment permits
