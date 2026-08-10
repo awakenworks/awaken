@@ -439,6 +439,16 @@ fn build_pod(
     }
 }
 
+/// Render the exact Kubernetes Pod shape used by [`K8sRuntime`] from an already
+/// normalized container plan, without contacting an apiserver. This is the
+/// canonical deployment-proof seam for callers that need to validate generated
+/// Pod contracts; live creation still adds runtime ownership labels in
+/// [`K8sRuntime::pod`] before submitting the same Pod.
+#[must_use]
+pub fn pod_for_plan(id: &str, plan: &ContainerPlan) -> Pod {
+    build_pod(id, plan, &None, None, &[])
+}
+
 /// Host side of the reverse-dial: bind the rendezvous and accept the Pod's outbound
 /// connection, returning it as the agent channel. Extracted so it is testable with a
 /// stand-in dialer (no cluster).
