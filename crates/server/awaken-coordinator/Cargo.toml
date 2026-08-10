@@ -11,6 +11,7 @@ authority = "coordinator"
 
 
 [dependencies]
+awaken-service-lifecycle.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-session-executor.workspace = true
@@ -130,6 +131,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
+    "awaken-webhook-managed/test-support",
     "dep:awaken-store-inmem",
     "dep:awaken-resource-persistence",
     "awaken-resource-persistence/test-support",
@@ -147,7 +149,6 @@ test-support = [
     "awaken-session-executor/test-support",
     "awaken-worker-registry/test-support",
     "awaken-webhook/test-support",
-    "awaken-webhook-managed/test-support",
 ]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
 # awaken-session-executor → awaken-dispatch so the built binary carries a NATS-capable

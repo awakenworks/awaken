@@ -146,7 +146,7 @@ enum RuntimeModelAssembly {
 struct ControlServicePorts {
     audit: Arc<dyn awaken_config_service::ManagementAuditRepository>,
     credentials: Arc<dyn awaken_session_application::SessionCredentialSource>,
-    webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
+    webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
 }
 
@@ -169,12 +169,14 @@ pub struct ProcessAssembly {
     pub private_router: Router,
     pub local_setup: Option<awaken_control::LocalSetupHandoff>,
     pub registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
+    pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 }
 
 struct ProcessRouterAssembly {
     public_router: Router,
     private_router: Router,
     registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
+    service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 }
 
 impl ProcessRouterAssembly {
@@ -182,6 +184,7 @@ impl ProcessRouterAssembly {
         public_router: Router,
         private_router: Router,
         registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
+        service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
         // Router-only embedding helpers do not retain ProcessAssembly. Keep the
         // same supervisor alive inside the router as well as exposing it to the
@@ -190,10 +193,12 @@ impl ProcessRouterAssembly {
             Some(supervisor) => public_router.layer(axum::Extension(supervisor.clone())),
             None => public_router,
         };
+        let public_router = public_router.layer(axum::Extension(service_lifecycle.clone()));
         Self {
             public_router,
             private_router,
             registration_supervisor,
+            service_lifecycle,
         }
     }
 }

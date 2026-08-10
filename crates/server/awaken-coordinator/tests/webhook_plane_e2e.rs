@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use awaken_config_resolver::InMemoryWebhookStore;
 use awaken_coordinator::webhooks;
 use awaken_credential_vault::InMemorySecretStore;
+use awaken_session_contract::{ManagedLifecycleFact, ManagedSessionRepository};
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::verify;
@@ -75,6 +76,13 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test]
 async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
+    // Cause/effect graph: C1 owning tenant authors a loopback subscription; C2
+    // a committed Session fact wakes the supervised outbox; C3 signing material
+    // resolves; C4 service cancellation follows delivery. Effects: E1 one scoped,
+    // signed HTTP event; E2 secret never reappears in reads; E3 delete removes
+    // the endpoint; E4 the one outbox loop joins. Coverage rule R1=C1+C2+C3 ->
+    // E1+E2, then delete -> E3, then C4 -> E4.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     // 1. A real receiver on an ephemeral port.
     let inbox: Inbox = Arc::new(Mutex::new(Vec::new()));
     let recv = Router::new()
@@ -92,7 +100,8 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     // The guarded production posture would refuse this loopback receiver (SSRF
     // pin/admission), so use the loopback assembly for the in-process e2e.
-    let (sink, crud) = webhooks::assemble_loopback(store, secrets, None, sessions);
+    let (notifier, crud) =
+        webhooks::assemble_loopback(store, secrets, None, sessions.clone(), &service_lifecycle);
     let crud = crud.layer(axum::middleware::from_fn(stamp_local));
 
     // 3. Register a subscription through the REAL CRUD route; the secret comes back once.
@@ -120,12 +129,19 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         "list never echoes the secret"
     );
 
-    // 4. A committed session lifecycle fact, owned by wrkspc_local, drives the sink
-    // exactly as `create_session` does (owner resolved at ingress; the
-    // create_session→sink link itself is covered in protocol-managed).
-    use awaken_session_contract::SessionLifecycleFactSink;
-    sink.emit("sesn_live", Some("wrkspc_local"), "session.status_idled")
-        .await;
+    // 4. The aggregate transaction is the fact authority; the notifier carries
+    // no payload and only accelerates the supervised replay.
+    sessions
+        .append_lifecycle(ManagedLifecycleFact {
+            id: "session:sesn_live:status_idled".into(),
+            object_id: "sesn_live".into(),
+            workspace_id: Some("wrkspc_local".into()),
+            event_type: "session.status_idled".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await
+        .expect("commit lifecycle fact");
+    notifier.notify();
 
     // 5. The receiver got exactly one signed, correctly-scoped delivery.
     for _ in 0..100 {
@@ -181,6 +197,10 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         listed["data"].as_array().unwrap().is_empty(),
         "unsubscribed"
     );
+    service_lifecycle
+        .shutdown(std::time::Duration::from_secs(1))
+        .await
+        .expect("R1/E4 supervised outbox joins");
 }
 
 /// The webhook row carries its owner, so the handlers self-fence: another tenant's
@@ -188,10 +208,15 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
 /// the isolation that holds even under standalone, which has no ownership middleware.
 #[tokio::test]
 async fn cross_tenant_access_to_a_webhook_id_is_fenced() {
+    // Cause/effect rule R2: C1 one service lifecycle owns the outbox and C2 an
+    // intruder addresses another workspace's id -> E1 GET/list disclose nothing,
+    // E2 DELETE is a no-op, and C3 cancellation -> E3 the outbox loop joins.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
     let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let (_sink, crud) = webhooks::assemble_with_session_repo(store, secrets, None, sessions);
+    let (_sink, crud) =
+        webhooks::assemble_with_session_repo(store, secrets, None, sessions, &service_lifecycle);
     let owner = crud.clone().layer(axum::middleware::from_fn(stamp_local));
     let intruder = crud.layer(axum::middleware::from_fn(stamp_intruder));
 
@@ -231,4 +256,8 @@ async fn cross_tenant_access_to_a_webhook_id_is_fenced() {
     // The owner still has it — the intruder's DELETE touched nothing.
     let (status, _) = call(&owner, "GET", "/v1/config/webhook-subscriptions/wh_1", None).await;
     assert_eq!(status, StatusCode::OK, "owner's row survived");
+    service_lifecycle
+        .shutdown(std::time::Duration::from_secs(1))
+        .await
+        .expect("R2/E3 supervised outbox joins");
 }

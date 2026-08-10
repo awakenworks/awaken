@@ -15,15 +15,17 @@ use awaken_config_resolver::{
 };
 use awaken_credential_vault::{CredentialError, SecretRef, SecretStore};
 use awaken_session_contract::{
-    ManagedLifecycleFact, ManagedSessionRepository, PersistedSession, SessionLifecycleFactSink,
+    LifecycleFactDelivery, LifecycleFactNotifier, ManagedLifecycleFact, ManagedSessionRepository,
+    PersistedSession,
 };
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::{
     ResolvedSubscription, SubscriptionFailureState, SubscriptionSource, WebhookDispatcher,
     WebhookSender,
 };
+use awaken_webhook_managed::WebhookOutboxNotifier;
 use awaken_webhook_managed::{
-    ConfigPlaneSubscriptionSource, WebhookLifecycleFactSink, config_plane_lifecycle_delivery,
+    ConfigPlaneLifecycleDelivery, ConfigPlaneSubscriptionSource, config_plane_lifecycle_delivery,
     reconcile_webhook_inventory, recover_webhook_mutations, webhook_config_router,
 };
 use axum::body::Body;
@@ -38,7 +40,16 @@ use tower::ServiceExt;
 struct MemStore(InMemoryWebhookStore);
 
 #[derive(Default)]
-struct SessionOutbox(Mutex<HashMap<String, ManagedLifecycleFact>>);
+struct SessionOutbox {
+    rows: Mutex<HashMap<String, ManagedLifecycleFact>>,
+    fail_completion_once: AtomicBool,
+}
+
+impl SessionOutbox {
+    fn fail_completion_once(&self) {
+        self.fail_completion_once.store(true, Ordering::SeqCst);
+    }
+}
 
 #[async_trait]
 impl ManagedSessionRepository for SessionOutbox {
@@ -78,7 +89,7 @@ impl ManagedSessionRepository for SessionOutbox {
         &self,
         fact: ManagedLifecycleFact,
     ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
-        self.0
+        self.rows
             .lock()
             .unwrap()
             .entry(fact.id.clone())
@@ -88,13 +99,20 @@ impl ManagedSessionRepository for SessionOutbox {
     async fn pending_lifecycle(
         &self,
     ) -> Result<Vec<ManagedLifecycleFact>, awaken_session_contract::SessionRepositoryError> {
-        Ok(self.0.lock().unwrap().values().cloned().collect())
+        Ok(self.rows.lock().unwrap().values().cloned().collect())
     }
     async fn complete_lifecycle(
         &self,
         fact_id: &str,
     ) -> Result<(), awaken_session_contract::SessionRepositoryError> {
-        self.0.lock().unwrap().remove(fact_id);
+        if self.fail_completion_once.swap(false, Ordering::SeqCst) {
+            return Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "injected lifecycle completion outage".into(),
+                ),
+            );
+        }
+        self.rows.lock().unwrap().remove(fact_id);
         Ok(())
     }
     async fn get(
@@ -1009,7 +1027,7 @@ async fn inventory_reconciliation_protects_intents_and_reports_missing_material(
     assert!(secrets.get(&concurrent).await.is_ok(), "R5/E5");
 }
 
-// --- WebhookLifecycleFactSink: the no-owner early return ---
+// --- ConfigPlaneLifecycleDelivery: the no-owner early return ---
 
 struct CountingSource(Arc<Mutex<u32>>);
 #[async_trait]
@@ -1039,21 +1057,27 @@ impl WebhookSender for NoopSender {
 }
 
 #[tokio::test]
-async fn emit_without_a_workspace_owner_does_not_fan_out() {
+async fn delivery_without_a_workspace_owner_does_not_fan_out() {
+    // Cause/effect rule R1: C1 a committed lifecycle fact has no Workspace
+    // owner -> E1 Control delivery succeeds as a deterministic no-op and E2 no
+    // subscription lookup occurs. Notification/replay is intentionally absent:
+    // ownership filtering belongs to the delivery adapter, not the notifier.
     let calls = Arc::new(Mutex::new(0u32));
     let dispatcher = Arc::new(WebhookDispatcher::new(
         Arc::new(CountingSource(calls.clone())),
         Arc::new(NoopSender),
     ));
-    let sink = WebhookLifecycleFactSink::new(
-        dispatcher,
-        None,
-        Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
-    );
-    // No owner → the sink returns before spawning any dispatch (deterministic:
-    // no owner means no spawn, so the source is never consulted).
-    sink.emit("sesn_1", None, "session.created").await;
-    assert_eq!(*calls.lock().unwrap(), 0, "no owner → no fan-out");
+    ConfigPlaneLifecycleDelivery::new(dispatcher, None)
+        .deliver(&ManagedLifecycleFact {
+            id: "session:sesn_1:created".into(),
+            object_id: "sesn_1".into(),
+            workspace_id: None,
+            event_type: "session.created".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await
+        .expect("an unattributed fact is a successful no-op");
+    assert_eq!(*calls.lock().unwrap(), 0, "R1/E1");
 }
 
 /// A sender that reports the delivered body over a channel, so the out-of-band
@@ -1130,11 +1154,34 @@ async fn wait_for_calls(calls: &AtomicUsize, expected: usize) {
     .expect("webhook attempts within the deadline");
 }
 
+async fn shutdown_lifecycle(lifecycle: &awaken_service_lifecycle::ServiceLifecycle) {
+    lifecycle
+        .shutdown(std::time::Duration::from_secs(1))
+        .await
+        .expect("supervised webhook reconciliation exits after cancellation");
+}
+
+fn outbox_notifier(
+    dispatcher: Arc<WebhookDispatcher>,
+    org_id: Option<String>,
+    outbox: Arc<dyn ManagedSessionRepository>,
+    lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+) -> WebhookOutboxNotifier {
+    WebhookOutboxNotifier::with_delivery(
+        Arc::new(ConfigPlaneLifecycleDelivery::new(dispatcher, org_id)),
+        outbox,
+        lifecycle,
+    )
+}
+
 #[tokio::test]
 async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() {
     // Decision rule R1: one transactionally committed lifecycle fact (C1),
     // followed by duplicate drain notifications (C2), yields one delivery (E1)
     // and retirement of the canonical session-outbox row (E2).
+    // R1 also constrains C3 service cancellation -> E3 the sole drain exits;
+    // there is no detached notification task to outlive the test/service.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let outbox = Arc::new(SessionOutbox::default());
     outbox
         .append_lifecycle(ManagedLifecycleFact {
@@ -1154,26 +1201,15 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
             status: Ok(200),
         }),
     ));
-    let sink = WebhookLifecycleFactSink::new(
+    let notifier = outbox_notifier(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        &service_lifecycle,
     );
 
-    sink.emit_fact(
-        "session:sesn_1:created",
-        "sesn_1",
-        Some("ws_a"),
-        "session.created",
-    )
-    .await;
-    sink.emit_fact(
-        "session:sesn_1:created",
-        "sesn_1",
-        Some("ws_a"),
-        "session.created",
-    )
-    .await;
+    notifier.notify();
+    notifier.notify();
     wait_for_calls(&calls, 1).await;
     tokio::task::yield_now().await;
 
@@ -1186,12 +1222,16 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
             .is_empty(),
         "successful delivery retires the row"
     );
+    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 #[tokio::test]
 async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
     // Decision rule R2: a committed fact (C1) plus exhausted delivery retries
     // (C2) keeps that exact fact pending (E1) for later reconciliation.
+    // C3 service cancellation stops retry ownership cleanly (E2); the durable
+    // row, rather than a detached task, remains the recovery source.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let outbox = Arc::new(SessionOutbox::default());
     outbox
         .append_lifecycle(ManagedLifecycleFact {
@@ -1211,19 +1251,14 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
             status: Err("injected outage".into()),
         }),
     ));
-    let sink = WebhookLifecycleFactSink::new(
+    let notifier = outbox_notifier(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        &service_lifecycle,
     );
 
-    sink.emit_fact(
-        "session:sesn_1:archived",
-        "sesn_1",
-        Some("ws_a"),
-        "session.archived",
-    )
-    .await;
+    notifier.notify();
     wait_for_calls(&calls, 3).await;
     tokio::task::yield_now().await;
 
@@ -1231,12 +1266,97 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, "session:sesn_1:archived");
     assert_eq!(pending[0].object_id, "sesn_1");
+    shutdown_lifecycle(&service_lifecycle).await;
+}
+
+#[tokio::test]
+async fn completion_failure_replays_the_same_stable_fact_identity() {
+    // Cause/effect decision rule R3: C1 delivery succeeds but C2 the repository
+    // cannot durably complete its receipt -> E1 the exact fact stays pending;
+    // C3 a later wake after repository recovery -> E2 the same id is delivered
+    // again and then retired. C4 cancellation -> E3 the sole replay task joins.
+    // At-least-once receivers therefore deduplicate by this aggregate-owned id;
+    // the notifier never invents a replacement identity.
+    #[derive(Default)]
+    struct RecordingDelivery(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl LifecycleFactDelivery for RecordingDelivery {
+        async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
+            self.0.lock().unwrap().push(fact.id.clone());
+            Ok(())
+        }
+    }
+
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    let outbox = Arc::new(SessionOutbox::default());
+    outbox
+        .append_lifecycle(ManagedLifecycleFact {
+            id: "session:sesn_receipt:archived".into(),
+            object_id: "sesn_receipt".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.archived".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await
+        .expect("append lifecycle");
+    outbox.fail_completion_once();
+    let delivery = Arc::new(RecordingDelivery::default());
+    let notifier = WebhookOutboxNotifier::with_delivery(
+        delivery.clone(),
+        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        &service_lifecycle,
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while delivery.0.lock().unwrap().len() < 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("startup replay attempts delivery");
+    assert_eq!(
+        outbox
+            .pending_lifecycle()
+            .await
+            .expect("pending lifecycle")
+            .len(),
+        1,
+        "R3/E1"
+    );
+
+    notifier.notify();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while delivery.0.lock().unwrap().len() < 2
+            || !outbox
+                .pending_lifecycle()
+                .await
+                .expect("pending lifecycle")
+                .is_empty()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("replayed fact completes after repository recovery");
+    assert_eq!(
+        *delivery.0.lock().unwrap(),
+        vec![
+            "session:sesn_receipt:archived".to_string(),
+            "session:sesn_receipt:archived".to_string(),
+        ],
+        "R3/E2"
+    );
+    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 #[tokio::test]
 async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
     // Decision rule R3: a lifecycle fact left pending before process start
     // (C1) is recovered by sink construction (E1) and retired after success (E2).
+    // C2 lifecycle cancellation after recovery -> E3 the startup drain joins;
+    // construction itself owns no hidden runtime handle.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let outbox = Arc::new(SessionOutbox::default());
     outbox
         .append_lifecycle(ManagedLifecycleFact {
@@ -1257,10 +1377,11 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
         }),
     ));
 
-    let _rebuilt = WebhookLifecycleFactSink::new(
+    let _rebuilt = outbox_notifier(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        &service_lifecycle,
     );
     wait_for_calls(&calls, 1).await;
     tokio::task::yield_now().await;
@@ -1273,10 +1394,15 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
             .is_empty(),
         "startup recovery retires a successfully redelivered row"
     );
+    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 #[tokio::test]
 async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
+    // Cause/effect rule R4: C1 a durable row exists and C2 its transient notify
+    // was lost before service start -> E1 the supervised startup replay delivers
+    // and retires it; C3 cancellation -> E2 the replay owner joins.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let outbox = Arc::new(SessionOutbox::default());
     outbox
         .append_lifecycle(ManagedLifecycleFact {
@@ -1297,10 +1423,11 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
             status: Ok(200),
         }),
     ));
-    let _restarted = WebhookLifecycleFactSink::new(
+    let _restarted = outbox_notifier(
         dispatcher,
         None,
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        &service_lifecycle,
     );
 
     wait_for_calls(&calls, 1).await;
@@ -1311,10 +1438,17 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
             .expect("pending lifecycle")
             .is_empty()
     );
+    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 #[tokio::test]
 async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
+    // Cause/effect decision table:
+    // R5 C1 initial delivery failure + C2 no later notification + C3 dependency
+    // recovers -> E1 interval replay delivers and retires the row.
+    // R6 C4 service cancellation at any point -> E2 the one reconciliation loop
+    // exits and joins; no constructor-owned or per-event task survives.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let outbox = Arc::new(SessionOutbox::default());
     outbox
         .append_lifecycle(ManagedLifecycleFact {
@@ -1335,11 +1469,11 @@ async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
             failing: failing.clone(),
         }),
     ));
-    let _sink = WebhookLifecycleFactSink::with_session_outbox_interval(
-        dispatcher,
-        None,
+    let _notifier = WebhookOutboxNotifier::with_delivery_interval(
+        Arc::new(ConfigPlaneLifecycleDelivery::new(dispatcher, None)),
         outbox.clone() as Arc<dyn ManagedSessionRepository>,
         std::time::Duration::from_millis(10),
+        &service_lifecycle,
     );
     wait_for_calls(&calls, 3).await;
     assert_eq!(
@@ -1364,48 +1498,70 @@ async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
     })
     .await
     .expect("periodic reconciliation should redeliver after recovery");
+    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 #[tokio::test]
-async fn emit_with_a_workspace_owner_fans_out_a_stamped_monotonic_event() {
-    // The lifecycle→webhook bridge: a committed fact with an owner builds the
-    // Anthropic-shaped event (session id, event type, workspace, org stamped) and
-    // delivers it out-of-band. The event id is `event_<n>`, monotonic from zero.
+async fn committed_fact_identity_and_scope_are_projected_unchanged() {
+    // Decision rule R7: C1 two transactionally committed facts carry stable,
+    // aggregate-owned ids and C2 both have a Workspace owner; after one notifier
+    // wake, E1 both are projected with those exact ids, object ids and scopes,
+    // E2 Control stamps only the configured organization, and C3 cancellation
+    // joins the sole replay task. The notifier must not mint another event id.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let dispatcher = Arc::new(WebhookDispatcher::new(
         Arc::new(OneSubSource(awaken_webhook::generate_secret())),
         Arc::new(RecordingSender(tx)),
     ));
-    let sink = WebhookLifecycleFactSink::new(
+    let outbox = Arc::new(SessionOutbox::default());
+    for fact in [
+        ManagedLifecycleFact {
+            id: "session:sesn_1:status_idled".into(),
+            object_id: "sesn_1".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.status_idled".into(),
+            timestamp: 1_768_780_800,
+        },
+        ManagedLifecycleFact {
+            id: "session:sesn_2:status_terminated".into(),
+            object_id: "sesn_2".into(),
+            workspace_id: Some("ws_a".into()),
+            event_type: "session.status_terminated".into(),
+            timestamp: 1_768_780_801,
+        },
+    ] {
+        outbox
+            .append_lifecycle(fact)
+            .await
+            .expect("commit lifecycle fact");
+    }
+    let notifier = outbox_notifier(
         dispatcher,
         Some("org_root".into()),
-        Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
+        outbox as Arc<dyn ManagedSessionRepository>,
+        &service_lifecycle,
     );
 
-    sink.emit("sesn_1", Some("ws_a"), "session.status_idled")
-        .await;
-    let body = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-        .await
-        .expect("delivery within the deadline")
-        .expect("a body was delivered");
-    let v: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["type"], "event");
-    assert_eq!(v["id"], "event_0", "first event id counts from zero");
-    assert_eq!(v["data"]["type"], "session.status_idled");
-    assert_eq!(v["data"]["id"], "sesn_1", "the object id is the session");
-    assert_eq!(v["data"]["workspace_id"], "ws_a");
-    assert_eq!(v["data"]["organization_id"], "org_root", "org is stamped");
-
-    // A second emit advances the monotonic sequence.
-    sink.emit("sesn_2", Some("ws_a"), "session.status_terminated")
-        .await;
-    let body2 = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
-        .await
-        .expect("second delivery")
-        .expect("a second body");
-    let v2: Value = serde_json::from_str(&body2).unwrap();
-    assert_eq!(v2["id"], "event_1", "the event id is monotonic");
-    assert_eq!(v2["data"]["id"], "sesn_2");
+    notifier.notify();
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("delivery within the deadline")
+            .expect("a body was delivered");
+        delivered.push(serde_json::from_str::<Value>(&body).unwrap());
+    }
+    delivered.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    assert_eq!(delivered[0]["type"], "event");
+    assert_eq!(delivered[0]["id"], "session:sesn_1:status_idled");
+    assert_eq!(delivered[0]["data"]["type"], "session.status_idled");
+    assert_eq!(delivered[0]["data"]["id"], "sesn_1");
+    assert_eq!(delivered[0]["data"]["workspace_id"], "ws_a");
+    assert_eq!(delivered[0]["data"]["organization_id"], "org_root");
+    assert_eq!(delivered[1]["id"], "session:sesn_2:status_terminated");
+    assert_eq!(delivered[1]["data"]["id"], "sesn_2");
+    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 #[tokio::test]
@@ -1544,17 +1700,25 @@ async fn drive(router: Router, method: &str, uri: &str, ws: &str, body: Value) -
 /// with `strict_endpoint_url_policy()`. The guarded-sender + strict-policy pairing
 /// is only covered downstream, so drive the CRUD router `assemble` returns and prove
 /// the STRICT policy is wired — a loopback endpoint is rejected at admission (400).
-/// Also confirm the returned lifecycle sink is a live `SessionLifecycleFactSink` (its
-/// no-owner path is a deterministic no-op, needing no network).
+/// Also confirm the returned notifier wakes the exact repository supplied to
+/// assembly; no payload or parallel fact-production path is involved.
 #[tokio::test]
-async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_sink() {
+async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_notifier() {
+    // Cause/effect rule: C1 production assembly receives one service lifecycle
+    // and C2 a loopback endpoint is authored -> E1 strict admission rejects it;
+    // C3 a committed ownerless fact is followed by a notifier wake -> E2 the
+    // same outbox is drained without network fan-out; C4 cancellation -> E3 the
+    // exact outbox loop assembled here joins.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
-    let (sink, router) = awaken_webhook_managed::assemble_with_session_repo(
+    let outbox = Arc::new(SessionOutbox::default());
+    let (notifier, router) = awaken_webhook_managed::assemble_with_session_repo(
         store.clone() as Arc<dyn WebhookStore>,
         secrets as Arc<dyn SecretStore>,
         Some("org_root".into()),
-        Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
+        outbox.clone() as Arc<dyn ManagedSessionRepository>,
+        &service_lifecycle,
     );
 
     // Strict policy wired: a loopback endpoint is rejected, and no row is stored.
@@ -1576,8 +1740,30 @@ async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_sink() {
         "a rejected create stores no row"
     );
 
-    // The returned sink is a real lifecycle sink: the no-owner emit is a no-op.
-    sink.emit("sesn_1", None, "session.created").await;
+    outbox
+        .append_lifecycle(ManagedLifecycleFact {
+            id: "session:sesn_1:created".into(),
+            object_id: "sesn_1".into(),
+            workspace_id: None,
+            event_type: "session.created".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await
+        .expect("commit lifecycle fact");
+    notifier.notify();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !outbox
+            .pending_lifecycle()
+            .await
+            .expect("pending lifecycle")
+            .is_empty()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("assembly notifier wakes its repository");
+    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 /// `assemble_loopback` is the e2e composition: `ReqwestSender::default()` paired
@@ -1587,6 +1773,10 @@ async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_sink() {
 /// drives the private `assemble_with` both delegate to.
 #[tokio::test]
 async fn assemble_loopback_admits_a_loopback_endpoint_the_strict_path_rejects() {
+    // Cause/effect rule: C1 test assembly receives one service lifecycle and C2
+    // a loopback endpoint is authored -> E1 permissive admission stores it; C3
+    // cancellation -> E2 the same explicitly-owned outbox loop joins.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let store = Arc::new(MemStore::default());
     let secrets = Arc::new(MemSecrets::ok());
     let (_sink, router) = awaken_webhook_managed::assemble_loopback(
@@ -1594,6 +1784,7 @@ async fn assemble_loopback_admits_a_loopback_endpoint_the_strict_path_rejects() 
         secrets as Arc<dyn SecretStore>,
         None,
         Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
+        &service_lifecycle,
     );
 
     let status = drive(
@@ -1613,6 +1804,7 @@ async fn assemble_loopback_admits_a_loopback_endpoint_the_strict_path_rejects() 
         store.get("wh_lb").expect("the row is stored").workspace_id,
         "ws_a"
     );
+    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 #[tokio::test]

@@ -331,29 +331,34 @@ impl ConfigServiceDraftStore {
         scope: impl Into<ScopeId>,
         resources: Arc<dyn AgentInputBindingRepository>,
     ) -> Self {
-        let store = Self {
+        Self {
             plane,
             scope: scope.into(),
             resources,
-        };
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let plane = store.plane.clone();
-            let scope = store.scope.clone();
-            let resources = store.resources.clone();
-            handle.spawn(async move {
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                loop {
-                    interval.tick().await;
-                    if let Err(error) =
-                        apply_pending_resource_effects(&plane, &scope, resources.as_ref()).await
-                    {
-                        eprintln!("resource binding reconciliation failed: {error}");
-                    }
-                }
-            });
         }
-        store
+    }
+
+    /// Reconcile durable resource-binding effects until the owning service
+    /// cancels this component task. Construction remains side-effect free.
+    pub async fn run_resource_effect_reconciliation(
+        self: Arc<Self>,
+        cancellation: awaken_runtime_contract::CancellationToken,
+    ) -> Result<(), String> {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => break,
+                _ = interval.tick() => {}
+            }
+            if let Err(error) =
+                apply_pending_resource_effects(&self.plane, &self.scope, self.resources.as_ref())
+                    .await
+            {
+                eprintln!("resource binding reconciliation failed: {error}");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -723,15 +728,26 @@ mod tests {
 
     #[tokio::test]
     async fn draft_resource_bindings_keep_equal_agent_ids_in_their_workspace() {
+        // Causes: C1 equal Agent id under distinct Workspace scopes; C2 an
+        // already-cancelled service token starts reconciliation. Effects: E1
+        // each scope reads only its binding; E2 reconciliation exits without a
+        // detached timer. Rules: R1=C1 -> E1; R2=C2 -> E2.
         let plane = ConfigPlane::new(
             Arc::new(test_config_service()),
             Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
             Arc::new(StaticToolCatalog(Vec::new())),
         );
         let resources = Arc::new(InMemoryAgentInputBindingRepository::new());
-        let workspace_a =
-            ConfigServiceDraftStore::new(plane.clone(), "workspace-a", resources.clone());
-        let workspace_b = ConfigServiceDraftStore::new(plane, "workspace-b", resources);
+        let workspace_a = Arc::new(ConfigServiceDraftStore::new(
+            plane.clone(),
+            "workspace-a",
+            resources.clone(),
+        ));
+        let workspace_b = Arc::new(ConfigServiceDraftStore::new(
+            plane,
+            "workspace-b",
+            resources,
+        ));
         let binding = |resource_id: &str| InputSpec {
             kind: "file".into(),
             resource_id: resource_id.into(),
@@ -757,6 +773,12 @@ mod tests {
             workspace_b.get_resources("shared-agent").await.unwrap()[0].resource_id,
             "file-b"
         );
+        let cancellation = awaken_runtime_contract::CancellationToken::new();
+        cancellation.cancel();
+        workspace_a
+            .run_resource_effect_reconciliation(cancellation)
+            .await
+            .expect("R2 cancelled reconciler exits");
     }
 
     #[tokio::test]
