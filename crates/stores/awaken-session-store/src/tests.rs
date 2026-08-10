@@ -153,7 +153,7 @@ fn sqlite_create_waits_for_a_competing_aggregate_writer() {
 fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
     /* MIG-01/MIG-02 cause/effect decision table. Causes: C1 fresh database,
      * C2 two simultaneous Session-store starters, C3 later replay. Effects:
-     * E1 exactly one complete V1..V22 ledger, E2 both starters converge, E3
+     * E1 exactly one complete V1..V20 ledger, E2 both starters converge, E3
      * replay is a no-op. Rules: S1 T/F/F=>E1; S2 T/T/F=>E1+E2; S3 F/F/T=>E3.
      * A backend crash cannot expose DDL without its receipt because the shared
      * migration runner commits each migration and ledger row in one backend
@@ -184,7 +184,7 @@ fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(ledger_count, 22, "S1/E1 and S3/E3");
+    assert_eq!(ledger_count, 20, "S1/E1 and S3/E3");
     let quarantine_exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",

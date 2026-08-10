@@ -156,13 +156,9 @@ pub async fn migrate_deployment_schema(
         .await
         .map(drop)?;
     }
-    if manifest.contains(&MigrationComponent::ExecutableAgentCatalog) {
-        executable_agent_registration::migrate(deployment).await?;
-    }
-    if manifest.contains(&MigrationComponent::ExecutableEnvironmentCatalog) {
-        executable_environment_registration::migrate(deployment).await?;
-    }
     if manifest.contains(&MigrationComponent::Coordinator) {
+        executable_agent_registration::migrate(deployment).await?;
+        executable_environment_registration::migrate(deployment).await?;
         awaken_coordinator::migrate_postgres_coordinator_schema(&deployment.runtime).await?;
     }
     Ok(())
