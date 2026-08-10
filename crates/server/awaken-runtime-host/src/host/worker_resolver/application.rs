@@ -32,6 +32,16 @@ async fn refresh_frozen_application_material(
     })
 }
 
+async fn acquire_session_realization_admission(
+    host: &SharedHost,
+    session_id: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    host.session_slots
+        .realization_lock(session_id)
+        .lock_owned()
+        .await
+}
+
 /// Install the frozen Session projection under the authenticated Run claim.
 /// Application contribution is one optional branch; ordinary registered-Worker
 /// Sessions use this same realization owner and phase driver.
@@ -71,6 +81,16 @@ pub(super) async fn install_claimed_session_projection(
         }
         return Ok(());
     };
+
+    // FMECA/causal graph: C1 concurrent reads/retries enter the same Session;
+    // C2 each Control resume/contribution may advance its realization lease;
+    // C3 a slow Environment effect from the earlier entrant is then fenced by
+    // the later entrant before it can persist. E1 serialize before the first
+    // Control mutation, E2 let the admitted entrant drive that exact directive,
+    // E3 later entrants observe/adopt the committed Session projection. Locking
+    // only the phase driver is too late because the directive already carries
+    // the durable fence created by Control.
+    let _realization = acquire_session_realization_admission(host, &thread_id.0).await;
 
     let dispatch: Arc<dyn awaken_run_ingress::DispatchQueue> = host
         .dispatch_store()
@@ -136,7 +156,7 @@ pub(super) async fn install_claimed_session_projection(
             )
             .await?;
         }
-        HostWorkerResolver::realize_application_session(
+        HostWorkerResolver::drive_application_session(
             host,
             control.as_ref(),
             &thread_id.0,
@@ -211,7 +231,7 @@ pub(super) async fn install_claimed_session_projection(
             .baseline
             .application
             .is_some();
-        HostWorkerResolver::realize_application_session(
+        HostWorkerResolver::drive_application_session(
             host,
             control.as_ref(),
             &thread_id.0,
@@ -241,6 +261,32 @@ pub(super) async fn install_claimed_session_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn realization_admission_precedes_concurrent_control_mutation() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let host = Arc::new(SharedHost::new(
+            Arc::new(crate::no_model::NoModelConfiguredExecutor),
+            "stub",
+        ));
+        let first = acquire_session_realization_admission(&host, "shared-session").await;
+        let second_entered = Arc::new(AtomicBool::new(false));
+        let waiting = {
+            let host = host.clone();
+            let second_entered = second_entered.clone();
+            tokio::spawn(async move {
+                let _second = acquire_session_realization_admission(&host, "shared-session").await;
+                second_entered.store(true, Ordering::SeqCst);
+            })
+        };
+
+        tokio::task::yield_now().await;
+        assert!(!second_entered.load(Ordering::SeqCst), "E1/E2");
+        drop(first);
+        waiting.await.expect("second admission joins");
+        assert!(second_entered.load(Ordering::SeqCst), "E3");
+    }
 
     #[test]
     fn only_absorbing_application_provisioning_failures_terminalize_the_claim() {
