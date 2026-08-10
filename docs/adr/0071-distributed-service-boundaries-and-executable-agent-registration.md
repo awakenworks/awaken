@@ -68,6 +68,15 @@ The private HTTP boundary requires a bearer token. Its client retries only
 idempotent network, availability, and storage failures; validation,
 authentication, and semantic conflicts return immediately.
 
+Split Control and Coordinator bind this boundary to an explicit
+`internal_bind`, separate from the public `bind`. The process assembly returns
+distinct public and private Routers and never provides a merged compatibility
+Router. Deployment adapters expose the internal port only through a dedicated
+ClusterIP Service with no public ingress; NetworkPolicy restricts Coordinator's
+private listener to Control/Management callers and Control's private listener
+to Coordinator callers. Listener separation is the routing invariant, while
+service authentication and NetworkPolicy are independent defense layers.
+
 Publication success means the Coordinator acknowledged registration. A durable
 publication may exist while registration is temporarily unavailable; that call
 returns an availability failure and an idempotent retry registers the same

@@ -65,6 +65,7 @@ impl ResolvedDeployment {
                 "role": self.role.as_str(),
                 "mode": self.mode.as_str(),
                 "bind": self.bind,
+                "internal_bind": self.internal_bind,
                 "data_dir": self.data_dir,
                 "config_file": self.config_path,
                 "config_file_exists": self.config_file_exists,
@@ -84,10 +85,11 @@ impl ResolvedDeployment {
             .expect("configuration report is serializable");
         }
         let mut report = format!(
-            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
+            "Awaken configuration\n\n  role                 {role}\n  mode                 {mode}\n  bind                 {bind}\n  internal bind        {internal_bind}\n  data directory       {data}\n  config file          {config} ({exists})\n  local worker pool    {pool}\n  identity mode        {identity}\n  cloud models         {cloud_models}\n  runtime dispatch     {runtime}\n  Resources backend    {resources}\n  control seal key     {key}\n\nSources: command line --config or standard config.toml, then defaults.\n",
             role = self.role.as_str(),
             mode = self.mode.as_str(),
             bind = self.bind,
+            internal_bind = self.internal_bind.as_deref().unwrap_or("not applicable"),
             data = self.data_dir.display(),
             config = self.config_path.display(),
             exists = if self.config_file_exists {

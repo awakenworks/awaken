@@ -44,7 +44,7 @@ pub async fn build_control_router(
 ) -> Result<Router, String> {
     build_control_assembly(deployment, key)
         .await
-        .map(|assembly| assembly.router)
+        .map(|assembly| assembly.public_router)
 }
 
 /// Canonical hosted assembly, including the one-time local setup handoff owned
@@ -110,7 +110,7 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
         Some((web_search_providers, web_search_publication_resolver)),
     )
     .await
-    .map(|assembly| assembly.router)
+    .map(|assembly| assembly.public_router)
 }
 
 async fn build_control_assembly_with_model_composition(
@@ -202,7 +202,8 @@ async fn build_control_assembly_with_model_composition(
     )
     .await;
     Ok(ProcessAssembly {
-        router: assembled.router,
+        public_router: assembled.public_router,
+        private_router: assembled.private_router,
         local_setup: identity.local_setup,
         registration_supervisor: assembled.registration_supervisor,
     })

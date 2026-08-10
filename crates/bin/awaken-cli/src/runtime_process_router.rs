@@ -565,7 +565,7 @@ pub(super) async fn assemble_runtime_process_router(
             ),
         ),
     };
-    let registration_router = executable_agent_private_router
+    let private_router = executable_agent_private_router
         .merge(executable_environment_private_router)
         .merge(worker_observation_private_router);
     let resource_ports = resource_application.ports();
@@ -594,7 +594,7 @@ pub(super) async fn assemble_runtime_process_router(
             environments: environment_execution,
             sessions,
             default_workspace: platform_workspace.clone(),
-            registration_router,
+            private_router,
         },
     )
     .await
@@ -636,6 +636,7 @@ pub(super) async fn assemble_runtime_process_router(
             platform_workspace,
             managed_rate_limiter,
         ),
+        coordinator.private_router,
         registration_supervisor,
     ))
 }

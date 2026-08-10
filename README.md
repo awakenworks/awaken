@@ -86,20 +86,35 @@ with the per-store URL fields. Seal keys and Cloud workload credentials likewise
 use their existing file-backed settings. Environment variables never select
 these deployment facts.
 
-Split Control and Coordinator processes additionally use one explicit private
-registration boundary:
+Split Control and Coordinator processes each bind a second, private HTTP
+surface. `bind` serves only public/product routes; `internal_bind` serves only
+authenticated service routes. A deployment must expose each internal port
+through a separate ClusterIP Service with no Ingress and restrict its callers
+with NetworkPolicy.
 
 ```toml
-# Control: destination of immutable executable Agent registrations.
-coordinator_internal_url = "http://awaken-coordinator:8080"
+# Control Pod: public Management API plus calls to Coordinator's private Service.
+role = "control"
+bind = "0.0.0.0:8080"
+internal_bind = "0.0.0.0:8081"
+coordinator_internal_url = "http://awaken-coordinator-private:8081"
 
 # Control and Coordinator: the same operator-projected, least-scope token file.
 executable_agent_registration_token_file = "/var/run/secrets/awaken/agent-registration-token"
 
+# Coordinator Pod: public runtime API plus calls to Control's private Service.
+role = "coordinator"
+bind = "0.0.0.0:8080"
+internal_bind = "0.0.0.0:8081"
+control_internal_url = "http://awaken-control-private:8081"
+control_service_token_file = "/var/run/secrets/awaken/control-service-token"
 ```
 
-Token values are loaded from files and never appear in `awaken config`. Workers
-reject both private-boundary credentials and every authority database field.
+The two role examples belong in separate configuration files. Split roles fail
+startup when `internal_bind` is absent, malformed, or equal to `bind`;
+AllInOne and Worker reject it. Token values are loaded from files and never
+appear in `awaken config`. Workers reject both private-boundary credentials and
+every authority database field.
 `awaken database migrate` also prepares the Coordinator-owned executable Agent
 command log when `runtime_database_url` is configured.
 

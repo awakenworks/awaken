@@ -131,6 +131,10 @@ is secondary to the port contract.
   `coordinator_internal_url` plus an operator-projected registration token file,
   Coordinator mounts the authenticated durable router, and Worker rejects both
   registration credentials and authority database bindings;
+- split Control and Coordinator return distinct public/private Routers and bind
+  the private Router to the required `internal_bind`; the public Router contains
+  no registration, Worker-observation, captured-content erasure, or reverse
+  Control-service route, and no merged compatibility surface remains;
 - `AgentResourceReferenceSource`, allowing Resource reclamation to query the
   same execution projection without depending on Config Service.
 
