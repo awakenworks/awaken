@@ -59,3 +59,28 @@ The dynamic flow is:
   session directory implementation rather than add a product-owned path.
 - Consumers pin the awaken-iam revision containing ADR-0012 as one atomic
   cross-repository dependency update.
+
+## Amendment — 2026-08-10: retain authorization across restart
+
+The in-memory restart consequence above is superseded. Embedded IAM already
+owns the migrated `<data_dir>/iam.sqlite` `SessionRepo`; Awaken now passes
+that exact repository to awaken-iam's canonical `SessionGateway`. No
+product-owned session table, cookie parser, hydration cache, or alternate
+authorization path is added.
+
+The restart sequence is:
+
+1. Awaken reopens and migrates the existing `iam.sqlite`.
+2. `LocalBrowserAuth` creates a fresh five-minute setup challenge for browsers
+   that do not yet have a session and attaches a repository-backed Gateway to
+   the existing `IamGate`.
+3. A browser presenting its prior HttpOnly cookie is resolved by token hash
+   from `iam_sessions`; expiry and persisted revocation are checked before
+   the existing PDP and Workspace fence run.
+4. A missing, expired, or revoked row returns 401 and the browser uses the
+   current one-time setup token. Repository failure returns 503 and never
+   clears or admits the browser session.
+
+The server-side session and browser cookie keep the existing 30-day bound.
+`last_seen_at` is durable activity metadata, not sliding expiry. Logout writes
+`revoked_at` to the same row, so restart cannot revive a logged-out browser.

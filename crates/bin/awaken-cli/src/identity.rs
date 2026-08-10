@@ -33,9 +33,9 @@ pub(crate) fn identity_wiring(
                 iam.register_workspace(workspace_id);
             }
             let account_id = AccountId("local-console-admin".to_owned());
-            let (browser, handoff) = LocalBrowserAuth::begin(account_id.clone())
+            let (browser, handoff) = iam
+                .begin_local_browser(account_id)
                 .map_err(|error| format!("local browser authentication: {error}"))?;
-            iam.enable_local_browser(&browser, &account_id);
             Ok(IdentityWiring {
                 iam: Some(iam),
                 remote_iam: None,

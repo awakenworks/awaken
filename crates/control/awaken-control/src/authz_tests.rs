@@ -1,4 +1,5 @@
 use super::*;
+use awaken_iam_contract::AccountId;
 
 #[test]
 fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
@@ -633,8 +634,7 @@ fn guarded_app(iam: Arc<ManagementAuthz>) -> Router {
 async fn local_browser_session_enters_the_existing_management_pdp() {
     let (_dir, iam) = fresh_iam();
     let account = AccountId("local-console-admin".into());
-    let (browser, handoff) = LocalBrowserAuth::begin(account.clone()).unwrap();
-    iam.enable_local_browser(&browser, &account);
+    let (browser, handoff) = iam.begin_local_browser(account).unwrap();
 
     let exchange = awaken_iam_host::local_browser_router(browser)
         .oneshot(
@@ -690,8 +690,7 @@ async fn local_browser_session_enters_the_existing_resource_pdp() {
 
     let (_dir, iam) = fresh_iam();
     let account = AccountId("local-console-resource-admin".into());
-    let (browser, handoff) = LocalBrowserAuth::begin(account.clone()).unwrap();
-    iam.enable_local_browser(&browser, &account);
+    let (browser, handoff) = iam.begin_local_browser(account).unwrap();
     let exchange = awaken_iam_host::local_browser_router(browser)
         .oneshot(
             Request::builder()
