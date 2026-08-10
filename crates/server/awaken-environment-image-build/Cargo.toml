@@ -14,6 +14,7 @@ async-trait.workspace = true
 awaken-environment-contract.workspace = true
 awaken-environment-realization-contract.workspace = true
 awaken-executable-environment-contract.workspace = true
+awaken-runtime-contract.workspace = true
 awaken-scoped-migration = { workspace = true, features = ["postgres"] }
 awaken-scoped-migration-sqlite.workspace = true
 rusqlite.workspace = true

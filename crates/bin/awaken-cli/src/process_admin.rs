@@ -30,7 +30,7 @@ pub struct DrainController {
     active: AtomicUsize,
     registration_supervisor: RwLock<Option<Arc<awaken_control::StaticRegistrationSupervisor>>>,
     registration_health: RwLock<Option<Arc<awaken_control::RegistrationHealth>>>,
-    process_tasks: RwLock<Option<awaken_process_lifecycle::ProcessTaskGroup>>,
+    service_lifecycle: RwLock<Option<awaken_service_lifecycle::ServiceLifecycle>>,
 }
 
 impl DrainController {
@@ -68,11 +68,11 @@ impl DrainController {
             .expect("registration health lock poisoned") = Some(health);
     }
 
-    pub fn set_process_tasks(&self, tasks: awaken_process_lifecycle::ProcessTaskGroup) {
+    pub fn set_service_lifecycle(&self, lifecycle: awaken_service_lifecycle::ServiceLifecycle) {
         *self
-            .process_tasks
+            .service_lifecycle
             .write()
-            .expect("process lifecycle lock poisoned") = Some(tasks);
+            .expect("service lifecycle lock poisoned") = Some(lifecycle);
     }
 
     #[cfg(test)]
@@ -87,11 +87,11 @@ impl DrainController {
     pub fn is_ready(&self) -> bool {
         !self.is_draining()
             && self
-                .process_tasks
+                .service_lifecycle
                 .read()
-                .expect("process lifecycle lock poisoned")
+                .expect("service lifecycle lock poisoned")
                 .as_ref()
-                .is_none_or(awaken_process_lifecycle::ProcessTaskGroup::is_healthy)
+                .is_none_or(awaken_service_lifecycle::ServiceLifecycle::is_healthy)
             && self
                 .registration_health
                 .read()
@@ -243,16 +243,16 @@ pub fn register_active_streams_gauge(
             })
             .build()
     };
-    let process_tasks_healthy = {
+    let service_lifecycle_healthy = {
         let ctrl = ctrl.clone();
         meter
-            .u64_observable_gauge("awaken_process_tasks_healthy")
-            .with_description("1 while every supervised critical process task is healthy.")
+            .u64_observable_gauge("awaken_service_lifecycle_healthy")
+            .with_description("1 while every supervised critical service task is healthy.")
             .with_callback(move |obs| {
                 if let Some(tasks) = ctrl
-                    .process_tasks
+                    .service_lifecycle
                     .read()
-                    .expect("process lifecycle lock poisoned")
+                    .expect("service lifecycle lock poisoned")
                     .as_ref()
                 {
                     obs.observe(u64::from(tasks.is_healthy()), &[]);
@@ -267,7 +267,7 @@ pub fn register_active_streams_gauge(
         registration_pending,
         registration_failures,
         registration_lag,
-        process_tasks_healthy,
+        service_lifecycle_healthy,
     ]
 }
 
@@ -334,22 +334,22 @@ mod tests {
 
     #[tokio::test]
     async fn critical_task_failure_removes_readiness() {
-        // Causes: C1 process task group healthy, C2 one critical task returns an
+        // Causes: C1 service lifecycle healthy, C2 one critical task returns an
         // error, C3 drain is false. Effects: E1 C1+C3 -> ready; E2 C2+C3 ->
         // unavailable. Registration state is absent, so this isolates the one
-        // process-lifecycle health source from the existing registration source.
+        // service-lifecycle health source from the existing registration source.
         let (app, ctrl) = app();
-        let tasks = awaken_process_lifecycle::ProcessTaskGroup::new();
-        ctrl.set_process_tasks(tasks.clone());
+        let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+        ctrl.set_service_lifecycle(lifecycle.clone());
         assert_eq!(get(&app, "/readyz").await.0, StatusCode::OK, "E1");
-        tasks.spawn("failed", |_| async { Err("offline".into()) });
-        tasks.wait_for_failure().await.expect("C2 observed");
+        lifecycle.spawn("failed", |_| async { Err("offline".into()) });
+        lifecycle.wait_for_failure().await.expect("C2 observed");
         assert_eq!(
             get(&app, "/readyz").await.0,
             StatusCode::SERVICE_UNAVAILABLE,
             "E2"
         );
-        tasks
+        lifecycle
             .shutdown(std::time::Duration::from_secs(1))
             .await
             .expect("failed task watcher joins");

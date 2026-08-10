@@ -421,7 +421,6 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
- "awaken-process-lifecycle",
  "awaken-protocol-acp",
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
@@ -442,6 +441,7 @@ dependencies = [
  "awaken-sandbox-policy-store",
  "awaken-scenario-host",
  "awaken-service-auth-contract",
+ "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
@@ -583,11 +583,11 @@ dependencies = [
  "awaken-iam-server",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
- "awaken-process-lifecycle",
  "awaken-protocol-managed",
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-runtime-contract",
+ "awaken-service-lifecycle",
  "awaken-session-contract",
  "awaken-skill-store",
  "awaken-tenancy",
@@ -642,7 +642,6 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
- "awaken-process-lifecycle",
  "awaken-protocol-a2a",
  "awaken-protocol-acp",
  "awaken-protocol-ag-ui",
@@ -666,6 +665,7 @@ dependencies = [
  "awaken-sandbox-memoryd",
  "awaken-scenario-host",
  "awaken-service-auth-contract",
+ "awaken-service-lifecycle",
  "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
@@ -923,6 +923,7 @@ dependencies = [
  "awaken-environment-realization-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
+ "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "rusqlite",
@@ -1384,14 +1385,6 @@ dependencies = [
  "async-trait",
  "reqwest 0.12.28",
  "tokio",
-]
-
-[[package]]
-name = "awaken-process-lifecycle"
-version = "1.0.0-dev"
-dependencies = [
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -2133,6 +2126,14 @@ name = "awaken-service-auth-contract"
 version = "1.0.0-dev"
 
 [[package]]
+name = "awaken-service-lifecycle"
+version = "1.0.0-dev"
+dependencies = [
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "awaken-session-application"
 version = "1.0.0-dev"
 dependencies = [
@@ -2361,6 +2362,7 @@ dependencies = [
  "awaken-authz-enforce",
  "awaken-config-resolver",
  "awaken-credential-vault",
+ "awaken-service-lifecycle",
  "awaken-session-contract",
  "awaken-tenancy",
  "awaken-webhook",

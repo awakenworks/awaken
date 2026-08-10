@@ -35,9 +35,9 @@ impl WorkerObservationReconcileGate {
         self: std::sync::Arc<Self>,
         reconciler: std::sync::Arc<dyn PublicationBindingReconciler>,
         period: std::time::Duration,
-        process_tasks: &awaken_process_lifecycle::ProcessTaskGroup,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) {
-        process_tasks.spawn(
+        service_lifecycle.spawn(
             "control-worker-observation-reconciliation",
             move |cancel| async move {
                 let mut interval = tokio::time::interval(period);

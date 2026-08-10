@@ -176,13 +176,13 @@ async fn serve_resolved(
     };
     let local_setup = assembly.local_setup;
     let registration_supervisor = assembly.registration_supervisor;
-    let process_tasks = assembly.process_tasks;
+    let service_lifecycle = assembly.service_lifecycle;
     let public_app = assembly.public_router.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
     let private_app = assembly.private_router;
     let controller = crate::DrainController::new();
-    controller.set_process_tasks(process_tasks.clone());
+    controller.set_service_lifecycle(service_lifecycle.clone());
     if let Some(supervisor) = registration_supervisor {
         controller.set_registration_supervisor(supervisor);
     }
@@ -214,7 +214,7 @@ async fn serve_resolved(
     if let (Some(listener), Some(admin_addr)) = (admin_listener, &deployment.admin_listen) {
         let admin = crate::process_admin_router(controller);
         eprintln!("awaken: admin http://{admin_addr} (/readyz /metrics /admin/drain)");
-        process_tasks.spawn("process-admin-http", move |cancel| async move {
+        service_lifecycle.spawn("service-admin-http", move |cancel| async move {
             axum::serve(listener, admin)
                 .with_graceful_shutdown(async move { cancel.cancelled().await })
                 .await
@@ -281,7 +281,7 @@ async fn serve_resolved(
     let Some(worker) = local_worker else {
         let observed_failure = std::sync::Arc::new(std::sync::Mutex::new(None));
         let failure_slot = observed_failure.clone();
-        let failure_source = process_tasks.clone();
+        let failure_source = service_lifecycle.clone();
         let server_result = serve_application_surfaces(
             public_listener,
             public_app,
@@ -296,7 +296,7 @@ async fn serve_resolved(
             },
         )
         .await;
-        let drain_result = process_tasks
+        let drain_result = service_lifecycle
             .shutdown(std::time::Duration::from_secs(10))
             .await
             .map_err(|error| error.to_string());
@@ -377,7 +377,7 @@ async fn serve_resolved(
             worker_result?;
             server_result
         }
-        failure = process_tasks.wait_for_failure() => {
+        failure = service_lifecycle.wait_for_failure() => {
             if let Some(tx) = worker_shutdown_tx.take() {
                 let _ = tx.send(awaken_worker::WorkerShutdown::Prompt);
             }
@@ -397,7 +397,7 @@ async fn serve_resolved(
             ))
         }
     };
-    let drain_result = process_tasks
+    let drain_result = service_lifecycle
         .shutdown(std::time::Duration::from_secs(10))
         .await
         .map_err(|error| error.to_string());

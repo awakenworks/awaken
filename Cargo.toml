@@ -44,7 +44,7 @@ awaken-agent-contract = { path = "crates/contract/awaken-agent-contract" }
 awaken-credential-contract = { path = "crates/contract/awaken-credential-contract" }
 awaken-runtime-contract = { path = "crates/runtime/awaken-runtime-contract" }
 awaken-tenancy = { path = "crates/contract/awaken-tenancy" }
-awaken-process-lifecycle = { path = "crates/server/awaken-process-lifecycle" }
+awaken-service-lifecycle = { path = "crates/server/awaken-service-lifecycle" }
 awaken-session-contract = { path = "crates/contract/awaken-session-contract" }
 awaken-session-application = { path = "crates/server/awaken-session-application" }
 awaken-deployment-contract = { path = "crates/contract/awaken-deployment-contract" }

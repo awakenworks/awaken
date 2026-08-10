@@ -68,6 +68,7 @@ pub struct WebhookLifecycleFactSink {
     seq: AtomicU64,
     session_outbox: Arc<dyn ManagedSessionRepository>,
     draining: Arc<tokio::sync::Mutex<()>>,
+    wake: Arc<tokio::sync::Notify>,
 }
 
 /// Delivery half of the lifecycle projection. AllInOne injects the local
@@ -140,10 +141,12 @@ impl WebhookLifecycleFactSink {
         dispatcher: Arc<WebhookDispatcher>,
         org_id: Option<String>,
         outbox: Arc<dyn ManagedSessionRepository>,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
         Self::with_delivery(
             Arc::new(ConfigPlaneLifecycleDelivery { dispatcher, org_id }),
             outbox,
+            service_lifecycle,
         )
     }
 
@@ -151,8 +154,9 @@ impl WebhookLifecycleFactSink {
     pub fn with_delivery(
         delivery: Arc<dyn LifecycleFactDelivery>,
         outbox: Arc<dyn ManagedSessionRepository>,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
-        Self::with_delivery_interval(delivery, outbox, RECONCILIATION_INTERVAL)
+        Self::with_delivery_interval(delivery, outbox, RECONCILIATION_INTERVAL, service_lifecycle)
     }
 
     #[doc(hidden)]
@@ -161,11 +165,13 @@ impl WebhookLifecycleFactSink {
         org_id: Option<String>,
         outbox: Arc<dyn ManagedSessionRepository>,
         interval: Duration,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
         Self::with_delivery_interval(
             Arc::new(ConfigPlaneLifecycleDelivery { dispatcher, org_id }),
             outbox,
             interval,
+            service_lifecycle,
         )
     }
 
@@ -173,45 +179,42 @@ impl WebhookLifecycleFactSink {
         delivery: Arc<dyn LifecycleFactDelivery>,
         outbox: Arc<dyn ManagedSessionRepository>,
         interval: Duration,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
+        let wake = Arc::new(tokio::sync::Notify::new());
         let sink = Self {
             delivery,
             seq: AtomicU64::new(0),
             session_outbox: outbox,
             draining: Arc::new(tokio::sync::Mutex::new(())),
+            wake,
         };
-        sink.spawn_drain();
-        sink.spawn_reconciliation(interval);
+        sink.register_reconciliation(interval, service_lifecycle);
         sink
     }
 
-    fn spawn_reconciliation(&self, interval: Duration) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
+    fn register_reconciliation(
+        &self,
+        interval: Duration,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    ) {
         let delivery = self.delivery.clone();
         let session_outbox = self.session_outbox.clone();
         let draining = self.draining.clone();
-        handle.spawn(async move {
+        let wake = self.wake.clone();
+        service_lifecycle.spawn("coordinator-webhook-outbox", move |cancel| async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ticker.tick().await;
             loop {
-                ticker.tick().await;
                 Self::drain_once(&delivery, &session_outbox, &draining).await;
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = ticker.tick() => {}
+                    () = wake.notified() => {}
+                }
             }
-        });
-    }
-
-    fn spawn_drain(&self) {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let delivery = self.delivery.clone();
-        let session_outbox = self.session_outbox.clone();
-        let draining = self.draining.clone();
-        handle.spawn(async move {
-            Self::drain_once(&delivery, &session_outbox, &draining).await;
+            Ok(())
         });
     }
 
@@ -260,7 +263,7 @@ impl SessionLifecycleFactSink for WebhookLifecycleFactSink {
             tracing::warn!(session_id, %error, "Session lifecycle fact could not be persisted");
             return;
         }
-        self.spawn_drain();
+        self.wake.notify_one();
     }
 
     async fn emit_fact(
@@ -274,7 +277,7 @@ impl SessionLifecycleFactSink for WebhookLifecycleFactSink {
         // transaction. The sink is a notification/drain adapter only; appending it
         // again would recreate the former parallel outbox path.
         let _ = (fact_id, session_id, workspace_id, event_type);
-        self.spawn_drain();
+        self.wake.notify_one();
     }
 }
 
@@ -811,6 +814,7 @@ pub fn assemble_with_session_repo(
     secrets: Arc<dyn SecretStore>,
     org_id: Option<String>,
     sessions: Arc<dyn ManagedSessionRepository>,
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Arc<WebhookLifecycleFactSink>, Router) {
     assemble_with(
         store,
@@ -819,6 +823,7 @@ pub fn assemble_with_session_repo(
         Arc::new(ReqwestSender::guarded()),
         strict_endpoint_url_policy(),
         sessions,
+        service_lifecycle,
     )
 }
 
@@ -834,6 +839,7 @@ pub fn assemble_loopback(
     secrets: Arc<dyn SecretStore>,
     org_id: Option<String>,
     sessions: Arc<dyn ManagedSessionRepository>,
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Arc<WebhookLifecycleFactSink>, Router) {
     assemble_with(
         store,
@@ -842,6 +848,7 @@ pub fn assemble_loopback(
         Arc::new(ReqwestSender::default()),
         Arc::new(|_url| Ok(())),
         sessions,
+        service_lifecycle,
     )
 }
 
@@ -852,13 +859,19 @@ fn assemble_with(
     sender: Arc<dyn WebhookSender>,
     url_policy: EndpointUrlPolicy,
     sessions: Arc<dyn ManagedSessionRepository>,
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Arc<WebhookLifecycleFactSink>, Router) {
     let source = Arc::new(ConfigPlaneSubscriptionSource::new(
         store.clone(),
         secrets.clone(),
     ));
     let dispatcher = Arc::new(WebhookDispatcher::new(source, sender));
-    let sink = Arc::new(WebhookLifecycleFactSink::new(dispatcher, org_id, sessions));
+    let sink = Arc::new(WebhookLifecycleFactSink::new(
+        dispatcher,
+        org_id,
+        sessions,
+        service_lifecycle,
+    ));
     (
         sink,
         webhook_config_router_with_policy(store, secrets, url_policy),

@@ -169,14 +169,14 @@ pub struct ProcessAssembly {
     pub private_router: Router,
     pub local_setup: Option<awaken_control::LocalSetupHandoff>,
     pub registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
-    pub process_tasks: awaken_process_lifecycle::ProcessTaskGroup,
+    pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 }
 
 struct ProcessRouterAssembly {
     public_router: Router,
     private_router: Router,
     registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
-    process_tasks: awaken_process_lifecycle::ProcessTaskGroup,
+    service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 }
 
 impl ProcessRouterAssembly {
@@ -184,7 +184,7 @@ impl ProcessRouterAssembly {
         public_router: Router,
         private_router: Router,
         registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
-        process_tasks: awaken_process_lifecycle::ProcessTaskGroup,
+        service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
         // Router-only embedding helpers do not retain ProcessAssembly. Keep the
         // same supervisor alive inside the router as well as exposing it to the
@@ -193,12 +193,12 @@ impl ProcessRouterAssembly {
             Some(supervisor) => public_router.layer(axum::Extension(supervisor.clone())),
             None => public_router,
         };
-        let public_router = public_router.layer(axum::Extension(process_tasks.clone()));
+        let public_router = public_router.layer(axum::Extension(service_lifecycle.clone()));
         Self {
             public_router,
             private_router,
             registration_supervisor,
-            process_tasks,
+            service_lifecycle,
         }
     }
 }

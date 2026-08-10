@@ -11,7 +11,7 @@ authority = "coordinator"
 
 
 [dependencies]
-awaken-process-lifecycle.workspace = true
+awaken-service-lifecycle.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
 # host modules live here; this bin only composes them into router modes.
 awaken-runtime-host.workspace = true

@@ -17,7 +17,7 @@ authority = "control"
 # NOT depend on the awaken-coordinator data-plane bin — the two planes are siblings the
 # composition root (awaken-cli) weaves together.
 [dependencies]
-awaken-process-lifecycle.workspace = true
+awaken-service-lifecycle.workspace = true
 awaken-deployment-contract.workspace = true
 # The config-authoring plane (config service + routers + resolver + tool catalog).
 # Control depends on this shared crate, NOT on the awaken-runtime-host execution host —

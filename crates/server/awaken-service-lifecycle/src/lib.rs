@@ -1,7 +1,7 @@
-//! Process-owned supervision for long-lived service tasks.
+//! Service-host supervision for long-lived component tasks.
 //!
 //! Domain components register their recurring loops here, while the outermost
-//! process remains the sole owner of cancellation, readiness, and bounded join.
+//! service host remains the sole owner of cancellation, readiness, and bounded join.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +27,7 @@ impl std::fmt::Display for ShutdownError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "process tasks did not stop before the drain deadline: {}",
+            "service tasks did not stop before the drain deadline: {}",
             self.timed_out.join(", ")
         )
     }
@@ -63,19 +63,19 @@ impl Drop for Inner {
     }
 }
 
-/// One process-wide registry for critical recurring tasks.
+/// One service-instance registry for critical recurring tasks.
 #[derive(Clone)]
-pub struct ProcessTaskGroup {
+pub struct ServiceLifecycle {
     inner: Arc<Inner>,
 }
 
-impl Default for ProcessTaskGroup {
+impl Default for ServiceLifecycle {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ProcessTaskGroup {
+impl ServiceLifecycle {
     #[must_use]
     pub fn new() -> Self {
         let (failure_tx, failure_rx) = mpsc::unbounded_channel();
@@ -92,7 +92,7 @@ impl ProcessTaskGroup {
         }
     }
 
-    /// Spawn a critical task with a child of the process cancellation token.
+    /// Spawn a critical task with a child of the service cancellation token.
     /// Returning before cancellation, returning an error, or panicking marks the
     /// whole group unhealthy. Registration after shutdown is rejected loudly
     /// because silently detaching it would create a second lifecycle.
@@ -103,7 +103,7 @@ impl ProcessTaskGroup {
     {
         assert!(
             self.inner.accepting.load(Ordering::Acquire),
-            "cannot add a process task after shutdown began"
+            "cannot add a service task after shutdown began"
         );
         let name = name.into();
         let cancellation = self.inner.cancellation.child_token();
@@ -132,7 +132,7 @@ impl ProcessTaskGroup {
             healthy.store(false, Ordering::Release);
             let mut first = first_failure
                 .lock()
-                .expect("process lifecycle failure lock poisoned");
+                .expect("service lifecycle failure lock poisoned");
             if first.is_none() {
                 *first = Some(failure.clone());
                 let _ = failure_tx.send(failure);
@@ -141,7 +141,7 @@ impl ProcessTaskGroup {
         self.inner
             .tasks
             .lock()
-            .expect("process lifecycle task lock poisoned")
+            .expect("service lifecycle task lock poisoned")
             .push(TaskHandle {
                 name,
                 task_abort,
@@ -154,7 +154,7 @@ impl ProcessTaskGroup {
         self.inner.healthy.load(Ordering::Acquire)
     }
 
-    /// Wait for the first critical failure, or `None` when normal process
+    /// Wait for the first critical failure, or `None` when normal service
     /// cancellation wins. The first fault is retained as the diagnostic source
     /// of truth; later task fallout cannot overwrite it.
     pub async fn wait_for_failure(&self) -> Option<TaskFailure> {
@@ -162,7 +162,7 @@ impl ProcessTaskGroup {
             .inner
             .first_failure
             .lock()
-            .expect("process lifecycle failure lock poisoned")
+            .expect("service lifecycle failure lock poisoned")
             .clone()
         {
             return Some(failure);
@@ -184,7 +184,7 @@ impl ProcessTaskGroup {
                 .inner
                 .tasks
                 .lock()
-                .expect("process lifecycle task lock poisoned"),
+                .expect("service lifecycle task lock poisoned"),
         );
         if tasks.is_empty() {
             return Ok(());

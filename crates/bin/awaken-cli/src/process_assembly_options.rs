@@ -9,7 +9,7 @@ use super::{
 
 #[derive(Default)]
 pub(super) struct ProcessAssemblyOptions {
-    pub(super) process_tasks: awaken_process_lifecycle::ProcessTaskGroup,
+    pub(super) service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     pub(super) deployment: Option<awaken_runtime_host::DeploymentConfig>,
     pub(super) content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     pub(super) org_id: Option<String>,

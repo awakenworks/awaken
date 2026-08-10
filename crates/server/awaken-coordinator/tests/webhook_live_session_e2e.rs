@@ -49,6 +49,12 @@ async fn receive(State(inbox): State<Inbox>, headers: HeaderMap, body: String) -
 
 #[tokio::test]
 async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
+    // Cause/effect graph: C1 the guard resolves the owning workspace; C2 create
+    // and archive commit stable lifecycle facts; C3 the one supervised outbox
+    // wakes; C4 service cancellation follows delivery. Effects: E1 signed,
+    // scoped idled and terminated events; E2 no duplicate delivery; E3 the
+    // outbox loop joins. Decision rules: R1=C1+C2+C3 -> E1+E2; R2=C4 -> E3.
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     // 1. Real receiver.
     let inbox: Inbox = Arc::new(Mutex::new(Vec::new()));
     let recv = Router::new()
@@ -89,7 +95,8 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     store.complete_mutation(&intent).unwrap();
     // The guarded production posture would refuse this loopback receiver (SSRF
     // pin/admission), so use the loopback assembly for the in-process e2e.
-    let (sink, _crud) = webhooks::assemble_loopback(store, secrets, None, sessions.clone());
+    let (sink, _crud) =
+        webhooks::assemble_loopback(store, secrets, None, sessions.clone(), &service_lifecycle);
 
     // 3. A managed surface with the sink, wrapped: guard (resolves + publishes the
     // owning workspace) → stamp_workspace_scope (maps it to WorkspaceScope).
@@ -220,4 +227,8 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         "the terminal fact is about the same session"
     );
     assert_eq!(v2["data"]["workspace_id"], "wrkspc_test");
+    service_lifecycle
+        .shutdown(std::time::Duration::from_secs(1))
+        .await
+        .expect("R2/E3 supervised outbox joins");
 }

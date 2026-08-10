@@ -28,7 +28,7 @@ use crate::{SharedHost, WorkerTransportBuildError};
 /// boundaries before invoking this builder; the injected `SharedHost` is the
 /// Coordinator's neutral Runtime port adapter.
 pub struct CoordinatorDependencies {
-    pub process_tasks: awaken_process_lifecycle::ProcessTaskGroup,
+    pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     pub host: Arc<SharedHost>,
     pub managed_state: Arc<ManagedState>,
     pub resource_catalog: Arc<dyn ResourceCatalog>,
@@ -93,7 +93,7 @@ pub async fn build_coordinator_component(
     dependencies: CoordinatorDependencies,
 ) -> Result<CoordinatorComponent, CoordinatorBuildError> {
     let CoordinatorDependencies {
-        process_tasks,
+        service_lifecycle,
         host,
         managed_state,
         resource_catalog,
@@ -119,7 +119,7 @@ pub async fn build_coordinator_component(
     // recovery as background work. Component construction must expose readiness
     // without awaiting an external sandbox timeout for every persisted Session.
     let session_application = managed_state.session_application();
-    process_tasks.spawn("coordinator-session-lifecycle", move |cancel| async move {
+    service_lifecycle.spawn("coordinator-session-lifecycle", move |cancel| async move {
         session_application.run_lifecycle_supervisor(cancel).await
     });
     deployment_application.bind_launcher(Arc::new(
@@ -167,7 +167,7 @@ pub async fn build_coordinator_component(
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.
     let scheduled_deployments = deployment_application;
-    process_tasks.spawn(
+    service_lifecycle.spawn(
         "coordinator-deployment-dream-scheduler",
         move |cancel| async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));

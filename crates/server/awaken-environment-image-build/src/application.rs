@@ -124,17 +124,25 @@ impl EnvironmentImageBuildCoordinator {
         Ok(true)
     }
 
-    pub fn spawn_worker(self: &Arc<Self>, owner: impl Into<String>) {
-        let coordinator = self.clone();
+    pub async fn run_worker(
+        self: Arc<Self>,
+        owner: impl Into<String>,
+        cancellation: awaken_runtime_contract::CancellationToken,
+    ) -> Result<(), String> {
         let owner = owner.into();
-        tokio::spawn(async move {
-            loop {
-                if let Err(error) = coordinator.run_once(&owner).await {
-                    eprintln!("Environment image-build worker failed: {error}");
-                }
-                tokio::time::sleep(coordinator.policy.poll_interval).await;
+        loop {
+            if cancellation.is_cancelled() {
+                break;
             }
-        });
+            if let Err(error) = self.run_once(&owner).await {
+                eprintln!("Environment image-build worker failed: {error}");
+            }
+            tokio::select! {
+                () = cancellation.cancelled() => break,
+                () = tokio::time::sleep(self.policy.poll_interval) => {}
+            }
+        }
+        Ok(())
     }
 }
 
@@ -449,7 +457,8 @@ mod tests {
         // claim invokes the injected builder and records its immutable image; R5
         // Session readiness reuses that Ready result without a second build;
         // R6 an exact Session policy with a different base image creates and
-        // reuses a distinct demand rather than aliasing the default build.
+        // reuses a distinct demand rather than aliasing the default build; R7 a
+        // cancelled service token exits the worker without a detached loop.
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
         let builder = Arc::new(FakeBuilder {
@@ -545,5 +554,12 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        let cancellation = awaken_runtime_contract::CancellationToken::new();
+        cancellation.cancel();
+        coordinator
+            .run_worker("builder-a", cancellation)
+            .await
+            .expect("R7 cancelled worker exits");
+        assert_eq!(*builder.builds.lock().unwrap(), 2, "R7 performs no work");
     }
 }

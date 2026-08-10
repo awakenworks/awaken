@@ -55,6 +55,7 @@ impl ExecutableEnvironmentWiring {
         deployment: &ResolvedDeployment,
         schema: PostgresSchemaMode,
         work: Arc<dyn WorkQueue>,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Result<Self, String> {
         let authenticator = deployment
             .executable_agent_registration
@@ -80,7 +81,7 @@ impl ExecutableEnvironmentWiring {
             }
             .map_err(|error| error.to_string())?,
         );
-        let image_builds = open_image_builds(deployment, schema).await?;
+        let image_builds = open_image_builds(deployment, schema, service_lifecycle).await?;
         let build_aware: Arc<dyn ExecutableEnvironmentRegistrar> = match &image_builds {
             Some(builds) => Arc::new(
                 awaken_environment_image_build::BuildAwareExecutableEnvironmentRegistrar::new(
@@ -115,11 +116,12 @@ pub(crate) async fn for_runtime_role(
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
     work: Arc<dyn WorkQueue>,
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> Result<ExecutableEnvironmentWiring, String> {
     match role {
         Role::AllInOne => {
             let mut wiring = ExecutableEnvironmentWiring::local(work)?;
-            wiring.image_builds = open_image_builds(deployment, schema).await?;
+            wiring.image_builds = open_image_builds(deployment, schema, service_lifecycle).await?;
             if let Some(builds) = &wiring.image_builds {
                 wiring.registrar = Arc::new(
                     awaken_environment_image_build::BuildAwareExecutableEnvironmentRegistrar::new(
@@ -131,7 +133,8 @@ pub(crate) async fn for_runtime_role(
             Ok(wiring)
         }
         Role::Coordinator => {
-            ExecutableEnvironmentWiring::coordinator(deployment, schema, work).await
+            ExecutableEnvironmentWiring::coordinator(deployment, schema, work, service_lifecycle)
+                .await
         }
         Role::Control | Role::Worker => {
             unreachable!("runtime assembly accepts only AllInOne or Coordinator")
@@ -142,6 +145,7 @@ pub(crate) async fn for_runtime_role(
 async fn open_image_builds(
     deployment: &ResolvedDeployment,
     schema: PostgresSchemaMode,
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> Result<Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>, String> {
     let Some(provisioner) =
         awaken_runtime_host::package_image_provisioner(&deployment.runtime).await?
@@ -187,7 +191,12 @@ async fn open_image_builds(
         )
         .map_err(|error| error.to_string())?,
     );
-    coordinator.spawn_worker(deployment.runtime.dispatch_owner.clone());
+    let worker = coordinator.clone();
+    let owner = deployment.runtime.dispatch_owner.clone();
+    service_lifecycle.spawn(
+        "coordinator-environment-image-build",
+        move |cancel| async move { worker.run_worker(owner, cancel).await },
+    );
     Ok(Some(coordinator))
 }
 

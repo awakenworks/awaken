@@ -2,17 +2,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use awaken_process_lifecycle::ProcessTaskGroup;
+use awaken_service_lifecycle::ServiceLifecycle;
 
 #[tokio::test]
 async fn critical_task_outcomes_drive_one_health_and_shutdown_contract() {
     // Cause/effect graph:
     // C1 a critical task remains pending; C2 it returns an error; C3 it panics;
-    // C4 process cancellation is requested. Effects: E1 health remains ready;
+    // C4 service cancellation is requested. Effects: E1 health remains ready;
     // E2 health becomes failed and wait_for_failure reports the task name/cause;
     // E3 cancellation is not classified as failure; E4 shutdown joins all tasks.
     // Constraints: the first terminal fault is authoritative, and every task
-    // receives a child of the one process cancellation token.
+    // receives a child of the one service cancellation token.
     //
     // Decision table:
     // | Rule | C1 pending | C2 error | C3 panic | C4 cancel | Effects |
@@ -20,7 +20,7 @@ async fn critical_task_outcomes_drive_one_health_and_shutdown_contract() {
     // | R2   | no         | yes      | no       | no        | E2      |
     // | R3   | no         | no       | yes      | no        | E2      |
     // | R4   | any        | no       | no       | yes       | E3+E4   |
-    let group = ProcessTaskGroup::new();
+    let group = ServiceLifecycle::new();
     let cancellation_observed = Arc::new(AtomicBool::new(false));
     let observed = cancellation_observed.clone();
     group.spawn("steady", move |cancel| async move {
@@ -45,7 +45,7 @@ async fn critical_task_outcomes_drive_one_health_and_shutdown_contract() {
         .expect("R4 cooperative tasks join");
     assert!(cancellation_observed.load(Ordering::SeqCst), "R4");
 
-    let panicking = ProcessTaskGroup::new();
+    let panicking = ServiceLifecycle::new();
     panicking.spawn("panicked", |_| async {
         panic!("boom");
         #[allow(unreachable_code)]
@@ -71,7 +71,7 @@ async fn shutdown_is_idempotent_and_aborts_only_after_the_drain_deadline() {
     // E3 a repeated call observes the already-drained group and succeeds.
     // Decision table: R1=C1+!C2 -> E1; R2=C1+C2 -> E1+E2;
     // R3=(R1|R2)+C3 -> E3. No drop-only cleanup is accepted as a test oracle.
-    let group = ProcessTaskGroup::new();
+    let group = ServiceLifecycle::new();
     group.spawn("stuck", |_| async {
         std::future::pending::<()>().await;
         Ok(())

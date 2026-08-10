@@ -1,5 +1,5 @@
 [package]
-name = "awaken-process-lifecycle"
+name = "awaken-service-lifecycle"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 [package.metadata.awaken]
 context = "shared"
 layer = "infrastructure"
-authority = "process-lifecycle"
+authority = "service-lifecycle"
 
 [dependencies]
 tokio = { workspace = true, features = ["rt", "sync", "time"] }

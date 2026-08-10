@@ -214,7 +214,7 @@ pub(super) async fn assemble_runtime_process_router(
         config::Role::AllInOne => Some(
             control_component_for_process(
                 &stores,
-                &assembly.process_tasks,
+                &assembly.service_lifecycle,
                 &platform_workspace,
                 &org_id,
                 enrollment_signing_key,
@@ -373,6 +373,7 @@ pub(super) async fn assemble_runtime_process_router(
                     secrets,
                     Some(org_id.clone()),
                     sessions.clone(),
+                    &assembly.service_lifecycle,
                 )
                 .0
             }
@@ -385,6 +386,7 @@ pub(super) async fn assemble_runtime_process_router(
                         .webhooks
                         .clone(),
                     sessions.clone(),
+                    &assembly.service_lifecycle,
                 ),
             ),
         };
@@ -494,7 +496,7 @@ pub(super) async fn assemble_runtime_process_router(
     }
     let recurring_resource_reclaimer = resource_reclaimer.clone();
     assembly
-        .process_tasks
+        .service_lifecycle
         .spawn("resources-reclamation", move |cancel| async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -587,7 +589,7 @@ pub(super) async fn assemble_runtime_process_router(
         });
     let coordinator = awaken_coordinator::build_coordinator_component(
         awaken_coordinator::CoordinatorDependencies {
-            process_tasks: assembly.process_tasks.clone(),
+            service_lifecycle: assembly.service_lifecycle.clone(),
             host,
             managed_state,
             resource_catalog,
@@ -648,6 +650,6 @@ pub(super) async fn assemble_runtime_process_router(
         ),
         coordinator.private_router,
         registration_supervisor,
-        assembly.process_tasks,
+        assembly.service_lifecycle,
     ))
 }
