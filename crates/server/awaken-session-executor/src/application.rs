@@ -496,8 +496,10 @@ impl crate::SharedHost {
             .unwrap_or(false)
     }
 
-    /// Renew every active MCP projection approaching expiry through the same
-    /// Control phase protocol used for initial creation and hot replacement.
+    /// Renew every active Session realization approaching expiry through the
+    /// same Control phase protocol used for initial creation and hot replacement.
+    /// Environment-only Sessions participate because image/package realization
+    /// can outlive the initial lease even when no MCP attachment exists.
     /// A failed renewal revokes that Session's process-local projection before
     /// the batch continues. Session authority is narrower than Worker registry
     /// authority: an expired or terminal application Run must not fence unrelated
