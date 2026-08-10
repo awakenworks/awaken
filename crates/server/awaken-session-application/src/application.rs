@@ -62,7 +62,7 @@ pub struct SessionApplication {
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     sessions_repo: Arc<dyn ManagedSessionRepository>,
-    lifecycle_sink: Option<Arc<dyn SessionLifecycleFactSink>>,
+    lifecycle_notifier: Option<Arc<dyn LifecycleFactNotifier>>,
     local_realization_owner: String,
     runtime_incarnation: String,
     lifecycle_supervisor_started: AtomicBool,
@@ -124,7 +124,7 @@ impl SessionApplication {
             resource_references: None,
             resource_files: None,
             sessions_repo,
-            lifecycle_sink: None,
+            lifecycle_notifier: None,
             local_realization_owner,
             runtime_incarnation: format!(
                 "session:{}:{started_at}:{}",
@@ -325,8 +325,8 @@ impl SessionApplication {
         self.environments = source;
     }
 
-    pub fn set_lifecycle_sink(&mut self, sink: Arc<dyn SessionLifecycleFactSink>) {
-        self.lifecycle_sink = Some(sink);
+    pub fn set_lifecycle_notifier(&mut self, notifier: Arc<dyn LifecycleFactNotifier>) {
+        self.lifecycle_notifier = Some(notifier);
     }
 
     pub fn set_resource_purge_scheduler(

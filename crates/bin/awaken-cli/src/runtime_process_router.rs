@@ -365,20 +365,24 @@ pub(super) async fn assemble_runtime_process_router(
     // against this Coordinator's sole Managed Session repository; split Control
     // neither mirrors that repository nor owns a second token directory.
     let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
-    let webhook_sink: Arc<dyn awaken_session_contract::SessionLifecycleFactSink> =
+    let webhook_notifier: Arc<dyn awaken_session_contract::LifecycleFactNotifier> =
         match local_webhook_stores {
             Some((webhook_store, secrets)) => {
-                awaken_webhook_managed::assemble_with_session_repo(
+                let delivery = awaken_webhook_managed::config_plane_lifecycle_delivery(
                     webhook_store,
                     secrets,
                     Some(org_id.clone()),
-                    sessions.clone(),
-                    &assembly.service_lifecycle,
+                );
+                Arc::new(
+                    awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(
+                        delivery,
+                        sessions.clone(),
+                        &assembly.service_lifecycle,
+                    ),
                 )
-                .0
             }
             None => Arc::new(
-                awaken_webhook_managed::WebhookLifecycleFactSink::with_delivery(
+                awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(
                     assembly
                         .control_service
                         .as_ref()
@@ -553,7 +557,7 @@ pub(super) async fn assemble_runtime_process_router(
         // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
         // published agent's model sees the authoritative config-plane truth (M2).
         .with_config_source(executable_agent_catalog.clone());
-    managed_state = managed_state.with_lifecycle_sink(webhook_sink);
+    managed_state = managed_state.with_lifecycle_notifier(webhook_notifier);
     let managed_state = Arc::new(managed_state);
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat

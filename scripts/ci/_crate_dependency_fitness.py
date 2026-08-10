@@ -88,7 +88,7 @@ def dependency_violations(specs: list[CrateSpec]) -> list[str]:
                     f"{sorted(allowed_layers)}"
                 )
                 continue
-            if source.layer in {"bootstrap", "tooling"} or target.layer == "contract":
+            if target.layer == "contract":
                 continue
             allowed_contexts = CONTEXT_DEPENDENCIES[source.context]
             if target.context not in allowed_contexts:
@@ -109,10 +109,18 @@ def selftest() -> None:
     """Cause/effect decision table.
 
     Causes: C1 metadata complete/valid, C2 dependency layer allowed, C3 dependency
-    context allowed, C4 target is a contract, C5 source is bootstrap/tooling.
+    context allowed, C4 target is a contract, C5 source is bootstrap/tooling,
+    C6 source context is an application/devtool composition root.
     Effects: E1 accept; E2 reject incomplete metadata; E3 reject domain-to-adapter;
     E4 reject application-to-adapter; E5 reject cross-context implementation;
-    E6 accept explicit contract seam; E7 accept composition/test assembly.
+    E6 accept explicit contract seam; E7 accept composition/test assembly; E8
+    reject a domain bootstrap/tooling crate that uses its layer as a bypass.
+
+    | Rule | cross context | target contract | bootstrap/tooling | apps/devtools | Effect |
+    | R5   | yes           | no              | no                | no            | E5     |
+    | R6   | yes           | yes             | any               | any           | E6     |
+    | R7   | yes           | no              | yes               | yes           | E7     |
+    | R8   | yes           | no              | yes               | no            | E8     |
     """
     c = lambda n, x, l, a="owner", d=frozenset(): CrateSpec(n, x, l, a, d)
     assert metadata_violations(c("missing", "", "", "")), "R2"
@@ -131,3 +139,12 @@ def selftest() -> None:
     assert dependency_violations(
         [c("app", "apps", "bootstrap", d=frozenset({"infra"})), c("infra", "control", "infrastructure")]
     ) == [], "R7"
+    assert dependency_violations(
+        [c("worker", "worker", "bootstrap", d=frozenset({"control"})), c("control", "control", "infrastructure")]
+    ), "R8 bootstrap"
+    assert dependency_violations(
+        [c("worker-tool", "worker", "tooling", d=frozenset({"control"})), c("control", "control", "application")]
+    ), "R8 tooling"
+    assert dependency_violations(
+        [c("tool", "devtools", "tooling", d=frozenset({"infra"})), c("infra", "control", "infrastructure")]
+    ) == [], "R7 devtool"

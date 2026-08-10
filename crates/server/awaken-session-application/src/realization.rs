@@ -1104,14 +1104,8 @@ impl SessionRealizationControl for SessionApplication {
                 SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
                 error => unavailable(error),
             })?;
-        if let Some(fact) = &ready_fact {
-            self.emit_lifecycle_fact(
-                &fact.id,
-                &fact.object_id,
-                fact.workspace_id.as_deref(),
-                &fact.event_type,
-            )
-            .await;
+        if ready_fact.is_some() {
+            self.notify_lifecycle_fact();
         }
         Self::realization_directive(
             owner_scope,

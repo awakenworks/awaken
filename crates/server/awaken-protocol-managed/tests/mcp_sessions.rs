@@ -5,6 +5,7 @@
 
 mod support;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -14,8 +15,8 @@ use awaken_protocol_managed::{
     ManagedState, VaultState, router, types::SessionStatus, vault_router,
 };
 use awaken_session_contract::{
-    ManagedSessionRepository, OutcomeReport, PersistedSession, RunError, RunErrorKind,
-    SessionExecutionState, SessionInit, SessionLifecycleFactSink, SessionRuntime, StepOutcome,
+    LifecycleFactNotifier, ManagedSessionRepository, OutcomeReport, PersistedSession, RunError,
+    RunErrorKind, SessionExecutionState, SessionInit, SessionRuntime, StepOutcome,
     ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -36,6 +37,40 @@ struct PreparingFake {
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
     repo: Option<Arc<dyn ManagedSessionRepository>>,
     fail_with: Option<RunErrorKind>,
+}
+
+#[derive(Default)]
+struct CountingLifecycleNotifier(AtomicUsize);
+
+impl LifecycleFactNotifier for CountingLifecycleNotifier {
+    fn notify(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl CountingLifecycleNotifier {
+    fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+fn lifecycle_test_state() -> (
+    ManagedState,
+    Arc<SqliteManagedSessionRepository>,
+    Arc<CountingLifecycleNotifier>,
+) {
+    let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
+    let notifier = Arc::new(CountingLifecycleNotifier::default());
+    let state = ManagedState::new_with_mcp(PreparingFake {
+        captured: Arc::new(Mutex::new(Vec::new())),
+        staged: Arc::new(Mutex::new(Vec::new())),
+        observed_durable: Arc::new(Mutex::new(Vec::new())),
+        repo: None,
+        fail_with: None,
+    })
+    .with_session_repo(repository.clone())
+    .with_lifecycle_notifier(notifier.clone());
+    (state, repository, notifier)
 }
 
 #[async_trait::async_trait]
@@ -2030,22 +2065,13 @@ async fn minting_namespace_cannot_alias_committed_truth() {
 /// | A2 | 1 | preparing | never | never | Accepted |
 #[tokio::test]
 async fn application_required_creation_is_generated_from_the_decision_table() {
-    #[derive(Default)]
-    struct CapturingSink(Mutex<Vec<String>>);
-
-    #[async_trait::async_trait]
-    impl SessionLifecycleFactSink for CapturingSink {
-        async fn emit(&self, _session_id: &str, _workspace_id: Option<&str>, event_type: &str) {
-            self.0.lock().unwrap().push(event_type.to_string());
-        }
-    }
-
     for (required, expected_status, expected_prepares, expected_facts, rule) in [
         (false, SessionStatus::Idle, 1, 1, "A1"),
         (true, SessionStatus::Preparing, 0, 0, "A2"),
     ] {
         let prepared = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::new(CapturingSink::default());
+        let notifier = Arc::new(CountingLifecycleNotifier::default());
+        let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
         let state = ManagedState::new_with_mcp(PreparingFake {
             captured: prepared.clone(),
             staged: Arc::new(Mutex::new(Vec::new())),
@@ -2053,7 +2079,8 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
             repo: None,
             fail_with: None,
         })
-        .with_lifecycle_sink(sink.clone());
+        .with_session_repo(repository.clone())
+        .with_lifecycle_notifier(notifier.clone());
         let session = state
             .create_session(
                 awaken_protocol_managed::types::SessionCreateParams {
@@ -2073,7 +2100,22 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
             .unwrap_or_else(|error| panic!("{rule}: {error:?}"));
         assert_eq!(session.status, expected_status, "{rule}");
         assert_eq!(prepared.lock().unwrap().len(), expected_prepares, "{rule}");
-        assert_eq!(sink.0.lock().unwrap().len(), expected_facts, "{rule}");
+        let facts = repository.pending_lifecycle().await.unwrap();
+        assert_eq!(facts.len(), expected_facts, "{rule}: outbox authority");
+        assert_eq!(
+            notifier.count(),
+            expected_facts,
+            "{rule}: notifier is only a post-commit wake hint"
+        );
+        if let Some(fact) = facts.first() {
+            assert_eq!(fact.object_id, session.id, "{rule}");
+            assert_eq!(
+                fact.workspace_id.as_deref(),
+                Some("workspace-application"),
+                "{rule}"
+            );
+            assert_eq!(fact.event_type, "session.status_idled", "{rule}");
+        }
 
         let contribution = awaken_session_contract::ApplicationSessionContribution {
             session_id: session.id,
@@ -2169,36 +2211,14 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
     assert!(prepared.lock().unwrap().is_empty());
 }
 
-/// ADR-0048 / S10: creating a session fires the lifecycle projection sink with the
-/// session's owner and the `session.status_idled` fact (the webhook catalog name,
-/// matching Anthropic's official set) — the seam a webhook dispatcher hangs off,
-/// projected out-of-band.
+/// ADR-0048 / S10: Session creation commits the lifecycle fact and Session in
+/// one repository transaction, then emits only a payload-free replay hint.
 #[tokio::test]
-async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
-    #[derive(Default)]
-    struct CapturingSink {
-        seen: Mutex<Vec<(String, Option<String>, String)>>,
-    }
-    #[async_trait::async_trait]
-    impl SessionLifecycleFactSink for CapturingSink {
-        async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
-            self.seen.lock().unwrap().push((
-                session_id.to_string(),
-                workspace_id.map(str::to_string),
-                event_type.to_string(),
-            ));
-        }
-    }
-
-    let sink = Arc::new(CapturingSink::default());
-    let state = ManagedState::new_with_mcp(PreparingFake {
-        captured: Arc::new(Mutex::new(Vec::new())),
-        staged: Arc::new(Mutex::new(Vec::new())),
-        observed_durable: Arc::new(Mutex::new(Vec::new())),
-        repo: None,
-        fail_with: None,
-    })
-    .with_lifecycle_sink(sink.clone());
+async fn create_session_commits_the_owned_fact_then_notifies_once() {
+    // Decision rule L1: C1 creation reaches idle and C2 repository commit
+    // succeeds -> E1 one stable owned fact exists and E2 one payload-free wake
+    // occurs. The repository, never the notifier, owns fact content.
+    let (state, repository, notifier) = lifecycle_test_state();
 
     let session = state
         .create_session(
@@ -2218,48 +2238,25 @@ async fn create_session_fires_the_lifecycle_sink_with_the_owner() {
         .await
         .expect("create session");
 
-    let seen = sink.seen.lock().unwrap();
-    assert_eq!(seen.len(), 1, "exactly one lifecycle fact emitted");
+    let facts = repository.pending_lifecycle().await.unwrap();
+    assert_eq!(facts.len(), 1, "L1/E1");
+    assert_eq!(facts[0].object_id, session.id, "L1/E1");
     assert_eq!(
-        seen[0],
-        (
-            session.id.clone(),
-            Some("wrkspc_acme".to_string()),
-            "session.status_idled".to_string()
-        ),
-        "the sink sees the session, its owner, and the idled fact"
+        facts[0].workspace_id.as_deref(),
+        Some("wrkspc_acme"),
+        "L1/E1"
     );
+    assert_eq!(facts[0].event_type, "session.status_idled", "L1/E1");
+    assert_eq!(notifier.count(), 1, "L1/E2");
 }
 
-/// Archiving a session fires the lifecycle sink with the `session.status_terminated`
-/// fact and the session's owner — the terminal transition mirrors create's
-/// `session.status_idled`. Idempotent: a second archive fans out no second event.
+/// Archive is idempotent at the aggregate/outbox transaction boundary.
 #[tokio::test]
-async fn archive_session_fires_the_terminated_fact_once() {
-    #[derive(Default)]
-    struct CapturingSink {
-        seen: Mutex<Vec<(String, Option<String>, String)>>,
-    }
-    #[async_trait::async_trait]
-    impl SessionLifecycleFactSink for CapturingSink {
-        async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
-            self.seen.lock().unwrap().push((
-                session_id.to_string(),
-                workspace_id.map(str::to_string),
-                event_type.to_string(),
-            ));
-        }
-    }
-
-    let sink = Arc::new(CapturingSink::default());
-    let state = ManagedState::new_with_mcp(PreparingFake {
-        captured: Arc::new(Mutex::new(Vec::new())),
-        staged: Arc::new(Mutex::new(Vec::new())),
-        observed_durable: Arc::new(Mutex::new(Vec::new())),
-        repo: None,
-        fail_with: None,
-    })
-    .with_lifecycle_sink(sink.clone());
+async fn archive_session_commits_the_terminated_fact_once() {
+    // Decision rules: L2 C1 first archive -> E1 one terminated fact and one
+    // wake; L3 C2 repeat archive of the terminated aggregate -> E2 no second
+    // fact and no second wake. Create's idled fact remains independently stable.
+    let (state, repository, notifier) = lifecycle_test_state();
 
     let session = state
         .create_session(
@@ -2286,51 +2283,33 @@ async fn archive_session_fires_the_terminated_fact_once() {
         .await
         .expect("re-archive is idempotent");
 
-    let seen = sink.seen.lock().unwrap();
-    // create's idled, then exactly one terminated (not two).
-    assert_eq!(seen.len(), 2, "idled on create, terminated once on archive");
+    let facts = repository.pending_lifecycle().await.unwrap();
+    assert_eq!(facts.len(), 2, "L2/E1 + L3/E2");
+    let terminated = facts
+        .iter()
+        .filter(|fact| fact.event_type == "session.status_terminated")
+        .collect::<Vec<_>>();
+    assert_eq!(terminated.len(), 1, "L3/E2");
+    assert_eq!(terminated[0].object_id, session.id, "L2/E1");
     assert_eq!(
-        seen[1],
-        (
-            session.id.clone(),
-            Some("wrkspc_acme".to_string()),
-            "session.status_terminated".to_string()
-        ),
-        "the sink sees the session, its owner, and the terminated fact",
+        terminated[0].workspace_id.as_deref(),
+        Some("wrkspc_acme"),
+        "L2/E1"
+    );
+    assert_eq!(
+        notifier.count(),
+        2,
+        "one wake for create and one for archive"
     );
 }
 
-/// Deleting a session fires the lifecycle sink with the `session.deleted` fact and
-/// the session's owner — a webhook subscriber is notified of a deletion just as it
-/// is of create (`session.status_idled`) and archive (`session.status_terminated`).
-/// The owner is still resolvable because delete drops the record but not the owner
-/// index.
+/// Delete commits the terminal visibility fact before the aggregate disappears.
 #[tokio::test]
-async fn delete_session_fires_the_deleted_fact_with_the_owner() {
-    #[derive(Default)]
-    struct CapturingSink {
-        seen: Mutex<Vec<(String, Option<String>, String)>>,
-    }
-    #[async_trait::async_trait]
-    impl SessionLifecycleFactSink for CapturingSink {
-        async fn emit(&self, session_id: &str, workspace_id: Option<&str>, event_type: &str) {
-            self.seen.lock().unwrap().push((
-                session_id.to_string(),
-                workspace_id.map(str::to_string),
-                event_type.to_string(),
-            ));
-        }
-    }
-
-    let sink = Arc::new(CapturingSink::default());
-    let state = ManagedState::new_with_mcp(PreparingFake {
-        captured: Arc::new(Mutex::new(Vec::new())),
-        staged: Arc::new(Mutex::new(Vec::new())),
-        observed_durable: Arc::new(Mutex::new(Vec::new())),
-        repo: None,
-        fail_with: None,
-    })
-    .with_lifecycle_sink(sink.clone());
+async fn delete_session_commits_the_deleted_fact_with_the_owner() {
+    // Decision rule L4: C1 an owned active Session is deleted -> E1 its stable
+    // deleted fact remains in the transactionally durable outbox after the row
+    // becomes unavailable and E2 one post-commit wake is added to create's wake.
+    let (state, repository, notifier) = lifecycle_test_state();
 
     let session = state
         .create_session(
@@ -2352,16 +2331,17 @@ async fn delete_session_fires_the_deleted_fact_with_the_owner() {
 
     state.delete_session(&session.id).await.expect("delete");
 
-    let seen = sink.seen.lock().unwrap();
-    // create's idled, then the deleted fact.
-    assert_eq!(seen.len(), 2, "idled on create, deleted on delete");
+    let facts = repository.pending_lifecycle().await.unwrap();
+    assert_eq!(facts.len(), 2, "L4/E1");
+    let deleted = facts
+        .iter()
+        .find(|fact| fact.event_type == "session.deleted")
+        .expect("deleted fact remains durable");
+    assert_eq!(deleted.object_id, session.id, "L4/E1");
     assert_eq!(
-        seen[1],
-        (
-            session.id.clone(),
-            Some("wrkspc_acme".to_string()),
-            "session.deleted".to_string()
-        ),
-        "the sink sees the session, its owner, and the deleted fact",
+        deleted.workspace_id.as_deref(),
+        Some("wrkspc_acme"),
+        "L4/E1"
     );
+    assert_eq!(notifier.count(), 2, "L4/E2");
 }

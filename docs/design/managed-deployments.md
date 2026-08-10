@@ -36,7 +36,7 @@ modified, or genuinely new before describing the dependency graph.
 | executable Agent version truth | `ExecutableAgentRegistrationSource` | validates and freezes the requested latest or pinned Agent version |
 | Session creation and initial Event admission | `ManagedState::create_deployment_session_with_initial_events` over the canonical Session create/event commands | the only Deployment-to-execution path, idempotent by DeploymentRun |
 | organization create admission | `ManagedRateLimiter` | shares the ordinary Session-create bucket |
-| webhook delivery and retry | `WebhookLifecycleFactSink` | drains the sole Managed lifecycle outbox |
+| webhook delivery and retry | `WebhookOutboxNotifier` over `LifecycleFactDelivery` | drains the sole Managed lifecycle outbox; notifications carry no fact payload |
 
 ### Modified existing owners
 
@@ -73,7 +73,7 @@ HTTP adapter (official DTOs)
             `- ManagedState (ordinary Session/Event authority)
 
 ManagedLifecycleFact outbox
-  `- WebhookLifecycleFactSink -> official deployment.* / deployment_run.* events
+  `- WebhookOutboxNotifier -> LifecycleFactDelivery -> official deployment.* / deployment_run.* events
 ```
 
 `DeploymentApplication` keeps a locked working projection for fast list/retrieve and

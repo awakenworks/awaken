@@ -89,11 +89,6 @@ awaken-executable-agent-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-executable-agent-catalog.workspace = true
-# Webhook plane (ADR-0048 / S10): the WebhookLifecycleFactSink bridges the managed
-# session lifecycle to the neutral dispatcher; the CRUD router manages
-# workspace-scoped subscriptions. Env-gated by AWAKEN_WEBHOOK_DIR.
-awaken-webhook = { workspace = true }
-awaken-webhook-managed = { workspace = true }
 awaken-runtime = { workspace = true }
 async-trait.workspace = true
 serde_json.workspace = true

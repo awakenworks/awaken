@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [package.metadata.awaken]
-context = "worker"
+context = "control"
 layer = "infrastructure"
 authority = "sandbox-policy"
 

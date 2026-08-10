@@ -38,7 +38,7 @@ const RETRY_DELAY: Duration = Duration::from_millis(25);
 struct ControlServiceState {
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
-    webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
+    webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 }
@@ -89,7 +89,7 @@ struct ConsentCeilingCommand {
 pub fn router(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
-    webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
+    webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
@@ -108,7 +108,7 @@ pub fn router(
 pub fn router_with_authenticator(
     audit: ManagementAuditPlane,
     credentials: Arc<dyn SessionCredentialSource>,
-    webhooks: Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>,
+    webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 ) -> Router {
@@ -479,7 +479,7 @@ impl SessionCredentialSource for HttpControlServiceClient {
 }
 
 #[async_trait::async_trait]
-impl awaken_webhook_managed::LifecycleFactDelivery for HttpControlServiceClient {
+impl awaken_session_contract::LifecycleFactDelivery for HttpControlServiceClient {
     async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
         self.post(WEBHOOK_DELIVER_PATH, fact).await
     }
@@ -523,7 +523,7 @@ mod tests {
     struct RecordingDelivery(Mutex<Vec<ManagedLifecycleFact>>);
 
     #[async_trait::async_trait]
-    impl awaken_webhook_managed::LifecycleFactDelivery for RecordingDelivery {
+    impl awaken_session_contract::LifecycleFactDelivery for RecordingDelivery {
         async fn deliver(&self, fact: &ManagedLifecycleFact) -> Result<(), String> {
             self.0.lock().expect("delivery lock").push(fact.clone());
             Ok(())
@@ -639,7 +639,7 @@ mod tests {
             event_type: "session.status_idled".into(),
             timestamp: 7,
         };
-        awaken_webhook_managed::LifecycleFactDelivery::deliver(&client, &fact)
+        awaken_session_contract::LifecycleFactDelivery::deliver(&client, &fact)
             .await
             .unwrap();
         assert_eq!(*delivery.0.lock().unwrap(), vec![fact], "R2");

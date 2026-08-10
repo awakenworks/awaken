@@ -1,4 +1,4 @@
-//! Webhook lifecycle-fact catalog projected through `SessionLifecycleFactSink`.
+//! Lifecycle-fact catalog committed through the Session repository outbox.
 //!
 //! These past-tense facts are distinct from the in-session SSE transition names.
 //! The Managed adapter owns the catalog while the contract owns only the narrow

@@ -2089,8 +2089,6 @@ dependencies = [
  "awaken-sandbox-policy-store",
  "awaken-session-contract",
  "awaken-tenancy",
- "awaken-webhook",
- "awaken-webhook-managed",
  "awaken-work-store",
  "awaken-worker",
  "awaken-worker-transport-security",

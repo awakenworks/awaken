@@ -1,9 +1,9 @@
 //! The full live path (ADR-0048 / S10, A#1): a REAL guarded `POST /v1/sessions`
 //! fans a webhook out to a REAL receiver. The guard (the authz aspect) resolves
 //! the owning workspace from the API key and publishes it; `stamp_workspace_scope`
-//! maps it to the wire crate's `WorkspaceScope`; `create_session` hands it to the
-//! lifecycle sink; the dispatcher signs and delivers over real HTTP. The core
-//! session never stores tenancy — the owner is an edge value throughout.
+//! maps it to the wire crate's `WorkspaceScope`; `create_session` commits the
+//! owned lifecycle fact with the Session and wakes the outbox notifier; the
+//! dispatcher signs and delivers over real HTTP.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -95,16 +95,17 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     store.complete_mutation(&intent).unwrap();
     // The guarded production posture would refuse this loopback receiver (SSRF
     // pin/admission), so use the loopback assembly for the in-process e2e.
-    let (sink, _crud) =
+    let (notifier, _crud) =
         webhooks::assemble_loopback(store, secrets, None, sessions.clone(), &service_lifecycle);
 
-    // 3. A managed surface with the sink, wrapped: guard (resolves + publishes the
-    // owning workspace) → stamp_workspace_scope (maps it to WorkspaceScope).
+    // 3. A managed surface with the notifier, wrapped: guard resolves the owning
+    // workspace, the Session transaction owns the fact, and notifier is only a
+    // payload-free post-commit wake.
     let host = Arc::new(SharedHost::new(Arc::new(DeadModel), "test"));
     let managed = Arc::new(
         ManagedState::new(ManagedHost::new(host))
             .with_session_repo(sessions)
-            .with_lifecycle_sink(sink),
+            .with_lifecycle_notifier(notifier),
     );
     let engine = Arc::new(EnforceEngine::seeded());
     let token = engine

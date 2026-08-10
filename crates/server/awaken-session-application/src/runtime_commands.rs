@@ -212,16 +212,9 @@ impl SessionApplication {
         Ok(awaken_resource_contract::RepositoryId::from(input.id))
     }
 
-    pub async fn emit_lifecycle_fact(
-        &self,
-        fact_id: &str,
-        session_id: &str,
-        workspace_id: Option<&str>,
-        event_type: &str,
-    ) {
-        if let Some(sink) = &self.lifecycle_sink {
-            sink.emit_fact(fact_id, session_id, workspace_id, event_type)
-                .await;
+    pub fn notify_lifecycle_fact(&self) {
+        if let Some(notifier) = &self.lifecycle_notifier {
+            notifier.notify();
         }
     }
 

@@ -131,6 +131,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 [features]
 # Volatile embedded/scenario assembly is excluded from product builds.
 test-support = [
+    "awaken-webhook-managed/test-support",
     "dep:awaken-store-inmem",
     "dep:awaken-resource-persistence",
     "awaken-resource-persistence/test-support",
@@ -148,7 +149,6 @@ test-support = [
     "awaken-runtime-host/test-support",
     "awaken-worker-registry/test-support",
     "awaken-webhook/test-support",
-    "awaken-webhook-managed/test-support",
 ]
 # Cross-node dispatch wake over NATS (AWAKEN_DISPATCH_WAKE=nats). Passes through to
 # awaken-runtime-host → awaken-run-ingress so the built binary carries a NATS-capable

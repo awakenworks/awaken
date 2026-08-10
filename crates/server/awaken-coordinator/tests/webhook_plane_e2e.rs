@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use awaken_config_resolver::InMemoryWebhookStore;
 use awaken_coordinator::webhooks;
 use awaken_credential_vault::InMemorySecretStore;
+use awaken_session_contract::{ManagedLifecycleFact, ManagedSessionRepository};
 use awaken_session_store::SqliteManagedSessionRepository;
 use awaken_tenancy::WorkspaceScope;
 use awaken_webhook::verify;
@@ -99,8 +100,8 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
     // The guarded production posture would refuse this loopback receiver (SSRF
     // pin/admission), so use the loopback assembly for the in-process e2e.
-    let (sink, crud) =
-        webhooks::assemble_loopback(store, secrets, None, sessions, &service_lifecycle);
+    let (notifier, crud) =
+        webhooks::assemble_loopback(store, secrets, None, sessions.clone(), &service_lifecycle);
     let crud = crud.layer(axum::middleware::from_fn(stamp_local));
 
     // 3. Register a subscription through the REAL CRUD route; the secret comes back once.
@@ -128,12 +129,19 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         "list never echoes the secret"
     );
 
-    // 4. A committed session lifecycle fact, owned by wrkspc_local, drives the sink
-    // exactly as `create_session` does (owner resolved at ingress; the
-    // create_session→sink link itself is covered in protocol-managed).
-    use awaken_session_contract::SessionLifecycleFactSink;
-    sink.emit("sesn_live", Some("wrkspc_local"), "session.status_idled")
-        .await;
+    // 4. The aggregate transaction is the fact authority; the notifier carries
+    // no payload and only accelerates the supervised replay.
+    sessions
+        .append_lifecycle(ManagedLifecycleFact {
+            id: "session:sesn_live:status_idled".into(),
+            object_id: "sesn_live".into(),
+            workspace_id: Some("wrkspc_local".into()),
+            event_type: "session.status_idled".into(),
+            timestamp: 1_768_780_800,
+        })
+        .await
+        .expect("commit lifecycle fact");
+    notifier.notify();
 
     // 5. The receiver got exactly one signed, correctly-scoped delivery.
     for _ in 0..100 {
