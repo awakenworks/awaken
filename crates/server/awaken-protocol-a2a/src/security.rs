@@ -3,17 +3,18 @@
 //! Publication and launch consume this one projection so supported anonymous /
 //! single-header requirements and their fingerprint cannot drift.
 
-use awaken_protocol_a2a::{AgentCard, ApiKeyLocation, SecurityScheme};
-use awaken_runtime_contract::CredentialUsage;
+use awaken_credential_contract::CredentialUsage;
+
+use crate::{AgentCard, ApiKeyLocation, SecurityScheme};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct A2aSecurityProfile {
-    pub(crate) fingerprint: String,
-    pub(crate) anonymous: bool,
-    pub(crate) accepted_headers: Vec<CredentialUsage>,
+pub struct A2aSecurityProfile {
+    pub fingerprint: String,
+    pub anonymous: bool,
+    pub accepted_headers: Vec<CredentialUsage>,
 }
 
-pub(crate) fn project_agent_card_security(card: &AgentCard) -> Result<A2aSecurityProfile, String> {
+pub fn project_agent_card_security(card: &AgentCard) -> Result<A2aSecurityProfile, String> {
     let fingerprint =
         awaken_runtime_contract::content_fingerprint(&(&card.security_schemes, &card.security))
             .map(|fingerprint| format!("sha256:{fingerprint}"))
@@ -88,7 +89,7 @@ mod tests {
     use super::*;
 
     fn card(security: serde_json::Value) -> AgentCard {
-        let mut card = awaken_protocol_a2a::agent_card("remote");
+        let mut card = crate::agent_card("remote");
         card.url = "https://agent.example".into();
         let security = security.as_object().expect("security fixture");
         card.security_schemes = serde_json::from_value(

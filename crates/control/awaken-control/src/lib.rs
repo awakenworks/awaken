@@ -1,7 +1,8 @@
 //! `awaken-control` — the authoring / authz plane (Stage B2).
 //!
 //! This crate owns the management **authoring** surfaces and the embedded IAM
-//! guard: the admin config CRUD (catalog / credentials / profiles / MCP defs), the
+//! guard: the admin config CRUD (catalog / credentials / profiles / MCP defs),
+//! Provider model discovery, catalog-and-credential model publication resolution, the
 //! webhook-subscription CRUD, the Managed vault front door, user profiles,
 //! the config authoring plane (`/v1/config/agents/*`),
 //! and the capability snapshot — all optionally gated behind the embedded
@@ -10,7 +11,7 @@
 //!
 //! It is a sibling of the `awaken-coordinator` **data plane** (session surface +
 //! protocol adapters + host): the two do NOT depend on each other. The single
-//! machine composition root (`awaken-cli`) builds the shared handles (stores,
+//! machine composition root (`awaken-cli`) builds role-scoped handles (stores,
 //! vault/env state, the config plane), asks this crate for the authoring router,
 //! asks `awaken-coordinator` for the data-plane router, merges them, and applies the
 //! guard exactly where it applied before.
@@ -23,6 +24,7 @@ mod credential_reference;
 mod data_subject;
 mod managed_agents;
 pub mod model_discovery;
+pub mod model_publication;
 mod registration_supervisor;
 pub mod worker_stores;
 

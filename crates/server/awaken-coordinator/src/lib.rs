@@ -10,12 +10,13 @@
 //! This crate is the Coordinator owner: its canonical
 //! [`build_coordinator_component`] assembles Deployment/Session scheduling and
 //! the session surface + protocol adapters
-//! (`mount` / `mount_with_managed`, under `test-support`), the injected exact
-//! published-model materialization port, the model publication resolver, the inert no-model placeholder,
-//! workspace path addressing, and the Worker
+//! (`mount` / `mount_with_managed`, under `test-support`), injected exact
+//! published-model materialization and executable-directory ports, the inert
+//! no-model placeholder, workspace path addressing, and the Worker
 //! role helper (the hand is now the separate `awaken-sandbox` execution-plane
 //! binary). Its sibling **authoring / authz plane** lives in
-//! `awaken-control`; neither depends on the other, and `awaken-cli` is the
+//! `awaken-control`; it owns model-catalog publication resolution and neither
+//! crate depends on the other. `awaken-cli` is the
 //! composition root that weaves them into one management router. The service layer
 //! (the host, the two port adapters, the per-plane resource routers) lives in
 //! `awaken-runtime-host`.
@@ -31,8 +32,6 @@ pub mod data_subject_boundary;
 mod inference_publication_tests;
 pub mod mcp_export;
 pub mod model_directory;
-pub mod model_resolver;
-mod oauth_refresh;
 mod runtime_authority;
 pub mod webhooks;
 pub mod worker_observation_boundary;
@@ -51,11 +50,9 @@ pub use coordinator_persistence::{
     CoordinatorPersistence, migrate_postgres_schema as migrate_postgres_coordinator_schema,
     open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
 };
-pub use oauth_refresh::{VaultRefreshFactory, VaultRefresher};
 
 use std::sync::Arc;
 
-mod a2a_security;
 mod dream;
 
 use awaken_protocol_managed::{ManagedState, router};
@@ -66,7 +63,6 @@ use axum::Router;
 pub use awaken_acp_application::{
     LocalAcpPreparation, PreparedAcpCapabilities, ensure_workspace_bindings,
 };
-pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
 pub use awaken_ext_skills::{SkillContext, SkillSpec, parse_skill_md};
 pub use awaken_protocol_managed::{
     ResourcesRouterInput, default_models, models_router, resources_router,
@@ -216,7 +212,7 @@ impl awaken_run_executor_a2a::TransportResolver for PinnedA2aTransportResolver {
         let card = awaken_protocol_a2a::client::agent_card(&anonymous)
             .await
             .map_err(|error| format!("discover A2A Agent Card before launch: {error}"))?;
-        let security = crate::a2a_security::project_agent_card_security(&card)?;
+        let security = awaken_protocol_a2a::project_agent_card_security(&card)?;
         if &security.fingerprint != security_fingerprint {
             return Err("A2A Agent Card security changed after publication".into());
         }
@@ -415,9 +411,10 @@ fn local_managed_state_over(
 }
 
 // The **worker** lifecycle moved to the production `awaken-worker` crate. In the
-// current shared-store composition it resolves each drained run's model from the
-// DB-configured catalog + vault via `CredentialInferenceMaterializer`; its `NoModelConfiguredExecutor` is
-// only an inert construction placeholder and is never a materialization fallback.
+// current composition it consumes only the publication-pinned model candidate
+// through the injected `CredentialInferenceMaterializer`; its
+// `NoModelConfiguredExecutor` is only an inert construction placeholder and is
+// never a materialization fallback.
 // The `awaken` binary's Worker role delegates to `awaken_worker::run`. The
 // test-only echo-draining worker (for the worker-pool e2e) lives in
 // `awaken-scenario-host::run_echo_worker`.

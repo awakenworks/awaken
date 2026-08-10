@@ -19,7 +19,7 @@ awaken-run-ingress-http.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-worker-runtime.workspace = true
 awaken-config-service.workspace = true
-awaken-credential-materializer = { workspace = true, features = ["authority"] }
+awaken-credential-materializer.workspace = true
 awaken-ext-skills.workspace = true
 awaken-provisioning-contract.workspace = true
 awaken-run-ingress = { workspace = true, features = ["durable"] }
@@ -31,6 +31,7 @@ awaken-deployment-contract.workspace = true
 awaken-deployment-application.workspace = true
 awaken-environment-execution-application.workspace = true
 awaken-worker-registry = { workspace = true }
+awaken-worker-contract.workspace = true
 awaken-acp-contract = { workspace = true }
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }
@@ -62,22 +63,9 @@ awaken-protocol-acp.workspace = true
 # A2A attempt adapter is assembled here, at the data-plane composition root,
 # and injected into the neutral runtime host through `RunAttemptExecutor`.
 awaken-run-executor-a2a = { workspace = true }
-# Management plane (ADR-0043): the composition root resolves a run's inference
-# (adapter_kind + base_url + already-resolved credential) and builds the host's
-# model executor from it — the runtime never sees the credential binding (D6/D9).
-awaken-config-resolver = { workspace = true }
-awaken-provider-genai = { workspace = true }
-# The management-plane HTTP surfaces this binary mounts: admin config CRUD and the
-# Managed vault/credential front door over stores selected by the outer product
-# composition. Volatile scenario wiring is available only through `test-support`.
-awaken-admin-config-api = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-model-catalog.workspace = true
-awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres"] }
-# `oauth-command`: refresh a Google OAuth2 token (gcloud) for the `real-gemini` mode.
-# `sqlite` + `sealed-aead`: the durable management plane persists secret-free rows in
-# SQLite and secrets only as AEAD-sealed blobs under typed control_seal_key.
-awaken-credential-vault = { workspace = true, features = ["oauth-command"] }
-awaken-credential-store = { workspace = true, features = ["sqlite", "sealed-aead", "postgres"] }
+# Volatile scenario wiring is available only through `test-support`; production
+# Coordinator composition receives exact credential ports and never opens Vault.
+awaken-credential-vault = { workspace = true, features = ["oauth-command"], optional = true }
 awaken-credential-contract.workspace = true
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.
 # Embedded IAM (ADR-0042/0043 P1): typed self-managed identity gates management
@@ -118,8 +106,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-base64 = "0.22"
-form_urlencoded = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 axum = { version = "0.8", features = ["multipart"] }
@@ -134,12 +120,12 @@ test-support = [
     "awaken-webhook-managed/test-support",
     "dep:awaken-store-inmem",
     "dep:awaken-resource-persistence",
+    "dep:awaken-credential-vault",
     "awaken-resource-persistence/test-support",
     "awaken-deployment-application/test-support",
     "awaken-captured-content-store/test-support",
     "awaken-run-ingress-http/test-support",
     "awaken-resource-worker-http/test-support",
-    "awaken-config-resolver/test-support",
     "awaken-config-store/test-support",
     "awaken-credential-vault/test-support",
     "awaken-model-catalog/test-support",
@@ -164,6 +150,7 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-control.workspace = true
 awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 awaken-deployment-application = { workspace = true, features = ["test-support"] }
 awaken-webhook = { workspace = true, features = ["test-support"] }
@@ -174,6 +161,7 @@ awaken-config-resolver = { workspace = true, features = ["test-support"] }
 awaken-config-store = { workspace = true, features = ["test-support"] }
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
+awaken-provider-genai.workspace = true
 awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-scenario-host = { workspace = true }
 awaken-run-ingress = { workspace = true }

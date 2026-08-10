@@ -14,7 +14,8 @@ only opaque references and explicit permission decisions.
 |---|---|
 | Runtime Core | typed tool calls, permission hooks, opaque credential references |
 | Dispatch / Server | passing resolved references into runtime activation when required |
-| Credential Domain / Product | vault schema, credential CRUD, OAuth refresh, account grouping, availability projection, operator UX |
+| Credential Domain / Product | vault schema, credential CRUD, refresh policy, account grouping, availability projection, operator UX |
+| Credential materialization adapter | exact pinned material lookup and OAuth refresh/reseal mechanics; no selection or owning API |
 | Orchestration layer above | credential delivery into tool execution (out of scope here) |
 
 ## Domain Model
@@ -277,6 +278,9 @@ fallback. Exact
 current-Vault rediscovery. Target binding, streaming lifecycle, and
 sandbox-facing MCP route projection remain Runtime Host adapter
 responsibilities. Failure never authorizes plaintext in another trust domain.
+`awaken-credential-materializer` contains the sole `CredentialRefreshFactory`
+and Vault-backed refresher. Runtime Host consumes that factory port; Coordinator
+does not own or duplicate refresh policy, token exchange, or Vault write-back.
 
 In a split deployment, the implemented self-hosted path is the external
 Secret/CSI projection described below; brokered inference remains secretless to

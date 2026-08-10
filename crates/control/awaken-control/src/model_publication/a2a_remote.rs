@@ -69,7 +69,7 @@ impl CatalogModelPublicationResolver {
             ));
         }
         let security =
-            crate::a2a_security::project_agent_card_security(&card).map_err(unavailable)?;
+            awaken_protocol_a2a::project_agent_card_security(&card).map_err(unavailable)?;
         let credential = if security.anonymous {
             None
         } else {

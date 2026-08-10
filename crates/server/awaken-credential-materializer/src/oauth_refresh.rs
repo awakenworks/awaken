@@ -1,9 +1,10 @@
-//! Coordinator-owned OAuth refresh and exact Vault rotation adapter.
+//! Exact OAuth refresh and Vault rotation adapter.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, rotate_credential_materials_exact,
@@ -11,13 +12,29 @@ use awaken_credential_vault::repo::{
 use awaken_credential_vault::{
     CredentialStatus, OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretRef, SecretStore,
 };
-use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher};
 use awaken_runtime_contract::{CredentialRefreshAccess, TokenEndpointAuth};
 use base64::Engine as _;
 
 pub struct VaultRefreshFactory {
     credentials: Arc<dyn CredentialRepo>,
     secrets: Arc<dyn SecretStore>,
+}
+
+/// Factory for one exact credential revision's challenge recovery. Runtime
+/// carries only the resulting transport refresher and never sees a Credential
+/// repository or Secret Store.
+pub trait CredentialRefreshFactory: Send + Sync {
+    fn refresher(
+        &self,
+        credential_id: CredentialSourceId,
+        access: CredentialRefreshAccess,
+    ) -> Arc<dyn CredentialRefresher>;
+
+    fn bearer_reloader(
+        &self,
+        credential_id: CredentialSourceId,
+        credential_revision: u64,
+    ) -> Arc<dyn CredentialRefresher>;
 }
 
 impl VaultRefreshFactory {
@@ -30,7 +47,7 @@ impl VaultRefreshFactory {
     }
 }
 
-impl awaken_runtime_host::CredentialRefreshFactory for VaultRefreshFactory {
+impl CredentialRefreshFactory for VaultRefreshFactory {
     fn refresher(
         &self,
         credential_id: CredentialSourceId,
@@ -327,13 +344,9 @@ mod tests {
             www_authenticate: None,
         };
         assert_eq!(
-            awaken_runtime_host::CredentialRefreshFactory::bearer_reloader(
-                &factory,
-                source.id.clone(),
-                1,
-            )
-            .refresh(&challenge)
-            .await,
+            CredentialRefreshFactory::bearer_reloader(&factory, source.id.clone(), 1,)
+                .refresh(&challenge)
+                .await,
             Some(Credential::Bearer("current-bearer".into())),
             "B1/E1"
         );
@@ -366,19 +379,15 @@ mod tests {
             case_credentials.put(replacement).await.unwrap();
             let case_factory = VaultRefreshFactory::new(case_credentials, secrets.clone());
             assert_eq!(
-                awaken_runtime_host::CredentialRefreshFactory::bearer_reloader(
-                    &case_factory,
-                    source.id.clone(),
-                    1,
-                )
-                .refresh(&challenge)
-                .await,
+                CredentialRefreshFactory::bearer_reloader(&case_factory, source.id.clone(), 1,)
+                    .refresh(&challenge)
+                    .await,
                 None,
                 "{case}"
             );
         }
         assert_eq!(
-            awaken_runtime_host::CredentialRefreshFactory::bearer_reloader(
+            CredentialRefreshFactory::bearer_reloader(
                 &factory,
                 CredentialSourceId("cred:missing".into()),
                 1,

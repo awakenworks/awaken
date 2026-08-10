@@ -10,61 +10,21 @@ use crate::discovery_spec::{
 };
 use crate::{AcpLaunch, AcpLaunchIdentity, OpenError};
 use awaken_provisioning_contract as pc;
-use awaken_runtime_contract::{
-    CredentialObservationState, CredentialUsage, resolved::BackendModelSelection,
-};
+use awaken_runtime_contract::{CredentialObservationState, resolved::BackendModelSelection};
 
+mod acquisition;
 mod catalog;
 mod image_contract;
 mod managed_delivery;
+mod publication;
+pub use acquisition::AcpAcquisition;
 pub use catalog::known_acp_clis;
 pub use image_contract::{AcpImageRequirement, image_runtime_contract_json};
 use managed_delivery::project_acp_session;
 pub use managed_delivery::{
     CredentialArtifactCodec, CredentialArtifactSpec, ManagedCredentialDelivery,
 };
-
-/// How the local host obtains the ACP-serving executable. This is the sole local
-/// argv authority; discovery and launch both project it instead of inferring an
-/// install strategy from a command name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AcpAcquisition {
-    Direct {
-        executable: &'static str,
-        args: &'static [&'static str],
-    },
-    PinnedNpmWrapper {
-        installer: &'static str,
-        package: &'static str,
-        bin: &'static str,
-    },
-}
-
-impl AcpAcquisition {
-    #[must_use]
-    pub fn executable(self) -> &'static str {
-        match self {
-            Self::Direct { executable, .. } => executable,
-            Self::PinnedNpmWrapper { bin, .. } => bin,
-        }
-    }
-
-    #[must_use]
-    pub fn local_argv(self) -> Vec<String> {
-        match self {
-            Self::Direct { executable, args } => std::iter::once(executable)
-                .chain(args.iter().copied())
-                .map(str::to_string)
-                .collect(),
-            Self::PinnedNpmWrapper { bin, .. } => vec![bin.to_string()],
-        }
-    }
-
-    #[must_use]
-    pub fn requires_installation(self) -> bool {
-        matches!(self, Self::PinnedNpmWrapper { .. })
-    }
-}
+pub use publication::known_acp_publication_capabilities;
 
 /// How Awaken-managed model coordinates reach a CLI through its provider
 /// environment. Backend-owned selection uses [`BackendModelInterface`] instead.
@@ -123,26 +83,6 @@ impl ModelDelivery {
     #[must_use]
     pub fn supports_credential_env(self, name: &str) -> bool {
         self.credential_env.contains(&name)
-    }
-
-    /// Compile the retained authoring hint into the only execution-time usage.
-    /// The delivery catalog owns this allowlist; publishers and launchers must
-    /// never independently interpret environment-variable names.
-    pub fn compile_credential_usage(
-        self,
-        environment_hint: Option<&str>,
-    ) -> Result<CredentialUsage, String> {
-        let Some(name) = environment_hint else {
-            return Ok(CredentialUsage::ProviderAdapter);
-        };
-        if !self.supports_credential_env(name) {
-            return Err(format!(
-                "ACP model delivery does not accept credential environment {name}"
-            ));
-        }
-        Ok(CredentialUsage::EnvironmentVariable {
-            name: name.to_string(),
-        })
     }
 }
 
@@ -921,6 +861,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn publication_projection_preserves_each_catalog_rows_static_facts() {
+        // Causes: C1 one executable catalog row; C2 it supports exact model
+        // selection; C3 it exposes managed credential environments. Effects:
+        // E1 one same-id publication capability; E2 exact-selection bit and E3
+        // environment allowlist equal the row. Iterating every row is the
+        // decision table and prevents a second hand-maintained adapter list.
+        let projected = known_acp_publication_capabilities();
+        assert_eq!(projected.len(), known_acp_clis().len());
+        for row in known_acp_clis() {
+            let capability = projected
+                .iter()
+                .find(|capability| capability.backend_ref == format!("acp:{}", row.id))
+                .expect("E1");
+            assert_eq!(
+                capability.supports_exact_model_selection,
+                row.backend_model_interface != BackendModelInterface::Unsupported,
+                "E2 {}",
+                row.id
+            );
+            assert_eq!(
+                capability.model_delivery_credential_environments,
+                row.model_delivery.map(|delivery| {
+                    delivery
+                        .credential_env
+                        .iter()
+                        .map(|name| (*name).to_string())
+                        .collect()
+                }),
+                "E3 {}",
+                row.id
+            );
+        }
+    }
+
     fn resolved() -> ResolvedModel {
         ResolvedModel::Managed {
             base_url: "https://api.minimaxi.com/anthropic".to_string(),
@@ -961,41 +936,6 @@ mod tests {
         assert!(acp_cli("opencode").is_some());
         assert!(acp_cli("hermes").is_some());
         assert!(acp_cli("no_such_cli").is_none());
-    }
-
-    /// Cause-effect graph: one catalog delivery plus an optional retained hint
-    /// compiles the execution usage. Missing hints preserve provider-adapter
-    /// delivery, allowlisted hints become explicit process secrets, and every
-    /// other value fails closed.
-    ///
-    /// | Rule | hint | allowlisted | result |
-    /// |---|---|---|---|
-    /// | U1 | absent | - | ProviderAdapter |
-    /// | U2 | ANTHROPIC_API_KEY | yes | EnvironmentVariable |
-    /// | U3 | PATH | no | error |
-    #[test]
-    fn model_delivery_is_the_only_credential_usage_compiler() {
-        let delivery = acp_cli("claude")
-            .and_then(|profile| profile.model_delivery)
-            .expect("Claude managed delivery");
-        assert_eq!(
-            delivery.compile_credential_usage(None).unwrap(),
-            CredentialUsage::ProviderAdapter,
-            "U1"
-        );
-        assert_eq!(
-            delivery
-                .compile_credential_usage(Some("ANTHROPIC_API_KEY"))
-                .unwrap(),
-            CredentialUsage::EnvironmentVariable {
-                name: "ANTHROPIC_API_KEY".into()
-            },
-            "U2"
-        );
-        assert!(
-            delivery.compile_credential_usage(Some("PATH")).is_err(),
-            "U3"
-        );
     }
 
     #[test]

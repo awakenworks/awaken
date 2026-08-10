@@ -130,10 +130,11 @@ pub(super) async fn assemble_runtime_process_router(
     let credential_refresh_factory = (role == config::Role::AllInOne)
         .then(|| {
             stores.control.as_ref().map(|control| {
-                Arc::new(awaken_coordinator::VaultRefreshFactory::new(
+                Arc::new(awaken_credential_materializer::VaultRefreshFactory::new(
                     control.credentials.clone(),
                     control.secrets.clone(),
-                )) as Arc<dyn awaken_runtime_host::CredentialRefreshFactory>
+                ))
+                    as Arc<dyn awaken_credential_materializer::CredentialRefreshFactory>
             })
         })
         .flatten();

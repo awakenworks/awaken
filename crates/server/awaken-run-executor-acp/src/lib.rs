@@ -1449,6 +1449,7 @@ pub use acp_cli::{
     ManagedModelInterface, ManagedProviderConfigCodec, ManagedProviderConfigDelivery, McpDelivery,
     McpInterface, ModelDelivery, ProcessSecretRequirement, ResolvedModel, SessionKey,
     SessionPersistence, acp_cli, image_runtime_contract_json, known_acp_clis,
+    known_acp_publication_capabilities,
 };
 pub use awaken_runtime_contract::resolved::{
     AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,

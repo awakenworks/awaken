@@ -510,7 +510,7 @@ pub async fn build_resolved_real_router() -> Router {
     )
     .await
     .expect("enter credential");
-    let resolver = awaken_coordinator::model_resolver::CatalogModelPublicationResolver::from_repo(
+    let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
         cred_repo.clone(),
     );
@@ -628,7 +628,7 @@ pub async fn build_oauth_resolved_router() -> Router {
         .put(source)
         .await
         .expect("persist OAuth credential");
-    let resolver = awaken_coordinator::model_resolver::CatalogModelPublicationResolver::from_repo(
+    let resolver = awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
         catalog_repo,
         cred_repo.clone(),
     );

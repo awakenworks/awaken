@@ -18,6 +18,7 @@ authority = "control"
 # composition root (awaken-cli) weaves together.
 [dependencies]
 awaken-service-lifecycle.workspace = true
+awaken-acp-contract.workspace = true
 awaken-deployment-contract.workspace = true
 # The config-authoring plane (config service + routers + resolver + tool catalog).
 # Control depends on this shared crate, NOT on the awaken-runtime-host execution host —
@@ -31,6 +32,7 @@ awaken-executable-agent-contract = { workspace = true }
 awaken-tenancy = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true }
+awaken-protocol-a2a.workspace = true
 awaken-resource-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-agent-config.workspace = true
@@ -56,6 +58,7 @@ awaken-iam-host = { workspace = true }
 awaken-webhook-managed = { workspace = true }
 awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
+awaken-worker-contract.workspace = true
 awaken-provider-genai.workspace = true
 # The embedded IAM token/binding rows persist under typed <data_dir>/iam.sqlite.
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -66,6 +69,7 @@ sha2 = "0.10"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 tracing = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 axum = { version = "0.8", features = ["multipart"] }
 
 [dev-dependencies]
@@ -79,6 +83,8 @@ awaken-skill-store = { workspace = true, features = ["test-support"] }
 awaken-executable-agent-catalog.workspace = true
 awaken-env-store = { workspace = true, features = ["test-support"] }
 awaken-model-catalog = { workspace = true, features = ["test-support"] }
+awaken-run-executor-acp.workspace = true
+awaken-worker-registry = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

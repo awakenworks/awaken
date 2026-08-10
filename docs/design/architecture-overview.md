@@ -18,7 +18,8 @@ retains only ephemeral execution state and receives no authority database handle
 ```text
   Control Context
   Agent and Environment authoring, immutable revisions/publications,
-  Resource references, IAM, credential metadata, vaults, directory APIs
+  model-candidate resolution, Resource references, IAM, credential metadata,
+  vaults, directory APIs
         |
         | exact executable Agent/Environment registrations
         v
@@ -47,8 +48,8 @@ Resources component builders; an optional local Worker uses the same
 
 | Deployment unit or context | Canonical components | Durable authority acquired | Cross-context ports |
 |---|---|---|---|
-| Control | `awaken_control::build_control_component` | Agent/config publication, Environment definitions/revisions and sandbox-policy versions, Catalog, Credential/secret, Admin, IAM, Data Subject consent/accountability | registers exact executable Agent and Environment facts; exposes authenticated audit, credential, webhook, and consent-read ports |
-| Coordinator | `awaken_coordinator::build_coordinator_component`; currently co-deploys the canonical Resources component | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections; calls narrow Control ports; dispatches to and settles Workers; mounts Resources ports without owning their stores |
+| Control | `awaken_control::build_control_component`, `CatalogModelPublicationResolver`, `GenaiModelDiscovery` | Agent/config publication, Environment definitions/revisions and sandbox-policy versions, Catalog, Credential/secret, Admin, IAM, Data Subject consent/accountability | resolves complete secret-free model candidates once; registers exact executable Agent and Environment facts; exposes authenticated audit, credential, webhook, and consent-read ports |
+| Coordinator | `awaken_coordinator::build_coordinator_component`; currently co-deploys the canonical Resources component | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections and published candidates; calls narrow Control ports; dispatches to and settles Workers; mounts Resources ports without owning their stores |
 | Resources (currently co-deployed with Coordinator) | `awaken_resource_application::ResourcesApplication` over `build_resource_component` | Resource Catalog/lifecycle, File logical metadata and immutable blobs, Memory content/history, Skill versions | exposes public application ports and claim-fenced per-kind Worker ports; never opens Control or Coordinator stores |
 | Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
 | AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
@@ -65,8 +66,8 @@ live under the technical `crates/server/` workspace bucket:
 
 | Package | DDD role | Rule |
 |---|---|---|
-| `awaken-control` | Control application component | owns authored facts and publication; never schedules Runs |
-| `awaken-coordinator` | Coordinator application component | owns dynamic scheduling, dispatch, settlement, and replay; it is not a generic “server” |
+| `awaken-control` | Control application component | owns authored facts, Provider discovery, and catalog/credential-backed publication; never schedules Runs |
+| `awaken-coordinator` | Coordinator application component | owns dynamic scheduling, dispatch, settlement, and replay; consumes immutable model candidates and never opens Catalog or Credential authority |
 | `awaken-worker` | Worker process composition | advertises capabilities and executes claim-fenced work; native, ACP, and outbound A2A are execution adapters, not public ingress owners |
 | `awaken-resource-application` | Resources application component | sole composition of File, MemoryStore, Skill, and lifecycle ports |
 | `awaken-protocol-managed` | Complete Anthropic-compatible Managed Public API anti-corruption layer | owns Agent/Session/Environment/File/MemoryStore/Skill/Model wire DTOs and routing only; domain behavior stays behind application ports |
@@ -140,7 +141,10 @@ its feature-resolved dependency closure can be proven authority-store-free. The
 CLI assembles these deployables; it does not become another domain owner.
 
 Under the accepted target, config publication is a Control flow, not a runtime
-subsystem. Control persists one immutable `StoredPublication`, then invokes
+subsystem. The sole `CatalogModelPublicationResolver` in `awaken-control` reads
+Catalog and credential metadata plus injected, secret-free ACP/Worker capability
+facts and freezes complete model candidates. Control persists one immutable
+`StoredPublication`, then invokes
 `ExecutableAgentRegistrar::register`. Coordinator stores a rebuildable
 `ExecutableAgentCatalog` projection for future Session resolution. The complete
 decision and transition plan is
@@ -186,7 +190,7 @@ crate name.
 | Boundary | Owns | Examples |
 |---|---|---|
 | Agent-domain contract | replayable agent truth and runtime commit vocabulary | `RunRecord`, durable run lifecycle value, `ThreadCommit`, `CommitCoordinator`, `RuntimeResumeStore`, state/fact/event records |
-| Config publication contract | Control-owned records and immutable publication values | `ConfigStore`, `StoredPublication`, `ExecutableAgentSnapshot`, `ExecutableAgentRegistrar` |
+| Config publication contract | Control-owned records, model-candidate resolution, and immutable publication values | `ConfigStore`, `CatalogModelPublicationResolver`, `StoredPublication`, `ExecutableAgentSnapshot`, `ExecutableAgentRegistrar` |
 | Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvRegistry`, `EnvironmentSandboxPolicyRef` |
 | Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalog`, current/exact-revision/fingerprint reads, local/HTTP/PostgreSQL registrar adapters, authenticated private router, and durable command replay |
 | Coordinator Environment application | rebuildable executable-Environment availability, frozen Session snapshot compilation, registration convergence, and dynamic work coordination | `EnvironmentExecutionApplication` over `ExecutableEnvironmentCatalog` and `WorkQueue`; no authoring repository, HTTP, or Managed DTO |
@@ -333,6 +337,11 @@ substrate stays generic; downstream products own:
 The anti-corruption layer maps those product terms to neutral runtime values and
 back. Product names such as `requires_action`, product sessions, or
 Anthropic outcome result enums must not appear in the runtime core.
+
+The Credential domain owns refresh policy and durable records. The existing
+`awaken-credential-materializer` infrastructure adapter is the sole executor of
+an exact pinned OAuth refresh/reseal access; Runtime and Coordinator receive only
+its narrow port and do not recreate Vault refresh mechanics.
 
 ---
 

@@ -132,6 +132,44 @@ pub trait AcpCapabilityObservationSource: Send + Sync {
     async fn capability_observations(&self) -> Result<Vec<AcpCapabilityObservation>, String>;
 }
 
+/// Secret-free static projection of one installed ACP adapter that Control may
+/// use while freezing an executable publication. Launch commands and other
+/// Worker implementation details never cross this contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcpPublicationCapability {
+    pub backend_ref: String,
+    pub model_api_dialects: Vec<String>,
+    pub supports_exact_model_selection: bool,
+    pub model_delivery_credential_environments: Option<Vec<String>>,
+}
+
+impl AcpPublicationCapability {
+    /// Compile an authored credential environment hint through the adapter's
+    /// published allowlist. Absence always means provider-adapter delivery.
+    pub fn credential_usage(
+        &self,
+        environment_hint: Option<&str>,
+    ) -> Result<awaken_credential_contract::CredentialUsage, String> {
+        let Some(name) = environment_hint else {
+            return Ok(awaken_credential_contract::CredentialUsage::ProviderAdapter);
+        };
+        if !self
+            .model_delivery_credential_environments
+            .as_ref()
+            .is_some_and(|environments| environments.iter().any(|candidate| candidate == name))
+        {
+            return Err(format!(
+                "ACP model delivery does not accept credential environment {name}"
+            ));
+        }
+        Ok(
+            awaken_credential_contract::CredentialUsage::EnvironmentVariable {
+                name: name.to_string(),
+            },
+        )
+    }
+}
+
 /// Canonical executable-capability fingerprint shared by discovery, publication
 /// and launch-time handshake verification.
 ///
@@ -329,5 +367,44 @@ mod tests {
             ..failure
         };
         assert!(!mixed_failure.is_coherent(), "W5");
+    }
+
+    #[test]
+    fn publication_credential_usage_is_allowlisted() {
+        // Causes: C1 no environment hint; C2 hint is in the projected adapter
+        // allowlist; C3 hint is outside it; C4 adapter exposes no environment
+        // delivery. Effects: E1 ProviderAdapter, E2 exact EnvironmentVariable,
+        // E3 reject. Rules P1=C1 -> E1; P2=C2 -> E2; P3=C3||C4 -> E3.
+        let capability = AcpPublicationCapability {
+            backend_ref: "acp:test".into(),
+            model_api_dialects: vec!["anthropic_messages".into()],
+            supports_exact_model_selection: true,
+            model_delivery_credential_environments: Some(vec!["TEST_API_KEY".into()]),
+        };
+        assert_eq!(
+            capability.credential_usage(None).unwrap(),
+            awaken_credential_contract::CredentialUsage::ProviderAdapter,
+            "P1/E1"
+        );
+        assert_eq!(
+            capability.credential_usage(Some("TEST_API_KEY")).unwrap(),
+            awaken_credential_contract::CredentialUsage::EnvironmentVariable {
+                name: "TEST_API_KEY".into()
+            },
+            "P2/E2"
+        );
+        assert!(
+            capability.credential_usage(Some("OTHER_KEY")).is_err(),
+            "P3/E3"
+        );
+        assert!(
+            AcpPublicationCapability {
+                model_delivery_credential_environments: None,
+                ..capability
+            }
+            .credential_usage(Some("TEST_API_KEY"))
+            .is_err(),
+            "P3/E3 no delivery"
+        );
     }
 }

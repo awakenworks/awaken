@@ -44,29 +44,6 @@ impl ModelDirectory for ExecutableAgentModelDirectory {
     }
 }
 
-/// The sole built-in executor-to-model capability projection. Runtime
-/// diagnostics, model discovery, and publication consume this data rather than
-/// rebuilding CLI-specific dialect tables.
-#[must_use]
-pub fn installed_executor_model_capabilities()
--> Vec<awaken_config_resolver::ExecutorModelCapability> {
-    std::iter::once(awaken_config_resolver::ExecutorModelCapability::native())
-        .chain(
-            awaken_run_executor_acp::known_acp_clis()
-                .iter()
-                .map(|executor| awaken_config_resolver::ExecutorModelCapability {
-                    backend_ref: format!("acp:{}", executor.id),
-                    model_api_dialects: executor
-                        .model_api_dialects
-                        .iter()
-                        .map(|dialect| (*dialect).to_string())
-                        .collect(),
-                    available: true,
-                }),
-        )
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
