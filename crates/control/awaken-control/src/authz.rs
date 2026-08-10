@@ -104,7 +104,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_iam_contract::{
-    AccountId, ActivateAuthorizationProfile, ApiToken, ApiTokenId, AuthorizationDecision,
+    ActivateAuthorizationProfile, ApiToken, ApiTokenId, AuthorizationDecision,
     AuthorizationRequest, CreateAuthorizationProfile, OrgId, PolicySnapshot, PrincipalRef,
     ScopeRef, Timestamp, WorkspaceId,
 };
@@ -117,7 +117,7 @@ use awaken_iam_core::{
 use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
 #[cfg(test)]
 use awaken_iam_core::{Effect, Grant, GrantId, GrantSubject};
-use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalBrowserAuth, LocalIamState};
+use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
 use awaken_iam_server::{
     AuthorizationProfileAdmin, AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store,
@@ -125,7 +125,7 @@ use awaken_iam_server::{
 use awaken_protocol_managed::types::ErrorResponse;
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
-use axum::http::header::{CONTENT_TYPE, COOKIE};
+use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -133,6 +133,7 @@ use axum::routing::delete;
 use axum::{Json, Router};
 
 mod bootstrap;
+mod local_browser;
 mod profiles;
 mod remote;
 
@@ -265,45 +266,6 @@ pub struct TokenSpec {
 }
 
 impl ManagementAuthz {
-    /// Bind the stable local browser account as this installation's Org admin
-    /// and attach IAM's canonical session authority to the existing gate.
-    pub fn enable_local_browser(&self, browser: &LocalBrowserAuth, account_id: &AccountId) {
-        let principal = PrincipalRef::Account {
-            account_id: account_id.clone(),
-        };
-        for role in [qualify_role("admin"), qualify_resource_role("admin")] {
-            let binding = RoleBinding {
-                principal: principal.clone(),
-                role,
-                scope: ScopeRef::Org {
-                    org_id: self.org_id.clone(),
-                },
-            };
-            RoleBindingRepo::add(&self.store, binding.clone())
-                .expect("persist local browser admin binding");
-            self.state
-                .lock()
-                .expect("local IAM state lock")
-                .authz
-                .policy_mut()
-                .bind_role(binding);
-        }
-        browser.attach_to(&self.gate);
-    }
-
-    fn authenticate_browser(
-        &self,
-        headers: &HeaderMap,
-    ) -> Result<(PrincipalRef, WorkspaceId), AuthReject> {
-        let cookie = headers
-            .get(COOKIE)
-            .and_then(|value| value.to_str().ok())
-            .ok_or(AuthReject::Invalid)?;
-        self.gate
-            .authenticate_session_cookie(cookie, Timestamp(now_rfc3339()))
-            .map(|principal| (principal, self.workspace_id.clone()))
-    }
-
     /// Mint a token: engine write (directory + workspace role binding) and the
     /// durable rows, atomically under the state lock. Returns the one-time
     /// cleartext `sk-awaken-…` credential.
