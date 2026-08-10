@@ -5,6 +5,39 @@ use std::sync::Arc;
 
 use super::Role;
 
+/// Resolve the one process-private listener without manufacturing a default
+/// that could accidentally alias the public surface. Split roles must author it;
+/// roles without a cross-process private service must not receive it.
+pub(super) fn resolve_internal_bind(
+    role: Role,
+    authored: Option<String>,
+    public_bind: &str,
+) -> Result<Option<String>, String> {
+    let internal = authored
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    match role {
+        Role::Control | Role::Coordinator => {
+            let internal =
+                internal.ok_or_else(|| format!("{} requires internal_bind", role.as_str()))?;
+            let internal_addr = internal.parse::<std::net::SocketAddr>().map_err(|_| {
+                format!("invalid internal_bind address {internal:?}; expected IP:PORT")
+            })?;
+            let public_addr = public_bind
+                .parse::<std::net::SocketAddr>()
+                .map_err(|_| format!("invalid bind address {public_bind:?}; expected IP:PORT"))?;
+            if internal_addr == public_addr {
+                return Err("internal_bind must differ from the public bind".into());
+            }
+            Ok(Some(internal))
+        }
+        Role::AllInOne | Role::Worker if internal.is_some() => {
+            Err("internal_bind belongs only to split Control and Coordinator processes".into())
+        }
+        Role::AllInOne | Role::Worker => Ok(None),
+    }
+}
+
 pub(super) fn enforce_worker_database_isolation(
     role: Role,
     configured_databases: &[(&str, bool)],
@@ -298,6 +331,52 @@ fn load_token(path: Option<&Path>, field: &str, boundary: &str) -> Result<String
 mod tests {
     use super::*;
     use crate::config::{ConfigOverrides, FileConfig, ResolvedDeployment};
+
+    #[test]
+    fn internal_listener_is_explicit_and_role_scoped() {
+        // Cause/effect graph: C1 split Control/Coordinator, C2 internal bind is
+        // present, C3 address is valid, C4 it differs from public, C5 a role has
+        // no private cross-process surface. Effects: E1 accept exactly one
+        // private listener; E2 reject a missing/malformed/aliased listener; E3
+        // reject private listener configuration on AllInOne/Worker.
+        // Decision table: R1 C1+C2+C3+C4 -> E1; R2 C1+!C2 -> E2; R3
+        // C1+C2+(!C3|!C4) -> E2; R4 C5+!C2 -> no listener; R5 C5+C2 -> E3.
+        for role in [Role::Control, Role::Coordinator] {
+            assert_eq!(
+                resolve_internal_bind(role, Some("127.0.0.1:8081".into()), "127.0.0.1:8080")
+                    .unwrap()
+                    .as_deref(),
+                Some("127.0.0.1:8081"),
+                "R1 {role:?}"
+            );
+            assert!(
+                resolve_internal_bind(role, None, "127.0.0.1:8080").is_err(),
+                "R2 {role:?}"
+            );
+            assert!(
+                resolve_internal_bind(role, Some("not-an-address".into()), "127.0.0.1:8080")
+                    .is_err(),
+                "R3 address {role:?}"
+            );
+            assert!(
+                resolve_internal_bind(role, Some("127.0.0.1:8080".into()), "127.0.0.1:8080")
+                    .is_err(),
+                "R3 alias {role:?}"
+            );
+        }
+        for role in [Role::AllInOne, Role::Worker] {
+            assert_eq!(
+                resolve_internal_bind(role, None, "127.0.0.1:8080").unwrap(),
+                None,
+                "R4 {role:?}"
+            );
+            assert!(
+                resolve_internal_bind(role, Some("127.0.0.1:8081".into()), "127.0.0.1:8080")
+                    .is_err(),
+                "R5 {role:?}"
+            );
+        }
+    }
 
     #[test]
     fn registration_configuration_is_role_scoped_and_complete() {

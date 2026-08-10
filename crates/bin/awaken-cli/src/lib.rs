@@ -162,32 +162,37 @@ impl ControlServicePorts {
         }
     }
 }
-/// Router plus the cleartext local setup handoff printed by the CLI once.
+/// Role-owned HTTP surfaces plus the cleartext local setup handoff printed by
+/// the CLI once. `private_router` is never merged into `public_router`.
 pub struct ProcessAssembly {
-    pub router: Router,
+    pub public_router: Router,
+    pub private_router: Router,
     pub local_setup: Option<awaken_control::LocalSetupHandoff>,
     pub registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
 }
 
 struct ProcessRouterAssembly {
-    router: Router,
+    public_router: Router,
+    private_router: Router,
     registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
 }
 
 impl ProcessRouterAssembly {
     fn new(
-        router: Router,
+        public_router: Router,
+        private_router: Router,
         registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
     ) -> Self {
         // Router-only embedding helpers do not retain ProcessAssembly. Keep the
         // same supervisor alive inside the router as well as exposing it to the
         // binary's readiness controller.
-        let router = match &registration_supervisor {
-            Some(supervisor) => router.layer(axum::Extension(supervisor.clone())),
-            None => router,
+        let public_router = match &registration_supervisor {
+            Some(supervisor) => public_router.layer(axum::Extension(supervisor.clone())),
+            None => public_router,
         };
         Self {
-            router,
+            public_router,
+            private_router,
             registration_supervisor,
         }
     }
@@ -618,7 +623,7 @@ pub async fn build_ephemeral_all_in_one_router() -> Router {
     )
     .await
     .expect("assemble ephemeral all-in-one process")
-    .router
+    .public_router
 }
 
 /// Canonical product assembly from the command's one resolved configuration.
@@ -628,7 +633,7 @@ pub async fn build_all_in_one_router_with_deployment(
 ) -> Result<Router, String> {
     build_all_in_one_assembly(deployment, key)
         .await
-        .map(|assembly| assembly.router)
+        .map(|assembly| assembly.public_router)
 }
 
 pub async fn build_all_in_one_assembly(
@@ -694,7 +699,7 @@ async fn build_all_in_one_router_with_composition(
     )
     .await
     .unwrap_or_else(|error| panic!("assemble all-in-one process: {error}"))
-    .router
+    .public_router
 }
 
 /// [`build_all_in_one_router_with_model`] plus a last-mile hook on the assembled host
@@ -724,7 +729,7 @@ pub async fn build_all_in_one_router_with_host_customizer(
     )
     .await
     .expect("assemble test-support customized all-in-one process")
-    .router
+    .public_router
 }
 
 /// Durable counterpart of [`build_all_in_one_router_with_host_customizer`].
@@ -759,7 +764,7 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
     )
     .await
     .expect("assemble durable customized all-in-one process")
-    .router
+    .public_router
 }
 
 /// Build the management router over in-memory stores with an explicit host default
@@ -789,7 +794,7 @@ pub async fn build_all_in_one_router_with_model(
     )
     .await
     .expect("assemble test-support modeled all-in-one process")
-    .router
+    .public_router
 }
 
 /// [`build_all_in_one_router`] with explicit persistence inputs (no environment
@@ -814,7 +819,7 @@ pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 3
     )
     .await
     .expect("assemble durable all-in-one process")
-    .router
+    .public_router
 }
 
 /// [`build_durable_all_in_one_router`] with the embedded IAM guard enabled — the
@@ -842,7 +847,7 @@ pub async fn build_secured_all_in_one_router(
     )
     .await
     .expect("assemble secured all-in-one process")
-    .router;
+    .public_router;
     (router, iam)
 }
 
@@ -1177,6 +1182,31 @@ mod process_role_surface_tests {
 
     use super::*;
 
+    fn executable_agent_registration_body() -> Vec<u8> {
+        let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+            .fingerprint("fp-a")
+            .build();
+        snapshot.metadata = awaken_runtime_contract::AgentSnapshotMetadata {
+            source: awaken_runtime_contract::AgentConfigRevisionRef {
+                agent_id: awaken_runtime_contract::snapshot::AgentId("agent-a".into()),
+                revision: 1,
+            },
+            publication_version: awaken_runtime_contract::AgentPublicationVersion("v1".into()),
+            resolution: Default::default(),
+            fingerprint: awaken_runtime_contract::AgentSnapshotFingerprint("fp-a".into()),
+        };
+        serde_json::to_vec(
+            &awaken_executable_agent_contract::ExecutableAgentRegistration {
+                workspace_id: "workspace-a".into(),
+                agent_id: "agent-a".into(),
+                source_revision: 1,
+                snapshot,
+                session_profile: Default::default(),
+            },
+        )
+        .unwrap()
+    }
+
     #[test]
     fn control_component_has_exactly_the_authoring_process_owners() {
         // Cause/effect decision table:
@@ -1232,12 +1262,14 @@ mod process_role_surface_tests {
 
     /// Cause/effect decision table:
     ///
-    /// | role | authoring API | Session API | Deployment API | registration API |
+    /// | role/listener | authoring API | Session API | Deployment API | private service API |
     /// | --- | --- | --- | --- | --- |
-    /// | Control | mounted | absent | absent | absent |
-    /// | Coordinator | absent | mounted | mounted | authenticated |
+    /// | Control/public | mounted | absent | absent | absent |
+    /// | Control/private | absent | absent | absent | authenticated |
+    /// | Coordinator/public | absent | mounted | mounted | absent |
+    /// | Coordinator/private | absent | absent | absent | authenticated |
     ///
-    /// AllInOne merging is covered by the existing full-surface integration
+    /// AllInOne local-adapter composition is covered by the existing full-surface integration
     /// suites; this test owns the two exclusion rules that those suites cannot
     /// prove. Moving the composition body into `runtime_process_router` adds no
     /// new condition or outcome, so a separate decision table is inapplicable:
@@ -1245,7 +1277,7 @@ mod process_role_surface_tests {
     /// regression coverage.
     #[tokio::test]
     async fn service_roles_expose_only_their_owned_api() {
-        let app = assemble_control_process_router(
+        let control_assembly = assemble_control_process_router(
             in_memory_control_stores(),
             None,
             None,
@@ -1264,11 +1296,15 @@ mod process_role_surface_tests {
                         awaken_coordinator::test_worker_directory(),
                     ),
                 ),
+                control_service_authenticator: Some(
+                    awaken_service_auth_contract::static_token_authenticator("control-token")
+                        .unwrap(),
+                ),
                 ..Default::default()
             },
         )
-        .await
-        .router;
+        .await;
+        let app = control_assembly.public_router;
 
         let control = app
             .clone()
@@ -1294,6 +1330,38 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(registration.status(), StatusCode::NOT_FOUND);
 
+        for path in [
+            awaken_executable_environment_catalog::EXECUTABLE_ENVIRONMENT_REGISTER_PATH,
+            awaken_coordinator::worker_observation_boundary::WORKER_OBSERVATIONS_PATH,
+            awaken_coordinator::data_subject_boundary::ERASE_COORDINATOR_CONTENT_PATH,
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer registration-token")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+
+        let internal_control = app
+            .clone()
+            .oneshot(
+                Request::post("/internal/v1/control/audit/get")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer control-token")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(internal_control.status(), StatusCode::NOT_FOUND);
+
         let deployment = app
             .clone()
             .oneshot(Request::get("/v1/deployments").body(Body::empty()).unwrap())
@@ -1306,6 +1374,41 @@ mod process_role_surface_tests {
             .await
             .unwrap();
         assert_eq!(session.status(), StatusCode::NOT_FOUND);
+
+        let private_control = control_assembly.private_router;
+        let public_on_private = private_control
+            .clone()
+            .oneshot(
+                Request::get("/v1/config/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(public_on_private.status(), StatusCode::NOT_FOUND);
+        let unauthorized = private_control
+            .clone()
+            .oneshot(
+                Request::post("/internal/v1/control/audit/get")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let authenticated = private_control
+            .oneshot(
+                Request::post("/internal/v1/control/audit/get")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer control-token")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(authenticated.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(authenticated.status(), StatusCode::NOT_FOUND);
 
         let (coordinator_stores, control_service) = in_memory_split_coordinator();
         let coordinator_data = tempfile::tempdir().expect("coordinator test data");
@@ -1323,7 +1426,7 @@ mod process_role_surface_tests {
             )
             .expect("compose Coordinator test Environment wiring");
         let worker_directory = awaken_coordinator::test_worker_directory();
-        let app = assemble_runtime_process_router(
+        let coordinator_assembly = assemble_runtime_process_router(
             coordinator_stores,
             None,
             None,
@@ -1349,8 +1452,8 @@ mod process_role_surface_tests {
             None,
         )
         .await
-        .expect("assemble split Coordinator test process")
-        .router;
+        .expect("assemble split Coordinator test process");
+        let app = coordinator_assembly.public_router;
         let control = app
             .clone()
             .oneshot(
@@ -1379,7 +1482,26 @@ mod process_role_surface_tests {
             )
             .await
             .unwrap();
-        assert_eq!(registration.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(registration.status(), StatusCode::NOT_FOUND);
+
+        for path in [
+            awaken_executable_environment_catalog::EXECUTABLE_ENVIRONMENT_REGISTER_PATH,
+            awaken_coordinator::worker_observation_boundary::WORKER_OBSERVATIONS_PATH,
+            awaken_coordinator::data_subject_boundary::ERASE_COORDINATOR_CONTENT_PATH,
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer registration-token")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
 
         let deployments = app
             .clone()
@@ -1398,6 +1520,36 @@ mod process_role_surface_tests {
             .await
             .unwrap();
         assert_eq!(retired_private_launch.status(), StatusCode::NOT_FOUND);
+
+        let private_coordinator = coordinator_assembly.private_router;
+        let session_on_private = private_coordinator
+            .clone()
+            .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(session_on_private.status(), StatusCode::NOT_FOUND);
+        let unauthorized = private_coordinator
+            .clone()
+            .oneshot(
+                Request::post(awaken_executable_agent_catalog::EXECUTABLE_AGENT_REGISTER_PATH)
+                    .header("content-type", "application/json")
+                    .body(Body::from(executable_agent_registration_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let authenticated = private_coordinator
+            .oneshot(
+                Request::post(awaken_executable_agent_catalog::EXECUTABLE_AGENT_REGISTER_PATH)
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer registration-token")
+                    .body(Body::from(executable_agent_registration_body()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authenticated.status(), StatusCode::OK);
     }
 
     #[derive(Debug)]
@@ -1462,7 +1614,7 @@ mod process_role_surface_tests {
             },
         )
         .await
-        .router;
+        .public_router;
 
         let authored = app
             .clone()
