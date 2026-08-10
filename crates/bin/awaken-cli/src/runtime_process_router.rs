@@ -564,21 +564,14 @@ pub(super) async fn assemble_runtime_process_router(
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
     // routing. Flat requests fall through unchanged. The same assembly returns the
     // DreamApplication it mounted, so scheduling cannot target a parallel instance.
-    let model_directory: Arc<dyn awaken_coordinator::ModelDirectory> = match control_stores.as_ref()
-    {
-        Some(control) => Arc::new(
-            awaken_coordinator::model_directory::CatalogModelDirectory::with_source(
-                control.catalog.clone(),
-                control.credentials.clone(),
-                live_runtime_capabilities.expect("AllInOne composes live Control capabilities"),
-            ),
+    // AllInOne and split Coordinator expose the same rebuildable runtime
+    // projection. Process co-location never grants the Coordinator a second,
+    // direct read path into Control catalog or credential authority.
+    let model_directory: Arc<dyn awaken_coordinator::ModelDirectory> = Arc::new(
+        awaken_coordinator::model_directory::ExecutableAgentModelDirectory::new(
+            executable_agent_catalog.clone(),
         ),
-        None => Arc::new(
-            awaken_coordinator::model_directory::ExecutableAgentModelDirectory::new(
-                executable_agent_catalog.clone(),
-            ),
-        ),
-    };
+    );
     let private_router = executable_agent_private_router
         .merge(executable_environment_private_router)
         .merge(worker_observation_private_router);
