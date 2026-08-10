@@ -20,6 +20,7 @@ CONTROL_SOURCE = "crates/control/awaken-control/src"
 CLI_SOURCE = "crates/bin/awaken-cli/src"
 CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
 COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
+SERVICE_BOUNDARY = "crates/bin/awaken-cli/src/config/service_boundary.rs"
 RESOURCE_COMPONENT = "crates/resources/awaken-resource-application/src/component.rs"
 RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
 RESOURCE_PERSISTENCE = "crates/resources/awaken-resource-persistence/src/lib.rs"
@@ -772,6 +773,34 @@ def coordinator_resource_composition_violations(
     return errors
 
 
+def worker_listener_partition_violations(
+    coordinator_source: str, component_source: str, boundary_source: str
+) -> list[str]:
+    """Keep every Worker-facing route on a process-private listener."""
+
+    errors: list[str] = []
+    public_match = re.search(
+        r"let router = managed(.*?)let router = with_local_workspace_scope",
+        coordinator_source,
+        re.S,
+    )
+    if public_match is None:
+        errors.append("Coordinator public router assembly is missing")
+    elif ".merge(worker_transport)" in public_match.group(1):
+        errors.append("Coordinator public router merges the Worker transport")
+    for required in (
+        "Ok((router, worker_transport, dream_application))",
+        ".merge(worker_transport)",
+        ".merge(environment_warmups)",
+    ):
+        owner = coordinator_source if required.startswith("Ok(") else component_source
+        if required not in owner:
+            errors.append(f"private Worker surface is missing `{required}`")
+    if 'Some("127.0.0.1:0".to_owned())' not in boundary_source:
+        errors.append("AllInOne lacks a loopback-only private Worker listener default")
+    return errors
+
+
 def _struct_body(source: str, name: str) -> str:
     match = re.search(rf"\bstruct\s+{re.escape(name)}\s*\{{(.*?)\n\}}", source, re.S)
     return match.group(1) if match else ""
@@ -1133,6 +1162,28 @@ def selftest() -> None:
         "embedded_resource_component awaken_resource_store::",
         "",
     )  # O11b R2/R3/R4/R5
+    # Worker listener causes/effects: R1 Worker router absent from public,
+    # returned separately, merged with warmups into private, and AllInOne has a
+    # loopback private default -> accept. R2 any missing partition fact or a
+    # public merge -> reject accidental exposure or an unusable local Worker.
+    worker_partition = (
+        "let router = managed.merge(models); "
+        "let router = with_local_workspace_scope(router, local); "
+        "Ok((router, worker_transport, dream_application))"
+    )
+    private_partition = ".merge(worker_transport).merge(environment_warmups)"
+    assert worker_listener_partition_violations(
+        worker_partition,
+        private_partition,
+        'Some("127.0.0.1:0".to_owned())',
+    ) == []  # O11c R1
+    assert worker_listener_partition_violations(
+        worker_partition.replace(
+            ".merge(models)", ".merge(worker_transport).merge(models)"
+        ),
+        "",
+        "",
+    )  # O11d R2
     process_stores = (
         "struct ProcessStores { control: Option<ControlStores>, "
         "coordinator: Option<CoordinatorStores>\n}\n"
@@ -1543,6 +1594,13 @@ def check_all(repo_root: Path) -> list[str]:
             product_manifests[CLI_MANIFEST],
             (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
             (repo_root / COORDINATOR_COMPONENT).read_text(encoding="utf-8"),
+        )
+    )
+    errors.extend(
+        worker_listener_partition_violations(
+            (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
+            (repo_root / COORDINATOR_COMPONENT).read_text(encoding="utf-8"),
+            (repo_root / SERVICE_BOUNDARY).read_text(encoding="utf-8"),
         )
     )
     errors.extend(

@@ -1262,12 +1262,12 @@ mod process_role_surface_tests {
 
     /// Cause/effect decision table:
     ///
-    /// | role/listener | authoring API | Session API | Deployment API | private service API |
+    /// | role/listener | authoring API | Session/Deployment | Worker transport | service API |
     /// | --- | --- | --- | --- | --- |
     /// | Control/public | mounted | absent | absent | absent |
     /// | Control/private | absent | absent | absent | authenticated |
-    /// | Coordinator/public | absent | mounted | mounted | absent |
-    /// | Coordinator/private | absent | absent | absent | authenticated |
+    /// | Coordinator/public | absent | mounted | absent | absent |
+    /// | Coordinator/private | absent | absent | authenticated | authenticated |
     ///
     /// AllInOne local-adapter composition is covered by the existing full-surface integration
     /// suites; this test owns the two exclusion rules that those suites cannot
@@ -1510,6 +1510,30 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(deployments.status(), StatusCode::OK);
 
+        let worker_paths = [
+            "/v1/worker/dispatch/claim",
+            "/v1/worker/environment/warmups",
+            "/v1/worker/resources/files/content",
+            "/v1/worker/commit-claimed",
+        ];
+        for path in worker_paths {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .header(
+                            awaken_worker_transport_security::WORKER_ID_HEADER,
+                            "worker-test",
+                        )
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "public {path}");
+        }
+
         let retired_private_launch = app
             .oneshot(
                 Request::post("/internal/v1/deployment-sessions/launch")
@@ -1528,6 +1552,47 @@ mod process_role_surface_tests {
             .await
             .unwrap();
         assert_eq!(session_on_private.status(), StatusCode::NOT_FOUND);
+        for path in worker_paths {
+            let unauthorized = private_coordinator
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                unauthorized.status(),
+                StatusCode::UNAUTHORIZED,
+                "private unauthenticated {path}"
+            );
+            let authenticated = private_coordinator
+                .clone()
+                .oneshot(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .header(
+                            awaken_worker_transport_security::WORKER_ID_HEADER,
+                            "worker-test",
+                        )
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                authenticated.status(),
+                StatusCode::UNAUTHORIZED,
+                "private authenticated {path}"
+            );
+            assert_ne!(
+                authenticated.status(),
+                StatusCode::NOT_FOUND,
+                "private mounted {path}"
+            );
+        }
         let unauthorized = private_coordinator
             .clone()
             .oneshot(

@@ -220,8 +220,21 @@ async fn serve_resolved(
     }
 
     let url = browser_url(&deployment.bind)?;
+    let worker_url = private_listener.as_ref().map(|listener| {
+        format!(
+            "http://{}",
+            listener.local_addr().expect("bound listener address")
+        )
+    });
     let local_worker = prepared_worker
-        .map(|prepared| prepared.build_worker(url.clone(), &deployment))
+        .map(|prepared| {
+            prepared.build_worker(
+                worker_url
+                    .clone()
+                    .expect("AllInOne always binds its private Worker surface"),
+                &deployment,
+            )
+        })
         .transpose()?;
     if role == ServiceRole::AllInOne {
         eprintln!("\n  Awaken is ready\n");

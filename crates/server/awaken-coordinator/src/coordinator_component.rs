@@ -59,10 +59,11 @@ pub struct CoordinatorDependencies {
 
 /// Complete Coordinator application surface.
 pub struct CoordinatorComponent {
-    /// User, Session, Deployment, and authenticated Worker transport surface.
+    /// User, Session, Deployment, and Resources product surface.
     pub router: Router,
-    /// Management-to-Coordinator service surface. Process composition must bind
-    /// this router to the private listener and never merge it into `router`.
+    /// Control-to-Coordinator and Worker-to-Coordinator service surface. Process
+    /// composition binds it to the private listener and never merges it into
+    /// `router`.
     pub private_router: Router,
     /// Coordinator-owned management commands before the process-level audit/IAM
     /// edge is applied.
@@ -128,21 +129,24 @@ pub async fn build_coordinator_component(
         worker_directory.clone(),
         worker_authenticator.clone(),
     );
-    let (data, dream_application) = crate::mount_with_managed_application_access_models_and_dreams(
-        host,
-        managed_state,
-        resource_catalog,
-        application_access.clone(),
-        model_directory,
-        dream_process_store,
-        crate::ManagedRoutingExtensions {
-            resource_management_router,
-            memory_stores,
-            worker_authenticator,
-            worker_directory,
-        },
-    )?;
-    let data = data.merge(environment_warmups);
+    let (data, worker_transport, dream_application) =
+        crate::mount_with_managed_application_access_models_and_dreams(
+            host,
+            managed_state,
+            resource_catalog,
+            application_access.clone(),
+            model_directory,
+            dream_process_store,
+            crate::ManagedRoutingExtensions {
+                resource_management_router,
+                memory_stores,
+                worker_authenticator,
+                worker_directory,
+            },
+        )?;
+    let private_router = private_router
+        .merge(worker_transport)
+        .merge(environment_warmups);
     let management_router =
         awaken_protocol_managed::deployments_router(deployment_application.clone())
             .merge(awaken_protocol_awaken::dream_policy_router(

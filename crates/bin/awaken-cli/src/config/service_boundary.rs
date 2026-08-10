@@ -12,30 +12,41 @@ pub(super) fn resolve_internal_bind(
     role: Role,
     authored: Option<String>,
     public_bind: &str,
+    run_local_pool: bool,
 ) -> Result<Option<String>, String> {
-    let internal = authored
+    let authored = authored
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty());
-    match role {
-        Role::Control | Role::Coordinator => {
-            let internal =
-                internal.ok_or_else(|| format!("{} requires internal_bind", role.as_str()))?;
-            let internal_addr = internal.parse::<std::net::SocketAddr>().map_err(|_| {
-                format!("invalid internal_bind address {internal:?}; expected IP:PORT")
-            })?;
-            let public_addr = public_bind
-                .parse::<std::net::SocketAddr>()
-                .map_err(|_| format!("invalid bind address {public_bind:?}; expected IP:PORT"))?;
-            if internal_addr == public_addr {
-                return Err("internal_bind must differ from the public bind".into());
-            }
-            Ok(Some(internal))
+    let internal = match (role, authored) {
+        (Role::Control | Role::Coordinator, Some(internal)) => Some(internal),
+        (Role::Control | Role::Coordinator, None) => {
+            return Err(format!("{} requires internal_bind", role.as_str()));
         }
-        Role::AllInOne | Role::Worker if internal.is_some() => {
-            Err("internal_bind belongs only to split Control and Coordinator processes".into())
+        (Role::AllInOne, Some(internal)) => Some(internal),
+        (Role::AllInOne, None) if run_local_pool => Some("127.0.0.1:0".to_owned()),
+        (Role::AllInOne, None) => {
+            return Err(
+                "run_local_pool=false requires internal_bind for remote Worker traffic".into(),
+            );
         }
-        Role::AllInOne | Role::Worker => Ok(None),
+        (Role::Worker, Some(_)) => {
+            return Err("Worker is an outbound client and must not configure internal_bind".into());
+        }
+        (Role::Worker, None) => None,
+    };
+    let Some(internal) = internal else {
+        return Ok(None);
+    };
+    let internal_addr = internal
+        .parse::<std::net::SocketAddr>()
+        .map_err(|_| format!("invalid internal_bind address {internal:?}; expected IP:PORT"))?;
+    let public_addr = public_bind
+        .parse::<std::net::SocketAddr>()
+        .map_err(|_| format!("invalid bind address {public_bind:?}; expected IP:PORT"))?;
+    if internal_addr == public_addr {
+        return Err("internal_bind must differ from the public bind".into());
     }
+    Ok(Some(internal))
 }
 
 pub(super) fn enforce_worker_database_isolation(
@@ -334,48 +345,95 @@ mod tests {
 
     #[test]
     fn internal_listener_is_explicit_and_role_scoped() {
-        // Cause/effect graph: C1 split Control/Coordinator, C2 internal bind is
-        // present, C3 address is valid, C4 it differs from public, C5 a role has
-        // no private cross-process surface. Effects: E1 accept exactly one
-        // private listener; E2 reject a missing/malformed/aliased listener; E3
-        // reject private listener configuration on AllInOne/Worker.
-        // Decision table: R1 C1+C2+C3+C4 -> E1; R2 C1+!C2 -> E2; R3
-        // C1+C2+(!C3|!C4) -> E2; R4 C5+!C2 -> no listener; R5 C5+C2 -> E3.
+        // Causes: C1 role; C2 authored bind; C3 valid/non-aliased address; C4
+        // AllInOne local pool. Effects: E1 explicit listener; E2 loopback
+        // ephemeral listener; E3 no listener; E4 configuration rejection.
+        //
+        // | Rule | role         | C2 | C3 | C4 | Effect |
+        // | R1   | Control/Coord| T  | T  | -  | E1     |
+        // | R2   | Control/Coord| F  | -  | -  | E4     |
+        // | R3   | any accepted | T  | F  | -  | E4     |
+        // | R4   | AllInOne     | F  | -  | T  | E2     |
+        // | R5   | AllInOne     | F  | -  | F  | E4     |
+        // | R6   | AllInOne     | T  | T  | *  | E1     |
+        // | R7   | Worker       | F  | -  | -  | E3     |
+        // | R8   | Worker       | T  | *  | -  | E4     |
         for role in [Role::Control, Role::Coordinator] {
             assert_eq!(
-                resolve_internal_bind(role, Some("127.0.0.1:8081".into()), "127.0.0.1:8080")
-                    .unwrap()
-                    .as_deref(),
+                resolve_internal_bind(
+                    role,
+                    Some("127.0.0.1:8081".into()),
+                    "127.0.0.1:8080",
+                    false,
+                )
+                .unwrap()
+                .as_deref(),
                 Some("127.0.0.1:8081"),
                 "R1 {role:?}"
             );
             assert!(
-                resolve_internal_bind(role, None, "127.0.0.1:8080").is_err(),
+                resolve_internal_bind(role, None, "127.0.0.1:8080", false).is_err(),
                 "R2 {role:?}"
             );
             assert!(
-                resolve_internal_bind(role, Some("not-an-address".into()), "127.0.0.1:8080")
-                    .is_err(),
+                resolve_internal_bind(
+                    role,
+                    Some("not-an-address".into()),
+                    "127.0.0.1:8080",
+                    false,
+                )
+                .is_err(),
                 "R3 address {role:?}"
             );
             assert!(
-                resolve_internal_bind(role, Some("127.0.0.1:8080".into()), "127.0.0.1:8080")
-                    .is_err(),
+                resolve_internal_bind(
+                    role,
+                    Some("127.0.0.1:8080".into()),
+                    "127.0.0.1:8080",
+                    false,
+                )
+                .is_err(),
                 "R3 alias {role:?}"
             );
         }
-        for role in [Role::AllInOne, Role::Worker] {
-            assert_eq!(
-                resolve_internal_bind(role, None, "127.0.0.1:8080").unwrap(),
-                None,
-                "R4 {role:?}"
-            );
-            assert!(
-                resolve_internal_bind(role, Some("127.0.0.1:8081".into()), "127.0.0.1:8080")
-                    .is_err(),
-                "R5 {role:?}"
-            );
-        }
+        assert_eq!(
+            resolve_internal_bind(Role::AllInOne, None, "127.0.0.1:8080", true)
+                .unwrap()
+                .as_deref(),
+            Some("127.0.0.1:0"),
+            "R4"
+        );
+        assert!(
+            resolve_internal_bind(Role::AllInOne, None, "127.0.0.1:8080", false).is_err(),
+            "R5"
+        );
+        assert_eq!(
+            resolve_internal_bind(
+                Role::AllInOne,
+                Some("127.0.0.1:8081".into()),
+                "127.0.0.1:8080",
+                false,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("127.0.0.1:8081"),
+            "R6"
+        );
+        assert_eq!(
+            resolve_internal_bind(Role::Worker, None, "127.0.0.1:8080", true).unwrap(),
+            None,
+            "R7"
+        );
+        assert!(
+            resolve_internal_bind(
+                Role::Worker,
+                Some("127.0.0.1:8081".into()),
+                "127.0.0.1:8080",
+                true,
+            )
+            .is_err(),
+            "R8"
+        );
     }
 
     #[test]
