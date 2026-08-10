@@ -617,8 +617,12 @@ impl ResolvedDeployment {
             .as_deref()
             .map(|value| validate_suite_hub_url(value, mode))
             .transpose()?;
-        let internal_bind =
-            service_boundary::resolve_internal_bind(role, file.internal_bind.clone(), &bind)?;
+        let internal_bind = service_boundary::resolve_internal_bind(
+            role,
+            file.internal_bind.clone(),
+            &bind,
+            run_local_pool,
+        )?;
         origins.insert(
             "internal_bind".to_owned(),
             if file.internal_bind.is_some() {

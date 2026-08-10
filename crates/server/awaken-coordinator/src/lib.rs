@@ -653,7 +653,14 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     model_directory: Arc<dyn awaken_protocol_managed::ModelDirectory>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
-) -> Result<(Router, Arc<awaken_dream_application::DreamApplication>), WorkerTransportBuildError> {
+) -> Result<
+    (
+        Router,
+        Router,
+        Arc<awaken_dream_application::DreamApplication>,
+    ),
+    WorkerTransportBuildError,
+> {
     mount_with_managed_over_and_models(
         host,
         managed_state,
@@ -674,7 +681,7 @@ fn mount_with_managed_over(
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_catalog.clone());
-    mount_with_managed_over_and_models(
+    let (public, _worker_private, dreams) = mount_with_managed_over_and_models(
         host,
         managed_state,
         resource_catalog,
@@ -690,7 +697,8 @@ fn mount_with_managed_over(
             worker_directory: test_worker_directory(),
         },
     )
-    .expect("test-support Worker transport must assemble")
+    .expect("test-support Worker transport must assemble");
+    (public, dreams)
 }
 
 fn mount_with_managed_over_and_models(
@@ -701,7 +709,14 @@ fn mount_with_managed_over_and_models(
     model_directory: Option<Arc<dyn awaken_protocol_managed::ModelDirectory>>,
     dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     routing: ManagedRoutingExtensions,
-) -> Result<(Router, Arc<awaken_dream_application::DreamApplication>), WorkerTransportBuildError> {
+) -> Result<
+    (
+        Router,
+        Router,
+        Arc<awaken_dream_application::DreamApplication>,
+    ),
+    WorkerTransportBuildError,
+> {
     let ManagedRoutingExtensions {
         resource_management_router,
         memory_stores,
@@ -898,11 +913,12 @@ fn mount_with_managed_over_and_models(
         .merge(ag_ui)
         .merge(a2a)
         .merge(durable_ops)
-        .merge(worker_transport)
         .merge(resource_management_router)
         .merge(models);
     let router = with_local_workspace_scope(router, local_workspace);
-    Ok((router, dream_application))
+    let worker_transport =
+        with_local_workspace_scope(worker_transport, host.local_workspace().to_string());
+    Ok((router, worker_transport, dream_application))
 }
 
 fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router {
