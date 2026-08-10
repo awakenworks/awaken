@@ -60,23 +60,30 @@ struct EraseCommand {
 #[derive(Clone)]
 struct BoundaryState {
     eraser: Arc<dyn ContentEraser>,
-    bearer_token: Arc<str>,
+    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
 }
 
 pub fn router(
     eraser: Arc<dyn ContentEraser>,
     bearer_token: impl Into<String>,
 ) -> Result<Router, String> {
-    let bearer_token = bearer_token.into();
-    if bearer_token.trim().is_empty() {
-        return Err("Coordinator content-erasure bearer token must not be empty".into());
-    }
-    Ok(Router::new()
+    Ok(router_with_authenticator(
+        eraser,
+        awaken_service_auth_contract::static_token_authenticator(bearer_token)?,
+    ))
+}
+
+#[must_use]
+pub fn router_with_authenticator(
+    eraser: Arc<dyn ContentEraser>,
+    authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
+) -> Router {
+    Router::new()
         .route(ERASE_COORDINATOR_CONTENT_PATH, post(handle_erase))
         .with_state(BoundaryState {
             eraser,
-            bearer_token: Arc::from(bearer_token),
-        }))
+            authenticator,
+        })
 }
 
 async fn handle_erase(
@@ -84,13 +91,14 @@ async fn handle_erase(
     headers: HeaderMap,
     Json(command): Json<EraseCommand>,
 ) -> axum::response::Response {
-    if !awaken_service_auth_contract::service_bearer_token_matches(
+    match state.authenticator.authenticate(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),
-        &state.bearer_token,
     ) {
-        return StatusCode::UNAUTHORIZED.into_response();
+        Ok(true) => {}
+        Ok(false) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
     match state.eraser.erase_subject(&command.subject).await {
         Ok(removed) => (StatusCode::OK, Json(Ok::<_, String>(removed))).into_response(),
@@ -105,7 +113,7 @@ async fn handle_erase(
 #[derive(Clone)]
 pub struct HttpCoordinatorContentEraser {
     endpoint: String,
-    bearer_token: String,
+    token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
     client: reqwest::Client,
 }
 
@@ -114,17 +122,35 @@ impl HttpCoordinatorContentEraser {
         base_url: impl Into<String>,
         bearer_token: impl Into<String>,
     ) -> Result<Self, String> {
+        Self::with_token_source(
+            base_url,
+            awaken_service_auth_contract::static_token_source(bearer_token)?,
+        )
+    }
+
+    pub fn with_token_source(
+        base_url: impl Into<String>,
+        token_source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
+    ) -> Result<Self, String> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
-        let bearer_token = bearer_token.into();
-        reqwest::Url::parse(&base_url)
+        let parsed = reqwest::Url::parse(&base_url)
             .map_err(|error| format!("invalid Coordinator erasure URL: {error}"))?;
-        if bearer_token.trim().is_empty() {
-            return Err("Coordinator erasure bearer token is required".into());
+        if !matches!(parsed.scheme(), "http" | "https")
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(
+                "Coordinator erasure requires an http(s) base URL without query or fragment".into(),
+            );
         }
+        awaken_service_auth_contract::resolve_service_bearer_token(token_source.as_ref())?;
         Ok(Self {
             endpoint: format!("{base_url}{ERASE_COORDINATOR_CONTENT_PATH}"),
-            bearer_token,
-            client: reqwest::Client::new(),
+            token_source,
+            client: reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .map_err(|error| error.to_string())?,
         })
     }
 
@@ -134,10 +160,14 @@ impl HttpCoordinatorContentEraser {
         };
         let mut last_error = "Coordinator captured-content service unavailable".to_owned();
         for attempt in 0..ATTEMPTS {
+            let bearer_token = awaken_service_auth_contract::resolve_service_bearer_token(
+                self.token_source.as_ref(),
+            )
+            .map_err(ErasureError)?;
             match self
                 .client
                 .post(&self.endpoint)
-                .bearer_auth(&self.bearer_token)
+                .bearer_auth(bearer_token.as_ref())
                 .json(&command)
                 .send()
                 .await
@@ -148,6 +178,19 @@ impl HttpCoordinatorContentEraser {
                         .await
                         .map_err(|error| ErasureError(format!("decode erasure response: {error}")))?
                         .map_err(ErasureError);
+                }
+                Ok(response) if response.status() == StatusCode::UNAUTHORIZED => {
+                    let rotated = awaken_service_auth_contract::service_bearer_token_rotated(
+                        self.token_source.as_ref(),
+                        bearer_token.as_ref(),
+                    )
+                    .map_err(ErasureError)?;
+                    if attempt + 1 < ATTEMPTS && rotated {
+                        continue;
+                    }
+                    return Err(ErasureError(
+                        "Coordinator erasure credentials were rejected".into(),
+                    ));
                 }
                 Ok(response) if response.status().is_client_error() => {
                     return Err(ErasureError(format!(
@@ -191,8 +234,9 @@ mod tests {
     async fn private_erasure_boundary_authenticates_fans_out_and_fences() {
         // Cause/effect decision table: R1 valid token + captured content + ACP
         // blob -> erase both and return two; R2 retry -> replay the same durable
-        // receipt; R3 wrong token -> reject before mutation. The Coordinator
-        // factory is the only fanout owner.
+        // receipt; R3 wrong token -> reject before mutation; R4 non-HTTP,
+        // query-bearing, or empty-token client configuration -> fail before a
+        // request. The Coordinator factory is the only fanout owner.
         let store = Arc::new(InMemoryCapturedContentStore::new());
         store.insert(
             DataSubjectId("dsub_a".into()),
@@ -244,5 +288,18 @@ mod tests {
             serde_json::from_slice(&to_bytes(replay.into_body(), usize::MAX).await.unwrap())
                 .unwrap();
         assert_eq!(receipt.unwrap(), 2, "R2");
+
+        assert!(
+            HttpCoordinatorContentEraser::new("ftp://coordinator", "secret").is_err(),
+            "R4"
+        );
+        assert!(
+            HttpCoordinatorContentEraser::new("http://coordinator?scope=x", "secret").is_err(),
+            "R4"
+        );
+        assert!(
+            HttpCoordinatorContentEraser::new("http://coordinator", " ").is_err(),
+            "R4"
+        );
     }
 }

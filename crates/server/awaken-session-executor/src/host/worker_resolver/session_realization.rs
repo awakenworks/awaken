@@ -644,6 +644,11 @@ mod tests {
         assert!(preparing.to_string().contains("Skill"), "M3: {preparing}");
     }
 
+    /// Dynamic-publication cause/effect graph: C1 initial claimed snapshot is
+    /// authoritative; C2 renewal omits a snapshot; C3 a later caller supplies a
+    /// different snapshot. E1 retain the whole immutable snapshot in the slot;
+    /// E2 reuse it on lease-only renewal; E3 reject replacement and preserve E1.
+    /// Decision rules: P1 C1=>E1, P2 E1+C2=>E2, P3 E1+C3=>E3.
     #[tokio::test]
     async fn lease_only_renewal_reuses_a_dynamic_claimed_publication() {
         use awaken_session_contract::SessionProjectionSynchronizer as _;
@@ -682,14 +687,32 @@ mod tests {
         .synchronize_session_projection(thread, &projection, &lease, false)
         .await
         .expect("lease renewal reuses the retained immutable publication");
+        let retained = host
+            .session_slots
+            .read(thread, |slot| slot.published_snapshot.clone())
+            .flatten();
+        assert_eq!(retained.as_ref(), Some(&snapshot), "P1/P2");
+
+        let mut replacement = snapshot.clone();
+        replacement.resolved_spec.model_binding.backend_ref = "acp:replacement".into();
+        let error = WorkerProjectionSynchronizer {
+            host: host.as_ref(),
+            claim: None,
+            published_snapshot: Some(&replacement),
+            rebuild_unavailable_environment: false,
+            requires_runtime_before_effects: false,
+        }
+        .synchronize_session_projection(thread, &projection, &lease, false)
+        .await
+        .expect_err("P3 immutable publication replacement is rejected");
+        assert_eq!(error.code, "session_runtime_publication_conflict", "P3");
         assert_eq!(
             host.session_slots
-                .read(thread, |slot| slot
-                    .published_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.id.clone()))
-                .flatten(),
-            Some(snapshot.id)
+                .read(thread, |slot| slot.published_snapshot.clone())
+                .flatten()
+                .as_ref(),
+            Some(&snapshot),
+            "P3"
         );
     }
 

@@ -266,9 +266,11 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
 
 #[tokio::test]
 async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
-    // Cause/effect rule: once run_streaming returns a terminal outcome, retaining
-    // its best-effort sink must not retain the response body; the client observes
-    // exactly one finish event and EOF without waiting for the retained Arc.
+    // Cause/effect decision table. C1 Run terminal, C2 sink retained, C3 queued
+    // live event, C4 client connected. R1 C1+C2+!C3+C4 => finish+[DONE]+EOF;
+    // R2 C1+C2+C3+C4 => drain queued events, then the same terminal sequence;
+    // R3 !C1+C4 => continue receiving/keep-alive; R4 !C4 => interrupt Run.
+    // This test owns R1 and the adjacent live-stream/disconnect tests own R2-R4.
     struct RetainedSinkMock {
         retained: Mutex<Option<Arc<dyn StreamSink>>>,
     }

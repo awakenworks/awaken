@@ -224,7 +224,10 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         command: awaken_session_contract::ActivateSessionRealization,
-    ) -> Result<awaken_session_contract::SessionRealizationDirective, String> {
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
         self.realization_phase("/v1/worker/session/realization/activate", identity, command)
             .await
     }
@@ -233,7 +236,10 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         command: awaken_session_contract::BeginSessionRealization,
-    ) -> Result<awaken_session_contract::SessionRealizationDirective, String> {
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
         self.realization_phase("/v1/worker/session/realization/begin", identity, command)
             .await
     }
@@ -242,7 +248,10 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         command: awaken_session_contract::AcknowledgeSessionRealization,
-    ) -> Result<awaken_session_contract::SessionRealizationDirective, String> {
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
         self.realization_phase(
             "/v1/worker/session/realization/acknowledge",
             identity,
@@ -255,8 +264,8 @@ impl WorkerControlClient {
         &self,
         identity: &WorkerIdentity,
         command: awaken_session_contract::FailSessionRealization,
-    ) -> Result<(), String> {
-        self.post(
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.realization_response(
             "/v1/worker/session/realization/fail",
             json!({ "identity": identity, "command": command }),
         )
@@ -269,12 +278,54 @@ impl WorkerControlClient {
         path: &str,
         identity: &WorkerIdentity,
         command: T,
-    ) -> Result<awaken_session_contract::SessionRealizationDirective, String> {
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
         let body = self
-            .post(path, json!({ "identity": identity, "command": command }))
+            .realization_response(path, json!({ "identity": identity, "command": command }))
             .await?;
-        serde_json::from_value(body.get("realization").cloned().unwrap_or(Value::Null))
-            .map_err(|error| format!("Session realization directive decode: {error}"))
+        serde_json::from_value(body.get("realization").cloned().unwrap_or(Value::Null)).map_err(
+            |error| {
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                    "Session realization directive decode: {error}"
+                ))
+            },
+        )
+    }
+
+    async fn realization_response(
+        &self,
+        path: &str,
+        body: Value,
+    ) -> Result<Value, awaken_session_contract::SessionRealizationControlFailure> {
+        let (status, body) = self
+            .post_response(path, body)
+            .await
+            .map_err(awaken_session_contract::SessionRealizationControlFailure::Unavailable)?;
+        if status.is_success() {
+            return Ok(body);
+        }
+        if let Some(error) = body.get("realization_error") {
+            return serde_json::from_value(error.clone()).map_or_else(
+                |decode| {
+                    Err(
+                        awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                            format!("Session realization failure decode: {decode}"),
+                        ),
+                    )
+                },
+                Err,
+            );
+        }
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                body.get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("worker control request rejected")
+                    .to_string(),
+            ),
+        )
     }
 
     async fn mutation(&self, path: &str, body: Value) -> Result<RegistryMutation, String> {
