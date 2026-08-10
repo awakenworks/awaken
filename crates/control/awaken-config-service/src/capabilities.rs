@@ -243,6 +243,7 @@ pub fn sandbox_execution_policy_capability() -> Value {
         },
         "presets": sandbox_presets(),
         "collection_path": "/v1/awaken/sandbox-execution-policies",
+        "version_path_template": "/v1/awaken/sandbox-execution-policies/{policy_id}/versions/{version}",
     })
 }
 
@@ -284,8 +285,10 @@ How a run is isolated (a versioned SandboxExecutionPolicy). Authoring rules:\n\
 - `isolation`: `workdir` (cwd only, no OS isolation — trusted/dev), `namespace` \
 (OS-namespace isolation via bubblewrap/sandbox-exec — the default for an ACP CLI), or \
 `container` (full container/VM). A provider must meet or exceed what you ask for.\n\
-- `limits`: best-effort caps `cpu_millis` (1000 = 1 core) and `memory_bytes`; omit for \
-provider defaults. A backend that can't enforce a set limit fails closed, never ignores it.\n\
+- `requests`: scheduler reservations for `cpu_millis` (1000 = 1 core), `memory_bytes`, and \
+`disk_bytes`; they are placement demand, not runtime caps or billing units.\n\
+- `limits`: enforceable caps for `cpu_millis`, `memory_bytes`, `disk_bytes`, and `pids`; omit \
+for provider defaults. A backend that can't enforce a set limit fails closed, never ignores it.\n\
 Networking belongs to Environment; mounts belong to typed Resources.";
 
 /// The exact config persisted in a SandboxExecutionPolicy version.
@@ -303,10 +306,23 @@ fn sandbox_config_schema() -> Value {
             },
             "limits": {
                 "type": "object",
-                "description": "Best-effort resource caps; omit for provider defaults.",
+                "description": "Enforceable resource caps; omit for provider defaults.",
+                "additionalProperties": false,
                 "properties": {
                     "cpu_millis": { "type": ["integer", "null"], "minimum": 1, "description": "CPU cap in millicores (1000 = 1 core)." },
-                    "memory_bytes": { "type": ["integer", "null"], "minimum": 1, "description": "Memory cap in bytes." }
+                    "memory_bytes": { "type": ["integer", "null"], "minimum": 1, "description": "Memory cap in bytes." },
+                    "disk_bytes": { "type": ["integer", "null"], "minimum": 1, "description": "Ephemeral-disk cap in bytes." },
+                    "pids": { "type": ["integer", "null"], "minimum": 1, "description": "Process-count cap." }
+                }
+            },
+            "requests": {
+                "type": "object",
+                "description": "Scheduler reservations; independent of limits and billing.",
+                "additionalProperties": false,
+                "properties": {
+                    "cpu_millis": { "type": ["integer", "null"], "minimum": 1, "description": "Reserved CPU in millicores (1000 = 1 core)." },
+                    "memory_bytes": { "type": ["integer", "null"], "minimum": 1, "description": "Reserved memory in bytes." },
+                    "disk_bytes": { "type": ["integer", "null"], "minimum": 1, "description": "Reserved ephemeral disk in bytes." }
                 }
             }
         }
@@ -467,6 +483,12 @@ mod tests {
 
     #[test]
     fn sandbox_execution_policy_capability_has_no_resource_or_network_overlap() {
+        // Cause/effect decision table: R1 the exact SandboxOverride scheduling
+        // axes are authorable -> requests(cpu,memory,disk) and
+        // limits(cpu,memory,disk,pids) appear with positive-or-null grammar;
+        // R2 Environment/Resource-owned network and mounts stay absent; R3
+        // nested unknown fields fail schema admission; R4 requests remain
+        // explicitly distinct from caps and billing in the authoring guide.
         let sb = sandbox_execution_policy_capability();
         let schema = &sb["config_schema"];
         assert!(schema.is_object());
@@ -475,10 +497,49 @@ mod tests {
         assert!(desc.contains("namespace") && desc.contains("Networking belongs"));
         assert!(schema["properties"].get("network").is_none());
         assert!(schema["properties"].get("mounts").is_none());
+        let requests = &schema["properties"]["requests"];
+        assert_eq!(requests["additionalProperties"], false, "R3");
+        assert_eq!(
+            requests["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["cpu_millis", "disk_bytes", "memory_bytes"]
+                .into_iter()
+                .collect(),
+            "R1"
+        );
+        let limits = &schema["properties"]["limits"];
+        assert_eq!(limits["additionalProperties"], false, "R3");
+        assert_eq!(
+            limits["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["cpu_millis", "disk_bytes", "memory_bytes", "pids"]
+                .into_iter()
+                .collect(),
+            "R1"
+        );
+        for fields in [requests, limits] {
+            for field in fields["properties"].as_object().unwrap().values() {
+                assert_eq!(field["minimum"], 1, "R1");
+                assert_eq!(field["type"], json!(["integer", "null"]), "R1");
+            }
+        }
+        assert!(desc.contains("not runtime caps or billing units"), "R4");
         assert_eq!(sb["provisioning_schema"]["default"], "eager");
         assert_eq!(
             sb["provisioning_schema"]["enum"],
             json!(["eager", "on_tool_use"])
+        );
+        assert_eq!(
+            sb["version_path_template"],
+            "/v1/awaken/sandbox-execution-policies/{policy_id}/versions/{version}"
         );
         let presets = sb["presets"].as_array().unwrap();
         let preset_ids: Vec<&str> = presets.iter().map(|p| p["id"].as_str().unwrap()).collect();

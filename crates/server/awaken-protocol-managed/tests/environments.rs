@@ -144,7 +144,7 @@ async fn environment_scope_follows_the_official_decision_table() {
 /// |---|---|---|---|
 /// | A1 self_hosted | T | T | canonical self_hosted |
 /// | A2 cloud | T | T | defaulted network/packages |
-/// | A3 private sandbox extension | T | F | 400 |
+/// | A3 private sandbox/policy/requests/limits extension | T | F | 400 |
 /// | A4 unknown variant | F | - | 400 |
 /// | A5 unknown nested network/package field | T | F | 400 |
 #[tokio::test]
@@ -154,6 +154,18 @@ async fn environment_config_admission_follows_the_official_union_decision_table(
         (
             "A3",
             json!({"type":"self_hosted", "sandbox": {"isolation":"container"}}),
+        ),
+        (
+            "A3-requests",
+            json!({"type":"cloud", "requests":{"cpu_millis":500}}),
+        ),
+        (
+            "A3-limits",
+            json!({"type":"cloud", "limits":{"memory_bytes":1073741824u64}}),
+        ),
+        (
+            "A3-policy",
+            json!({"type":"cloud", "sandbox_policy":{"id":"design", "version":1}}),
         ),
         ("A4", json!({"type":"custom_cloud"})),
         (
@@ -229,6 +241,7 @@ async fn environment_config_admission_follows_the_official_union_decision_table(
 /// | U2 | MCP flag | false | replaced |
 /// | U3 | npm | null | cleared; pip preserved |
 /// | U4 | networking | null | unrestricted; packages preserved |
+/// | U5 | private requests/limits/policy | present | 400; revision/config unchanged |
 #[tokio::test]
 async fn environment_update_preserves_omitted_and_resets_null_fields() {
     let app = app();
@@ -294,6 +307,32 @@ async fn environment_update_preserves_omitted_and_resets_null_fields() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(reset["config"]["networking"]["type"], "unrestricted", "U4");
     assert_eq!(reset["config"]["packages"]["pip"], json!(["httpx"]), "U4");
+
+    for private in [
+        json!({"requests":{"cpu_millis":500}}),
+        json!({"limits":{"memory_bytes":1073741824u64}}),
+        json!({"sandbox_policy":{"id":"design", "version":1}}),
+    ] {
+        let mut config = json!({"type":"cloud"});
+        config.as_object_mut().unwrap().extend(
+            private
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+        let (status, _) = call(
+            &app,
+            "POST",
+            &format!("/v1/environments/{id}"),
+            Some(json!({"config": config})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "U5");
+    }
+    let (status, unchanged) = call(&app, "GET", &format!("/v1/environments/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "U5");
+    assert_eq!(unchanged["config"], reset["config"], "U5");
 }
 
 #[tokio::test]

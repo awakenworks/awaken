@@ -5,7 +5,7 @@ use std::sync::Arc;
 use awaken_executable_environment_catalog::{
     ExecutableEnvironmentCatalog, HttpExecutableEnvironmentRegistrar,
     LocalExecutableEnvironmentRegistrar, PostgresExecutableEnvironmentRegistrar,
-    executable_environment_registration_router,
+    executable_environment_registration_router_with_authenticator,
 };
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrar;
 use awaken_session_contract::work_queue::WorkQueue;
@@ -56,9 +56,9 @@ impl ExecutableEnvironmentWiring {
         schema: PostgresSchemaMode,
         work: Arc<dyn WorkQueue>,
     ) -> Result<Self, String> {
-        let token = deployment
+        let authenticator = deployment
             .executable_agent_registration
-            .coordinator_token()?;
+            .coordinator_authenticator()?;
         let database_url = deployment.runtime.database_url.as_deref().ok_or_else(|| {
             "Coordinator requires runtime_database_url for executable Environment registration"
                 .to_owned()
@@ -96,9 +96,10 @@ impl ExecutableEnvironmentWiring {
                 work,
             ),
         );
-        let private_router =
-            executable_environment_registration_router(registrar.clone(), token)
-                .map_err(|error| format!("construct executable Environment router: {error}"))?;
+        let private_router = executable_environment_registration_router_with_authenticator(
+            registrar.clone(),
+            authenticator,
+        );
         Ok(Self {
             catalog,
             registrar,
@@ -193,11 +194,11 @@ async fn open_image_builds(
 pub(crate) fn control_registrar(
     deployment: &ResolvedDeployment,
 ) -> Result<Arc<dyn ExecutableEnvironmentRegistrar>, String> {
-    let (coordinator_url, token) = deployment
+    let (coordinator_url, token_source) = deployment
         .executable_agent_registration
         .control_credentials()?;
     Ok(Arc::new(
-        HttpExecutableEnvironmentRegistrar::new(coordinator_url, token)
+        HttpExecutableEnvironmentRegistrar::with_token_source(coordinator_url, token_source)
             .map_err(|error| error.to_string())?,
     ))
 }

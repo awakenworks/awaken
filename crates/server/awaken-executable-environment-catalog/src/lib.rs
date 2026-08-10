@@ -17,7 +17,8 @@ mod postgres;
 mod schema;
 
 pub use http::{
-    EXECUTABLE_ENVIRONMENT_REGISTER_PATH, EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH,
+    EXECUTABLE_ENVIRONMENT_PUBLISH_PERMISSION, EXECUTABLE_ENVIRONMENT_REGISTER_PATH,
+    EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH, EXECUTABLE_ENVIRONMENT_WITHDRAW_PERMISSION,
     HttpExecutableEnvironmentRegistrar, executable_environment_registration_router,
     executable_environment_registration_router_with_authenticator,
 };

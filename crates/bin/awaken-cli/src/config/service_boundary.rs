@@ -1,6 +1,7 @@
 //! Typed configuration for the private Control-to-Coordinator registration edge.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use super::Role;
 
@@ -125,20 +126,39 @@ impl ControlServiceConfig {
         }
     }
 
-    pub fn control_token(&self) -> Result<String, String> {
-        load_token(
-            self.token_file.as_deref(),
-            "control_service_token_file",
-            "Control service",
-        )
+    pub fn control_authenticator(
+        &self,
+    ) -> Result<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>, String> {
+        Ok(Arc::new(
+            awaken_service_auth_contract::TokenSourceAuthenticator::new(projected_token_source(
+                self.token_file.as_deref(),
+                "control_service_token_file",
+                "Control service",
+            )?),
+        ))
     }
 
-    pub fn coordinator_credentials(&self) -> Result<(&str, String), String> {
+    pub fn coordinator_credentials(
+        &self,
+    ) -> Result<
+        (
+            &str,
+            Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
+        ),
+        String,
+    > {
         let url = self
             .control_url
             .as_deref()
             .ok_or_else(|| "Coordinator requires control_internal_url".to_owned())?;
-        Ok((url, self.control_token()?))
+        Ok((
+            url,
+            projected_token_source(
+                self.token_file.as_deref(),
+                "control_service_token_file",
+                "Control service",
+            )?,
+        ))
     }
 }
 
@@ -161,13 +181,21 @@ impl ExecutableAgentRegistrationConfig {
         })
     }
 
-    pub fn control_credentials(&self) -> Result<(&str, String), String> {
+    pub fn control_credentials(
+        &self,
+    ) -> Result<
+        (
+            &str,
+            Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>,
+        ),
+        String,
+    > {
         let url = self.coordinator_url.as_deref().ok_or_else(|| {
             "Control requires coordinator_internal_url for executable Agent registration".to_owned()
         })?;
         Ok((
             url,
-            load_token(
+            projected_token_source(
                 self.token_file.as_deref(),
                 "executable_agent_registration_token_file",
                 "executable Agent registration",
@@ -175,13 +203,49 @@ impl ExecutableAgentRegistrationConfig {
         ))
     }
 
-    pub fn coordinator_token(&self) -> Result<String, String> {
-        load_token(
-            self.token_file.as_deref(),
-            "executable_agent_registration_token_file",
-            "executable Agent registration",
-        )
+    pub fn coordinator_authenticator(
+        &self,
+    ) -> Result<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>, String> {
+        Ok(Arc::new(
+            awaken_service_auth_contract::TokenSourceAuthenticator::new(projected_token_source(
+                self.token_file.as_deref(),
+                "executable_agent_registration_token_file",
+                "executable Agent registration",
+            )?),
+        ))
     }
+}
+
+/// File projection adapter for Kubernetes Secret/workload-token rotation. The
+/// path is stable while its contents are resolved for every request by the
+/// shared service-auth contract.
+#[derive(Clone)]
+struct ProjectedFileServiceBearerTokenSource {
+    path: PathBuf,
+    boundary: &'static str,
+}
+
+impl awaken_service_auth_contract::ServiceBearerTokenSource
+    for ProjectedFileServiceBearerTokenSource
+{
+    fn current_token(&self) -> Result<Arc<str>, String> {
+        load_token(Some(&self.path), "token_file", self.boundary).map(Arc::from)
+    }
+}
+
+fn projected_token_source(
+    path: Option<&Path>,
+    field: &str,
+    boundary: &'static str,
+) -> Result<Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>, String> {
+    let path = path.ok_or_else(|| format!("{field} is required for split deployment"))?;
+    let source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource> =
+        Arc::new(ProjectedFileServiceBearerTokenSource {
+            path: path.to_path_buf(),
+            boundary,
+        });
+    awaken_service_auth_contract::resolve_service_bearer_token(source.as_ref())?;
+    Ok(source)
 }
 
 fn resolve_private_boundary(
@@ -291,9 +355,12 @@ mod tests {
 
     #[test]
     fn projected_token_is_loaded_trimmed_and_never_defaulted() {
-        // Causes: missing file, empty file, and a file containing one token plus
-        // a trailing newline. Effects: fail closed for the first two and return
-        // only the trimmed token for the third; no environment fallback exists.
+        // Cause/effect decision table: R1 missing file and R2 empty file -> fail
+        // closed; R3 a projected token plus newline -> trim and return it; R4
+        // atomically replaced file contents -> the existing source observes the
+        // successor without rebuilding CLI wiring; R5 a later empty projection
+        // -> source error, never reuse the previous token. No environment or
+        // startup-cache fallback exists.
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
         assert!(load_token(Some(&missing), "registration_token_file", "registration").is_err());
@@ -305,6 +372,78 @@ mod tests {
         assert_eq!(
             load_token(Some(&valid), "registration_token_file", "registration").unwrap(),
             "secret-token"
+        );
+        let source =
+            projected_token_source(Some(&valid), "registration_token_file", "registration")
+                .unwrap();
+        assert_eq!(
+            source.current_token().unwrap().as_ref(),
+            "secret-token",
+            "R3"
+        );
+        std::fs::write(&valid, "rotated-token\n").unwrap();
+        assert_eq!(
+            source.current_token().unwrap().as_ref(),
+            "rotated-token",
+            "R4"
+        );
+        std::fs::write(&valid, "\n").unwrap();
+        assert!(source.current_token().is_err(), "R5");
+    }
+
+    #[test]
+    fn split_boundary_credentials_share_request_time_file_semantics() {
+        // Cause/effect decision table: R1 Control-side client credentials read
+        // the first file value; R2 Coordinator-side router authentication reads
+        // the same projection; R3 replacing the file makes the already-built
+        // client source and authenticator reject the predecessor and accept the
+        // successor. This pins the CLI composition methods rather than only the
+        // generic token-source implementation.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private-token");
+        std::fs::write(&path, "first\n").unwrap();
+        let control = ExecutableAgentRegistrationConfig {
+            coordinator_url: Some("http://coordinator:8080".into()),
+            token_file: Some(path.clone()),
+        };
+        let (_, client_source) = control.control_credentials().unwrap();
+        let coordinator = ExecutableAgentRegistrationConfig {
+            coordinator_url: None,
+            token_file: Some(path.clone()),
+        };
+        let authenticator = coordinator.coordinator_authenticator().unwrap();
+        let requirement = awaken_service_auth_contract::ServiceAuthorizationRequirement::new(
+            awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE,
+            "agent:publish",
+        )
+        .in_workspace("workspace-a");
+        assert_eq!(
+            client_source.current_token().unwrap().as_ref(),
+            "first",
+            "R1"
+        );
+        assert!(
+            authenticator
+                .authenticate(Some(b"Bearer first"), requirement)
+                .is_ok(),
+            "R2"
+        );
+
+        std::fs::write(&path, "second\n").unwrap();
+        assert_eq!(
+            client_source.current_token().unwrap().as_ref(),
+            "second",
+            "R3"
+        );
+        assert!(matches!(
+            authenticator.authenticate(Some(b"Bearer first"), requirement),
+            Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized)
+        ));
+        assert!(
+            authenticator
+                .authenticate(Some(b"Bearer second"), requirement)
+                .is_ok(),
+            "R3"
         );
     }
 
