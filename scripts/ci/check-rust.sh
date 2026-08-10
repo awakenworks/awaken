@@ -65,6 +65,13 @@ step "authority-arithmetic" "replace lossy or saturating authority arithmetic wi
 step "crate-boundaries" "remove the illegal dependency shown above (a lower layer must not import a higher one)" \
   python3 scripts/ci/check_crate_boundaries.py
 
+# Cause/effect rule CR1: when Runtime Host is resolved without default
+# features (cause), its neutral credential-refresh port must still compile
+# without acquiring Vault authority (effect). Checking it separately keeps
+# workspace feature unification from masking this product-consumer graph.
+step "runtime-host-neutral" "keep neutral Runtime Host ports available without enabling authority dependencies" \
+  cargo check -p awaken-runtime-host --no-default-features "${locked[@]}"
+
 case "$mode" in
   --quick)
     step "check" "fix the compile errors shown above" \
