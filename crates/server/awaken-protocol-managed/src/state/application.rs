@@ -493,6 +493,200 @@ mod tests {
         ));
     }
 
+    fn application_file_attachment(
+        binding_id: impl Into<String>,
+        file_id: impl Into<String>,
+        mount_path: impl Into<String>,
+        replaces: Option<impl Into<String>>,
+    ) -> awaken_session_contract::SessionInputAttachment {
+        awaken_session_contract::SessionInputAttachment {
+            binding: awaken_resource_contract::InputBinding {
+                binding_id: awaken_resource_contract::BindingId::from(binding_id.into()),
+                target: awaken_resource_contract::InputResourceId::File(
+                    awaken_resource_contract::FileId::from(file_id.into()),
+                ),
+                mount_path: mount_path.into(),
+                access: awaken_resource_contract::ResourceAccess::ReadOnly,
+                instructions: None,
+            },
+            replaces: replaces
+                .map(Into::into)
+                .map(awaken_resource_contract::BindingId::from),
+        }
+    }
+
+    async fn preparing_application_session(state: &ManagedState) -> String {
+        state
+            .create_session(
+                crate::types::SessionCreateParams {
+                    agent: crate::types::AgentRef::Id("assistant".into()),
+                    initial_events: Vec::new(),
+                    application_contribution_required: true,
+                    environment_id: None,
+                    title: None,
+                    metadata: Default::default(),
+                    mcp_servers: Vec::new(),
+                    vault_ids: Vec::new(),
+                    resources: Vec::new(),
+                },
+                Some("workspace".into()),
+            )
+            .await
+            .expect("create preparing Session")
+            .id
+    }
+
+    #[tokio::test]
+    async fn typed_application_inputs_follow_the_causal_and_fmeca_table() {
+        // Cause graph:
+        // claim + typed logical File -> canonical resolver -> manifest merge
+        // -> root CAS -> frozen resource projection. A collision without an
+        // explicit replacement stops before root CAS and before realization.
+        //
+        // | Rule | Claim/input | Existing slot | Replacement | Effect |
+        // | A1 | first/exact | absent | none | commit exactly one File |
+        // | A2 | replay/exact | frozen A1 | none | replay, no duplicate |
+        // | A3 | replay/changed | frozen A1 | none | conflict |
+        // | A4 | first/path collision | present | none | invalid, stay preparing |
+        // | A5 | first/new File | present | explicit | atomic replacement |
+        //
+        // FMECA (S/O/D, RPN): blob/storage identity leakage 7/7/8=392 is
+        // prevented by InputResourceId::File; provider-key lowering 8/4/8=256
+        // by this application boundary; post-pod validation 8/5/6=240 by A4;
+        // duplicate replay 7/4/6=168 by A2; silent slot overwrite 9/3/7=189 by
+        // A4+A5. These rows are intentionally scenario-independent.
+        let committed_state = ManagedState::new(NoopRuntime);
+        let committed_id = preparing_application_session(&committed_state).await;
+        let input = awaken_session_contract::ApplicationSessionInput {
+            session_inputs: vec![application_file_attachment(
+                "flow-file",
+                "file-design",
+                "/mnt/input/design.pdf",
+                None::<String>,
+            )],
+            ..Default::default()
+        };
+        let contribution = ApplicationSessionContribution {
+            session_id: committed_id,
+            application_fingerprint: "flow-plan".into(),
+            input: input.clone(),
+        };
+        let committed = committed_state
+            .application
+            .contribute_application(contribution.clone())
+            .await
+            .expect("A1 commits");
+        assert_eq!(committed.outcome, ApplicationContributionOutcome::Committed);
+        assert_eq!(committed.projection.resources.inputs.len(), 1);
+        assert!(matches!(
+            committed.projection.resources.inputs[0].source,
+            awaken_session_contract::ResolvedInputSource::File { ref file_id }
+                if file_id.as_str() == "file-design"
+        ));
+
+        let replayed = committed_state
+            .application
+            .contribute_application(contribution.clone())
+            .await
+            .expect("A2 replays");
+        assert_eq!(replayed.outcome, ApplicationContributionOutcome::Replayed);
+        assert_eq!(replayed.projection.resources.inputs.len(), 1);
+
+        let mut changed = contribution;
+        changed.input.session_inputs[0].binding.mount_path = "/mnt/input/changed.pdf".into();
+        assert_eq!(
+            committed_state
+                .application
+                .contribute_application(changed)
+                .await
+                .unwrap_err(),
+            ApplicationSessionContributionFailure::Conflict
+        );
+
+        let collision_state = ManagedState::new(NoopRuntime);
+        let collision_id = preparing_application_session(&collision_state).await;
+        collision_state
+            .create_resource(
+                &collision_id,
+                serde_json::from_value(serde_json::json!({
+                    "type": "file",
+                    "file_id": "file-old",
+                    "mount_path": "/mnt/input/design.pdf"
+                }))
+                .unwrap(),
+            )
+            .await
+            .expect("attach existing slot");
+        let collision = collision_state
+            .application
+            .contribute_application(ApplicationSessionContribution {
+                session_id: collision_id.clone(),
+                application_fingerprint: "collision-plan".into(),
+                input: awaken_session_contract::ApplicationSessionInput {
+                    session_inputs: vec![application_file_attachment(
+                        "flow-file",
+                        "file-new",
+                        "/mnt/input/design.pdf",
+                        None::<String>,
+                    )],
+                    ..Default::default()
+                },
+            })
+            .await;
+        assert!(matches!(
+            collision,
+            Err(ApplicationSessionContributionFailure::Invalid(_))
+        ));
+        assert!(
+            collision_state
+                .application
+                .session(&collision_id)
+                .await
+                .unwrap()
+                .frozen_baseline()
+                .is_none()
+        );
+
+        let replacement_state = ManagedState::new(NoopRuntime);
+        let replacement_id = preparing_application_session(&replacement_state).await;
+        replacement_state
+            .create_resource(
+                &replacement_id,
+                serde_json::from_value(serde_json::json!({
+                    "type": "file",
+                    "file_id": "file-old",
+                    "mount_path": "/mnt/input/design.pdf"
+                }))
+                .unwrap(),
+            )
+            .await
+            .expect("attach replaceable slot");
+        let replaced_binding = format!("session:{replacement_id}:live:0");
+        let replaced = replacement_state
+            .application
+            .contribute_application(ApplicationSessionContribution {
+                session_id: replacement_id,
+                application_fingerprint: "replacement-plan".into(),
+                input: awaken_session_contract::ApplicationSessionInput {
+                    session_inputs: vec![application_file_attachment(
+                        replaced_binding.clone(),
+                        "file-new",
+                        "/mnt/input/design.pdf",
+                        Some(replaced_binding),
+                    )],
+                    ..Default::default()
+                },
+            })
+            .await
+            .expect("A5 replaces");
+        assert_eq!(replaced.projection.resources.inputs.len(), 1);
+        assert!(matches!(
+            replaced.projection.resources.inputs[0].source,
+            awaken_session_contract::ResolvedInputSource::File { ref file_id }
+                if file_id.as_str() == "file-new"
+        ));
+    }
+
     fn server(name: &str, url: &str) -> McpServer {
         McpServer {
             name: name.into(),
