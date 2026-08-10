@@ -405,7 +405,7 @@ impl LlmExecutor for GenaiExecutor {
         .map_err(|_| Error::Timeout("model call timed out".to_string()))?
         .map_err(|err| classify_error(&err.to_string()))?;
 
-        Ok(from_genai_response(response))
+        require_visible_response(from_genai_response(response))
     }
 
     async fn infer_streaming(
@@ -560,7 +560,7 @@ impl LlmExecutor for GenaiExecutor {
         if !reasoning.trim().is_empty() {
             output.blocks.insert(0, ContentBlock::thinking(reasoning));
         }
-        Ok(ChatResponse {
+        require_visible_response(ChatResponse {
             output,
             usage,
             stop_reason,
@@ -778,6 +778,13 @@ pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
             .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
             .map(to_genai_part)
             .collect();
+        // A reasoning-only assistant turn has no replayable content after its
+        // Thinking blocks are removed. Sending that empty row violates strict
+        // provider protocols (notably Anthropic Messages), while omitting it
+        // preserves the exact visible conversation used for the retry.
+        if parts.is_empty() {
+            continue;
+        }
         // The neutral transcript commits one Tool message per completed call.
         // Anthropic Messages instead requires every result for one assistant
         // tool-use turn to appear together in the immediately following user
@@ -887,6 +894,36 @@ pub fn from_genai_response(response: genai::chat::ChatResponse) -> ChatResponse 
         output: map_assistant_output(&response.content),
         usage: Some(map_usage(&response.usage)),
         stop_reason: response.stop_reason.as_ref().and_then(map_stop_reason),
+    }
+}
+
+fn require_visible_response(response: ChatResponse) -> Result<ChatResponse> {
+    if response.output.text_content().trim().is_empty() && response.output.tool_calls().is_empty() {
+        return Err(Error::Provider(
+            "model returned no visible assistant content or tool call".into(),
+        ));
+    }
+    Ok(response)
+}
+
+#[cfg(test)]
+mod visible_response_tests {
+    use super::*;
+
+    #[test]
+    fn reasoning_only_response_is_retryable_instead_of_committed_as_empty_success() {
+        let response = ChatResponse {
+            output: AssistantOutput::from_blocks(vec![ContentBlock::thinking("reasoning")]),
+            usage: Some(TokenUsage {
+                completion_tokens: 7,
+                ..TokenUsage::default()
+            }),
+            stop_reason: Some(StopReason::EndTurn),
+        };
+
+        let error = require_visible_response(response).unwrap_err();
+        assert!(matches!(error, Error::Provider(_)));
+        assert!(error.is_retryable());
     }
 }
 
