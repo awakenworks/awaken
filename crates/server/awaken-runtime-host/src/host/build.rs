@@ -91,6 +91,24 @@ impl SharedHost {
         self
     }
 
+    /// Install the exact durable dispatch transport for a Coordinator-only Host.
+    ///
+    /// Unlike [`Self::with_dispatch_store`], this topology owns admission and
+    /// completion observation but never drains the queue or realizes a Session
+    /// Environment. A separately registered Worker is the sole physical effect
+    /// owner. Keeping this as one constructor prevents call ordering from silently
+    /// re-enabling the local pool after a composition selected remote placement.
+    #[must_use]
+    pub fn with_coordinator_dispatch_store(
+        mut self,
+        store: Arc<awaken_run_ingress::AnyDispatchStore>,
+    ) -> Self {
+        self.dispatch_store_override = Some(store);
+        self.deployment.durable = true;
+        self.deployment.disable_local_pool = true;
+        self
+    }
+
     /// Install the Coordinator-owned durable capability before the Host serves.
     #[must_use]
     pub fn with_runtime_authority(mut self, authority: Arc<dyn crate::RuntimeAuthority>) -> Self {

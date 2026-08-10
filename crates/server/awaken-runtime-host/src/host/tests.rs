@@ -3333,6 +3333,27 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
     assert!(host.session_environment("binding-order").await.is_some());
 }
 
+#[test]
+fn dispatch_store_topology_keeps_one_physical_execution_owner() {
+    // FMECA/causal table: injecting the same durable queue is not enough to
+    // choose placement. A local executor must drain it; a Coordinator must only
+    // admit/observe it. If the latter accidentally enables a pool, Coordinator
+    // and registered Worker race for one Session and fence each other's Sandbox.
+    // | constructor | local drain | Coordinator may realize Environment |
+    // | local       | yes         | yes                               |
+    // | coordinator | no          | no                                |
+    let local_store =
+        Arc::new(awaken_run_ingress::AnyDispatchStore::open_sqlite(":memory:").unwrap());
+    let local = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(local_store);
+    assert!(local.runs_local_dispatch_pool(), "local");
+
+    let coordinator_store =
+        Arc::new(awaken_run_ingress::AnyDispatchStore::open_sqlite(":memory:").unwrap());
+    let coordinator = SharedHost::new(Arc::new(OkModel), "stub")
+        .with_coordinator_dispatch_store(coordinator_store);
+    assert!(!coordinator.runs_local_dispatch_pool(), "coordinator");
+}
+
 /// Restart synchronization cause/effect graph: C1 a recovered claim adopts the
 /// Session environment before Control's replacement lease is projected; C2 the
 /// first exact receipt is rejected as stale; C3 Control installs the new lease.
