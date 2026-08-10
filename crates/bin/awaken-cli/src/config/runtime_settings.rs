@@ -46,6 +46,11 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .k8s_namespace
             .clone()
             .unwrap_or_else(|| "default".to_owned()),
+        k8s_network_policy_enforcement: file
+            .k8s_network_policy_enforcement
+            .as_deref()
+            .map(str::parse)
+            .transpose()?,
         k8s_image_pull_secrets: file
             .k8s_image_pull_secrets
             .clone()

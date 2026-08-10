@@ -3,7 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-03
 - Amended: 2026-07-04 (Slice 3/5 mechanism decisions — see Amendment);
-  2026-07-24 (credential broker composition — see Amendment 2)
+  2026-07-24 (credential broker composition — see Amendment 2);
+  2026-08-11 (Kubernetes egress-policy evidence — see Amendment 3)
 - Builds on: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (kernel is
   sandbox-agnostic; a rooted tool is just a `RawTool`, D6),
   [ADR-0035](0035-environment-provisioning-tools-skills-resources.md)
@@ -254,3 +255,32 @@ read-only mount and therefore fails the admission check for that declaration;
 Workdir and Namespace also fail closed when brokered writable write-back is
 requested. A higher layer carries only the opaque reference and may not replace
 it with `InlineBytes`.
+
+## Amendment 3 (2026-08-11): Kubernetes egress-policy evidence
+
+The Kubernetes adapter remains the sole K8s realization of the process-level
+provider seam. It labels each Session Pod with the canonical
+`app=awaken-sandbox` and `awaken-egress=open|restricted` posture, but a label is
+not enforcement. A composition may therefore advertise K8s network isolation
+only when it supplies the versioned `awaken-restricted-egress-v1` evidence that
+its cluster policy selects those exact labels, denies ingress for every Session
+Pod, permits unrestricted egress only for `open`, and denies all egress for
+`restricted`.
+
+Static structure: `SandboxSettings` owns the optional operator evidence;
+`DeploymentConfig::sandbox_support` projects it into the Worker manifest; the
+existing `K8sRuntime` receives the same evidence and remains the only creator of
+Session Pods. The neutral provisioning contract and its `NetworkPolicy` are
+unchanged. Platform composition owns the matching Kubernetes `NetworkPolicy`
+objects and must not claim evidence when they are disabled or use another label
+contract.
+
+Dynamic behavior: without evidence, unrestricted Pods remain admissible while a
+restricted request fails before Pod creation and the Worker does not advertise
+network isolation. With exact evidence, the Worker advertises deny-all support,
+the adapter admits `NetworkPolicy::None`, emits `awaken-egress=restricted`, and
+the platform policy denies its egress. Host allowlists remain unsupported and
+fail closed because this binary posture contract cannot enforce arbitrary host
+sets. Removing or changing the cluster policy requires removing the evidence
+before Workers become ready; otherwise the operator has violated the advertised
+capability contract.

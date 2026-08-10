@@ -117,8 +117,8 @@ pub use crate::config::{
 };
 pub use crate::deployment_config::{
     AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, DeploymentConfig, DispatchBackend,
-    PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind, Wake,
-    default_postgres_max_connections,
+    K8sNetworkPolicyEnforcement, PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind,
+    Wake, default_postgres_max_connections,
 };
 // The model-route seam (R1/R2/R5): a composition root supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.

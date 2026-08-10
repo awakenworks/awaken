@@ -16,6 +16,21 @@ pub(super) fn egress_label(network: &crate::NetworkMode) -> &'static str {
     }
 }
 
+/// Admit the posture only when the Kubernetes composition has supplied exact
+/// enforcement evidence. Labels alone never turn metadata into a boundary.
+pub(super) fn admit_network(
+    network: &crate::NetworkMode,
+    restricted_policy: bool,
+) -> Result<(), crate::RuntimeError> {
+    if matches!(network, crate::NetworkMode::Open) || restricted_policy {
+        Ok(())
+    } else {
+        Err(crate::RuntimeError::Backend(
+            "k8s adapter cannot prove an installed network-isolation policy".into(),
+        ))
+    }
+}
+
 /// The hardened `securityContext` for the untrusted agent container: no privilege
 /// escalation, every Linux capability dropped.
 pub(super) fn hardened_security_context() -> SecurityContext {
@@ -72,4 +87,26 @@ pub(super) fn pod_resources(
 /// Return the requested limit Kubernetes cannot express at Pod-spec level.
 pub(super) fn unenforceable_k8s_limit(limits: &pc::ResourceLimits) -> Option<&'static str> {
     limits.pids.map(|_| "pids")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restricted_network_requires_exact_composition_evidence() {
+        /* Cause/effect graph: C1 network is open, C2 the composition attests the
+         * versioned restricted-egress policy. E1 admits Pod creation; E2 fails
+         * before contacting Kubernetes. Decision rules: N1 C1+!C2=>E1;
+         * N2 C1+C2=>E1; N3 !C1+C2=>E1; N4 !C1+!C2=>E2. Allowlist is rejected
+         * earlier by the canonical egress planner and is not a NetworkMode. */
+        assert!(
+            admit_network(&crate::NetworkMode::Open, false).is_ok(),
+            "N1"
+        );
+        assert!(admit_network(&crate::NetworkMode::Open, true).is_ok(), "N2");
+        assert!(admit_network(&crate::NetworkMode::None, true).is_ok(), "N3");
+        let error = admit_network(&crate::NetworkMode::None, false).expect_err("N4");
+        assert!(error.to_string().contains("cannot prove"), "N4: {error}");
+    }
 }

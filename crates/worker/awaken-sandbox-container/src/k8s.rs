@@ -52,7 +52,7 @@ use pod_projection::{
     content_binds, credential_binds, credential_key,
 };
 use pod_security::{
-    egress_label, hardened_security_context, pod_resources, unenforceable_k8s_limit,
+    admit_network, egress_label, hardened_security_context, pod_resources, unenforceable_k8s_limit,
 };
 use process::{K8sExecProcess, K8sExecState, k8s_exec_argv, k8s_live_file_result};
 #[cfg(test)]
@@ -81,6 +81,9 @@ pub struct K8sRuntime {
     /// the host direct-dials `agent_addr` (a published Service) instead.
     rendezvous: Option<SocketAddr>,
     image_pull_secrets: Vec<String>,
+    /// Exact external `awaken-egress=open|restricted` enforcement evidence;
+    /// labels alone never imply a boundary.
+    restricted_egress_policy: bool,
 }
 
 /// Select the process-wide provider before any kube client is built. Workspace
@@ -108,6 +111,7 @@ impl K8sRuntime {
             owner_id: crate::runtime_owner_id(),
             rendezvous: None,
             image_pull_secrets: Vec::new(),
+            restricted_egress_policy: false,
         })
     }
 
@@ -139,6 +143,14 @@ impl K8sRuntime {
         self
     }
 
+    /// Attest that the cluster denies all Session ingress and restricted egress,
+    /// while only `awaken-egress=open` may egress.
+    #[must_use]
+    pub fn with_restricted_egress_policy(mut self, installed: bool) -> Self {
+        self.restricted_egress_policy = installed;
+        self
+    }
+
     /// A runtime backed by a **lazy** client (no cluster dial), for unit-testing the
     /// builder + Pod-assembly paths; the live `create`/`wait`/… methods still need a
     /// real apiserver (exercised by the gated `k8s_it` integration test).
@@ -155,6 +167,7 @@ impl K8sRuntime {
             owner_id: crate::runtime_owner_id(),
             rendezvous: None,
             image_pull_secrets: Vec::new(),
+            restricted_egress_policy: false,
         }
     }
 
@@ -493,11 +506,7 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
-        if !matches!(plan.network, crate::NetworkMode::Open) {
-            return Err(RuntimeError::Backend(
-                "k8s adapter cannot prove an installed network-isolation policy".into(),
-            ));
-        }
+        admit_network(&plan.network, self.restricted_egress_policy)?;
         // Fail closed on a limit k8s cannot enforce at the Pod-spec level (pids), rather
         // than silently placing the spec and dropping the cap — the tier advertises
         // `resource_limits`, so honoring it means refusing what it cannot enforce.

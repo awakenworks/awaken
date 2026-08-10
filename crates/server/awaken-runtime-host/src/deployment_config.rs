@@ -177,6 +177,28 @@ pub enum PackageImageBuilder {
     Kubernetes,
 }
 
+/// Versioned operator evidence that the Kubernetes composition enforces the
+/// egress-posture labels emitted by the canonical K8s sandbox adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum K8sNetworkPolicyEnforcement {
+    /// `app=awaken-sandbox` is ingress-denied; `awaken-egress=open` alone may
+    /// egress, while `awaken-egress=restricted` is denied all egress.
+    AwakenRestrictedEgressV1,
+}
+
+impl std::str::FromStr for K8sNetworkPolicyEnforcement {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "awaken-restricted-egress-v1" => Ok(Self::AwakenRestrictedEgressV1),
+            other => Err(format!(
+                "invalid k8s_network_policy_enforcement={other:?}: expected awaken-restricted-egress-v1"
+            )),
+        }
+    }
+}
+
 impl SandboxTier {
     /// Whether this tier runs the agent inside a container image (vs. the local or
     /// namespace tiers on the worker host) — the composition root builds a container
@@ -223,6 +245,10 @@ pub struct SandboxSettings {
     pub container_forward_proxy: Option<String>,
     /// Kubernetes namespace used by the K8s container adapter.
     pub k8s_namespace: String,
+    /// Exact external NetworkPolicy contract installed by the Kubernetes
+    /// composition. Absence means the adapter may not claim or realize network
+    /// isolation even though it still emits posture labels.
+    pub k8s_network_policy_enforcement: Option<K8sNetworkPolicyEnforcement>,
     /// Existing namespace-local Secrets used by kubelet for private image pulls.
     pub k8s_image_pull_secrets: Vec<String>,
     /// Executable path for the Awaken Hand inside a container image.
@@ -272,6 +298,7 @@ impl Default for SandboxSettings {
             warm_pool_idle_ttl_secs: 300,
             container_forward_proxy: None,
             k8s_namespace: "default".to_owned(),
+            k8s_network_policy_enforcement: None,
             k8s_image_pull_secrets: Vec::new(),
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
             container_hand_idle_secs: 300,
@@ -392,10 +419,11 @@ impl DeploymentConfig {
                     tool_transparent: true,
                     path_fidelity: true,
                     enforced_readonly: true,
-                    // Docker/Podman structurally apply `network none`. The current
-                    // Kubernetes adapter only labels restricted pods and cannot claim
-                    // enforcement until composition verifies an installed policy.
-                    network_isolation: !matches!(self.sandbox_tier, SandboxTier::K8s),
+                    // Docker/Podman structurally apply `network none`. Kubernetes
+                    // may claim the same capability only under the exact external
+                    // label-policy evidence consumed by its adapter.
+                    network_isolation: !matches!(self.sandbox_tier, SandboxTier::K8s)
+                        || self.sandbox.k8s_network_policy_enforcement.is_some(),
                     enforced_network_allowlist: false,
                     secret_egress_substitution: false,
                     resource_limits: true,
@@ -559,7 +587,8 @@ mod tests {
     /// | local | 0 | 0 | neither |
     /// | namespace | 1 | 0 | deny-all only |
     /// | docker/podman | 1 | 0 | deny-all only |
-    /// | k8s (current adapter) | 0 | 0 | neither |
+    /// | k8s, no policy evidence | 0 | 0 | neither |
+    /// | k8s, restricted-egress-v1 | 1 | 0 | deny-all only |
     #[test]
     fn sandbox_support_reports_adapter_evidence_not_isolation_class() {
         for (tier, deny_all, package_provisioning, backend) in [
@@ -591,6 +620,27 @@ mod tests {
         assert!(
             k8s_with_builder.sandbox_support().0.package_provisioning,
             "Kubernetes may advertise packages only with an independent builder and shared registry"
+        );
+
+        let mut k8s_with_policy = base();
+        k8s_with_policy.sandbox_tier = SandboxTier::K8s;
+        k8s_with_policy.sandbox.k8s_network_policy_enforcement =
+            Some(K8sNetworkPolicyEnforcement::AwakenRestrictedEgressV1);
+        let support = k8s_with_policy.sandbox_support().0;
+        assert!(support.network_isolation, "K8s exact policy evidence");
+        assert!(
+            !support.enforced_network_allowlist,
+            "binary posture is not an allowlist"
+        );
+
+        assert_eq!(
+            "awaken-restricted-egress-v1".parse(),
+            Ok(K8sNetworkPolicyEnforcement::AwakenRestrictedEgressV1)
+        );
+        assert!(
+            "labels-only"
+                .parse::<K8sNetworkPolicyEnforcement>()
+                .is_err()
         );
     }
 
