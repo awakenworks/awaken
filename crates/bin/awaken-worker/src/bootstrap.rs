@@ -226,7 +226,9 @@ impl WorkerDaemonConfig {
             ))
         });
         let inference =
-            awaken_credential_materializer::DirectInferenceMaterializer::new(credentials.clone());
+            awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
+                credentials.clone(),
+            );
         let mut builder = crate::WorkerNodeBuilder::new(upstream)
             .with_deployment_config(self.runtime.clone())
             .with_standard_manifest_config(manifest)

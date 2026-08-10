@@ -133,7 +133,7 @@ fn configured_worker_builder(
         .with_deployment_config(deployment.runtime.clone())
         .with_standard_manifest_config(manifest)
         .with_inference_materializer(Arc::new(
-            awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::from_pinned(
+            awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
                 credentials.clone(),
             ),
         ))

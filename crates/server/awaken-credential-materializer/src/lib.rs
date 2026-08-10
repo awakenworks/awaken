@@ -2,15 +2,18 @@
 //!
 //! This host adapter owns no selection policy and cannot enumerate credentials. It
 //! accepts one immutable [`ResolvedModelCandidate`], verifies its
-//! Workspace/revision/usage pins against the persisted row, then materializes that exact secret. Native
-//! provider execution and ACP provisioning share this adapter so they cannot drift.
+//! Workspace/revision/usage pins against the persisted row, then materializes
+//! that exact secret. Native provider execution, optional brokered inference,
+//! and ACP provisioning share this adapter so candidate routing cannot drift.
 
+#[cfg(feature = "brokered")]
+pub mod brokered_inference;
 mod credential_artifact;
 mod inference;
 mod secret_broker;
 
 pub use inference::{
-    DirectInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,
+    CredentialInferenceMaterializer, ResolvedExecutorError, executor_from_materialized_endpoint,
 };
 
 use std::collections::{BTreeMap, HashMap};

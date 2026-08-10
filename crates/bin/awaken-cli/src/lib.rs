@@ -861,7 +861,7 @@ fn brokered_inference_client(
     remote_iam: Option<&Arc<RemoteManagementAuthz>>,
     cloud_api_base_url: Option<&str>,
     execution_workspace: &str,
-) -> Option<Arc<awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient>> {
+) -> Option<Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>> {
     cloud_models_enabled
         .then(|| remote_iam.and_then(|authz| authz.cloud_user_token()))
         .flatten()
@@ -869,7 +869,7 @@ fn brokered_inference_client(
             let base_url = cloud_api_base_url
                 .expect("Awaken Cloud identity requires a Cloud inference API URL");
             Arc::new(
-                awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::new(
+                awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient::new(
                     base_url,
                     token,
                     execution_workspace,
@@ -928,7 +928,7 @@ fn runtime_model_wiring(
     credential_materializer: &awaken_credential_materializer::PinnedCredentialMaterializer,
     cloud_models_enabled: bool,
     brokered_client: Option<
-        &Arc<awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient>,
+        &Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>,
     >,
 ) -> RuntimeModelWiring {
     match runtime {
@@ -936,10 +936,11 @@ fn runtime_model_wiring(
             executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: Some(Arc::new({
-                let materializer = awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::from_pinned(
-                    credential_materializer.clone(),
-                )
-                .with_brokered_mode(cloud_models_enabled);
+                let materializer =
+                    awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
+                        credential_materializer.clone(),
+                    )
+                    .with_brokered_mode(cloud_models_enabled);
                 match brokered_client {
                     Some(client) => materializer.with_brokered_client(client.clone()),
                     None => materializer,

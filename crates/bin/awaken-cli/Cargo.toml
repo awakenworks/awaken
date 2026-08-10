@@ -44,7 +44,7 @@ awaken-worker = { workspace = true }
 awaken-runtime-host.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
-awaken-credential-materializer = { workspace = true, features = ["authority"] }
+awaken-credential-materializer = { workspace = true, features = ["authority", "brokered"] }
 awaken-env-store.workspace = true
 awaken-environment-application.workspace = true
 awaken-environment-execution-application.workspace = true

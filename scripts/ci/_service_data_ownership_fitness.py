@@ -80,6 +80,9 @@ WEBHOOK_DISPATCH_SOURCE = "crates/server/awaken-webhook/src/dispatch.rs"
 WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
 MODEL_DIRECTORY_SOURCE = "crates/server/awaken-coordinator/src/model_directory.rs"
 RUNTIME_PROCESS_ROUTER = "crates/bin/awaken-cli/src/runtime_process_router.rs"
+CREDENTIAL_INFERENCE_SOURCE = (
+    "crates/server/awaken-credential-materializer/src/inference.rs"
+)
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -1071,6 +1074,30 @@ def model_directory_authority_violations(
     return errors
 
 
+def inference_materializer_authority_violations(
+    authoritative_source: str, coordinator_source: str
+) -> list[str]:
+    """Keep one publication-pinned candidate router outside Coordinator."""
+
+    errors: list[str] = []
+    count = authoritative_source.count("struct PinnedCandidateExecutor")
+    if count != 1:
+        errors.append(
+            "Credential materializer must own exactly one pinned candidate router; "
+            f"found {count}"
+        )
+    for forbidden in (
+        "struct CredentialInferenceMaterializer",
+        "struct PinnedCandidateExecutor",
+        "impl InferenceExecutorMaterializer",
+    ):
+        if forbidden in coordinator_source:
+            errors.append(
+                f"Coordinator recreates credential inference authority `{forbidden}`"
+            )
+    return errors
+
+
 def selftest() -> None:
     """Cause/effect decision table.
 
@@ -1114,7 +1141,9 @@ def selftest() -> None:
     terminate in one lifecycle -> accepted; O38 a missing target, Worker twin, or
     entrypoint-local composition -> rejected; O39 one executable-registration
     model directory shared by every topology -> accepted; O40 a direct Control
-    catalog directory or duplicate/missing construction path -> rejected.
+    catalog directory or duplicate/missing construction path -> rejected; O41
+    one candidate router in credential materialization -> accepted; O42 a
+    missing/duplicate router or Coordinator-owned materializer -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -1523,6 +1552,14 @@ def selftest() -> None:
         "pub struct ExecutableAgentModelDirectory;",
         "ExecutableAgentModelDirectory::new(a) ExecutableAgentModelDirectory::new(b)",
     )  # O40 duplicate construction
+    assert inference_materializer_authority_violations(
+        "struct PinnedCandidateExecutor;",
+        "pub mod coordinator_component;",
+    ) == []  # O41
+    assert inference_materializer_authority_violations(
+        "struct PinnedCandidateExecutor; struct PinnedCandidateExecutor;",
+        "struct CredentialInferenceMaterializer; impl InferenceExecutorMaterializer for X {}",
+    )  # O42
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -1720,4 +1757,15 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / RUNTIME_PROCESS_ROUTER).read_text(encoding="utf-8"),
     ):
         errors.append(f"Coordinator model projection: {error}")
+    coordinator_production = "\n".join(
+        re.split(r"(?m)^\s*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*]", source, maxsplit=1)[0]
+        for path in sorted((repo_root / "crates/server/awaken-coordinator/src").rglob("*.rs"))
+        if "tests" not in path.stem
+        for source in [path.read_text(encoding="utf-8")]
+    )
+    for error in inference_materializer_authority_violations(
+        (repo_root / CREDENTIAL_INFERENCE_SOURCE).read_text(encoding="utf-8"),
+        coordinator_production,
+    ):
+        errors.append(f"Inference materialization: {error}")
     return errors

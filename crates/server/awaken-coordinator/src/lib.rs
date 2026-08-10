@@ -10,8 +10,8 @@
 //! This crate is the Coordinator owner: its canonical
 //! [`build_coordinator_component`] assembles Deployment/Session scheduling and
 //! the session surface + protocol adapters
-//! (`mount` / `mount_with_managed`, under `test-support`), exact published-model credential
-//! materialization, the model publication resolver, the inert no-model placeholder,
+//! (`mount` / `mount_with_managed`, under `test-support`), the injected exact
+//! published-model materialization port, the model publication resolver, the inert no-model placeholder,
 //! workspace path addressing, and the Worker
 //! role helper (the hand is now the separate `awaken-sandbox` execution-plane
 //! binary). Its sibling **authoring / authz plane** lives in
@@ -22,13 +22,13 @@
 
 pub mod admin;
 pub mod application_access;
-pub mod brokered_inference;
 pub mod console;
 pub mod control_service_boundary;
 mod coordinator_component;
 mod coordinator_persistence;
 pub mod data_subject_boundary;
-pub mod inference_materializer;
+#[cfg(test)]
+mod inference_publication_tests;
 pub mod mcp_export;
 pub mod model_directory;
 pub mod model_resolver;
