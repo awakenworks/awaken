@@ -1,0 +1,15 @@
+pub mod awaken_resource_persistence
+pub enum awaken_resource_persistence::ResourcePersistenceError
+pub awaken_resource_persistence::ResourcePersistenceError::Catalog(alloc::string::String)
+pub awaken_resource_persistence::ResourcePersistenceError::CreateDirectory
+pub awaken_resource_persistence::ResourcePersistenceError::CreateDirectory::error: core::io::error::Error
+pub awaken_resource_persistence::ResourcePersistenceError::CreateDirectory::path: std::path::PathBuf
+pub awaken_resource_persistence::ResourcePersistenceError::File(alloc::string::String)
+pub awaken_resource_persistence::ResourcePersistenceError::Memory(alloc::string::String)
+pub awaken_resource_persistence::ResourcePersistenceError::NonUtf8Path(std::path::PathBuf)
+pub awaken_resource_persistence::ResourcePersistenceError::Skill(alloc::string::String)
+pub enum awaken_resource_persistence::SchemaMode
+pub awaken_resource_persistence::SchemaMode::Migrate
+pub awaken_resource_persistence::SchemaMode::Verify
+pub fn awaken_resource_persistence::open_embedded(&std::path::Path) -> core::result::Result<awaken_resource_application::ResourcesApplication, awaken_resource_persistence::ResourcePersistenceError>
+pub async fn awaken_resource_persistence::open_postgres(&str, awaken_resource_persistence::SchemaMode) -> core::result::Result<awaken_resource_application::ResourcesApplication, awaken_resource_persistence::ResourcePersistenceError>

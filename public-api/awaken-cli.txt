@@ -159,6 +159,7 @@ pub fn awaken_cli::DrainController::is_draining(&self) -> bool
 pub fn awaken_cli::DrainController::is_ready(&self) -> bool
 pub fn awaken_cli::DrainController::new() -> alloc::sync::Arc<Self>
 pub fn awaken_cli::DrainController::set_registration_supervisor(&self, alloc::sync::Arc<awaken_control::registration_supervisor::StaticRegistrationSupervisor>)
+pub fn awaken_cli::DrainController::set_service_lifecycle(&self, awaken_service_lifecycle::ServiceLifecycle)
 pub struct awaken_cli::PreparedLocalAcp
 impl awaken_cli::PreparedLocalAcp
 pub fn awaken_cli::PreparedLocalAcp::build_worker(self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
@@ -170,10 +171,12 @@ pub awaken_cli::ProcessAssembly::local_setup: core::option::Option<awaken_iam_ho
 pub awaken_cli::ProcessAssembly::private_router: axum::routing::Router
 pub awaken_cli::ProcessAssembly::public_router: axum::routing::Router
 pub awaken_cli::ProcessAssembly::registration_supervisor: core::option::Option<alloc::sync::Arc<awaken_control::registration_supervisor::StaticRegistrationSupervisor>>
+pub awaken_cli::ProcessAssembly::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
 pub async fn awaken_cli::build_all_in_one_assembly(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::ProcessAssembly, alloc::string::String>
 pub async fn awaken_cli::build_all_in_one_router() -> axum::routing::Router
 pub async fn awaken_cli::build_all_in_one_router_with_deployment(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub async fn awaken_cli::build_control_assembly(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::ProcessAssembly, alloc::string::String>
+pub async fn awaken_cli::build_control_assembly_with_publication_resolver_and_web_search(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>, awaken_ext_builtin_tools::web::WebSearchProviderRegistry, alloc::sync::Arc<dyn awaken_config_service::plugin_validation::PluginPublicationResolver>) -> core::result::Result<awaken_cli::ProcessAssembly, alloc::string::String>
 pub async fn awaken_cli::build_control_router(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub async fn awaken_cli::build_control_router_with_publication_resolver(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub async fn awaken_cli::build_control_router_with_publication_resolver_and_web_search(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>, awaken_ext_builtin_tools::web::WebSearchProviderRegistry, alloc::sync::Arc<dyn awaken_config_service::plugin_validation::PluginPublicationResolver>) -> core::result::Result<axum::routing::Router, alloc::string::String>
@@ -190,5 +193,6 @@ pub fn awaken_cli::register_active_streams_gauge(alloc::sync::Arc<awaken_cli::Dr
 pub fn awaken_cli::registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMounterFactory
 pub async fn awaken_cli::run_service(awaken_cli::console::ServiceArgs, awaken_cli::ServiceRole) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_cli::run_service_binary(awaken_cli::ServiceRole) -> std::process::ExitCode
+pub async fn awaken_cli::serve_control_assembly(awaken_cli::config::ResolvedDeployment, awaken_cli::ProcessAssembly) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_cli::with_connection_metric(axum::routing::Router, alloc::sync::Arc<awaken_cli::DrainController>) -> axum::routing::Router
 pub fn awaken_cli::with_process_admin(axum::routing::Router, alloc::sync::Arc<awaken_cli::DrainController>) -> axum::routing::Router

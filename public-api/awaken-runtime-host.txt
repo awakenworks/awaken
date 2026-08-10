@@ -194,7 +194,7 @@ impl awaken_runtime_host::ManagedHost
 pub fn awaken_runtime_host::ManagedHost::install_dispatch_session_runtime(self) -> Self
 pub fn awaken_runtime_host::ManagedHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_credential_materializer(self, awaken_credential_materializer::PinnedCredentialMaterializer) -> Self
-pub fn awaken_runtime_host::ManagedHost::with_credential_refresh_factory(self, alloc::sync::Arc<dyn awaken_runtime_host::CredentialRefreshFactory>) -> Self
+pub fn awaken_runtime_host::ManagedHost::with_credential_refresh_factory(self, alloc::sync::Arc<dyn awaken_credential_materializer::CredentialRefreshFactory>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_mcp_attachment_realizer(self, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_repository_binding_verifier(self, alloc::sync::Arc<dyn awaken_resource_contract::execution::RepositoryBindingVerifier<awaken_run_ingress_contract::dispatch::RunClaim>>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_resource_validator(self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceBindingValidator>) -> Self
@@ -354,7 +354,7 @@ pub fn awaken_runtime_host::SharedHost::install_capture_sink(&self, alloc::sync:
 pub fn awaken_runtime_host::SharedHost::local_workspace(&self) -> &str
 pub fn awaken_runtime_host::SharedHost::model(&self) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::model_for_thread(&self, &str) -> alloc::string::String
-pub fn awaken_runtime_host::SharedHost::new_with_resource_component_and_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_resource_contract::component::ResourceComponent, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>, awaken_runtime_host::DeploymentConfig) -> Self
+pub fn awaken_runtime_host::SharedHost::new_with_resource_component_and_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, awaken_resource_application::component::ResourceComponent, alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>, awaken_runtime_host::DeploymentConfig) -> Self
 pub fn awaken_runtime_host::SharedHost::new_worker_with_deployment(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_resource_contract::execution::FileContentSource<awaken_run_ingress_contract::dispatch::RunClaim>>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, awaken_runtime_host::DeploymentConfig) -> Self
 pub fn awaken_runtime_host::SharedHost::pool_accepting_work(&self) -> bool
 pub fn awaken_runtime_host::SharedHost::pool_in_flight(&self) -> u32
@@ -480,9 +480,6 @@ pub trait awaken_runtime_host::AcpToolExporter: core::marker::Send + core::marke
 pub fn awaken_runtime_host::AcpToolExporter::export<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_host::CacheVolumeInitializer: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::CacheVolumeInitializer::initialize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_host::CacheVolumeWarmup) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub trait awaken_runtime_host::CredentialRefreshFactory: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_host::CredentialRefreshFactory::bearer_reloader(&self, awaken_credential_contract::CredentialSourceId, u64) -> alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>
-pub fn awaken_runtime_host::CredentialRefreshFactory::refresher(&self, awaken_credential_contract::CredentialSourceId, awaken_credential_contract::CredentialRefreshAccess) -> alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>
 pub trait awaken_runtime_host::HandExecutorFactory: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::HandExecutorFactory::bind(&self, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, &str) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>
 pub trait awaken_runtime_host::LocalCommit: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::commit::coordinator::OperationCoordinator + awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView + awaken_agent_contract::thread::read::recovery::RunRecoverySource + awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed + core::marker::Send + core::marker::Sync

@@ -16,6 +16,13 @@ pub fn awaken_acp_contract::AcpCapabilityObservation::is_coherent(&self) -> bool
 pub struct awaken_acp_contract::AcpCapabilityProbeConfig
 pub awaken_acp_contract::AcpCapabilityProbeConfig::auth_method_id: core::option::Option<alloc::string::String>
 pub awaken_acp_contract::AcpCapabilityProbeConfig::session_cwd: core::option::Option<alloc::string::String>
+pub struct awaken_acp_contract::AcpPublicationCapability
+pub awaken_acp_contract::AcpPublicationCapability::backend_ref: alloc::string::String
+pub awaken_acp_contract::AcpPublicationCapability::model_api_dialects: alloc::vec::Vec<alloc::string::String>
+pub awaken_acp_contract::AcpPublicationCapability::model_delivery_credential_environments: core::option::Option<alloc::vec::Vec<alloc::string::String>>
+pub awaken_acp_contract::AcpPublicationCapability::supports_exact_model_selection: bool
+impl awaken_acp_contract::AcpPublicationCapability
+pub fn awaken_acp_contract::AcpPublicationCapability::credential_usage(&self, core::option::Option<&str>) -> core::result::Result<awaken_credential_contract::CredentialUsage, alloc::string::String>
 pub struct awaken_acp_contract::AcpSessionConfigChoice
 pub awaken_acp_contract::AcpSessionConfigChoice::description: core::option::Option<alloc::string::String>
 pub awaken_acp_contract::AcpSessionConfigChoice::group_id: core::option::Option<alloc::string::String>

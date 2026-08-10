@@ -1,5 +1,4 @@
 pub mod awaken_coordinator
-pub use awaken_coordinator::ConfigService
 pub use awaken_coordinator::ExtMcpProbe
 pub use awaken_coordinator::HostResume
 pub use awaken_coordinator::LocalAcpPreparation
@@ -19,8 +18,6 @@ pub use awaken_coordinator::UNCONFIGURED_MODEL_REF
 pub use awaken_coordinator::WorkerDirectory
 pub use awaken_coordinator::WorkerObservationSource
 pub use awaken_coordinator::advertised_tools
-pub use awaken_coordinator::capabilities_router
-pub use awaken_coordinator::config_router
 pub use awaken_coordinator::content_fingerprint
 pub use awaken_coordinator::default_models
 pub use awaken_coordinator::durable_ops_router
@@ -53,67 +50,6 @@ pub awaken_coordinator::application_access::IssuedApplicationToken::operations: 
 pub awaken_coordinator::application_access::IssuedApplicationToken::protocols: alloc::vec::Vec<alloc::string::String>
 pub awaken_coordinator::application_access::IssuedApplicationToken::token_type: &'static str
 pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::string::String) -> axum::routing::Router
-pub mod awaken_coordinator::brokered_inference
-pub enum awaken_coordinator::brokered_inference::BrokeredInferenceError
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::AccountSelectionRequired
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::AuthenticationRequired
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::InsufficientBalance
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::InvalidRequest
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::ModelNotEntitled
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::ModelUnavailable
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::QuotaExceeded
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::QuotaExceeded::retry_after: core::option::Option<core::time::Duration>
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::SubscriptionRequired
-pub awaken_coordinator::brokered_inference::BrokeredInferenceError::TemporarilyUnavailable
-pub struct awaken_coordinator::brokered_inference::BrokeredInferenceLease
-pub awaken_coordinator::brokered_inference::BrokeredInferenceLease::capability: awaken_agent_contract::secret::RedactedString
-pub awaken_coordinator::brokered_inference::BrokeredInferenceLease::gateway_base_url: alloc::string::String
-pub awaken_coordinator::brokered_inference::BrokeredInferenceLease::grant_expires_at: i64
-pub awaken_coordinator::brokered_inference::BrokeredInferenceLease::grant_id: alloc::string::String
-pub struct awaken_coordinator::brokered_inference::BrokeredInferenceRequest
-pub awaken_coordinator::brokered_inference::BrokeredInferenceRequest::idempotency_key: alloc::string::String
-pub awaken_coordinator::brokered_inference::BrokeredInferenceRequest::local_run_correlation: core::option::Option<alloc::string::String>
-pub awaken_coordinator::brokered_inference::BrokeredInferenceRequest::native_protocol: alloc::string::String
-pub awaken_coordinator::brokered_inference::BrokeredInferenceRequest::original_model_id: alloc::string::String
-pub awaken_coordinator::brokered_inference::BrokeredInferenceRequest::provider: alloc::string::String
-pub struct awaken_coordinator::brokered_inference::BrokeredModel
-pub awaken_coordinator::brokered_inference::BrokeredModel::capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
-pub awaken_coordinator::brokered_inference::BrokeredModel::context_window: core::option::Option<u32>
-pub awaken_coordinator::brokered_inference::BrokeredModel::max_output_tokens: core::option::Option<u32>
-pub awaken_coordinator::brokered_inference::BrokeredModel::native_protocol: alloc::string::String
-pub awaken_coordinator::brokered_inference::BrokeredModel::original_model_id: alloc::string::String
-pub awaken_coordinator::brokered_inference::BrokeredModel::provider: alloc::string::String
-pub awaken_coordinator::brokered_inference::BrokeredModel::route_publication_revision: u64
-pub struct awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient
-impl awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::new(impl core::convert::Into<alloc::string::String>, awaken_agent_contract::secret::RedactedString, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
-impl awaken_admin_config_api::router::BrokeredCatalogDiscovery for awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::projection<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_model_catalog::BrokeredCatalogProjection, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl awaken_coordinator::brokered_inference::BrokeredInferenceClient for awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::close_grant<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::create_grant<'life0, 'async_trait>(&'life0 self, awaken_coordinator::brokered_inference::BrokeredInferenceRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_coordinator::brokered_inference::BrokeredInferenceLease, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::renew_grant<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_coordinator::brokered_inference::BrokeredInferenceLease, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl awaken_coordinator::brokered_inference::BrokeredModelCatalogClient for awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::list_models<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_coordinator::brokered_inference::BrokeredModel>, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::readiness<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl core::fmt::Debug for awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub const awaken_coordinator::brokered_inference::BROKERED_INFERENCE_ACCESS_CAPABILITY: &str
-pub const awaken_coordinator::brokered_inference::BROKERED_ROUTE_PREFIX: &str
-pub trait awaken_coordinator::brokered_inference::BrokeredInferenceClient: core::marker::Send + core::marker::Sync
-pub fn awaken_coordinator::brokered_inference::BrokeredInferenceClient::close_grant<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_coordinator::brokered_inference::BrokeredInferenceClient::create_grant<'life0, 'async_trait>(&'life0 self, awaken_coordinator::brokered_inference::BrokeredInferenceRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_coordinator::brokered_inference::BrokeredInferenceLease, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_coordinator::brokered_inference::BrokeredInferenceClient::renew_grant<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_coordinator::brokered_inference::BrokeredInferenceLease, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-impl awaken_coordinator::brokered_inference::BrokeredInferenceClient for awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::close_grant<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::create_grant<'life0, 'async_trait>(&'life0 self, awaken_coordinator::brokered_inference::BrokeredInferenceRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_coordinator::brokered_inference::BrokeredInferenceLease, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::renew_grant<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_coordinator::brokered_inference::BrokeredInferenceLease, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub trait awaken_coordinator::brokered_inference::BrokeredModelCatalogClient: core::marker::Send + core::marker::Sync
-pub fn awaken_coordinator::brokered_inference::BrokeredModelCatalogClient::list_models<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_coordinator::brokered_inference::BrokeredModel>, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_coordinator::brokered_inference::BrokeredModelCatalogClient::readiness<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-impl awaken_coordinator::brokered_inference::BrokeredModelCatalogClient for awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::list_models<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_coordinator::brokered_inference::BrokeredModel>, awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_coordinator::brokered_inference::HttpBrokeredInferenceClient::readiness<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_coordinator::brokered_inference::BrokeredInferenceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub mod awaken_coordinator::console
 pub fn awaken_coordinator::console::mount(axum::routing::Router, &std::path::Path) -> axum::routing::Router
 pub mod awaken_coordinator::control_service_boundary
@@ -132,11 +68,11 @@ pub fn awaken_coordinator::control_service_boundary::HttpControlServiceClient::c
 pub fn awaken_coordinator::control_service_boundary::HttpControlServiceClient::has_vault<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_coordinator::control_service_boundary::HttpControlServiceClient::mcp_access_for_source<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential_contract::CredentialSourceId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::CredentialAccess, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_coordinator::control_service_boundary::HttpControlServiceClient::mcp_credential_source_for_url<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 [alloc::string::String], &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_credential_contract::CredentialSourceId>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl awaken_webhook_managed::LifecycleFactDelivery for awaken_coordinator::control_service_boundary::HttpControlServiceClient
+impl awaken_session_contract::lifecycle::LifecycleFactDelivery for awaken_coordinator::control_service_boundary::HttpControlServiceClient
 pub fn awaken_coordinator::control_service_boundary::HttpControlServiceClient::deliver<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub const awaken_coordinator::control_service_boundary::CONTROL_SERVICE_ACCESS_PERMISSION: &str
-pub fn awaken_coordinator::control_service_boundary::router(awaken_config_service::management_audit::ManagementAuditPlane, alloc::sync::Arc<dyn awaken_session_application::ports::SessionCredentialSource>, alloc::sync::Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectConsentSource>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
-pub fn awaken_coordinator::control_service_boundary::router_with_authenticator(awaken_config_service::management_audit::ManagementAuditPlane, alloc::sync::Arc<dyn awaken_session_application::ports::SessionCredentialSource>, alloc::sync::Arc<dyn awaken_webhook_managed::LifecycleFactDelivery>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectConsentSource>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>) -> axum::routing::Router
+pub fn awaken_coordinator::control_service_boundary::router(awaken_config_service::management_audit::ManagementAuditPlane, alloc::sync::Arc<dyn awaken_session_application::ports::SessionCredentialSource>, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectConsentSource>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
+pub fn awaken_coordinator::control_service_boundary::router_with_authenticator(awaken_config_service::management_audit::ManagementAuditPlane, alloc::sync::Arc<dyn awaken_session_application::ports::SessionCredentialSource>, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectConsentSource>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>) -> axum::routing::Router
 pub mod awaken_coordinator::data_subject_boundary
 pub struct awaken_coordinator::data_subject_boundary::HttpCoordinatorContentEraser
 impl awaken_coordinator::data_subject_boundary::HttpCoordinatorContentEraser
@@ -149,60 +85,17 @@ pub const awaken_coordinator::data_subject_boundary::ERASE_COORDINATOR_CONTENT_P
 pub fn awaken_coordinator::data_subject_boundary::coordinator_content_eraser(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>, core::option::Option<std::path::PathBuf>) -> alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>
 pub fn awaken_coordinator::data_subject_boundary::router(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<axum::routing::Router, alloc::string::String>
 pub fn awaken_coordinator::data_subject_boundary::router_with_authenticator(alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::ContentEraser>, alloc::sync::Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>) -> axum::routing::Router
-pub mod awaken_coordinator::inference_materializer
-pub struct awaken_coordinator::inference_materializer::CredentialInferenceMaterializer
-impl awaken_coordinator::inference_materializer::CredentialInferenceMaterializer
-pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::from_pinned(awaken_credential_materializer::PinnedCredentialMaterializer) -> Self
-pub async fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::materialize_candidate(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
-pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::new(alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
-pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::with_brokered_client(self, alloc::sync::Arc<dyn awaken_coordinator::brokered_inference::BrokeredInferenceClient>) -> Self
-pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::with_brokered_mode(self, bool) -> Self
-impl awaken_runtime_contract::inference::InferenceExecutorMaterializer for awaken_coordinator::inference_materializer::CredentialInferenceMaterializer
-pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::credential_realization_capabilities(&self) -> awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities
-pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::materialize(&self, &awaken_runtime_contract::activation::RunActivation, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>, alloc::string::String>
-pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::materialize_pinned(&self, &awaken_runtime_contract::resolved::ResolvedModelCandidate, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
-pub fn awaken_coordinator::inference_materializer::CredentialInferenceMaterializer::supported_access_schemes(&self) -> &'static [&'static str]
 pub mod awaken_coordinator::mcp_export
 pub struct awaken_coordinator::mcp_export::SessionToolExporter
 impl awaken_runtime_host::acp_tool_export::AcpToolExporter for awaken_coordinator::mcp_export::SessionToolExporter
 pub fn awaken_coordinator::mcp_export::SessionToolExporter::export<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_host::acp_tool_export::AcpToolExport, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_coordinator::mcp_export::router(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>, core::option::Option<alloc::string::String>) -> axum::routing::Router
 pub mod awaken_coordinator::model_directory
-pub struct awaken_coordinator::model_directory::CatalogModelDirectory
-impl awaken_coordinator::model_directory::CatalogModelDirectory
-pub fn awaken_coordinator::model_directory::CatalogModelDirectory::new(alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<alloc::vec::Vec<awaken_config_resolver::executable_models::ExecutorModelCapability>>) -> Self
-pub fn awaken_coordinator::model_directory::CatalogModelDirectory::with_source(alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_coordinator::model_directory::ExecutorModelCapabilitySource>) -> Self
-impl awaken_protocol_managed::control::models::ModelDirectory for awaken_coordinator::model_directory::CatalogModelDirectory
-pub fn awaken_coordinator::model_directory::CatalogModelDirectory::list<'a>(&'a self, &'a str) -> awaken_protocol_managed::control::models::ModelDirectoryFuture<'a>
 pub struct awaken_coordinator::model_directory::ExecutableAgentModelDirectory
 impl awaken_coordinator::model_directory::ExecutableAgentModelDirectory
 pub fn awaken_coordinator::model_directory::ExecutableAgentModelDirectory::new(alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>) -> Self
 impl awaken_protocol_managed::control::models::ModelDirectory for awaken_coordinator::model_directory::ExecutableAgentModelDirectory
 pub fn awaken_coordinator::model_directory::ExecutableAgentModelDirectory::list<'a>(&'a self, &'a str) -> awaken_protocol_managed::control::models::ModelDirectoryFuture<'a>
-pub trait awaken_coordinator::model_directory::ExecutorModelCapabilitySource: core::marker::Send + core::marker::Sync
-pub fn awaken_coordinator::model_directory::ExecutorModelCapabilitySource::current<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<awaken_config_resolver::executable_models::ExecutorModelCapability>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_coordinator::model_directory::installed_executor_model_capabilities() -> alloc::vec::Vec<awaken_config_resolver::executable_models::ExecutorModelCapability>
-pub mod awaken_coordinator::model_discovery
-pub struct awaken_coordinator::model_discovery::GenaiModelDiscovery
-impl awaken_coordinator::model_discovery::GenaiModelDiscovery
-pub fn awaken_coordinator::model_discovery::GenaiModelDiscovery::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
-impl awaken_admin_config_api::provider_connection::ModelCatalogDiscovery for awaken_coordinator::model_discovery::GenaiModelDiscovery
-pub fn awaken_coordinator::model_discovery::GenaiModelDiscovery::discover<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpoint, &'life2 awaken_credential_vault::CredentialSource) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, awaken_admin_config_api::provider_connection::ModelCatalogDiscoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_coordinator::model_discovery::GenaiModelDiscovery::discover_with_secret<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_model_catalog::ProtocolEndpoint, &'life2 awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_model_catalog::DiscoveredModel>, awaken_admin_config_api::provider_connection::ModelCatalogDiscoveryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub mod awaken_coordinator::model_resolver
-pub struct awaken_coordinator::model_resolver::CatalogModelPublicationResolver
-impl awaken_coordinator::model_resolver::CatalogModelPublicationResolver
-pub fn awaken_coordinator::model_resolver::CatalogModelPublicationResolver::from_repo(alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>) -> Self
-pub fn awaken_coordinator::model_resolver::CatalogModelPublicationResolver::new(awaken_model_catalog::ProviderCatalog, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>) -> Self
-pub fn awaken_coordinator::model_resolver::CatalogModelPublicationResolver::with_a2a_card_discovery(self, alloc::sync::Arc<dyn awaken_coordinator::model_resolver::A2aCardDiscovery>) -> Self
-pub fn awaken_coordinator::model_resolver::CatalogModelPublicationResolver::with_brokered_access(self, bool) -> Self
-pub fn awaken_coordinator::model_resolver::CatalogModelPublicationResolver::with_executor_capabilities(self, alloc::sync::Arc<alloc::vec::Vec<awaken_config_resolver::executable_models::ExecutorModelCapability>>) -> Self
-pub fn awaken_coordinator::model_resolver::CatalogModelPublicationResolver::with_profiles(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::InferenceProfileStore>) -> Self
-pub fn awaken_coordinator::model_resolver::CatalogModelPublicationResolver::with_worker_observations(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerObservationSource>) -> Self
-impl awaken_config_service::binding_resolver::ModelPublicationResolver for awaken_coordinator::model_resolver::CatalogModelPublicationResolver
-pub fn awaken_coordinator::model_resolver::CatalogModelPublicationResolver::resolve_models<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::config::ModelSelection, &'life3 [awaken_runtime_contract::resolved::ModelBinding]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_config_service::binding_resolver::ResolvedPublicationModels, awaken_config_service::binding_resolver::PublicationResolutionError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-pub trait awaken_coordinator::model_resolver::A2aCardDiscovery: core::marker::Send + core::marker::Sync
-pub fn awaken_coordinator::model_resolver::A2aCardDiscovery::discover<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_a2a::types::AgentCard, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_coordinator::webhooks
 pub use awaken_coordinator::webhooks::<<awaken_webhook_managed::*>>
 pub mod awaken_coordinator::worker_observation_boundary
@@ -252,11 +145,13 @@ pub awaken_coordinator::CoordinatorDependencies::environments: alloc::sync::Arc<
 pub awaken_coordinator::CoordinatorDependencies::executable_agents: alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrationSource>
 pub awaken_coordinator::CoordinatorDependencies::host: alloc::sync::Arc<awaken_runtime_host::host::SharedHost>
 pub awaken_coordinator::CoordinatorDependencies::managed_state: alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>
+pub awaken_coordinator::CoordinatorDependencies::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub awaken_coordinator::CoordinatorDependencies::model_directory: alloc::sync::Arc<dyn awaken_protocol_managed::control::models::ModelDirectory>
 pub awaken_coordinator::CoordinatorDependencies::private_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorDependencies::rate_limiter: alloc::sync::Arc<awaken_protocol_managed::rate_limit::ManagedRateLimiter>
 pub awaken_coordinator::CoordinatorDependencies::resource_catalog: alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>
 pub awaken_coordinator::CoordinatorDependencies::resource_management_router: axum::routing::Router
+pub awaken_coordinator::CoordinatorDependencies::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
 pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
 pub awaken_coordinator::CoordinatorDependencies::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::CoordinatorDependencies::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
@@ -264,32 +159,17 @@ pub struct awaken_coordinator::CoordinatorPersistence
 pub awaken_coordinator::CoordinatorPersistence::runtime_authority: alloc::sync::Arc<dyn awaken_runtime_host::authority::RuntimeAuthority>
 pub awaken_coordinator::CoordinatorPersistence::worker_directory: awaken_coordinator::WorkerDirectoryHandle
 pub struct awaken_coordinator::ManagedRoutingExtensions
+pub awaken_coordinator::ManagedRoutingExtensions::memory_stores: alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: axum::routing::Router
 pub awaken_coordinator::ManagedRoutingExtensions::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
-pub struct awaken_coordinator::VaultRefreshFactory
-impl awaken_coordinator::VaultRefreshFactory
-pub fn awaken_coordinator::VaultRefreshFactory::new(alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
-impl awaken_runtime_host::authority::CredentialRefreshFactory for awaken_coordinator::VaultRefreshFactory
-pub fn awaken_coordinator::VaultRefreshFactory::bearer_reloader(&self, awaken_credential_contract::CredentialSourceId, u64) -> alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>
-pub fn awaken_coordinator::VaultRefreshFactory::refresher(&self, awaken_credential_contract::CredentialSourceId, awaken_credential_contract::CredentialRefreshAccess) -> alloc::sync::Arc<dyn awaken_credential::CredentialRefresher>
-pub struct awaken_coordinator::VaultRefresher
-impl awaken_coordinator::VaultRefresher
-pub fn awaken_coordinator::VaultRefresher::new(awaken_credential_contract::CredentialSourceId, awaken_credential_contract::CredentialRefreshAccess, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>, alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>) -> Self
-impl awaken_credential::CredentialRefresher for awaken_coordinator::VaultRefresher
-pub fn awaken_coordinator::VaultRefresher::refresh<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential::AuthChallenge) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_credential::Credential>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_coordinator::a2a_attempt_executor(core::option::Option<awaken_credential_materializer::PinnedCredentialMaterializer>) -> awaken_runtime_host::host::RemoteAttemptInstallation
 pub async fn awaken_coordinator::build_coordinator_component(awaken_coordinator::CoordinatorDependencies) -> core::result::Result<awaken_coordinator::CoordinatorComponent, awaken_coordinator::CoordinatorBuildError>
-pub fn awaken_coordinator::embedded_resource_component(&std::path::Path) -> awaken_resource_contract::component::ResourceComponent
-pub fn awaken_coordinator::embedded_resources_application(&std::path::Path) -> awaken_resource_application::ResourcesApplication
-pub fn awaken_coordinator::embedded_skill_store(&std::path::Path) -> alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>
 pub fn awaken_coordinator::install_platform_memory_data_plane(&awaken_runtime_host::host::SharedHost)
-pub fn awaken_coordinator::memory_store_application(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
 pub async fn awaken_coordinator::migrate_postgres_coordinator_schema(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<(), alloc::string::String>
-pub fn awaken_coordinator::mount_with_managed_application_access_models_and_dreams(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>, alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_protocol_managed::control::models::ModelDirectory>, alloc::sync::Arc<dyn awaken_session_contract::dream::DreamProcessStore>, awaken_coordinator::ManagedRoutingExtensions) -> core::result::Result<(axum::routing::Router, alloc::sync::Arc<awaken_dream_application::DreamApplication>), awaken_coordinator::WorkerTransportBuildError>
+pub fn awaken_coordinator::mount_with_managed_application_access_models_and_dreams(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>, alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_protocol_managed::control::models::ModelDirectory>, alloc::sync::Arc<dyn awaken_session_contract::dream::DreamProcessStore>, awaken_coordinator::ManagedRoutingExtensions) -> core::result::Result<(axum::routing::Router, axum::routing::Router, alloc::sync::Arc<awaken_dream_application::DreamApplication>), awaken_coordinator::WorkerTransportBuildError>
 pub async fn awaken_coordinator::open_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub async fn awaken_coordinator::open_existing_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub async fn awaken_coordinator::prepare_local_acp(awaken_acp_application::LocalAcpPreparation) -> core::result::Result<awaken_acp_application::PreparedAcpCapabilities, alloc::string::String>
-pub fn awaken_coordinator::resource_purge_scheduler(alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReclamationRepository>) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
 pub async fn awaken_coordinator::restore_deployment_application(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>, awaken_coordinator::CoordinatorBuildError>
 pub type awaken_coordinator::WorkerDirectoryHandle = alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>

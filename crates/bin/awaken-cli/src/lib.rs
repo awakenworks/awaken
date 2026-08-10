@@ -67,7 +67,8 @@ pub use acp_local_credentials::{
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;
 pub use control::{
-    build_control_assembly, build_control_router, build_control_router_with_publication_resolver,
+    build_control_assembly, build_control_assembly_with_publication_resolver_and_web_search,
+    build_control_router, build_control_router_with_publication_resolver,
     build_control_router_with_publication_resolver_and_web_search,
 };
 use control_component::{assemble_control_process_router, control_component_for_process};
@@ -85,7 +86,9 @@ use process_stores::{
 use resource_component::ephemeral_resources_application;
 use resource_component::open_resources_application;
 use runtime_process_router::assemble_runtime_process_router;
-pub use service::{ServiceRole, migrate_service, run_service, run_service_binary};
+pub use service::{
+    ServiceRole, migrate_service, run_service, run_service_binary, serve_control_assembly,
+};
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
 pub use awaken_control::{
@@ -1279,7 +1282,9 @@ mod process_role_surface_tests {
     /// prove. Moving the composition body into `runtime_process_router` adds no
     /// new condition or outcome, so a separate decision table is inapplicable:
     /// these same route-presence/absence effects are the structural-extraction
-    /// regression coverage.
+    /// regression coverage. The hosted custom-publication entry point delegates
+    /// to this same assembly and only substitutes publication SPIs, so these
+    /// listener-presence and listener-absence rules cover that projection too.
     #[tokio::test]
     async fn service_roles_expose_only_their_owned_api() {
         let control_assembly = assemble_control_process_router(

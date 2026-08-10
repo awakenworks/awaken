@@ -1457,7 +1457,7 @@ pub fn awaken_protocol_managed::AgentRegistryState::with_archive_cascade(self, a
 pub struct awaken_protocol_managed::EnvironmentAuthoringState
 impl awaken_protocol_managed::EnvironmentAuthoringState
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::application(&self) -> alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>
-pub fn awaken_protocol_managed::EnvironmentAuthoringState::new(alloc::sync::Arc<dyn awaken_environment_contract::EnvRegistry>, alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>, alloc::sync::Arc<dyn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar>) -> Self
+pub fn awaken_protocol_managed::EnvironmentAuthoringState::new(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>) -> Self
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::sandbox_policy_store(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>
 pub struct awaken_protocol_managed::LocalDeploymentSessionLauncher
 impl awaken_protocol_managed::LocalDeploymentSessionLauncher
@@ -1513,7 +1513,7 @@ pub fn awaken_protocol_managed::ManagedState::from_application(awaken_session_ap
 pub fn awaken_protocol_managed::ManagedState::session_application(&self) -> alloc::sync::Arc<awaken_session_application::SessionApplication>
 pub fn awaken_protocol_managed::ManagedState::with_config_source(self, alloc::sync::Arc<dyn awaken_executable_agent_contract::session_profile::ExecutableAgentProfileSource>) -> Self
 pub fn awaken_protocol_managed::ManagedState::with_credential_source(self, alloc::sync::Arc<dyn awaken_session_application::ports::SessionCredentialSource>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_lifecycle_sink(self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::SessionLifecycleFactSink>) -> Self
+pub fn awaken_protocol_managed::ManagedState::with_lifecycle_notifier(self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactNotifier>) -> Self
 pub fn awaken_protocol_managed::ManagedState::with_repository_credential_ingress(self, alloc::sync::Arc<dyn awaken_session_application::ports::RepositoryCredentialIngress>) -> Self
 pub fn awaken_protocol_managed::ManagedState::with_resource_catalog(self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>) -> Self
 pub fn awaken_protocol_managed::ManagedState::with_resource_purge_scheduler(self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> Self

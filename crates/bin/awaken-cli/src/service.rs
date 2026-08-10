@@ -109,6 +109,34 @@ pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), Str
     result
 }
 
+/// Serve a caller-composed Control assembly through Awaken's canonical public,
+/// private, admin, health, failure-observation, and graceful-drain lifecycle.
+///
+/// Closed deployments may inject publication SPIs while retaining this single
+/// service lifecycle and listener owner.
+pub async fn serve_control_assembly(
+    deployment: ResolvedDeployment,
+    assembly: crate::ProcessAssembly,
+) -> Result<(), String> {
+    validate_prebuilt_control_deployment(&deployment)?;
+    warn_deprecations(&deployment);
+    deployment.ensure_data_layout()?;
+    awaken_observability::init(&deployment.observability);
+    let result = serve_process_assembly(deployment, ServiceRole::Control, assembly, None).await;
+    awaken_observability::shutdown();
+    result
+}
+
+fn validate_prebuilt_control_deployment(deployment: &ResolvedDeployment) -> Result<(), String> {
+    if deployment.role != Role::Control {
+        return Err("prebuilt Control assembly requires role = \"control\"".into());
+    }
+    if deployment.mode != crate::config::OperatingMode::Server {
+        return Err("prebuilt Control assembly requires mode = \"server\"".into());
+    }
+    Ok(())
+}
+
 /// Apply only the migrations owned by the role declared in the deployment.
 pub async fn migrate_service(config_path: Option<std::path::PathBuf>) -> Result<(), String> {
     let deployment = load_migration_deployment(config_path)?;
@@ -174,6 +202,15 @@ async fn serve_resolved(
         }
         ServiceRole::Coordinator => crate::build_coordinator_assembly(&deployment).await?,
     };
+    serve_process_assembly(deployment, role, assembly, prepared_worker).await
+}
+
+async fn serve_process_assembly(
+    deployment: ResolvedDeployment,
+    role: ServiceRole,
+    assembly: crate::ProcessAssembly,
+    prepared_worker: Option<crate::PreparedLocalWorker>,
+) -> Result<(), String> {
     let local_setup = assembly.local_setup;
     let registration_supervisor = assembly.registration_supervisor;
     let service_lifecycle = assembly.service_lifecycle;
@@ -681,6 +718,40 @@ mod tests {
             ServiceRole::Coordinator.binary(),
             "awaken-coordinator",
             "S3"
+        );
+    }
+
+    #[test]
+    fn prebuilt_control_lifecycle_rejects_mismatched_authority_or_mode() {
+        // Cause/effect decision table: P1 Control+server is the only accepted
+        // prebuilt authority; P2 AllInOne+server is rejected before serving;
+        // P3 Control+local is rejected before serving. This prevents an injected
+        // publication adapter from widening either the role or deployment mode.
+        let dir = tempfile::tempdir().unwrap();
+        let mut deployment =
+            crate::config::local_test_deployment(dir.path().join("prebuilt-control"));
+        deployment.role = Role::Control;
+        deployment.mode = crate::config::OperatingMode::Server;
+        assert!(
+            validate_prebuilt_control_deployment(&deployment).is_ok(),
+            "P1"
+        );
+
+        deployment.role = Role::AllInOne;
+        assert!(
+            validate_prebuilt_control_deployment(&deployment)
+                .unwrap_err()
+                .contains("role"),
+            "P2"
+        );
+
+        deployment.role = Role::Control;
+        deployment.mode = crate::config::OperatingMode::Local;
+        assert!(
+            validate_prebuilt_control_deployment(&deployment)
+                .unwrap_err()
+                .contains("mode"),
+            "P3"
         );
     }
 
