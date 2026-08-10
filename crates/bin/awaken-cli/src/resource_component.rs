@@ -5,14 +5,14 @@ use std::sync::Arc;
 use super::{PostgresSchemaMode, config};
 
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn ephemeral_resource_component() -> awaken_resource_contract::ResourceComponent {
+pub(super) fn ephemeral_resource_component() -> awaken_resource_application::ResourceComponent {
     awaken_coordinator::ephemeral_resources_application().ports()
 }
 
 pub(super) async fn open_resource_component(
     backend: config::ResourceStoreBackend,
     postgres_schema: PostgresSchemaMode,
-) -> Result<awaken_resource_contract::ResourceComponent, String> {
+) -> Result<awaken_resource_application::ResourceComponent, String> {
     match backend {
         config::ResourceStoreBackend::Embedded(root) => {
             Ok(awaken_coordinator::embedded_resource_component(&root))
@@ -58,8 +58,8 @@ pub(super) async fn open_resource_component(
                 }
             }
             .map_err(|error| format!("connect resource skill Postgres: {error}"))?;
-            Ok(awaken_resource_contract::build_resource_component(
-                awaken_resource_contract::ResourceDependencies {
+            Ok(awaken_resource_application::build_resource_component(
+                awaken_resource_application::ResourceDependencies {
                     resource_catalog: resources.clone(),
                     file_store: files.clone(),
                     file_catalog: files,
@@ -84,7 +84,7 @@ mod tests {
         // durable root.
         // PostgreSQL adapter selection is covered by backend integration suites;
         // this unit test owns the no-parallel-construction component invariant.
-        let assert_complete = |component: &awaken_resource_contract::ResourceComponent| {
+        let assert_complete = |component: &awaken_resource_application::ResourceComponent| {
             let _ = component.resource_catalog();
             let _ = component.file_store();
             let _ = component.file_catalog();

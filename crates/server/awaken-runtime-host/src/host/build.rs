@@ -131,7 +131,7 @@ impl SharedHost {
     pub fn new_with_resource_component(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: awaken_resource_contract::ResourceComponent,
+        resources: awaken_resource_application::ResourceComponent,
     ) -> Self {
         Self::build(
             llm,
@@ -148,7 +148,7 @@ impl SharedHost {
     pub fn new_with_resource_component_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: awaken_resource_contract::ResourceComponent,
+        resources: awaken_resource_application::ResourceComponent,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
@@ -189,7 +189,7 @@ impl SharedHost {
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
-        resources: Option<awaken_resource_contract::ResourceComponent>,
+        resources: Option<awaken_resource_application::ResourceComponent>,
         worker_content: Option<WorkerContentAdapters>,
         extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
         deployment: crate::DeploymentConfig,

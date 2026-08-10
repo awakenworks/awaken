@@ -205,7 +205,7 @@ impl ProcessRouterAssembly {
 struct ProcessStoreOpenOptions<'a> {
     control: awaken_control::ControlStoreConfig,
     coordinator: config::CoordinatorStoreConfig,
-    resource_component: Option<awaken_resource_contract::ResourceComponent>,
+    resource_component: Option<awaken_resource_application::ResourceComponent>,
     workspace_root: std::path::PathBuf,
     seal_key: Option<&'a [u8; 32]>,
     role: config::Role,

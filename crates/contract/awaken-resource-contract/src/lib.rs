@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 mod catalog;
-mod component;
 mod execution;
 mod input;
 mod lifecycle;
@@ -34,7 +33,6 @@ pub use catalog::{
     ResourceCatalogError, ResourceCatalogRules, ResourceConfigSource, ResourceState,
     ResourceTimestamps, RetentionPolicy,
 };
-pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
 pub use execution::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
     FileContentSource, FileContentSourceError, MemoryMaterializationReferenceEncoder,

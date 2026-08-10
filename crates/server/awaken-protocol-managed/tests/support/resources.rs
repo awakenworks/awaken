@@ -2,8 +2,10 @@
 
 use std::sync::Arc;
 
-use awaken_resource_application::ResourcesApplication;
-use awaken_resource_contract::{ResourceDependencies, SkillStore};
+use awaken_resource_application::{
+    ResourceDependencies, ResourcesApplication, build_resource_component,
+};
+use awaken_resource_contract::SkillStore;
 
 /// Build the canonical Resources application component consumed by process composition,
 /// with an injectable Skill repository for durability-specific protocol cases.
@@ -13,16 +15,14 @@ pub fn resources(skill_store: Arc<dyn SkillStore>) -> ResourcesApplication {
         awaken_resource_store::SqliteResourceStore::in_memory()
             .expect("open ephemeral Resource Catalog"),
     );
-    ResourcesApplication::new(awaken_resource_contract::build_resource_component(
-        ResourceDependencies {
-            resource_catalog: catalog.clone(),
-            file_store: files.clone(),
-            file_catalog: files,
-            memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-            skill_store,
-            reclamation: catalog,
-        },
-    ))
+    ResourcesApplication::new(build_resource_component(ResourceDependencies {
+        resource_catalog: catalog.clone(),
+        file_store: files.clone(),
+        file_catalog: files,
+        memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+        skill_store,
+        reclamation: catalog,
+    }))
 }
 
 pub fn ephemeral_resources() -> ResourcesApplication {

@@ -6,17 +6,19 @@
 
 use std::sync::Arc;
 
+mod component;
 mod execution_sources;
 mod files;
 mod skill_ingest;
 use awaken_resource_contract::{
     ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
     MemoryStoreApplicationService, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    PutResourcePurgeOutcome, ResourceCatalog, ResourceComponent, ResourceKind, ResourcePurgeError,
+    PutResourcePurgeOutcome, ResourceCatalog, ResourceKind, ResourcePurgeError,
     ResourcePurgeIntent, ResourcePurgeScheduler, ResourceReclamationRepository, ResourceState,
     ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
 };
 pub use awaken_resource_contract::{MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES};
+pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
 pub use execution_sources::{
     ApplicationArtifactPublisher, ApplicationFileContentSource, CatalogRepositoryBindingVerifier,
     StoreSkillBundleSource,
@@ -288,7 +290,7 @@ impl ResourcePurgeScheduler for RepositoryPurgeScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_resource_contract::{ResourceDependencies, ResourceKind};
+    use awaken_resource_contract::ResourceKind;
 
     fn application() -> ResourcesApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
@@ -296,16 +298,14 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open resource authority"),
         );
-        ResourcesApplication::new(awaken_resource_contract::build_resource_component(
-            ResourceDependencies {
-                resource_catalog: resources.clone(),
-                file_store: files.clone(),
-                file_catalog: files,
-                memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-                skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-                reclamation: resources,
-            },
-        ))
+        ResourcesApplication::new(build_resource_component(ResourceDependencies {
+            resource_catalog: resources.clone(),
+            file_store: files.clone(),
+            file_catalog: files,
+            memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+            skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+            reclamation: resources,
+        }))
     }
 
     #[tokio::test]

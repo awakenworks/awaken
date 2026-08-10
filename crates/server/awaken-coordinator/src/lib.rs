@@ -194,7 +194,7 @@ mod platform_memory_projection_tests {
 /// roots from drifting on filenames or backend selection.
 pub fn embedded_resource_component(
     root: &std::path::Path,
-) -> awaken_resource_contract::ResourceComponent {
+) -> awaken_resource_application::ResourceComponent {
     std::fs::create_dir_all(root).expect("create resource-plane directory");
     let resources = Arc::new(
         awaken_resource_store::SqliteResourceStore::open(root.join("resources.db"))
@@ -214,8 +214,8 @@ pub fn embedded_resource_component(
         )
         .expect("open resource file sqlite"),
     );
-    awaken_resource_contract::build_resource_component(
-        awaken_resource_contract::ResourceDependencies {
+    awaken_resource_application::build_resource_component(
+        awaken_resource_application::ResourceDependencies {
             resource_catalog: resources.clone(),
             file_store: files.clone(),
             file_catalog: files,
@@ -242,8 +242,8 @@ pub fn ephemeral_resources_application() -> awaken_resource_application::Resourc
             .expect("open ephemeral Resources store"),
     );
     awaken_resource_application::ResourcesApplication::new(
-        awaken_resource_contract::build_resource_component(
-            awaken_resource_contract::ResourceDependencies {
+        awaken_resource_application::build_resource_component(
+            awaken_resource_application::ResourceDependencies {
                 resource_catalog: resources.clone(),
                 file_store: files.clone(),
                 file_catalog: files,

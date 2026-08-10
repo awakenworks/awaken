@@ -20,7 +20,8 @@ CONTROL_SOURCE = "crates/control/awaken-control/src"
 CLI_SOURCE = "crates/bin/awaken-cli/src"
 CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
 COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
-RESOURCE_COMPONENT = "crates/contract/awaken-resource-contract/src/component.rs"
+RESOURCE_COMPONENT = "crates/resources/awaken-resource-application/src/component.rs"
+RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
 PROCESS_STORES = "crates/bin/awaken-cli/src/process_stores.rs"
 RUNTIME_HOST_MANIFEST = "crates/server/awaken-runtime-host/Cargo.toml"
@@ -667,6 +668,7 @@ def domain_component_violations(
     control_source: str,
     coordinator_source: str,
     resource_source: str,
+    resource_contract_source: str,
     runtime_host_source: str,
     worker_source: str,
 ) -> list[str]:
@@ -699,7 +701,18 @@ def domain_component_violations(
         "pub struct ResourceComponent",
     ):
         if required not in resource_source:
-            errors.append(f"awaken-resource-contract component is missing `{required}`")
+            errors.append(f"awaken-resource-application component is missing `{required}`")
+    for forbidden in (
+        "mod component;",
+        "ResourceComponent",
+        "ResourceDependencies",
+        "build_resource_component",
+    ):
+        if forbidden in resource_contract_source:
+            errors.append(
+                "awaken-resource-contract contains application composition "
+                f"vocabulary `{forbidden}`"
+            )
     if "ResourcePlane" in runtime_host_source:
         errors.append("Runtime Host retains the retired ResourcePlane component owner")
     if "pub struct WorkerNodeBuilder" not in worker_source:
@@ -1030,22 +1043,29 @@ def selftest() -> None:
         "pub fn build_resource_component("
         " pub struct ResourceDependencies pub struct ResourceComponent"
     )
+    # Cause/effect decision table for Resources component ownership:
+    # R1 application owns all three component symbols and contract owns none -> accept;
+    # R2 any required application symbol is absent -> reject incomplete owner;
+    # R3 any component symbol returns to contract -> reject a parallel owner;
+    # R4 CLI/Runtime/Worker reconstruct another owner -> reject at its boundary.
     assert domain_component_violations(
         "awaken_coordinator::build_coordinator_component(",
         "",
         coordinator,
         resources,
         "",
+        "",
         "pub struct WorkerNodeBuilder",
-    ) == []  # O10 four canonical component owners
+    ) == []  # O10 R1 four canonical component owners
     assert domain_component_violations(
         "DeploymentApplication::from_repository(",
         "ManagedSessionRepository",
         "",
         "",
+        "pub use component::ResourceComponent;",
         "ResourcePlane",
         "pub struct WorkerNodeBuilder build_worker_component",
-    )  # O11 parallel or cross-owner component construction
+    )  # O11 R2/R3/R4 parallel or cross-owner component construction
     process_stores = (
         "struct ProcessStores { control: Option<ControlStores>, "
         "coordinator: Option<CoordinatorStores>\n}\n"
@@ -1441,6 +1461,7 @@ def check_all(repo_root: Path) -> list[str]:
             ),
             (repo_root / COORDINATOR_COMPONENT).read_text(encoding="utf-8"),
             (repo_root / RESOURCE_COMPONENT).read_text(encoding="utf-8"),
+            (repo_root / RESOURCE_CONTRACT).read_text(encoding="utf-8"),
             (repo_root / RUNTIME_HOST_BUILD).read_text(encoding="utf-8"),
             "\n".join(
                 path.read_text(encoding="utf-8")
