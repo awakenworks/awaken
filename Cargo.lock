@@ -2137,6 +2137,9 @@ dependencies = [
 [[package]]
 name = "awaken-service-auth-contract"
 version = "1.0.0-dev"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "awaken-service-lifecycle"

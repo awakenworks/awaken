@@ -260,34 +260,15 @@ impl ExecutableAgentRegistrationConfig {
     }
 }
 
-/// File projection adapter for Kubernetes Secret/workload-token rotation. The
-/// path is stable while its contents are resolved for every request by the
-/// shared service-auth contract.
-#[derive(Clone)]
-struct ProjectedFileServiceBearerTokenSource {
-    path: PathBuf,
-    boundary: &'static str,
-}
-
-impl awaken_service_auth_contract::ServiceBearerTokenSource
-    for ProjectedFileServiceBearerTokenSource
-{
-    fn current_token(&self) -> Result<Arc<str>, String> {
-        load_token(Some(&self.path), "token_file", self.boundary).map(Arc::from)
-    }
-}
-
 fn projected_token_source(
     path: Option<&Path>,
     field: &str,
     boundary: &'static str,
 ) -> Result<Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource>, String> {
     let path = path.ok_or_else(|| format!("{field} is required for split deployment"))?;
-    let source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource> =
-        Arc::new(ProjectedFileServiceBearerTokenSource {
-            path: path.to_path_buf(),
-            boundary,
-        });
+    let source: Arc<dyn awaken_service_auth_contract::ServiceBearerTokenSource> = Arc::new(
+        awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource::new(path, boundary),
+    );
     awaken_service_auth_contract::resolve_service_bearer_token(source.as_ref())?;
     Ok(source)
 }
@@ -327,21 +308,11 @@ fn resolve_private_boundary(
     Ok((coordinator_url, token_file))
 }
 
-fn load_token(path: Option<&Path>, field: &str, boundary: &str) -> Result<String, String> {
-    let path = path.ok_or_else(|| format!("{field} is required for split deployment"))?;
-    let token = std::fs::read_to_string(path)
-        .map_err(|error| format!("read {boundary} token {}: {error}", path.display()))?;
-    let token = token.trim().to_owned();
-    if token.is_empty() {
-        return Err(format!("{boundary} token {} is empty", path.display()));
-    }
-    Ok(token)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ConfigOverrides, FileConfig, ResolvedDeployment};
+    use awaken_service_auth_contract::ServiceBearerTokenSource;
 
     #[test]
     fn internal_listener_is_explicit_and_role_scoped() {
@@ -500,16 +471,21 @@ mod tests {
         // startup-cache fallback exists.
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("missing");
-        assert!(load_token(Some(&missing), "registration_token_file", "registration").is_err());
+        let missing_source =
+            awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource::new(
+                &missing,
+                "registration",
+            );
+        assert!(missing_source.current_token().is_err());
         let empty = dir.path().join("empty");
         std::fs::write(&empty, "\n").unwrap();
-        assert!(load_token(Some(&empty), "registration_token_file", "registration").is_err());
+        let empty_source = awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource::new(
+            &empty,
+            "registration",
+        );
+        assert!(empty_source.current_token().is_err());
         let valid = dir.path().join("valid");
         std::fs::write(&valid, "secret-token\n").unwrap();
-        assert_eq!(
-            load_token(Some(&valid), "registration_token_file", "registration").unwrap(),
-            "secret-token"
-        );
         let source =
             projected_token_source(Some(&valid), "registration_token_file", "registration")
                 .unwrap();
