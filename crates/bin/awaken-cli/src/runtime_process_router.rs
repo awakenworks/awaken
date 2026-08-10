@@ -214,6 +214,7 @@ pub(super) async fn assemble_runtime_process_router(
         config::Role::AllInOne => Some(
             control_component_for_process(
                 &stores,
+                &assembly.process_tasks,
                 &platform_workspace,
                 &org_id,
                 enrollment_signing_key,
@@ -492,19 +493,26 @@ pub(super) async fn assemble_runtime_process_router(
         eprintln!("reclaimed {} durable resource(s)", summary.completed);
     }
     let recurring_resource_reclaimer = resource_reclaimer.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_millis() as u64)
-                .unwrap_or_default();
-            if let Err(error) = recurring_resource_reclaimer.reconcile(now, 256).await {
-                eprintln!("resource reclamation retry remains pending: {error}");
+    assembly
+        .process_tasks
+        .spawn("resources-reclamation", move |cancel| async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or_default();
+                if let Err(error) = recurring_resource_reclaimer.reconcile(now, 256).await {
+                    eprintln!("resource reclamation retry remains pending: {error}");
+                }
             }
-        }
-    });
+            Ok(())
+        });
     let mut managed_host = ManagedHost::new(host.clone())
         .with_resource_validator(resource_catalog.clone())
         .with_repository_binding_verifier(Arc::new(
@@ -579,6 +587,7 @@ pub(super) async fn assemble_runtime_process_router(
         });
     let coordinator = awaken_coordinator::build_coordinator_component(
         awaken_coordinator::CoordinatorDependencies {
+            process_tasks: assembly.process_tasks.clone(),
             host,
             managed_state,
             resource_catalog,
@@ -639,5 +648,6 @@ pub(super) async fn assemble_runtime_process_router(
         ),
         coordinator.private_router,
         registration_supervisor,
+        assembly.process_tasks,
     ))
 }

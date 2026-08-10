@@ -218,73 +218,66 @@ impl SessionApplication {
         }
     }
 
-    /// Start the sole Session lifecycle supervisor for this application
-    /// instance. Recovery runs off the composition/readiness path and the same
-    /// timer owns Resource, MCP, WorkQueue, and realization-lease convergence.
-    #[must_use]
-    pub fn spawn_lifecycle_supervisor(
-        self: &std::sync::Arc<Self>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let runtime = tokio::runtime::Handle::try_current().ok()?;
+    /// Run the sole Session lifecycle supervisor for this application instance.
+    /// The process composition owns spawning, cancellation, readiness, and join;
+    /// this application owns only the convergence sequence and one-shot fence.
+    pub async fn run_lifecycle_supervisor(
+        self: std::sync::Arc<Self>,
+        cancellation: awaken_runtime_contract::CancellationToken,
+    ) -> Result<(), String> {
         if !self.claim_lifecycle_supervisor() {
-            return None;
+            return Err("Session lifecycle supervisor was already claimed".into());
         }
-        let application = self.clone();
-        Some(runtime.spawn(async move {
-            let recovery_application = application.clone();
-            let mut recovery = tokio::spawn(async move {
-                recovery_application.reconcile_pending_session_state().await
-            });
-            let mut recovery_failure_streak = 0_u32;
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-            interval.tick().await;
-            let initial_dispatch = application.reconcile_work_dispatches().await;
-            for failure in initial_dispatch.failures {
-                tracing::warn!(
-                    session = %failure.session_id,
-                    environment = %failure.environment_id,
-                    error = %failure.message,
-                    "Session WorkQueue dispatch remains pending"
-                );
-            }
-            loop {
-                interval.tick().await;
-                if recovery.is_finished() {
-                    recovery_failure_streak = match recovery.await {
-                        Ok(cycle) if cycle.retryable_failures == 0 => 0,
-                        Ok(_) => recovery_failure_streak.saturating_add(1),
-                        Err(error) => {
-                            tracing::warn!(error = ?error, "Session state reconciliation task failed");
-                            recovery_failure_streak.saturating_add(1)
-                        }
+        let mut recovery_failure_streak = 0_u32;
+        let mut next_recovery = tokio::time::Instant::now();
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        let initial_dispatch = self.reconcile_work_dispatches().await;
+        for failure in initial_dispatch.failures {
+            tracing::warn!(
+                session = %failure.session_id,
+                environment = %failure.environment_id,
+                error = %failure.message,
+                "Session WorkQueue dispatch remains pending"
+            );
+        }
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => break,
+                _ = tokio::time::sleep_until(next_recovery) => {
+                    let cycle = self.reconcile_pending_session_state().await;
+                    recovery_failure_streak = if cycle.retryable_failures == 0 {
+                        0
+                    } else {
+                        recovery_failure_streak.saturating_add(1)
                     };
-                    let delay = session_recovery_delay(recovery_failure_streak);
-                    let recovery_application = application.clone();
-                    recovery = tokio::spawn(async move {
-                        tokio::time::sleep(delay).await;
-                        recovery_application.reconcile_pending_session_state().await
-                    });
+                    next_recovery = tokio::time::Instant::now()
+                        + session_recovery_delay(recovery_failure_streak);
                 }
-                if let Err(error) = application
-                    .renew_due_session_realizations(now_unix_ms())
-                    .await
-                {
-                    tracing::warn!(
-                        error = ?error,
-                        "Session realization lease renewal remains pending"
-                    );
-                }
-                let dispatch = application.reconcile_work_dispatches().await;
-                for failure in dispatch.failures {
-                    tracing::warn!(
-                        session = %failure.session_id,
-                        environment = %failure.environment_id,
-                        error = %failure.message,
-                        "Session WorkQueue dispatch remains pending"
-                    );
+                _ = interval.tick() => {
+                    if let Err(error) = self
+                        .renew_due_session_realizations(now_unix_ms())
+                        .await
+                    {
+                        tracing::warn!(
+                            error = ?error,
+                            "Session realization lease renewal remains pending"
+                        );
+                    }
+                    let dispatch = self.reconcile_work_dispatches().await;
+                    for failure in dispatch.failures {
+                        tracing::warn!(
+                            session = %failure.session_id,
+                            environment = %failure.environment_id,
+                            error = %failure.message,
+                            "Session WorkQueue dispatch remains pending"
+                        );
+                    }
                 }
             }
-        }))
+        }
+        Ok(())
     }
 
     /// Install frozen dispatch facts without acquiring a local realization

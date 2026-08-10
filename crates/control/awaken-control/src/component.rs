@@ -46,6 +46,9 @@ const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
 /// content databases, and Worker hosts are deliberately absent. Cross-domain
 /// information enters through narrow read or command ports.
 pub struct ControlDependencies {
+    /// Process-owned cancellation/readiness boundary for every recurring
+    /// Control task. The component registers tasks but never owns shutdown.
+    pub process_tasks: awaken_process_lifecycle::ProcessTaskGroup,
     pub execution_workspace: String,
     pub data_subject_org: String,
     pub enrollment_signing_key: [u8; 32],
@@ -111,6 +114,7 @@ pub struct ControlComponent {
 /// Build the one authoritative Control application component.
 pub async fn build_control_component(dependencies: ControlDependencies) -> ControlComponent {
     let ControlDependencies {
+        process_tasks,
         execution_workspace,
         data_subject_org,
         enrollment_signing_key,
@@ -150,8 +154,8 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         remote_iam,
     } = dependencies;
 
-    recover_and_supervise_credentials(secrets.clone(), credentials.clone()).await;
-    recover_and_supervise_webhooks(secrets.clone(), webhook_store.clone()).await;
+    recover_and_supervise_credentials(secrets.clone(), credentials.clone(), &process_tasks).await;
+    recover_and_supervise_webhooks(secrets.clone(), webhook_store.clone(), &process_tasks).await;
 
     let mut vault_state = VaultState::new(secrets.clone(), credentials.clone());
     if let Some(probe) = mcp_probe {
@@ -192,6 +196,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     let registration_supervisor = crate::StaticRegistrationSupervisor::start(
         publication_reconciler.clone(),
         environment_application,
+        &process_tasks,
     );
     let capability_reader = Arc::new(CatalogCapabilityReader::new(
         catalog.clone(),
@@ -285,6 +290,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
 async fn recover_and_supervise_credentials(
     secrets: Arc<dyn SecretStore>,
     credentials: Arc<dyn CredentialRepo>,
+    process_tasks: &awaken_process_lifecycle::ProcessTaskGroup,
 ) {
     if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
         secrets.as_ref(),
@@ -296,23 +302,30 @@ async fn recover_and_supervise_credentials(
     }
     report_credential_inventory(secrets.as_ref(), credentials.as_ref()).await;
 
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(CREDENTIAL_RECONCILIATION_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        interval.tick().await;
-        loop {
+    process_tasks.spawn(
+        "control-credential-reconciliation",
+        move |cancel| async move {
+            let mut interval = tokio::time::interval(CREDENTIAL_RECONCILIATION_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             interval.tick().await;
-            if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
-                secrets.as_ref(),
-                credentials.as_ref(),
-            )
-            .await
-            {
-                eprintln!("credential mutation reconciliation failed: {error}");
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                if let Err(error) = awaken_credential_vault::repo::recover_credential_mutations(
+                    secrets.as_ref(),
+                    credentials.as_ref(),
+                )
+                .await
+                {
+                    eprintln!("credential mutation reconciliation failed: {error}");
+                }
+                report_credential_inventory(secrets.as_ref(), credentials.as_ref()).await;
             }
-            report_credential_inventory(secrets.as_ref(), credentials.as_ref()).await;
-        }
-    });
+            Ok(())
+        },
+    );
 }
 
 async fn report_credential_inventory(secrets: &dyn SecretStore, credentials: &dyn CredentialRepo) {
@@ -330,6 +343,7 @@ async fn report_credential_inventory(secrets: &dyn SecretStore, credentials: &dy
 async fn recover_and_supervise_webhooks(
     secrets: Arc<dyn SecretStore>,
     webhooks: Arc<dyn WebhookStore>,
+    process_tasks: &awaken_process_lifecycle::ProcessTaskGroup,
 ) {
     if let Err(error) =
         awaken_webhook_managed::recover_webhook_mutations(webhooks.as_ref(), secrets.as_ref()).await
@@ -338,12 +352,15 @@ async fn recover_and_supervise_webhooks(
     }
     report_webhook_inventory(webhooks.as_ref(), secrets.as_ref()).await;
 
-    tokio::spawn(async move {
+    process_tasks.spawn("control-webhook-reconciliation", move |cancel| async move {
         let mut interval = tokio::time::interval(CREDENTIAL_RECONCILIATION_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
         loop {
-            interval.tick().await;
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             if let Err(error) = awaken_webhook_managed::recover_webhook_mutations(
                 webhooks.as_ref(),
                 secrets.as_ref(),
@@ -354,6 +371,7 @@ async fn recover_and_supervise_webhooks(
             }
             report_webhook_inventory(webhooks.as_ref(), secrets.as_ref()).await;
         }
+        Ok(())
     });
 }
 

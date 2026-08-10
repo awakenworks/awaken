@@ -421,6 +421,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
+ "awaken-process-lifecycle",
  "awaken-protocol-acp",
  "awaken-protocol-awaken",
  "awaken-protocol-managed",
@@ -582,6 +583,7 @@ dependencies = [
  "awaken-iam-server",
  "awaken-model-catalog",
  "awaken-model-catalog-store",
+ "awaken-process-lifecycle",
  "awaken-protocol-managed",
  "awaken-resource-contract",
  "awaken-resource-store",
@@ -640,6 +642,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-observability",
+ "awaken-process-lifecycle",
  "awaken-protocol-a2a",
  "awaken-protocol-acp",
  "awaken-protocol-ag-ui",
@@ -1381,6 +1384,14 @@ dependencies = [
  "async-trait",
  "reqwest 0.12.28",
  "tokio",
+]
+
+[[package]]
+name = "awaken-process-lifecycle"
+version = "1.0.0-dev"
+dependencies = [
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

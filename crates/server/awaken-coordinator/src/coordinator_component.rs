@@ -28,6 +28,7 @@ use crate::{SharedHost, WorkerTransportBuildError};
 /// boundaries before invoking this builder; the injected `SharedHost` is the
 /// Coordinator's neutral Runtime port adapter.
 pub struct CoordinatorDependencies {
+    pub process_tasks: awaken_process_lifecycle::ProcessTaskGroup,
     pub host: Arc<SharedHost>,
     pub managed_state: Arc<ManagedState>,
     pub resource_catalog: Arc<dyn ResourceCatalog>,
@@ -92,6 +93,7 @@ pub async fn build_coordinator_component(
     dependencies: CoordinatorDependencies,
 ) -> Result<CoordinatorComponent, CoordinatorBuildError> {
     let CoordinatorDependencies {
+        process_tasks,
         host,
         managed_state,
         resource_catalog,
@@ -116,9 +118,10 @@ pub async fn build_coordinator_component(
     // The canonical supervisor owns durable resource, MCP, and WorkQueue
     // recovery as background work. Component construction must expose readiness
     // without awaiting an external sandbox timeout for every persisted Session.
-    let _ = managed_state
-        .session_application()
-        .spawn_lifecycle_supervisor();
+    let session_application = managed_state.session_application();
+    process_tasks.spawn("coordinator-session-lifecycle", move |cancel| async move {
+        session_application.run_lifecycle_supervisor(cancel).await
+    });
     deployment_application.bind_launcher(Arc::new(
         awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone())
             .with_rate_limiter(rate_limiter),
@@ -164,22 +167,30 @@ pub async fn build_coordinator_component(
     // One timer drives the exact DeploymentApplication and DreamApplication mounted above;
     // no scheduler may reconstruct either aggregate beside this component.
     let scheduled_deployments = deployment_application;
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_millis() as u64)
-                .unwrap_or_default();
-            if let Err(error) = scheduled_deployments.tick_and_launch(now_ms).await {
-                eprintln!("scheduled Deployment tick failed: {error}");
+    process_tasks.spawn(
+        "coordinator-deployment-dream-scheduler",
+        move |cancel| async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or_default();
+                if let Err(error) = scheduled_deployments.tick_and_launch(now_ms).await {
+                    eprintln!("scheduled Deployment tick failed: {error}");
+                }
+                if let Err(error) = dream_application.tick_policies(now_ms).await {
+                    eprintln!("scheduled Dream policy tick failed: {error}");
+                }
             }
-            if let Err(error) = dream_application.tick_policies(now_ms).await {
-                eprintln!("scheduled Dream policy tick failed: {error}");
-            }
-        }
-    });
+            Ok(())
+        },
+    );
 
     Ok(CoordinatorComponent {
         router: data,

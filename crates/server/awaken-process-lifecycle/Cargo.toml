@@ -1,0 +1,17 @@
+[package]
+name = "awaken-process-lifecycle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "shared"
+layer = "infrastructure"
+authority = "process-lifecycle"
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio-util.workspace = true
+
+[lints]
+workspace = true

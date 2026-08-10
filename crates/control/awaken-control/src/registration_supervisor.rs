@@ -98,11 +98,13 @@ impl StaticRegistrationSupervisor {
     pub fn start(
         agents: Arc<dyn PublicationBindingReconciler>,
         environments: Arc<EnvironmentApplication>,
+        process_tasks: &awaken_process_lifecycle::ProcessTaskGroup,
     ) -> Arc<Self> {
         Self::start_with_config(
             agents,
             environments,
             RegistrationSupervisorConfig::default(),
+            process_tasks,
         )
     }
 
@@ -111,11 +113,12 @@ impl StaticRegistrationSupervisor {
         agents: Arc<dyn PublicationBindingReconciler>,
         environments: Arc<EnvironmentApplication>,
         config: RegistrationSupervisorConfig,
+        process_tasks: &awaken_process_lifecycle::ProcessTaskGroup,
     ) -> Arc<Self> {
         let health = Arc::new(RegistrationHealth::default());
         let (wake, mut wake_rx) = tokio::sync::watch::channel(0_u64);
         let task_health = health.clone();
-        tokio::spawn(async move {
+        process_tasks.spawn("control-static-registration", move |cancel| async move {
             let mut failures = 0_u32;
             loop {
                 let (agent_result, environment_result) = tokio::join!(
@@ -139,6 +142,7 @@ impl StaticRegistrationSupervisor {
                     retry_delay(config, failures)
                 };
                 tokio::select! {
+                    () = cancel.cancelled() => break,
                     _ = tokio::time::sleep(delay) => {}
                     changed = wake_rx.changed() => {
                         if changed.is_err() {
@@ -147,6 +151,7 @@ impl StaticRegistrationSupervisor {
                     }
                 }
             }
+            Ok(())
         });
         Arc::new(Self { health, wake })
     }
@@ -255,6 +260,7 @@ mod tests {
         let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
         let registrar = Arc::new(EnvironmentRegistrar::default());
         let environments = Arc::new(EnvironmentApplication::new(envs, registrar, None));
+        let process_tasks = awaken_process_lifecycle::ProcessTaskGroup::new();
         let supervisor = StaticRegistrationSupervisor::start_with_config(
             agents,
             environments,
@@ -263,6 +269,7 @@ mod tests {
                 retry_max: Duration::from_secs(60),
                 settled_interval: Duration::from_secs(60),
             },
+            &process_tasks,
         );
         for _ in 0..100 {
             if supervisor.health().snapshot().consecutive_failures == 1 {
@@ -299,5 +306,9 @@ mod tests {
             Duration::from_secs(5),
             "R3"
         );
+        process_tasks
+            .shutdown(Duration::from_secs(1))
+            .await
+            .expect("test supervisor stops cooperatively");
     }
 }

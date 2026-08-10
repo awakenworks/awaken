@@ -31,21 +31,29 @@ impl WorkerObservationReconcileGate {
     /// authenticated Coordinator projection and feed changes into this same
     /// fingerprint/retry state machine; AllInOne continues to use heartbeat as
     /// its immediate clock.
-    pub(crate) fn spawn_periodic(
+    pub(crate) fn register_periodic(
         self: std::sync::Arc<Self>,
         reconciler: std::sync::Arc<dyn PublicationBindingReconciler>,
         period: std::time::Duration,
+        process_tasks: &awaken_process_lifecycle::ProcessTaskGroup,
     ) {
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(period);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                interval.tick().await;
-                if let Err(error) = self.reconcile(reconciler.as_ref()).await {
-                    eprintln!("Worker observation reconciliation remains pending: {error}");
+        process_tasks.spawn(
+            "control-worker-observation-reconciliation",
+            move |cancel| async move {
+                let mut interval = tokio::time::interval(period);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        () = cancel.cancelled() => break,
+                        _ = interval.tick() => {}
+                    }
+                    if let Err(error) = self.reconcile(reconciler.as_ref()).await {
+                        eprintln!("Worker observation reconciliation remains pending: {error}");
+                    }
                 }
-            }
-        });
+                Ok(())
+            },
+        );
     }
 
     async fn reconcile_fingerprint(

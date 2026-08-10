@@ -16,13 +16,17 @@ const HOSTED_MODEL_CATALOG_RECONCILIATION_INTERVAL: Duration = Duration::from_se
 fn spawn_hosted_model_catalog_reconciliation(
     catalog: Arc<dyn awaken_model_catalog::repo::CatalogRepo>,
     discovery: Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>,
+    process_tasks: &awaken_process_lifecycle::ProcessTaskGroup,
 ) {
-    tokio::spawn(async move {
+    process_tasks.spawn("control-hosted-model-catalog", move |cancel| async move {
         let mut interval = tokio::time::interval(HOSTED_MODEL_CATALOG_RECONCILIATION_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
         loop {
-            interval.tick().await;
+            tokio::select! {
+                () = cancel.cancelled() => break,
+                _ = interval.tick() => {}
+            }
             if let Err(error) = awaken_admin_config_api::reconcile_brokered_catalog(
                 discovery.as_ref(),
                 catalog.as_ref(),
@@ -32,6 +36,7 @@ fn spawn_hosted_model_catalog_reconciliation(
                 eprintln!("hosted model catalog reconciliation failed: {error}");
             }
         }
+        Ok(())
     });
 }
 
@@ -123,6 +128,7 @@ async fn build_control_assembly_with_model_composition(
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
 ) -> Result<ProcessAssembly, String> {
+    let process_tasks = awaken_process_lifecycle::ProcessTaskGroup::new();
     let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
@@ -154,7 +160,7 @@ async fn build_control_assembly_with_model_composition(
             .map_err(|error| {
                 format!("initial hosted model catalog reconciliation failed: {error}")
             })?;
-        spawn_hosted_model_catalog_reconciliation(catalog, discovery.clone());
+        spawn_hosted_model_catalog_reconciliation(catalog, discovery.clone(), &process_tasks);
     }
     let executable_agent_wiring =
         executable_agent_registration::ExecutableAgentWiring::control(deployment)?;
@@ -169,6 +175,7 @@ async fn build_control_assembly_with_model_composition(
         identity.local_browser_auth,
         model_composition,
         ProcessAssemblyOptions {
+            process_tasks: process_tasks.clone(),
             deployment: None,
             content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
@@ -206,5 +213,6 @@ async fn build_control_assembly_with_model_composition(
         private_router: assembled.private_router,
         local_setup: identity.local_setup,
         registration_supervisor: assembled.registration_supervisor,
+        process_tasks: assembled.process_tasks,
     })
 }

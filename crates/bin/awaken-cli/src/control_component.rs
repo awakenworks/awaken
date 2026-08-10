@@ -8,6 +8,7 @@ use super::*;
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn control_component_for_process(
     stores: &ProcessStores,
+    process_tasks: &awaken_process_lifecycle::ProcessTaskGroup,
     execution_workspace: &str,
     data_subject_org: &str,
     enrollment_signing_key: [u8; 32],
@@ -50,6 +51,7 @@ pub(super) async fn control_component_for_process(
         local_acp_observations,
     );
     awaken_control::build_control_component(awaken_control::ControlDependencies {
+        process_tasks: process_tasks.clone(),
         execution_workspace: execution_workspace.to_owned(),
         data_subject_org: data_subject_org.to_owned(),
         enrollment_signing_key,
@@ -189,6 +191,7 @@ pub(super) async fn assemble_control_process_router(
     let environment_application = environment_authoring.application();
     let component = control_component_for_process(
         &stores,
+        &assembly.process_tasks,
         &execution_workspace,
         &data_subject_org,
         enrollment_signing_key,
@@ -247,9 +250,10 @@ pub(super) async fn assemble_control_process_router(
             worker_observations.clone(),
         ),
     )
-    .spawn_periodic(
+    .register_periodic(
         component.publication_reconciler.clone(),
         std::time::Duration::from_secs(5),
+        &assembly.process_tasks,
     );
     let mcp_export = awaken_coordinator::mcp_export::router(
         awaken_admin_assistant::admin_tool_descriptors(),
@@ -269,6 +273,7 @@ pub(super) async fn assemble_control_process_router(
         ),
         private_router,
         Some(component.registration_supervisor),
+        assembly.process_tasks,
     )
 }
 

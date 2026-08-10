@@ -235,22 +235,33 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_supervisor_is_single_owner_and_starts_recovery_off_path() {
-        // Cause/effect decision table: R1 Tokio runtime + first start -> return
-        // one background supervisor immediately; R2 the same application starts
-        // again -> return None and create no overlapping recovery/timer; R3 no
-        // runtime -> existing contract returns None. Slow recovery is owned by the
-        // spawned child, so component construction never awaits sandbox I/O.
+        // Causes: C1 first process-owned task polls the supervisor future; C2 a
+        // second task targets the same application; C3 process cancellation.
+        // Effects: E1 C1 claims the sole recovery/timer owner; E2 C1+C2 rejects
+        // the duplicate before it can reconcile; E3 C1+C3 exits cooperatively.
+        // The protocol state never spawns or retains a parallel lifecycle path.
         let state = Arc::new(ManagedState::new_with_mcp(NoopRuntime));
-        let supervisor = state
-            .application
-            .spawn_lifecycle_supervisor()
-            .expect("R1 starts the sole supervisor");
-        assert!(
-            state.application.spawn_lifecycle_supervisor().is_none(),
-            "R2 rejects a parallel supervisor"
+        let cancellation = awaken_runtime_contract::CancellationToken::new();
+        let supervisor = tokio::spawn(
+            state
+                .application
+                .clone()
+                .run_lifecycle_supervisor(cancellation.clone()),
         );
         tokio::task::yield_now().await;
-        supervisor.abort();
+        let duplicate = state
+            .application
+            .clone()
+            .run_lifecycle_supervisor(awaken_runtime_contract::CancellationToken::new())
+            .await;
+        assert!(
+            duplicate
+                .expect_err("E2 rejects a parallel supervisor")
+                .contains("already claimed"),
+            "E2"
+        );
+        cancellation.cancel();
+        supervisor.await.unwrap().expect("E3 cooperative stop");
     }
 
     fn exact_receipts(action: &SessionRealizationAction) -> Vec<McpRealizationReceipt> {

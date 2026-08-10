@@ -30,6 +30,7 @@ path = "src/bin/awaken-coordinator.rs"
 # and thin Control/Coordinator executables. Every target calls the same role
 # service lifecycle; the authority-free Worker remains its own package and binary.
 [dependencies]
+awaken-process-lifecycle.workspace = true
 awaken-api-contract = { workspace = true }
 # The two management planes this composition root weaves together.
 awaken-control = { workspace = true }

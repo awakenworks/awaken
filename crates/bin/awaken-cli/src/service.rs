@@ -176,11 +176,13 @@ async fn serve_resolved(
     };
     let local_setup = assembly.local_setup;
     let registration_supervisor = assembly.registration_supervisor;
+    let process_tasks = assembly.process_tasks;
     let public_app = assembly.public_router.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
     let private_app = assembly.private_router;
     let controller = crate::DrainController::new();
+    controller.set_process_tasks(process_tasks.clone());
     if let Some(supervisor) = registration_supervisor {
         controller.set_registration_supervisor(supervisor);
     }
@@ -212,10 +214,11 @@ async fn serve_resolved(
     if let (Some(listener), Some(admin_addr)) = (admin_listener, &deployment.admin_listen) {
         let admin = crate::process_admin_router(controller);
         eprintln!("awaken: admin http://{admin_addr} (/readyz /metrics /admin/drain)");
-        tokio::spawn(async move {
-            if let Err(error) = axum::serve(listener, admin).await {
-                eprintln!("awaken: admin server stopped: {error}");
-            }
+        process_tasks.spawn("process-admin-http", move |cancel| async move {
+            axum::serve(listener, admin)
+                .with_graceful_shutdown(async move { cancel.cancelled().await })
+                .await
+                .map_err(|error| format!("admin server stopped: {error}"))
         });
     }
 
@@ -276,13 +279,40 @@ async fn serve_resolved(
     }
 
     let Some(worker) = local_worker else {
-        return serve_application_surfaces(
+        let observed_failure = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let failure_slot = observed_failure.clone();
+        let failure_source = process_tasks.clone();
+        let server_result = serve_application_surfaces(
             public_listener,
             public_app,
             private_listener.map(|listener| (listener, private_app)),
-            shutdown_signal(),
+            async move {
+                tokio::select! {
+                    () = shutdown_signal() => {}
+                    failure = failure_source.wait_for_failure() => {
+                        *failure_slot.lock().expect("process failure lock poisoned") = failure;
+                    }
+                }
+            },
         )
         .await;
+        let drain_result = process_tasks
+            .shutdown(std::time::Duration::from_secs(10))
+            .await
+            .map_err(|error| error.to_string());
+        server_result?;
+        drain_result?;
+        if let Some(failure) = observed_failure
+            .lock()
+            .expect("process failure lock poisoned")
+            .take()
+        {
+            return Err(format!(
+                "critical process task `{}` stopped: {}",
+                failure.task, failure.cause
+            ));
+        }
+        return Ok(());
     };
 
     // AllInOne owns one shutdown sequence. The local Worker fences admission
@@ -313,7 +343,7 @@ async fn serve_resolved(
     tokio::pin!(worker);
     let mut worker_shutdown_tx = Some(worker_shutdown_tx);
     let mut server_shutdown_tx = Some(server_shutdown_tx);
-    tokio::select! {
+    let result = tokio::select! {
         mode = shutdown_mode_signal() => {
             if let Some(tx) = worker_shutdown_tx.take() {
                 let _ = tx.send(mode);
@@ -347,7 +377,32 @@ async fn serve_resolved(
             worker_result?;
             server_result
         }
-    }
+        failure = process_tasks.wait_for_failure() => {
+            if let Some(tx) = worker_shutdown_tx.take() {
+                let _ = tx.send(awaken_worker::WorkerShutdown::Prompt);
+            }
+            let worker_result = local_worker_result((&mut worker).await);
+            if let Some(tx) = server_shutdown_tx.take() {
+                let _ = tx.send(());
+            }
+            let server_result = (&mut server)
+                .await
+                .map_err(|error| format!("server stopped: {error}"));
+            worker_result?;
+            server_result?;
+            let failure = failure.expect("process task wait ends only for failure before cancellation");
+            Err(format!(
+                "critical process task `{}` stopped: {}",
+                failure.task, failure.cause
+            ))
+        }
+    };
+    let drain_result = process_tasks
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .map_err(|error| error.to_string());
+    result?;
+    drain_result
 }
 
 async fn bind_application_listeners(
