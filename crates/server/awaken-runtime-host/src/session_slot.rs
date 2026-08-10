@@ -209,7 +209,6 @@ impl SessionRuntimeSlots {
             .lock()
             .expect("session runtime slots mutex poisoned")
             .iter()
-            .filter(|(_, slot)| slot.has_mcp_projection)
             .filter_map(|(session_id, slot)| {
                 slot.realization_lease
                     .clone()
@@ -233,5 +232,32 @@ impl SessionRuntimeSlots {
             .lock()
             .expect("session runtime slots mutex poisoned")
             .contains_key(session)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn environment_only_session_lease_remains_supervised() {
+        // FMECA/causal graph: C1 Environment startup outlives the initial lease;
+        // C2 the Session has no MCP projection; C3 supervision filters on MCP.
+        // E1 C1+C2 must still expose the lease for renewal, otherwise C3 lets
+        // the durable fence expire before the Environment receipt can commit.
+        let slots = SessionRuntimeSlots::default();
+        slots.update("environment-only", |slot| {
+            assert!(!slot.has_mcp_projection, "C2");
+            slot.realization_lease = Some(awaken_session_contract::SessionRealizationLease {
+                owner: "worker".into(),
+                runtime_incarnation: "worker/incarnation".into(),
+                epoch: 1,
+                expires_at_unix_ms: 30,
+            });
+        });
+
+        let leases = slots.realization_leases();
+        assert_eq!(leases.len(), 1, "E1");
+        assert_eq!(leases[0].0, "environment-only", "E1");
     }
 }
