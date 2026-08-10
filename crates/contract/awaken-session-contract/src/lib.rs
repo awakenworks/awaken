@@ -80,7 +80,7 @@ pub use environment::{
     SessionEnvironmentEffectKind, SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
     SessionEnvironmentState,
 };
-pub use lifecycle::{ManagedLifecycleFact, SessionLifecycleFactSink};
+pub use lifecycle::{LifecycleFactDelivery, LifecycleFactNotifier, ManagedLifecycleFact};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
     McpAttachmentState, McpDesiredSetFingerprint, McpGeneration, McpGenerationRef,

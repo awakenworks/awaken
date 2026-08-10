@@ -12,8 +12,8 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationErr
 #[cfg(test)]
 use awaken_session_contract::SessionExecutionState;
 use awaken_session_contract::{
-    ManagedSessionRepository, McpAttachmentRealizer, McpTarget, PersistedSession, RunError,
-    SandboxProvisioning, SessionEnvironmentBindingSink, SessionLifecycleFactSink, SessionRuntime,
+    LifecycleFactNotifier, ManagedSessionRepository, McpAttachmentRealizer, McpTarget,
+    PersistedSession, RunError, SandboxProvisioning, SessionEnvironmentBindingSink, SessionRuntime,
     SessionRuntimePlacement,
 };
 

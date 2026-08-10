@@ -945,14 +945,7 @@ impl ManagedState {
         // notified, mirroring create's `session.status_idled` and archive's
         // `session.status_terminated`. The owner is resolved from the persisted
         // owner (the delete edge carries only the id).
-        self.application
-            .emit_lifecycle_fact(
-                &deleted_fact.id,
-                id,
-                owner.as_deref(),
-                lifecycle_event::SESSION_DELETED,
-            )
-            .await;
+        self.application.notify_lifecycle_fact();
         Ok(())
     }
 
@@ -1019,14 +1012,7 @@ impl ManagedState {
         // persisted owner (the archive edge carries only the id) so a subscription in
         // that workspace is matched even after a restart lost the in-memory index.
         if newly_terminated {
-            self.application
-                .emit_lifecycle_fact(
-                    &terminated_fact.id,
-                    id,
-                    owner.as_deref(),
-                    lifecycle_event::SESSION_TERMINATED,
-                )
-                .await;
+            self.application.notify_lifecycle_fact();
         }
         Ok(session)
     }

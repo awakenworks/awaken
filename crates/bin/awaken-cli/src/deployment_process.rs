@@ -12,6 +12,7 @@ pub(super) async fn build_runtime_process_assembly(
         role,
         config::Role::AllInOne | config::Role::Coordinator
     ));
+    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let identity = identity_wiring(
         deployment.identity_mode,
         Some(&deployment.data_dir),
@@ -59,6 +60,7 @@ pub(super) async fn build_runtime_process_assembly(
             .expect("Managed Execution owns WorkQueue")
             .environment_work
             .clone(),
+        &service_lifecycle,
     )
     .await?;
     let executable_agent_wiring = executable_agent_registration::for_runtime_role(
@@ -92,6 +94,7 @@ pub(super) async fn build_runtime_process_assembly(
         identity.local_browser_auth,
         model_composition,
         ProcessAssemblyOptions {
+            service_lifecycle: service_lifecycle.clone(),
             deployment: Some(deployment.runtime.clone()),
             content_capture_ceiling: deployment.runtime.content_capture.level,
             org_id: Some(deployment.org_id.clone()),
@@ -122,6 +125,7 @@ pub(super) async fn build_runtime_process_assembly(
         private_router: assembled.private_router,
         local_setup: identity.local_setup,
         registration_supervisor: assembled.registration_supervisor,
+        service_lifecycle: assembled.service_lifecycle,
     })
 }
 
