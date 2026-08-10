@@ -584,6 +584,7 @@ dependencies = [
  "awaken-model-catalog",
  "awaken-model-catalog-store",
  "awaken-protocol-managed",
+ "awaken-provider-genai",
  "awaken-resource-contract",
  "awaken-resource-store",
  "awaken-runtime-contract",
