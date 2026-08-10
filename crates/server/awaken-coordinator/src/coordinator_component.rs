@@ -33,6 +33,8 @@ pub struct CoordinatorDependencies {
     pub resource_catalog: Arc<dyn ResourceCatalog>,
     /// Resources-owned public API, assembled from its application component.
     pub resource_management_router: Router,
+    /// Exact Resources MemoryStore service shared by HTTP and Dream.
+    pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub application_access: Arc<ApplicationAccessStore>,
     pub model_directory: Arc<dyn ModelDirectory>,
     pub dream_process_store: Arc<dyn DreamProcessStore>,
@@ -93,6 +95,7 @@ pub async fn build_coordinator_component(
         managed_state,
         resource_catalog,
         resource_management_router,
+        memory_stores,
         application_access,
         model_directory,
         dream_process_store,
@@ -134,6 +137,7 @@ pub async fn build_coordinator_component(
         dream_process_store,
         crate::ManagedRoutingExtensions {
             resource_management_router,
+            memory_stores,
             worker_authenticator,
             worker_directory,
         },

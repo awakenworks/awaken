@@ -6,17 +6,19 @@
 
 use std::sync::Arc;
 
+mod component;
 mod execution_sources;
 mod files;
 mod skill_ingest;
 use awaken_resource_contract::{
     ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
     MemoryStoreApplicationService, MemoryStoreConfigVersion, MemoryStoreDefinition,
-    PutResourcePurgeOutcome, ResourceCatalog, ResourceComponent, ResourceKind, ResourcePurgeError,
+    PutResourcePurgeOutcome, ResourceCatalog, ResourceKind, ResourcePurgeError,
     ResourcePurgeIntent, ResourcePurgeScheduler, ResourceReclamationRepository, ResourceState,
     ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
 };
 pub use awaken_resource_contract::{MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES};
+pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
 pub use execution_sources::{
     ApplicationArtifactPublisher, ApplicationFileContentSource, CatalogRepositoryBindingVerifier,
     StoreSkillBundleSource,
@@ -288,7 +290,7 @@ impl ResourcePurgeScheduler for RepositoryPurgeScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_resource_contract::{ResourceDependencies, ResourceKind};
+    use awaken_resource_contract::ResourceKind;
 
     fn application() -> ResourcesApplication {
         let files = Arc::new(awaken_file_store::InMemoryFileStore::new());
@@ -296,29 +298,48 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open resource authority"),
         );
-        ResourcesApplication::new(awaken_resource_contract::build_resource_component(
-            ResourceDependencies {
-                resource_catalog: resources.clone(),
-                file_store: files.clone(),
-                file_catalog: files,
-                memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-                skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-                reclamation: resources,
-            },
-        ))
+        ResourcesApplication::new(build_resource_component(ResourceDependencies {
+            resource_catalog: resources.clone(),
+            file_store: files.clone(),
+            file_catalog: files,
+            memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+            skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+            reclamation: resources,
+        }))
     }
 
     #[tokio::test]
     async fn memory_store_commands_share_one_lifecycle_owner() {
         // Cause/effect graph and decision table:
-        // C1 absent id + valid create -> E1 one Suspended aggregate at v1;
-        // C2 same deterministic id again -> E2 conflict and original unchanged;
-        // C3 existing id + metadata/state commands -> E3 one updated aggregate;
-        // C4 delete with zero retention -> E4 Deleted plus one durable purge;
-        // C5 unknown id -> E5 NotFound and no aggregate. These rules cover the
-        // HTTP and Dream callers because both drive this same application port.
+        // C0 one Resources composition -> E0 every consumer receives the exact
+        // same MemoryStore and purge service allocations; C1 absent id + valid
+        // create -> E1 one Suspended aggregate at v1; C2 same deterministic id
+        // again -> E2 conflict and original unchanged; C3 existing id +
+        // metadata/state commands -> E3 one updated aggregate; C4 delete with
+        // zero retention -> E4 Deleted plus one durable purge; C5 unknown id ->
+        // E5 NotFound and no aggregate.
+        //
+        // | Rule | composition | command/state | Effect |
+        // | R0   | one         | none          | E0     |
+        // | R1   | one         | create/new    | E1     |
+        // | R2   | one         | create/exists | E2     |
+        // | R3   | one         | update/exists | E3     |
+        // | R4   | one         | delete/exists | E4     |
+        // | R5   | one         | any/missing   | E5     |
+        // HTTP and Dream both drive the same application ports proven by R0.
         let application = application();
         let stores = application.memory_stores();
+        assert!(
+            Arc::ptr_eq(&stores, &application.memory_stores()),
+            "R0: MemoryStore service must not be reconstructed per consumer"
+        );
+        assert!(
+            Arc::ptr_eq(
+                &application.purge_scheduler(),
+                &application.purge_scheduler()
+            ),
+            "R0: reclamation scheduler must not be reconstructed per consumer"
+        );
         let id: awaken_resource_contract::MemoryStoreId = "memory-result".into();
         let created = stores
             .create(CreateMemoryStoreCommand {
