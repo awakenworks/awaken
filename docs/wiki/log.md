@@ -1,5 +1,11 @@
 # Wiki Update Log
 
+## 2026-08-10
+
+- **Update**: Amended ADR-0070 so local browser sessions reuse IAM's existing
+  durable `SessionRepo` and survive Awaken process restart without adding a
+  product-owned session or authorization path.
+
 ## 2026-07-28
 
 - **Update**: Amended ADR-0061 so embedded IAM and the side-effect-free
