@@ -35,7 +35,7 @@ pub fn resources_router(input: ResourcesRouterInput) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_resource_contract::ResourceDependencies;
+    use awaken_resource_application::ResourceDependencies;
 
     #[tokio::test]
     async fn one_resources_router_mounts_each_public_family_once() {
@@ -50,7 +50,7 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory().expect("resource catalog"),
         );
         let application = awaken_resource_application::ResourcesApplication::new(
-            awaken_resource_contract::build_resource_component(ResourceDependencies {
+            awaken_resource_application::build_resource_component(ResourceDependencies {
                 resource_catalog: catalog.clone(),
                 file_store: files.clone(),
                 file_catalog: files,

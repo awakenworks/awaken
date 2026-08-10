@@ -102,9 +102,8 @@ pub(super) async fn assemble_runtime_process_router(
                 .as_ref()
                 .and_then(|deployment| deployment.acp_session_blob_root.clone()),
         );
-    let resource_component = coordinator_stores.resource_component.clone();
-    let resource_application =
-        awaken_resource_application::ResourcesApplication::new(resource_component.clone());
+    let resource_application = coordinator_stores.resources.clone();
+    let resource_component = resource_application.ports();
     // Resolve the installation's Workspace exactly once, then inject the same
     // coordinate into every adapter assembled below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
@@ -282,7 +281,7 @@ pub(super) async fn assemble_runtime_process_router(
         coordinator,
     } = stores;
     let CoordinatorStores {
-        resource_component,
+        resources: _,
         sessions,
         deployments: _,
         dream_process_store,
@@ -584,6 +583,7 @@ pub(super) async fn assemble_runtime_process_router(
             managed_state,
             resource_catalog,
             resource_management_router,
+            memory_stores: resource_application.memory_stores(),
             application_access,
             model_directory,
             dream_process_store,

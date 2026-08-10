@@ -1,13 +1,13 @@
 //! Canonical Resources application component.
 //!
 //! File, Memory, Skill, and reclamation retain their type-specific semantics and
-//! repositories. This component is only their atomic process-composition value:
+//! repositories. This component is their atomic application-composition value:
 //! callers cannot accidentally pair ports opened from different backend
 //! selections, and Runtime/Coordinator code receives no concrete database type.
 
 use std::sync::Arc;
 
-use crate::{
+use awaken_resource_contract::{
     FileCatalog, FileStore, MemoryRepository, ResourceCatalog, ResourceReclamationRepository,
     SkillStore,
 };
