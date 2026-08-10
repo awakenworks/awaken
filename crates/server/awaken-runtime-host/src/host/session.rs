@@ -238,59 +238,70 @@ impl SharedHost {
             {
                 return Ok(());
             }
-            let realization = self
+            let mut realization = self
                 .session_slots
                 .read(thread, |slot| slot.realization_lease.clone())
                 .flatten();
-            let receipt = awaken_session_contract::SessionEnvironmentReceipt::new(
-                thread,
-                kind,
-                binding.clone(),
-                realization.clone(),
-            );
-            let persisted = match sink.persist(receipt).await {
-                Ok(()) => Ok(()),
-                Err(error) if error.code == "session_realization_stale" => {
-                    // Restart ordering decision table: C1 a claimed Run reaches
-                    // environment adoption; C2 the Session application has not
-                    // yet installed its replacement realization lease; C3 it
-                    // installs a different exact lease. R1 exact authority
-                    // persists immediately; R2 C1+C2 waits without publishing;
-                    // R3 C1+C2+C3 retries one exact receipt; R4 no C3 times out
-                    // and fails closed. The notification carries no authority.
-                    let changed = self
-                        .session_slots
-                        .update(thread, |slot| slot.realization_changed.clone());
-                    let replacement =
-                        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                            loop {
-                                let notified = changed.notified();
-                                let current = self
-                                    .session_slots
-                                    .read(thread, |slot| slot.realization_lease.clone())
-                                    .flatten();
-                                if current.is_some() && current != realization {
-                                    break current;
+            // FMECA/causal graph: C1 a slow K8s realization finishes under lease L1;
+            // C2 heartbeat/reclaim projects L2 before its receipt commits; C3 a
+            // second renewal projects L3 while the L2 retry is in flight. E1 never
+            // publishes under L1/L2 after either fence changed; E2 follows each
+            // exact slot notification; E3 commits only under the repository-current
+            // lease; E4 bounded churn/absence fails closed. One replacement retry
+            // is insufficient because renewal and reclaim are independent clocks.
+            const FENCE_CATCH_UP_ATTEMPTS: usize = 4;
+            let mut persisted = None;
+            for attempt in 0..FENCE_CATCH_UP_ATTEMPTS {
+                let result = sink
+                    .persist(awaken_session_contract::SessionEnvironmentReceipt::new(
+                        thread,
+                        kind,
+                        binding.clone(),
+                        realization.clone(),
+                    ))
+                    .await;
+                match result {
+                    Ok(()) => {
+                        persisted = Some(Ok(()));
+                        break;
+                    }
+                    Err(error)
+                        if error.code == "session_realization_stale"
+                            && attempt + 1 < FENCE_CATCH_UP_ATTEMPTS =>
+                    {
+                        let changed = self
+                            .session_slots
+                            .update(thread, |slot| slot.realization_changed.clone());
+                        let replacement =
+                            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                                loop {
+                                    let notified = changed.notified();
+                                    let current = self
+                                        .session_slots
+                                        .read(thread, |slot| slot.realization_lease.clone())
+                                        .flatten();
+                                    if current.is_some() && current != realization {
+                                        break current;
+                                    }
+                                    notified.await;
                                 }
-                                notified.await;
+                            })
+                            .await;
+                        match replacement {
+                            Ok(replacement) => realization = replacement,
+                            Err(_) => {
+                                persisted = Some(Err(error));
+                                break;
                             }
-                        })
-                        .await;
-                    match replacement {
-                        Ok(replacement) => {
-                            sink.persist(awaken_session_contract::SessionEnvironmentReceipt::new(
-                                thread,
-                                kind,
-                                binding,
-                                replacement,
-                            ))
-                            .await
                         }
-                        Err(_) => Err(error),
+                    }
+                    Err(error) => {
+                        persisted = Some(Err(error));
+                        break;
                     }
                 }
-                Err(error) => Err(error),
-            };
+            }
+            let persisted = persisted.expect("bounded binding persistence produces a result");
             persisted.map_err(|error| {
                 HostError::internal(format!(
                     "persist Session environment binding before use: {error}"
