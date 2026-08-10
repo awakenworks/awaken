@@ -13,6 +13,7 @@ use serde::Deserialize;
 pub(super) struct FileConfig {
     pub(super) data_dir: Option<PathBuf>,
     pub(super) bind: Option<String>,
+    pub(super) internal_bind: Option<String>,
     pub(super) mode: Option<String>,
     pub(super) role: Option<String>,
     pub(super) worker_server: Option<String>,

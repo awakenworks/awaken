@@ -118,7 +118,8 @@ pub(super) async fn build_runtime_process_assembly(
     )
     .await?;
     Ok(ProcessAssembly {
-        router: assembled.router,
+        public_router: assembled.public_router,
+        private_router: assembled.private_router,
         local_setup: identity.local_setup,
         registration_supervisor: assembled.registration_supervisor,
     })

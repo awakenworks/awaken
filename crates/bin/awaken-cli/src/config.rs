@@ -44,6 +44,9 @@ pub struct ResolvedDeployment {
     pub role: Role,
     pub mode: OperatingMode,
     pub bind: String,
+    /// Role-private service listener. Present only for split Control and
+    /// Coordinator processes; it is never used by AllInOne or Worker.
+    pub internal_bind: Option<String>,
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
     pub config_file_exists: bool,
@@ -614,10 +617,22 @@ impl ResolvedDeployment {
             .as_deref()
             .map(|value| validate_suite_hub_url(value, mode))
             .transpose()?;
+        let internal_bind =
+            service_boundary::resolve_internal_bind(role, file.internal_bind.clone(), &bind)?;
+        origins.insert(
+            "internal_bind".to_owned(),
+            if file.internal_bind.is_some() {
+                "config.toml"
+            } else {
+                "not applicable"
+            }
+            .to_owned(),
+        );
         Ok(Self {
             role,
             mode,
             bind,
+            internal_bind,
             data_dir,
             config_file_exists: config_path.exists(),
             config_path,
@@ -1565,6 +1580,7 @@ mod tests {
 
         let control = resolve(
             FileConfig {
+                internal_bind: Some("127.0.0.1:8081".into()),
                 control_service_token_file: Some("/run/control-service-token".into()),
                 ..Default::default()
             },
@@ -1593,6 +1609,7 @@ mod tests {
 
         let coordinator = resolve(
             FileConfig {
+                internal_bind: Some("127.0.0.1:8081".into()),
                 runtime_database_url: Some("postgres://coordinator/db".to_owned()),
                 resource_database_url: Some("postgres://resource/db".to_owned()),
                 control_internal_url: Some("http://control:3000".to_owned()),
@@ -1620,6 +1637,7 @@ mod tests {
             PathBuf::from("/home/dev/.awaken/config.toml"),
             FileConfig {
                 role: Some("control".to_owned()),
+                internal_bind: Some("127.0.0.1:8081".into()),
                 environment_db: Some("postgres://control/environments".to_owned()),
                 control_service_token_file: Some("/run/control-service-token".into()),
                 ..Default::default()
@@ -1756,6 +1774,7 @@ mod tests {
         // therefore never appear as authority granted to another process.
         let control = resolve(
             FileConfig {
+                internal_bind: Some("127.0.0.1:8081".into()),
                 control_service_token_file: Some("/run/control-service-token".into()),
                 ..Default::default()
             },
@@ -1785,6 +1804,7 @@ mod tests {
 
         let coordinator = resolve(
             FileConfig {
+                internal_bind: Some("127.0.0.1:8081".into()),
                 runtime_database_url: Some("postgres://coordinator/runtime".to_owned()),
                 resource_database_url: Some("postgres://resources/content".to_owned()),
                 control_internal_url: Some("http://control:3000".to_owned()),

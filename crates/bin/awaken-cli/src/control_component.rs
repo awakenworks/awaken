@@ -230,17 +230,17 @@ pub(super) async fn assemble_control_process_router(
             assembly.org_id.clone(),
         )
     };
-    let router = match assembly.control_service_authenticator {
-        Some(authenticator) => component.router.merge(
+    let private_router = match assembly.control_service_authenticator {
+        Some(authenticator) => {
             awaken_coordinator::control_service_boundary::router_with_authenticator(
                 component.management_audit.clone(),
                 component.vault_state.clone(),
                 webhook_delivery,
                 component.data_subject_consent.clone(),
                 authenticator,
-            ),
-        ),
-        None => component.router,
+            )
+        }
+        None => Router::new(),
     };
     std::sync::Arc::new(
         crate::observation_reconcile::WorkerObservationReconcileGate::new(
@@ -258,7 +258,7 @@ pub(super) async fn assemble_control_process_router(
     );
     ProcessRouterAssembly::new(
         process_surface::finish(
-            router,
+            component.router,
             mcp_export,
             Some(component.publication_reconciler),
             worker_observations,
@@ -267,6 +267,7 @@ pub(super) async fn assemble_control_process_router(
                 awaken_protocol_managed::ManagedRateLimiter::for_organization(data_subject_org),
             ),
         ),
+        private_router,
         Some(component.registration_supervisor),
     )
 }
@@ -306,7 +307,7 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
         },
     )
     .await
-    .router;
+    .public_router;
     let response = app
         .oneshot(
             Request::get("/v1/user_profiles/unknown/capture-decision?requested=full")
@@ -374,7 +375,7 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
             },
         )
         .await
-        .router;
+        .public_router;
         let response = app
             .oneshot(
                 Request::get("/v1/config/capabilities")

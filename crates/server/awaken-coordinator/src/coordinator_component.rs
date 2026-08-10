@@ -52,12 +52,16 @@ pub struct CoordinatorDependencies {
     /// Authenticated executable Agent and Environment registration routes.
     /// Process composition installs projection refresh around the final
     /// Runtime-admitting surface, not around these transport-only routes.
-    pub registration_router: Router,
+    pub private_router: Router,
 }
 
 /// Complete Coordinator application surface.
 pub struct CoordinatorComponent {
+    /// User, Session, Deployment, and authenticated Worker transport surface.
     pub router: Router,
+    /// Management-to-Coordinator service surface. Process composition must bind
+    /// this router to the private listener and never merge it into `router`.
+    pub private_router: Router,
     /// Coordinator-owned management commands before the process-level audit/IAM
     /// edge is applied.
     pub management_router: Router,
@@ -100,7 +104,7 @@ pub async fn build_coordinator_component(
         environments,
         sessions,
         default_workspace,
-        registration_router,
+        private_router,
     } = dependencies;
 
     deployment_application.bind_executable_agents(executable_agents);
@@ -134,7 +138,7 @@ pub async fn build_coordinator_component(
             worker_directory,
         },
     )?;
-    let data = data.merge(registration_router).merge(environment_warmups);
+    let data = data.merge(environment_warmups);
     let management_router =
         awaken_protocol_managed::deployments_router(deployment_application.clone())
             .merge(awaken_protocol_awaken::dream_policy_router(
@@ -171,6 +175,7 @@ pub async fn build_coordinator_component(
 
     Ok(CoordinatorComponent {
         router: data,
+        private_router,
         management_router,
     })
 }

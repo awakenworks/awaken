@@ -176,30 +176,40 @@ async fn serve_resolved(
     };
     let local_setup = assembly.local_setup;
     let registration_supervisor = assembly.registration_supervisor;
-    let app = assembly.router.layer(axum::middleware::from_fn(
+    let public_app = assembly.public_router.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
+    let private_app = assembly.private_router;
     let controller = crate::DrainController::new();
     if let Some(supervisor) = registration_supervisor {
         controller.set_registration_supervisor(supervisor);
     }
     let _active_streams_gauge = crate::register_active_streams_gauge(controller.clone());
-    let app = match &deployment.admin_listen {
-        Some(_) => crate::with_connection_metric(app, controller.clone()),
-        None => crate::with_process_admin(app, controller.clone()),
+    let public_app = match &deployment.admin_listen {
+        Some(_) => crate::with_connection_metric(public_app, controller.clone()),
+        None => crate::with_process_admin(public_app, controller.clone()),
     };
-    let app = app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
-    let app = crate::mount_console_with_navigation(
-        app,
+    let public_app = public_app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
+    let public_app = crate::mount_console_with_navigation(
+        public_app,
         awaken_api_contract::SuiteNavigation {
             hub_url: deployment.suite_hub_url.clone(),
         },
     );
+    let private_app =
+        private_app.layer(axum::middleware::from_fn(awaken_observability::trace_http));
 
-    if let Some(admin_addr) = &deployment.admin_listen {
-        let listener = tokio::net::TcpListener::bind(admin_addr)
-            .await
-            .map_err(|error| friendly_bind_error("admin", admin_addr, error))?;
+    let admin_listener = match &deployment.admin_listen {
+        Some(admin_addr) => Some(
+            tokio::net::TcpListener::bind(admin_addr)
+                .await
+                .map_err(|error| friendly_bind_error("admin", admin_addr, error))?,
+        ),
+        None => None,
+    };
+    let (public_listener, private_listener) = bind_application_listeners(&deployment).await?;
+
+    if let (Some(listener), Some(admin_addr)) = (admin_listener, &deployment.admin_listen) {
         let admin = crate::process_admin_router(controller);
         eprintln!("awaken: admin http://{admin_addr} (/readyz /metrics /admin/drain)");
         tokio::spawn(async move {
@@ -209,9 +219,6 @@ async fn serve_resolved(
         });
     }
 
-    let listener = tokio::net::TcpListener::bind(&deployment.bind)
-        .await
-        .map_err(|error| friendly_bind_error("server", &deployment.bind, error))?;
     let url = browser_url(&deployment.bind)?;
     let local_worker = prepared_worker
         .map(|prepared| prepared.build_worker(url.clone(), &deployment))
@@ -237,6 +244,14 @@ async fn serve_resolved(
             deployment.data_dir.display(),
             deployment.mode.as_str()
         );
+        eprintln!(
+            "{}: private http://{}",
+            role.binary(),
+            deployment
+                .internal_bind
+                .as_deref()
+                .expect("split service role requires internal_bind")
+        );
         if let Some(setup) = &local_setup {
             eprintln!(
                 "{}: local setup token={} expires_at={}",
@@ -248,20 +263,26 @@ async fn serve_resolved(
     }
 
     let Some(worker) = local_worker else {
-        return axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .map_err(|error| format!("server stopped: {error}"));
+        return serve_application_surfaces(
+            public_listener,
+            public_app,
+            private_listener.map(|listener| (listener, private_app)),
+            shutdown_signal(),
+        )
+        .await;
     };
 
     // AllInOne owns one shutdown sequence. The local Worker fences admission
     // and deregisters before the co-located HTTP service stops.
     let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::oneshot::channel();
     let (server_shutdown_tx, server_shutdown_rx) = tokio::sync::oneshot::channel();
-    let server = std::future::IntoFuture::into_future(
-        axum::serve(listener, app).with_graceful_shutdown(async move {
+    let server = serve_application_surfaces(
+        public_listener,
+        public_app,
+        private_listener.map(|listener| (listener, private_app)),
+        async move {
             let _ = server_shutdown_rx.await;
-        }),
+        },
     );
     tokio::pin!(server);
     let worker = tokio::spawn(async move {
@@ -316,6 +337,81 @@ async fn serve_resolved(
     }
 }
 
+async fn bind_application_listeners(
+    deployment: &ResolvedDeployment,
+) -> Result<(tokio::net::TcpListener, Option<tokio::net::TcpListener>), String> {
+    let public = tokio::net::TcpListener::bind(&deployment.bind)
+        .await
+        .map_err(|error| friendly_bind_error("public server", &deployment.bind, error))?;
+    let private = match deployment.internal_bind.as_deref() {
+        Some(address) => Some(
+            tokio::net::TcpListener::bind(address)
+                .await
+                .map_err(|error| friendly_bind_error("private server", address, error))?,
+        ),
+        None => None,
+    };
+    Ok((public, private))
+}
+
+async fn wait_for_surface_shutdown(mut receiver: tokio::sync::watch::Receiver<bool>) {
+    if *receiver.borrow() {
+        return;
+    }
+    let _ = receiver.changed().await;
+}
+
+async fn serve_application_surfaces<Shutdown>(
+    public_listener: tokio::net::TcpListener,
+    public_app: axum::Router,
+    private: Option<(tokio::net::TcpListener, axum::Router)>,
+    shutdown: Shutdown,
+) -> Result<(), String>
+where
+    Shutdown: std::future::Future<Output = ()> + Send + 'static,
+{
+    let Some((private_listener, private_app)) = private else {
+        return axum::serve(public_listener, public_app)
+            .with_graceful_shutdown(shutdown)
+            .await
+            .map_err(|error| format!("public server stopped: {error}"));
+    };
+
+    let (stop, receiver) = tokio::sync::watch::channel(false);
+    let public = std::future::IntoFuture::into_future(
+        axum::serve(public_listener, public_app)
+            .with_graceful_shutdown(wait_for_surface_shutdown(receiver.clone())),
+    );
+    let private = std::future::IntoFuture::into_future(
+        axum::serve(private_listener, private_app)
+            .with_graceful_shutdown(wait_for_surface_shutdown(receiver)),
+    );
+    tokio::pin!(public);
+    tokio::pin!(private);
+    tokio::pin!(shutdown);
+
+    tokio::select! {
+        _ = &mut shutdown => {
+            let _ = stop.send(true);
+            let (public, private) = tokio::join!(&mut public, &mut private);
+            public.map_err(|error| format!("public server stopped: {error}"))?;
+            private.map_err(|error| format!("private server stopped: {error}"))
+        }
+        public = &mut public => {
+            let _ = stop.send(true);
+            let private = (&mut private).await;
+            public.map_err(|error| format!("public server stopped: {error}"))?;
+            private.map_err(|error| format!("private server stopped: {error}"))
+        }
+        private = &mut private => {
+            let _ = stop.send(true);
+            let public = (&mut public).await;
+            private.map_err(|error| format!("private server stopped: {error}"))?;
+            public.map_err(|error| format!("public server stopped: {error}"))
+        }
+    }
+}
+
 fn local_worker_result(
     result: Result<Result<(), String>, tokio::task::JoinError>,
 ) -> Result<(), String> {
@@ -334,6 +430,11 @@ fn warn_deprecations(deployment: &ResolvedDeployment) {
 
 fn friendly_bind_error(kind: &str, address: &str, error: std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::AddrInUse {
+        if kind == "private server" {
+            return format!(
+                "cannot start {kind} on {address}: the address is already in use; choose another internal_bind in the deployment config"
+            );
+        }
         format!(
             "cannot start {kind} on {address}: the address is already in use; choose another with --port or bind in the deployment config"
         )
@@ -419,6 +520,76 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn public_and_private_servers_share_one_graceful_lifecycle() {
+        // Cause/effect graph: C1 both listeners bind, C2 each owns its distinct
+        // Router, C3 the shared shutdown resolves. Effects: E1 both sockets
+        // accept while the process is live; E2 one shutdown drains and closes
+        // both; E3 the lifecycle future terminates successfully.
+        // Decision table: R1 C1+C2+!C3 -> E1; R2 C1+C2+C3 -> E2+E3. Router
+        // path isolation and authentication are owned by the role-surface test.
+        let public = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let public_addr = public.local_addr().unwrap();
+        let private = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let private_addr = private.local_addr().unwrap();
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let lifecycle = tokio::spawn(serve_application_surfaces(
+            public,
+            axum::Router::new(),
+            Some((private, axum::Router::new())),
+            async move {
+                let _ = stopped.await;
+            },
+        ));
+
+        let public_connection = tokio::net::TcpStream::connect(public_addr).await;
+        let private_connection = tokio::net::TcpStream::connect(private_addr).await;
+        assert!(public_connection.is_ok(), "R1 public");
+        assert!(private_connection.is_ok(), "R1 private");
+        drop(public_connection);
+        drop(private_connection);
+
+        shutdown.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), lifecycle)
+            .await
+            .expect("R2 both listeners drain")
+            .expect("R3 lifecycle task")
+            .expect("R3 lifecycle result");
+        assert!(
+            tokio::net::TcpStream::connect(public_addr).await.is_err(),
+            "R2 public closed"
+        );
+        assert!(
+            tokio::net::TcpStream::connect(private_addr).await.is_err(),
+            "R2 private closed"
+        );
+    }
+
+    #[tokio::test]
+    async fn private_bind_failure_aborts_before_any_surface_is_served() {
+        // Cause/effect graph: C1 public and private addresses alias, C2 public
+        // bind succeeds first, C3 private bind conflicts. Effect E1 startup
+        // fails with the private boundary named and the unserved public listener
+        // is dropped. Decision rule B1=C1+C2+C3 -> E1. Valid dual-bind startup
+        // is covered by the shared-lifecycle test.
+        let reserved = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = reserved.local_addr().unwrap();
+        drop(reserved);
+        let mut deployment =
+            crate::config::local_test_deployment(tempfile::tempdir().unwrap().path().to_owned());
+        deployment.bind = address.to_string();
+        deployment.internal_bind = Some(address.to_string());
+        let error = bind_application_listeners(&deployment)
+            .await
+            .expect_err("B1 aliased private bind must fail");
+        assert!(error.contains("private server"), "B1: {error}");
+        assert!(error.contains("already in use"), "B1: {error}");
+        assert!(
+            tokio::net::TcpListener::bind(address).await.is_ok(),
+            "E1 public listener was never served and was dropped"
+        );
+    }
+
     #[test]
     fn service_roles_map_to_exact_deployment_authorities() {
         // Cause/effect decision table: S1 AllInOne -> union composition and
@@ -462,6 +633,7 @@ mod tests {
 data_dir = {data:?}
 mode = "server"
 role = "coordinator"
+internal_bind = "127.0.0.1:8081"
 runtime_database_url = "postgres://127.0.0.1/runtime"
 resource_database_url = "postgres://127.0.0.1/resources"
 executable_agent_registration_token_file = {token:?}
