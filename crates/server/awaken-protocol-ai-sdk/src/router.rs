@@ -203,17 +203,10 @@ fn stream_turn_with_keep_alive(
             tokio::select! {
                 event = live_rx.recv(), if !live_closed => match event {
                     Some(event) => {
-                    let wires = match &event {
-                        AgentEvent::Delta(delta) => transcoder.delta(delta),
-                        AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
-                        AgentEvent::Fact(_) => Vec::new(),
-                    };
-                    for wire in wires {
-                        if out_tx.send(sse_line(&wire)).is_err() {
+                        if !forward_live_event(&mut transcoder, &out_tx, &event) {
                             disconnected = true;
                             break 'live;
                         }
-                    }
                     }
                     None => live_closed = true,
                 },
@@ -226,16 +219,9 @@ fn stream_turn_with_keep_alive(
                     // clone of the best-effort sink. The committed outcome below
                     // is authoritative and must always close the client stream.
                     while let Ok(event) = live_rx.try_recv() {
-                        let wires = match &event {
-                            AgentEvent::Delta(delta) => transcoder.delta(delta),
-                            AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
-                            AgentEvent::Fact(_) => Vec::new(),
-                        };
-                        for wire in wires {
-                            if out_tx.send(sse_line(&wire)).is_err() {
-                                disconnected = true;
-                                break 'live;
-                            }
+                        if !forward_live_event(&mut transcoder, &out_tx, &event) {
+                            disconnected = true;
+                            break 'live;
                         }
                     }
                     live_closed = true;
@@ -273,6 +259,24 @@ fn stream_turn_with_keep_alive(
         let _ = out_tx.send("data: [DONE]\n\n".to_string());
     });
     stream_response(out_rx)
+}
+
+/// The single live-event projection used by both concurrent receive and the
+/// finite completion drain. A retained sink can affect neither event semantics
+/// nor response termination by selecting a second forwarding path.
+fn forward_live_event(
+    transcoder: &mut AiSdkEncoder,
+    out_tx: &mpsc::UnboundedSender<String>,
+    event: &AgentEvent,
+) -> bool {
+    let wires = match event {
+        AgentEvent::Delta(delta) => transcoder.delta(delta),
+        AgentEvent::Fact(fact @ Fact::RunStarted) => transcoder.fact(fact),
+        AgentEvent::Fact(_) => Vec::new(),
+    };
+    wires
+        .into_iter()
+        .all(|wire| out_tx.send(sse_line(&wire)).is_ok())
 }
 
 /// Translate the request's decisions into a resume against the awaiting tool and

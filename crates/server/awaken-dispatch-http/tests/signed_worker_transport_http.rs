@@ -35,6 +35,7 @@ struct RecordingApplicationContributions {
     acknowledgements: Mutex<usize>,
     failures: Mutex<usize>,
     begins: Mutex<Vec<awaken_session_contract::BeginSessionRealization>>,
+    begin_failure: Mutex<Option<awaken_session_contract::SessionRealizationControlFailure>>,
 }
 
 #[async_trait::async_trait]
@@ -123,6 +124,9 @@ impl awaken_session_contract::SessionRealizationControl for RecordingApplication
         awaken_session_contract::SessionRealizationControlFailure,
     > {
         self.begins.lock().unwrap().push(command.clone());
+        if let Some(error) = self.begin_failure.lock().unwrap().clone() {
+            return Err(error);
+        }
         let projection = self
             .projection
             .lock()
@@ -534,6 +538,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T14 | exact/live | exact/live | wrong Session | reject resume before control |
     // | T15 | exact/live | exact/live | contribution/resume | mark claim-authorized reassignment |
     // | T16 | exact/live | renew+reassign | - | reject contradictory authority before control |
+    // | T17 | exact/live | explicit renewal | Control NotReady | preserve typed terminal reply |
     let client = WorkerControlClient::new(upstream.clone());
     let contribution = awaken_session_contract::ApplicationSessionContribution {
         session_id: "signed-thread".into(),
@@ -611,6 +616,18 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("T10");
     assert_eq!(contributions.begins.lock().unwrap().len(), 3, "T10");
+    *contributions.begin_failure.lock().unwrap() =
+        Some(awaken_session_contract::SessionRealizationControlFailure::NotReady);
+    assert!(
+        matches!(
+            client
+                .begin_session_realization(&registered.snapshot.identity, renewal.clone())
+                .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+        ),
+        "T17"
+    );
+    *contributions.begin_failure.lock().unwrap() = None;
     let mut implicit = renewal.clone();
     implicit.target.renew_existing_lease = false;
     assert!(
@@ -629,7 +646,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T12"
     );
-    assert_eq!(contributions.begins.lock().unwrap().len(), 3, "T11/T12");
+    assert_eq!(contributions.begins.lock().unwrap().len(), 4, "T11/T12/T17");
     let mut contradictory = excessive;
     contradictory.target.lease_expires_at_unix_ms = realization_lease.expires_at_unix_ms;
     contradictory.target.reassign_existing_lease = true;
@@ -640,7 +657,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T16"
     );
-    assert_eq!(contributions.begins.lock().unwrap().len(), 3, "T16");
+    assert_eq!(contributions.begins.lock().unwrap().len(), 4, "T16/T17");
     client
         .activate_session_realization(
             &registered.snapshot.identity,

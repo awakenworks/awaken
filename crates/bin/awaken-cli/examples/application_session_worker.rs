@@ -114,10 +114,10 @@ impl awaken_session_contract::ApplicationSessionProvisioner for ApplicationProvi
         // The provisioner participates in the same claim boundary as the Host;
         // checking here proves an embedding application can fence its own I/O.
         ownership.verify_current().await.map_err(|error| {
-            awaken_session_contract::ApplicationSessionProvisionError::new(error.to_string())
+            awaken_session_contract::ApplicationSessionProvisionError::retryable(error.to_string())
         })?;
         let mcp_url = std::env::var("AWAKEN_TEST_MCP_URL").map_err(|error| {
-            awaken_session_contract::ApplicationSessionProvisionError::new(format!(
+            awaken_session_contract::ApplicationSessionProvisionError::terminal(format!(
                 "AWAKEN_TEST_MCP_URL is required: {error}"
             ))
         })?;
@@ -133,7 +133,7 @@ impl awaken_session_contract::ApplicationSessionProvisioner for ApplicationProvi
             application_fingerprint: format!("application-session-e2e-v2:{mcp_url}"),
             input: awaken_session_contract::ApplicationSessionInput {
                 env: vec![serde_json::to_value(env).map_err(|error| {
-                    awaken_session_contract::ApplicationSessionProvisionError::new(
+                    awaken_session_contract::ApplicationSessionProvisionError::terminal(
                         error.to_string(),
                     )
                 })?],
@@ -156,6 +156,21 @@ impl awaken_session_contract::ApplicationSessionProvisioner for ApplicationProvi
                 ..Default::default()
             },
         })
+    }
+
+    async fn refresh_frozen(
+        &self,
+        _activation: &awaken_runtime_contract::activation::RunActivation,
+        _session_id: &str,
+        ownership: Arc<dyn AttemptOwnershipVerifier>,
+    ) -> Result<
+        awaken_session_contract::ApplicationSessionMaterialRefresh,
+        awaken_session_contract::ApplicationSessionProvisionError,
+    > {
+        ownership.verify_current().await.map_err(|error| {
+            awaken_session_contract::ApplicationSessionProvisionError::retryable(error.to_string())
+        })?;
+        Ok(awaken_session_contract::ApplicationSessionMaterialRefresh::NotRequired)
     }
 }
 

@@ -149,7 +149,8 @@ pub struct FailSessionRealization {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
+#[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum SessionRealizationControlFailure {
     #[error("Session was not found")]
     NotFound,
@@ -400,8 +401,8 @@ impl<T> ApplicationSessionControl for T where
 #[cfg(test)]
 mod tests {
     use super::{
-        realization_generation_authorizes, realization_lease_authorizes,
-        realization_lease_is_live_at,
+        SessionRealizationControlFailure, realization_generation_authorizes,
+        realization_lease_authorizes, realization_lease_is_live_at,
     };
     use crate::{McpAttachmentId, McpGeneration, McpGenerationRef, SessionRealizationLease};
 
@@ -550,6 +551,33 @@ mod tests {
                 expected,
                 "{rule}"
             );
+        }
+    }
+
+    #[test]
+    fn realization_control_failures_round_trip_without_semantic_loss() {
+        // Transport cause/effect table: T1 unit lifecycle failures, T2 detailed
+        // invalid input, and T3 detailed dependency failure each serialize and
+        // deserialize to the exact variant. This preserves renewal retirement
+        // decisions across HTTP instead of reconstructing them from prose.
+        for (rule, failure) in [
+            ("T1 not found", SessionRealizationControlFailure::NotFound),
+            ("T1 not ready", SessionRealizationControlFailure::NotReady),
+            ("T1 stale", SessionRealizationControlFailure::StaleOwnership),
+            ("T1 conflict", SessionRealizationControlFailure::Conflict),
+            (
+                "T2 invalid",
+                SessionRealizationControlFailure::Invalid("bad target".into()),
+            ),
+            (
+                "T3 unavailable",
+                SessionRealizationControlFailure::Unavailable("control offline".into()),
+            ),
+        ] {
+            let wire = serde_json::to_value(&failure).expect(rule);
+            let decoded: SessionRealizationControlFailure =
+                serde_json::from_value(wire).expect(rule);
+            assert_eq!(decoded, failure, "{rule}");
         }
     }
 }

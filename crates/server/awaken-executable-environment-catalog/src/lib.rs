@@ -19,6 +19,7 @@ mod schema;
 pub use http::{
     EXECUTABLE_ENVIRONMENT_REGISTER_PATH, EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH,
     HttpExecutableEnvironmentRegistrar, executable_environment_registration_router,
+    executable_environment_registration_router_with_authenticator,
 };
 pub use postgres::PostgresExecutableEnvironmentRegistrar;
 pub use schema::executable_environment_catalog_bundle;
