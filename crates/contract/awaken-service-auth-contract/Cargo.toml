@@ -11,3 +11,6 @@ authority = "private-service-authentication"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"

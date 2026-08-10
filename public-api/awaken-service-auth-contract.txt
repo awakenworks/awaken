@@ -10,6 +10,11 @@ pub struct awaken_service_auth_contract::AuthenticatedService
 pub awaken_service_auth_contract::AuthenticatedService::principal: alloc::sync::Arc<str>
 impl awaken_service_auth_contract::AuthenticatedService
 pub fn awaken_service_auth_contract::AuthenticatedService::new(impl core::convert::Into<alloc::sync::Arc<str>>) -> Self
+pub struct awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource
+impl awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource
+pub fn awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource::new(impl core::convert::Into<std::path::PathBuf>, &'static str) -> Self
+impl awaken_service_auth_contract::ServiceBearerTokenSource for awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource
+pub fn awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource::current_token(&self) -> core::result::Result<alloc::sync::Arc<str>, alloc::string::String>
 pub struct awaken_service_auth_contract::ServiceAuthorizationRequirement<'a>
 pub awaken_service_auth_contract::ServiceAuthorizationRequirement::audience: &'a str
 pub awaken_service_auth_contract::ServiceAuthorizationRequirement::permission: &'a str
@@ -31,6 +36,8 @@ pub const awaken_service_auth_contract::CONTROL_SERVICE_AUDIENCE: &str
 pub const awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE: &str
 pub trait awaken_service_auth_contract::ServiceBearerTokenSource: core::marker::Send + core::marker::Sync
 pub fn awaken_service_auth_contract::ServiceBearerTokenSource::current_token(&self) -> core::result::Result<alloc::sync::Arc<str>, alloc::string::String>
+impl awaken_service_auth_contract::ServiceBearerTokenSource for awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource
+pub fn awaken_service_auth_contract::ProjectedFileServiceBearerTokenSource::current_token(&self) -> core::result::Result<alloc::sync::Arc<str>, alloc::string::String>
 impl awaken_service_auth_contract::ServiceBearerTokenSource for awaken_service_auth_contract::StaticServiceBearerTokenSource
 pub fn awaken_service_auth_contract::StaticServiceBearerTokenSource::current_token(&self) -> core::result::Result<alloc::sync::Arc<str>, alloc::string::String>
 pub trait awaken_service_auth_contract::ServiceRequestAuthenticator: core::marker::Send + core::marker::Sync

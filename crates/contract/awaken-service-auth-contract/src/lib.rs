@@ -3,6 +3,7 @@
 //! This leaf owns no HTTP framework, identity store, authorization policy, or
 //! domain command. Adapters pass raw header bytes after transport parsing.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub const COORDINATOR_SERVICE_AUDIENCE: &str = "awaken-coordinator";
@@ -116,6 +117,46 @@ impl StaticServiceBearerTokenSource {
 impl ServiceBearerTokenSource for StaticServiceBearerTokenSource {
     fn current_token(&self) -> Result<Arc<str>, String> {
         Ok(self.0.clone())
+    }
+}
+
+/// Request-time adapter for projected Kubernetes Secrets and other atomically
+/// replaced credential files. The path is stable while contents are re-read on
+/// every request, so callers neither cache a predecessor nor require restart.
+#[derive(Clone)]
+pub struct ProjectedFileServiceBearerTokenSource {
+    path: PathBuf,
+    boundary: &'static str,
+}
+
+impl ProjectedFileServiceBearerTokenSource {
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, boundary: &'static str) -> Self {
+        Self {
+            path: path.into(),
+            boundary,
+        }
+    }
+}
+
+impl ServiceBearerTokenSource for ProjectedFileServiceBearerTokenSource {
+    fn current_token(&self) -> Result<Arc<str>, String> {
+        let token = std::fs::read_to_string(&self.path).map_err(|error| {
+            format!(
+                "read {} token {}: {error}",
+                self.boundary,
+                self.path.display()
+            )
+        })?;
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(format!(
+                "{} token {} is empty",
+                self.boundary,
+                self.path.display()
+            ));
+        }
+        Ok(Arc::from(token))
     }
 }
 
@@ -294,5 +335,28 @@ mod tests {
         assert_eq!(scoped.audience, "coordinator", "R2");
         assert_eq!(scoped.permission, "agent:publish", "R2");
         assert_eq!(scoped.workspace_id, Some("workspace-a"), "R2");
+    }
+
+    #[test]
+    fn projected_file_source_is_trimmed_rotatable_and_fail_closed() {
+        // Causes: C1 readable non-empty projection; C2 missing/empty
+        // projection; C3 atomic replacement after construction. Effects: E1
+        // trimmed token; E2 error without fallback; E3 successor token.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | R1   | Y  | N  | N  | E1     |
+        // | R2   | N  | Y  | N  | E2     |
+        // | R3   | Y  | N  | Y  | E3     |
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("token");
+        let source = ProjectedFileServiceBearerTokenSource::new(&path, "Coordinator service");
+
+        assert!(source.current_token().is_err(), "R2 missing");
+        std::fs::write(&path, " first\n").unwrap();
+        assert_eq!(&*source.current_token().unwrap(), "first", "R1");
+        std::fs::write(&path, " \n").unwrap();
+        assert!(source.current_token().is_err(), "R2 empty");
+        std::fs::write(&path, "second").unwrap();
+        assert_eq!(&*source.current_token().unwrap(), "second", "R3");
     }
 }
