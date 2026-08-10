@@ -261,10 +261,13 @@ impl ApplicationContributionReceipt {
     }
 }
 
-/// Boundary command input. Values remain opaque until the Session application
-/// compiler maps them to the owning Resource/provisioning/MCP contracts.
+/// Boundary command input. Resource attachments are typed at this boundary;
+/// provisioning and MCP extension values remain opaque until the Session
+/// application compiler maps them to their owning contracts.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ApplicationSessionInput {
+    #[serde(default)]
+    pub session_inputs: Vec<crate::SessionInputAttachment>,
     #[serde(default)]
     pub mounts: Vec<serde_json::Value>,
     #[serde(default)]
@@ -753,6 +756,7 @@ mod tests {
         );
 
         let application_input = ApplicationSessionInput {
+            session_inputs: Vec::new(),
             mounts: vec![serde_json::json!({"source": "application"})],
             env: vec![serde_json::json!({"name": "APPLICATION"})],
             prompts: vec!["application".into()],

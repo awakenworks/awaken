@@ -4,7 +4,8 @@ use awaken_session_contract::{
     ApplicationContributionError, ApplicationSessionContribution,
     ApplicationSessionContributionApi, ApplicationSessionContributionFailure,
     ApplicationSessionContributionReceipt, CompiledSessionCreation, McpAttachmentOrigin,
-    PersistedSession, SessionBaselineState, SessionMcpAttachmentSet,
+    PersistedSession, ResolvedSessionResources, SessionBaselineState, SessionInputAttachment,
+    SessionMcpAttachmentSet,
 };
 
 use super::{
@@ -104,11 +105,87 @@ fn application_mcp_candidates(
 }
 
 impl SessionApplication {
+    fn merge_application_session_inputs(
+        &self,
+        owner_scope: &str,
+        initial: ResolvedSessionResources,
+        attachments: &[SessionInputAttachment],
+    ) -> Result<ResolvedSessionResources, ApplicationSessionContributionFailure> {
+        if attachments.is_empty() {
+            return Ok(initial);
+        }
+
+        let mut replacements = std::collections::HashSet::new();
+        for replacement in attachments
+            .iter()
+            .filter_map(|attachment| attachment.replaces.as_ref())
+        {
+            if !replacements.insert(replacement.clone()) {
+                return Err(ApplicationSessionContributionFailure::Invalid(format!(
+                    "application Session inputs replace binding `{replacement}` more than once"
+                )));
+            }
+            if !initial
+                .inputs
+                .iter()
+                .any(|input| &input.binding_id == replacement)
+            {
+                return Err(ApplicationSessionContributionFailure::Invalid(format!(
+                    "application Session input replaces unknown binding `{replacement}`"
+                )));
+            }
+        }
+
+        // Replacement authority is checked against the already-resolved durable
+        // manifest above. Remove it before invoking the canonical resolver so
+        // unaffected Memory/Repository pins are never resolved a second time.
+        let unresolved = attachments
+            .iter()
+            .cloned()
+            .map(|mut attachment| {
+                attachment.replaces = None;
+                attachment
+            })
+            .collect::<Vec<_>>();
+        let resolved = self
+            .resolve_session_inputs(owner_scope, &[], &unresolved)
+            .map_err(|error| ApplicationSessionContributionFailure::Invalid(error.to_string()))?;
+
+        let mut merged = initial;
+        for replacement in replacements {
+            (merged, _) = merged.detach(&replacement).map_err(|error| {
+                ApplicationSessionContributionFailure::Invalid(error.to_string())
+            })?;
+        }
+        for input in resolved.inputs {
+            merged = merged.attach(input).map_err(|error| {
+                ApplicationSessionContributionFailure::Invalid(error.to_string())
+            })?;
+        }
+        Ok(merged)
+    }
+
     pub async fn commit_compiled_session_creation(
+        &self,
+        owner_scope: &str,
+        session: PersistedSession,
+        compiled: CompiledSessionCreation,
+    ) -> Result<PersistedSession, ApplicationSessionContributionFailure> {
+        self.commit_compiled_session_creation_with_application_inputs(
+            owner_scope,
+            session,
+            compiled,
+            &[],
+        )
+        .await
+    }
+
+    async fn commit_compiled_session_creation_with_application_inputs(
         &self,
         owner_scope: &str,
         mut session: PersistedSession,
         mut compiled: CompiledSessionCreation,
+        application_inputs: &[SessionInputAttachment],
     ) -> Result<PersistedSession, ApplicationSessionContributionFailure> {
         match &session.baseline {
             SessionBaselineState::Preparing(_) => {}
@@ -141,6 +218,11 @@ impl SessionApplication {
         if compiled.initial_resources.skills.is_none() {
             compiled.initial_resources.skills = session.resources.desired().skills.clone();
         }
+        compiled.initial_resources = self.merge_application_session_inputs(
+            owner_scope,
+            compiled.initial_resources,
+            application_inputs,
+        )?;
         let mut resources = session.resources.clone();
         let result = if resources.pending.is_some() {
             resources.revise_unattempted_pending(&session.session_id, compiled.initial_resources)
@@ -224,7 +306,12 @@ impl ApplicationSessionContributionApi for SessionApplication {
                 ApplicationSessionContributionFailure::Invalid(error.to_string())
             })?;
             match self
-                .commit_compiled_session_creation(&owner_scope, session, compiled)
+                .commit_compiled_session_creation_with_application_inputs(
+                    &owner_scope,
+                    session,
+                    compiled,
+                    &contribution.input.session_inputs,
+                )
                 .await
             {
                 Ok(session) => {

@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-21
 - Amended: 2026-08-01 — logical File identity and canonical Resources application
+- Amended: 2026-08-10 — typed application-contributed Session inputs
 - Builds on: [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
   (resource injection and provisioning descriptors),
   [ADR-0041](0041-sandbox-execution-environment-provider.md) (sandbox lifecycle),
@@ -393,6 +394,23 @@ The first coherent slice is:
    version into the Session manifest;
 6. route all Memory use through `MemoryRepository`, then remove blob/harvest;
 7. add activation reconciliation and resource-specific reclamation tests.
+
+### 2026-08-10 amendment: application contributors use typed Session inputs
+
+A claim-fenced `ApplicationSessionContribution` may contribute
+`SessionInputAttachment` values in addition to the inputs compiled from Agent
+defaults. The Session application resolves those attachments through the same
+`SessionInputResolver`, merges them into `ResolvedSessionResources` before the
+root compare-and-swap, and persists the resulting manifest with the frozen
+baseline.
+
+The contributor carries logical resource identities only. A File contribution
+therefore contains a logical `FileId`; it never contains a Resources blob id, a
+storage URL, or a provider-specific `MountSource::File` key. Required
+replacements are explicit through `SessionInputAttachment::replaces`. An exact
+claim replay returns the frozen projection; a changed attachment under the same
+claim conflicts. Invalid identity, replacement, collision, or ownership is
+rejected before sandbox realization.
 
 ## Consequences
 

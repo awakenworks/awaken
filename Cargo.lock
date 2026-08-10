@@ -455,6 +455,8 @@ dependencies = [
  "awaken-worker-transport-security",
  "axum",
  "base64",
+ "bytes",
+ "http-body",
  "http-body-util",
  "opentelemetry",
  "rusqlite",
