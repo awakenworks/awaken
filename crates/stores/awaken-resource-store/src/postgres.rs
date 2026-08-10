@@ -98,10 +98,8 @@ impl PostgresResourceStore {
         .map_err(|error| storage(error.to_string()))?
         .run_bundle(&catalog)
         .await
-        .map_err(|error| storage(error.to_string()))?;
-        self.migrate_legacy_memory_stores()
-            .await
-            .map_err(|error| storage(error.to_string()))
+        .map(|_| ())
+        .map_err(|error| storage(error.to_string()))
     }
 }
 

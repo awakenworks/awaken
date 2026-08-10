@@ -14,7 +14,7 @@
 -- create/seed and a late-joining node never rewinds the counter. Seeding jumps the
 -- sequence past any pre-existing `sequence` so an upgraded, already-populated
 -- database continues without colliding on the PK.
-CREATE SEQUENCE IF NOT EXISTS {prefix}_commit_seq;
+CREATE SEQUENCE {prefix}_commit_seq;
 
 SELECT setval(
     '{prefix}_commit_seq',

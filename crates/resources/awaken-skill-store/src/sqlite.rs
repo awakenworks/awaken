@@ -415,47 +415,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn published_v1_ledger_upgrades_to_v2() {
-        // Cause/effect decision table:
-        // | starting ledger | bundle | effect                    |
-        // | empty           | V1,V2 | both schemas apply         |
-        // | V1              | V1,V2 | only aggregate V2 applies  |
-        // | V1              | new V1 | checksum drift is rejected|
+    fn current_baseline_exposes_only_the_skill_aggregate() {
+        // Causes: C1 empty ledger; C2 exact V1 replay. Effects: E1 create the
+        // aggregate table without the retired current-body projection; E2 apply
+        // once; E3 replay no SQL. Decision rules S1=C1=>E1+E2; S2=C2=>E3.
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = skill_store_bundle().expect("bundle builds");
-        let published_v1 = awaken_scoped_migration::MigrationBundle::new(
-            crate::schema::BUNDLE_ID,
-            vec![full.migrations()[0].clone()],
-        )
-        .expect("published V1 bundle");
         let runner =
             awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
-        runner
-            .run_bundle(&conn, &published_v1)
-            .expect("apply published V1");
-        conn.execute(
-            "INSERT INTO skill_store_skill(workspace_id,id,content) \
-             VALUES ('ws','kept','legacy')",
-            [],
-        )
-        .expect("seed legacy skill");
-
-        let delta = runner.run_bundle(&conn, &full).expect("upgrade to V2");
+        let applied = runner.run_bundle(&conn, &full).expect("S1");
         assert_eq!(
-            delta
+            applied
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            vec![2]
+            vec![1],
+            "S1/E2"
         );
-        let kept: String = conn
+        let active: i64 = conn
             .query_row(
-                "SELECT content FROM skill_store_skill WHERE id='kept'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_store_aggregate'",
                 [],
                 |row| row.get(0),
             )
-            .expect("read legacy skill");
-        assert_eq!(kept, "legacy");
+            .unwrap();
+        let retired: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='skill_store_skill'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!((active, retired), (1, 0), "S1/E1");
+        assert!(runner.run_bundle(&conn, &full).expect("S2").is_empty());
     }
 
     fn aggregate() -> (SkillDefinition, SkillVersion) {

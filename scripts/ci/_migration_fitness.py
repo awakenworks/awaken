@@ -16,17 +16,42 @@ DDL = re.compile(
 )
 SESSION_SCHEMA = "crates/stores/awaken-session-store/src/schema.rs"
 
+CONDITIONAL_MIGRATION_SQL = (
+    ("IF NOT EXISTS", re.compile(r"\bIF\s+NOT\s+EXISTS\b", re.IGNORECASE)),
+    ("IF EXISTS", re.compile(r"\bIF\s+EXISTS\b", re.IGNORECASE)),
+    ("CREATE OR REPLACE", re.compile(r"\bCREATE\s+OR\s+REPLACE\b", re.IGNORECASE)),
+    ("INSERT OR IGNORE", re.compile(r"\bINSERT\s+OR\s+IGNORE\b", re.IGNORECASE)),
+    (
+        "ON CONFLICT DO NOTHING",
+        re.compile(r"\bON\s+CONFLICT(?:\s*\([^)]*\))?\s+DO\s+NOTHING\b", re.IGNORECASE),
+    ),
+)
+
+LEGACY_CONSTRUCTORS = (
+    "Migration::published_legacy(",
+    "Migration::published_legacy_with_aliases(",
+    "Migration::published_legacy_per_dialect(",
+    "Migration::published_legacy_per_dialect_with_aliases(",
+)
+
 
 def _session_registry_violations(source: str) -> list[str]:
     errors: list[str] = []
-    if "fn published(" not in source or "Migration::published_legacy(" not in source:
+    if "fn published(" in source or "Migration::published_legacy(" in source:
         errors.append(
-            f"{SESSION_SCHEMA}: published Session migrations must use the immutable runtime registry"
+            f"{SESSION_SCHEMA}: unreleased Session history must have one deterministic migration stream"
         )
-    if '22 => (' in source:
-        errors.append(
-            f"{SESSION_SCHEMA}: new V0022 quarantine migration must not masquerade as previously published"
-        )
+    return errors
+
+
+def _conditional_errors(path: Path, source: str, root: Path) -> list[str]:
+    errors: list[str] = []
+    for label, pattern in CONDITIONAL_MIGRATION_SQL:
+        if pattern.search(source):
+            errors.append(
+                f"{path.relative_to(root)}: migration SQL uses conditional `{label}`; "
+                "the scoped ledger must be the only apply/skip decision"
+            )
     return errors
 
 
@@ -68,14 +93,7 @@ def _migration_declarations(source: str) -> str:
 
 
 def check_all(repo_root: Path) -> list[str]:
-    """Check version identity and DDL ownership.
-
-    SQL-policy validation belongs to the authoritative Foundation `Migration`
-    constructors. In particular, `published_legacy*` pins historical bytes and
-    may intentionally preserve conditional SQL that `Migration::new` rejects.
-    Reimplementing that distinction here would create a second checksum/policy
-    source of truth.
-    """
+    """Check one version identity, one registration, and deterministic SQL."""
     errors: list[str] = []
     crates = repo_root / "crates"
     session_schema = repo_root / SESSION_SCHEMA
@@ -84,6 +102,11 @@ def check_all(repo_root: Path) -> list[str]:
             _session_registry_violations(session_schema.read_text(encoding="utf-8"))
         )
 
+    rust_sources = {
+        path: _production_rust(path.read_text(encoding="utf-8"))
+        for path in sorted(crates.rglob("*.rs"))
+        if "tests" not in path.parts
+    }
     dialect_groups: dict[tuple[Path, str], dict[str, Path]] = {}
     for path in sorted(crates.rglob("*.sql")):
         dialect = DIALECT_SQL.fullmatch(path.name)
@@ -91,6 +114,15 @@ def check_all(repo_root: Path) -> list[str]:
             key = (path.parent, dialect.group("identity"))
             dialect_groups.setdefault(key, {})[dialect.group("dialect")] = path
             continue
+        errors.extend(_conditional_errors(path, path.read_text(encoding="utf-8"), repo_root))
+
+        include = f'include_str!("migrations/{path.name}")'
+        owners = [source_path for source_path, source in rust_sources.items() if include in source]
+        if len(owners) != 1:
+            errors.append(
+                f"{path.relative_to(repo_root)}: versioned SQL must be registered by exactly "
+                f"one Migration declaration (found {len(owners)})"
+            )
         if path.parent.name != "migrations" or not VERSIONED_SQL.fullmatch(path.name):
             errors.append(
                 f"{path.relative_to(repo_root)}: SQL schema file is not a versioned "
@@ -113,7 +145,7 @@ def check_all(repo_root: Path) -> list[str]:
         include_sqlite = f'include_str!("migrations/{sqlite.name}")'
         owners = []
         for source_path in sorted(directory.parent.rglob("*.rs")):
-            source = _production_rust(source_path.read_text(encoding="utf-8"))
+            source = rust_sources.get(source_path, "")
             if include_postgres in source or include_sqlite in source:
                 owners.append((source_path, source))
         exact_owners = [
@@ -129,30 +161,46 @@ def check_all(repo_root: Path) -> list[str]:
                 "be included together by exactly one Migration::per_dialect declaration"
             )
 
-    for path in sorted(crates.rglob("*.rs")):
-        if "tests" in path.parts:
-            continue
-        source = _production_rust(path.read_text(encoding="utf-8"))
+    registration = re.compile(
+        r'"(?P<registered>V[0-9]{4}__[a-z0-9_]+\.sql)"\s*,\s*'
+        r'include_str!\("migrations/(?P<included>V[0-9]{4}__[a-z0-9_]+\.sql)"\)'
+    )
+    for path, source in rust_sources.items():
         migration_source = _migration_declarations(source)
         owns_migration = bool(migration_source)
         if DDL.search(source) and not owns_migration:
             errors.append(
                 f"{path.relative_to(repo_root)}: production DDL is not owned by a versioned Migration"
             )
+        if owns_migration:
+            errors.extend(_conditional_errors(path, migration_source, repo_root))
+            for constructor in LEGACY_CONSTRUCTORS:
+                if constructor in migration_source:
+                    errors.append(
+                        f"{path.relative_to(repo_root)}: `{constructor[:-1]}` is a parallel "
+                        "unreleased-history path; use Migration::new/per_dialect"
+                    )
+        for match in registration.finditer(source):
+            if match.group("registered") != match.group("included"):
+                errors.append(
+                    f"{path.relative_to(repo_root)}: registered migration "
+                    f"{match.group('registered')} includes {match.group('included')}"
+                )
     return errors
 
 
 def selftest() -> None:
     """Cause/effect decision table.
 
-    M1 versioned SQL -> accepted; M2 unversioned SQL filename -> rejected; M3
-    production raw DDL without Migration ownership -> rejected; M4 the same DDL
-    inside a Migration -> accepted; M5 inline test fixture DDL -> ignored; M6
-    runtime idempotent DML after an inline bundle declaration -> ignored; M7 a
-    published-legacy constructor owns historical DDL. Constructor tests in
-    awaken-scoped-migration own the separate SQL-policy decision table; M8
-    unrelated code before an inline bundle -> does not change its identity; M9
-    only an exact Postgres/SQLite dialect suffix carries one shared identity.
+    Causes: C1 versioned filename, C2 exactly one registration, C3 registered
+    identity equals the included file, C4 unconditional body, C5 ordinary
+    Migration constructor, C6 production DDL is migration-owned. Effects: E1
+    accept one executable history; E2 reject before a database connection.
+
+    Decision table: M1 all true -> E1; M2 !C1 -> E2; M3 !C2 -> E2; M4 !C3 ->
+    E2; M5 !C4 -> E2; M6 !C5 -> E2; M7 !C6 -> E2. M8 test-only DDL and M9
+    runtime DML are outside the migration source; M10 paired dialect files share
+    one version identity; M11 Session cannot retain a legacy registry.
     """
     assert VERSIONED_SQL.fullmatch("V0001__catalog.sql")  # M1
     assert not VERSIONED_SQL.fullmatch("catalog.sql")  # M2
@@ -168,13 +216,18 @@ def selftest() -> None:
     mixed = """pub fn bundle() {\nMigration::new(1, \"x\", \"CREATE TABLE x(id INT)\");\n}\n\
 pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     assert "INSERT OR IGNORE" not in _migration_declarations(mixed)  # M6
-    published = (
-        'Migration::published_legacy(9, "x", "DROP TABLE IF EXISTS {prefix}_x", '
-        '"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")'
-    )
-    assert "published_legacy" in _migration_declarations(published)  # M7
-    assert _migration_declarations(published) == _migration_declarations(
-        "#[cfg(feature = \"test-support\")]\nuse fixture::Store;\n" + published
+    for source in (
+        "CREATE TABLE IF NOT EXISTS x(id TEXT)",
+        "DROP TABLE IF EXISTS x",
+        "CREATE OR REPLACE VIEW x AS SELECT 1",
+        "INSERT OR IGNORE INTO x VALUES (1)",
+        "INSERT INTO x VALUES (1) ON CONFLICT(id) DO NOTHING",
+    ):
+        assert any(pattern.search(source) for _, pattern in CONDITIONAL_MIGRATION_SQL)  # M5
+    legacy = 'Migration::published_legacy(9, "x", "CREATE TABLE x(id INT)", "sum")'
+    assert any(constructor in legacy for constructor in LEGACY_CONSTRUCTORS)  # M6
+    assert _migration_declarations(legacy) == _migration_declarations(
+        "#[cfg(feature = \"test-support\")]\nuse fixture::Store;\n" + legacy
     )  # M8
     postgres = DIALECT_SQL.fullmatch("V0025__nonnegative_authority.postgres.sql")
     sqlite = DIALECT_SQL.fullmatch("V0025__nonnegative_authority.sqlite.sql")
@@ -182,6 +235,5 @@ pub fn write() { sql(\"INSERT OR IGNORE INTO x VALUES (1)\"); }"""
     assert postgres.group("identity") == sqlite.group("identity")  # M9
     assert not DIALECT_SQL.fullmatch("V0025__nonnegative_authority.mysql.sql")
     registry = "fn published() { Migration::published_legacy(); }\nMigration::new(22);"
-    assert _session_registry_violations(registry) == []  # M10 immutable + append-only
-    assert _session_registry_violations("Migration::new(1);")  # M11 mutable history
-    assert _session_registry_violations(registry + "\n22 => (x)")  # M12 relabel new as old
+    assert _session_registry_violations(registry)  # M11 duplicate history path
+    assert _session_registry_violations("Migration::new(1);") == []  # M1

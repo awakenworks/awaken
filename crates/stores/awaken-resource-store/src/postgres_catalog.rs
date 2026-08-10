@@ -7,9 +7,9 @@ use std::collections::BTreeMap;
 use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, RepositoryConfigVersion,
     RepositoryDefinition, ResourceBindingValidator, ResourceCatalog, ResourceCatalogError,
-    ResourceCatalogRules, ResourceConfigSource, ResourceState, ResourceTimestamps,
+    ResourceCatalogRules, ResourceConfigSource, ResourceState,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sqlx::Row;
 use sqlx::types::Json;
 
@@ -20,90 +20,11 @@ use crate::schema::CATALOG_NS;
 const MEMORY: &str = "memory_store";
 const REPOSITORY: &str = "repository";
 
-/// Upgrade-only shape written by the removed Control-owned MemoryStore registry.
-/// It is read during schema migration only; normal reads have one Resource Catalog.
-#[derive(Debug, Deserialize)]
-struct LegacyMemoryStoreDefinition {
-    id: String,
-    #[serde(default)]
-    workspace_id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    metadata: BTreeMap<String, String>,
-    #[serde(default)]
-    archived: bool,
-}
-
 fn storage(error: impl ToString) -> ResourceCatalogError {
     ResourceCatalogError::Storage(error.to_string())
 }
 
 impl PostgresResourceStore {
-    /// Idempotently import owned rows from the removed Control registry when the
-    /// legacy and Resources stores share one PostgreSQL database. Deployments
-    /// with separate databases have no legacy table here and take the no-op arm.
-    pub(crate) async fn migrate_legacy_memory_stores(&self) -> Result<(), ResourceCatalogError> {
-        let legacy_table: Option<String> =
-            sqlx::query_scalar("SELECT to_regclass('admin_memory_store')::text")
-                .fetch_one(&self.pool)
-                .await
-                .map_err(storage)?;
-        if legacy_table.is_none() {
-            return Ok(());
-        }
-        let rows = sqlx::query("SELECT id, data FROM admin_memory_store ORDER BY id")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(storage)?;
-        for row in rows {
-            let row_id: String = row.try_get("id").map_err(storage)?;
-            let Json(legacy): Json<LegacyMemoryStoreDefinition> =
-                row.try_get("data").map_err(storage)?;
-            if legacy.id != row_id {
-                return Err(ResourceCatalogError::Storage(format!(
-                    "legacy MemoryStore row `{row_id}` contains id `{}`",
-                    legacy.id
-                )));
-            }
-            if legacy.workspace_id.trim().is_empty() {
-                continue;
-            }
-            let state = if legacy.archived {
-                ResourceState::Archived
-            } else {
-                ResourceState::Active
-            };
-            let at = now_nanos();
-            let mut timestamps = ResourceTimestamps::created(at);
-            timestamps.transition_to(state, at);
-            let id: awaken_resource_contract::MemoryStoreId = legacy.id.into();
-            match self.create_memory_store(
-                MemoryStoreDefinition {
-                    id: id.clone(),
-                    workspace_id: legacy.workspace_id,
-                    name: legacy.name,
-                    description: legacy.description,
-                    metadata: legacy.metadata,
-                    state,
-                    current_config_version: ConfigVersion::INITIAL,
-                    timestamps,
-                },
-                MemoryStoreConfigVersion {
-                    memory_store_id: id,
-                    version: ConfigVersion::INITIAL,
-                    retention_policy: Default::default(),
-                },
-            ) {
-                Ok(()) | Err(ResourceCatalogError::AlreadyExists(_)) => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(())
-    }
-
     fn catalog_record<T>(&self, kind: &str, id: &str) -> Result<Option<T>, ResourceCatalogError>
     where
         T: serde::de::DeserializeOwned + Send + 'static,

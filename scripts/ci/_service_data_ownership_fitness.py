@@ -40,6 +40,7 @@ MEMORY_SQLITE_SOURCE = "crates/resources/awaken-memory-store/src/sqlite.rs"
 SKILL_STORE_SOURCE = "crates/resources/awaken-skill-store/src/lib.rs"
 SKILL_SQLITE_SOURCE = "crates/resources/awaken-skill-store/src/sqlite.rs"
 RESOURCE_STORE_SOURCE = "crates/stores/awaken-resource-store/src/lib.rs"
+RESOURCE_POSTGRES_CATALOG = "crates/stores/awaken-resource-store/src/postgres_catalog.rs"
 RUNTIME_MEMORY_STORES = "crates/server/awaken-runtime-host/src/memory_stores.rs"
 ENV_STORE_SQLITE_SOURCE = "crates/stores/awaken-env-store/src/lib.rs"
 SANDBOX_POLICY_STORE_SOURCE = "crates/server/awaken-sandbox-policy-store/src/lib.rs"
@@ -773,6 +774,21 @@ def coordinator_resource_composition_violations(
     return errors
 
 
+def resource_catalog_authority_violations(source: str) -> list[str]:
+    """The Resources catalog must never discover or import a Control table."""
+
+    forbidden = (
+        "admin_memory_store",
+        "LegacyMemoryStoreDefinition",
+        "migrate_legacy_memory_stores",
+    )
+    return [
+        f"Resources catalog retains Control compatibility path `{token}`"
+        for token in forbidden
+        if token in source
+    ]
+
+
 def worker_listener_partition_violations(
     coordinator_source: str, component_source: str, boundary_source: str
 ) -> list[str]:
@@ -1162,6 +1178,13 @@ def selftest() -> None:
         "embedded_resource_component awaken_resource_store::",
         "",
     )  # O11b R2/R3/R4/R5
+    # Resource-catalog authority causes/effects: R1 the adapter reads only its
+    # own catalog tables -> accept; R2 it probes/imports any legacy Control table
+    # -> reject the second source of truth and cross-database assumption.
+    assert resource_catalog_authority_violations("SELECT data FROM resource_catalog_entry") == []
+    assert resource_catalog_authority_violations(
+        "LegacyMemoryStoreDefinition migrate_legacy_memory_stores admin_memory_store"
+    )  # O11e R2
     # Worker listener causes/effects: R1 Worker router absent from public,
     # returned separately, merged with warmups into private, and AllInOne has a
     # loopback private default -> accept. R2 any missing partition fact or a
@@ -1594,6 +1617,11 @@ def check_all(repo_root: Path) -> list[str]:
             product_manifests[CLI_MANIFEST],
             (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
             (repo_root / COORDINATOR_COMPONENT).read_text(encoding="utf-8"),
+        )
+    )
+    errors.extend(
+        resource_catalog_authority_violations(
+            (repo_root / RESOURCE_POSTGRES_CATALOG).read_text(encoding="utf-8")
         )
     )
     errors.extend(

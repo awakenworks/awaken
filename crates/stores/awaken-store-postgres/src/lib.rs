@@ -106,12 +106,7 @@ pub fn commit_pg_bundle()
                 .find_map(|line| line.strip_prefix("--").map(|rest| rest.trim().to_string()))
                 .filter(|desc| !desc.is_empty())
                 .unwrap_or_else(|| (*name).to_string());
-            awaken_scoped_migration::Migration::published_legacy(
-                version,
-                description,
-                contents.trim(),
-                "84c3e9c903caa1962167ead4e6f15edda675be29a7b9869048a15048b697208a",
-            )
+            awaken_scoped_migration::Migration::new(version, description, contents.trim())
         })
         .collect::<Result<Vec<_>, _>>()?;
     awaken_scoped_migration::MigrationBundle::new(COMMIT_PG_BUNDLE_ID, migrations)

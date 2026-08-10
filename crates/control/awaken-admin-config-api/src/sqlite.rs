@@ -786,97 +786,37 @@ mod tests {
     }
 
     #[test]
-    fn published_v1_v2_ledger_upgrades_to_v11() {
-        // Cause/effect decision table:
-        // | starting ledger | canonical bundle | effect                         |
-        // | empty           | V1..V11          | full schema; intent WAL present |
-        // | V1,V2           | V1..V11          | V3..V11; profile survives       |
-        // | V1,V2           | rewritten V1     | fail closed on unknown V2      |
+    fn current_admin_baseline_applies_once_and_fails_closed_on_drift() {
+        // Causes: C1 empty ledger, C2 exact V1 receipt, C3 drifted V1 receipt.
+        // Effects: E1 create four active Control tables, E2 replay no SQL, E3
+        // reject before schema mutation. Decision table: A1=C1=>E1;
+        // A2=C2=>E2; A3=C3=>E3.
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = admin_bundle().expect("bundle builds");
-        let published_v1_v2 = awaken_scoped_migration::MigrationBundle::new(
-            crate::schema::BUNDLE_ID,
-            full.migrations()[..2].to_vec(),
-        )
-        .expect("published V1/V2 bundle");
         let runner =
             awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
-        runner
-            .run_bundle(&conn, &published_v1_v2)
-            .expect("apply V1/V2");
-        conn.execute(
-            "INSERT INTO admin_inference_profile(id,data) VALUES ('kept','{}')",
-            [],
-        )
-        .expect("seed profile");
-
-        let delta = runner.run_bundle(&conn, &full).expect("upgrade to V11");
+        let delta = runner.run_bundle(&conn, &full).expect("A1 apply baseline");
         assert_eq!(
             delta
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            (3..=11).collect::<Vec<_>>()
+            vec![1],
+            "A1/E1"
         );
-        let kept: String = conn
-            .query_row(
-                "SELECT data FROM admin_inference_profile WHERE id='kept'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("read pre-upgrade profile");
-        assert_eq!(kept, "{}");
-    }
-
-    #[test]
-    fn published_v9_ledger_retires_the_legacy_webhook_outbox() {
-        // Cause/effect graph: C1 V1..V9 receipts + legacy outbox present; C2 V10
-        // receipt absent; C3 canonical V1..V10 bundle. Effect E1 applies only V10,
-        // E2 removes the competing outbox table, E3 records V10. Decision rule
-        // R1=C1∧C2∧C3 -> E1∧E2∧E3; V11 then installs the one material-intent
-        // journal, and replay applies no migration.
-        let conn = Connection::open_in_memory().expect("open sqlite");
-        let full = admin_bundle().expect("bundle builds");
-        let published_v9 = awaken_scoped_migration::MigrationBundle::new(
-            crate::schema::BUNDLE_ID,
-            full.migrations()[..9].to_vec(),
-        )
-        .expect("published V1..V9 bundle");
-        let runner =
-            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).expect("runner");
-        runner
-            .run_bundle(&conn, &published_v9)
-            .expect("apply V1..V9");
-        conn.execute(
-            "INSERT INTO admin_webhook_outbox(event_id,data) VALUES ('legacy','{}')",
-            [],
-        )
-        .expect("seed legacy outbox");
-
-        let delta = runner.run_bundle(&conn, &full).expect("apply V10");
-        assert_eq!(
-            delta
-                .iter()
-                .map(|migration| migration.version)
-                .collect::<Vec<_>>(),
-            vec![10, 11],
-            "R1/E1/E3"
-        );
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'admin_webhook_outbox'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("inspect schema");
-        assert_eq!(count, 0, "R1/E2");
         assert!(
             runner
                 .run_bundle(&conn, &full)
-                .expect("replay V10/V11")
+                .expect("A2 replay V1")
                 .is_empty(),
-            "the scoped receipt makes R1 idempotent"
+            "A2/E2"
         );
+        conn.execute(
+            "UPDATE admin_schema_migrations SET checksum = 'drifted' WHERE bundle_id = 'awaken.admin' AND version = 1",
+            [],
+        )
+        .expect("seed A3 drift");
+        assert!(runner.run_bundle(&conn, &full).is_err(), "A3/E3");
     }
 
     #[test]
@@ -884,10 +824,8 @@ mod tests {
         // Cause/effect decision table:
         // R1 active Control profile/input/webhook aggregates and webhook mutation
         // journal -> present.
-        // R2 retired MCP tracks -> dropped by their published retirement migration.
-        // R3 historical memory/catalog DDL has no current repository adapter.
-        // R4 the historical admin webhook outbox is dropped because the Session
-        // repository lifecycle outbox is the sole delivery authority.
+        // R2 MCP, Memory/Resource catalog, and webhook outbox belong to no Admin
+        // adapter -> absent from the current baseline.
         let store = SqliteAdminStore::open_in_memory().unwrap();
         let conn = store.conn.lock().unwrap();
         for table in [
@@ -908,7 +846,8 @@ mod tests {
         for table in [
             "admin_mcp_server",
             "admin_agent_mcp",
-            "admin_resource_catalog_entry",
+            "admin_memory_store",
+            "admin_resource_catalog",
             "admin_webhook_outbox",
         ] {
             let count: i64 = conn
@@ -918,7 +857,7 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "R2/R3/R4: {table}");
+            assert_eq!(count, 0, "R2: {table}");
         }
     }
 
