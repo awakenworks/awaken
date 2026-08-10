@@ -1115,11 +1115,7 @@ pub async fn build_config_router() -> Router {
         )),
         // A fresh in-memory environment registry satisfies the author port for the
         // scenario host (no durable env state in scope).
-        Arc::new(
-            awaken_environment_application::EnvironmentApplicationAuthor::new(
-                composition::test_environment_components().0.application(),
-            ),
-        ),
+        composition::test_environment_components().0.application(),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
     let host = resource_host_with_deployment(model, model_ref, deployment)

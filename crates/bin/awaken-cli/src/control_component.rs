@@ -25,7 +25,7 @@ pub(super) async fn control_component_for_process(
     local_acp_observations: &[awaken_acp_application::AcpHostObservation],
     runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
-    environment_author: Arc<dyn awaken_admin_assistant::EnvironmentAuthor>,
+    environment_author: Arc<dyn awaken_environment_contract::EnvironmentAuthor>,
     environment_application: Arc<awaken_environment_application::EnvironmentApplication>,
     environment_router: Router,
     coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
@@ -176,10 +176,14 @@ pub(super) async fn assemble_control_process_router(
             .control
             .as_ref()
             .expect("Control process requires Control stores");
-        Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
+        let application = Arc::new(awaken_environment_application::EnvironmentApplication::new(
             control.environments.clone(),
-            control.sandbox_policies.clone(),
             executable_environment_registrar,
+            Some(control.sandbox_policies.clone()),
+        ));
+        Arc::new(awaken_protocol_managed::EnvironmentAuthoringState::new(
+            application,
+            control.sandbox_policies.clone(),
         ))
     };
     let environment_application = environment_authoring.application();
@@ -200,11 +204,7 @@ pub(super) async fn assemble_control_process_router(
         &assembly.local_acp_observations,
         runtimes,
         None,
-        Arc::new(
-            awaken_environment_application::EnvironmentApplicationAuthor::new(
-                environment_authoring.application(),
-            ),
-        ),
+        environment_application.clone(),
         environment_application,
         awaken_protocol_managed::environment_authoring_router(environment_authoring.clone()).merge(
             awaken_protocol_awaken::environment_extensions_router(

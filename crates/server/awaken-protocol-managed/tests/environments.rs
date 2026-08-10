@@ -576,11 +576,16 @@ async fn snapshot_normalizes_the_networking_policy() {
 
 #[tokio::test]
 async fn environment_application_replay_converges_one_environment_and_healthcheck() {
-    // Causes/effects decision table: R1 first stable command creates Environment
-    // + healthcheck; R2 exact replay returns the same Environment and `ensure`
-    // leaves one healthcheck; R3 conflicting payload is rejected by the registry
-    // before another Environment or work item can appear.
+    // Causal graph: C1 one composition -> E1 every protocol accessor returns the
+    // same application allocation; C2 first stable command -> E2 Environment plus
+    // healthcheck; C3 exact replay -> E3 same Environment and one healthcheck; C4
+    // conflicting payload -> E4 registry rejection before another side effect.
+    // Decision table: R1=C1=>E1; R2=C2=>E2; R3=C2+C3=>E3; R4=C2+C4=>E4.
     let (authoring, execution) = awaken_protocol_managed::test_support::environment_components();
+    assert!(
+        std::sync::Arc::ptr_eq(&authoring.application(), &authoring.application()),
+        "R1: HTTP and assistant adapters must share one application instance"
+    );
     let command = awaken_environment_contract::CreateEnvironmentCommand {
         command_id: "control:call-1".into(),
         name: "stable".into(),

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use awaken_admin_assistant::{EnvironmentAuthor, ResourceInventory};
+use awaken_admin_assistant::ResourceInventory;
 use awaken_admin_config_api::{BrokeredCatalogDiscovery, CredentialProbe, ModelCatalogDiscovery};
 use awaken_agent_config::{ModelSelection, ScopedConfigRegistry};
 use awaken_config_resolver::{AgentInputBindingRepository, InferenceProfileStore, WebhookStore};
@@ -22,6 +22,7 @@ use awaken_credential_vault::repo::CredentialRepo;
 use awaken_data_subject_application::{
     DataSubjectApplication, DataSubjectRepo, ErasureJobRepo, ErasureTarget, RepoDataSubjectResolver,
 };
+use awaken_environment_contract::EnvironmentAuthor;
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_protocol_managed::{ManagedAgentRepository, VaultState};
