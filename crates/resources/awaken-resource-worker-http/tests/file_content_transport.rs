@@ -131,6 +131,7 @@ fn frozen_application_session(
             epoch: 1,
             expires_at_unix_ms: support::unix_now_ms().saturating_add(60_000),
         }),
+        realization_progress: Default::default(),
         execution: awaken_session_contract::SessionExecutionState::Running,
         disposition: Default::default(),
         terminal_cleanup: Default::default(),
