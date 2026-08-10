@@ -78,6 +78,8 @@ CREDENTIAL_SQLITE_SOURCE = "crates/stores/awaken-credential-store/src/sqlite.rs"
 CREDENTIAL_SEALED_SOURCE = "crates/stores/awaken-credential-store/src/sealed.rs"
 WEBHOOK_DISPATCH_SOURCE = "crates/server/awaken-webhook/src/dispatch.rs"
 WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
+MODEL_DIRECTORY_SOURCE = "crates/server/awaken-coordinator/src/model_directory.rs"
+RUNTIME_PROCESS_ROUTER = "crates/bin/awaken-cli/src/runtime_process_router.rs"
 
 # Exact packages are used instead of broad words such as "resource" or
 # "session": the Worker legitimately consumes the neutral contracts carrying
@@ -1040,6 +1042,35 @@ def webhook_mutation_authority_violations(source: str) -> list[str]:
     return errors
 
 
+def model_directory_authority_violations(
+    directory_source: str, composition_source: str
+) -> list[str]:
+    """Keep one Coordinator model projection for every process topology."""
+
+    errors: list[str] = []
+    for forbidden in (
+        "CatalogModelDirectory",
+        "CatalogRepo",
+        "CredentialRepo",
+        "project_executable_models",
+    ):
+        if forbidden in directory_source:
+            errors.append(
+                f"Coordinator model directory reads Control authority `{forbidden}`"
+            )
+    construction_count = composition_source.count(
+        "ExecutableAgentModelDirectory::new("
+    )
+    if construction_count != 1:
+        errors.append(
+            "Runtime composition must construct exactly one executable-registration "
+            f"model directory path; found {construction_count}"
+        )
+    if "CatalogModelDirectory" in composition_source:
+        errors.append("Runtime composition retains an AllInOne Control-catalog model path")
+    return errors
+
+
 def selftest() -> None:
     """Cause/effect decision table.
 
@@ -1081,7 +1112,9 @@ def selftest() -> None:
     explicit Coordinator capability -> accepted; O36 an implicit default or a
     detached Coordinator capability -> rejected; O37 all role-named executables
     terminate in one lifecycle -> accepted; O38 a missing target, Worker twin, or
-    entrypoint-local composition -> rejected.
+    entrypoint-local composition -> rejected; O39 one executable-registration
+    model directory shared by every topology -> accepted; O40 a direct Control
+    catalog directory or duplicate/missing construction path -> rejected.
     Together the rules cover compile-time acquisition, production call paths,
     component ownership, and schema acquisition.
     """
@@ -1478,6 +1511,18 @@ def selftest() -> None:
         "build_control()",
         "",
     )  # O38
+    assert model_directory_authority_violations(
+        "pub struct ExecutableAgentModelDirectory;",
+        "ExecutableAgentModelDirectory::new(registrations)",
+    ) == []  # O39
+    assert model_directory_authority_violations(
+        "CatalogModelDirectory CatalogRepo CredentialRepo project_executable_models",
+        "CatalogModelDirectory::new(catalog)",
+    )  # O40 direct Control path and missing canonical construction
+    assert model_directory_authority_violations(
+        "pub struct ExecutableAgentModelDirectory;",
+        "ExecutableAgentModelDirectory::new(a) ExecutableAgentModelDirectory::new(b)",
+    )  # O40 duplicate construction
 
 
 def check_all(repo_root: Path) -> list[str]:
@@ -1670,4 +1715,9 @@ def check_all(repo_root: Path) -> list[str]:
         errors.append(f"{RUNTIME_LIB_SOURCE}: {error}")
     for error in coordinator_persistence_composition_violations("\n".join(cli_sources)):
         errors.append(f"awaken-cli persistence composition: {error}")
+    for error in model_directory_authority_violations(
+        (repo_root / MODEL_DIRECTORY_SOURCE).read_text(encoding="utf-8"),
+        (repo_root / RUNTIME_PROCESS_ROUTER).read_text(encoding="utf-8"),
+    ):
+        errors.append(f"Coordinator model projection: {error}")
     return errors

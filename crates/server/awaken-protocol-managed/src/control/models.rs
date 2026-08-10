@@ -173,6 +173,8 @@ async fn get_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
 
     #[test]
     fn default_models_are_nonempty_and_project_to_beta_model_info() {
@@ -198,5 +200,31 @@ mod tests {
                 "the output ceiling is reported"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn retrieve_accepts_complete_slash_bearing_model_id() {
+        // Causes: C1 the registered model id contains provider/model path
+        // separators; C2 the request supplies that complete id through the
+        // wildcard route. Effect: E1 retrieval matches the exact id and returns
+        // its BetaModelInfo document. Decision rule R1=C1&&C2 -> E1. This test
+        // belongs to the HTTP adapter; directory implementations need only
+        // supply opaque model ids.
+        let id = "provider/claude/model-a";
+        let app = models_router(Arc::new(vec![ModelEntry::new(id, "Model A")]));
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/v1/models/{id}"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK, "R1");
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["id"], id, "R1");
     }
 }
