@@ -27,8 +27,10 @@ mod postgres;
 mod schema;
 
 pub use http::{
-    EXECUTABLE_AGENT_REGISTER_PATH, EXECUTABLE_AGENT_WITHDRAW_PATH, HttpExecutableAgentRegistrar,
-    executable_agent_registration_router, executable_agent_registration_router_with_authenticator,
+    EXECUTABLE_AGENT_PUBLISH_PERMISSION, EXECUTABLE_AGENT_REGISTER_PATH,
+    EXECUTABLE_AGENT_WITHDRAW_PATH, EXECUTABLE_AGENT_WITHDRAW_PERMISSION,
+    HttpExecutableAgentRegistrar, executable_agent_registration_router,
+    executable_agent_registration_router_with_authenticator,
 };
 pub use postgres::PostgresExecutableAgentRegistrar;
 pub use schema::executable_agent_catalog_bundle;

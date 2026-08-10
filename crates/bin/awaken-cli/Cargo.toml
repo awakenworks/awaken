@@ -62,6 +62,7 @@ awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-resource-contract = { workspace = true }
 awaken-resource-application = { workspace = true }
 awaken-session-contract = { workspace = true }
+awaken-service-auth-contract = { workspace = true }
 awaken-session-application.workspace = true
 awaken-deployment-contract = { workspace = true }
 awaken-ext-memory = { workspace = true }

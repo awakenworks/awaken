@@ -16,6 +16,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 
 pub const WORKER_OBSERVATIONS_PATH: &str = "/internal/v1/workers/observations";
+pub const WORKER_OBSERVE_PERMISSION: &str = "worker:observe";
 const ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -35,7 +36,6 @@ pub fn router(
     ))
 }
 
-#[must_use]
 pub fn router_with_authenticator(
     source: Arc<dyn WorkerObservationSource>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
@@ -56,10 +56,21 @@ async fn handle_list(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),
+        awaken_service_auth_contract::ServiceAuthorizationRequirement::new(
+            awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE,
+            WORKER_OBSERVE_PERMISSION,
+        ),
     ) {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::UNAUTHORIZED.into_response(),
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(_) => {}
+        Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized) => {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        Err(awaken_service_auth_contract::ServiceAuthError::Forbidden) => {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        Err(awaken_service_auth_contract::ServiceAuthError::Unavailable(_)) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
     }
     match state.source.list().await {
         Ok(workers) => (StatusCode::OK, Json(Ok::<_, String>(workers))).into_response(),
@@ -196,8 +207,17 @@ mod tests {
     struct UnavailableAuthenticator;
 
     impl awaken_service_auth_contract::ServiceRequestAuthenticator for UnavailableAuthenticator {
-        fn authenticate(&self, _authorization: Option<&[u8]>) -> Result<bool, String> {
-            Err("token projection unavailable".into())
+        fn authenticate(
+            &self,
+            _authorization: Option<&[u8]>,
+            _requirement: awaken_service_auth_contract::ServiceAuthorizationRequirement<'_>,
+        ) -> Result<
+            awaken_service_auth_contract::AuthenticatedService,
+            awaken_service_auth_contract::ServiceAuthError,
+        > {
+            Err(awaken_service_auth_contract::ServiceAuthError::Unavailable(
+                "token projection unavailable".into(),
+            ))
         }
     }
 

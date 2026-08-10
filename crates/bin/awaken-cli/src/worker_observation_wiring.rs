@@ -21,14 +21,14 @@ impl WorkerObservationWiring {
     }
 
     pub(super) fn control(deployment: &ResolvedDeployment) -> Result<Self, String> {
-        let (coordinator_url, token) = deployment
+        let (coordinator_url, token_source) = deployment
             .executable_agent_registration
             .control_credentials()?;
         Ok(Self {
             source: Arc::new(
-                awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource::new(
+                awaken_coordinator::worker_observation_boundary::HttpWorkerObservationSource::with_token_source(
                     coordinator_url,
-                    token,
+                    token_source,
                 )?,
             ),
             private_router: Router::new(),
@@ -43,16 +43,17 @@ impl WorkerObservationWiring {
         match role {
             Role::AllInOne => Ok(Self::local(directory)),
             Role::Coordinator => {
-                let token = deployment
+                let authenticator = deployment
                     .executable_agent_registration
-                    .coordinator_token()?;
+                    .coordinator_authenticator()?;
                 let source: Arc<dyn awaken_coordinator::WorkerObservationSource> =
                     directory.clone();
                 Ok(Self {
-                    private_router: awaken_coordinator::worker_observation_boundary::router(
-                        source.clone(),
-                        token,
-                    )?,
+                    private_router:
+                        awaken_coordinator::worker_observation_boundary::router_with_authenticator(
+                            source.clone(),
+                            authenticator,
+                        ),
                     source,
                 })
             }

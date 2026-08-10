@@ -14,6 +14,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 pub const ERASE_COORDINATOR_CONTENT_PATH: &str = "/internal/v1/data-subjects/erase";
+pub const DATA_SUBJECT_ERASE_PERMISSION: &str = "data:erase";
 const ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -73,7 +74,6 @@ pub fn router(
     ))
 }
 
-#[must_use]
 pub fn router_with_authenticator(
     eraser: Arc<dyn ContentEraser>,
     authenticator: Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>,
@@ -95,10 +95,21 @@ async fn handle_erase(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),
+        awaken_service_auth_contract::ServiceAuthorizationRequirement::new(
+            awaken_service_auth_contract::COORDINATOR_SERVICE_AUDIENCE,
+            DATA_SUBJECT_ERASE_PERMISSION,
+        ),
     ) {
-        Ok(true) => {}
-        Ok(false) => return StatusCode::UNAUTHORIZED.into_response(),
-        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Ok(_) => {}
+        Err(awaken_service_auth_contract::ServiceAuthError::Unauthorized) => {
+            return StatusCode::UNAUTHORIZED.into_response();
+        }
+        Err(awaken_service_auth_contract::ServiceAuthError::Forbidden) => {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        Err(awaken_service_auth_contract::ServiceAuthError::Unavailable(_)) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
     }
     match state.eraser.erase_subject(&command.subject).await {
         Ok(removed) => (StatusCode::OK, Json(Ok::<_, String>(removed))).into_response(),

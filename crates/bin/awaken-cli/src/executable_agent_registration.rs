@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use awaken_executable_agent_catalog::{
     ExecutableAgentCatalog, HttpExecutableAgentRegistrar, LocalExecutableAgentRegistrar,
-    PostgresExecutableAgentRegistrar, executable_agent_registration_router,
+    PostgresExecutableAgentRegistrar, executable_agent_registration_router_with_authenticator,
 };
 use awaken_executable_agent_contract::ExecutableAgentRegistrar;
 use axum::Router;
@@ -58,15 +58,16 @@ impl ExecutableAgentWiring {
     }
 
     pub(crate) fn control(deployment: &ResolvedDeployment) -> Result<Self, String> {
-        let (coordinator_url, token) = deployment
+        let (coordinator_url, token_source) = deployment
             .executable_agent_registration
             .control_credentials()?;
-        let registrar = HttpExecutableAgentRegistrar::new(coordinator_url, token.clone())
-            .map_err(|error| error.to_string())?;
+        let registrar =
+            HttpExecutableAgentRegistrar::with_token_source(coordinator_url, token_source.clone())
+                .map_err(|error| error.to_string())?;
         let coordinator_content_eraser = Arc::new(
-            awaken_coordinator::data_subject_boundary::HttpCoordinatorContentEraser::new(
+            awaken_coordinator::data_subject_boundary::HttpCoordinatorContentEraser::with_token_source(
                 coordinator_url,
-                token,
+                token_source,
             )?,
         );
         Ok(Self {
@@ -82,8 +83,11 @@ impl ExecutableAgentWiring {
     pub(crate) fn local_server(token: &str) -> Self {
         let catalog = Arc::new(ExecutableAgentCatalog::new());
         let registrar = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
-        let private_router = executable_agent_registration_router(registrar.clone(), token)
-            .expect("test registration router");
+        let private_router = awaken_executable_agent_catalog::executable_agent_registration_router(
+            registrar.clone(),
+            token,
+        )
+        .expect("test registration router");
         Self {
             catalog,
             registrar,
@@ -98,9 +102,9 @@ impl ExecutableAgentWiring {
         schema: PostgresSchemaMode,
         captured_content: Arc<dyn awaken_runtime_contract::ContentEraser>,
     ) -> Result<Self, String> {
-        let token = deployment
+        let authenticator = deployment
             .executable_agent_registration
-            .coordinator_token()?;
+            .coordinator_authenticator()?;
         let database_url = deployment.runtime.database_url.as_deref().ok_or_else(|| {
             "Coordinator requires runtime_database_url for executable Agent registration".to_owned()
         })?;
@@ -116,17 +120,20 @@ impl ExecutableAgentWiring {
         }
         .map_err(|error| error.to_string())?;
         let registrar = Arc::new(registrar);
-        let private_router = executable_agent_registration_router(registrar.clone(), token.clone())
-            .map_err(|error| format!("construct executable Agent registration router: {error}"))?;
+        let private_router = executable_agent_registration_router_with_authenticator(
+            registrar.clone(),
+            authenticator.clone(),
+        );
         let coordinator_content =
             awaken_coordinator::data_subject_boundary::coordinator_content_eraser(
                 captured_content,
                 deployment.runtime.acp_session_blob_root.clone(),
             );
         let private_router = private_router.merge(
-            awaken_coordinator::data_subject_boundary::router(coordinator_content, token).map_err(
-                |error| format!("construct Coordinator content-erasure router: {error}"),
-            )?,
+            awaken_coordinator::data_subject_boundary::router_with_authenticator(
+                coordinator_content,
+                authenticator,
+            ),
         );
         Ok(Self {
             catalog,

@@ -8,7 +8,10 @@ use awaken_executable_agent_contract::{
     ExecutableAgentRegistrationOutcome, ExecutableAgentWithdrawal,
     ExecutableAgentWithdrawalOutcome,
 };
-use awaken_service_auth_contract::{ServiceBearerTokenSource, ServiceRequestAuthenticator};
+use awaken_service_auth_contract::{
+    COORDINATOR_SERVICE_AUDIENCE, ServiceAuthError, ServiceAuthorizationRequirement,
+    ServiceBearerTokenSource, ServiceRequestAuthenticator,
+};
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -19,6 +22,8 @@ use serde::de::DeserializeOwned;
 
 pub const EXECUTABLE_AGENT_REGISTER_PATH: &str = "/internal/v1/executable-agents/register";
 pub const EXECUTABLE_AGENT_WITHDRAW_PATH: &str = "/internal/v1/executable-agents/withdraw";
+pub const EXECUTABLE_AGENT_PUBLISH_PERMISSION: &str = "agent:publish";
+pub const EXECUTABLE_AGENT_WITHDRAW_PERMISSION: &str = "agent:withdraw";
 
 const IDEMPOTENT_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
@@ -42,7 +47,6 @@ pub fn executable_agent_registration_router(
     ))
 }
 
-#[must_use]
 pub fn executable_agent_registration_router_with_authenticator(
     registrar: Arc<dyn ExecutableAgentRegistrar>,
     authenticator: Arc<dyn ServiceRequestAuthenticator>,
@@ -61,7 +65,15 @@ async fn register(
     headers: HeaderMap,
     Json(command): Json<ExecutableAgentRegistration>,
 ) -> impl IntoResponse {
-    if let Err(status) = authorize(&headers, state.authenticator.as_ref()) {
+    if let Err(status) = authorize(
+        &headers,
+        state.authenticator.as_ref(),
+        ServiceAuthorizationRequirement::new(
+            COORDINATOR_SERVICE_AUDIENCE,
+            EXECUTABLE_AGENT_PUBLISH_PERMISSION,
+        )
+        .in_workspace(&command.workspace_id),
+    ) {
         return status.into_response();
     }
     match state.registrar.register(command).await {
@@ -79,7 +91,15 @@ async fn withdraw(
     headers: HeaderMap,
     Json(command): Json<ExecutableAgentWithdrawal>,
 ) -> impl IntoResponse {
-    if let Err(status) = authorize(&headers, state.authenticator.as_ref()) {
+    if let Err(status) = authorize(
+        &headers,
+        state.authenticator.as_ref(),
+        ServiceAuthorizationRequirement::new(
+            COORDINATOR_SERVICE_AUDIENCE,
+            EXECUTABLE_AGENT_WITHDRAW_PERMISSION,
+        )
+        .in_workspace(&command.workspace_id),
+    ) {
         return status.into_response();
     }
     match state.registrar.withdraw(command).await {
@@ -95,15 +115,18 @@ async fn withdraw(
 fn authorize(
     headers: &HeaderMap,
     authenticator: &dyn ServiceRequestAuthenticator,
+    requirement: ServiceAuthorizationRequirement<'_>,
 ) -> Result<(), StatusCode> {
     match authenticator.authenticate(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),
+        requirement,
     ) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(StatusCode::UNAUTHORIZED),
-        Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
+        Ok(_) => Ok(()),
+        Err(ServiceAuthError::Unauthorized) => Err(StatusCode::UNAUTHORIZED),
+        Err(ServiceAuthError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(ServiceAuthError::Unavailable(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
     }
 }
 
@@ -292,7 +315,11 @@ mod tests {
     use crate::test_support::registration as test_registration;
     use crate::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_runtime_contract::{AgentSnapshotFingerprint, CatalogFingerprint};
+    use axum::body::Body;
+    use axum::http::Request;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt;
 
     fn registration() -> ExecutableAgentRegistration {
         test_registration(7, "fp-a")
@@ -327,6 +354,7 @@ mod tests {
         delegate: LocalExecutableAgentRegistrar,
         unavailable_before: usize,
         calls: AtomicUsize,
+        withdrawal_calls: AtomicUsize,
     }
 
     impl CountingRegistrar {
@@ -335,6 +363,7 @@ mod tests {
                 delegate: LocalExecutableAgentRegistrar::new(catalog),
                 unavailable_before,
                 calls: AtomicUsize::new(0),
+                withdrawal_calls: AtomicUsize::new(0),
             }
         }
     }
@@ -358,8 +387,95 @@ mod tests {
             &self,
             withdrawal: ExecutableAgentWithdrawal,
         ) -> Result<ExecutableAgentWithdrawalOutcome, ExecutableAgentRegistrationError> {
+            self.withdrawal_calls.fetch_add(1, Ordering::SeqCst);
             self.delegate.withdraw(withdrawal).await
         }
+    }
+
+    struct RecordingForbiddenAuthenticator(Mutex<Vec<(String, String, Option<String>)>>);
+
+    impl ServiceRequestAuthenticator for RecordingForbiddenAuthenticator {
+        fn authenticate(
+            &self,
+            _authorization: Option<&[u8]>,
+            requirement: ServiceAuthorizationRequirement<'_>,
+        ) -> Result<
+            awaken_service_auth_contract::AuthenticatedService,
+            awaken_service_auth_contract::ServiceAuthError,
+        > {
+            self.0.lock().unwrap().push((
+                requirement.audience.to_owned(),
+                requirement.permission.to_owned(),
+                requirement.workspace_id.map(str::to_owned),
+            ));
+            Err(awaken_service_auth_contract::ServiceAuthError::Forbidden)
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_authorization_fences_catalog_commands_before_mutation() {
+        // Cause/effect graph: decoded command identity -> route-specific
+        // requirement -> injected IAM decision -> registrar. Decision table:
+        // R1 forbidden register carries coordinator/agent:publish/exact
+        // Workspace -> 403 and zero registrar calls; R2 forbidden withdrawal
+        // carries agent:withdraw/the same Workspace -> 403 and zero withdrawal
+        // calls. Static-token 401 and successful mutation are covered by the
+        // authenticated adapter table below; dependency-unavailable 503 is
+        // covered by the Worker observation boundary table.
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let registrar = Arc::new(CountingRegistrar::new(catalog, 0));
+        let authenticator = Arc::new(RecordingForbiddenAuthenticator(Mutex::new(Vec::new())));
+        let app = executable_agent_registration_router_with_authenticator(
+            registrar.clone(),
+            authenticator.clone(),
+        );
+        let response = app
+            .clone()
+            .oneshot(
+                Request::post(EXECUTABLE_AGENT_REGISTER_PATH)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&registration()).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "R1");
+        assert_eq!(registrar.calls.load(Ordering::SeqCst), 0, "R1");
+
+        let response = app
+            .oneshot(
+                Request::post(EXECUTABLE_AGENT_WITHDRAW_PATH)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&ExecutableAgentWithdrawal {
+                            workspace_id: "workspace-a".into(),
+                            agent_id: "agent-a".into(),
+                            lifecycle_revision: 8,
+                        })
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "R2");
+        assert_eq!(registrar.withdrawal_calls.load(Ordering::SeqCst), 0, "R2");
+        assert_eq!(
+            *authenticator.0.lock().unwrap(),
+            vec![
+                (
+                    COORDINATOR_SERVICE_AUDIENCE.into(),
+                    EXECUTABLE_AGENT_PUBLISH_PERMISSION.into(),
+                    Some("workspace-a".into()),
+                ),
+                (
+                    COORDINATOR_SERVICE_AUDIENCE.into(),
+                    EXECUTABLE_AGENT_WITHDRAW_PERMISSION.into(),
+                    Some("workspace-a".into()),
+                ),
+            ],
+            "R1/R2"
+        );
     }
 
     #[tokio::test]

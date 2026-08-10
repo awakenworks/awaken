@@ -33,7 +33,8 @@ pub(super) struct ProcessAssemblyOptions {
     pub(super) worker_directory: Option<awaken_coordinator::WorkerDirectoryHandle>,
     pub(super) runtime_authority: Option<Arc<dyn awaken_runtime_host::RuntimeAuthority>>,
     pub(super) worker_observations: Option<worker_observation_wiring::WorkerObservationWiring>,
-    pub(super) control_service_token: Option<String>,
+    pub(super) control_service_authenticator:
+        Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
     pub(super) control_service: Option<super::ControlServicePorts>,
 }
 

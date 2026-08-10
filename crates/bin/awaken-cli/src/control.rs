@@ -194,7 +194,9 @@ async fn build_control_assembly_with_model_composition(
             worker_directory: None,
             runtime_authority: None,
             worker_observations: Some(worker_observations),
-            control_service_token: Some(deployment.control_service.control_token()?),
+            control_service_authenticator: Some(
+                deployment.control_service.control_authenticator()?,
+            ),
             control_service: None,
         },
     )

@@ -230,16 +230,15 @@ pub(super) async fn assemble_control_process_router(
             assembly.org_id.clone(),
         )
     };
-    let router = match assembly.control_service_token.as_deref() {
-        Some(token) => component.router.merge(
-            awaken_coordinator::control_service_boundary::router(
+    let router = match assembly.control_service_authenticator {
+        Some(authenticator) => component.router.merge(
+            awaken_coordinator::control_service_boundary::router_with_authenticator(
                 component.management_audit.clone(),
                 component.vault_state.clone(),
                 webhook_delivery,
                 component.data_subject_consent.clone(),
-                token,
-            )
-            .unwrap_or_else(|error| panic!("build Control service boundary: {error}")),
+                authenticator,
+            ),
         ),
         None => component.router,
     };

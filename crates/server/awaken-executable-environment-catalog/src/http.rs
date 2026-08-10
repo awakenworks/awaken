@@ -8,7 +8,10 @@ use awaken_executable_environment_contract::{
     ExecutableEnvironmentRegistrationError, ExecutableEnvironmentRegistrationOutcome,
     ExecutableEnvironmentWithdrawal, ExecutableEnvironmentWithdrawalOutcome,
 };
-use awaken_service_auth_contract::{ServiceBearerTokenSource, ServiceRequestAuthenticator};
+use awaken_service_auth_contract::{
+    COORDINATOR_SERVICE_AUDIENCE, ServiceAuthError, ServiceAuthorizationRequirement,
+    ServiceBearerTokenSource, ServiceRequestAuthenticator,
+};
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -22,6 +25,8 @@ pub const EXECUTABLE_ENVIRONMENT_REGISTER_PATH: &str =
     "/internal/v1/executable-environments/register";
 pub const EXECUTABLE_ENVIRONMENT_WITHDRAW_PATH: &str =
     "/internal/v1/executable-environments/withdraw";
+pub const EXECUTABLE_ENVIRONMENT_PUBLISH_PERMISSION: &str = "environment:publish";
+pub const EXECUTABLE_ENVIRONMENT_WITHDRAW_PERMISSION: &str = "environment:withdraw";
 const IDEMPOTENT_ATTEMPTS: usize = 3;
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -43,7 +48,6 @@ pub fn executable_environment_registration_router(
     )
 }
 
-#[must_use]
 pub fn executable_environment_registration_router_with_authenticator(
     registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
     authenticator: Arc<dyn ServiceRequestAuthenticator>,
@@ -60,15 +64,18 @@ pub fn executable_environment_registration_router_with_authenticator(
 fn authorize(
     headers: &HeaderMap,
     authenticator: &dyn ServiceRequestAuthenticator,
+    requirement: ServiceAuthorizationRequirement<'_>,
 ) -> Result<(), StatusCode> {
     match authenticator.authenticate(
         headers
             .get(header::AUTHORIZATION)
             .map(|value| value.as_bytes()),
+        requirement,
     ) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(StatusCode::UNAUTHORIZED),
-        Err(_) => Err(StatusCode::SERVICE_UNAVAILABLE),
+        Ok(_) => Ok(()),
+        Err(ServiceAuthError::Unauthorized) => Err(StatusCode::UNAUTHORIZED),
+        Err(ServiceAuthError::Forbidden) => Err(StatusCode::FORBIDDEN),
+        Err(ServiceAuthError::Unavailable(_)) => Err(StatusCode::SERVICE_UNAVAILABLE),
     }
 }
 
@@ -77,7 +84,14 @@ async fn register(
     headers: HeaderMap,
     Json(command): Json<ExecutableEnvironmentRegistration>,
 ) -> impl IntoResponse {
-    if let Err(status) = authorize(&headers, state.authenticator.as_ref()) {
+    if let Err(status) = authorize(
+        &headers,
+        state.authenticator.as_ref(),
+        ServiceAuthorizationRequirement::new(
+            COORDINATOR_SERVICE_AUDIENCE,
+            EXECUTABLE_ENVIRONMENT_PUBLISH_PERMISSION,
+        ),
+    ) {
         return status.into_response();
     }
     match state.registrar.register(command).await {
@@ -97,7 +111,14 @@ async fn withdraw(
     headers: HeaderMap,
     Json(command): Json<ExecutableEnvironmentWithdrawal>,
 ) -> impl IntoResponse {
-    if let Err(status) = authorize(&headers, state.authenticator.as_ref()) {
+    if let Err(status) = authorize(
+        &headers,
+        state.authenticator.as_ref(),
+        ServiceAuthorizationRequirement::new(
+            COORDINATOR_SERVICE_AUDIENCE,
+            EXECUTABLE_ENVIRONMENT_WITHDRAW_PERMISSION,
+        ),
+    ) {
         return status.into_response();
     }
     match state.registrar.withdraw(command).await {

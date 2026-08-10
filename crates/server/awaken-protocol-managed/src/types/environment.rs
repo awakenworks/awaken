@@ -320,3 +320,76 @@ pub struct WorkHeartbeat {
     pub state: &'static str,
     pub ttl_seconds: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_environment_wire_remains_exactly_anthropic_owned() {
+        // Cause/effect graph: official SDK JSON -> protocol-managed tagged
+        // union -> neutral Environment config. Awaken SandboxExecutionPolicy is
+        // a sibling /v1/awaken API and must never enter this wire object.
+        // Decision table: R1 official cloud networking/packages create input ->
+        // accepted; R2 requests or limits in create -> reject unknown field; R3
+        // the same private fields in partial update -> reject; R4 serialized
+        // official response contains only the Managed Environment config and no
+        // policy/request/limit projection. Together these pin both ingress DTOs
+        // and the response shape used by an unmodified Anthropic SDK.
+        let official = serde_json::json!({
+            "name": "browser",
+            "description": "managed environment",
+            "metadata": {"owner": "design"},
+            "scope": "organization",
+            "config": {
+                "type": "cloud",
+                "networking": {"type": "unrestricted"},
+                "packages": {"type": "packages", "npm": ["playwright@1.54.1"]}
+            }
+        });
+        assert!(
+            serde_json::from_value::<EnvironmentCreateParams>(official).is_ok(),
+            "R1"
+        );
+
+        for private_field in ["requests", "limits"] {
+            let mut create = serde_json::json!({
+                "name": "browser",
+                "config": {"type": "cloud"}
+            });
+            create["config"][private_field] = serde_json::json!({"cpu_millis": 500});
+            assert!(
+                serde_json::from_value::<EnvironmentCreateParams>(create).is_err(),
+                "R2 {private_field}"
+            );
+
+            let mut update = serde_json::json!({"config": {"type": "cloud"}});
+            update["config"][private_field] = serde_json::json!({"memory_bytes": 1073741824u64});
+            assert!(
+                serde_json::from_value::<EnvironmentUpdateParams>(update).is_err(),
+                "R3 {private_field}"
+            );
+        }
+
+        let response = Environment {
+            id: "env_1".into(),
+            object_type: "environment",
+            archived_at: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            name: "browser".into(),
+            description: "managed environment".into(),
+            metadata: BTreeMap::new(),
+            scope: Some("organization".into()),
+            config: awaken_environment_contract::EnvironmentConfig::Cloud {
+                networking: Default::default(),
+                packages: Default::default(),
+            },
+        };
+        let encoded = serde_json::to_value(response).unwrap();
+        assert_eq!(encoded["config"]["type"], "cloud", "R4");
+        assert!(encoded["config"].get("requests").is_none(), "R4");
+        assert!(encoded["config"].get("limits").is_none(), "R4");
+        assert!(encoded.get("sandbox_policy").is_none(), "R4");
+    }
+}

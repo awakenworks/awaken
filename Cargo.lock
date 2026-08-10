@@ -440,6 +440,7 @@ dependencies = [
  "awaken-sandbox-memoryd",
  "awaken-sandbox-policy-store",
  "awaken-scenario-host",
+ "awaken-service-auth-contract",
  "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
@@ -994,6 +995,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -1462,12 +1464,18 @@ name = "awaken-protocol-awaken"
 version = "1.0.0-dev"
 dependencies = [
  "awaken-agent-contract",
+ "awaken-env-store",
  "awaken-environment-application",
+ "awaken-executable-environment-catalog",
  "awaken-provisioning-contract",
+ "awaken-sandbox-policy-store",
  "awaken-session-contract",
  "awaken-tenancy",
  "axum",
  "serde",
+ "serde_json",
+ "tokio",
+ "tower",
 ]
 
 [[package]]
