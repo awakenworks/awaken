@@ -40,7 +40,7 @@ mod tests {
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
         );
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let resolver = HostWorkerResolver {
             host: Arc::downgrade(&host),
         };
@@ -359,9 +359,9 @@ mod tests {
             required_runtime: Some((Arc::downgrade(&host), thread.into())),
             ..Default::default()
         });
-        let managed =
-            crate::ManagedHost::new(host.clone()).with_mcp_attachment_realizer(realizer.clone());
-        drop(managed);
+        let _managed = crate::ManagedHost::new(host.clone())
+            .with_mcp_attachment_realizer(realizer.clone())
+            .install_dispatch_session_runtime();
         let stage = awaken_session_contract::StageMcpAttachment {
             workspace_id: host.local_workspace().into(),
             generation: awaken_session_contract::McpGenerationRef {
@@ -944,9 +944,9 @@ mod tests {
                 host
             };
             let host = Arc::new(host);
-            let managed = crate::ManagedHost::new(host.clone())
-                .with_mcp_attachment_realizer(mcp_realizer.clone());
-            drop(managed);
+            let _managed = crate::ManagedHost::new(host.clone())
+                .with_mcp_attachment_realizer(mcp_realizer.clone())
+                .install_dispatch_session_runtime();
             let thread = format!("thread-application-{rule}");
             let run = format!("run-application-{rule}");
             let mut run_dispatch =
@@ -1272,7 +1272,7 @@ mod tests {
                 false,
             );
         let host = Arc::new(raw_host);
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let bytes = b"frozen worker input".to_vec();
         let file_id = host
             .file_application()
@@ -1379,7 +1379,7 @@ mod tests {
     #[tokio::test]
     async fn claimed_worker_advances_only_to_a_newer_resource_generation() {
         let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
-        let _managed = crate::ManagedHost::new(host.clone());
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let claim = awaken_run_ingress::RunClaim {
             run_id: RunId("run-generation-fence".into()),
             owner: "worker-generation-fence".into(),
@@ -1483,7 +1483,7 @@ mod tests {
             SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_file_content_source(Arc::new(ClaimFileSource)),
         );
-        let managed = crate::ManagedHost::new(host.clone());
+        let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let manifest = awaken_session_contract::SessionResourceManifest::new(
             "workspace-remote",
             awaken_session_contract::ResolvedSessionResources {
