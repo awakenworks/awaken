@@ -116,6 +116,7 @@ pub(super) async fn prepare_runtime_process(
             worker_observations: Some(worker_observations),
             control_service_authenticator: None,
             control_service,
+            additional_lifecycle_delivery: None,
         },
         None,
     )

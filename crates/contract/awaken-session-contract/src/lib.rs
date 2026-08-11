@@ -85,8 +85,8 @@ pub use environment::{
     SuspendPhase, checkpoint_source_disposal_authorized,
 };
 pub use lifecycle::{
-    LifecycleFactDelivery, LifecycleFactNotifier, ManagedLifecycleFact, SessionRuntimeInterval,
-    SessionRuntimeIntervalStart,
+    CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
+    ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalStart,
 };
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,

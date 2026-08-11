@@ -107,3 +107,11 @@
   resolve tenant DEKs without a Session mirror or guessed identity.
 - Kept URLs, credentials, pricing, and storage lifecycle out of the neutral
   contract; the Session aggregate remains the only continuation authority.
+
+## 2026-08-11 (Lifecycle consumers share one outbox delivery path)
+
+- Added one generic ordered lifecycle-delivery composite at the Control
+  composition seam so deployment consumers reuse the existing stable fact and
+  transactional outbox.
+- Every receiver is attempted and any failure keeps the fact retryable; no
+  consumer gains a polling loop, Session mutation authority, or parallel ledger.

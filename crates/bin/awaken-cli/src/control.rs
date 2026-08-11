@@ -65,6 +65,7 @@ pub async fn prepare_control_process(
         PublicationModelSupply::PublishedProviders,
         None,
         None,
+        None,
     )
     .await
 }
@@ -131,12 +132,37 @@ pub async fn prepare_control_process_with_publication_resolver_and_web_search(
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
 ) -> Result<PreparedProcess, String> {
+    prepare_control_process_with_publication_resolver_web_search_and_lifecycle_delivery(
+        deployment,
+        key,
+        resolver,
+        brokered_catalog,
+        web_search_providers,
+        web_search_publication_resolver,
+        None,
+    )
+    .await
+}
+
+/// Hosted control process with the canonical publication adapters plus one
+/// deployment-owned lifecycle receiver. The existing durable lifecycle outbox
+/// remains the only source and retry authority for every receiver.
+pub async fn prepare_control_process_with_publication_resolver_web_search_and_lifecycle_delivery(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+    brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
+    web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
+    additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
+) -> Result<PreparedProcess, String> {
     prepare_control_process_with_model_supply(
         deployment,
         key,
         PublicationModelSupply::HostedPublication { resolver },
         brokered_catalog,
         Some((web_search_providers, web_search_publication_resolver)),
+        additional_lifecycle_delivery,
     )
     .await
 }
@@ -150,6 +176,7 @@ async fn prepare_control_process_with_model_supply(
         awaken_ext_builtin_tools::WebSearchProviderRegistry,
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
+    additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
 ) -> Result<PreparedProcess, String> {
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let identity = identity_wiring(
@@ -228,6 +255,7 @@ async fn prepare_control_process_with_model_supply(
                 deployment.control_service.control_authenticator()?,
             ),
             control_service: None,
+            additional_lifecycle_delivery,
         },
     )
     .await;

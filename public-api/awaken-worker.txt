@@ -83,6 +83,7 @@ pub fn awaken_worker::WorkerNodeBuilder::with_credential_materializer(self, awak
 pub fn awaken_worker::WorkerNodeBuilder::with_credential_observation_window(self, core::time::Duration, core::time::Duration) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_deployment_config(self, awaken_runtime_host::deployment_config::DeploymentConfig) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_enclosing_sandbox_boundary(self, impl core::convert::Into<alloc::string::String>, awaken_provisioning_contract::sandbox::SandboxCapabilities) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_environment_checkpoint_store(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SandboxCheckpointStore>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_graceful_drain(self, core::time::Duration) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_hand_executor_factory(self, alloc::sync::Arc<dyn awaken_runtime_host::session_environment::HandExecutorFactory>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_inference_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>) -> Self
@@ -90,6 +91,7 @@ pub fn awaken_worker::WorkerNodeBuilder::with_manifest(self, awaken_worker_contr
 pub fn awaken_worker::WorkerNodeBuilder::with_mcp_attachment_realizer(self, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_registered_memory_mounter_factory(self, awaken_worker::RegisteredMemoryMounterFactory) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_remote_attempt_executor(self, awaken_runtime_host::host::RemoteAttemptInstallation) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_session_container_environment_components(self, impl core::convert::Into<alloc::string::String>, awaken_runtime_host::container_environment::ContainerEnvironmentComponents) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider_and_capacity(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>, core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_standard_manifest(self, alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> Self

@@ -139,6 +139,7 @@ suspension or terminal release.
 | `SessionEnvironmentProvider` | the one live Sandbox instance and provider selection | a second Session registry |
 | `SandboxProvider` | create, adopt, checkpoint, restore and dispose effects | Session status and retention policy |
 | Resource and MCP owners | exact pins, write-back/flush, generation staging and publication | filesystem checkpoint lifecycle |
+| Lifecycle delivery composition | ordered delivery to every configured consumer through the one transactional outbox fact id | Session state, pricing, or a second outbox |
 
 The provisioning contract extends the canonical `SandboxProvider` port with
 `checkpoint_formats`, while the existing `WorkerManifest.checkpoint_formats`
@@ -148,9 +149,9 @@ checkpoint-provider registry is introduced. Admission rejects a provider or
 Worker that cannot honor the exact frozen format.
 
 The checkpoint byte request carries the existing Workspace owner scope plus
-the immutable generation creation and expiry timestamps. Hosted adapters use
-that scope only to resolve their existing tenant/region placement and DEK
-authority; standalone adapters may ignore it. No tenant registry, storage URL,
+the immutable generation creation and expiry timestamps. Deployment adapters
+use that scope only to resolve an existing placement and key-custody authority.
+No tenant registry, storage URL,
 credential, or pricing data enters the Session aggregate or provider contract.
 
 Customer-visible execution time is projected without adding another Session
@@ -161,6 +162,12 @@ commits `session.runtime_interval_closed` through the existing
 secret-free and pricing-neutral; downstream consumers may interpret it, but
 cannot author or repair Session execution state. Restore, checkpoint, queue,
 drain, and retention never open this interval.
+
+When a deployment has more than one lifecycle consumer, the Control composition
+uses the contract's one ordered `CompositeLifecycleFactDelivery`. Every
+consumer is attempted; any failure leaves the stable fact pending for replay.
+Each consumer must therefore be idempotent by fact id. This extends the one
+outbox delivery port and does not add a Billing poller or delivery ledger.
 
 The canonical deployment builder returns the provider together with its
 never-used capacity, creation mounts, and CacheVolume initializer. A
@@ -373,6 +380,8 @@ beside each case. Required layers are:
    restore into a distinct environment;
 7. active-active Coordinator, stale Worker lease, Worker crash, terminal race,
    and duplicate driving-event tests.
+8. lifecycle fan-out tests proving every consumer is attempted and any failure
+   keeps the single outbox fact retryable.
 
 Completion requires every decision-table rule, every state transition, and the
 before/during/after crash window of every external effect. Mock-only evidence is

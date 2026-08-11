@@ -12,6 +12,12 @@ pub awaken_session_application::SessionActivityError::NotFound
 pub awaken_session_application::SessionActivityError::NotReady
 pub awaken_session_application::SessionActivityError::Terminal
 pub awaken_session_application::SessionActivityError::Unavailable(alloc::string::String)
+pub enum awaken_session_application::SessionContinuationError
+pub awaken_session_application::SessionContinuationError::DidNotConverge
+pub awaken_session_application::SessionContinuationError::Repository(alloc::string::String)
+pub awaken_session_application::SessionContinuationError::Runtime(awaken_session_contract::session::RunError)
+pub awaken_session_application::SessionContinuationError::Terminal
+pub awaken_session_application::SessionContinuationError::Transition(awaken_session_contract::environment::SessionEnvironmentTransitionError)
 pub enum awaken_session_application::SessionCreationError
 pub awaken_session_application::SessionCreationError::Conflict
 pub awaken_session_application::SessionCreationError::IdempotencyMismatch
@@ -189,6 +195,9 @@ impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::commit_compiled_session_creation(&self, &str, awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::baseline::CompiledSessionCreation) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::application_contribution::ApplicationSessionContributionFailure>
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::create_session(&self, awaken_session_application::CreateSessionCommand) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionCreationError>
+impl awaken_session_application::SessionApplication
+pub async fn awaken_session_application::SessionApplication::ensure_environment_resident(&self, &str, u64) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionContinuationError>
+pub async fn awaken_session_application::SessionApplication::reconcile_environment_continuation(&self, &str, u64) -> core::result::Result<(), awaken_session_application::SessionContinuationError>
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::ensure_repository_credentials_pinned(&self, &str, awaken_session_contract::session_repo::PersistedSession) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionPreparationError>
 pub async fn awaken_session_application::SessionApplication::pin_repository_credential(&self, &str, &awaken_credential_contract::PlaintextHolder, &mut awaken_session_contract::resource::ResolvedInput) -> core::result::Result<(), awaken_session_application::SessionPreparationError>
