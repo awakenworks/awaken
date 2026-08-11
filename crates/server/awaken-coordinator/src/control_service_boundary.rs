@@ -638,6 +638,7 @@ mod tests {
             workspace_id: Some("workspace-a".into()),
             event_type: "session.status_idled".into(),
             timestamp: 7,
+            runtime_interval: None,
         };
         awaken_session_contract::LifecycleFactDelivery::deliver(&client, &fact)
             .await

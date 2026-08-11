@@ -202,6 +202,7 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         workspace_id: Some("workspace".into()),
         event_type: event_type.into(),
         timestamp: 1,
+        runtime_interval: None,
     };
 
     let archive_fact = fact("archive-race", "session.terminated");
@@ -257,16 +258,17 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
 /// the current epoch; C5 a later admission or terminal transition has
 /// fenced that settlement; C6 initial realization is still preparing.
 /// Effects: E1 an idle admission commits `running` with one unique monotonic
-/// epoch; E2 only the current running completion commits `idle`; E3 stale or
-/// terminal completions are no-ops; E4 missing, terminal, not-ready, and
-/// exhausted-epoch admissions do not mutate durable truth.
+/// epoch and opens one interval; E2 only the current running completion commits
+/// `idle` and the matching interval fact; E3 stale or terminal completions are
+/// no-ops; E4 missing, terminal, not-ready, and exhausted-epoch admissions do
+/// not mutate durable truth; E5 terminal intent closes the same open interval.
 ///
 /// | Rule | Exists | Status | Epoch available | Current settle | Fence | Effect |
 /// |---|---|---|---|---|---|---|
 /// | A1 | yes | idle | yes | n/a | concurrent admit | E1, distinct epochs |
 /// | A2 | yes | running | n/a | no | newer epoch | E3, remains running |
-/// | A3 | yes | running | n/a | yes | none | E2, idle |
-/// | A4 | yes | terminal | n/a | any | terminal | E3, terminal preserved |
+/// | A3 | yes | running | n/a | yes | none | E2, idle + one interval fact |
+/// | A4 | yes | running | n/a | n/a | terminal command | E5, terminal + interval fact |
 /// | A5 | yes | terminal | any | n/a | n/a | E4, reject admission |
 /// | A6 | yes | idle | no | n/a | n/a | E4, reject exhaustion |
 /// | A7 | no | n/a | n/a | n/a | n/a | E4, not found |
@@ -295,6 +297,11 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
     assert_eq!(epochs, [1, 2], "A1");
     let active = repo.get("activity").await.expect("A1 durable Session");
     assert_eq!(active.execution.as_str(), "running", "A1");
+    let first_interval = active
+        .running_interval
+        .clone()
+        .expect("A1 one durable interval");
+    assert_eq!(first_interval.activity_epoch, epochs[0], "A1 joins overlap");
 
     let stale = app
         .settle_activity("activity", epochs[0])
@@ -302,28 +309,44 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
         .expect("A2 stale settlement");
     assert_eq!(stale.execution.as_str(), "running", "A2");
     assert_eq!(stale.activity_epoch, epochs[1], "A2");
+    assert_eq!(stale.running_interval, Some(first_interval.clone()), "A2");
 
     let idle = app
         .settle_activity("activity", epochs[1])
         .await
         .expect("A3 current settlement");
     assert_eq!(idle.execution.as_str(), "idle", "A3");
+    assert!(idle.running_interval.is_none(), "A3");
+    let pending = repo.pending_lifecycle().await.expect("A3 outbox");
+    assert_eq!(pending.len(), 1, "A3 one interval fact");
+    let closed = pending[0]
+        .runtime_interval
+        .as_ref()
+        .expect("A3 typed interval");
+    assert_eq!(closed.interval_id, first_interval.interval_id, "A3");
+    assert!(closed.ended_at_unix_ms >= closed.started_at_unix_ms, "A3");
 
     let running = app
         .begin_activity("activity")
         .await
         .expect("A4 activity before terminal transition");
-    let mut terminated = running.clone();
-    terminated.execution = SessionExecutionState::Terminated;
     let terminated = app
-        .commit_session_snapshot(
-            "workspace",
-            terminated,
-            "activity-test-terminal",
-            Vec::new(),
+        .begin_archive(
+            "activity",
+            "2026-08-11T00:00:00Z",
+            awaken_session_contract::ManagedLifecycleFact {
+                id: "activity-terminal".into(),
+                object_id: "activity".into(),
+                workspace_id: Some("workspace".into()),
+                event_type: "session.status_terminated".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            },
         )
         .await
-        .expect("A4 terminal transition");
+        .expect("A4 terminal transition")
+        .session;
+    assert!(terminated.running_interval.is_none(), "A4/E5");
     let fenced = app
         .settle_activity("activity", running.activity_epoch)
         .await

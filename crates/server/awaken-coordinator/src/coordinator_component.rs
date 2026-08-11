@@ -142,12 +142,14 @@ pub async fn build_coordinator_component(
     let (data, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
             host,
-            session_application,
             managed_state,
-            resource_catalog,
-            application_access.clone(),
-            model_inventory,
-            dream_process_store,
+            crate::ManagedApplicationServices {
+                session_application,
+                resource_catalog,
+                application_access: Some(application_access.clone()),
+                model_inventory: Some(model_inventory),
+                dream_process_store,
+            },
             crate::ManagedRoutingExtensions {
                 resource_management_router,
                 memory_stores,

@@ -507,12 +507,14 @@ pub fn mount_with_managed_and_application_access_and_models(
     let session_application = managed_state.session_application();
     mount_with_managed_over_and_models(
         host,
-        session_application,
         managed_state,
-        resource_catalog,
-        Some(application_access),
-        Some(model_inventory),
-        ephemeral_dream_process_store(),
+        ManagedApplicationServices {
+            session_application,
+            resource_catalog,
+            application_access: Some(application_access),
+            model_inventory: Some(model_inventory),
+            dream_process_store: ephemeral_dream_process_store(),
+        },
         ManagedRoutingExtensions {
             resource_management_router: resources,
             memory_stores,
@@ -532,6 +534,18 @@ pub struct ManagedRoutingExtensions {
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
+}
+
+/// Application-layer authorities mounted together by the one managed data-plane
+/// composition. Keeping this dependency cluster explicit prevents production
+/// and deterministic hosts from growing parallel assembly signatures.
+pub struct ManagedApplicationServices {
+    pub session_application: Arc<awaken_session_application::SessionApplication>,
+    pub resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
+    pub application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
+    pub model_inventory:
+        Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>,
+    pub dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -641,12 +655,8 @@ mod worker_checkpoint_authority_tests {
 /// periodic policies instead of constructing a second scheduler.
 pub fn mount_with_managed_application_access_models_and_dreams(
     host: Arc<SharedHost>,
-    session_application: Arc<awaken_session_application::SessionApplication>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
-    model_inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
-    dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
+    applications: ManagedApplicationServices,
     routing: ManagedRoutingExtensions,
 ) -> Result<
     (
@@ -656,16 +666,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     ),
     WorkerTransportBuildError,
 > {
-    mount_with_managed_over_and_models(
-        host,
-        session_application,
-        managed_state,
-        resource_catalog,
-        Some(application_access),
-        Some(model_inventory),
-        dream_process_store,
-        routing,
-    )
+    mount_with_managed_over_and_models(host, managed_state, applications, routing)
 }
 
 #[cfg(feature = "test-support")]
@@ -680,12 +681,14 @@ fn mount_with_managed_over(
         resource_management_router_from_host(&host, resource_catalog.clone());
     let (public, _worker_private, dreams) = mount_with_managed_over_and_models(
         host,
-        session_application,
         managed_state,
-        resource_catalog,
-        application_access,
-        None,
-        ephemeral_dream_process_store(),
+        ManagedApplicationServices {
+            session_application,
+            resource_catalog,
+            application_access,
+            model_inventory: None,
+            dream_process_store: ephemeral_dream_process_store(),
+        },
         ManagedRoutingExtensions {
             resource_management_router: resources,
             memory_stores,
@@ -701,14 +704,8 @@ fn mount_with_managed_over(
 
 fn mount_with_managed_over_and_models(
     host: Arc<SharedHost>,
-    session_application: Arc<awaken_session_application::SessionApplication>,
     managed_state: Arc<ManagedState>,
-    resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
-    application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
-    model_inventory: Option<
-        Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
-    >,
-    dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
+    applications: ManagedApplicationServices,
     routing: ManagedRoutingExtensions,
 ) -> Result<
     (
@@ -718,6 +715,13 @@ fn mount_with_managed_over_and_models(
     ),
     WorkerTransportBuildError,
 > {
+    let ManagedApplicationServices {
+        session_application,
+        resource_catalog,
+        application_access,
+        model_inventory,
+        dream_process_store,
+    } = applications;
     let ManagedRoutingExtensions {
         resource_management_router,
         memory_stores,

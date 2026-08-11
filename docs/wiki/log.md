@@ -91,3 +91,27 @@
 - Kept claim/settle operation order as the sole Worker lifecycle authority;
   downstream elapsed-time projections consume the feed and never create a
   second running-state machine.
+
+## 2026-08-11 (Session Running interval remains aggregate-owned)
+
+- Amended ADR-0074 so overlapping activity, idle settlement, and terminal
+  intent produce one typed, pricing-neutral Running interval through the
+  existing transactional lifecycle outbox.
+- Kept checkpoint, restore, queue, drain, and retention work outside that
+  interval and prohibited a Billing-specific Session event store.
+
+## 2026-08-11 (Checkpoint custody receives authoritative ownership scope)
+
+- Extended the existing checkpoint byte request with the Session repository's
+  Workspace owner scope and immutable creation time so hosted custody can
+  resolve tenant DEKs without a Session mirror or guessed identity.
+- Kept URLs, credentials, pricing, and storage lifecycle out of the neutral
+  contract; the Session aggregate remains the only continuation authority.
+
+## 2026-08-11 (Lifecycle consumers share one outbox delivery path)
+
+- Added one generic ordered lifecycle-delivery composite at the Control
+  composition seam so deployment consumers reuse the existing stable fact and
+  transactional outbox.
+- Every receiver is attempted and any failure keeps the fact retryable; no
+  consumer gains a polling loop, Session mutation authority, or parallel ledger.

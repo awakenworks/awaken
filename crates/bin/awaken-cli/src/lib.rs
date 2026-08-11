@@ -70,6 +70,7 @@ pub use control::{
     build_control_router, build_control_router_with_publication_resolver,
     build_control_router_with_publication_resolver_and_web_search, prepare_control_process,
     prepare_control_process_with_publication_resolver_and_web_search,
+    prepare_control_process_with_publication_resolver_web_search_and_lifecycle_delivery,
 };
 use control_component::{control_component_for_process, prepare_control_routers};
 pub use deployment_process::migrate_deployment_schema;
@@ -1044,6 +1045,7 @@ mod runtime_session_store_tests {
             metadata: Default::default(),
             tools: Default::default(),
             activity_epoch: 0,
+            running_interval: None,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),

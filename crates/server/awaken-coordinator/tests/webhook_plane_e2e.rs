@@ -138,6 +138,7 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
             workspace_id: Some("wrkspc_local".into()),
             event_type: "session.status_idled".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("commit lifecycle fact");

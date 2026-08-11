@@ -418,6 +418,7 @@ mod tests {
             metadata: BTreeMap::new(),
             tools: Default::default(),
             activity_epoch: 0,
+            running_interval: None,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
