@@ -145,6 +145,7 @@ mod tests {
                 config_fingerprint: EnvironmentFingerprint("env-fingerprint".into()),
                 sandbox: serde_json::json!({}),
                 sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
                 packages: Default::default(),
                 prepared_image: None,
                 network: SessionNetworkPolicy::Unrestricted,

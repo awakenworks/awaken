@@ -1656,6 +1656,20 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         &self,
         handle: &pc::SandboxHandle,
     ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError>;
+
+    /// Restore a distinct environment from the canonical checkpoint byte port.
+    /// Production Kubernetes implementations override this only when their
+    /// mutable filesystem is fully exportable/importable or snapshot-backed.
+    async fn restore_environment(
+        &self,
+        _spec: &pc::SandboxSpec,
+        _checkpoint: &pc::SandboxCheckpointRef,
+        _store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<Arc<dyn ContainerEnvironment>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "container provider does not implement checkpoint restore",
+        ))
+    }
 }
 
 /// Backend-erased lifecycle for never-used container capacity.

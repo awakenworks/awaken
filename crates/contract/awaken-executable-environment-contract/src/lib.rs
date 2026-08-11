@@ -224,6 +224,7 @@ mod tests {
             version: awaken_provisioning_contract::SandboxExecutionPolicyVersion(1),
             config,
             provisioning: Default::default(),
+            idle_retention: Default::default(),
             disabled: false,
         };
         let registration = ExecutableEnvironmentRegistration::new(definition(), Some(policy));

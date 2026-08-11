@@ -115,6 +115,18 @@ impl SessionEnvironment {
         }
     }
 
+    pub(crate) async fn quiesce(&self) {
+        self.stop_bound_processes().await;
+    }
+
+    pub(crate) async fn checkpoint(
+        &self,
+        request: &pc::SandboxCheckpointRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, pc::SandboxError> {
+        self.sandbox().checkpoint(request, store).await
+    }
+
     #[must_use]
     pub(crate) fn workdir(sandbox: LocalSandbox) -> Self {
         Self::Workdir(Arc::new(sandbox))
