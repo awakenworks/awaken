@@ -795,12 +795,14 @@ async fn existing_credential_connection_reuses_the_source_without_creating_a_dup
 }
 
 #[tokio::test]
-async fn endpoint_scoped_connection_credential_cannot_be_reused_for_a_sibling_endpoint() {
-    // Cause/effect decision table:
-    // R1 connection-owned credential + the endpoint it proved -> accepted;
-    // R2 the same credential + a sibling endpoint under the same Provider ->
-    // rejected before discovery; R3 an ordinary provider-wide credential remains
-    // reusable (covered by `existing_credential_connection_reuses...`).
+async fn endpoint_scoped_connection_credential_can_widen_for_the_same_provider() {
+    // FMECA / cause-effect decision table: an endpoint pin combined with a
+    // sibling endpoint used to cause a false authorization rejection. R1 the
+    // endpoint originally proved creates one exact credential; R2 the same
+    // Provider + active lifecycle + exact revision atomically widens that source
+    // to Provider scope and performs discovery without copying secret authority;
+    // R3 another Provider, lifecycle change, or stale revision remains fail-closed
+    // in `provider_scope_widening_is_exact_and_retains_material_authority`.
     let harness = harness();
     let (primary_status, primary) = call(
         &harness.app,
@@ -819,8 +821,7 @@ async fn endpoint_scoped_connection_credential_cannot_be_reused_for_a_sibling_en
     .await;
     assert_eq!(primary_status, StatusCode::CREATED, "R1: {primary}");
     let credential_id = primary["credential"]["id"].as_str().unwrap();
-    let calls_before = harness.discovery.calls.lock().unwrap().len()
-        + harness.discovery.secret_calls.lock().unwrap().len();
+    let primary_version = primary["credential"]["version"].as_i64().unwrap();
 
     let (sibling_status, sibling) = call(
         &harness.app,
@@ -837,16 +838,21 @@ async fn endpoint_scoped_connection_credential_cannot_be_reused_for_a_sibling_en
         }),
     )
     .await;
-    assert_eq!(
-        sibling_status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "R2: {sibling}"
+    assert_eq!(sibling_status, StatusCode::CREATED, "R2: {sibling}");
+    assert_eq!(sibling["credential"]["id"], credential_id, "R2 identity");
+    assert!(
+        sibling["credential"]["protocol_endpoint_id"].is_null(),
+        "R2 widens the existing credential instead of pinning it to either endpoint"
     );
     assert_eq!(
-        harness.discovery.calls.lock().unwrap().len()
-            + harness.discovery.secret_calls.lock().unwrap().len(),
-        calls_before,
-        "R2 fails before provider discovery"
+        sibling["credential"]["version"].as_i64().unwrap(),
+        primary_version + 1,
+        "R2 widening is one exact durable mutation"
+    );
+    assert_eq!(
+        harness.credentials.list("workspace-a").await.unwrap().len(),
+        1,
+        "R2 does not duplicate credential or secret authority"
     );
 }
 
