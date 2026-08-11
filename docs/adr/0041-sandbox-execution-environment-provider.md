@@ -157,8 +157,9 @@ it without changing the contract:
 5. `DockerProvider` → `K8sProvider`, reusing `adopt`/`lease`. In-repo as below-seam
    provider crates until a distributed deployment is real, then extracted to a
    distributed repo; never depended on by the agents plane. K8s maps `spawn` to a
-   process-as-container (Job/Pod command), not exec-into-idle; orphan reaping uses
-   native GC (ownerReferences / TTL), a custom reaper only for Docker; artifacts are
+   process-as-container (Job/Pod command), not exec-into-idle; orphan disposal uses
+   the durable referenced-set reconciliation (ADR-0074), while native GC is valid
+   only under a lifecycle-stable owner; artifacts are
    retrieved out-of-band via an object-store/PVC-backed `outputs_path`, not streamed
    through the control plane.
 
@@ -170,8 +171,8 @@ it without changing the contract:
   contract change.
 - **Local and distributed share one contract.** `SandboxHandle` + `adopt` +
   `poll`/`status` + `renew_lease` make a remote sandbox reconnectable across host
-  restarts and self-reaping when orphaned; the local backend implements them
-  trivially, so the addition is non-breaking.
+  restarts; only the durable referenced-set reconciliation may dispose an orphan.
+  The local backend implements the same ports trivially.
 - **The neutral surface stays minimal.** Container knobs, monitoring policy, and
   build/pin vocabulary are pushed to `extra`/provider/consumer/control-plane; they
   are added to the contract only when a concrete cross-backend consumer exists.
@@ -218,8 +219,9 @@ place accordingly.
   `ProcessHandle::streams`; a single transport concept (`awaken-connection`,
   core-only) instead of a parallel `futures-io` duplex on the neutral contract.
 - *K8s process model* — process-as-container (Job/Pod command), not exec-into-idle.
-- *Orphan reaping* — native GC (ownerReferences / TTL); a custom reaper only for
-  Docker, which lacks equivalents.
+- *Orphan disposal* — the durable referenced-set reconciliation is authoritative;
+  ADR-0074 retires age-based Docker/Podman/Kubernetes reaping because process age
+  and lease loss are not destruction evidence.
 - *Artifacts* — out-of-band via an object-store/PVC-backed `outputs_path`; the
   control plane is not an artifact conduit (`read_artifact` direct-read is a
   local-tier convenience).

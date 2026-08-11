@@ -19,7 +19,7 @@ use bollard::Docker;
 use bollard::auth::DockerCredentials;
 use bollard::container::{
     Config, CreateContainerOptions, DownloadFromContainerOptions, KillContainerOptions,
-    ListContainersOptions, RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
+    RemoveContainerOptions, StartContainerOptions, WaitContainerOptions,
 };
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::image::{BuildImageOptions, CreateImageOptions, PruneImagesOptions, PushImageOptions};
@@ -29,8 +29,9 @@ use tokio::io::AsyncWriteExt;
 
 use crate::net::TcpAgentTransport;
 use crate::{
-    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, PackageImageProvisioner,
-    REAPER_LABEL, REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, runtime_container_name,
+    ContainerPlan, ContainerRuntime, ContainerState, MANAGED_SANDBOX_LABEL,
+    PackageImageProvisioner, RUNTIME_OWNER_LABEL, RuntimeAgentProcess, RuntimeError,
+    runtime_container_name,
 };
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -451,7 +452,6 @@ mod cgroup_host_config_tests {
         let rt = DockerRuntime::connect_local(8080).unwrap();
         assert!(rt.artifacts("cid").await.unwrap().is_empty());
         assert!(rt.touch_lease("cid").await.is_err());
-        assert!(rt.adopted.lock().unwrap().is_empty());
     }
 }
 
@@ -470,10 +470,6 @@ pub struct DockerRuntime {
     docker: Docker,
     agent_port: u16,
     owner_id: String,
-    /// Containers adopted by this runtime incarnation. Docker labels are immutable,
-    /// so a renewed/adopted lease is fenced in memory and merged with label ownership
-    /// when the crash reaper lists candidates.
-    adopted: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Serialize the cache-probe/build sequence so concurrent sessions with the
     /// same Environment cannot race two identical immutable image builds.
     package_builds: tokio::sync::Mutex<()>,
@@ -490,7 +486,6 @@ impl DockerRuntime {
             docker,
             agent_port,
             owner_id: crate::runtime_owner_id(),
-            adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
             package_builds: tokio::sync::Mutex::new(()),
             package_registry: None,
             package_registry_credentials: None,
@@ -504,7 +499,6 @@ impl DockerRuntime {
             docker,
             agent_port,
             owner_id: crate::runtime_owner_id(),
-            adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
             package_builds: tokio::sync::Mutex::new(()),
             package_registry: None,
             package_registry_credentials: None,
@@ -853,11 +847,11 @@ impl ContainerRuntime for DockerRuntime {
         let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
         let mut exposed_ports = HashMap::new();
         exposed_ports.insert(self.port_key(), HashMap::new());
-        // The discovery label the cross-restart reaper (`crate::reaper`) filters on, so
-        // a container this worker leaks on a crash is found + swept by a later process.
+        // Stable discovery and runtime-incarnation labels support diagnostics and
+        // adoption. Neither label authorizes destruction.
         let mut labels = HashMap::new();
-        labels.insert(REAPER_LABEL.to_string(), "1".to_string());
-        labels.insert(REAPER_OWNER_LABEL.to_string(), self.owner_id.clone());
+        labels.insert(MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
+        labels.insert(RUNTIME_OWNER_LABEL.to_string(), self.owner_id.clone());
         let config = Config {
             image: Some(plan.image.clone()),
             // A Session environment owns PID 1 and execs every attempt into the
@@ -1140,21 +1134,16 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     async fn touch_lease(&self, container_id: &str) -> Result<(), RuntimeError> {
-        // Docker labels cannot be updated. Confirm liveness before protecting an
-        // adopted id in this runtime's ownership set.
+        // Docker labels are immutable. Renewal therefore proves the target remains
+        // live; the durable Session/realization lease carries ownership authority.
         if self.inspect(container_id).await? != ContainerState::Running {
             return Err(RuntimeError::NotFound(container_id.into()));
         }
-        self.adopted
-            .lock()
-            .unwrap()
-            .insert(container_id.to_string());
         Ok(())
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        let result = self
-            .docker
+        self.docker
             .remove_container(
                 container_id,
                 Some(RemoveContainerOptions {
@@ -1163,56 +1152,7 @@ impl ContainerRuntime for DockerRuntime {
                 }),
             )
             .await
-            .map_err(backend);
-        if result.is_ok() {
-            self.adopted.lock().unwrap().remove(container_id);
-        }
-        result
-    }
-
-    async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
-        // Discover every awaken-labeled container (running or stopped) so the reaper can
-        // judge each. `all: true` includes exited ones — those are the finished-work
-        // garbage. `created` is unix seconds; age = now - created against the host clock.
-        let mut filters = HashMap::new();
-        filters.insert("label".to_string(), vec![format!("{REAPER_LABEL}=1")]);
-        let list = self
-            .docker
-            .list_containers(Some(ListContainersOptions {
-                all: true,
-                filters,
-                ..Default::default()
-            }))
-            .await
-            .map_err(backend)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        Ok(list
-            .into_iter()
-            .filter_map(|c| {
-                let id = c.id?;
-                // Docker reports state as a lowercase string ("running", "exited", …).
-                let running = c.state.as_deref() == Some("running");
-                let age_secs = c
-                    .created
-                    .map(|created| now.saturating_sub(created.max(0) as u64))
-                    .unwrap_or(0);
-                let owned_by_label = c
-                    .labels
-                    .as_ref()
-                    .and_then(|labels| labels.get(REAPER_OWNER_LABEL))
-                    == Some(&self.owner_id);
-                let owned_by_adoption = self.adopted.lock().unwrap().contains(&id);
-                Some(ManagedContainer {
-                    id,
-                    owned_by_current_runtime: owned_by_label || owned_by_adoption,
-                    running,
-                    age_secs,
-                })
-            })
-            .collect())
+            .map_err(backend)
     }
 }
 

@@ -45,9 +45,9 @@ pub use execution_policy::{
     SandboxExecutionPolicyRef, SandboxExecutionPolicyStore, SandboxExecutionPolicyVersion,
 };
 pub use lease::{
-    AdoptionPlan, LeaseGrant, LeaseLiveness, LivenessSignals, ReapCause, ReconcileOutcome,
-    apply_adoption_plan, capped_expiry, decide_reap, egress_permitted, reconcile_adoption,
-    reconcile_and_apply,
+    AdoptionPlan, LeaseAction, LeaseFenceCause, LeaseGrant, LeaseLiveness, LeaseTimingError,
+    LeaseTimingPolicy, LivenessSignals, ReconcileOutcome, apply_adoption_plan, capped_expiry,
+    decide_lease_action, egress_permitted, reconcile_adoption, reconcile_and_apply,
 };
 pub use prepare::{
     EnvironmentPlan, PrepareError, prepare_environment, validate_mount_requirements,

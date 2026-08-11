@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
 use awaken_provisioning_contract as pc;
 
-use crate::{ContainerPlan, ManagedContainer};
+use crate::ContainerPlan;
 
 /// A container/pod runtime failure.
 #[derive(Debug, thiserror::Error)]
@@ -170,7 +170,4 @@ pub trait ContainerRuntime: Send + Sync {
     ) -> Result<Vec<u8>, RuntimeError>;
     async fn touch_lease(&self, container_id: &str) -> Result<(), RuntimeError>;
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError>;
-    async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
-        Ok(Vec::new())
-    }
 }

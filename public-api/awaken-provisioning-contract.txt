@@ -41,10 +41,21 @@ pub enum awaken_provisioning_contract::IsolationClass
 pub awaken_provisioning_contract::IsolationClass::Container
 pub awaken_provisioning_contract::IsolationClass::Namespace
 pub awaken_provisioning_contract::IsolationClass::Workdir
+pub enum awaken_provisioning_contract::LeaseAction
+pub awaken_provisioning_contract::LeaseAction::Fence(awaken_provisioning_contract::LeaseFenceCause)
+pub awaken_provisioning_contract::LeaseAction::Keep
+pub enum awaken_provisioning_contract::LeaseFenceCause
+pub awaken_provisioning_contract::LeaseFenceCause::Expired
+pub awaken_provisioning_contract::LeaseFenceCause::Revoked
+pub awaken_provisioning_contract::LeaseFenceCause::TransportLost
 pub enum awaken_provisioning_contract::LeaseLiveness
+pub awaken_provisioning_contract::LeaseLiveness::Expired
 pub awaken_provisioning_contract::LeaseLiveness::Expiring
 pub awaken_provisioning_contract::LeaseLiveness::Live
-pub awaken_provisioning_contract::LeaseLiveness::Reapable
+pub enum awaken_provisioning_contract::LeaseTimingError
+pub awaken_provisioning_contract::LeaseTimingError::InsufficientRecoveryGrace
+pub awaken_provisioning_contract::LeaseTimingError::InsufficientRenewalWindow
+pub awaken_provisioning_contract::LeaseTimingError::Zero
 pub enum awaken_provisioning_contract::MaterializedEnvValue
 pub awaken_provisioning_contract::MaterializedEnvValue::Inline(alloc::string::String)
 pub awaken_provisioning_contract::MaterializedEnvValue::Secret(awaken_agent_contract::secret::RedactedString)
@@ -116,12 +127,6 @@ pub enum awaken_provisioning_contract::Realization
 pub awaken_provisioning_contract::Realization::Bind
 pub awaken_provisioning_contract::Realization::Copy
 pub awaken_provisioning_contract::Realization::Fuse
-pub enum awaken_provisioning_contract::ReapCause
-pub awaken_provisioning_contract::ReapCause::Expired
-pub awaken_provisioning_contract::ReapCause::Released
-pub awaken_provisioning_contract::ReapCause::Revoked
-pub awaken_provisioning_contract::ReapCause::Superseded
-pub awaken_provisioning_contract::ReapCause::TransportLost
 pub enum awaken_provisioning_contract::RootfsSource
 pub awaken_provisioning_contract::RootfsSource::Dir
 pub awaken_provisioning_contract::RootfsSource::Dir::path_template: alloc::string::String
@@ -200,6 +205,13 @@ impl awaken_provisioning_contract::LeaseGrant
 pub fn awaken_provisioning_contract::LeaseGrant::indefinite() -> Self
 pub fn awaken_provisioning_contract::LeaseGrant::liveness(&self, u64, u64) -> awaken_provisioning_contract::LeaseLiveness
 pub fn awaken_provisioning_contract::LeaseGrant::until(u64) -> Self
+pub struct awaken_provisioning_contract::LeaseTimingPolicy
+impl awaken_provisioning_contract::LeaseTimingPolicy
+pub fn awaken_provisioning_contract::LeaseTimingPolicy::lease_ttl_ms(self) -> u64
+pub fn awaken_provisioning_contract::LeaseTimingPolicy::new(u64, u64, u64, u64) -> core::result::Result<Self, awaken_provisioning_contract::LeaseTimingError>
+pub fn awaken_provisioning_contract::LeaseTimingPolicy::reconciliation_interval_ms(self) -> u64
+pub fn awaken_provisioning_contract::LeaseTimingPolicy::recovery_grace_ms(self) -> u64
+pub fn awaken_provisioning_contract::LeaseTimingPolicy::renew_interval_ms(self) -> u64
 pub struct awaken_provisioning_contract::LivenessSignals
 pub awaken_provisioning_contract::LivenessSignals::now_ms: u64
 pub awaken_provisioning_contract::LivenessSignals::revoked: bool
@@ -400,7 +412,7 @@ pub fn awaken_provisioning_contract::approval_decide(awaken_provisioning_contrac
 pub const fn awaken_provisioning_contract::capability_requirements_satisfied(awaken_provisioning_contract::IsolationClass, awaken_provisioning_contract::IsolationClass, bool, bool, bool, bool) -> bool
 pub fn awaken_provisioning_contract::capped_expiry(u64, u64, &awaken_provisioning_contract::LeaseGrant) -> u64
 pub fn awaken_provisioning_contract::check_environment_soundness(&awaken_provisioning_contract::EnvironmentDecl) -> core::result::Result<(), awaken_provisioning_contract::AdmissionError>
-pub fn awaken_provisioning_contract::decide_reap(&awaken_provisioning_contract::LeaseGrant, awaken_provisioning_contract::LivenessSignals) -> core::option::Option<awaken_provisioning_contract::ReapCause>
+pub fn awaken_provisioning_contract::decide_lease_action(&awaken_provisioning_contract::LeaseGrant, awaken_provisioning_contract::LivenessSignals) -> awaken_provisioning_contract::LeaseAction
 pub fn awaken_provisioning_contract::egress_permitted(&awaken_provisioning_contract::LeaseGrant, u64, bool) -> bool
 pub async fn awaken_provisioning_contract::materialize_process_command(&[awaken_provisioning_contract::EnvVar], awaken_provisioning_contract::Command, core::option::Option<&alloc::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>>) -> core::result::Result<awaken_provisioning_contract::MaterializedCommand, awaken_provisioning_contract::SandboxError>
 pub fn awaken_provisioning_contract::prepare_environment(&awaken_provisioning_contract::SandboxSpec, &awaken_provisioning_contract::SandboxCapabilities) -> core::result::Result<awaken_provisioning_contract::EnvironmentPlan, awaken_provisioning_contract::PrepareError>

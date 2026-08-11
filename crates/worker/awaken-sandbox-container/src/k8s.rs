@@ -78,7 +78,7 @@ pub struct K8sRuntime {
     namespace: String,
     agent_addr: SocketAddr,
     owner: Option<OwnerReference>,
-    /// Process-incarnation fence used by the cross-restart orphan reaper.
+    /// Process-incarnation fence used by realization adoption.
     owner_id: String,
     /// When set, the host binds this address as a **reverse-dial rendezvous**: the
     /// Pod dials *out* to it (no inbound, no Service, fully egress-fenced) and the
@@ -215,8 +215,11 @@ impl K8sRuntime {
             &self.image_pull_secrets,
         );
         let labels = pod.metadata.labels.get_or_insert_with(Default::default);
-        labels.insert(crate::REAPER_LABEL.to_string(), "1".to_string());
-        labels.insert(crate::REAPER_OWNER_LABEL.to_string(), self.owner_id.clone());
+        labels.insert(crate::MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
+        labels.insert(
+            crate::RUNTIME_OWNER_LABEL.to_string(),
+            self.owner_id.clone(),
+        );
         pod
     }
 }
@@ -567,18 +570,21 @@ impl ContainerRuntime for K8sRuntime {
             .metadata
             .labels
             .as_ref()
-            .and_then(|labels| labels.get(crate::REAPER_OWNER_LABEL))
+            .and_then(|labels| labels.get(crate::RUNTIME_OWNER_LABEL))
             != Some(&self.owner_id)
         {
             // The immutable digest already proved this is the same frozen Session
-            // realization. Transfer only the reaper lease with the observed
+            // realization. Transfer only the runtime-owner lease with the observed
             // resourceVersion as the optimistic-concurrency fence; a concurrent
             // claimant gets 409 and must not steal a live Pod silently.
             created
                 .metadata
                 .labels
                 .get_or_insert_with(Default::default)
-                .insert(crate::REAPER_OWNER_LABEL.to_string(), self.owner_id.clone());
+                .insert(
+                    crate::RUNTIME_OWNER_LABEL.to_string(),
+                    self.owner_id.clone(),
+                );
             pods.replace(&name, &PostParams::default(), &created)
                 .await
                 .map_err(backend)?;
@@ -836,8 +842,8 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn touch_lease(&self, _container_id: &str) -> Result<(), RuntimeError> {
-        // Native GC: the owner Lease's renewTime is patched by the owner controller;
-        // ownerReference + TTL reaps orphans (no bespoke reaper here).
+        // The owner controller patches the native Lease renewTime. This adapter
+        // must not duplicate that authority or infer disposal from Pod age.
         Ok(())
     }
 
@@ -852,50 +858,6 @@ impl ContainerRuntime for K8sRuntime {
             Err(error) if api_not_found(&error) => Ok(()),
             Err(error) => Err(backend(error)),
         }
-    }
-
-    async fn list_managed(&self) -> Result<Vec<crate::ManagedContainer>, RuntimeError> {
-        let pods = self
-            .pods()
-            // `app=awaken-sandbox` predates the reaper labels. Selecting the stable
-            // legacy label lets the first upgraded process collect Pods leaked by
-            // older ownerless runtimes as well as all newly fenced Pods.
-            .list(&ListParams::default().labels("app=awaken-sandbox"))
-            .await
-            .map_err(backend)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
-        Ok(pods
-            .into_iter()
-            .filter_map(|pod| {
-                let id = pod.metadata.name?;
-                let owned_by_current_runtime = pod
-                    .metadata
-                    .labels
-                    .as_ref()
-                    .and_then(|labels| labels.get(crate::REAPER_OWNER_LABEL))
-                    == Some(&self.owner_id);
-                let running = !matches!(
-                    pod.status
-                        .as_ref()
-                        .and_then(|status| status.phase.as_deref()),
-                    Some("Succeeded" | "Failed")
-                );
-                let age_secs = pod
-                    .metadata
-                    .creation_timestamp
-                    .map(|created| now.saturating_sub(created.0.timestamp().max(0) as u64))
-                    .unwrap_or(0);
-                Some(crate::ManagedContainer {
-                    id,
-                    owned_by_current_runtime,
-                    running,
-                    age_secs,
-                })
-            })
-            .collect())
     }
 }
 
@@ -1410,11 +1372,11 @@ mod tests {
             .labels
             .unwrap();
         assert_eq!(
-            labels.get(crate::REAPER_LABEL).map(String::as_str),
+            labels.get(crate::MANAGED_SANDBOX_LABEL).map(String::as_str),
             Some("1")
         );
         assert_eq!(
-            labels.get(crate::REAPER_OWNER_LABEL).map(String::as_str),
+            labels.get(crate::RUNTIME_OWNER_LABEL).map(String::as_str),
             Some(rt.owner_id.as_str())
         );
         assert_eq!(
