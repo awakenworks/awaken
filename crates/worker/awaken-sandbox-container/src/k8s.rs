@@ -27,8 +27,10 @@ use k8s_openapi::api::core::v1::{
 #[cfg(test)]
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
+use kube::Api;
+#[cfg(test)]
+use kube::Client;
 use kube::api::{AttachParams, DeleteParams, ListParams, PostParams};
-use kube::{Api, Client};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::net::TcpAgentTransport;
@@ -36,6 +38,7 @@ use crate::{
     BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
 };
 
+mod client;
 mod error;
 mod live_inputs;
 mod memory;
@@ -44,6 +47,8 @@ mod pod_projection;
 mod pod_security;
 mod process;
 mod realization;
+use client::K8sClients;
+pub(crate) use client::install_rustls_crypto_provider;
 use error::api_not_found;
 pub(crate) use error::{api_conflict, backend};
 use names::{configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
@@ -69,7 +74,7 @@ static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// A Kubernetes-backed [`ContainerRuntime`]. `agent_addr` is the Service endpoint the
 /// runtime dials for the [`AgentChannel`]; `owner` (optional) is the GC owner.
 pub struct K8sRuntime {
-    client: Client,
+    clients: K8sClients,
     namespace: String,
     agent_addr: SocketAddr,
     owner: Option<OwnerReference>,
@@ -86,13 +91,6 @@ pub struct K8sRuntime {
     restricted_egress_policy: bool,
 }
 
-/// Select the process-wide provider before any kube client is built. Workspace
-/// feature unification can compile both rustls providers, so relying on rustls'
-/// implicit selection is not deterministic.
-pub(crate) fn install_rustls_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
 impl K8sRuntime {
     /// Connect via in-cluster ServiceAccount or the ambient kubeconfig.
     pub async fn connect(
@@ -102,9 +100,9 @@ impl K8sRuntime {
         // kube's rustls client needs a process-level CryptoProvider; install ring
         // once (idempotent — a prior install by the host is fine).
         install_rustls_crypto_provider();
-        let client = Client::try_default().await.map_err(backend)?;
+        let clients = K8sClients::infer().await?;
         Ok(Self {
-            client,
+            clients,
             namespace: namespace.into(),
             agent_addr,
             owner: None,
@@ -157,10 +155,8 @@ impl K8sRuntime {
     #[cfg(test)]
     fn for_test(agent_addr: SocketAddr) -> Self {
         install_rustls_crypto_provider();
-        let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
-        let client = Client::try_from(config).expect("lazy kube client builds without a cluster");
         Self {
-            client,
+            clients: K8sClients::for_test(),
             namespace: "default".into(),
             agent_addr,
             owner: None,
@@ -172,15 +168,19 @@ impl K8sRuntime {
     }
 
     fn pods(&self) -> Api<Pod> {
-        Api::namespaced(self.client.clone(), &self.namespace)
+        Api::namespaced(self.clients.control.clone(), &self.namespace)
+    }
+
+    fn streaming_pods(&self) -> Api<Pod> {
+        Api::namespaced(self.clients.streaming.clone(), &self.namespace)
     }
 
     fn configmaps(&self) -> Api<ConfigMap> {
-        Api::namespaced(self.client.clone(), &self.namespace)
+        Api::namespaced(self.clients.control.clone(), &self.namespace)
     }
 
     fn secrets(&self) -> Api<Secret> {
-        Api::namespaced(self.client.clone(), &self.namespace)
+        Api::namespaced(self.clients.control.clone(), &self.namespace)
     }
 
     async fn cleanup_projected_content(&self, container_id: &str) {
@@ -613,7 +613,7 @@ impl ContainerRuntime for K8sRuntime {
             EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
         let execution = k8s_exec_argv(&id, command)?;
-        let pods = self.pods();
+        let pods = self.streaming_pods();
         let mut attached = pods
             .exec(
                 container_id,
@@ -675,7 +675,7 @@ impl ContainerRuntime for K8sRuntime {
             EXEC_SEQUENCE.fetch_add(1, Ordering::Relaxed)
         );
         let execution = k8s_exec_argv(&id, command)?;
-        let pods = self.pods();
+        let pods = self.streaming_pods();
         let mut attached = pods
             .exec(
                 container_id,
@@ -741,7 +741,7 @@ impl ContainerRuntime for K8sRuntime {
         path: &str,
     ) -> Result<Option<Vec<u8>>, RuntimeError> {
         let mut attached = self
-            .pods()
+            .streaming_pods()
             .exec(
                 container_id,
                 vec!["cat", "--", path],
