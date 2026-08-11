@@ -1,4 +1,4 @@
-//! One role-aware composition for the Coordinator Worker-observation authority.
+//! One role-aware startup for the Coordinator Worker-observation authority.
 
 use std::sync::Arc;
 

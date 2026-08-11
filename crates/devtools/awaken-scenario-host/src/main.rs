@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("statemachine-rich") => awaken_scenario_host::build_statemachine_rich_router(),
         Ok("config") => awaken_scenario_host::build_config_router().await,
         // The management scenario drives the REAL management router but with the
-        // deterministic MCP scenario model as an explicit HostExecutor composition;
+        // deterministic MCP scenario model as an explicit HostExecutor selection;
         // env-driven store selection + IAM are identical to production.
         Ok("management") => {
             let (model, model_ref) = awaken_scenario_host::scenario_model(
@@ -93,15 +93,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             )
             .await
         }
-        // Production model composition for provider/BYOK/brokered e2e: no
+        // Production model supply for provider/BYOK/brokered e2e: no
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
         Ok("management-providers") => awaken_cli::build_all_in_one_router().await,
-        // Real split-Control composition with only its model-publication SPI
+        // Real split-Control deployment with only its model-publication contract
         // supplied by the deterministic scenario adapter.
         Ok("distributed-control") => awaken_scenario_host::build_distributed_control_router().await,
         Ok("distributed-provider") => awaken_scenario_host::build_distributed_provider_router(),
-        // The production management composition (durable stores + config plane +
+        // The production management deployment (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
         // by the Skill pin/restart e2e; resource repositories remain auth-agnostic.
         Ok("management-skills") => {
@@ -301,7 +301,7 @@ mod dispatch_tests {
         // Cause/effect decision table:
         // C1 a Host-backed scenario consumes deployment::resource_host -> E1 install
         // the single shared scenario authority (R1 default/ordinary mode).
-        // C2 an AllInOne composition owns its production authority -> E2 do not
+        // C2 an AllInOne process owns its production authority -> E2 do not
         // install an unused parallel authority (R2 every management mode).
         // C3 split Control or protocol-only Provider owns no scenario Host -> E2
         // (R3 both distributed modes). These rows fence authority duplication while
@@ -334,7 +334,7 @@ mod dispatch_tests {
     async fn every_sync_env_free_mode_string_maps_to_a_mounted_factory() {
         // Cause/effect decision table: each supported environment-free mode is
         // one cause; every rule must build through its canonical scenario
-        // composition and expose the shared protocol route. A missing Resources
+        // platform and expose the shared protocol route. A missing Resources
         // application, alternate Host path, or unmounted adapter is a failed
         // effect for that exact mode.
         // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the

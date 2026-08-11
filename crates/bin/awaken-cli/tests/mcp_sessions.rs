@@ -52,7 +52,7 @@ use awaken_session_contract::{McpProbe, McpProbeStatus};
 // This test drives the REAL management router but needs a deterministic model that
 // calls the MCP tool on `add <a> <b>` — that is a test concern, so it injects the
 // (mock) `McpToolModel` through the test-only seam. Production uses the provider-free
-// `NoModelConfiguredExecutor`; the mock never ships in the management assembly.
+// `NoModelConfiguredExecutor`; the mock never ships in the management process.
 async fn build_all_in_one_router() -> Router {
     build_all_in_one_router_with_model(Arc::new(McpToolModel), "management").await
 }

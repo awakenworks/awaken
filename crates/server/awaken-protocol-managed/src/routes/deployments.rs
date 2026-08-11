@@ -29,7 +29,7 @@ use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 
 #[path = "deployments/launcher.rs"]
 mod launcher;
-pub use launcher::LocalDeploymentSessionLauncher;
+pub use launcher::ManagedDeploymentSessionLauncher;
 
 type WireError = (StatusCode, Json<ErrorResponse>);
 

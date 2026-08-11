@@ -32,6 +32,45 @@ pub struct SessionRepositoryResourceInput {
 use crate::SessionApplication;
 
 impl SessionApplication {
+    /// Validate that one published Agent can start new Sessions in this scope.
+    pub fn validate_profiled_agent(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Result<(), RunError> {
+        if self.session_profile(workspace_id, agent_id).is_none()
+            || self.agent_unavailable(workspace_id, agent_id)
+        {
+            return Err(RunError::bad_request(format!(
+                "agent `{agent_id}` is unavailable"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Read the committed transcript after enforcing durable Session ownership.
+    /// Protocol projections are deliberately bypassed: the Session aggregate and
+    /// Runtime commit log are the only authorities involved.
+    pub async fn session_transcript(
+        &self,
+        workspace_id: &str,
+        session_id: &str,
+    ) -> Result<Vec<Message>, RunError> {
+        self.read_session_projection(session_id, Some(workspace_id))
+            .await
+            .map_err(|error| match error {
+                crate::SessionProjectionRecoveryError::NotFound => {
+                    RunError::bad_request("Session was not found")
+                }
+                crate::SessionProjectionRecoveryError::Rejected(error) => error,
+                crate::SessionProjectionRecoveryError::Unavailable(message) => {
+                    RunError::unavailable(message)
+                }
+            })?
+            .ok_or_else(|| RunError::bad_request("Session was not found"))?;
+        self.committed_messages(session_id).await
+    }
+
     pub async fn session(
         &self,
         session_id: &str,

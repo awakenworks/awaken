@@ -610,7 +610,7 @@ fn has_beta(req: &Request, expected: &str) -> bool {
 
 /// Axum middleware enforcing the `anthropic-beta: managed-agents-2026-04-01` opt-in
 /// on every ordinary Managed Agents endpoint. Applied by each executable
-/// composition root, NOT baked into [`router`], so router-level tests remain focused
+/// process startup, NOT baked into [`router`], so router-level tests remain focused
 /// on domain behavior. Memory and Skills are gated here with their exclusive
 /// endpoint-specific betas; User Profiles and Files remain with their family gates.
 pub async fn enforce_managed_beta(

@@ -1,4 +1,4 @@
-//! Reserved Assistant model selection at the composition boundary.
+//! Reserved Assistant model selection at the startup boundary.
 //!
 //! This policy consumes existing catalog, credential, and local ACP observations.
 //! It never authors another default, credential, or provider record.

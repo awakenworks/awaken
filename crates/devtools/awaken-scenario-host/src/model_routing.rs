@@ -80,8 +80,8 @@ impl InferenceExecutorMaterializer for RouteProvider {
 /// executors (R1/R2/R5/R6). `AWAKEN_MODEL_MODE=model-route`.
 pub fn build_model_route_router() -> Router {
     let (default_model, _) = scenario_model(Arc::new(LabelModel("default")), "default");
-    mount(Arc::new(
+    mount(
         resource_host(default_model, "default")
-            .with_inference_materializer(Arc::new(RouteProvider)),
-    ))
+            .map_host(|host| host.with_inference_materializer(Arc::new(RouteProvider))),
+    )
 }

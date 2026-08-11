@@ -1276,7 +1276,7 @@ mod tests {
         let bytes = b"frozen worker input".to_vec();
         let file_id = host
             .file_application()
-            .expect("test composition installs File application")
+            .expect("test startup installs File application")
             .create_uploaded_file(
                 "workspace-a",
                 "input.bin".into(),

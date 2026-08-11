@@ -1,4 +1,4 @@
-//! Production composition closure: a Deployment run creates and drives a real
+//! Production startup closure: a Deployment run creates and drives a real
 //! Session through the same application service as `/v1/sessions`.
 
 use std::sync::Arc;
@@ -34,7 +34,7 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
 
 #[tokio::test(flavor = "multi_thread")]
 async fn deployment_run_creates_session_and_executes_initial_events() {
-    // Production-composition cause/effect rules:
+    // Production-startup cause/effect rules:
     // C1 published Agent + valid Deployment -> Agent latest version is frozen;
     // C2 manual run -> ordinary Session with Deployment id;
     // C3 initial user Event -> ordinary Event executor commits the model response.

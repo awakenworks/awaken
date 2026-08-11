@@ -141,7 +141,7 @@ database connections.
 The process store bundle is split into optional Control and Coordinator groups.
 Split Coordinator cannot configure or acquire Catalog, Credential, Config,
 Admin, or the Control seal key; split Control cannot configure or acquire
-Session/Deployment or Resources content stores. `ResourceComponent` owns the
+Session/Deployment or Resources content stores. `ResourceAuthorities` owns the
 existing `ResourceCatalog` implementation together with its per-kind ports, so
 Coordinator may mount the component without borrowing Control's Admin store.
 
@@ -172,7 +172,7 @@ Control store group; Coordinator rejects it before store acquisition.
 
 Resources has one application composition. `ResourcesApplication` derives the
 single `FileApplicationService` and purge scheduler from one canonical
-`ResourceComponent`; the public File/Memory/Skill router and Runtime artifact
+`ResourceAuthorities`; the public File/Memory/Skill router and Runtime artifact
 harvesting consume those same ports. Coordinator may co-deploy and mount this
 component, but does not acquire its database authority. A separate Resources
 process can be introduced only with authenticated claim/grant ports that preserve

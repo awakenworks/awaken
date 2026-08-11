@@ -1,11 +1,11 @@
-//! MCP composition for the shared host (ADR-0043 Phase 3).
+//! MCP runtime services for the shared Host (ADR-0043 Phase 3).
 //!
 //! Owns the wire-client half of per-thread MCP wiring: given the servers a
 //! session staged (already credential-materialized), connect each through
 //! `awaken-ext-mcp` and hand back the executable tools + model-visible
 //! descriptors the host registers on that thread's runtime. Split out of
 //! `host.rs` so the host keeps session orchestration and this module owns the
-//! outbound wire composition.
+//! outbound wire encoding.
 //!
 //! It also owns [`ExtMcpProbe`] (the
 //! `awaken_session_contract::McpProbe` port the `mcp_oauth_validate` route

@@ -824,7 +824,7 @@ pub awaken_session_contract::SessionInputAttachment::binding: awaken_resource_co
 pub awaken_session_contract::SessionInputAttachment::replaces: core::option::Option<awaken_resource_contract::input::BindingId>
 pub struct awaken_session_contract::SessionInputResolver
 impl awaken_session_contract::SessionInputResolver
-pub fn awaken_session_contract::SessionInputResolver::compose(&[awaken_resource_contract::input::InputBinding], &[awaken_session_contract::SessionInputAttachment]) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::input::InputBinding>, awaken_session_contract::SessionInputError>
+pub fn awaken_session_contract::SessionInputResolver::effective_bindings(&[awaken_resource_contract::input::InputBinding], &[awaken_session_contract::SessionInputAttachment]) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::input::InputBinding>, awaken_session_contract::SessionInputError>
 pub fn awaken_session_contract::SessionInputResolver::resolve_inputs(&str, core::option::Option<&dyn awaken_resource_contract::catalog::ResourceConfigSource>, &[awaken_resource_contract::input::InputBinding], &[awaken_session_contract::SessionInputAttachment]) -> core::result::Result<awaken_session_contract::ResolvedSessionResources, awaken_session_contract::SessionInputError>
 pub struct awaken_session_contract::SessionMcpAttachment
 pub awaken_session_contract::SessionMcpAttachment::attachment_id: awaken_session_contract::McpAttachmentId

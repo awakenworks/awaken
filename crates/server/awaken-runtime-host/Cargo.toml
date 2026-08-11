@@ -19,7 +19,7 @@ awaken-resource-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-runtime = { workspace = true }
 # Volatile commit/checkpoint reference adapters are available only to explicit
-# test/scenario compositions. Product builds do not link this backend.
+# test/scenario deployments. Product builds do not link this backend.
 awaken-store-inmem = { workspace = true, optional = true }
 awaken-observability = { workspace = true }
 awaken-ext-builtin-tools = { workspace = true }
@@ -31,7 +31,7 @@ awaken-ext-mcp = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
 # Resource implementations are available only to test-support fixture builders;
-# product Runtime Host consumes the contract traits injected by composition.
+# product Runtime Host consumes the contract traits injected by startup.
 awaken-memory-store = { workspace = true, optional = true }
 awaken-skill-store = { workspace = true, optional = true }
 awaken-sandbox-local = { workspace = true }
@@ -80,7 +80,7 @@ uuid = { version = "1", features = ["v4"] }
 # assembly that can acquire a Store implicitly.
 default = []
 # Post-construction persistence overrides are restricted to tests. Product
-# composition selects every authority before constructing SharedHost.
+# startup selects every authority before constructing SharedHost.
 test-support = [
     "dep:awaken-store-inmem",
     "dep:awaken-file-store",

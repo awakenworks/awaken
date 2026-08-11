@@ -39,44 +39,44 @@ retains only ephemeral execution state and receives no authority database handle
   and commit contracts; embedded by Worker, not a fifth service authority
 ```
 
-AllInOne co-locates these components but does not create another bounded
+AllInOne co-locates these applications but does not create another bounded
 context or implementation. It calls the canonical Control, Coordinator, and
-Resources component builders; an optional local Worker uses the same
+Resources application constructors; an optional local Worker uses the same
 `WorkerNodeBuilder` as the split Worker process.
 
 ### 1.1 Physical deployment and authority map
 
-| Deployment unit or context | Canonical components | Durable authority acquired | Cross-context ports |
+| Deployment unit or context | Canonical applications | Durable authority acquired | Cross-context contracts |
 |---|---|---|---|
-| Control | `awaken_control::build_control_component`, `CatalogModelPublicationResolver`, `GenaiModelDiscovery` | Agent/config publication, Environment definitions/revisions and sandbox-policy versions, Catalog, Credential/secret, Admin, IAM, Data Subject consent/accountability | resolves complete secret-free model candidates once; registers exact executable Agent and Environment facts; exposes authenticated audit, credential, webhook, and consent-read ports |
-| Coordinator | `awaken_coordinator::build_coordinator_component`; currently co-deploys the canonical Resources component | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections and published candidates; calls narrow Control ports; dispatches to and settles Workers; mounts Resources ports without owning their stores |
-| Resources (currently co-deployed with Coordinator) | `awaken_resource_application::ResourcesApplication` over `build_resource_component` | Resource Catalog/lifecycle, File logical metadata and immutable blobs, Memory content/history, Skill versions | exposes public application ports and claim-fenced per-kind Worker ports; never opens Control or Coordinator stores |
+| Control | `awaken_control::build_control_component`, `CatalogModelPublicationResolver`, `GenaiModelDiscovery` | Agent/config publication, Environment definitions/revisions and sandbox-policy versions, Catalog, Credential/secret, Admin, IAM, Data Subject consent/accountability | resolves complete secret-free model candidates once; registers exact executable Agent and Environment facts; exposes authenticated audit, credential, webhook, and consent-read contracts |
+| Coordinator | `awaken_coordinator::build_coordinator_component`; currently co-deploys the canonical Resources application | executable-Agent and executable-Environment projections, Deployment/DeploymentRun, Session, WorkQueue, captured content, dispatch/commit | reads only rebuildable Control projections and published candidates; calls narrow Control contracts; dispatches to and settles Workers; mounts Resources services without owning their stores |
+| Resources (currently co-deployed with Coordinator) | `awaken_resource_application::ResourcesApplication` over one `ResourceAuthorities` value | Resource Catalog/lifecycle, File logical metadata and immutable blobs, Memory content/history, Skill versions | exposes public application services and claim-fenced per-kind Worker contracts; never opens Control or Coordinator stores |
 | Worker | `WorkerNodeBuilder` | none; execution state is ephemeral | claim-fenced Coordinator and per-kind Resources/Credential clients |
-| AllInOne | the same Control, Coordinator, Resources, and optional Worker components | the union of those authorities in one process | local adapters implement the same ports |
+| AllInOne | the same Control, Coordinator, Resources, and optional Worker applications | the union of those authorities in one process | local adapters implement the same contracts |
 
 Production process targets are role-named: `awaken-control`,
 `awaken-coordinator`, and `awaken-worker`. The `awaken` target remains the
 operator/AllInOne launcher and retains `awaken control` / `awaken coordinator`
 as compatibility commands. Control and Coordinator targets share the canonical
 source-level lifecycle in `awaken-cli`; neither entrypoint reconstructs a domain
-component. Worker keeps its independent authority-store-free bootstrap.
+application. Worker keeps its independent authority-store-free startup.
 
 Package names make the application and adapter roles explicit even though several
 live under the technical `crates/server/` workspace bucket:
 
 | Package | DDD role | Rule |
 |---|---|---|
-| `awaken-control` | Control application component | owns authored facts, Provider discovery, and catalog/credential-backed publication; never schedules Runs |
-| `awaken-coordinator` | Coordinator application component | owns dynamic scheduling, dispatch, settlement, and replay; consumes immutable model candidates and never opens Catalog or Credential authority |
-| `awaken-worker` | Worker process composition | advertises capabilities and executes claim-fenced work; native, ACP, and outbound A2A are execution adapters, not public ingress owners |
-| `awaken-resource-application` | Resources application component | sole composition of File, MemoryStore, Skill, and lifecycle ports |
-| `awaken-protocol-managed` | Complete Anthropic-compatible Managed Public API anti-corruption layer | owns Agent/Session/Environment/File/MemoryStore/Skill/Model wire DTOs and routing only; domain behavior stays behind application ports |
+| `awaken-control` | Control application | owns authored facts, Provider discovery, and catalog/credential-backed publication; never schedules Runs |
+| `awaken-coordinator` | Coordinator application | owns dynamic scheduling, dispatch, settlement, and replay; consumes immutable model candidates and never opens Catalog or Credential authority |
+| `awaken-worker` | Worker process | advertises capabilities and executes claim-fenced work; native, ACP, and outbound A2A are execution adapters, not public ingress owners |
+| `awaken-resource-application` | Resources application | owns File, MemoryStore, Skill, and lifecycle services over one `ResourceAuthorities` selection |
+| `awaken-protocol-managed` | Complete Anthropic-compatible Managed Public API anti-corruption layer | owns Agent/Session/Environment/File/MemoryStore/Skill/Model wire DTOs and routing only; domain behavior stays behind application contracts |
 | `awaken-protocol-awaken` | Awaken extension protocol | owns only explicitly namespaced `/v1/awaken/*` routes |
 | `awaken-protocol-a2a`, `-ai-sdk`, `-ag-ui`, `-mcp` | other ingress anti-corruption layers | each method + normalized path has exactly one source owner |
 
 Protocol packages are always-on ingress adapters when mounted by a process. They
 do not become services or execution authorities themselves. A protocol handler
-validates and translates, calls the owning application port, and projects the
+validates and translates, calls the owning application service, and projects the
 result. Worker-side ACP/A2A adapters are different: they execute an already
 admitted claim and never own the public route that admitted it.
 
@@ -104,18 +104,18 @@ User Profile, consent, enrollment, and accountability-preserving erasure;
 `awaken-data-subject-store` contains only the durable SQLite/PostgreSQL adapters.
 The Managed protocol projects that application and owns no profile state.
 Coordinator reads consent through `DataSubjectConsentSource`, while Control
-requests subject-content erasure through an authenticated Coordinator port. The
+requests subject-content erasure through an authenticated Coordinator contract. The
 single Coordinator application fans that command out to its captured-content
-store and optional portable ACP session store; AllInOne calls the same ports
+store and optional portable ACP session store; AllInOne calls the same contracts
 locally. Aggregate writes use revision-fenced compare-and-swap, so concurrent
 profile and consent changes cannot overwrite one another.
 
 The Runtime Core is the domain center. It runs tools in-process but must not know
 public protocols, registry publication workflow, vault schemas, remote execution
 placement, or product-specific session names. Server and product code adapt into
-the runtime through explicit ports.
+the runtime through explicit contracts.
 
-### 1.2 Runtime Host, authority, protocol, and composition
+### 1.2 Runtime Host, authority, and protocol responsibilities
 
 `awaken-runtime-host` owns execution semantics, Session environments, Worker
 transport adapters, and the `RuntimeAuthority`/`LocalCommit` injection contracts.
@@ -133,7 +133,7 @@ Managed HTTP contract into the existing Session application and Runtime Host
 interfaces; it is neither a Coordinator Runtime nor a persistence owner. Its
 Memory and Skill routes depend on `awaken-resource-contract` and the canonical
 Resources application ingestion path, with concrete stores supplied only by the
-Resources composition.
+Resources application.
 
 The `awaken`/`awaken-control`/`awaken-coordinator` targets share the single
 `awaken-cli::run_service` lifecycle. `awaken-worker` remains a separate package so
@@ -157,7 +157,7 @@ effects it records the stable audit identity through `ManagementAuditRepository`
 Session binding asks `SessionCredentialSource` only for secret-free credential
 pins; lifecycle outbox delivery calls `LifecycleFactDelivery`. Split roles use
 one authenticated HTTP adapter and AllInOne uses local adapters over the same
-ports. Authentication runs before a handler reaches any authority. Network or
+contracts. Authentication runs before a handler reaches any authority. Network or
 5xx failures are retried only for these idempotent commands; an unavailable
 webhook delivery leaves the Coordinator outbox fact pending for later drain.
 
@@ -177,7 +177,7 @@ The detailed rule is
 | Entity | run, thread, message, config record, credential record | Identity is not authorization |
 | Value object | `ExecutableAgentSnapshot`, `RunActivation`, `ResolvedSpec`, `BackendProfile`, `StateKey`, effect payload, capability descriptor, content hash | Immutable, serializable where it crosses a boundary |
 | Live context | `RuntimeRunContext`, stream/input handles, commit-source wiring | Process-local wiring recreated by the host; never durable request data |
-| Domain/application service | resolver, registrar, continuation guard, Outcome controller, permission evaluator, plugin hook runner, terminal observer | Stateless or explicit state dependencies through ports; an application service does not acquire another context's data authority |
+| Domain/application service | resolver, registrar, continuation guard, Outcome controller, permission evaluator, plugin hook runner, terminal observer | Stateless or explicit state dependencies through contracts; an application service does not acquire another context's data authority |
 | Repository | store traits under the runtime/server contract boundary | No product policy inside repositories |
 | Domain event/fact | committed runtime facts and `EventRecord` values | Emitted after the commit boundary, then projected outward |
 | Anti-corruption layer | protocol adapters, external product bridges, A2A/ACP mappers | Translate public names at the edge only |
@@ -194,13 +194,13 @@ crate name.
 | Environment contract | Control-owned static definitions, exact revisions, and policy references | `EnvItem`, `EnvironmentRevision`, `EnvRegistry`, `EnvironmentSandboxPolicyRef` |
 | Coordinator execution catalog | rebuildable executable-Agent availability for new Sessions | `ExecutableAgentCatalog`, current/exact-revision/fingerprint reads, local/HTTP/PostgreSQL registrar adapters, authenticated private router, and durable command replay |
 | Coordinator Environment application | rebuildable executable-Environment availability, frozen Session snapshot compilation, registration convergence, and dynamic work coordination | `EnvironmentExecutionApplication` over `ExecutableEnvironmentCatalog` and `WorkQueue`; no authoring repository, HTTP, or Managed DTO |
-| Resources application contract | resource commands and per-kind materialization/lifecycle ports | `ResourcesApplication`, `FileApplicationService`, `MemoryStoreApplicationService`, `ResourceCatalog`, `ResourceReclamationRepository`, Memory/Skill/File ports |
-| Runtime-facing contract | immutable values and ports used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
+| Resources application contract | resource commands and per-kind materialization/lifecycle contracts | `ResourcesApplication`, `ResourceAuthorities`, `FileApplicationService`, `MemoryStoreApplicationService`, `ResourceCatalog`, `ResourceReclamationRepository` |
+| Runtime-facing contract | immutable values and services used to prepare and execute one Run | `ExecutableAgentSnapshot`, `RunActivation`, `RuntimeRunContext`, `RunExecutor`, `RuntimeCapabilitySource`, `PluginManifest` |
 | Runtime implementation | live execution behavior over agent-domain vocabulary | agent loop, resolver implementation, provider routing, plugin execution, retry/backoff modules |
 | Run-ingress contract | durable delivery and dispatch vocabulary | submit/input records, dispatch records, claims, leases, wake hints, live-command delivery stores |
 | Run-ingress implementation | buffering, host supervision, recovery, and live delivery | `DurableRunIngress`, input buffer, dispatch coordinator, recovery replay |
 | Protocol projection | public protocol and product-facing replay shapes outside the runtime slice | `awaken-protocol-managed` solely owns the exact Anthropic-compatible surface; `/v1/awaken/*` lives in the separate `awaken-protocol-awaken` crate |
-| Concrete stores | backend implementations of multiple ports | SQL/in-memory adapters that implement both agent-truth and ingress stores |
+| Concrete stores | backend implementations of multiple repository contracts | SQL/in-memory adapters that implement both agent-truth and ingress stores |
 
 If a type describes durable agent truth, it belongs to the agent-domain contract.
 If it describes config records, snapshots, or publication identity, it belongs
@@ -220,8 +220,8 @@ runtime contract.
 | Environment | Control: create revision 1 → append update/policy-binding revisions → terminal archive; `env_local` is immutable built-in truth | executable-Environment registrar/catalog supplies current/exact facts; withdrawal denies new Sessions while exact history remains |
 | Sandbox policy | Control: create v1 → append versions; Environment stores one exact reference | Control resolves the body into the executable Environment registration; Worker receives only the frozen Session projection |
 | Deployment | Coordinator: create/update → active/paused → terminal archived | scheduler/manual trigger creates a stable DeploymentRun; it never executes an Agent itself |
-| DeploymentRun | Coordinator: started → succeeded with `session_id` or failed with exact error | `LocalDeploymentSessionLauncher` reaches the sole Session creation command, idempotent by `deployment_run_id` |
-| DreamProcess | Coordinator: requested → preparing → auxiliary Session linked → cleaning → terminal; usage remains an ordinary Session fact | `DreamApplication` schedules/reconciles while `DreamExecutor` composes Resource and Session authorities |
+| DeploymentRun | Coordinator: started → succeeded with `session_id` or failed with exact error | process-selected `ManagedDeploymentSessionLauncher` lowers stored Managed input and reaches the sole Session creation command, idempotent by `deployment_run_id` |
+| DreamProcess | Coordinator: requested → preparing → auxiliary Session linked → cleaning → terminal; usage remains an ordinary Session fact | `DreamApplication` schedules/reconciles while `DreamExecutor` calls Resource and Session authorities directly |
 | Session / Run | Coordinator: admit frozen Agent/Environment/Resource facts → enqueue → claimed/running/awaiting → committed terminal settlement | Worker executes under a lease epoch; Coordinator owns commit, replay, and public projection |
 | File | Resources: logical create → active/readable → logical delete → purge intent → safe physical reclaim | `FileApplication` is the sole HTTP/artifact command path; Worker reads immutable bytes through `FileContentSource` |
 | MemoryStore | Resources: create/retention → bind/freeze config version → active CAS use → tombstone → fenced reclaim | `MemoryStoreApplicationService` owns identity/lifecycle; `MemoryRepository` owns content; Agent `memory` plugin config owns recall/extraction behavior |
@@ -237,7 +237,7 @@ the boundary.
 
 ## 3. Runtime / Server Boundary
 
-The server consumes the runtime through one gated port:
+The server consumes the runtime through one gated contract:
 
 ```text
 AgentRuntime
@@ -341,7 +341,7 @@ Anthropic outcome result enums must not appear in the runtime core.
 The Credential domain owns refresh policy and durable records. The existing
 `awaken-credential-materializer` infrastructure adapter is the sole executor of
 an exact pinned OAuth refresh/reseal access; Runtime and Coordinator receive only
-its narrow port and do not recreate Vault refresh mechanics.
+its narrow contract and do not recreate Vault refresh mechanics.
 
 ---
 
@@ -366,8 +366,8 @@ or remote agent execution is added only when a future ADR introduces it.
 ## 7. Operational Convergence And Deployment Topology
 
 The four bounded contexts and their persistence authorities are complete in the
-current composition. Distributed deployment uses role-named Control,
-Coordinator, and Worker executables; Resources is a canonical sibling component
+current deployment. Distributed deployment uses role-named Control,
+Coordinator, and Worker executables; Resources is a canonical sibling application
 currently hosted by the Coordinator process. This is process co-location, not
 shared ownership: its stores, migrations, application services, and contracts
 remain Resources-owned.
@@ -424,25 +424,25 @@ and credential isolation are not required. A future split requires all of the
 following before adding the role:
 
 1. authenticated, claim-fenced per-kind Worker transports around the existing
-   `ResourcesApplication` ports;
+   `ResourcesApplication` contracts;
 2. an explicit reference/grant protocol so Agent bindings and Coordinator
    extraction/activation facts reach the Resources-owned reverse-reference
    index without Resources opening Coordinator storage;
 3. a Resources-only migration manifest and credentials, with no Control,
    Session, dispatch, or commit database access;
-4. the same `ResourceComponent`, router, lifecycle repository, and reclaimer—no
+4. the same `ResourceAuthorities`, router, lifecycle repository, and reclaimer—no
    alternate File, Memory, Skill, or purge implementation.
 
 Until those deployment requirements exist, configuration rejects `resources` as
-a process role and Coordinator continues to host the canonical component.
+a process role and Coordinator continues to host the canonical application.
 
-### 7.4 Composition modules
+### 7.4 Process modules
 
-The CLI shell remains integration-only. `runtime_process_router` composes
-Coordinator and optional AllInOne Control/Resources components; standalone
+The CLI shell remains integration-only. `runtime_process_router` starts
+Coordinator and optional AllInOne Control/Resources applications; standalone
 Control uses `control_component`; both receive their business routers from the
-same domain builders. Scenario-only ACP composition lives in
-`acp_scenarios`. These module splits change neither authority nor call order.
+same domain builders. Scenario-only ACP setup lives in `acp_scenarios`. These
+module splits change neither authority nor call order.
 
 Further work is demand-driven: database notification may replace the high-water
 poll only if admission-query load becomes material, and a Resources process may

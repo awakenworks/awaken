@@ -57,7 +57,7 @@ pub trait DreamSessionSource: Send + Sync {
 
     /// Read the ordinary auxiliary Session's cumulative committed usage. Dream
     /// never persists a second copy of these execution facts.
-    fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
+    async fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
         None
     }
 }
@@ -99,7 +99,7 @@ impl DreamCancellation {
     }
 }
 
-/// The one Dream execution seam. Production composes existing MemoryStore, Files, Session,
+/// The one Dream execution seam. Production calls existing MemoryStore, Files, Session,
 /// and Runtime authorities here; tests use a deterministic implementation.
 #[async_trait]
 pub trait DreamExecutor: Send + Sync {
@@ -451,18 +451,15 @@ impl DreamApplication {
         *self.model_readiness.lock().unwrap() = Some(source);
     }
 
-    fn project_process(&self, process: &DreamProcess) -> Dream {
-        let usage = process
-            .session_id
-            .as_deref()
-            .and_then(|session_id| {
-                self.session_source
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .and_then(|source| source.session_usage(&process.workspace_id, session_id))
-            })
-            .unwrap_or_default();
+    async fn project_process(&self, process: &DreamProcess) -> Dream {
+        let source = self.session_source.lock().unwrap().clone();
+        let usage = match (source, process.session_id.as_deref()) {
+            (Some(source), Some(session_id)) => source
+                .session_usage(&process.workspace_id, session_id)
+                .await
+                .unwrap_or_default(),
+            _ => DreamUsage::default(),
+        };
         process.project(usage)
     }
 
@@ -562,7 +559,7 @@ impl DreamApplication {
     }
 
     /// Evaluate every due policy once. This method is deterministic and public
-    /// for the composition root's single Managed periodic driver. Every accepted
+    /// for the process startup's single Managed periodic driver. Every accepted
     /// trigger calls the ordinary `create` path.
     pub async fn tick_policies(self: &Arc<Self>, now: u64) -> Result<Vec<Dream>, DreamApiError> {
         let source = self.session_source.lock().unwrap().clone();
@@ -788,7 +785,7 @@ impl DreamApplication {
             }
         }
         let id = job.id.clone();
-        let projected = self.project_process(&job);
+        let projected = self.project_process(&job).await;
         let cancellation = DreamCancellation::default();
         self.cancellations
             .lock()
@@ -943,15 +940,15 @@ impl DreamApplication {
         Ok(())
     }
 
-    pub fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
+    pub async fn retrieve(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
         let process = self.load_process(id)?;
         if process.workspace_id != workspace_id {
             return Err(DreamApiError::NotFound);
         }
-        Ok(self.project_process(&process))
+        Ok(self.project_process(&process).await)
     }
 
-    pub fn list(
+    pub async fn list(
         &self,
         workspace_id: &str,
         params: DreamListParams,
@@ -990,13 +987,11 @@ impl DreamApplication {
         let next_page = (start + selected.len() < jobs.len())
             .then(|| selected.last().map(|job| job.id.clone()))
             .flatten();
-        Ok(DreamPage {
-            data: selected
-                .into_iter()
-                .map(|job| self.project_process(job))
-                .collect(),
-            next_page,
-        })
+        let mut data = Vec::with_capacity(selected.len());
+        for job in selected {
+            data.push(self.project_process(job).await);
+        }
+        Ok(DreamPage { data, next_page })
     }
 
     pub async fn cancel(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
@@ -1005,7 +1000,7 @@ impl DreamApplication {
             return Err(DreamApiError::NotFound);
         }
         if current.status == DreamStatus::Canceled {
-            return Ok(self.project_process(&current));
+            return Ok(self.project_process(&current).await);
         }
         if current.status.is_terminal() {
             return Err(DreamApiError::BadRequest(
@@ -1041,10 +1036,10 @@ impl DreamApplication {
             job.transcript_file_ids.clear();
             Ok(())
         })?;
-        self.retrieve(workspace_id, id)
+        self.retrieve(workspace_id, id).await
     }
 
-    pub fn archive(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
+    pub async fn archive(&self, workspace_id: &str, id: &str) -> Result<Dream, DreamApiError> {
         let current = self.load_process(id)?;
         if current.workspace_id != workspace_id {
             return Err(DreamApiError::NotFound);
@@ -1055,13 +1050,13 @@ impl DreamApplication {
             ));
         }
         if current.archived_at.is_some() {
-            return Ok(self.project_process(&current));
+            return Ok(self.project_process(&current).await);
         }
-        self.commit_job_update(id, |job| {
+        let job = self.commit_job_update(id, |job| {
             job.archived_at = Some(now_ms());
             Ok(())
-        })
-        .map(|job| self.project_process(&job))
+        })?;
+        Ok(self.project_process(&job).await)
     }
 }
 

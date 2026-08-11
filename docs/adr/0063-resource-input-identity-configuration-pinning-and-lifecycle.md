@@ -286,7 +286,7 @@ same fields are denied in resource SQL migrations. The check intentionally
 permits Workspace because it is the resource partition/ownership coordinate
 stamped by the PEP, not evidence that authorization was granted.
 
-`ResourceComponent` injects the Resource Catalog, File store/catalog, Memory,
+`ResourceAuthorities` injects the Resource Catalog, File store/catalog, Memory,
 Skill, and lifecycle ports atomically when the process is constructed. A shared
 deployment therefore never opens an unused local File/Memory/Skill/lifecycle
 store before replacing it. A shared Runtime also requires the complete Resource

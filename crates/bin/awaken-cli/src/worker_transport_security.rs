@@ -1,6 +1,6 @@
 //! Projected-file adapters for the existing signed Worker transport contract.
 //!
-//! These are composition-only DTOs. The authoritative authentication behavior
+//! These are startup-only DTOs. The authoritative authentication behavior
 //! remains in `awaken-runtime-host`; this module only turns deployment files into
 //! its existing client and server ports.
 

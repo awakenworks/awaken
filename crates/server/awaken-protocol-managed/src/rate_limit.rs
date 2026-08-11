@@ -1,6 +1,6 @@
 //! Organization-scoped request limiting for the Managed Agents HTTP surface.
 //!
-//! One limiter is constructed per organization-serving composition root. That
+//! One limiter is constructed per organization-serving process startup. That
 //! keeps the organization coordinate at the edge: Workspace ownership remains a
 //! separate concern and the protocol handlers never acquire tenancy policy.
 

@@ -1,4 +1,4 @@
-//! Role-specific composition of the executable Agent registration boundary.
+//! Role-specific startup of the executable Agent registration boundary.
 
 use std::sync::Arc;
 
@@ -23,7 +23,7 @@ pub(crate) async fn for_runtime_role(
         Role::Coordinator => {
             ExecutableAgentWiring::coordinator(deployment, schema, captured_content).await
         }
-        _ => unreachable!("runtime assembly accepts only AllInOne or Coordinator"),
+        _ => unreachable!("runtime process accepts only AllInOne or Coordinator"),
     }
 }
 
@@ -153,11 +153,11 @@ type ProcessParts = (
     Option<Arc<dyn awaken_runtime_contract::ContentEraser>>,
 );
 
-/// Consume the explicitly selected role wiring into process-assembly values.
-/// A missing value is a composition defect; local single-process operation is
+/// Consume the explicitly selected role wiring into executable-Agent services.
+/// A missing value is a startup defect; local single-process operation is
 /// represented by an explicit [`ExecutableAgentWiring::local`] value.
 pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessParts {
-    let wiring = wiring.expect("process assembly requires executable Agent wiring");
+    let wiring = wiring.expect("product process requires executable Agent wiring");
     (
         wiring.catalog,
         wiring.registrar,
@@ -170,12 +170,12 @@ pub(crate) fn process_parts(wiring: Option<ExecutableAgentWiring>) -> ProcessPar
 #[cfg(test)]
 mod tests {
     #[test]
-    #[should_panic(expected = "process assembly requires executable Agent wiring")]
+    #[should_panic(expected = "product process requires executable Agent wiring")]
     fn missing_wiring_never_falls_back_to_a_volatile_catalog() {
         // Cause/effect decision table: A1 explicit local wiring -> the caller's
         // one local catalog; A2 explicit distributed wiring -> its durable/HTTP
-        // adapter; A3 missing wiring -> composition failure. A1/A2 are exercised
-        // by process assembly tests; this case owns A3 and prevents a healthy-
+        // adapter; A3 missing wiring -> startup failure. A1/A2 are exercised
+        // by product-process tests; this case owns A3 and prevents a healthy-
         // looking empty catalog from replacing durable authority.
         let _ = super::process_parts(None);
     }

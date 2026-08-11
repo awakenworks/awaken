@@ -36,20 +36,22 @@ mod tests {
 
     #[tokio::test]
     async fn every_local_backend_returns_one_complete_resources_application() {
-        // Cause/effect decision table:
+        // FMECA: FM1 a backend selection returns only part of the Resources
+        // authorities; FM2 process startup rebuilds services after persistence
+        // selection and creates divergent identities. Cause/effect decision table:
         // R1 ephemeral selection -> one complete application and stable services;
         // R2 embedded selection -> the same contract over one durable root and
         // stable services. PostgreSQL Migrate/Verify are covered by adapter
         // integration suites; this test proves the process adapter never rebuilds
         // an application after persistence selection.
         let assert_complete = |application: &awaken_resource_application::ResourcesApplication| {
-            let component = application.ports();
-            let _ = component.resource_catalog();
-            let _ = component.file_store();
-            let _ = component.file_catalog();
-            let _ = component.memory_repository();
-            let _ = component.skill_store();
-            let _ = component.reclamation();
+            let authorities = application.authorities();
+            let _ = authorities.resource_catalog();
+            let _ = authorities.file_store();
+            let _ = authorities.file_catalog();
+            let _ = authorities.memory_repository();
+            let _ = authorities.skill_store();
+            let _ = authorities.reclamation();
             assert!(Arc::ptr_eq(
                 &application.memory_stores(),
                 &application.memory_stores()

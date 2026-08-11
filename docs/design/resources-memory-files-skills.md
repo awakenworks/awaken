@@ -280,7 +280,7 @@ process-local handle.
 | front-door PEP | Existing/evolving | Server edge | authenticate, construct trusted Workspace target, call PDP, enforce obligations | resource content and domain policy implementation |
 | authorization PDP/PIP | External/shared authorization domain | IAM | decide principal/action/scope/resource facts under active policy | mounts, resource configuration, storage |
 | `SessionResourceCoordinator` | Existing in Managed Session application service | Session application/host | activation state, ordered provision/release, recovery handoff | Agent config loading, IAM policy language |
-| `ResourcesApplication` | Implemented canonical application assembly | Resources | derive the one File command service and purge scheduler from one `ResourceComponent`; expose the same ports to HTTP, Runtime artifact harvesting, and cleanup | HTTP, Runtime, Coordinator, IAM, or a second resource aggregate |
+| `ResourcesApplication` | Implemented canonical Resources application | Resources | derive the one File command service and purge scheduler from one `ResourceAuthorities`; expose the same services to HTTP, Runtime artifact harvesting, and cleanup | HTTP, Runtime, Coordinator, IAM, or a second resource aggregate |
 | `FileApplicationService` / `FileApplication` | Implemented sole File command path | Resources | logical File get/list/create/bytes/delete, quota, idempotent artifact harvesting, ownership reference ordering, and purge intent | route DTOs, Runtime execution, direct physical reclamation, or parallel catalog writes |
 | `FileStore` | Existing | Resources / File aggregate | immutable content-addressed bytes | Workspace authorization; mutable overwrite |
 | `FileContentSource` | Implemented boundary port | Worker/File boundary | resolve one exact Workspace-scoped public `FileId` under the current claim and verify the immutable digest before read-only materialization | File ownership, mutable write-back, private blob-id authority, database access |
@@ -303,8 +303,8 @@ process-local handle.
 | `SandboxProvider` | Existing | Environment provisioning | realize validated mounts/working trees and dispose them | product resource authoring and policy |
 | `ResourceReclaimer` | Existing, durable and per-resource | Product/session operations | reconcile crashed activations and purge intents; retention, reference checks, fenced claims, per-kind receipts | authorization decisions, remote Git deletion |
 | `ResourceReclamationFence` | Existing resource lifecycle port | Resource consistency | atomically prove zero physical references, fence `(kind, resource_id)`, and reject racing reference writes | principal, role, policy, API key, Org/Project/WorkUnit |
-| `ResourceComponent` | Existing canonical port assembly | Resources composition | select one Resource Catalog, File, Memory, Skill, and lifecycle implementation family | application command ordering, IAM/PDP data, authorization decisions |
-| `ResourcesRouterInput` / `resources_router` | Implemented HTTP composition | Resources adapter | mount File, Memory, and Skill route families exactly once over application ports | stores, business state, Worker claims, or another resource service |
+| `ResourceAuthorities` | Existing canonical authority set | Resources | select one Resource Catalog, File, Memory, Skill, and lifecycle implementation family | application command ordering, IAM/PDP data, authorization decisions |
+| `ResourcesRouterInput` / `resources_router` | Implemented Resources HTTP entry | Resources HTTP adapter | mount File, Memory, and Skill route families exactly once over application services | stores, business state, Worker claims, or another resource service |
 | `SqliteResourceStore` / `PostgresResourceStore` | Existing adapters | Resource consistency persistence | persist purge intents, intrinsic references, and reclamation fences for embedded or multi-node deployment | IAM/PDP data and File/Memory/Skill content |
 
 The catalog names roles rather than forcing them into one crate. Local mode may
@@ -369,8 +369,8 @@ the unchanged environment realizer with the frozen secret-free plan and
 ephemeral credential. The former direct Worker catalog connection and empty
 composition marker were removed.
 
-`ResourceComponent` selects local implementations at the Resources composition
-root. `ResourcesApplication` adds command ordering once and remains free of HTTP
+`ResourceAuthorities` selects the local Resource authorities at product-process
+startup. `ResourcesApplication` adds command ordering once and remains free of HTTP
 and Runtime concerns. A separately deployed provider retains its per-kind
 contract and data authority. The design does not add a universal
 `ResourceService` or `ResourceMaterializer`.

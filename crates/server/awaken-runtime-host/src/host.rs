@@ -43,7 +43,7 @@ use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_runtime_contract::tool::ToolOutput;
 // The Workdir-tier sandbox realized through the neutral provisioning contract:
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
-// (rooted tools, repos, artifacts) the host composes into each session's runtime.
+// (rooted tools, repos, artifacts) the host configures into each session's runtime.
 use awaken_sandbox_local::LocalProvider;
 use awaken_session_contract::DelegatedRun;
 
@@ -137,7 +137,7 @@ pub struct SharedHost {
     /// slot makes their lifecycle atomic while the durable manifest stays authoritative.
     pub(crate) session_slots: crate::session_slot::SessionRuntimeSlots,
     /// The host DEFAULT executor: used by auxiliary sub-agents (judge, compactor,
-    /// memory) and by an explicitly local composition with no
+    /// memory) and by an explicitly local deployment with no
     /// [`InferenceExecutorMaterializer`]. Once a materializer is installed, a rejected
     /// publication pin fails closed instead of falling back to this executor.
     pub(crate) llm: Arc<dyn LlmExecutor>,
@@ -147,11 +147,11 @@ pub struct SharedHost {
     /// ACP runtime backend (R3/R4): serves `acp:*` sessions on an external CLI.
     pub(crate) acp: Option<Arc<crate::acp_backend::AcpBackend>>,
     /// Higher-layer transport adapter for Session-owned tools exposed to ACP.
-    /// The Host names only this port; concrete MCP server assembly remains in
+    /// The Host names only this contract; concrete MCP server setup remains in
     /// `awaken-coordinator` and does not add a protocol dependency to the substrate.
     pub(crate) acp_tool_exporter: Option<Arc<dyn crate::AcpToolExporter>>,
-    /// Remote attempt adapter injected by the composition root. The neutral host
-    /// owns only the `RunAttemptExecutor` port and never names the A2A protocol.
+    /// Remote attempt adapter injected by the process startup. The neutral host
+    /// owns only the `RunAttemptExecutor` contract and never names the A2A protocol.
     pub(crate) remote_attempt_executor:
         Option<Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>>,
     pub(crate) remote_credential_realization:
@@ -177,8 +177,8 @@ pub struct SharedHost {
     /// It is a policy branch over the same Session owner, not a second executor.
     pub(crate) backend_owned_session_provider:
         Option<crate::session_environment::SessionEnvironmentProvider>,
-    /// The composition root installed the authoritative Session provider. ACP
-    /// assembly must reuse it instead of constructing a deployment-derived peer.
+    /// The process startup installed the authoritative Session provider. ACP
+    /// ACP execution must reuse it instead of constructing a deployment-derived peer.
     pub(crate) session_provider_explicit: bool,
     pub(crate) judge_snapshot: Option<ExecutableAgentSnapshot>,
     pub(crate) client_tools: HashSet<String>,
@@ -194,7 +194,7 @@ pub struct SharedHost {
     pub(crate) plugin_ids: Vec<String>,
     pub(crate) plugin_config: std::collections::BTreeMap<String, serde_json::Value>,
     /// One provider registry is used to derive authoring schema and to dispatch
-    /// Native/ACP WebSearch calls. External compositions extend this registry;
+    /// Native/ACP WebSearch calls. External deployments extend this registry;
     /// sessions never construct a provider-specific side registry.
     pub(crate) web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     /// Canonical exact materializer used by runtime extensions. The Managed
@@ -212,7 +212,7 @@ pub struct SharedHost {
     /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
     pub(crate) upstream: Option<awaken_worker_transport_security::WorkerUpstream>,
     /// Optional Resource-transport encoder installed by a remote Worker. The
-    /// runtime knows only the neutral Resources port, never an HTTP wire type.
+    /// runtime knows only the neutral Resources contract, never an HTTP wire type.
     pub(crate) memory_reference_encoder: Option<
         Arc<
             dyn awaken_resource_contract::MemoryMaterializationReferenceEncoder<
@@ -231,7 +231,7 @@ pub struct SharedHost {
     /// Explicit Worker-side dispatch transport. Coordinator processes leave this empty
     /// and resolve the configured durable backend; Workers inject their HTTP
     /// transport here so no process-global compatibility slot becomes a second
-    /// composition authority.
+    /// dispatch authority.
     pub(crate) dispatch_store_override: Option<Arc<awaken_run_ingress::AnyDispatchStore>>,
     /// Coordinator-owned durable capability. Runtime and Worker builds contain
     /// no concrete Store acquisition; a database-less Worker leaves this absent.
@@ -273,7 +273,7 @@ pub struct SharedHost {
     /// collected artifacts. A database-less Worker carries a fail-closed adapter;
     /// immutable claim-scoped reads use `file_content_source` instead.
     pub(crate) file_store: Arc<dyn FileStore>,
-    /// Sole per-kind File materialization port. Embedded composition points it at
+    /// Sole per-kind File materialization service. An embedded process points it at
     /// the local catalog/store pair; a database-less Worker replaces it with the
     /// claim-fenced HTTP adapter before accepting work.
     pub(crate) file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
@@ -281,9 +281,9 @@ pub struct SharedHost {
     /// Session scope, and harvest idempotency. Bytes remain in `file_store` only.
     pub(crate) file_catalog: Arc<dyn FileCatalog>,
     /// Full Resources-owned File application retained for local management and
-    /// Coordinator composition. Database-less Workers do not receive this port.
+    /// Coordinator processes. Database-less Workers do not receive this service.
     pub(crate) file_application: Option<Arc<dyn awaken_resource_contract::FileApplicationService>>,
-    /// Sole Runtime-to-Resources artifact command edge. Embedded compositions
+    /// Sole Runtime-to-Resources artifact command edge. Embedded deployments
     /// install the local application adapter; database-less Workers install the
     /// claim-fenced HTTP client.
     pub(crate) artifact_publisher:
@@ -296,8 +296,8 @@ pub struct SharedHost {
     /// The Resources context's path-addressed Memory backend shared by API,
     /// mounts, recall, and extraction. See [`crate::memory_stores`].
     pub(crate) memory_stores: crate::memory_stores::MemoryStores,
-    /// Worker-side realization port for governed MemoryStore mounts. The runtime
-    /// host stores only the neutral port; the outer server composition installs
+    /// Worker-side service for governed MemoryStore mounts. The Runtime Host
+    /// stores only the neutral contract; the outer server process installs
     /// the FUSE/copy adapter.
     pub(crate) memory_mounter:
         std::sync::RwLock<Option<Arc<dyn awaken_provisioning_contract::MemoryMounter>>>,
@@ -325,15 +325,15 @@ pub struct SharedHost {
     pub(crate) environment_binding_sink:
         std::sync::RwLock<Option<Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>>>,
     /// The one Host-owned subject-tagged captured-content sink (ADR-0050).
-    /// Composition may install it after the shared Host is assembled; sessions
+    /// Process startup may install it after the shared Host is created; sessions
     /// snapshot the current sink when they are created. `None` = spans only.
     pub(crate) capture_sink:
         std::sync::RwLock<Option<Arc<dyn awaken_runtime_contract::CaptureSink>>>,
     /// Deployment-resolved capture ceiling/redactor. Per-request consent and
     /// subject attribution may only narrow or activate this value.
     pub(crate) capture_decision: awaken_runtime_contract::CaptureDecision,
-    /// Read-only Control consent port. The default null source preserves open
-    /// standalone behavior; managed composition replaces it explicitly.
+    /// Read-only Control consent service. The default null source preserves open
+    /// standalone behavior; a managed process replaces it explicitly.
     pub(crate) data_subject_consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
     /// Globally-registered management tool executables (ADR-0052 D3/D4). Registered
     /// on every thread's runtime (the executor registry stays global); only the

@@ -336,8 +336,8 @@ impl SessionApplication {
         self.resource_purge_scheduler = Some(scheduler);
     }
 
-    /// Install the Resource authority ports used to publish the Session's
-    /// durable active+pending retention set. These ports are paired so logical
+    /// Install the Resource authorities used to publish the Session's durable
+    /// active+pending retention set. These authorities are paired so logical
     /// File ids and physical blob identities can never be sourced from
     /// different Resource components.
     pub fn set_resource_reference_authority(

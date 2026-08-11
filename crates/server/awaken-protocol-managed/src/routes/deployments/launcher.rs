@@ -6,12 +6,12 @@ use awaken_deployment_application::{
     DeploymentLaunch, DeploymentLaunchOutcome, DeploymentRunFailure, DeploymentSessionLauncher,
 };
 
-pub struct LocalDeploymentSessionLauncher {
+pub struct ManagedDeploymentSessionLauncher {
     state: Arc<crate::ManagedState>,
     rate_limiter: Option<Arc<crate::ManagedRateLimiter>>,
 }
 
-impl LocalDeploymentSessionLauncher {
+impl ManagedDeploymentSessionLauncher {
     #[must_use]
     pub fn new(state: Arc<crate::ManagedState>) -> Self {
         Self {
@@ -40,7 +40,7 @@ fn failed(error: crate::types::deployment::RunError) -> DeploymentLaunchOutcome 
 }
 
 #[async_trait::async_trait]
-impl DeploymentSessionLauncher for LocalDeploymentSessionLauncher {
+impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
     async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
         use crate::types::deployment::RunError;
 

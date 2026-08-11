@@ -36,10 +36,7 @@ pub mod types;
 pub mod test_support;
 
 pub use common::headers::{MANAGED_BETA, USER_PROFILES_BETA};
-pub use control::{
-    ModelDirectory, ModelDirectoryFuture, ModelEntry, default_models, models_router,
-    models_router_with_directory,
-};
+pub use control::{ModelEntry, default_models, models_router, models_router_with_inventory};
 mod resources;
 pub use resources::{
     ResourcesRouterInput, files_router, memory_stores_router, resources_router, skills_router,
@@ -59,7 +56,7 @@ pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate
 pub use routes::agents_registry::{
     AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
 };
-pub use routes::deployments::{LocalDeploymentSessionLauncher, deployments_router};
+pub use routes::deployments::{ManagedDeploymentSessionLauncher, deployments_router};
 pub use routes::environments::{
     EnvironmentAuthoringState, environment_authoring_router, environment_work_router,
 };

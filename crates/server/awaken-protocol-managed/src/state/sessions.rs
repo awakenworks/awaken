@@ -8,50 +8,6 @@ use super::session_mcp_projection::typed_mcp_servers;
 use crate::types::AgentRef;
 
 impl ManagedState {
-    pub fn validate_dream_agent(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-    ) -> Result<(), StateError> {
-        if agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID {
-            return Ok(());
-        }
-        let Some(_) = self.application.session_profile(workspace_id, agent_id) else {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "dream agent Agent `{agent_id}` is unavailable"
-            ))));
-        };
-        if self.application.agent_unavailable(workspace_id, agent_id) {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "dream agent Agent `{agent_id}` is unavailable"
-            ))));
-        }
-        Ok(())
-    }
-
-    /// Frozen committed Session input used by the dream
-    /// application. Workspace ownership is checked before the Runtime transcript
-    /// is read; the returned messages preserve tool calls and tool results exactly
-    /// as committed by the ordinary Session authority.
-    pub async fn dream_transcript(
-        &self,
-        workspace_id: &str,
-        session_id: &str,
-    ) -> Result<Vec<awaken_agent_contract::agent::message::Message>, StateError> {
-        self.ensure_session(session_id).await?;
-        let owner = self
-            .resolve_owner(session_id)
-            .await?
-            .ok_or(StateError::NotFound)?;
-        if owner != workspace_id {
-            return Err(StateError::NotFound);
-        }
-        self.application
-            .committed_messages(session_id)
-            .await
-            .map_err(StateError::Run)
-    }
-
     pub(super) const fn wire_session_status(execution: SessionExecutionState) -> SessionStatus {
         match execution {
             SessionExecutionState::Preparing => SessionStatus::Preparing,
@@ -459,7 +415,7 @@ impl ManagedState {
                 &mcp_targets,
             )
             .await?;
-        // Sole protocol-neutral Resource composition/resolution point. Environment
+        // Sole protocol-neutral Session input resolution point. Environment
         // selection has already produced one exact snapshot above; the final
         // SessionCreationIntent is the only value that combines and freezes both
         // families. Runtime never re-opens Agent or Resource stores.
@@ -965,9 +921,9 @@ impl ManagedState {
         );
         let transition = self
             .application
-            .begin_archive(id, PROCESSED_AT, terminated_fact.clone())
+            .terminate_session(id, PROCESSED_AT, terminated_fact.clone())
             .await
-            .map_err(Self::map_application_mutation_error)?;
+            .map_err(Self::map_preparation_error)?;
         self.refresh_cached_projection(&transition.session)?;
         let newly_terminated = transition.transitioned;
         let session = {
@@ -983,37 +939,10 @@ impl ManagedState {
             }
             record.session_projection()
         };
-        // Archive is terminal (no further turns run on this session), so reap its
-        // sandbox — but only on the transition, so a re-archive (idempotent) does
-        // not re-dispose. The record survives as a tombstone; only the sandbox goes.
-        let release_required = newly_terminated
-            || match self.application.session(id).await {
-                Ok(persisted) => {
-                    persisted.resources.pending.is_some()
-                        || persisted.resources.activations.iter().any(|activation| {
-                            activation.state == awaken_session_contract::ActivationState::Active
-                        })
-                }
-                Err(awaken_session_contract::SessionRepositoryError::NotFound) => false,
-                Err(error) => return Err(StateError::from(error)),
-            };
-        if release_required
-            && let Err(error) = self
-                .application
-                .release_terminal_resources(&transition.owner_scope, id)
-                .await
-        {
-            return Err(StateError::Run(RunError::internal(format!(
-                "Session `{id}` terminal resources could not be released: {error}"
-            ))));
-        }
         // Project the terminal transition as a lifecycle fact, mirroring create's
         // `session.status_idled`. The owning workspace is resolved from the session's
         // persisted owner (the archive edge carries only the id) so a subscription in
         // that workspace is matched even after a restart lost the in-memory index.
-        if newly_terminated {
-            self.application.notify_lifecycle_fact();
-        }
         Ok(session)
     }
 }

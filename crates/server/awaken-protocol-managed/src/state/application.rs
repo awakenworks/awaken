@@ -1,4 +1,4 @@
-//! Managed wire mapping for Session creation composition.
+//! Managed wire mapping for Session creation requests.
 //!
 //! Raw Session and published Agent MCP DTOs enter here once. This module only
 //! preserves source identity and translates them into protocol-neutral MCP

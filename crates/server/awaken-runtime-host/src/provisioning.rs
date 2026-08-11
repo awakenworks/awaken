@@ -942,14 +942,14 @@ mod provisioning_registry_tests {
         );
         let records = host
             .file_application()
-            .expect("test composition installs File application")
+            .expect("test startup installs File application")
             .list("workspace-a", Some("session-artifacts"))
             .await
             .unwrap();
         assert_eq!(records.len(), 1, "terminal retry remains idempotent");
         assert_eq!(
             host.file_application()
-                .expect("test composition installs File application")
+                .expect("test startup installs File application")
                 .bytes("workspace-a", &records[0].id)
                 .await
                 .unwrap()

@@ -1,4 +1,4 @@
-//! Protocol-neutral input ports owned by the Session application.
+//! Protocol-neutral services required by the Session application.
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::{
@@ -59,8 +59,8 @@ pub struct ResolvedSessionEnvironment {
 }
 
 /// Coordinator projection consumed by Session compilation. Environment HTTP
-/// routes may use the same concrete adapter, but their wire types do not cross
-/// this port.
+/// routes may use the same concrete adapter, but their wire types stay outside
+/// this service contract.
 #[async_trait::async_trait]
 pub trait SessionEnvironmentSource: Send + Sync {
     async fn get(

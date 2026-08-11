@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-/// Worker-owned bootstrap settings also reused by the all-in-one composition.
+/// Worker-owned bootstrap settings also reused by the all-in-one startup.
 #[derive(Debug, Clone)]
 pub struct WorkerBootstrap {
     pub worker_id: String,
@@ -23,7 +23,7 @@ pub struct WorkerBootstrap {
 }
 
 /// Optional authored Worker values resolved through one defaulting/validation
-/// path by both the standalone artifact and the all-in-one composition.
+/// path by both the standalone artifact and the all-in-one startup.
 #[derive(Debug, Clone, Default)]
 pub struct WorkerBootstrapInput {
     pub worker_id: Option<String>,
@@ -309,8 +309,8 @@ mod tests {
     /// the sandbox tier belongs to the canonical runtime vocabulary.
     /// R1 all true -> an isolated, resource/inference-capable Worker; R2
     /// !C1/!C2/!C4/!C5/!C7 -> config validation failure; R3 !C3 -> serde rejects the
-    /// unknown authority field; R4 !C6 -> composition fails before any network
-    /// activity. The built manifest is the terminal composition effect.
+    /// unknown authority field; R4 !C6 -> startup fails before any network
+    /// activity. The built manifest is the terminal startup effect.
     #[test]
     fn standalone_config_boundary_decision_table() {
         let directory = tempfile::tempdir().unwrap();
@@ -399,7 +399,7 @@ mod tests {
             .expect("R4 config syntax remains valid")
             .build()
             .err()
-            .expect("R4 mismatched signer must fail composition");
+            .expect("R4 mismatched signer must fail startup");
         assert!(error.contains("configured worker_id"), "R4: {error}");
 
         let missing_credential = directory.path().join("missing-worker.json");
@@ -408,10 +408,10 @@ mod tests {
             missing_credential.display()
         ));
         let error = WorkerDaemonConfig::load(&path, None)
-            .expect("R4 missing projection is a composition-time cause")
+            .expect("R4 missing projection is a startup-time cause")
             .build()
             .err()
-            .expect("R4 missing signer must fail composition");
+            .expect("R4 missing signer must fail startup");
         assert!(
             error.contains("read Worker request credential"),
             "R4: {error}"

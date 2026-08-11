@@ -26,21 +26,21 @@ path = "src/bin/awaken-control.rs"
 name = "awaken-coordinator"
 path = "src/bin/awaken-coordinator.rs"
 
-# One shared source-level composition root produces the operator/AllInOne launcher
+# One shared source-level process startup produces the operator/AllInOne launcher
 # and thin Control/Coordinator executables. Every target calls the same role
 # service lifecycle; the authority-free Worker remains its own package and binary.
 [dependencies]
 awaken-service-lifecycle.workspace = true
 awaken-api-contract = { workspace = true }
-# The two management planes this composition root weaves together.
+# The Control and Coordinator services started by this product process.
 awaken-control = { workspace = true }
 awaken-coordinator = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 # The production Worker executor: the Worker role delegates lifecycle to it while
-# this CLI composition still supplies the selected Credential/Resource adapters.
+# this CLI startup still supplies the selected Credential/Resource adapters.
 awaken-worker = { workspace = true }
 # The service layer: SharedHost / ManagedHost / ConfigService / ConfigPlane and the
-# durable session repositories the composition opens.
+# durable session repositories the startup opens.
 awaken-runtime-host.workspace = true
 awaken-resource-worker-http.workspace = true
 awaken-config-service.workspace = true
@@ -83,11 +83,11 @@ awaken-observability = { workspace = true }
 # The admin `/metrics` gauges are OTel observable instruments (rendered via the
 # Prometheus exporter in awaken-observability).
 opentelemetry = { version = "0.32", features = ["metrics"] }
-# The Managed wire aggregates the composition builds directly: session repos, the
-# vault + environment state shared across both planes.
+# Managed HTTP receives the Session repository, Vault, and Environment services
+# shared by its route families.
 awaken-protocol-managed = { workspace = true }
 awaken-protocol-awaken = { workspace = true }
-# The management stores this composition opens (in-memory / SQLite / Postgres).
+# The management stores this startup opens (in-memory / SQLite / Postgres).
 awaken-model-catalog.workspace = true
 awaken-model-catalog-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-credential-vault.workspace = true
@@ -104,10 +104,10 @@ awaken-admin-assistant = { workspace = true }
 # The opaque scope id the warm-load + reserved-scope seeding are keyed by.
 awaken-tenancy = { workspace = true }
 # Shared Awaken Cloud login cache; credential acquisition stays in the
-# composition root, outside the authorization/resource services.
+# process startup, outside the authorization/resource services.
 awaken-iam-client = { workspace = true, features = ["credential-cache"] }
 # The live credential probe backing the admin router — the only place the model SDK
-# is named in the composition (mirrors the standalone's GenaiProbe).
+# is named in the startup (mirrors the standalone's GenaiProbe).
 awaken-provider-genai = { workspace = true }
 awaken-agent-contract = { workspace = true }
 awaken-runtime-contract = { workspace = true }
@@ -124,7 +124,7 @@ base64 = "0.22"
 url.workspace = true
 
 [features]
-# Volatile composition helpers used by integration/scenario harnesses. The default
+# Volatile startup helpers used by integration/scenario harnesses. The default
 # product library and binary cannot link the process-local WorkQueue backend.
 test-support = [
     "awaken-admin-config-api/test-support",
@@ -165,7 +165,7 @@ awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 # The management integration tests moved here from awaken-coordinator (they drive
-# build_all_in_one_router* over this composition root).
+# build_all_in_one_router* over this process startup).
 awaken-scenario-host = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-store-inmem.workspace = true

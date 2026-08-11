@@ -258,7 +258,7 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
 async fn session_skill_limit_counts_the_effective_unique_agent_graph() {
     // Cause graph: C1 root effective selection; C2 recursively reachable Agent
     // selections; C3 repeated/cyclic Agent identity; C4 create-time root replace.
-    // Constraints: one Agent identity contributes once and the composed Session
+    // Constraints: one Agent identity contributes once and the configured Session
     // supports <=500 Skills. Effects: E1 exact boundary creates and prepares;
     // E2 overflow rejects before persistence/runtime; E3 an override replaces,
     // rather than adds to, the published root selection.

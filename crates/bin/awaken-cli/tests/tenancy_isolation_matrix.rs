@@ -1,5 +1,5 @@
 //! Systematic tenancy-isolation verification (ADR-0051), exercised from many
-//! angles over the REAL assembled management router. Each test is one angle.
+//! angles over the REAL prepared management router. Each test is one angle.
 //!
 //! Angles covered here (management plane, driven end-to-end):
 //!  1. Agents registry: cross-tenant read is 404 (not 403 — no existence leak).
@@ -58,7 +58,7 @@ async fn call(
 }
 
 /// Author an agent under `ws` via the D3 path form; return its id. The router is
-/// composed with the existing exact-host publication seam so these tenancy
+/// configured with the existing exact-host publication seam so these tenancy
 /// tests exercise ownership only, without inventing an invalid Provider route.
 async fn author_agent(app: &axum::Router, ws: &str, name: &str) -> String {
     let (status, agent) = call(

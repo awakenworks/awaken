@@ -1,6 +1,6 @@
 //! Managed Agent HTTP adapter (`/v1/agents`).
 //!
-//! The router is deliberately storage-neutral. Every composition root injects
+//! The router is deliberately storage-neutral. Every process startup injects
 //! an explicit repository; production uses the durable configuration-plane
 //! adapter, so this protocol crate owns no second in-memory Agent aggregate.
 

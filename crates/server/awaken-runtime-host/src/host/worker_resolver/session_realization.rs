@@ -178,6 +178,7 @@ impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
 }
 
 impl HostWorkerResolver {
+    #[cfg(test)]
     pub(crate) async fn realize_application_session(
         host: &SharedHost,
         control: &dyn awaken_session_contract::SessionRealizationControl,

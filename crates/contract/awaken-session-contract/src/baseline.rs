@@ -902,7 +902,7 @@ mod tests {
         // Cause/effect graph: C1 a retained baseline omits fields introduced
         // after its fingerprint was written; E1 neutral application collections
         // remain empty and E2 Runtime placement stays explicitly unresolved.
-        // An application composition decision, never serde or the protocol,
+        // An application policy decision, never serde or the protocol,
         // resolves E2. An explicit value must round-trip unchanged.
         //
         // | Rule | placement field | Effect |

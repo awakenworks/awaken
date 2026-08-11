@@ -1,6 +1,6 @@
-//! Shared scenario composition helpers.
+//! Canonical Scenario platform startup.
 //!
-//! This module owns the one test-only assembly path for resource catalogs,
+//! This module owns the one test-only Scenario startup path for Resource catalogs,
 //! Environment state, and immutable backend-owned Agent publications. Keeping
 //! these together prevents individual ACP scenarios from recreating Managed
 //! state or publication projections.
@@ -13,7 +13,8 @@ use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_runtime_contract::{PublishedAgentSnapshotSource, StaticPublishedAgentSnapshots};
 use axum::Router;
 
-use super::{EchoModel, SharedHost, resource_host, scenario_resource_catalog};
+use super::{EchoModel, SharedHost, resource_host};
+use crate::deployment::ScenarioPlatform;
 
 pub(super) fn test_environment_components() -> (
     Arc<awaken_protocol_managed::EnvironmentAuthoringState>,
@@ -56,20 +57,30 @@ pub(super) fn test_environment_components() -> (
     )
 }
 
-/// Scenario equivalent of the production composition root: one secret-free
+/// Scenario equivalent of the production service wiring: one secret-free
 /// Resource Catalog is shared by the Memory API, Managed ACL, and runtime
 /// activation. Authorization remains outside this helper.
-pub(super) fn mount(host: Arc<SharedHost>) -> Router {
-    let catalog = scenario_resource_catalog();
+pub(super) fn mount(platform: ScenarioPlatform) -> Router {
+    let (host, resources) = platform.into_parts();
+    mount_parts(Arc::new(host), resources)
+}
+
+pub(super) fn mount_parts(
+    host: Arc<SharedHost>,
+    resources: awaken_resource_application::ResourcesApplication,
+) -> Router {
+    let catalog = resources.authorities().resource_catalog();
     let managed = awaken_coordinator::local_managed_state(host.clone(), catalog.clone());
     awaken_coordinator::mount_with_managed_and_resource_catalog_and_dreams(host, managed, catalog).0
 }
 
 pub(super) fn mount_with_agent_source(
-    host: Arc<SharedHost>,
+    platform: ScenarioPlatform,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Router {
-    let catalog = scenario_resource_catalog();
+    let (host, resources) = platform.into_parts();
+    let host = Arc::new(host);
+    let catalog = resources.authorities().resource_catalog();
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
         host.clone(),
         catalog.clone(),
@@ -78,17 +89,19 @@ pub(super) fn mount_with_agent_source(
     awaken_coordinator::mount_with_managed_and_resource_catalog(host, managed, catalog)
 }
 
-/// Scenario composition with the Environment API and the same Resource Catalog,
+/// Scenario platform with the Environment API and the same Resource Catalog,
 /// credential plane, and Session repository used by [`mount`].
-pub(super) fn mount_with_environments(host: Arc<SharedHost>) -> Router {
-    mount_with_environments_and_agent_source(host, None)
+pub(super) fn mount_with_environments(platform: ScenarioPlatform) -> Router {
+    mount_with_environments_and_agent_source(platform, None)
 }
 
 pub(super) fn mount_with_environments_and_agent_source(
-    host: Arc<SharedHost>,
+    platform: ScenarioPlatform,
     agent_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
 ) -> Router {
-    let catalog = scenario_resource_catalog();
+    let (host, resources) = platform.into_parts();
+    let host = Arc::new(host);
+    let catalog = resources.authorities().resource_catalog();
     let (environment_authoring, environment_execution) = test_environment_components();
     let managed = match agent_source {
         Some(source) => awaken_coordinator::local_managed_state_with_environments_and_agent_source(
@@ -205,11 +218,11 @@ impl FixedAgentPublication {
 }
 
 /// Install the deterministic Memory probe through the same immutable Agent
-/// publication seam used by production. The published `/memory` slot is a
+/// publication path used by production. The published `/memory` slot is a
 /// replaceable identity: the Managed Session attachment supplies the actual
 /// Store while retaining this binding id for the plugin configuration.
 pub(super) fn mount_with_memory_publication(
-    host: SharedHost,
+    platform: ScenarioPlatform,
     model_ref: &str,
     skills: Vec<awaken_agent_contract::AgentSkillBinding>,
 ) -> Router {
@@ -240,8 +253,8 @@ pub(super) fn mount_with_memory_publication(
             instructions: None,
         }],
     });
-    let host = host.with_agent_publications(publication.clone());
-    mount_with_agent_source(Arc::new(host), publication)
+    let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
+    mount_with_agent_source(platform, publication)
 }
 
 pub(super) fn fixed_host_backend_publication_with_mcp(
@@ -281,16 +294,16 @@ pub(super) fn fixed_host_backend_publication(
 }
 
 /// Install one immutable Agent as the sole backend authority for deterministic
-/// ACP scenarios. Keeping this assembly in one place prevents scenario tests
+/// ACP scenarios. Keeping this platform preparation in one place prevents scenario tests
 /// from reviving metadata-based runtime selection as a second source of truth.
 pub(super) fn mount_with_host_backend_publication(
-    host: SharedHost,
+    platform: ScenarioPlatform,
     agent_id: &str,
     backend_ref: &str,
 ) -> Router {
     let publication = fixed_host_backend_publication(agent_id, backend_ref, Vec::new());
-    let host = host.with_agent_publications(publication.clone());
-    mount_with_agent_source(Arc::new(host), publication)
+    let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
+    mount_with_agent_source(platform, publication)
 }
 
 impl PublishedAgentSnapshotSource for FixedAgentPublication {
@@ -354,31 +367,21 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
     }
 }
 
-/// Resource HTTP adapters without the product composition root's local Workspace
-/// injector. This intentionally incomplete test composition proves that File,
+/// Resource HTTP adapters without the product service wiring's local Workspace
+/// injector. This intentionally incomplete Scenario platform proves that File,
 /// MemoryStore, and Skill routes fail closed instead of deriving a Workspace from
 /// the Host. Production always supplies either the local default-scope layer or an
 /// authenticated PEP before these routers.
 pub fn build_unscoped_resource_router() -> Router {
-    let host = Arc::new(resource_host(Arc::new(EchoModel), "unscoped-resource"));
-    let purge: Arc<dyn awaken_resource_contract::ResourcePurgeScheduler> =
-        Arc::new(awaken_resource_application::RepositoryPurgeScheduler::new(
-            host.resource_reclamation()
-                .expect("scenario resource lifecycle"),
-        ));
-    let memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService> =
-        Arc::new(awaken_resource_application::MemoryStoreApplication::new(
-            scenario_resource_catalog(),
-            purge.clone(),
-        ));
+    let platform = resource_host(Arc::new(EchoModel), "unscoped-resource");
+    let (_host, resources) = platform.into_parts();
+    let authorities = resources.authorities();
     awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput {
-        files: host
-            .file_application()
-            .expect("scenario resource composition installs File application"),
-        memories: host.memory_repository(),
-        memory_stores,
-        skills: host.skill_store(),
-        purge,
+        files: resources.files(),
+        memories: authorities.memory_repository(),
+        memory_stores: resources.memory_stores(),
+        skills: Some(authorities.skill_store()),
+        purge: resources.purge_scheduler(),
     })
 }
 

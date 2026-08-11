@@ -61,29 +61,23 @@ impl awaken_resource_application::RepositoryPurgeScheduler
 pub fn awaken_resource_application::RepositoryPurgeScheduler::new(alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReclamationRepository>) -> Self
 impl awaken_resource_contract::lifecycle::ResourcePurgeScheduler for awaken_resource_application::RepositoryPurgeScheduler
 pub fn awaken_resource_application::RepositoryPurgeScheduler::schedule_purge<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::lifecycle::ResourceTarget, core::option::Option<u64>, u64, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::lifecycle::PutResourcePurgeOutcome, awaken_resource_contract::lifecycle::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub struct awaken_resource_application::ResourceComponent
-impl awaken_resource_application::ResourceComponent
-pub fn awaken_resource_application::ResourceComponent::file_catalog(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>
-pub fn awaken_resource_application::ResourceComponent::file_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
-pub fn awaken_resource_application::ResourceComponent::memory_repository(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>
-pub fn awaken_resource_application::ResourceComponent::reclamation(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReclamationRepository>
-pub fn awaken_resource_application::ResourceComponent::resource_catalog(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>
-pub fn awaken_resource_application::ResourceComponent::skill_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>
-pub struct awaken_resource_application::ResourceDependencies
-pub awaken_resource_application::ResourceDependencies::file_catalog: alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>
-pub awaken_resource_application::ResourceDependencies::file_store: alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
-pub awaken_resource_application::ResourceDependencies::memory_repository: alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>
-pub awaken_resource_application::ResourceDependencies::reclamation: alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReclamationRepository>
-pub awaken_resource_application::ResourceDependencies::resource_catalog: alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>
-pub awaken_resource_application::ResourceDependencies::skill_store: alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>
+pub struct awaken_resource_application::ResourceAuthorities
+impl awaken_resource_application::ResourceAuthorities
+pub fn awaken_resource_application::ResourceAuthorities::file_catalog(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>
+pub fn awaken_resource_application::ResourceAuthorities::file_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileStore>
+pub fn awaken_resource_application::ResourceAuthorities::memory_repository(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>
+pub fn awaken_resource_application::ResourceAuthorities::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::FileStore>, alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReclamationRepository>) -> Self
+pub fn awaken_resource_application::ResourceAuthorities::reclamation(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReclamationRepository>
+pub fn awaken_resource_application::ResourceAuthorities::resource_catalog(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>
+pub fn awaken_resource_application::ResourceAuthorities::skill_store(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>
 pub struct awaken_resource_application::ResourcesApplication
 impl awaken_resource_application::ResourcesApplication
 pub fn awaken_resource_application::ResourcesApplication::artifact_publisher<C: core::marker::Send + core::marker::Sync + 'static>(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<C>>
+pub fn awaken_resource_application::ResourcesApplication::authorities(&self) -> awaken_resource_application::ResourceAuthorities
 pub fn awaken_resource_application::ResourcesApplication::file_content_source<C: core::marker::Sync + 'static>(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::execution::FileContentSource<C>>
 pub fn awaken_resource_application::ResourcesApplication::files(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
 pub fn awaken_resource_application::ResourcesApplication::memory_stores(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>
-pub fn awaken_resource_application::ResourcesApplication::new(awaken_resource_application::ResourceComponent) -> Self
-pub fn awaken_resource_application::ResourcesApplication::ports(&self) -> awaken_resource_application::ResourceComponent
+pub fn awaken_resource_application::ResourcesApplication::new(awaken_resource_application::ResourceAuthorities) -> Self
 pub fn awaken_resource_application::ResourcesApplication::purge_scheduler(&self) -> alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>
 pub fn awaken_resource_application::ResourcesApplication::skill_bundle_source<C: core::marker::Sync + 'static>(&self) -> alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<C>>
 pub struct awaken_resource_application::StoreSkillBundleSource
@@ -99,6 +93,5 @@ pub const awaken_resource_application::MAX_SKILL_ARCHIVE_BYTES: usize
 pub const awaken_resource_application::MAX_SKILL_BUNDLE_BYTES: usize
 pub const awaken_resource_application::MAX_SKILL_FILES: usize
 pub const awaken_resource_application::MAX_SKILL_FILE_BYTES: usize
-pub fn awaken_resource_application::build_resource_component(awaken_resource_application::ResourceDependencies) -> awaken_resource_application::ResourceComponent
 pub fn awaken_resource_application::canonicalize_skill_bundle(alloc::vec::Vec<awaken_resource_application::UploadedSkillBundleFile>) -> core::result::Result<awaken_resource_application::CanonicalSkillBundle, alloc::string::String>
 pub fn awaken_resource_application::normalize_bundle_path(&str) -> core::result::Result<alloc::string::String, alloc::string::String>

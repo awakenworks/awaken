@@ -12,7 +12,7 @@
   Session-owned environment. The unused generic `SandboxManager` was removed:
   its private in-memory registry duplicated the Session Environment owner without
   participating in any production call path.
-- Builds on: the `pc::Sandbox`/`SandboxProvider`/`SandboxHandle` port and the
+- Builds on: the `pc::Sandbox`/`SandboxProvider`/`SandboxHandle` contract and the
   never-downgrade `select_provider` / fail-closed `prepare_environment` gates
   (`awaken-provisioning-contract::sandbox`); the already-written-but-uncalled
   reuse decision functions `reconcile_adoption` / `LeaseLiveness`
@@ -29,7 +29,7 @@
 ## Context
 
 Awaken's sandbox layer has a complete **contract + decision** half and an absent
-**live-orchestration** half. The ports exist (`Sandbox::{spawn,attach,process,
+**live-orchestration** half. The contracts exist (`Sandbox::{spawn,attach,process,
 renew_lease,dispose,status,artifacts}`, `SandboxProvider::{capabilities,
 probe_ready,create,adopt}`), the never-downgrade selection and fail-closed
 preparation exist, and the reuse *decisions* are written as pure, tested
@@ -75,7 +75,7 @@ vocabulary this ADR adopts repo-wide.
 | OS-isolated spawn environment (`pc::Sandbox`) | **Sandbox instance** (pooled only when expensive) | an isolation boundary | per run, or awaiting warm for Container tier | **awaken worker plane** |
 | Execution endpoint that runs tools/spawns | **Hand** (`HandRegistry`, ≈ today's `WorkerRegistry`) | a stateless executor + its capabilities | fleet-lived | awaken worker/server plane |
 
-The composition at run time is a mount, not an inheritance:
+The run-time relationship is a mount, not an inheritance:
 
 ```
 Hand (chosen by placement, HandRegistry)
@@ -172,13 +172,13 @@ claim drain and before deregistration.
 |---|---|---|---|---|
 | Immutable Environment image | `awaken-environment-image-build` | Environment build digest | Environment registration enqueues one build demand; execution readiness waits for its receipt | Environment remains unready; no alternate image builder |
 | Never-used container environment | `WarmContainerPool` through `ContainerEnvironmentCapacity` | normalized mount-less `SandboxSpec` shape | Worker startup, before the first Ready heartbeat; adaptive replenish after a hit | log and retain cold create; selected isolation never downgrades |
-| Cache Volume bytes/path | product-side `CacheVolumePrewarmer` in `awaken-runtime-host` with an injected `CacheVolumeInitializer` | caller `(key, host_path)` | explicit eager call or automatically before Session provider creation | Session creation fails; failed preparation is removed and may retry |
+| Cache Volume bytes/location | product-side `CacheVolumePrewarmer` in `awaken-runtime-host` with an injected `CacheVolumeInitializer` | caller `(key, CacheVolumeLocation)`; `HostPath` and Kubernetes PVC are equally valid identities | explicit eager call or automatically before Session provider creation | Session creation fails; failed preparation is removed and may retry |
 
 Static dependency direction:
 
 ```text
 Environment registration -> image-build coordinator -> immutable image receipt
-Worker composition -> SessionEnvironmentProvider -> WarmContainerPool capacity
+Worker startup -> SessionEnvironmentProvider -> WarmContainerPool capacity
 Session creation -> product CacheVolumePrewarmer -> opaque CacheVolume mount -> provider
 ```
 
@@ -186,16 +186,33 @@ Dynamic startup/use/shutdown sequence:
 
 ```text
 register Worker as Starting
-  -> compose provider + capacity from the same backend
+  -> select provider + capacity from the same backend
   -> prewarm canonical empty shape to configured target
   -> publish Ready -> claim Session
   -> prepare each CacheVolume (single-flight) -> create/adopt Session environment
   -> drain claims/in-flight work -> shutdown unused capacity -> deregister
 ```
 
+Environment configuration changes use the same path instead of a fourth refresh
+mechanism:
+
+```text
+commit new Environment revision
+  -> enqueue/build its immutable image digest
+  -> publish the new exact EnvironmentSnapshot as current warmup demand
+  -> Worker compares the desired shape with retained unused capacity
+  -> discard obsolete unused capacity, then warm the new exact shape
+  -> leave existing Sessions pinned to their frozen revision and environment
+```
+
+A CacheVolume key or location change likewise creates a new preparation identity;
+it never mutates or aliases the previous prepared volume. Kubernetes PVC and
+host-path locations pass through the same `CacheVolumeLocation` identity and the
+selected backend-specific initializer.
+
 The three stages deliberately do not share a "warm manager": their keys,
 consistency boundaries, failure meaning, and owners are different. They share only
-the ordered composition above.
+the ordered lifecycle above.
 
 ### 5. Isolation floor is a policy input, not a hardcoded default — one mechanism, two trust models.
 

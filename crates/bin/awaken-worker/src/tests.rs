@@ -284,9 +284,9 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
     // | absent | n/a | deployment-derived sandbox evidence |
     // | present | non-empty | exact enclosing evidence, no container provider |
     // | present | empty | build fails closed |
-    // | present + Session provider | any | ambiguous composition fails closed |
+    // | present + Session provider | any | ambiguous startup fails closed |
     //
-    // R2 proves a Pod/VM composition can describe its already-enforced outer
+    // R2 proves a Pod/VM startup can describe its already-enforced outer
     // boundary without constructing a duplicate Session container path. R3
     // prevents an unaddressable boundary from entering placement evidence.
     let capabilities = awaken_provisioning_contract::SandboxCapabilities {
@@ -345,14 +345,14 @@ fn enclosing_sandbox_boundary_is_the_standard_manifest_capability_source() {
 /// Cause-effect graph: the canonical materializer owns external credential
 /// resolution. Installing its external-only constructor adds no local Vault,
 /// while the same pinned adapter remains the installed Native provider
-/// realization mechanism; Worker has no second resolver-composition path.
+/// realization mechanism; Worker has no second resolver-startup path.
 ///
 /// | Rule | Local Vault | External resolver | Result |
 /// |---|---|---|---|
 /// | X1 | F | T | build succeeds through `external_only` |
 /// | X2 | F | T | exact external source + Worker provider-adapter evidence |
 #[test]
-fn external_credential_resolver_has_one_canonical_composition_path() {
+fn external_credential_resolver_has_one_canonical_resolution_path() {
     let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
         "http://control",
     ))

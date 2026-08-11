@@ -4,7 +4,7 @@
 //! per-thread binding so a session (and, with a per-turn override, a turn) selects
 //! its published model. [`InferenceRouting`] holds the runtime materialization
 //! port plus per-thread overrides. Configuration resolution is deliberately not
-//! represented here. A composition without the port uses its explicitly bound
+//! represented here. A Host without the model resolver uses its explicitly bound
 //! executor; a configured materialization failure is rejected rather than
 //! silently selecting another route.
 

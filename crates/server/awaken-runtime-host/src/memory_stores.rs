@@ -1,11 +1,11 @@
 //! `MemoryStores` — the Resources context's Memory content backends (ADR-0038/0053).
 //!
 //! Owns the one path-addressed CAS [`MemoryRepository`] used by the Memory API, sandbox
-//! mounts, recall, and extraction. Product composition injects the selected
+//! mounts, recall, and extraction. Product startup injects the selected
 //! repository; the local opener exists only for tests and scenario fixtures.
 //!
 //! Resource definition/configuration/lifecycle lives in the platform
-//! `ResourceCatalog`, injected at the server composition root. The runtime host owns
+//! `ResourceCatalog`, injected at the server process startup. The runtime host owns
 //! only content backends; it does not own an authorization policy or a second identity
 //! registry.
 

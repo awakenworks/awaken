@@ -8,8 +8,8 @@
 //! build leases work to **one** worker at a time — `poll` hands out a queued item
 //! only when no item in the environment is already `active`. Multi-worker
 //! fan-out (many concurrent leases) is the managed scaling boundary. Product
-//! composition injects a durable SQLite/PostgreSQL queue; only explicit test-support
-//! composition uses the reference in-memory queue. Every new environment is seeded
+//! startup injects a durable SQLite/PostgreSQL queue; only explicit test-support
+//! startup uses the reference in-memory queue. Every new environment is seeded
 //! with one `healthcheck` work item so the queue is exercisable end to end.
 
 use std::sync::Arc;

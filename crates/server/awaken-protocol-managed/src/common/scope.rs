@@ -1,7 +1,7 @@
-//! Resource-route extraction of the Workspace selected by the composition edge.
+//! Resource-route extraction of the Workspace selected by the startup edge.
 //!
 //! Authentication and authorization happen before these routes. Local mode also
-//! selects its hidden default Workspace at the composition root. Resource APIs
+//! selects its hidden default Workspace at the process startup. Resource APIs
 //! therefore consume an existing [`WorkspaceScope`] and never infer one from the
 //! Host, credentials, route, or deployment mode.
 
@@ -11,7 +11,7 @@ use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, request::Parts};
 use axum::response::{IntoResponse, Response};
 
-/// Workspace selected and stamped by the trusted composition edge.
+/// Workspace selected and stamped by the trusted startup edge.
 ///
 /// Missing and empty values fail as `404` so an incorrectly wired route cannot
 /// create an unscoped resource or disclose whether a resource id exists.

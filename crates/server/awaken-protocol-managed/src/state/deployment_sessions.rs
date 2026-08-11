@@ -159,7 +159,9 @@ mod tests {
 
     #[tokio::test]
     async fn deployment_launch_preserves_missing_and_unavailable_environment_outcomes() {
-        // Cause/effect graph: C1=registration present, C2=registration absent,
+        // FMECA: collapsing a missing Environment and an unavailable catalog
+        // would either retry a terminal authoring error forever or discard a
+        // recoverable Deployment run. Cause/effect graph: C1=registration present, C2=registration absent,
         // C3=catalog read fails (mutually exclusive). Effects are E1=Some,
         // E2=None, E3=typed error. Decision rules exercised here are R2 C2→E2
         // and R3 C3→E3; R1 is covered by Environment execution conformance.
@@ -177,7 +179,7 @@ mod tests {
             vault_ids: Vec::new(),
         };
         let missing = Arc::new(ManagedState::new(RehydrateFake::default()));
-        let missing_launcher = crate::LocalDeploymentSessionLauncher::new(missing);
+        let missing_launcher = crate::ManagedDeploymentSessionLauncher::new(missing);
         assert!(
             matches!(
                 DeploymentSessionLauncher::launch(&missing_launcher, request("env_missing"))
@@ -197,7 +199,7 @@ mod tests {
                 ),
             )),
         );
-        let unavailable_launcher = crate::LocalDeploymentSessionLauncher::new(unavailable);
+        let unavailable_launcher = crate::ManagedDeploymentSessionLauncher::new(unavailable);
         assert!(
             matches!(
                 DeploymentSessionLauncher::launch(&unavailable_launcher, request("env_a"))
@@ -211,8 +213,12 @@ mod tests {
 
     #[tokio::test]
     async fn deployment_launch_never_downgrades_an_unrepresentable_agent_version_to_latest() {
+        // FMECA/cause-effect rule: C1 authored Agent revision exceeds the wire
+        // projection range; E1 launch fails before Session creation. Decision
+        // D1: C1 => E1. Falling back to the latest revision would execute a
+        // different immutable Agent than the Deployment selected.
         let state = Arc::new(ManagedState::new(RehydrateFake::default()));
-        let launcher = crate::LocalDeploymentSessionLauncher::new(state);
+        let launcher = crate::ManagedDeploymentSessionLauncher::new(state);
         let request = DeploymentLaunch {
             deployment_id: "depl_version".into(),
             deployment_run_id: "deprun_version".into(),

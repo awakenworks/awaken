@@ -26,7 +26,7 @@ use std::sync::Arc;
 use crate::{LocalCommitAdapter, LocalCommitQueries};
 
 // All delegation for a Coordinator-owned commit source is centralized here so
-// composition adapters cannot become parallel implementations of persistence
+// startup adapters cannot become parallel implementations of persistence
 // authority (ADR-0065/0066 architecture fitness).
 #[async_trait::async_trait]
 impl<S, Q> Coordinator for LocalCommitAdapter<S, Q>
@@ -116,14 +116,14 @@ where
 
 /// One thread's commit boundary: either a `Local` read+write store (an
 /// interchangeable memory/sqlite/fs/postgres backend behind `Arc<dyn LocalCommit>`,
-/// chosen at the composition root) or the `Remote` Worker boundary backed by a
+/// chosen at the process startup) or the `Remote` Worker boundary backed by a
 /// non-authoritative recovery projection. The four local backends are polymorphic
 /// — the enum only discriminates local authoritative reads from projected remote
 /// reads, not the backend.
 pub(crate) enum HostCommit {
     /// One of the interchangeable local backends (memory / sqlite / fs / postgres):
     /// polymorphic implementations of the same read+write store, chosen once at the
-    /// composition root behind a trait object — no per-backend dispatch here.
+    /// process startup behind a trait object — no per-backend dispatch here.
     Local(Arc<dyn crate::LocalCommit>),
     /// The database-independent Worker's read boundary. Authoritative writes go
     /// through the attempt's claim-fenced operation coordinator; reads use the

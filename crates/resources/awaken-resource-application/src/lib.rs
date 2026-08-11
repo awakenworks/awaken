@@ -1,15 +1,16 @@
-//! Canonical Resources application assembly.
+//! Canonical Resources application services.
 //!
-//! Persistence selection produces one [`ResourceComponent`]. This layer derives
+//! Persistence selection produces one [`ResourceAuthorities`]. This layer derives
 //! the application services shared by HTTP, Runtime artifact harvesting, and
 //! reclamation cleanup exactly once, without teaching those adapters about stores.
 
 use std::sync::Arc;
 
-mod component;
+mod authorities;
 mod execution_sources;
 mod files;
 mod skill_ingest;
+pub use authorities::ResourceAuthorities;
 use awaken_resource_contract::{
     ConfigVersion, CreateMemoryStoreCommand, FileApplicationService, MemoryStoreApplicationError,
     MemoryStoreApplicationService, MemoryStoreConfigVersion, MemoryStoreDefinition,
@@ -18,7 +19,6 @@ use awaken_resource_contract::{
     ResourceTarget, ResourceTimestamps, UpdateMemoryStoreCommand,
 };
 pub use awaken_resource_contract::{MAX_MANAGED_FILE_SIZE_BYTES, MAX_WORKSPACE_FILE_BYTES};
-pub use component::{ResourceComponent, ResourceDependencies, build_resource_component};
 pub use execution_sources::{
     ApplicationArtifactPublisher, ApplicationFileContentSource, CatalogRepositoryBindingVerifier,
     StoreSkillBundleSource,
@@ -31,7 +31,7 @@ pub use skill_ingest::{
 
 #[derive(Clone)]
 pub struct ResourcesApplication {
-    ports: ResourceComponent,
+    authorities: ResourceAuthorities,
     files: Arc<FileApplication>,
     memories: Arc<MemoryStoreApplication>,
     purge: Arc<RepositoryPurgeScheduler>,
@@ -39,27 +39,27 @@ pub struct ResourcesApplication {
 
 impl ResourcesApplication {
     #[must_use]
-    pub fn new(ports: ResourceComponent) -> Self {
-        let reclamation = ports.reclamation();
+    pub fn new(authorities: ResourceAuthorities) -> Self {
+        let reclamation = authorities.reclamation();
         let purge = Arc::new(RepositoryPurgeScheduler::new(reclamation.clone()));
         Self {
             files: Arc::new(FileApplication::new(
-                ports.file_store(),
-                ports.file_catalog(),
+                authorities.file_store(),
+                authorities.file_catalog(),
                 reclamation.clone(),
             )),
             memories: Arc::new(MemoryStoreApplication::new(
-                ports.resource_catalog(),
+                authorities.resource_catalog(),
                 purge.clone(),
             )),
             purge,
-            ports,
+            authorities,
         }
     }
 
     #[must_use]
-    pub fn ports(&self) -> ResourceComponent {
-        self.ports.clone()
+    pub fn authorities(&self) -> ResourceAuthorities {
+        self.authorities.clone()
     }
 
     #[must_use]
@@ -85,7 +85,7 @@ impl ResourcesApplication {
     pub fn skill_bundle_source<C: Sync + 'static>(
         &self,
     ) -> Arc<dyn awaken_session_contract::SkillBundleSource<C>> {
-        Arc::new(StoreSkillBundleSource::new(self.ports.skill_store()))
+        Arc::new(StoreSkillBundleSource::new(self.authorities.skill_store()))
     }
 
     #[must_use]
@@ -298,20 +298,22 @@ mod tests {
             awaken_resource_store::SqliteResourceStore::in_memory()
                 .expect("open resource authority"),
         );
-        ResourcesApplication::new(build_resource_component(ResourceDependencies {
-            resource_catalog: resources.clone(),
-            file_store: files.clone(),
-            file_catalog: files,
-            memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-            skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-            reclamation: resources,
-        }))
+        ResourcesApplication::new(ResourceAuthorities::new(
+            resources.clone(),
+            files.clone(),
+            files,
+            Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+            Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+            resources,
+        ))
     }
 
     #[tokio::test]
     async fn memory_store_commands_share_one_lifecycle_owner() {
-        // Cause/effect graph and decision table:
-        // C0 one Resources composition -> E0 every consumer receives the exact
+        // FMECA: FM1 HTTP and runtime receive different MemoryStore services;
+        // FM2 repeated create overwrites an existing aggregate; FM3 lifecycle
+        // transitions lose version order. Cause/effect graph and decision table:
+        // C0 one Resources application -> E0 every consumer receives the exact
         // same MemoryStore and purge service allocations; C1 absent id + valid
         // create -> E1 one Suspended aggregate at v1; C2 same deterministic id
         // again -> E2 conflict and original unchanged; C3 existing id +
@@ -319,7 +321,7 @@ mod tests {
         // zero retention -> E4 Deleted plus one durable purge; C5 unknown id ->
         // E5 NotFound and no aggregate.
         //
-        // | Rule | composition | command/state | Effect |
+        // | Rule | application | command/state | Effect |
         // | R0   | one         | none          | E0     |
         // | R1   | one         | create/new    | E1     |
         // | R2   | one         | create/exists | E2     |

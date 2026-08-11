@@ -394,6 +394,108 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
     );
 }
 
+/// Message-execution FMECA and cause/effect graph. Failure modes are FM1 a
+/// successful Runtime step leaves the Session running, FM2 a Runtime error
+/// skips settlement, FM3 admission failure invokes Runtime anyway. Causes: C1
+/// Session is idle, C2 Runtime succeeds, C3 Runtime fails after admission, C4
+/// Session is terminal before admission. Effects: E1 one epoch and idle
+/// settlement with a step, E2 one epoch and idle settlement with the original
+/// error, E3 no Runtime effect and terminal truth unchanged. Cause graph:
+/// C1&&C2 -> E1; C1&&C3 -> E2; C4 -> E3.
+///
+/// | Rule | Idle | Runtime | Terminal | Effect |
+/// |---|---|---|---|---|
+/// | M1 | yes | success | no | E1 |
+/// | M2 | yes | error | no | E2 |
+/// | M3 | no | not called | yes | E3 |
+#[tokio::test]
+async fn session_message_execution_always_settles_its_activity() {
+    let success_repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("M1 repository"),
+    );
+    create(
+        success_repo.as_ref(),
+        persisted("message-success", false, false, "idle"),
+    )
+    .await;
+    let success = application_with_runtime(
+        Arc::new(SuccessfulRuntime),
+        success_repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    )
+    .run_session_message(
+        "agent",
+        "message-success",
+        vec![awaken_agent_contract::agent::content::ContentBlock::text(
+            "go",
+        )],
+        None,
+        Arc::new(DiscardProgress),
+    )
+    .await
+    .expect("M1 successful message");
+    assert_eq!(success.session.execution, SessionExecutionState::Idle, "M1");
+    assert_eq!(success.session.activity_epoch, 1, "M1");
+
+    let failure_repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("M2 repository"),
+    );
+    create(
+        failure_repo.as_ref(),
+        persisted("message-failure", false, false, "idle"),
+    )
+    .await;
+    let failure = application(
+        failure_repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    )
+    .run_session_message(
+        "agent",
+        "message-failure",
+        vec![awaken_agent_contract::agent::content::ContentBlock::text(
+            "go",
+        )],
+        None,
+        Arc::new(DiscardProgress),
+    )
+    .await;
+    assert!(failure.is_err(), "M2");
+    let settled = failure_repo.get("message-failure").await.expect("M2 state");
+    assert_eq!(settled.execution, SessionExecutionState::Idle, "M2");
+    assert_eq!(settled.activity_epoch, 1, "M2");
+
+    let mut terminal = persisted("message-terminal", false, false, "idle");
+    terminal.execution = SessionExecutionState::Terminated;
+    create(failure_repo.as_ref(), terminal).await;
+    let terminal_before = failure_repo
+        .get("message-terminal")
+        .await
+        .expect("M3 initial state");
+    let rejected = application(
+        failure_repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    )
+    .run_session_message(
+        "agent",
+        "message-terminal",
+        Vec::new(),
+        None,
+        Arc::new(DiscardProgress),
+    )
+    .await;
+    assert!(rejected.is_err(), "M3");
+    assert_eq!(
+        failure_repo
+            .get("message-terminal")
+            .await
+            .expect("M3 state"),
+        terminal_before,
+        "M3"
+    );
+}
+
 /// Update-admission authority graph. C1 durable status is idle; C2 durable
 /// status is running/terminal; C3 an interface cache is absent or stale.
 /// Only C1 permits mutation (E1); C2 always rejects without a root revision

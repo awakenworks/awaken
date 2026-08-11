@@ -158,7 +158,7 @@ struct MemoryStoreApi {
 }
 
 /// Mount the Memory API over the same Resource Catalog used by Session
-/// resolution. Composition roots that manage resources must use this variant so
+/// resolution. Processes that manage Resources must use this variant so
 /// create/archive/delete and activation share one lifecycle truth.
 pub fn memory_stores_router(
     memories: Arc<dyn MemoryRepository>,

@@ -1,7 +1,7 @@
 //! ADR-0048 D3 / ADR-0051 end-to-end: the management plane addresses a workspace
 //! resource by path (`/v1/workspaces/{ws}/…`), and that path scope both routes to
 //! the flat handler AND fences cross-tenant access through the resource's
-//! ownership guard. Driven over the real assembled management router.
+//! ownership guard. Driven over the real prepared management router.
 
 use std::sync::Arc;
 

@@ -4,7 +4,7 @@
 use super::*;
 
 /// Worker-side Resource content ports that must be installed as one unit.
-/// Keeping the pair named prevents a partially remote Host composition from
+/// Keeping the pair named prevents a partially remote Host startup from
 /// silently opening a local content authority for the missing half.
 struct WorkerContentAdapters {
     file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
@@ -14,7 +14,7 @@ use awaken_runtime_contract::delegation::RunDelegationService;
 
 impl SharedHost {
     /// Resolve or provision the stable local workspace coordinate owned by this
-    /// installation. Composition roots call this once and pass the value to every
+    /// installation. Process startup calls this once and passes the value to every
     /// resource adapter they assemble.
     pub fn provision_local_workspace() -> String {
         resolve_local_workspace(None)
@@ -27,7 +27,7 @@ impl SharedHost {
     }
 
     /// Test-support selection of the same local extraction repository used by
-    /// volatile/local host fixtures. Product composition injects its role-owned
+    /// volatile/local host fixtures. Product startup injects its role-owned
     /// repository directly into the production constructor.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_memory_extraction_repository(
@@ -69,7 +69,7 @@ impl SharedHost {
     }
 
     /// The configured Session sandbox tier selected by the authoritative
-    /// [`crate::DeploymentConfig`]. Composition adapters use this read-only view
+    /// [`crate::DeploymentConfig`]. Startup adapters use this read-only view
     /// when their realization strategy must be compatible with the environment;
     /// it does not introduce another tier-selection source.
     #[must_use]
@@ -77,7 +77,7 @@ impl SharedHost {
         self.deployment.sandbox_tier
     }
 
-    /// Install the exact durable dispatch transport owned by this host composition.
+    /// Install the exact durable dispatch transport owned by this host startup.
     ///
     /// An explicitly assembled queue is already the authority for ingress, so it
     /// also enables this host's dispatch pool. Embedders do not need to mutate the
@@ -97,7 +97,7 @@ impl SharedHost {
     /// completion observation but never drains the queue or realizes a Session
     /// Environment. A separately registered Worker is the sole physical effect
     /// owner. Keeping this as one constructor prevents call ordering from silently
-    /// re-enabling the local pool after a composition selected remote placement.
+    /// re-enabling the local pool after a startup selected remote placement.
     #[must_use]
     pub fn with_coordinator_dispatch_store(
         mut self,
@@ -116,9 +116,9 @@ impl SharedHost {
         self
     }
 
-    /// Install a dispatch port supplied by a database-less Worker transport.
+    /// Install the dispatch service supplied by a database-less Worker transport.
     #[must_use]
-    pub fn with_dispatch_port(
+    pub fn with_worker_dispatch(
         self,
         dispatch: Arc<dyn awaken_run_ingress_contract::Dispatch>,
     ) -> Self {
@@ -146,10 +146,10 @@ impl SharedHost {
     /// Test/scenario construction with resources but no explicit deployment or
     /// durable extraction authority.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn new_with_resource_component(
+    pub fn new_with_resources(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: awaken_resource_application::ResourceComponent,
+        resources: awaken_resource_application::ResourceAuthorities,
     ) -> Self {
         Self::build(
             llm,
@@ -161,12 +161,12 @@ impl SharedHost {
         )
     }
 
-    /// Construct directly from the composition root's resolved deployment.
+    /// Construct directly from the process's resolved deployment.
     /// No resource or runtime backend is opened from process-global state first.
-    pub fn new_with_resource_component_and_deployment(
+    pub fn new_with_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
-        resources: awaken_resource_application::ResourceComponent,
+        resources: awaken_resource_application::ResourceAuthorities,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
@@ -207,18 +207,18 @@ impl SharedHost {
     fn build(
         llm: Arc<dyn LlmExecutor>,
         model_ref: String,
-        resources: Option<awaken_resource_application::ResourceComponent>,
+        resources: Option<awaken_resource_application::ResourceAuthorities>,
         worker_content: Option<WorkerContentAdapters>,
         extraction_repository: Option<Arc<dyn awaken_ext_memory::MemoryExtractionRepository>>,
         deployment: crate::DeploymentConfig,
     ) -> Self {
-        // Composition root: the deployment axes are parsed once from the environment
+        // Process startup parses the deployment axes once from the environment
         // into one typed config. `DeploymentConfig::storage_dir` set → durable SQLite commit
         // and resource adapters (all survive a restart); unset → ephemeral adapters.
         let store_dir = deployment.storage_dir.clone();
         let local_workspace = resolve_local_workspace(store_dir.as_deref());
         let sandbox_root = crate::acp_backend::session_sandbox_base(&deployment);
-        // Product Resource content is injected atomically through ResourceComponent;
+        // Product Resource content is injected atomically through ResourceAuthorities;
         // a Worker receives its remote adapter. Only test-support construction may
         // still use the local opener below.
         let memory_stores = if let Some(content) = &worker_content {
@@ -231,7 +231,7 @@ impl SharedHost {
                 crate::memory_stores::MemoryStores::open(store_dir.as_deref())
             }
             #[cfg(not(any(test, feature = "test-support")))]
-            unreachable!("product Host construction requires an explicit Resource component")
+            unreachable!("product Host construction requires explicit Resource authorities")
         };
         let extraction_repository = match extraction_repository {
             Some(repository) => repository,
@@ -441,7 +441,7 @@ impl SharedHost {
 
     /// Install the canonical exact credential materializer used by runtime
     /// extensions such as paid WebSearch. The value is cloned from the same
-    /// composition-root instance used by Managed MCP/Resource realization.
+    /// process-startup instance used by Managed MCP/Resource realization.
     #[must_use]
     pub fn with_credential_materializer(
         mut self,
@@ -452,7 +452,7 @@ impl SharedHost {
     }
 
     /// Add one externally owned WebSearch provider to the authoritative
-    /// registry. Duplicate ids fail at composition time instead of shadowing a
+    /// registry. Duplicate ids fail at startup time instead of shadowing a
     /// built-in or changing dispatch order at runtime.
     pub fn with_web_search_provider(
         mut self,
@@ -462,7 +462,7 @@ impl SharedHost {
         Ok(self)
     }
 
-    /// Replace the built-in registry with one composition-owned registry. Use
+    /// Replace the built-in registry with one process-owned registry. Use
     /// the same clone for capability projection and semantic publication
     /// validation to keep discovery, validation, and dispatch identical.
     #[must_use]
@@ -485,7 +485,7 @@ impl SharedHost {
 
     /// Install the adapter that drives snapshot-selected remote attempts. The
     /// host depends only on the neutral attempt port; A2A construction remains a
-    /// composition-root responsibility.
+    /// process-startup responsibility.
     pub fn with_remote_attempt_executor(
         mut self,
         installation: super::RemoteAttemptInstallation,
@@ -533,7 +533,7 @@ impl SharedHost {
     }
 
     /// Platform-managed local workspace used when no authenticated/path scope
-    /// exists. Composition roots may override it with a provisioned coordinate.
+    /// exists. Process startup may override it with a provisioned coordinate.
     #[must_use]
     pub fn with_local_workspace(mut self, workspace: impl Into<String>) -> Self {
         let workspace = workspace.into();
@@ -552,7 +552,7 @@ impl SharedHost {
 
     /// The resolved durable storage root, when this host is persistent.
     ///
-    /// Composition roots use this to place sibling repositories beside runtime
+    /// Process startup uses this to place sibling repositories beside runtime
     /// truth without re-reading process configuration or teaching the runtime
     /// about those repositories.
     pub fn storage_dir(&self) -> Option<&std::path::Path> {
@@ -612,7 +612,7 @@ impl SharedHost {
             dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>,
         >,
     ) -> Self {
-        // This is the database-less Worker composition edge. Retaining the
+        // This is the database-less Worker startup edge. Retaining the
         // test-only/local File application here would create a second command
         // path and incorrectly classify the remote publisher as locally fenced.
         self.file_application = None;
@@ -661,7 +661,7 @@ impl SharedHost {
             .flatten()
     }
 
-    /// Whether this process owns a co-located dispatch pool. Composition roots use
+    /// Whether this process owns a co-located dispatch pool. Process startup uses
     /// the same parsed deployment value that admission uses, so the process cannot
     /// accidentally both advertise coordinator-only behavior and drain locally.
     #[must_use]
@@ -712,7 +712,7 @@ impl SharedHost {
         self
     }
 
-    /// Install the canonical Host-owned capture sink at a late composition edge.
+    /// Install the canonical Host-owned capture sink at a late startup edge.
     ///
     /// This is intentionally the same storage used by [`with_capture_sink`], not
     /// a process-global fallback. Existing sessions retain their immutable
@@ -842,7 +842,7 @@ impl SharedHost {
     }
 
     /// Supply immutable executable publications without mounting the authoring
-    /// plane. Intended for embedded composition roots and scenario fixtures.
+    /// plane. Intended for embedded process startups and scenario fixtures.
     pub fn with_agent_publications(
         mut self,
         source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
@@ -1063,10 +1063,10 @@ impl SharedHost {
         self
     }
 
-    /// Install the already-composed provider that owns every Session container
+    /// Install the already-configured provider that owns every Session container
     /// environment on this Host.
     ///
-    /// This is the public composition seam for downstream providers. The Host
+    /// This is the public startup seam for downstream providers. The Host
     /// continues to own Session routing and lifecycle; the provider supplies only
     /// its enforceable Sandbox capabilities and create/adopt implementation. A
     /// caller that also installs a [`awaken_provisioning_contract::SecretBroker`]
@@ -1082,7 +1082,7 @@ impl SharedHost {
     }
 
     /// Install one container provider and its optional never-used-capacity owner.
-    /// Keeping both handles from the same composition prevents provider erasure
+    /// Keeping both handles from the same startup prevents provider erasure
     /// from orphaning startup warmup and shutdown drain.
     #[must_use]
     pub fn with_session_container_provider_and_capacity(
@@ -1120,16 +1120,14 @@ impl SharedHost {
         self
     }
 
-    /// Eagerly prepare one caller-owned CacheVolume. The same `(key, host_path)`
-    /// is a no-op when Session realization later requests it.
+    /// Eagerly prepare one caller-owned CacheVolume. The same `(key, location)`
+    /// is a no-op when Session realization later requests it. `location` remains
+    /// exact for HostPath, Docker/Podman bind mounts, and Kubernetes PVCs.
     pub async fn prewarm_cache_volume(
         &self,
-        key: impl Into<String>,
-        host_path: impl Into<std::path::PathBuf>,
+        volume: crate::CacheVolumeWarmup,
     ) -> Result<(), String> {
-        self.cache_volume_prewarmer
-            .prewarm(crate::CacheVolumeWarmup::host_path(key, host_path))
-            .await
+        self.cache_volume_prewarmer.prewarm(volume).await
     }
 
     /// Warm the deployment's canonical empty Session shape to the target selected
@@ -1389,7 +1387,7 @@ impl SharedHost {
         }
         let Ok(store) = self.dispatch_store() else {
             // Postgres backend not yet initialised — a later `mount` after
-            // Coordinator composition supplies the shared dispatch authority and
+            // Coordinator startup supplies the shared dispatch authority and
             // this Host owns only its process-local claimer.
             return;
         };
@@ -1520,7 +1518,7 @@ fn local_memory_extraction_repository(
 }
 
 #[cfg(test)]
-mod composition_tests {
+mod startup_tests {
     use super::*;
 
     #[test]

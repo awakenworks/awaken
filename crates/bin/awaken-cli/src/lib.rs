@@ -1,7 +1,7 @@
-//! `awaken-cli` library: the product process **composition root**.
+//! `awaken-cli` library: product-process startup.
 //!
 //! Control (`awaken-control`) and Coordinator (`awaken-coordinator`) do not depend on
-//! each other. This crate is their process composition root: it opens deployment
+//! each other. This crate starts their product processes: it opens deployment
 //! stores, builds shared adapters, asks each owner for its router, and exposes
 //! exactly the API selected by `config::Role`. AllInOne merges those same routers;
 //! it does not maintain a second implementation. The role-named Control and
@@ -28,10 +28,10 @@ mod identity;
 mod local_process_stores;
 mod observation_reconcile;
 mod process_admin;
-mod process_assembly_options;
+mod process_startup;
 mod process_stores;
 mod process_surface;
-mod resource_component;
+mod resources;
 mod runtime_process_router;
 mod service;
 mod web_search_publication;
@@ -67,27 +67,27 @@ pub use acp_local_credentials::{
 pub use console_assets::mount as mount_console;
 pub use console_assets::mount_with_navigation as mount_console_with_navigation;
 pub use control::{
-    build_control_assembly, build_control_assembly_with_publication_resolver_and_web_search,
     build_control_router, build_control_router_with_publication_resolver,
-    build_control_router_with_publication_resolver_and_web_search,
+    build_control_router_with_publication_resolver_and_web_search, prepare_control_process,
+    prepare_control_process_with_publication_resolver_and_web_search,
 };
-use control_component::{assemble_control_process_router, control_component_for_process};
-use deployment_process::build_runtime_process_assembly;
+use control_component::{control_component_for_process, prepare_control_routers};
 pub use deployment_process::migrate_deployment_schema;
+use deployment_process::prepare_runtime_process;
 use identity::identity_wiring;
-use process_assembly_options::{ProcessAssemblyOptions, local_model_supply};
+use process_startup::{ProcessStartup, local_model_supply};
 #[cfg(test)]
-use process_stores::role_composes_resource_component;
+use process_stores::role_hosts_resources;
 use process_stores::{
     ControlStores, CoordinatorStores, MigrationComponent, PostgresSchemaMode, ProcessStores,
     migration_manifest, role_owns_control_component, role_owns_managed_execution,
 };
 #[cfg(any(test, feature = "test-support"))]
-use resource_component::ephemeral_resources_application;
-use resource_component::open_resources_application;
-use runtime_process_router::assemble_runtime_process_router;
+use resources::ephemeral_resources_application;
+use resources::open_resources_application;
+use runtime_process_router::prepare_runtime_routers;
 pub use service::{
-    ServiceRole, migrate_service, run_service, run_service_binary, serve_control_assembly,
+    ServiceRole, migrate_service, run_service, run_service_binary, serve_prepared_control,
 };
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
@@ -98,13 +98,13 @@ pub use awaken_control::{
 mod live_runtime_capabilities;
 use live_runtime_capabilities::LiveRuntimeCapabilities;
 
-/// The two legal composition modes are deliberately disjoint: production
+/// The two legal startup modes are deliberately disjoint: production
 /// publishes catalog-backed provider candidates and installs their credential
 /// materializer; deterministic scenarios publish one exact host executor and do
 /// not install a provider materializer.
-enum PublicationModelComposition {
+enum PublicationModelSupply {
     PublishedProviders,
-    /// A hosted composition owns provider custody and injects its resolver into
+    /// A hosted startup owns provider custody and injects its resolver into
     /// the same Awaken publication pipeline. This variant is legal only for the
     /// control-only surface: the separate hosted Worker owns runtime
     /// materialization.
@@ -118,7 +118,7 @@ enum PublicationModelComposition {
     },
 }
 
-/// Concrete wiring produced by one legal composition mode. Keeping these four
+/// Concrete wiring produced by one legal startup mode. Keeping these four
 /// values together prevents a provider resolver from being paired with a host
 /// executor or a Host publication from receiving a credential materializer.
 struct RuntimeModelWiring {
@@ -129,14 +129,14 @@ struct RuntimeModelWiring {
 }
 
 /// Publication policy plus a deferred runtime choice. Standalone Control uses
-/// only the resolver; execution adapters are realized only by runtime assembly.
-struct PublicationModelAssembly {
+/// only the resolver; execution adapters are realized only by runtime process.
+struct ResolvedModelServices {
     publication_resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
-    runtime: RuntimeModelAssembly,
+    runtime: RuntimeModelServices,
 }
 
 #[derive(Clone)]
-enum RuntimeModelAssembly {
+enum RuntimeModelServices {
     PublishedProviders,
     NoModelConfigured,
     #[cfg(any(test, feature = "test-support"))]
@@ -146,14 +146,14 @@ enum RuntimeModelAssembly {
     },
 }
 #[derive(Clone)]
-struct ControlServicePorts {
+struct ControlServices {
     audit: Arc<dyn awaken_config_service::ManagementAuditRepository>,
     credentials: Arc<dyn awaken_session_application::SessionCredentialSource>,
     webhooks: Arc<dyn awaken_session_contract::LifecycleFactDelivery>,
     consent: Arc<dyn awaken_runtime_contract::DataSubjectConsentSource>,
 }
 
-impl ControlServicePorts {
+impl ControlServices {
     fn remote(
         client: Arc<awaken_coordinator::control_service_boundary::HttpControlServiceClient>,
     ) -> Self {
@@ -167,7 +167,7 @@ impl ControlServicePorts {
 }
 /// Role-owned HTTP surfaces plus the cleartext local setup handoff printed by
 /// the CLI once. `private_router` is never merged into `public_router`.
-pub struct ProcessAssembly {
+pub struct PreparedProcess {
     pub public_router: Router,
     pub private_router: Router,
     pub local_setup: Option<awaken_control::LocalSetupHandoff>,
@@ -175,21 +175,21 @@ pub struct ProcessAssembly {
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 }
 
-struct ProcessRouterAssembly {
+struct ProcessRouters {
     public_router: Router,
     private_router: Router,
     registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
     service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 }
 
-impl ProcessRouterAssembly {
+impl ProcessRouters {
     fn new(
         public_router: Router,
         private_router: Router,
         registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
         service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
-        // Router-only embedding helpers do not retain ProcessAssembly. Keep the
+        // Router-only embedding helpers do not retain PreparedProcess. Keep the
         // same supervisor alive inside the router as well as exposing it to the
         // binary's readiness controller.
         let public_router = match &registration_supervisor {
@@ -611,69 +611,69 @@ async fn open_process_stores(
 
 /// Build all-in-one from the standard typed deployment configuration.
 pub async fn build_all_in_one_router() -> Router {
-    build_all_in_one_router_with_composition(PublicationModelComposition::PublishedProviders).await
+    build_all_in_one_router_with_model_supply(PublicationModelSupply::PublishedProviders).await
 }
 
-/// Hermetic all-in-one composition for tests and embedders that explicitly want
+/// Hermetic all-in-one startup for tests and embedders that explicitly want
 /// volatile stores. It never consults the standard deployment config path.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn build_ephemeral_all_in_one_router() -> Router {
     let stores = in_memory_process_stores();
     let options = exact_host_model::local_test_process_options(&stores);
-    assemble_runtime_process_router(
+    prepare_runtime_routers(
         stores,
         None,
         None,
         None,
-        PublicationModelComposition::PublishedProviders,
+        PublicationModelSupply::PublishedProviders,
         options,
         None,
     )
     .await
-    .expect("assemble ephemeral all-in-one process")
+    .expect("prepare ephemeral all-in-one process")
     .public_router
 }
 
-/// Canonical product assembly from the command's one resolved configuration.
+/// Canonical product process from the command's one resolved configuration.
 pub async fn build_all_in_one_router_with_deployment(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<Router, String> {
-    build_all_in_one_assembly(deployment, key)
+    prepare_all_in_one_process(deployment, key)
         .await
-        .map(|assembly| assembly.public_router)
+        .map(|process| process.public_router)
 }
 
-pub async fn build_all_in_one_assembly(
+pub async fn prepare_all_in_one_process(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
-) -> Result<ProcessAssembly, String> {
-    build_runtime_process_assembly(
+) -> Result<PreparedProcess, String> {
+    prepare_runtime_process(
         deployment,
         Some(key),
         config::Role::AllInOne,
-        PublicationModelComposition::PublishedProviders,
+        PublicationModelSupply::PublishedProviders,
     )
     .await
 }
 
-/// Coordinator-only process assembly. It reuses the exact same Session, Run,
+/// Coordinator-only process. It reuses the exact same Session, Run,
 /// Dispatch, and Worker-coordination construction as all-in-one, while the
 /// shared role selector keeps Control routes outside the exposed API.
-pub async fn build_coordinator_assembly(
+pub async fn prepare_coordinator_process(
     deployment: &config::ResolvedDeployment,
-) -> Result<ProcessAssembly, String> {
-    build_runtime_process_assembly(
+) -> Result<PreparedProcess, String> {
+    prepare_runtime_process(
         deployment,
         None,
         config::Role::Coordinator,
-        PublicationModelComposition::PublishedProviders,
+        PublicationModelSupply::PublishedProviders,
     )
     .await
 }
 
 /// Build the real env-selected management surface with one explicit in-process
-/// scenario executor. This is a dev/e2e composition, not a provider fallback:
+/// scenario executor. This is a dev/e2e startup, not a provider fallback:
 /// its exact host candidate is published by a dedicated resolver and no
 /// credential/provider materializer is installed.
 #[cfg(any(test, feature = "test-support"))]
@@ -681,7 +681,7 @@ pub async fn build_all_in_one_router_with_scenario_model(
     model: Arc<dyn LlmExecutor>,
     model_ref: String,
 ) -> Router {
-    build_all_in_one_router_with_composition(PublicationModelComposition::Host {
+    build_all_in_one_router_with_model_supply(PublicationModelSupply::Host {
         executor: model,
         binding: awaken_runtime_contract::resolved::ModelBinding::new(
             "default", model_ref, "default",
@@ -690,29 +690,27 @@ pub async fn build_all_in_one_router_with_scenario_model(
     .await
 }
 
-async fn build_all_in_one_router_with_composition(
-    model_composition: PublicationModelComposition,
-) -> Router {
+async fn build_all_in_one_router_with_model_supply(model_supply: PublicationModelSupply) -> Router {
     let deployment = config::ResolvedDeployment::load(config::ConfigOverrides::default())
         .unwrap_or_else(|error| panic!("deployment configuration: {error}"));
     let key = deployment
         .seal_key
         .load_or_create()
         .unwrap_or_else(|error| panic!("control seal key: {error}"));
-    build_runtime_process_assembly(
+    prepare_runtime_process(
         &deployment,
         Some(&key),
         config::Role::AllInOne,
-        model_composition,
+        model_supply,
     )
     .await
-    .unwrap_or_else(|error| panic!("assemble all-in-one process: {error}"))
+    .unwrap_or_else(|error| panic!("prepare all-in-one process: {error}"))
     .public_router
 }
 
-/// [`build_all_in_one_router_with_model`] plus a last-mile hook on the assembled host
-/// (`customize_host`) — the seam a composition root uses to wire a runtime backend the
-/// standard process assembly does not provide, e.g. `host.with_acp(executor)` so `acp:*`
+/// [`build_all_in_one_router_with_model`] plus a last-mile hook on the prepared host
+/// (`customize_host`) — the seam a process startup uses to wire a runtime backend the
+/// standard product process does not provide, e.g. `host.with_acp(executor)` so `acp:*`
 /// threads run on an external CLI while the full managed plane (vault + MCP staging +
 /// config plane) is still in play. Keeps the ACP executor's crate out of this module.
 #[cfg(any(test, feature = "test-support"))]
@@ -723,12 +721,12 @@ pub async fn build_all_in_one_router_with_host_customizer(
 ) -> Router {
     let stores = in_memory_process_stores();
     let options = exact_host_model::local_test_process_options(&stores);
-    assemble_runtime_process_router(
+    prepare_runtime_routers(
         stores,
         None,
         None,
         None,
-        PublicationModelComposition::Host {
+        PublicationModelSupply::Host {
             executor: model,
             binding,
         },
@@ -736,13 +734,13 @@ pub async fn build_all_in_one_router_with_host_customizer(
         Some(Box::new(customize_host)),
     )
     .await
-    .expect("assemble test-support customized all-in-one process")
+    .expect("prepare test-support customized all-in-one process")
     .public_router
 }
 
 /// Durable counterpart of [`build_all_in_one_router_with_host_customizer`].
 ///
-/// This is an explicit-input composition seam for restart tests and embeddings
+/// This is an explicit-input startup seam for restart tests and embeddings
 /// that need a real external runtime while retaining the same management and
 /// resource-plane state across host lifetimes. The sealing key and storage root
 /// are supplied by the caller, avoiding process-global environment races.
@@ -758,12 +756,12 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
         .await
         .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
     let options = exact_host_model::local_test_process_options(&stores);
-    assemble_runtime_process_router(
+    prepare_runtime_routers(
         stores,
         None,
         None,
         None,
-        PublicationModelComposition::Host {
+        PublicationModelSupply::Host {
             executor: model,
             binding,
         },
@@ -771,14 +769,14 @@ pub async fn build_durable_all_in_one_router_with_host_customizer(
         Some(Box::new(customize_host)),
     )
     .await
-    .expect("assemble durable customized all-in-one process")
+    .expect("prepare durable customized all-in-one process")
     .public_router
 }
 
 /// Build the management router over in-memory stores with an explicit host default
 /// model injected — a **test-only** seam so an integration test can drive the real
 /// management router with a deterministic (mock) model, keeping the mock out of the
-/// production assembly.
+/// production process.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn build_all_in_one_router_with_model(
     model: Arc<dyn LlmExecutor>,
@@ -786,12 +784,12 @@ pub async fn build_all_in_one_router_with_model(
 ) -> Router {
     let stores = in_memory_process_stores();
     let options = exact_host_model::local_test_process_options(&stores);
-    assemble_runtime_process_router(
+    prepare_runtime_routers(
         stores,
         None,
         None,
         None,
-        PublicationModelComposition::Host {
+        PublicationModelSupply::Host {
             executor: model,
             binding: awaken_runtime_contract::resolved::ModelBinding::new(
                 "default", model_ref, "genai",
@@ -801,7 +799,7 @@ pub async fn build_all_in_one_router_with_model(
         None,
     )
     .await
-    .expect("assemble test-support modeled all-in-one process")
+    .expect("prepare test-support modeled all-in-one process")
     .public_router
 }
 
@@ -809,29 +807,29 @@ pub async fn build_all_in_one_router_with_model(
 /// read): durable all-in-one over `dir`, sealing secrets under `key`.
 /// Exposed so a restart test can rebuild a router over one directory across
 /// simulated process lifetimes without racing on process-global env vars.
-/// No IAM guard; available only to explicit test-support compositions.
+/// No IAM guard; available only to explicit test-support deployments.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn build_durable_all_in_one_router(dir: &std::path::Path, key: &[u8; 32]) -> Router {
     let stores = open_local_process_stores(dir, key)
         .await
         .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
     let options = exact_host_model::local_test_process_options(&stores);
-    assemble_runtime_process_router(
+    prepare_runtime_routers(
         stores,
         None,
         None,
         None,
-        PublicationModelComposition::PublishedProviders,
+        PublicationModelSupply::PublishedProviders,
         options,
         None,
     )
     .await
-    .expect("assemble durable all-in-one process")
+    .expect("prepare durable all-in-one process")
     .public_router
 }
 
 /// [`build_durable_all_in_one_router`] with the embedded IAM guard enabled — the
-/// typed self-managed identity composition. Returns the
+/// typed self-managed identity startup. Returns the
 /// [`ManagementAuthz`] handle too so a test (or an embedding) can mint further
 /// workspace tokens against the same policy state.
 #[cfg(any(test, feature = "test-support"))]
@@ -844,17 +842,17 @@ pub async fn build_secured_all_in_one_router(
         .await
         .unwrap_or_else(|error| panic!("open local deployment stores: {error}"));
     let options = exact_host_model::local_test_process_options(&stores);
-    let router = assemble_runtime_process_router(
+    let router = prepare_runtime_routers(
         stores,
         Some(iam.clone()),
         None,
         None,
-        PublicationModelComposition::PublishedProviders,
+        PublicationModelSupply::PublishedProviders,
         options,
         None,
     )
     .await
-    .expect("assemble secured all-in-one process")
+    .expect("prepare secured all-in-one process")
     .public_router;
     (router, iam)
 }
@@ -882,19 +880,19 @@ fn brokered_inference_client(
         })
 }
 
-fn publication_model_assembly(
-    composition: PublicationModelComposition,
+fn resolve_model_services(
+    supply: PublicationModelSupply,
     stores: &ProcessStores,
     cloud_models_enabled: bool,
     worker_observations: Arc<dyn awaken_coordinator::WorkerObservationSource>,
-) -> PublicationModelAssembly {
+) -> ResolvedModelServices {
     let control = stores
         .control
         .as_ref()
         .expect("model publication requires Control stores");
     let acp_capabilities = Arc::new(awaken_run_executor_acp::known_acp_publication_capabilities());
-    match composition {
-        PublicationModelComposition::PublishedProviders => PublicationModelAssembly {
+    match supply {
+        PublicationModelSupply::PublishedProviders => ResolvedModelServices {
             publication_resolver: Arc::new(
                 awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
                     control.catalog.clone(),
@@ -905,18 +903,18 @@ fn publication_model_assembly(
                 .with_worker_observations(worker_observations)
                 .with_brokered_access(cloud_models_enabled),
             ),
-            runtime: RuntimeModelAssembly::PublishedProviders,
+            runtime: RuntimeModelServices::PublishedProviders,
         },
-        PublicationModelComposition::HostedPublication { resolver } => PublicationModelAssembly {
+        PublicationModelSupply::HostedPublication { resolver } => ResolvedModelServices {
             publication_resolver: resolver,
-            runtime: RuntimeModelAssembly::NoModelConfigured,
+            runtime: RuntimeModelServices::NoModelConfigured,
         },
         #[cfg(any(test, feature = "test-support"))]
-        PublicationModelComposition::Host { executor, binding } => {
+        PublicationModelSupply::Host { executor, binding } => {
             let model_ref = binding.model_ref.clone();
-            PublicationModelAssembly {
+            ResolvedModelServices {
                 publication_resolver: Arc::new(ExactHostModelPublicationResolver { binding }),
-                runtime: RuntimeModelAssembly::Host {
+                runtime: RuntimeModelServices::Host {
                     executor,
                     model_ref,
                 },
@@ -926,7 +924,7 @@ fn publication_model_assembly(
 }
 
 fn runtime_model_wiring(
-    runtime: RuntimeModelAssembly,
+    runtime: RuntimeModelServices,
     credential_materializer: &awaken_credential_materializer::PinnedCredentialMaterializer,
     cloud_models_enabled: bool,
     brokered_client: Option<
@@ -934,7 +932,7 @@ fn runtime_model_wiring(
     >,
 ) -> RuntimeModelWiring {
     match runtime {
-        RuntimeModelAssembly::PublishedProviders => RuntimeModelWiring {
+        RuntimeModelServices::PublishedProviders => RuntimeModelWiring {
             executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: Some(Arc::new({
@@ -949,13 +947,13 @@ fn runtime_model_wiring(
                 }
             })),
         },
-        RuntimeModelAssembly::NoModelConfigured => RuntimeModelWiring {
+        RuntimeModelServices::NoModelConfigured => RuntimeModelWiring {
             executor: Arc::new(awaken_runtime_host::NoModelConfiguredExecutor),
             model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: None,
         },
         #[cfg(any(test, feature = "test-support"))]
-        RuntimeModelAssembly::Host {
+        RuntimeModelServices::Host {
             executor,
             model_ref,
         } => RuntimeModelWiring {
@@ -966,11 +964,11 @@ fn runtime_model_wiring(
     }
 }
 
-/// Assemble Coordinator, optionally composing the canonical Control component
-/// for AllInOne. The data plane comes from [`awaken_coordinator::mount_with_managed`];
-/// this process layer merges routers and supervises lifecycle without rebuilding
-/// either domain application.
-/// Resolve the hidden local Org from one composition-root seam. Self-managed
+/// Prepare Coordinator and, for AllInOne, include the canonical Control service.
+/// The data plane comes from [`awaken_coordinator::mount_with_managed`]; this
+/// process boundary joins their HTTP surfaces and supervises lifecycle without
+/// rebuilding either domain application.
+/// Resolve the hidden local Org from one process-startup seam. Self-managed
 /// deployments may explicitly configure it; single-machine mode never asks the
 /// user and consistently uses the default Org.
 fn local_org_id() -> String {
@@ -1064,7 +1062,7 @@ mod runtime_session_store_tests {
             let execution = stores
                 .coordinator
                 .as_ref()
-                .expect("test composition owns Managed Execution");
+                .expect("test startup owns Managed Execution");
             let value = session("sesn-restart");
             let payload_hash = stable_fingerprint(&value);
             execution
@@ -1086,7 +1084,7 @@ mod runtime_session_store_tests {
         let execution = reopened
             .coordinator
             .as_ref()
-            .expect("test composition owns Managed Execution");
+            .expect("test startup owns Managed Execution");
         assert_eq!(
             execution.sessions.owner("sesn-restart").await.as_deref(),
             Ok("workspace-a")
@@ -1106,15 +1104,15 @@ mod runtime_session_store_tests {
     fn session_and_deployment_ports_share_one_physical_repository() {
         // Cause/effect decision table: D1 durable runtime storage -> Session and
         // Deployment typed ports point at one concrete repository allocation;
-        // D2 ephemeral composition -> the same single-allocation invariant holds.
+        // D2 ephemeral startup -> the same single-allocation invariant holds.
         // A different address would expose a parallel Deployment truth before
-        // the repository-backed Deployment component is assembled.
+        // the repository-backed Deployment component is prepared.
         let dir = tempfile::tempdir().expect("temporary runtime storage");
         let durable = process_stores_for_runtime_storage(Some(dir.path()));
         let durable = durable
             .coordinator
             .as_ref()
-            .expect("durable test composition owns Managed Execution");
+            .expect("durable test startup owns Managed Execution");
         assert_eq!(
             Arc::as_ptr(&durable.sessions) as *const (),
             Arc::as_ptr(&durable.deployments) as *const (),
@@ -1125,7 +1123,7 @@ mod runtime_session_store_tests {
         let ephemeral = ephemeral
             .coordinator
             .as_ref()
-            .expect("ephemeral test composition owns Managed Execution");
+            .expect("ephemeral test startup owns Managed Execution");
         assert_eq!(
             Arc::as_ptr(&ephemeral.sessions) as *const (),
             Arc::as_ptr(&ephemeral.deployments) as *const (),
@@ -1235,7 +1233,7 @@ mod process_role_surface_tests {
     fn managed_execution_stores_have_only_execution_process_owners() {
         // Cause/effect decision table:
         // R1 Coordinator owns the distributed execution boundary and R2
-        // AllInOne composes it locally, so both open the Session/Deployment store
+        // AllInOne configures it locally, so both open the Session/Deployment store
         // group. R3 Control and R4 Worker must never create a second local group.
         assert!(role_owns_managed_execution(config::Role::Coordinator), "R1");
         assert!(role_owns_managed_execution(config::Role::AllInOne), "R2");
@@ -1244,28 +1242,16 @@ mod process_role_surface_tests {
     }
 
     #[test]
-    fn resource_component_has_only_resource_serving_process_owners() {
+    fn resource_authorities_have_only_resource_serving_process_owners() {
         // Cause/effect decision table:
         // R1 AllInOne and R2 Coordinator serve claim-fenced Resource APIs and
-        // therefore compose the canonical component. R3 Control consumes only
-        // Resource authoring/read ports; R4 Worker consumes authenticated per-kind
-        // clients, so neither may open a Resource authority component.
-        assert!(
-            role_composes_resource_component(config::Role::AllInOne),
-            "R1"
-        );
-        assert!(
-            role_composes_resource_component(config::Role::Coordinator),
-            "R2"
-        );
-        assert!(
-            !role_composes_resource_component(config::Role::Control),
-            "R3"
-        );
-        assert!(
-            !role_composes_resource_component(config::Role::Worker),
-            "R4"
-        );
+        // therefore host the canonical authorities. R3 Control consumes only
+        // Resource authoring/read services; R4 Worker consumes authenticated per-kind
+        // clients, so neither may open Resource authorities.
+        assert!(role_hosts_resources(config::Role::AllInOne), "R1");
+        assert!(role_hosts_resources(config::Role::Coordinator), "R2");
+        assert!(!role_hosts_resources(config::Role::Control), "R3");
+        assert!(!role_hosts_resources(config::Role::Worker), "R4");
     }
 
     /// Cause/effect decision table:
@@ -1277,23 +1263,23 @@ mod process_role_surface_tests {
     /// | Coordinator/public | absent | mounted | absent | absent |
     /// | Coordinator/private | absent | absent | authenticated | authenticated |
     ///
-    /// AllInOne local-adapter composition is covered by the existing full-surface integration
+    /// AllInOne local-adapter startup is covered by the existing full-surface integration
     /// suites; this test owns the two exclusion rules that those suites cannot
-    /// prove. Moving the composition body into `runtime_process_router` adds no
+    /// prove. Moving the startup body into `runtime_process_router` adds no
     /// new condition or outcome, so a separate decision table is inapplicable:
     /// these same route-presence/absence effects are the structural-extraction
     /// regression coverage. The hosted custom-publication entry point delegates
-    /// to this same assembly and only substitutes publication SPIs, so these
+    /// to this same process and only substitutes publication SPIs, so these
     /// listener-presence and listener-absence rules cover that projection too.
     #[tokio::test]
     async fn service_roles_expose_only_their_owned_api() {
-        let control_assembly = assemble_control_process_router(
+        let control_routers = prepare_control_routers(
             in_memory_control_stores(),
             None,
             None,
             None,
-            PublicationModelComposition::PublishedProviders,
-            ProcessAssemblyOptions {
+            PublicationModelSupply::PublishedProviders,
+            ProcessStartup {
                 role: config::Role::Control,
                 executable_environment_wiring: Some(
                     executable_environment_registration::local_test_wiring(),
@@ -1314,7 +1300,7 @@ mod process_role_surface_tests {
             },
         )
         .await;
-        let app = control_assembly.public_router;
+        let app = control_routers.public_router;
 
         let control = app
             .clone()
@@ -1385,7 +1371,7 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(session.status(), StatusCode::NOT_FOUND);
 
-        let private_control = control_assembly.private_router;
+        let private_control = control_routers.private_router;
         let public_on_private = private_control
             .clone()
             .oneshot(
@@ -1434,15 +1420,15 @@ mod process_role_surface_tests {
                     .environment_work
                     .clone(),
             )
-            .expect("compose Coordinator test Environment wiring");
+            .expect("configure Coordinator test Environment wiring");
         let worker_directory = awaken_coordinator::test_worker_directory();
-        let coordinator_assembly = assemble_runtime_process_router(
+        let coordinator_routers = prepare_runtime_routers(
             coordinator_stores,
             None,
             None,
             None,
-            PublicationModelComposition::PublishedProviders,
-            ProcessAssemblyOptions {
+            PublicationModelSupply::PublishedProviders,
+            ProcessStartup {
                 role: config::Role::Coordinator,
                 executable_agent_wiring: Some(
                     executable_agent_registration::ExecutableAgentWiring::local_server(
@@ -1462,8 +1448,8 @@ mod process_role_surface_tests {
             None,
         )
         .await
-        .expect("assemble split Coordinator test process");
-        let app = coordinator_assembly.public_router;
+        .expect("prepare split Coordinator test process");
+        let app = coordinator_routers.public_router;
         let control = app
             .clone()
             .oneshot(
@@ -1555,7 +1541,7 @@ mod process_role_surface_tests {
             .unwrap();
         assert_eq!(retired_private_launch.status(), StatusCode::NOT_FOUND);
 
-        let private_coordinator = coordinator_assembly.private_router;
+        let private_coordinator = coordinator_routers.private_router;
         let session_on_private = private_coordinator
             .clone()
             .oneshot(Request::get("/v1/sessions").body(Body::empty()).unwrap())
@@ -1654,7 +1640,7 @@ mod process_role_surface_tests {
     /// -> its fail-closed result is returned without consulting the local catalog.
     ///
     /// Decision table:
-    /// | control composition | resolver result | local catalog | outcome |
+    /// | control startup | resolver result | local catalog | outcome |
     /// | --- | --- | --- | --- |
     /// | default open | any | authoritative | catalog resolver decides |
     /// | hosted injection | success | irrelevant | injected candidate publishes |
@@ -1662,17 +1648,17 @@ mod process_role_surface_tests {
     #[tokio::test]
     async fn hosted_control_uses_the_injected_publication_resolver() {
         let called = Arc::new(AtomicBool::new(false));
-        let app = assemble_control_process_router(
+        let app = prepare_control_routers(
             in_memory_control_stores(),
             None,
             None,
             None,
-            PublicationModelComposition::HostedPublication {
+            PublicationModelSupply::HostedPublication {
                 resolver: Arc::new(RecordingHostedResolver {
                     called: called.clone(),
                 }),
             },
-            ProcessAssemblyOptions {
+            ProcessStartup {
                 role: config::Role::Control,
                 executable_environment_wiring: Some(
                     executable_environment_registration::local_test_wiring(),

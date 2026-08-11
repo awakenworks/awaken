@@ -15,9 +15,9 @@ use awaken_acp_application::{
 use awaken_run_executor_acp::acp_cli;
 use awaken_runtime_contract::CredentialObservationState;
 
-/// One startup composition result for a trusted local ACP Worker. The durable
+/// One startup startup result for a trusted local ACP Worker. The durable
 /// sources remain in the credential repository; this value carries only the
-/// already-composed dependencies needed to build the existing WorkerNode.
+/// already-configured dependencies needed to build the existing WorkerNode.
 pub struct PreparedLocalAcp {
     resolver: Arc<AcpLocalCredentialResolver>,
     stores: awaken_control::InferenceMaterializationStores,
@@ -72,7 +72,7 @@ fn uses_host_acp_discovery(deployment: &crate::config::ResolvedDeployment) -> bo
 }
 
 /// Discover local ACP agents once, register their secret-free WorkerLocal
-/// locators idempotently, and compose the one liveness resolver. Server mode
+/// locators idempotently, and configure the one liveness resolver. Server mode
 /// deliberately does none of this.
 pub async fn prepare_local_acp(
     deployment: &mut crate::config::ResolvedDeployment,
@@ -97,8 +97,8 @@ pub async fn prepare_local_acp(
     prepare_local_acp_with(deployment, discovery, installer, negotiator, stores).await
 }
 
-/// Compose the one registration-bound Memory adapter at the executable edge.
-/// The Worker crate receives only the neutral factory and mounter ports.
+/// Provide the one registration-bound Memory adapter at the executable edge.
+/// The Worker crate receives only the neutral repository factory and mounter service.
 pub fn registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMounterFactory {
     Arc::new(|context| {
         let repository = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
@@ -838,7 +838,7 @@ mod tests {
         // I1 Local + Workdir   -> trusted local Worker
         // I2 Local + Namespace-> discovery; BackendOwned selects Workdir
         // I3 Local + Docker   -> discovery; Provider retains Docker
-        // I4 Server + Workdir -> no personal identity composition
+        // I4 Server + Workdir -> no personal identity startup
         let directory = tempfile::tempdir().unwrap();
         let mut deployment = crate::config::local_test_deployment(directory.path().into());
         deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;

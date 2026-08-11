@@ -5,7 +5,7 @@ use std::sync::Arc;
 use awaken_deployment_application::{
     DeploymentApplication, DeploymentLaunch, DeploymentLaunchOutcome, DeploymentSessionLauncher,
 };
-use awaken_protocol_managed::{LocalDeploymentSessionLauncher, ManagedState, deployments_router};
+use awaken_protocol_managed::{ManagedDeploymentSessionLauncher, ManagedState, deployments_router};
 use awaken_runtime_host::ManagedHost;
 use awaken_scenario_host::{EchoModel, build_router_and_host};
 use awaken_tenancy::WorkspaceScope;
@@ -50,7 +50,7 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     let workspace_id = host.local_workspace().to_string();
     let managed = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
     let app = awaken_coordinator::mount_with_managed(host, managed.clone());
-    let launcher = LocalDeploymentSessionLauncher::new(managed.clone());
+    let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
     let request: DeploymentLaunch = serde_json::from_value(json!({
         "deployment_id": "depl_retry",
         "deployment_run_id": "drun_retry",
@@ -125,7 +125,7 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     let workspace_id = host.local_workspace().to_string();
     let managed = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
     let deployments = Arc::new(DeploymentApplication::new());
-    deployments.bind_launcher(Arc::new(LocalDeploymentSessionLauncher::new(
+    deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
         managed.clone(),
     )));
     let deployment_api = deployments_router(deployments.clone())

@@ -1,4 +1,4 @@
-//! Composition of backend-erased, Session-owned container environments.
+//! Selection of backend-erased, Session-owned container environments.
 
 use std::sync::Arc;
 
@@ -325,7 +325,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_composition_selects_direct_and_warm_pool_shapes() {
+    fn provider_selection_supports_direct_and_warm_pool_shapes() {
         use awaken_sandbox_container::podman::PodmanRuntime;
 
         let settings = crate::deployment_config::SandboxSettings {
@@ -344,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_composition_requires_an_image() {
+    fn provider_selection_requires_an_image() {
         use awaken_sandbox_container::podman::PodmanRuntime;
 
         let settings = crate::deployment_config::SandboxSettings::default();

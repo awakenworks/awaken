@@ -15,17 +15,19 @@ pub fn build_acp_gateway_router() -> Router {
     let store_dir = scenario_storage_dir();
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
     mount_with_host_backend_publication(
-        resource_host(model, model_ref).with_projected_acp(
-            scenario_host_acp_cli(FAKE_ACP_CLI),
-            Arc::new(ScenarioEnvAcpModel),
-            store_dir,
-        ),
+        resource_host(model, model_ref).map_host(|host| {
+            host.with_projected_acp(
+                scenario_host_acp_cli(FAKE_ACP_CLI),
+                Arc::new(ScenarioEnvAcpModel),
+                store_dir,
+            )
+        }),
         "acp-agent",
         "acp:fake",
     )
 }
 
-/// Explicit environment fixture for dev-only live scenarios. Product composition
+/// Explicit environment fixture for dev-only live scenarios. Product startup
 /// uses publication-pinned database access instead.
 pub(super) struct ScenarioEnvAcpModel;
 

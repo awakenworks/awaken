@@ -33,7 +33,6 @@ use awaken_session_store::SqliteManagedSessionRepository;
 
 mod application;
 pub(crate) use application::agent_mcp_candidate;
-mod composition;
 mod constants;
 mod deployment_sessions;
 mod environment;
@@ -52,6 +51,7 @@ mod resources;
 mod session_create_idempotency;
 mod session_mcp_projection;
 mod session_record;
+mod session_service;
 mod session_update;
 mod sessions;
 #[cfg(test)]

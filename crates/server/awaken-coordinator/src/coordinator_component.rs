@@ -1,6 +1,6 @@
-//! Canonical Coordinator application component assembly.
+//! Canonical Coordinator application and process services.
 //!
-//! Process composition supplies already-selected Runtime, Resources, storage,
+//! Process startup supplies already-selected Runtime, Resources, storage,
 //! identity, and transport adapters. This module owns the one Coordinator router
 //! and the lifecycle supervisors attached to the exact states mounted in it.
 
@@ -10,10 +10,12 @@ use awaken_authz_enforce::ApplicationAccessStore;
 use awaken_deployment_application::DeploymentApplication;
 use awaken_deployment_contract::DeploymentRepository;
 use awaken_environment_execution_application::EnvironmentExecutionApplication;
-use awaken_executable_agent_contract::ExecutableAgentRegistrationSource;
-use awaken_protocol_managed::ModelDirectory;
-use awaken_protocol_managed::{ManagedRateLimiter, ManagedState};
+use awaken_executable_agent_contract::{
+    ExecutableAgentInventorySource, ExecutableAgentRegistrationSource,
+};
+use awaken_protocol_managed::ManagedState;
 use awaken_resource_contract::ResourceCatalog;
+use awaken_session_application::SessionApplication;
 use awaken_session_contract::DreamProcessStore;
 use awaken_session_contract::ManagedSessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
@@ -30,30 +32,37 @@ use crate::{SharedHost, WorkerTransportBuildError};
 pub struct CoordinatorDependencies {
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     pub host: Arc<SharedHost>,
+    /// Canonical Session application shared by internal services and protocol
+    /// projections. ManagedState may observe it but never owns its construction.
+    pub session_application: Arc<SessionApplication>,
     pub managed_state: Arc<ManagedState>,
     pub resource_catalog: Arc<dyn ResourceCatalog>,
-    /// Resources-owned public API, assembled from its application component.
+    /// Resources-owned public API served by its application.
     pub resource_management_router: Router,
     /// Exact Resources MemoryStore service shared by HTTP and Dream.
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub application_access: Arc<ApplicationAccessStore>,
-    pub model_directory: Arc<dyn ModelDirectory>,
+    pub model_inventory: Arc<dyn ExecutableAgentInventorySource>,
     pub dream_process_store: Arc<dyn DreamProcessStore>,
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
     /// Coordinator-owned Worker identity/incarnation authority. The process
-    /// composition opens one durable adapter and injects that exact instance.
+    /// startup opens one durable adapter and injects that exact instance.
     pub worker_directory: Arc<dyn crate::WorkerDirectory>,
-    /// The one restored Deployment aggregate. The process composition creates
+    /// The one restored Deployment aggregate. Process startup creates
     /// it before sibling components so an AllInOne Control Agent archive can
     /// invoke the exact same state mounted and scheduled by Coordinator.
     pub deployment_application: Arc<DeploymentApplication>,
+    /// Managed protocol lowering for Deployment-authored Session inputs. The
+    /// process edge selects this adapter; Coordinator only invokes the Deployment
+    /// application's domain command.
+    pub deployment_session_launcher:
+        Arc<dyn awaken_deployment_application::DeploymentSessionLauncher>,
     pub executable_agents: Arc<dyn ExecutableAgentRegistrationSource>,
-    pub rate_limiter: Arc<ManagedRateLimiter>,
     pub environments: Arc<EnvironmentExecutionApplication>,
     pub sessions: Arc<dyn ManagedSessionRepository>,
     pub default_workspace: String,
     /// Authenticated executable Agent and Environment registration routes.
-    /// Process composition installs projection refresh around the final
+    /// Process startup installs projection refresh around the final
     /// Runtime-admitting surface, not around these transport-only routes.
     pub private_router: Router,
 }
@@ -63,7 +72,7 @@ pub struct CoordinatorComponent {
     /// User, Session, Deployment, and Resources product surface.
     pub router: Router,
     /// Control-to-Coordinator and Worker-to-Coordinator service surface. Process
-    /// composition binds it to the private listener and never merges it into
+    /// the process binds it to the private listener and never merges it into
     /// `router`.
     pub private_router: Router,
     /// Coordinator-owned management commands before the process-level audit/IAM
@@ -95,18 +104,19 @@ pub async fn build_coordinator_component(
     let CoordinatorDependencies {
         service_lifecycle,
         host,
+        session_application,
         managed_state,
         resource_catalog,
         resource_management_router,
         memory_stores,
         application_access,
-        model_directory,
+        model_inventory,
         dream_process_store,
         worker_authenticator,
         worker_directory,
         deployment_application,
+        deployment_session_launcher,
         executable_agents,
-        rate_limiter,
         environments,
         sessions,
         default_workspace,
@@ -118,14 +128,11 @@ pub async fn build_coordinator_component(
     // The canonical supervisor owns durable resource, MCP, and WorkQueue
     // recovery as background work. Component construction must expose readiness
     // without awaiting an external sandbox timeout for every persisted Session.
-    let session_application = managed_state.session_application();
+    let supervised_sessions = session_application.clone();
     service_lifecycle.spawn("coordinator-session-lifecycle", move |cancel| async move {
-        session_application.run_lifecycle_supervisor(cancel).await
+        supervised_sessions.run_lifecycle_supervisor(cancel).await
     });
-    deployment_application.bind_launcher(Arc::new(
-        awaken_protocol_managed::LocalDeploymentSessionLauncher::new(managed_state.clone())
-            .with_rate_limiter(rate_limiter),
-    ));
+    deployment_application.bind_launcher(deployment_session_launcher);
 
     let environment_warmups = awaken_run_ingress_http::worker_environment_warmup_router(
         environments.clone(),
@@ -135,10 +142,11 @@ pub async fn build_coordinator_component(
     let (data, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
             host,
+            session_application,
             managed_state,
             resource_catalog,
             application_access.clone(),
-            model_directory,
+            model_inventory,
             dream_process_store,
             crate::ManagedRoutingExtensions {
                 resource_management_router,

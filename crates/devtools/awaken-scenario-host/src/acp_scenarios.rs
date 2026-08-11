@@ -1,4 +1,4 @@
-//! ACP execution scenario compositions and their deterministic fixtures.
+//! ACP execution Scenario platforms and their deterministic fixtures.
 
 use super::*;
 
@@ -41,7 +41,7 @@ pub fn build_acp_control_router() -> Router {
         slow_acp_source(),
     )));
     mount_with_host_backend_publication(
-        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
+        resource_host(Arc::new(EchoModel), "awaken").map_host(|host| host.with_acp(acp)),
         "acp-agent",
         "acp:claude",
     )
@@ -78,7 +78,7 @@ pub fn build_acp_relaunch_failure_router() -> Router {
     });
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
     mount_with_host_backend_publication(
-        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
+        resource_host(Arc::new(EchoModel), "awaken").map_host(|host| host.with_acp(acp)),
         "acp-agent",
         "acp:claude",
     )
@@ -94,14 +94,18 @@ pub async fn build_acp_jsonrpc_router() -> Router {
     );
     let mut deployment = scenario_deployment();
     deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
-    let host = resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
-        .with_gate_override(Arc::new(AllowAllGate))
-        .with_acp_launch_source(
-            awaken_worker::relay_hand_executor_factory(),
-            awaken_runtime_host::LaunchSource::FixedAcp(Box::new(launch)),
-        )
-        .await;
-    mount_with_host_backend_publication(host, "acp-agent", "acp:claude")
+    let platform =
+        resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
+            .map_host_async(|host| async move {
+                host.with_gate_override(Arc::new(AllowAllGate))
+                    .with_acp_launch_source(
+                        awaken_worker::relay_hand_executor_factory(),
+                        awaken_runtime_host::LaunchSource::FixedAcp(Box::new(launch)),
+                    )
+                    .await
+            })
+            .await;
+    mount_with_host_backend_publication(platform, "acp-agent", "acp:claude")
 }
 
 /// Durable allow/deny coverage for ACP `session/request_permission`, through the
@@ -117,7 +121,7 @@ pub fn build_acp_permission_router() -> Router {
     );
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
     mount_with_host_backend_publication(
-        resource_host(Arc::new(EchoModel), "awaken").with_acp(acp),
+        resource_host(Arc::new(EchoModel), "awaken").map_host(|host| host.with_acp(acp)),
         "acp-agent",
         "acp:claude",
     )
@@ -138,7 +142,7 @@ pub fn build_acp_router() -> Router {
     // runs on the real CLI subprocess either way.
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
     mount_with_host_backend_publication(
-        resource_host(model, model_ref).with_acp(acp),
+        resource_host(model, model_ref).map_host(|host| host.with_acp(acp)),
         "acp-agent",
         "acp:claude",
     )
@@ -414,7 +418,7 @@ const SANDBOXED_FAKE_ACP_SCRIPT: &str = "read _p; net=''; \
 
 /// [`build_acp_router`]'s isolated twin: `acp:*` sessions launch the ACP CLI
 /// from the Session-owned namespace Environment through the same bound ACP
-/// composition used by production. There is no second per-attempt sandbox.
+/// environment lifecycle used by production. There is no second per-attempt sandbox.
 /// Egress follows each Session's frozen Environment projection — a deny-egress
 /// session's CLI runs under `--unshare-net`.
 /// `AWAKEN_MODEL_MODE=acp-sandboxed`; the sandbox roots live under
@@ -452,24 +456,27 @@ pub async fn build_acp_sandboxed_router_with_deployment(
         });
     deployment.storage_dir = Some(base.clone());
     deployment.sandbox_dir = Some(base.join("sandboxes"));
-    let host = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
-        .with_acp_launch_source(
-            awaken_worker::relay_hand_executor_factory(),
-            awaken_runtime_host::LaunchSource::Fixed(launch),
-        )
+    let platform = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
+        .map_host_async(|host| async move {
+            host.with_acp_launch_source(
+                awaken_worker::relay_hand_executor_factory(),
+                awaken_runtime_host::LaunchSource::Fixed(launch),
+            )
+            .await
+        })
         .await;
     let publication = fixed_host_backend_publication("acp-agent", "acp:claude", Vec::new());
-    let host = Arc::new(host.with_agent_publications(publication.clone()));
+    let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
     // Mount `/v1/environments` over the same complete Managed state/resource
     // catalog used by every other scenario.
-    mount_with_environments_and_agent_source(host, Some(publication))
+    mount_with_environments_and_agent_source(platform, Some(publication))
 }
 
 /// The container-tier sibling of [`build_acp_sandboxed_router`]: the deterministic ACP
 /// agent and the Native tool hand run in one Session-owned Docker environment, driven
 /// through the full external SDK → managed → container-agent path. Configuration goes
 /// through an explicit fixed test launch plus `SESSION_ENVIRONMENT_TIER=docker`; product
-/// composition has no fixed-argv environment override. Needs `--features container-docker`, a production
+/// deployment has no fixed-argv environment override. Needs `--features container-docker`, a production
 /// sandbox image, and a reachable Docker daemon. Misconfiguration fails closed while
 /// building the host rather than falling back to a local process.
 pub async fn build_acp_container_router() -> Router {
@@ -586,12 +593,15 @@ pub async fn build_acp_container_router() -> Router {
         );
         (publication, launch, Arc::new(EchoModel))
     };
-    let host = resource_host_with_deployment(model, "awaken", deployment)
-        .with_agent_publications(publication.clone());
-    let host = host
-        .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), launch)
+    let host_publication = publication.clone();
+    let platform = resource_host_with_deployment(model, "awaken", deployment)
+        .map_host_async(|host| async move {
+            host.with_agent_publications(host_publication)
+                .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), launch)
+                .await
+        })
         .await;
     // Use the same shared Resource Catalog + Managed ACL assembly as every other
     // scenario, with the exact Environment Execution application mounted by the API.
-    mount_with_environments_and_agent_source(Arc::new(host), Some(publication))
+    mount_with_environments_and_agent_source(platform, Some(publication))
 }

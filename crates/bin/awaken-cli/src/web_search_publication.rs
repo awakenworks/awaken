@@ -1,4 +1,4 @@
-//! Composition adapter for WebSearch publication validation.
+//! Control-side adapter for WebSearch publication validation.
 
 use awaken_config_service::PluginPublicationResolver;
 

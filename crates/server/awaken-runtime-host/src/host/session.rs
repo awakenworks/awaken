@@ -466,7 +466,7 @@ impl SharedHost {
     /// `build_commit`'s durability choice: a filesystem store under the configured
     /// directory (so a partial survives a process crash and resumes), or the
     /// checkpoint adapter paired with the shared Postgres dispatch authority.
-    /// Only explicit test-support composition may select a process-local store.
+    /// Only explicit test-support startup may select a process-local store.
     fn build_stream_checkpoint(
         &self,
         thread: &str,
@@ -810,7 +810,7 @@ impl SharedHost {
         let is_acp = execution_backend.is_acp();
         // This thread's staged MCP servers (ADR-0043 Phase 3), registered by the
         // managed adapter's `prepare_session` before the first turn; the wire
-        // composition (connect + discover, fail closed) lives in `crate::mcp`.
+        // startup (connect + discover, fail closed) lives in `crate::mcp`.
         // Read, not removed, so a retry re-attempts (and re-fails) the connect.
         let active_mcp = self.active_mcp_projections(thread);
         let mcp = if is_acp {
@@ -1367,7 +1367,7 @@ impl SharedHost {
                 .read(thread, |slot| slot.deferred_executor.clone())
                 .flatten()
         };
-        // Cause/effect composition rules: terminal observers and Session plugins
+        // Cause/effect rules: terminal observers and Session plugins
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
         let run_context = terminal_observers.iter().cloned().fold(

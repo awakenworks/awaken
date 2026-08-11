@@ -412,7 +412,7 @@ mod tests {
         // Cause/effect decision table: C1 Control complete pair -> accepted;
         // C2 Control partial pair -> rejected; C3 Coordinator token-only server
         // input -> accepted; C4 Worker receives either authority credential ->
-        // rejected; C5 malformed scheme -> rejected before transport assembly.
+        // rejected; C5 malformed scheme -> rejected before transport process.
         let token = PathBuf::from("/var/run/secrets/registration-token");
         assert!(
             ExecutableAgentRegistrationConfig::resolve(
@@ -510,7 +510,7 @@ mod tests {
         // the first file value; R2 Coordinator-side router authentication reads
         // the same projection; R3 replacing the file makes the already-built
         // client source and authenticator reject the predecessor and accept the
-        // successor. This pins the CLI composition methods rather than only the
+        // successor. This pins the CLI startup methods rather than only the
         // generic token-source implementation.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("private-token");
@@ -614,9 +614,9 @@ mod tests {
         // Cause/effect decision table:
         // C1 Control without runtime/Session bindings -> accepted.
         // C2 any such binding -> every offending field is rejected before store
-        // assembly. Shared management/resource bindings remain valid because
+        // process. Shared management/resource bindings remain valid because
         // Control owns authoring stores and the resource inventory. C3 Coordinator
-        // and C4 AllInOne own/compose execution and may receive the same fields.
+        // and C4 AllInOne own/configure execution and may receive the same fields.
         assert!(
             enforce_control_execution_database_isolation(Role::Control, &[]).is_ok(),
             "C1"

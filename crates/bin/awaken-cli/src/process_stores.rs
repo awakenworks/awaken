@@ -1,4 +1,4 @@
-//! Role-owned store groups used by the process composition root.
+//! Role-owned store groups used by product-process startup.
 //!
 //! These types make acquisition authority explicit: a split process receives
 //! either Control or Coordinator stores, while AllInOne receives both canonical
@@ -63,7 +63,7 @@ pub(super) enum PostgresSchemaMode {
 }
 
 /// One independently owned schema group selected by the deployment role. The
-/// list is also the order in which AllInOne composes the same canonical groups.
+/// list is also the order in which AllInOne configures the same canonical groups.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum MigrationComponent {
     /// Every Control-owned authority, including Data Subject, Environment, and
@@ -105,7 +105,7 @@ pub(super) fn role_owns_managed_execution(role: config::Role) -> bool {
 }
 
 #[cfg(test)]
-pub(super) fn role_composes_resource_component(role: config::Role) -> bool {
+pub(super) fn role_hosts_resources(role: config::Role) -> bool {
     role_owns_managed_execution(role)
 }
 

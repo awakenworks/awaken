@@ -19,7 +19,7 @@
 //! `access_token`, `refresh_token`, `client_secret`) is write-only: sealed into
 //! the `SecretStore` on the way in as one revisioned credential material set,
 //! never present in any response. The MCP-OAuth validate route live-probes the
-//! MCP server when the composition root wires an [`McpProbe`]
+//! MCP server when the process startup wires an [`McpProbe`]
 //! ([`VaultState::with_probe`]): the credential's access token is materialized
 //! here and the port receives the resolved secret, never a vault ref. Without a
 //! probe — and always for `environment_variable` / `static_bearer`, which have no
@@ -170,7 +170,7 @@ pub struct VaultState {
     secrets: Arc<dyn SecretStore>,
     credentials: Arc<dyn CredentialRepo>,
     /// The live MCP probe the validate route consults for `mcp_oauth`
-    /// credentials, when the composition root wires one. `None` keeps every
+    /// credentials, when the process startup wires one. `None` keeps every
     /// validation `unknown` (never a false `valid`).
     probe: Option<Arc<dyn McpProbe>>,
     inner: std::sync::Mutex<Store>,
@@ -771,7 +771,7 @@ async fn create_credential(
 ) -> Result<(StatusCode, Json<Credential>), WireError> {
     let params = params.into_params();
     // The vault id is a wire-side container id, not an authorization scope. The
-    // platform-resolved workspace stamped at the composition edge owns the durable
+    // platform-resolved workspace stamped at the startup edge owns the durable
     // credential row. Standalone embeddings that omit that edge use the documented
     // local/default workspace; tenancy is never derived from a resource id.
     let resource_workspace = scope.map_or_else(
@@ -1323,7 +1323,7 @@ async fn validate_credential(
         (record.source_id.clone(), url, has_refresh)
     };
     // Live probe: only an `mcp_oauth` credential (it names an MCP server to
-    // handshake with) and only when the composition root wired an `McpProbe`.
+    // handshake with) and only when the process startup wired an `McpProbe`.
     // The access token is materialized HERE and the port receives the resolved
     // secret — never a vault ref (its signature enforces that). Any gap — no
     // probe, env-var/static_bearer, a broken row, an inconclusive probe — keeps

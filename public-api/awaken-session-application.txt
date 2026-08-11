@@ -72,6 +72,15 @@ pub fn awaken_session_application::AdmittedRunApplication::resume<'life0, 'life1
 pub fn awaken_session_application::AdmittedRunApplication::run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_application::AdmittedRunApplication::run_streaming<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_application::AdmittedRunApplication::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(u64, u64), awaken_session_contract::run_application::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub struct awaken_session_application::CreateProfiledSessionCommand
+pub awaken_session_application::CreateProfiledSessionCommand::agent_id: alloc::string::String
+pub awaken_session_application::CreateProfiledSessionCommand::application_contribution_required: bool
+pub awaken_session_application::CreateProfiledSessionCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_session_application::CreateProfiledSessionCommand::model: core::option::Option<alloc::string::String>
+pub awaken_session_application::CreateProfiledSessionCommand::owner_scope: alloc::string::String
+pub awaken_session_application::CreateProfiledSessionCommand::session_id: alloc::string::String
+pub awaken_session_application::CreateProfiledSessionCommand::title: core::option::Option<alloc::string::String>
+pub awaken_session_application::CreateProfiledSessionCommand::tools: core::option::Option<awaken_session_contract::tool_configuration::SessionToolConfiguration>
 pub struct awaken_session_application::CreateSessionCommand
 pub awaken_session_application::CreateSessionCommand::intent: awaken_session_contract::baseline::SessionCreationIntent
 pub awaken_session_application::CreateSessionCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
@@ -134,19 +143,24 @@ pub async fn awaken_session_application::SessionApplication::runtime_owns_thread
 pub async fn awaken_session_application::SessionApplication::session(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::session_repo::SessionRepositoryError>
 pub fn awaken_session_application::SessionApplication::session_memory_store(&self, &str, &str) -> core::result::Result<awaken_resource_contract::catalog::MemoryStoreDefinition, awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::session_profile(&self, &str, &str) -> core::option::Option<awaken_executable_agent_contract::session_profile::ExecutableAgentSessionProfile>
+pub async fn awaken_session_application::SessionApplication::session_transcript(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::session_usage(&self, &str) -> core::result::Result<awaken_session_contract::session::SessionUsage, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::supports_mid_conversation_system(&self, &str) -> bool
+pub fn awaken_session_application::SessionApplication::validate_profiled_agent(&self, &str, &str) -> core::result::Result<(), awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::validate_session_skill_total(&self, &str, &str, core::option::Option<&awaken_executable_agent_contract::session_profile::ExecutableAgentSessionProfile>, &[awaken_agent_contract::skill::AgentSkillBinding]) -> core::result::Result<(), awaken_session_contract::session::RunError>
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::admit_run_session(&self, &str, &str, &str) -> core::result::Result<(), awaken_session_contract::run_application::RunApplicationError>
+pub async fn awaken_session_application::SessionApplication::create_profiled_session(&self, awaken_session_application::CreateProfiledSessionCommand) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::read_session_projection(&self, &str, core::option::Option<&str>) -> core::result::Result<core::option::Option<awaken_session_application::RecoveredSessionProjection>, awaken_session_application::SessionProjectionRecoveryError>
 pub async fn awaken_session_application::SessionApplication::recover_session_projection(&self, &str, core::option::Option<&str>) -> core::result::Result<core::option::Option<awaken_session_application::RecoveredSessionProjection>, awaken_session_application::SessionProjectionRecoveryError>
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::begin_activity(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionActivityError>
+pub async fn awaken_session_application::SessionApplication::run_session_message(&self, &str, &str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, core::option::Option<alloc::string::String>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::result::Result<awaken_session_application::SessionMessageOutcome, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::settle_activity(&self, &str, u64) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionActivityError>
 impl awaken_session_application::SessionApplication
 pub async fn awaken_session_application::SessionApplication::begin_archive(&self, &str, &str, awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::result::Result<awaken_session_application::SessionDispositionMutation, awaken_session_application::SessionMutationError>
 pub async fn awaken_session_application::SessionApplication::begin_delete(&self, &str, awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::result::Result<awaken_session_application::SessionDispositionMutation, awaken_session_application::SessionPreparationError>
+pub async fn awaken_session_application::SessionApplication::terminate_session(&self, &str, &str, awaken_session_contract::lifecycle::ManagedLifecycleFact) -> core::result::Result<awaken_session_application::SessionDispositionMutation, awaken_session_application::SessionPreparationError>
 impl awaken_session_application::SessionApplication
 pub fn awaken_session_application::SessionApplication::claim_lifecycle_supervisor(&self) -> bool
 pub fn awaken_session_application::SessionApplication::deployment_agent_unavailable(&self, &str, &str) -> bool
@@ -229,6 +243,9 @@ pub struct awaken_session_application::SessionDispositionMutation
 pub awaken_session_application::SessionDispositionMutation::owner_scope: alloc::string::String
 pub awaken_session_application::SessionDispositionMutation::session: awaken_session_contract::session_repo::PersistedSession
 pub awaken_session_application::SessionDispositionMutation::transitioned: bool
+pub struct awaken_session_application::SessionMessageOutcome
+pub awaken_session_application::SessionMessageOutcome::session: awaken_session_contract::session_repo::PersistedSession
+pub awaken_session_application::SessionMessageOutcome::step: awaken_session_contract::session::StepOutcome
 pub struct awaken_session_application::SessionReconciliation
 pub awaken_session_application::SessionReconciliation::failures: alloc::vec::Vec<awaken_session_application::SessionReconciliationFailure>
 pub awaken_session_application::SessionReconciliation::pending: usize

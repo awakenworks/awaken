@@ -248,7 +248,7 @@ fn acp_config_mount(
     ))
 }
 
-/// Resolve the effective sandbox tier at composition, probing the OS-native launcher
+/// Resolve the effective sandbox tier at startup, probing the OS-native launcher
 /// ONCE (memoized) for the `Namespace` tier so an unsupported host gets a clear startup
 /// decision instead of an opaque per-run spawn error. An unavailable provider fails
 /// closed (`Err`) by default — the caller turns it into a startup abort with guidance.
@@ -314,7 +314,7 @@ pub(crate) fn container_image(image: Option<&str>) -> Result<String, String> {
 /// safety net); typed [`SandboxSettings`](crate::deployment_config::SandboxSettings)
 /// selects enablement, cadence and maximum age. Kubernetes also participates because
 /// ownerless local/control-plane deployments have no native GC owner to delete.
-/// Called once per host from the composition seam, so exactly one loop runs.
+/// Called once per host from the startup seam, so exactly one loop runs.
 #[cfg(any(
     feature = "container-docker",
     feature = "container-podman",

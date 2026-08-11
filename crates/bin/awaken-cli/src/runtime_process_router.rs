@@ -1,36 +1,36 @@
-//! Coordinator/AllInOne process composition over canonical domain components.
+//! Coordinator/AllInOne process startup over canonical domain components.
 
 use super::*;
 
-pub(super) async fn assemble_runtime_process_router(
+pub(super) async fn prepare_runtime_routers(
     stores: ProcessStores,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
-    model_composition: PublicationModelComposition,
-    assembly: ProcessAssemblyOptions,
-    // An optional last-mile hook on the assembled data-plane host, applied before it is
-    // shared. The composition root uses it to wire a runtime backend the standard process
-    // does not assemble itself (e.g. an ACP executor for `acp:*` threads) without this
+    model_supply: PublicationModelSupply,
+    process: ProcessStartup,
+    // An optional last-mile hook on the prepared data-plane host, applied before it is
+    // shared. The process startup uses it to supply a runtime backend the standard process
+    // does not own (e.g. an ACP executor for `acp:*` threads) without this
     // module naming that backend's crate. `None` in production; `Some` in a scenario that
     // serves external-CLI sessions.
     customize_host: Option<Box<dyn FnOnce(SharedHost) -> SharedHost + Send>>,
-) -> Result<ProcessRouterAssembly, String> {
-    let role = assembly.role;
+) -> Result<ProcessRouters, String> {
+    let role = process.role;
     debug_assert!(matches!(
         role,
         config::Role::AllInOne | config::Role::Coordinator
     ));
-    let worker_directory = assembly
+    let worker_directory = process
         .worker_directory
         .expect("runtime process requires an explicit WorkerDirectory");
-    let runtime_authority = assembly.runtime_authority;
-    let worker_observation_wiring = assembly
+    let runtime_authority = process.runtime_authority;
+    let worker_observation_wiring = process
         .worker_observations
         .expect("runtime process requires explicit Worker observation wiring");
     let worker_observations = worker_observation_wiring.source;
     let worker_observation_private_router = worker_observation_wiring.private_router;
-    let worker_authenticator = assembly.worker_authenticator.unwrap_or_else(|| {
+    let worker_authenticator = process.worker_authenticator.unwrap_or_else(|| {
         Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator)
             as Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
     });
@@ -40,9 +40,9 @@ pub(super) async fn assemble_runtime_process_router(
         executable_agent_private_router,
         executable_agent_projection_refresher,
         _remote_coordinator_content_eraser,
-    ) = executable_agent_registration::process_parts(assembly.executable_agent_wiring);
-    let content_capture_ceiling = assembly.content_capture_ceiling;
-    let deployment = assembly.deployment;
+    ) = executable_agent_registration::process_parts(process.executable_agent_wiring);
+    let content_capture_ceiling = process.content_capture_ceiling;
+    let deployment = process.deployment;
     let session_execution_placement = if deployment
         .as_ref()
         .is_some_and(|deployment| deployment.disable_local_pool)
@@ -51,12 +51,12 @@ pub(super) async fn assemble_runtime_process_router(
     } else {
         awaken_session_application::SessionExecutionPlacement::LocalWorker
     };
-    let cloud_api_base_url = assembly.cloud_api_base_url;
-    let model_supply = assembly.model_supply.clone();
-    let cloud_models_enabled = model_supply.cloud_models_enabled;
-    let injected_brokered_catalog = assembly.brokered_catalog.clone();
-    let org_id = assembly.org_id.unwrap_or_else(local_org_id);
-    let enrollment_signing_key = match (role, assembly.enrollment_signing_key) {
+    let cloud_api_base_url = process.cloud_api_base_url;
+    let model_capabilities = process.model_supply.clone();
+    let cloud_models_enabled = model_capabilities.cloud_models_enabled;
+    let injected_brokered_catalog = process.brokered_catalog.clone();
+    let org_id = process.org_id.unwrap_or_else(local_org_id);
+    let enrollment_signing_key = match (role, process.enrollment_signing_key) {
         (config::Role::AllInOne, Some(key)) => key,
         #[cfg(any(test, feature = "test-support"))]
         (config::Role::AllInOne, None) => [0xA5; 32],
@@ -69,8 +69,8 @@ pub(super) async fn assemble_runtime_process_router(
     };
     let managed_rate_limiter =
         Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
-    let mcp_bearer_token = assembly.mcp_bearer_token;
-    // Cause/effect composition rule: one selected ResourceComponent is moved intact
+    let mcp_bearer_token = process.mcp_bearer_token;
+    // Cause/effect ownership rule: one selected ResourceAuthorities value is moved intact
     // into the Host. The management Skill API borrows the one additional view it
     // needs; no tuple decomposition or parallel Resources reconstruction.
     let coordinator_stores = stores
@@ -78,7 +78,7 @@ pub(super) async fn assemble_runtime_process_router(
         .as_ref()
         .expect("Managed Execution role requires Coordinator stores");
     // Restore the Coordinator-owned Deployment aggregate exactly once before
-    // sibling components are assembled. AllInOne Agent lifecycle commands and
+    // sibling components are prepared. AllInOne Agent lifecycle commands and
     // the Coordinator router/scheduler receive this same instance.
     let deployment_application =
         awaken_coordinator::restore_deployment_application(coordinator_stores.deployments.clone())
@@ -87,7 +87,7 @@ pub(super) async fn assemble_runtime_process_router(
     let agent_archive_cascade =
         deployment_application.clone() as Arc<dyn awaken_deployment_contract::AgentArchiveCascade>;
     let executable_environment_wiring = executable_environment_registration::require_process_wiring(
-        assembly.executable_environment_wiring,
+        process.executable_environment_wiring,
     );
     let executable_environment_catalog = executable_environment_wiring.catalog;
     let executable_environment_registrar = executable_environment_wiring.registrar;
@@ -103,9 +103,9 @@ pub(super) async fn assemble_runtime_process_router(
                 .and_then(|deployment| deployment.acp_session_blob_root.clone()),
         );
     let resource_application = coordinator_stores.resources.clone();
-    let resource_component = resource_application.ports();
+    let resource_authorities = resource_application.authorities();
     // Resolve the installation's Workspace exactly once, then inject the same
-    // coordinate into every adapter assembled below. Durable roots persist it;
+    // coordinate into every adapter prepared below. Durable roots persist it;
     // ephemeral roots receive a process-local generated coordinate.
     let platform_workspace = stores.workspace_root.as_deref().map_or_else(
         SharedHost::provision_local_workspace,
@@ -138,20 +138,20 @@ pub(super) async fn assemble_runtime_process_router(
             })
         })
         .flatten();
-    let web_search_providers = assembly
+    let web_search_providers = process
         .web_search_providers
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
-    let model_assembly = (role == config::Role::AllInOne).then(|| {
-        publication_model_assembly(
-            model_composition,
+    let model_services = (role == config::Role::AllInOne).then(|| {
+        resolve_model_services(
+            model_supply,
             &stores,
             cloud_models_enabled,
             worker_observations.clone(),
         )
     });
-    let model_wiring = match (&model_assembly, &credential_materializer) {
-        (Some(assembly), Some(credentials)) => runtime_model_wiring(
-            assembly.runtime.clone(),
+    let model_wiring = match (&model_services, &credential_materializer) {
+        (Some(process), Some(credentials)) => runtime_model_wiring(
+            process.runtime.clone(),
             credentials,
             cloud_models_enabled,
             brokered_client.as_ref(),
@@ -161,10 +161,10 @@ pub(super) async fn assemble_runtime_process_router(
             model_ref: awaken_runtime_host::UNCONFIGURED_MODEL_REF.to_string(),
             materializer: None,
         },
-        _ => unreachable!("Control model adapters and Control stores are composed together"),
+        _ => unreachable!("Control model adapters and Control stores are configured together"),
     };
     let web_search_publication_resolver =
-        assembly.web_search_publication_resolver.unwrap_or_else(|| {
+        process.web_search_publication_resolver.unwrap_or_else(|| {
             Arc::new(
                 crate::web_search_publication::WebSearchPublicationResolver::new(
                     web_search_providers.clone(),
@@ -173,14 +173,14 @@ pub(super) async fn assemble_runtime_process_router(
         });
     // Keep the IAM handles for the sibling resource PEP. The authoring router owns
     // its PEP; File/Memory/Skill routes are wrapped independently after the data
-    // router is assembled, so neither plane depends on the other's services.
+    // router is prepared, so neither plane depends on the other's services.
     let resource_iam = iam.clone();
     let resource_remote_iam = remote_iam.clone();
     let deployment_iam = iam.clone();
     let deployment_remote_iam = remote_iam.clone();
     let live_runtime_capabilities = stores.control.as_ref().map(|control| {
         Arc::new(LiveRuntimeCapabilities {
-            initial: assembly.local_acp_observations.clone(),
+            initial: process.local_acp_observations.clone(),
             workers: worker_observations.clone(),
             credentials: control.credentials.clone(),
             workspace: platform_workspace.clone(),
@@ -215,30 +215,30 @@ pub(super) async fn assemble_runtime_process_router(
         config::Role::AllInOne => Some(
             control_component_for_process(
                 &stores,
-                &assembly.service_lifecycle,
+                &process.service_lifecycle,
                 &platform_workspace,
                 &org_id,
                 enrollment_signing_key,
                 executable_agent_registrar,
                 Some(agent_archive_cascade),
-                model_assembly
+                model_services
                     .as_ref()
-                    .expect("AllInOne composes model publication")
+                    .expect("AllInOne configures model publication")
                     .publication_resolver
                     .clone(),
                 web_search_publication_resolver,
                 &web_search_providers,
                 brokered_client.clone(),
                 injected_brokered_catalog,
-                model_supply,
+                model_capabilities,
                 role.exposes_managed_runtime(),
-                &assembly.local_acp_observations,
+                &process.local_acp_observations,
                 live_runtime_capabilities
                     .clone()
-                    .expect("AllInOne composes Control runtime capabilities"),
+                    .expect("AllInOne configures Control runtime capabilities"),
                 Some(Arc::new(awaken_control::HostResourceInventory::new(
-                    resource_component.resource_catalog(),
-                    resource_component.skill_store(),
+                    resource_authorities.resource_catalog(),
+                    resource_authorities.skill_store(),
                     &platform_workspace,
                 ))),
                 environment_authoring
@@ -274,7 +274,7 @@ pub(super) async fn assemble_runtime_process_router(
         ),
         config::Role::Coordinator => None,
         config::Role::Control | config::Role::Worker => {
-            unreachable!("runtime process assembly accepts only AllInOne or Coordinator")
+            unreachable!("runtime process accepts only AllInOne or Coordinator")
         }
     };
     let ProcessStores {
@@ -302,7 +302,7 @@ pub(super) async fn assemble_runtime_process_router(
         None => environment_execution,
     };
     let environment_execution = Arc::new(environment_execution);
-    let resource_catalog = resource_component.resource_catalog();
+    let resource_catalog = resource_authorities.resource_catalog();
     let (
         control,
         mcp_export,
@@ -340,19 +340,19 @@ pub(super) async fn assemble_runtime_process_router(
             )
         }
         None => {
-            let ports = assembly
+            let services = process
                 .control_service
                 .clone()
-                .expect("split Coordinator requires Control service ports");
+                .expect("split Coordinator requires Control services");
             (
                 Router::new(),
                 Router::new(),
                 None,
                 Vec::new(),
-                ports.credentials,
-                ManagementAuditPlane::from_repository(ports.audit),
+                services.credentials,
+                ManagementAuditPlane::from_repository(services.audit),
                 None,
-                ports.consent,
+                services.consent,
                 None,
             )
         }
@@ -378,20 +378,20 @@ pub(super) async fn assemble_runtime_process_router(
                     awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(
                         delivery,
                         sessions.clone(),
-                        &assembly.service_lifecycle,
+                        &process.service_lifecycle,
                     ),
                 )
             }
             None => Arc::new(
                 awaken_webhook_managed::WebhookOutboxNotifier::with_delivery(
-                    assembly
+                    process
                         .control_service
                         .as_ref()
                         .expect("split Coordinator requires Control webhook delivery")
                         .webhooks
                         .clone(),
                     sessions.clone(),
-                    &assembly.service_lifecycle,
+                    &process.service_lifecycle,
                 ),
             ),
         };
@@ -402,25 +402,25 @@ pub(super) async fn assemble_runtime_process_router(
     // host serves is exactly what the assistant enumerates, and identity survives a
     // restart.
     let mut host_builder = match deployment {
-        Some(deployment) => SharedHost::new_with_resource_component_and_deployment(
+        Some(deployment) => SharedHost::new_with_resources_and_deployment(
             model_wiring.executor,
             model_wiring.model_ref,
-            resource_component.clone(),
+            resource_authorities.clone(),
             memory_extractions,
             deployment,
         ),
         #[cfg(any(test, feature = "test-support"))]
         None => {
-            let host = SharedHost::new_with_resource_component(
+            let host = SharedHost::new_with_resources(
                 model_wiring.executor,
                 model_wiring.model_ref,
-                resource_component.clone(),
+                resource_authorities.clone(),
             );
             host.install_memory_extraction_repository(memory_extractions);
             host
         }
         #[cfg(not(any(test, feature = "test-support")))]
-        None => unreachable!("product runtime assembly requires a resolved deployment"),
+        None => unreachable!("product runtime process requires a resolved deployment"),
     };
     if let Some(runtime_authority) = runtime_authority {
         host_builder = host_builder.with_runtime_authority(runtime_authority);
@@ -460,8 +460,8 @@ pub(super) async fn assemble_runtime_process_router(
         .await
         .with_acp_from_deployment(credential_materializer.clone())
         .await;
-    // Last-mile backend wiring the standard process does not assemble itself, injected
-    // by the composition root (a scenario that serves external-CLI sessions).
+    // Last-mile backend wiring the standard process does not own, supplied
+    // by the process startup (a scenario that serves external-CLI sessions).
     let host_builder = match customize_host {
         Some(customize) => customize(host_builder),
         None => host_builder,
@@ -476,7 +476,7 @@ pub(super) async fn assemble_runtime_process_router(
             format!("awaken-resource-reclaimer:{}", std::process::id()),
             30_000,
             host.resource_reclamation()
-                .expect("resource-plane composition installs lifecycle repository"),
+                .expect("Resources persistence supplies the lifecycle repository"),
             resource_reclamation.clone(),
         )
         .expect("construct resource reclaimer")
@@ -484,7 +484,7 @@ pub(super) async fn assemble_runtime_process_router(
         .with_guard(Arc::new(
             awaken_session_application::SessionResourcePurgeGuard::new(
                 sessions.clone(),
-                resource_component.file_catalog(),
+                resource_authorities.file_catalog(),
             ),
         )),
     );
@@ -500,7 +500,7 @@ pub(super) async fn assemble_runtime_process_router(
         eprintln!("reclaimed {} durable resource(s)", summary.completed);
     }
     let recurring_resource_reclaimer = resource_reclaimer.clone();
-    assembly
+    process
         .service_lifecycle
         .spawn("resources-reclamation", move |cancel| async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
@@ -535,7 +535,7 @@ pub(super) async fn assemble_runtime_process_router(
     }
     managed_host = managed_host.install_dispatch_session_runtime();
     let managed_host = Arc::new(managed_host);
-    let session_application =
+    let mut session_application =
         awaken_session_application::SessionApplication::new_with_configuration(
             managed_host.clone(),
             managed_host,
@@ -547,60 +547,62 @@ pub(super) async fn assemble_runtime_process_router(
                 ..Default::default()
             },
         );
-    let mut managed_state = ManagedState::from_application(session_application)
-        .with_credential_source(credential_source)
-        .with_resource_catalog(resource_catalog.clone())
-        .with_resource_purge_scheduler(resource_application.purge_scheduler())
-        .with_resource_reference_authority(
-            resource_component.reclamation(),
-            resource_component.file_catalog(),
-        )
-        // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
-        // published agent's model sees the authoritative config-plane truth (M2).
-        .with_config_source(executable_agent_catalog.clone());
-    managed_state = managed_state.with_lifecycle_notifier(webhook_notifier);
-    let managed_state = Arc::new(managed_state);
+    session_application.set_credential_source(credential_source);
+    session_application.set_resource_catalog(resource_catalog.clone());
+    session_application.set_resource_purge_scheduler(resource_application.purge_scheduler());
+    session_application.set_resource_reference_authority(
+        resource_authorities.reclamation(),
+        resource_authorities.file_catalog(),
+    );
+    // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
+    // published agent's model sees the authoritative config-plane truth (M2).
+    session_application.set_config_source(executable_agent_catalog.clone());
+    session_application.set_lifecycle_notifier(webhook_notifier);
+    let session_application = Arc::new(session_application);
+    let managed_state = Arc::new(ManagedState::from_application(session_application.clone()));
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat
     // surface so a `/v1/workspaces/{ws}/…` request is captured, rewritten to its flat
     // `/v1/…` form, and its `{ws}` stamped as the edge scope before it re-enters
-    // routing. Flat requests fall through unchanged. The same assembly returns the
+    // routing. Flat requests fall through unchanged. The same process returns the
     // DreamApplication it mounted, so scheduling cannot target a parallel instance.
     // AllInOne and split Coordinator expose the same rebuildable runtime
     // projection. Process co-location never grants the Coordinator a second,
     // direct read path into Control catalog or credential authority.
-    let model_directory: Arc<dyn awaken_coordinator::ModelDirectory> = Arc::new(
-        awaken_coordinator::model_directory::ExecutableAgentModelDirectory::new(
-            executable_agent_catalog.clone(),
-        ),
+    let model_inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource> =
+        executable_agent_catalog.clone();
+    let deployment_session_launcher = Arc::new(
+        awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(managed_state.clone())
+            .with_rate_limiter(managed_rate_limiter.clone()),
     );
     let private_router = executable_agent_private_router
         .merge(executable_environment_private_router)
         .merge(worker_observation_private_router);
-    let resource_ports = resource_application.ports();
+    let resource_authorities = resource_application.authorities();
     let resource_management_router =
         awaken_coordinator::resources_router(awaken_coordinator::ResourcesRouterInput {
             files: resource_application.files(),
-            memories: resource_ports.memory_repository(),
+            memories: resource_authorities.memory_repository(),
             memory_stores: resource_application.memory_stores(),
-            skills: Some(resource_ports.skill_store()),
+            skills: Some(resource_authorities.skill_store()),
             purge: resource_application.purge_scheduler(),
         });
     let coordinator = awaken_coordinator::build_coordinator_component(
         awaken_coordinator::CoordinatorDependencies {
-            service_lifecycle: assembly.service_lifecycle.clone(),
+            service_lifecycle: process.service_lifecycle.clone(),
             host,
+            session_application,
             managed_state,
             resource_catalog,
             resource_management_router,
             memory_stores: resource_application.memory_stores(),
             application_access,
-            model_directory,
+            model_inventory,
             dream_process_store,
             worker_authenticator,
             worker_directory: worker_directory.clone(),
             deployment_application,
+            deployment_session_launcher,
             executable_agents: executable_agent_catalog,
-            rate_limiter: managed_rate_limiter.clone(),
             environments: environment_execution,
             sessions,
             default_workspace: platform_workspace.clone(),
@@ -634,10 +636,10 @@ pub(super) async fn assemble_runtime_process_router(
     let (flat, mcp_export) = match role {
         config::Role::AllInOne => (data.merge(control), mcp_export),
         config::Role::Coordinator => (data, Router::new()),
-        config::Role::Control => unreachable!("Control returned before Coordinator assembly"),
-        config::Role::Worker => unreachable!("Worker has its own process composition"),
+        config::Role::Control => unreachable!("Control returned before Coordinator process"),
+        config::Role::Worker => unreachable!("Worker has its own process startup"),
     };
-    Ok(ProcessRouterAssembly::new(
+    Ok(ProcessRouters::new(
         process_surface::finish(
             flat,
             mcp_export,
@@ -648,6 +650,6 @@ pub(super) async fn assemble_runtime_process_router(
         ),
         coordinator.private_router,
         registration_supervisor,
-        assembly.service_lifecycle,
+        process.service_lifecycle,
     ))
 }

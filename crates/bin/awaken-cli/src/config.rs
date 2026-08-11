@@ -36,7 +36,7 @@ pub use service_boundary::{ControlServiceConfig, ExecutableAgentRegistrationConf
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
-/// Fully resolved bootstrap truth shared by the command, server assembly, and
+/// Fully resolved bootstrap truth shared by the command, server process, and
 /// runtime host. Database URLs and key material are intentionally absent from
 /// its rendered reports.
 #[derive(Debug, Clone)]
@@ -836,7 +836,7 @@ mod tests {
     fn local_discovery_is_the_only_source_of_worker_routes_and_defaults() {
         // Cause graph:
         // The ACP application service supplies the already filtered route ids;
-        // this composition method only projects them into AcpWorkerProfile. The
+        // this startup method only projects them into AcpWorkerProfile. The
         // profile constructor alone decides whether one row becomes the default.
         //
         // Decision table:
@@ -935,7 +935,7 @@ mod tests {
     #[test]
     fn postgres_pool_size_is_resolved_once_as_a_non_zero_deployment_value() {
         // Cause/effect graph:
-        // C1 the author omits postgres_max_connections -> E1 the composition
+        // C1 the author omits postgres_max_connections -> E1 the startup
         // root derives one host-aware non-zero default; C2 the author supplies
         // a positive value -> E2 that exact value is retained; C3 the author
         // supplies zero -> E3 configuration fails before any store is built.

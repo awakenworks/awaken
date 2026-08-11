@@ -1459,12 +1459,12 @@ impl awaken_protocol_managed::EnvironmentAuthoringState
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::application(&self) -> alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::new(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>) -> Self
 pub fn awaken_protocol_managed::EnvironmentAuthoringState::sandbox_policy_store(&self) -> core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>
-pub struct awaken_protocol_managed::LocalDeploymentSessionLauncher
-impl awaken_protocol_managed::LocalDeploymentSessionLauncher
-pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::new(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
-pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::with_rate_limiter(self, alloc::sync::Arc<awaken_protocol_managed::ManagedRateLimiter>) -> Self
-impl awaken_deployment_application::DeploymentSessionLauncher for awaken_protocol_managed::LocalDeploymentSessionLauncher
-pub fn awaken_protocol_managed::LocalDeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_deployment_application::model::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_deployment_application::model::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_protocol_managed::ManagedDeploymentSessionLauncher
+impl awaken_protocol_managed::ManagedDeploymentSessionLauncher
+pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
+pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::with_rate_limiter(self, alloc::sync::Arc<awaken_protocol_managed::ManagedRateLimiter>) -> Self
+impl awaken_deployment_application::DeploymentSessionLauncher for awaken_protocol_managed::ManagedDeploymentSessionLauncher
+pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_deployment_application::model::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_deployment_application::model::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_protocol_managed::ManagedRateLimiter
 impl awaken_protocol_managed::ManagedRateLimiter
 pub fn awaken_protocol_managed::ManagedRateLimiter::for_organization(impl core::convert::Into<alloc::string::String>) -> Self
@@ -1483,14 +1483,12 @@ pub async fn awaken_protocol_managed::ManagedState::create_application_session(&
 pub async fn awaken_protocol_managed::ManagedState::create_session(&self, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::create_session_with_initial_events(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::delete_session(&self, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>
-pub async fn awaken_protocol_managed::ManagedState::dream_transcript(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::get_session(&self, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::list_sessions(&self) -> alloc::vec::Vec<awaken_protocol_managed::types::Session>
 pub fn awaken_protocol_managed::ManagedState::list_sessions_scoped(&self, &str) -> alloc::vec::Vec<awaken_protocol_managed::types::Session>
 pub fn awaken_protocol_managed::ManagedState::owner_scope(&self, &str) -> core::option::Option<alloc::string::String>
 pub async fn awaken_protocol_managed::ManagedState::resolve_owner(&self, &str) -> core::result::Result<core::option::Option<alloc::string::String>, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::session_revision(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::SessionRevision, awaken_protocol_managed::StateError>
-pub fn awaken_protocol_managed::ManagedState::validate_dream_agent(&self, &str, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::archive_thread(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::SessionThread, awaken_protocol_managed::StateError>
 pub fn awaken_protocol_managed::ManagedState::get_thread(&self, &str, &str) -> core::result::Result<awaken_protocol_managed::types::SessionThread, awaken_protocol_managed::StateError>
@@ -1509,16 +1507,8 @@ pub async fn awaken_protocol_managed::ManagedState::update_resource(&self, &str,
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::create_session_with_initial_events_idempotent(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 impl awaken_protocol_managed::ManagedState
-pub fn awaken_protocol_managed::ManagedState::from_application(awaken_session_application::SessionApplication) -> Self
+pub fn awaken_protocol_managed::ManagedState::from_application(alloc::sync::Arc<awaken_session_application::SessionApplication>) -> Self
 pub fn awaken_protocol_managed::ManagedState::session_application(&self) -> alloc::sync::Arc<awaken_session_application::SessionApplication>
-pub fn awaken_protocol_managed::ManagedState::with_config_source(self, alloc::sync::Arc<dyn awaken_executable_agent_contract::session_profile::ExecutableAgentProfileSource>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_credential_source(self, alloc::sync::Arc<dyn awaken_session_application::ports::SessionCredentialSource>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_lifecycle_notifier(self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactNotifier>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_repository_credential_ingress(self, alloc::sync::Arc<dyn awaken_session_application::ports::RepositoryCredentialIngress>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_resource_catalog(self, alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_resource_purge_scheduler(self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_resource_reference_authority(self, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourceReferenceIndex>, alloc::sync::Arc<dyn awaken_resource_contract::FileCatalog>) -> Self
-pub fn awaken_protocol_managed::ManagedState::with_vaults(self, alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> Self
 impl awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::list_events(&self, &str, core::option::Option<&str>, core::option::Option<usize>, bool) -> core::result::Result<awaken_protocol_managed::types::ListEventsResponse, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::send_events(&self, &str, awaken_protocol_managed::types::SendEventsRequest) -> core::result::Result<awaken_protocol_managed::types::SendEventsResponse, awaken_protocol_managed::StateError>
@@ -1529,7 +1519,7 @@ impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::reconcile_work_dispatches(&self) -> usize
 impl awaken_dream_application::DreamSessionSource for awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::eligible_sessions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_protocol_managed::ManagedState::session_usage(&self, &str, &str) -> core::option::Option<awaken_session_contract::dream::DreamUsage>
+pub fn awaken_protocol_managed::ManagedState::session_usage<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::dream::DreamUsage>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_protocol_managed::ModelEntry
 pub awaken_protocol_managed::ModelEntry::context_window: core::option::Option<u32>
 pub awaken_protocol_managed::ModelEntry::display_name: alloc::string::String
@@ -1554,10 +1544,10 @@ pub async fn awaken_protocol_managed::VaultState::mcp_access_for_source(&self, &
 pub fn awaken_protocol_managed::VaultState::mcp_credential_source_for_url(&self, &[alloc::string::String], &str) -> core::option::Option<awaken_credential_contract::CredentialSourceId>
 pub fn awaken_protocol_managed::VaultState::new(alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>, alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>) -> Self
 pub fn awaken_protocol_managed::VaultState::with_probe(self, alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>) -> Self
-impl awaken_session_application::ports::RepositoryCredentialIngress for awaken_protocol_managed::VaultState
+impl awaken_session_application::session_services::RepositoryCredentialIngress for awaken_protocol_managed::VaultState
 pub fn awaken_protocol_managed::VaultState::enter_repository_token<'life0, 'life1, 'async_trait>(&'life0 self, awaken_credential_contract::CredentialSourceId, &'life1 str, awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::CredentialSourceId, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_managed::VaultState::rotate_repository_token<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_credential_contract::CredentialSourceId, &'life2 str, awaken_agent_contract::secret::RedactedString) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-impl awaken_session_application::ports::SessionCredentialSource for awaken_protocol_managed::VaultState
+impl awaken_session_application::session_services::SessionCredentialSource for awaken_protocol_managed::VaultState
 pub fn awaken_protocol_managed::VaultState::credential_access_for_source<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_credential_contract::CredentialSourceId, &'life2 str, awaken_credential_contract::CredentialUsage, awaken_credential_contract::CredentialExecutionPolicy) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::CredentialAccess, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::VaultState::has_vault<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_managed::VaultState::mcp_access_for_source<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_credential_contract::CredentialSourceId) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_credential_contract::CredentialAccess, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -1575,8 +1565,6 @@ pub fn awaken_protocol_managed::ManagedAgentRepository::list<'life0, 'life1, 'li
 pub fn awaken_protocol_managed::ManagedAgentRepository::retrieve<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::ManagedAgentRepository::update<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_protocol_managed::types::agent::AgentUpdateParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::ManagedAgentRepository::versions<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::agent::Agent>, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub trait awaken_protocol_managed::ModelDirectory: core::marker::Send + core::marker::Sync
-pub fn awaken_protocol_managed::ModelDirectory::list<'a>(&'a self, &'a str) -> awaken_protocol_managed::ModelDirectoryFuture<'a>
 pub fn awaken_protocol_managed::agents_router(alloc::sync::Arc<awaken_protocol_managed::AgentRegistryState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::default_models() -> alloc::vec::Vec<awaken_protocol_managed::ModelEntry>
 pub fn awaken_protocol_managed::deployments_router(alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>) -> axum::routing::Router
@@ -1588,11 +1576,10 @@ pub fn awaken_protocol_managed::environment_work_router(alloc::sync::Arc<awaken_
 pub fn awaken_protocol_managed::files_router(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> axum::routing::Router
 pub fn awaken_protocol_managed::memory_stores_router(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>) -> axum::routing::Router
 pub fn awaken_protocol_managed::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_protocol_managed::ModelEntry>>) -> axum::routing::Router
-pub fn awaken_protocol_managed::models_router_with_directory(alloc::sync::Arc<dyn awaken_protocol_managed::ModelDirectory>) -> axum::routing::Router
+pub fn awaken_protocol_managed::models_router_with_inventory(alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>) -> axum::routing::Router
 pub async fn awaken_protocol_managed::replace_resource_manifest(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedState>>, axum::extract::path::Path<alloc::string::String>, core::option::Option<axum::extension::Extension<awaken_tenancy::WorkspaceScope>>, http::header::map::HeaderMap, axum::json::Json<awaken_protocol_managed::types::resource::ResourceManifestReplaceParams>) -> core::result::Result<(http::header::map::HeaderMap, axum::json::Json<awaken_protocol_managed::types::resource::SessionResourceManifest>), (http::status::StatusCode, axum::json::Json<awaken_protocol_managed::types::ErrorResponse>)>
 pub fn awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput) -> axum::routing::Router
 pub fn awaken_protocol_managed::router(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::skills_router(core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router
 pub fn awaken_protocol_managed::user_profiles_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_protocol_managed::vault_router(alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> axum::routing::Router
-pub type awaken_protocol_managed::ModelDirectoryFuture<'a> = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_protocol_managed::ModelEntry>, alloc::string::String>> + core::marker::Send + 'a)>>

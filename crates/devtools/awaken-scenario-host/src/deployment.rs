@@ -3,6 +3,43 @@ use std::sync::Arc;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_host::SharedHost;
 
+/// One runnable Scenario platform instance.
+///
+/// Keeping the Resources application beside the Host prevents route builders
+/// from reopening Resource Catalog, File, Memory, or Skill authorities after
+/// the persistence owner has selected them once.
+pub(crate) struct ScenarioPlatform {
+    host: SharedHost,
+    resources: awaken_resource_application::ResourcesApplication,
+}
+
+impl ScenarioPlatform {
+    #[must_use]
+    pub(crate) fn map_host(mut self, update: impl FnOnce(SharedHost) -> SharedHost) -> Self {
+        self.host = update(self.host);
+        self
+    }
+
+    pub(crate) async fn map_host_async<F, Fut>(mut self, update: F) -> Self
+    where
+        F: FnOnce(SharedHost) -> Fut,
+        Fut: std::future::Future<Output = SharedHost>,
+    {
+        self.host = update(self.host).await;
+        self
+    }
+
+    #[must_use]
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        SharedHost,
+        awaken_resource_application::ResourcesApplication,
+    ) {
+        (self.host, self.resources)
+    }
+}
+
 static SCENARIO_RUNTIME_AUTHORITY: std::sync::OnceLock<
     Arc<dyn awaken_runtime_host::RuntimeAuthority>,
 > = std::sync::OnceLock::new();
@@ -18,7 +55,7 @@ pub fn install_scenario_runtime_authority(
 }
 
 /// Resolve the scenario-only process fixture into the same typed deployment
-/// consumed by every scenario composition. Production binaries never use these
+/// consumed by every Scenario platform. Production binaries never use these
 /// environment variables; their sole boundary is `ResolvedDeployment`.
 pub fn scenario_deployment() -> awaken_runtime_host::DeploymentConfig {
     scenario_deployment_from(|name| std::env::var(name).ok())
@@ -82,13 +119,16 @@ fn scenario_deployment_from(
     deployment
 }
 
-/// The one scenario-only storage input. Scenario compositions must consume this
+/// The one scenario-only storage input. Scenario startup must consume this
 /// helper or the complete typed deployment instead of rediscovering process state.
 pub(crate) fn scenario_storage_dir() -> Option<std::path::PathBuf> {
     scenario_deployment().storage_dir
 }
 
-pub(crate) fn resource_host(llm: Arc<dyn LlmExecutor>, model_ref: impl Into<String>) -> SharedHost {
+pub(crate) fn resource_host(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+) -> ScenarioPlatform {
     resource_host_with_deployment(llm, model_ref, scenario_deployment())
 }
 
@@ -96,7 +136,7 @@ pub(crate) fn resource_host_with_deployment(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     deployment: awaken_runtime_host::DeploymentConfig,
-) -> SharedHost {
+) -> ScenarioPlatform {
     let resources = match deployment.storage_dir.clone() {
         Some(storage_dir) => awaken_resource_persistence::open_embedded(&storage_dir)
             .expect("open embedded scenario Resources application"),
@@ -109,10 +149,10 @@ pub(crate) fn resource_host_with_deployment(
     // explicit Local sandbox tier with the fail-closed Namespace default.
     let extraction_repository =
         SharedHost::test_memory_extraction_repository(deployment.storage_dir.as_deref());
-    let mut host = SharedHost::new_with_resource_component_and_deployment(
+    let mut host = SharedHost::new_with_resources_and_deployment(
         llm,
         model_ref,
-        resources.ports(),
+        resources.authorities(),
         extraction_repository,
         deployment,
     )
@@ -128,10 +168,11 @@ pub(crate) fn resource_host_with_deployment(
     let scenario_workspace = std::env::var("AWAKEN_SCENARIO_WORKSPACE")
         .ok()
         .filter(|workspace| !workspace.trim().is_empty());
-    match scenario_workspace {
+    let host = match scenario_workspace {
         Some(workspace) => host.with_local_workspace(workspace),
         None => host,
-    }
+    };
+    ScenarioPlatform { host, resources }
 }
 
 #[cfg(test)]
@@ -202,6 +243,51 @@ mod tests {
             deployment.sandbox_tier,
             awaken_runtime_host::SandboxTier::Local
         );
+    }
+
+    #[test]
+    fn scenario_resource_authority_fmeca_decision_table() {
+        // FMECA failure modes: FM1 the router reopens a Resource Catalog, FM2
+        // Host and HTTP use different Memory repositories, FM3 Skill ingestion
+        // and Runtime read different roots, FM4 File commands use different
+        // applications. Each produces split identity, stale reads, or cleanup
+        // against the wrong store (severity high, detection previously low).
+        // Causes: C1 durable root selected, C2 one ResourcesApplication retained,
+        // C3 Host receives its exact authorities, C4 route mounting consumes the
+        // retained application. Effects: E1 identical Memory/Skill/File Arc
+        // identities, E2 only canonical `skills` storage exists, E3 no legacy
+        // `skills_catalog` authority. Cause graph: C1&&C2&&C3&&C4 -> E1+E2+E3.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | R1 | yes | yes | yes | yes | E1, E2, E3 |
+        // | R2 | yes | no | any | any | FM1/FM3: forbidden second authority |
+        // | R3 | any | yes | no | any | FM2/FM4: Host identity mismatch |
+        let storage = tempfile::tempdir().expect("R1 storage root");
+        let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
+        deployment.storage_dir = Some(storage.path().to_path_buf());
+        let platform = resource_host_with_deployment(
+            Arc::new(crate::EchoModel),
+            "resource-authority-test",
+            deployment,
+        );
+        let (host, resources) = platform.into_parts();
+        let authorities = resources.authorities();
+
+        assert!(Arc::ptr_eq(
+            &host.memory_repository(),
+            &authorities.memory_repository()
+        ));
+        assert!(Arc::ptr_eq(
+            &host.skill_store().expect("Host Skill authority"),
+            &authorities.skill_store()
+        ));
+        assert!(Arc::ptr_eq(
+            &host.file_application().expect("Host File application"),
+            &resources.files()
+        ));
+        assert!(storage.path().join("skills").exists(), "R1/E2");
+        assert!(!storage.path().join("skills_catalog").exists(), "R1/E3");
     }
 
     #[test]

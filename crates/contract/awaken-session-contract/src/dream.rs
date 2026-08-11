@@ -220,7 +220,7 @@ pub enum DreamPolicyApplicationError {
 
 /// Application port driven by the Awaken policy protocol adapter.
 ///
-/// Workspace selection is resolved and authorized at the composition edge; the
+/// Workspace selection is resolved and authorized at the trusted process boundary; the
 /// protocol adapter only forwards that opaque ownership coordinate.
 pub trait DreamPolicyApplication: Send + Sync {
     fn policy(

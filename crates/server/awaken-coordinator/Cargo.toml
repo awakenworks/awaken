@@ -13,7 +13,7 @@ authority = "coordinator"
 [dependencies]
 awaken-service-lifecycle.workspace = true
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
-# host modules live here; this bin only composes them into router modes.
+# host modules live here; Coordinator startup selects the served router modes.
 awaken-runtime-host.workspace = true
 awaken-run-ingress-http.workspace = true
 awaken-resource-worker-http.workspace = true
@@ -60,11 +60,11 @@ awaken-sandbox-memoryd = { workspace = true }
 awaken-run-executor-acp = { workspace = true }
 awaken-acp-application.workspace = true
 awaken-protocol-acp.workspace = true
-# A2A attempt adapter is assembled here, at the data-plane composition root,
+# A2A attempt adapter is selected here, at the data-plane process boundary,
 # and injected into the neutral runtime host through `RunAttemptExecutor`.
 awaken-run-executor-a2a = { workspace = true }
 # Volatile scenario wiring is available only through `test-support`; production
-# Coordinator composition receives exact credential ports and never opens Vault.
+# Coordinator receives exact credential contracts and never opens Vault.
 awaken-credential-vault = { workspace = true, features = ["oauth-command"], optional = true }
 awaken-credential-contract.workspace = true
 # Data-subject consent/erasure store (ADR-0050): backs the /v1/user_profiles/:id/erasure endpoint.

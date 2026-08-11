@@ -21,7 +21,7 @@ CLI_SOURCE = "crates/bin/awaken-cli/src"
 CLI_LIB_SOURCE = "crates/bin/awaken-cli/src/lib.rs"
 COORDINATOR_COMPONENT = "crates/server/awaken-coordinator/src/coordinator_component.rs"
 SERVICE_BOUNDARY = "crates/bin/awaken-cli/src/config/service_boundary.rs"
-RESOURCE_COMPONENT = "crates/resources/awaken-resource-application/src/component.rs"
+RESOURCE_AUTHORITIES = "crates/resources/awaken-resource-application/src/authorities.rs"
 RESOURCE_CONTRACT = "crates/contract/awaken-resource-contract/src/lib.rs"
 RESOURCE_PERSISTENCE = "crates/resources/awaken-resource-persistence/src/lib.rs"
 RUNTIME_HOST_BUILD = "crates/server/awaken-runtime-host/src/host/build.rs"
@@ -78,7 +78,10 @@ CREDENTIAL_SQLITE_SOURCE = "crates/stores/awaken-credential-store/src/sqlite.rs"
 CREDENTIAL_SEALED_SOURCE = "crates/stores/awaken-credential-store/src/sealed.rs"
 WEBHOOK_DISPATCH_SOURCE = "crates/server/awaken-webhook/src/dispatch.rs"
 WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
-MODEL_DIRECTORY_SOURCE = "crates/server/awaken-coordinator/src/model_directory.rs"
+EXECUTABLE_AGENT_CONTRACT_SOURCE = (
+    "crates/server/awaken-executable-agent-contract/src/lib.rs"
+)
+PROTOCOL_MODEL_SOURCE = "crates/server/awaken-protocol-managed/src/control/models.rs"
 RUNTIME_PROCESS_ROUTER = "crates/bin/awaken-cli/src/runtime_process_router.rs"
 CREDENTIAL_INFERENCE_SOURCE = (
     "crates/server/awaken-credential-materializer/src/inference.rs"
@@ -121,7 +124,7 @@ FORBIDDEN_WORKER_SOURCE = re.compile(
     r"\b(?:rusqlite|sqlx)\s*::",
 )
 
-# Deployment and Environment are one Managed Execution composition. Reopening
+# Deployment and Environment are one Managed Execution authority. Reopening
 # either aggregate from the authoring service would recreate the former
 # Control/Coordinator parallel state path.
 FORBIDDEN_CONTROL_EXECUTION_SOURCE = re.compile(
@@ -129,7 +132,7 @@ FORBIDDEN_CONTROL_EXECUTION_SOURCE = re.compile(
 )
 
 # The retired private launch boundary must not return beside the local
-# Coordinator application port.
+# Coordinator application contract.
 FORBIDDEN_RETIRED_LAUNCH_SOURCE = re.compile(
     r"\b(?:HttpDeploymentSessionLauncher|DEPLOYMENT_SESSION_LAUNCH_PATH|"
     r"deployment_session_launch_router|DeploymentSessionLaunchConfig)\b"
@@ -148,7 +151,7 @@ VOLATILE_RUNTIME_HOST_APIS = (
     "new",
     "new_with_deployment",
     "with_deployment_config",
-    "new_with_resource_component",
+    "new_with_resources",
     "with_resource_reclamation",
     "with_upstream",
     "with_skill_store",
@@ -568,7 +571,7 @@ def service_binary_violations(
         if "run_service_binary(" not in source:
             errors.append(f"`{name}` bypasses the shared service lifecycle")
         if "build_" in source:
-            errors.append(f"`{name}` reconstructs composition inside its thin entrypoint")
+            errors.append(f"`{name}` reconstructs applications inside its thin entrypoint")
     return errors
 
 
@@ -642,11 +645,11 @@ def non_product_surface_violations(sources: dict[str, str]) -> list[str]:
 def control_component_violations(
     cli_source: str, component_source: str, control_process_source: str
 ) -> list[str]:
-    """Enforce one Control application builder and process-only composition.
+    """Enforce one Control application builder and process-only startup.
 
     AllInOne and standalone Control may each call the CLI adapter helper, but
     that helper must have exactly one call into the authoritative domain builder.
-    Coordinator/runtime assembly must never reconstruct ConfigService or invoke
+    Coordinator/runtime startup must never reconstruct ConfigService or invoke
     the lower-level Control router directly.
     """
 
@@ -667,10 +670,10 @@ def control_component_violations(
     ):
         if required not in component_source:
             errors.append(f"awaken-control component is missing `{required}`")
-    if "assemble_runtime_process_router(" in control_process_source:
-        errors.append("standalone Control delegates to the runtime process assembler")
-    if "assemble_control_process_router(" not in control_process_source:
-        errors.append("standalone Control does not use its dedicated process assembler")
+    if "prepare_runtime_routers(" in control_process_source:
+        errors.append("standalone Control delegates to the runtime process starter")
+    if "prepare_control_routers(" not in control_process_source:
+        errors.append("standalone Control does not use its dedicated process starter")
     if "ephemeral_resource_component(" in control_process_source:
         errors.append("standalone Control constructs the Resources component")
     return errors
@@ -709,12 +712,12 @@ def domain_component_violations(
         if required not in coordinator_source:
             errors.append(f"awaken-coordinator Coordinator component is missing `{required}`")
     for required in (
-        "pub fn build_resource_component(",
-        "pub struct ResourceDependencies",
-        "pub struct ResourceComponent",
+        "pub struct ResourceAuthorities",
+        "impl ResourceAuthorities",
+        "pub fn new(",
     ):
         if required not in resource_source:
-            errors.append(f"awaken-resource-application component is missing `{required}`")
+            errors.append(f"awaken-resource-application authorities are missing `{required}`")
     for forbidden in (
         "mod component;",
         "ResourceComponent",
@@ -723,7 +726,7 @@ def domain_component_violations(
     ):
         if forbidden in resource_contract_source:
             errors.append(
-                "awaken-resource-contract contains application composition "
+                "awaken-resource-contract contains application ownership "
                 f"vocabulary `{forbidden}`"
             )
     if "ResourcePlane" in runtime_host_source:
@@ -737,7 +740,7 @@ def domain_component_violations(
     return errors
 
 
-def coordinator_resource_composition_violations(
+def coordinator_resource_access_violations(
     coordinator_manifest: dict,
     cli_manifest: dict,
     source: str,
@@ -811,7 +814,7 @@ def worker_listener_partition_violations(
         re.S,
     )
     if public_match is None:
-        errors.append("Coordinator public router assembly is missing")
+        errors.append("Coordinator public routes are missing")
     elif ".merge(worker_transport)" in public_match.group(1):
         errors.append("Coordinator public router merges the Worker transport")
     for required in (
@@ -849,6 +852,7 @@ def process_store_ownership_violations(
         "DeploymentRepository",
         "DreamRepository",
         "MemoryExtractionRepository",
+        "ResourceAuthorities",
         "ResourceComponent",
         "ResourceCatalog",
     ):
@@ -871,13 +875,13 @@ def process_store_ownership_violations(
         "let resources = if manifest.contains(&MigrationComponent::Resources)",
     ):
         if required not in cli_source:
-            errors.append(f"role-aware store assembly is missing `{required}`")
+            errors.append(f"role-aware store selection is missing `{required}`")
     for required in (
-        "pub resource_catalog: Arc<dyn ResourceCatalog>",
+        "resource_catalog: Arc<dyn ResourceCatalog>",
         "pub fn resource_catalog(&self) -> Arc<dyn ResourceCatalog>",
     ):
         if required not in resource_source:
-            errors.append(f"Resources component does not own `{required}`")
+            errors.append(f"Resources authorities do not own `{required}`")
     return errors
 
 
@@ -954,8 +958,8 @@ def redundant_runtime_memory_reexport_violations(source: str) -> list[str]:
     return []
 
 
-def coordinator_persistence_composition_violations(cli_source: str) -> list[str]:
-    """Keep backend initialization on the one runtime-process assembly path."""
+def coordinator_persistence_ownership_violations(cli_source: str) -> list[str]:
+    """Keep backend initialization on the one runtime-process startup path."""
 
     errors: list[str] = []
     for call in (
@@ -1050,32 +1054,38 @@ def webhook_mutation_authority_violations(source: str) -> list[str]:
     return errors
 
 
-def model_directory_authority_violations(
-    directory_source: str, composition_source: str
+def model_inventory_authority_violations(
+    contract_source: str,
+    coordinator_source: str,
+    protocol_source: str,
+    startup_source: str,
 ) -> list[str]:
-    """Keep one Coordinator model projection for every process topology."""
+    """Keep one model-reference rule over executable Agent inventory."""
 
     errors: list[str] = []
+    if contract_source.count("pub async fn current_model_references(") != 1:
+        errors.append(
+            "executable Agent contract must own exactly one current-model rule"
+        )
+    for owner, source in (
+        ("Coordinator Dream readiness", coordinator_source),
+        ("Managed model projection", protocol_source),
+    ):
+        if "current_model_references(" not in source:
+            errors.append(f"{owner} bypasses the executable Agent inventory rule")
+    if startup_source.count("let model_inventory:") != 1:
+        errors.append("runtime startup must select exactly one executable Agent inventory")
     for forbidden in (
+        "ModelDirectory",
         "CatalogModelDirectory",
-        "CatalogRepo",
-        "CredentialRepo",
+        "ExecutableAgentModelDirectory",
         "project_executable_models",
     ):
-        if forbidden in directory_source:
-            errors.append(
-                f"Coordinator model directory reads Control authority `{forbidden}`"
-            )
-    construction_count = composition_source.count(
-        "ExecutableAgentModelDirectory::new("
-    )
-    if construction_count != 1:
-        errors.append(
-            "Runtime composition must construct exactly one executable-registration "
-            f"model directory path; found {construction_count}"
-        )
-    if "CatalogModelDirectory" in composition_source:
-        errors.append("Runtime composition retains an AllInOne Control-catalog model path")
+        if any(
+            forbidden in source
+            for source in (contract_source, coordinator_source, protocol_source, startup_source)
+        ):
+            errors.append(f"retired model projection path reappeared through `{forbidden}`")
     return errors
 
 
@@ -1127,7 +1137,7 @@ def control_publication_authority_violations(
 
 
 def coordinator_control_authority_dependency_violations(manifest: dict) -> list[str]:
-    """Coordinator may consume narrow ports, never Control authority adapters."""
+    """Coordinator may consume narrow contracts, never Control authority adapters."""
 
     forbidden = {
         "awaken-admin-config-api",
@@ -1168,7 +1178,7 @@ def credential_refresh_authority_violations(
 def selftest() -> None:
     """Cause/effect decision table.
 
-    O1 neutral Worker ports/adapters -> accepted; O2 a direct authority-store
+    O1 neutral Worker contracts/adapters -> accepted; O2 a direct authority-store
     dependency (including a Cargo alias) -> rejected; O3 an authority-store
     dependency reached through a transitive normal edge -> rejected; O4 ordinary
     HTTP adapter construction -> accepted. O5 Control creates Managed Execution
@@ -1181,7 +1191,7 @@ def selftest() -> None:
     migration acquisition -> rejected; O15 every volatile Host API is test-support
     gated -> accepted; O16 one missing Host gate -> rejected; O17 all canonical
     CLI scenario/restart helpers, File/Memory/Skill/Resource/Environment volatile
-    entrypoints, the ephemeral Resources assembler, and permissive webhook
+    entrypoints, the ephemeral Resources fixture, and permissive webhook
     loopback transport are test-support gated ->
     accepted; O18 any one gate missing -> rejected; O19 product defaults/normal
     edges do not enable test-support ->
@@ -1199,16 +1209,16 @@ def selftest() -> None:
     dependency on the selectable backend -> rejected; O29 Runtime has no
     compatibility re-export -> accepted; O30 a second Runtime public path for the
     backend -> rejected; O31 Coordinator persistence is initialized exactly once
-    per schema mode in the canonical Runtime assembly -> accepted; O32 a duplicate
+    per schema mode in the canonical Runtime startup -> accepted; O32 a duplicate
     initializer or retired global Worker authority path -> rejected; O33 one
     journaled Webhook mutation authority -> accepted; O34 direct put/delete or a
     missing recovery edge -> rejected; O35 an empty Runtime Host default plus an
     explicit Coordinator capability -> accepted; O36 an implicit default or a
     detached Coordinator capability -> rejected; O37 all role-named executables
     terminate in one lifecycle -> accepted; O38 a missing target, Worker twin, or
-    entrypoint-local composition -> rejected; O39 one executable-registration
-    model directory shared by every topology -> accepted; O40 a direct Control
-    catalog directory or duplicate/missing construction path -> rejected; O41
+    entrypoint-local application construction -> rejected; O39 one normalized
+    model-reference rule shared by Dream and Managed projections -> accepted;
+    O40 a retired directory or duplicate/missing inventory selection -> rejected; O41
     one candidate router in credential materialization -> accepted; O42 a
     missing/duplicate router or Coordinator-owned materializer -> rejected; O43
     one Control publication resolver -> accepted; O44 a missing/duplicate
@@ -1249,31 +1259,30 @@ def selftest() -> None:
     assert control_component_violations(
         "awaken_control::build_control_component(",
         component,
-        "assemble_control_process_router(",
+        "prepare_control_routers(",
     ) == []  # O8 one canonical builder
     assert control_component_violations(
         "ConfigService::new( awaken_control::build_control_component( ",
         component,
-        "assemble_runtime_process_router(",
+        "prepare_runtime_routers(",
     )  # O9 duplicate CLI construction and wrong standalone path
     assert control_component_violations(
         "awaken_control::build_control_component(",
         component,
-        "assemble_control_process_router( ephemeral_resource_component(",
-    )  # O12 Control must consume Resource ports without constructing Resources
+        "prepare_control_routers( ephemeral_resource_component(",
+    )  # O12 Control must consume Resource services without constructing Resources
     coordinator = (
         "pub async fn build_coordinator_component("
         " DeploymentApplication::from_repository("
         " mount_with_managed_application_access_models_and_dreams("
     )
-    resources = (
-        "pub fn build_resource_component("
-        " pub struct ResourceDependencies pub struct ResourceComponent"
-    )
-    # Cause/effect decision table for Resources component ownership:
-    # R1 application owns all three component symbols and contract owns none -> accept;
+    resources = "pub struct ResourceAuthorities impl ResourceAuthorities pub fn new("
+    # FMECA/cause-effect decision table for Resources authority ownership:
+    # FM1 a partial authority selection can pair File/Memory/Skill repositories
+    # from different backends; FM2 a second owner can reopen the same data.
+    # R1 application owns ResourceAuthorities and contract owns none -> accept;
     # R2 any required application symbol is absent -> reject incomplete owner;
-    # R3 any component symbol returns to contract -> reject a parallel owner;
+    # R3 a retired owner returns to contract -> reject a parallel owner;
     # R4 CLI/Runtime/Worker reconstruct another owner -> reject at its boundary.
     assert domain_component_violations(
         "awaken_coordinator::build_coordinator_component(",
@@ -1283,7 +1292,7 @@ def selftest() -> None:
         "",
         "",
         "pub struct WorkerNodeBuilder",
-    ) == []  # O10 R1 four canonical component owners
+    ) == []  # O10 R1 four canonical application/authority owners
     assert domain_component_violations(
         "DeploymentApplication::from_repository(",
         "ManagedSessionRepository",
@@ -1293,7 +1302,7 @@ def selftest() -> None:
         "ResourcePlane",
         "pub struct WorkerNodeBuilder build_worker_component",
     )  # O11 R2/R3/R4 parallel or cross-owner component construction
-    # Resources composition causes/effects:
+    # Resources authority causes/effects:
     # R1 no concrete store deps/factories + injected MemoryStore service -> accept;
     # R2 any concrete Resources dependency -> reject cross-context acquisition;
     # R3 any embedded/ephemeral factory -> reject a second backend selector;
@@ -1303,10 +1312,10 @@ def selftest() -> None:
         "pub memory_stores: Arc<dyn "
         "awaken_resource_contract::MemoryStoreApplicationService> memory_stores,"
     )
-    assert coordinator_resource_composition_violations(
+    assert coordinator_resource_access_violations(
         {"dependencies": {}}, {"dependencies": {}}, "", coordinator_resources
     ) == []  # O11a R1
-    assert coordinator_resource_composition_violations(
+    assert coordinator_resource_access_violations(
         {"dependencies": {"awaken-memory-store": {}}},
         {"dependencies": {"awaken-skill-store": {}}},
         "embedded_resource_component awaken_resource_store::",
@@ -1354,7 +1363,7 @@ def selftest() -> None:
         "let resources = if manifest.contains(&MigrationComponent::Resources)"
     )
     resource_owner = (
-        "pub resource_catalog: Arc<dyn ResourceCatalog> "
+        "resource_catalog: Arc<dyn ResourceCatalog> "
         "pub fn resource_catalog(&self) -> Arc<dyn ResourceCatalog>"
     )
     assert process_store_ownership_violations(
@@ -1556,8 +1565,8 @@ def selftest() -> None:
         "awaken_coordinator::open_coordinator_persistence(\n"
         "awaken_coordinator::open_existing_coordinator_persistence("
     )
-    assert coordinator_persistence_composition_violations(canonical_persistence) == []  # O31
-    assert coordinator_persistence_composition_violations(
+    assert coordinator_persistence_ownership_violations(canonical_persistence) == []  # O31
+    assert coordinator_persistence_ownership_violations(
         canonical_persistence
         + " awaken_coordinator::open_coordinator_persistence( worker_directory("
     )  # O32
@@ -1612,18 +1621,22 @@ def selftest() -> None:
         "build_control()",
         "",
     )  # O38
-    assert model_directory_authority_violations(
-        "pub struct ExecutableAgentModelDirectory;",
-        "ExecutableAgentModelDirectory::new(registrations)",
+    # Model inventory FMECA/cause-effect table: FM1 independent Dream/HTTP model
+    # normalization diverges; FM2 a Control catalog reader returns beside the
+    # executable publication inventory. R39 one rule + both consumers + one
+    # startup inventory => accept; R40 any missing cause or retired directory => reject.
+    assert model_inventory_authority_violations(
+        "pub async fn current_model_references(",
+        "current_model_references(",
+        "current_model_references(",
+        "let model_inventory:",
     ) == []  # O39
-    assert model_directory_authority_violations(
-        "CatalogModelDirectory CatalogRepo CredentialRepo project_executable_models",
-        "CatalogModelDirectory::new(catalog)",
-    )  # O40 direct Control path and missing canonical construction
-    assert model_directory_authority_violations(
-        "pub struct ExecutableAgentModelDirectory;",
-        "ExecutableAgentModelDirectory::new(a) ExecutableAgentModelDirectory::new(b)",
-    )  # O40 duplicate construction
+    assert model_inventory_authority_violations(
+        "pub async fn current_model_references(",
+        "ModelDirectory current_model_references(",
+        "",
+        "let model_inventory: let model_inventory:",
+    )  # O40 retired path, missing consumer, and duplicate selection
     assert inference_materializer_authority_violations(
         "struct PinnedCandidateExecutor;",
         "pub mod coordinator_component;",
@@ -1699,7 +1712,7 @@ def check_all(repo_root: Path) -> list[str]:
     for package in dependency_violations(runtime_dependencies):
         errors.append(
             f"{RUNTIME_HOST_MANIFEST}: default Runtime Host transitively links "
-            f"authority-store dependency `{package}`; select it only from Coordinator composition"
+            f"authority-store dependency `{package}`; select it only during Coordinator startup"
         )
     try:
         protocol_dependencies = resolved_product_dependencies(
@@ -1778,7 +1791,7 @@ def check_all(repo_root: Path) -> list[str]:
                 for path in sorted((repo_root / CONTROL_SOURCE).rglob("*.rs"))
             ),
             (repo_root / COORDINATOR_COMPONENT).read_text(encoding="utf-8"),
-            (repo_root / RESOURCE_COMPONENT).read_text(encoding="utf-8"),
+            (repo_root / RESOURCE_AUTHORITIES).read_text(encoding="utf-8"),
             (repo_root / RESOURCE_CONTRACT).read_text(encoding="utf-8"),
             (repo_root / RUNTIME_HOST_BUILD).read_text(encoding="utf-8"),
             "\n".join(
@@ -1788,7 +1801,7 @@ def check_all(repo_root: Path) -> list[str]:
         )
     )
     errors.extend(
-        coordinator_resource_composition_violations(
+        coordinator_resource_access_violations(
             product_manifests[COORDINATOR_MANIFEST],
             product_manifests[CLI_MANIFEST],
             (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
@@ -1811,7 +1824,7 @@ def check_all(repo_root: Path) -> list[str]:
         process_store_ownership_violations(
             (repo_root / PROCESS_STORES).read_text(encoding="utf-8"),
             "\n".join(cli_sources),
-            (repo_root / RESOURCE_COMPONENT).read_text(encoding="utf-8"),
+            (repo_root / RESOURCE_AUTHORITIES).read_text(encoding="utf-8"),
         )
     )
     for error in volatile_runtime_host_surface_violations(
@@ -1844,10 +1857,12 @@ def check_all(repo_root: Path) -> list[str]:
         (repo_root / RUNTIME_LIB_SOURCE).read_text(encoding="utf-8")
     ):
         errors.append(f"{RUNTIME_LIB_SOURCE}: {error}")
-    for error in coordinator_persistence_composition_violations("\n".join(cli_sources)):
-        errors.append(f"awaken-cli persistence composition: {error}")
-    for error in model_directory_authority_violations(
-        (repo_root / MODEL_DIRECTORY_SOURCE).read_text(encoding="utf-8"),
+    for error in coordinator_persistence_ownership_violations("\n".join(cli_sources)):
+        errors.append(f"awaken-cli persistence ownership: {error}")
+    for error in model_inventory_authority_violations(
+        (repo_root / EXECUTABLE_AGENT_CONTRACT_SOURCE).read_text(encoding="utf-8"),
+        (repo_root / COORDINATOR_SOURCE).read_text(encoding="utf-8"),
+        (repo_root / PROTOCOL_MODEL_SOURCE).read_text(encoding="utf-8"),
         (repo_root / RUNTIME_PROCESS_ROUTER).read_text(encoding="utf-8"),
     ):
         errors.append(f"Coordinator model projection: {error}")

@@ -148,11 +148,11 @@ executable registration R1–R6、ProviderConnection compatibility tests，以�
 
 ## M22：Models API 的显式配置前提
 
-原因 C143：测试在 production live `ModelDirectory` 上未写入 Catalog，却假设 bare-host 默认模型存在。结果 E141：空 Catalog 投影空列表；只有 Provider Connection 成功发现并原子写入后才列出精确模型。
+原因 C143：测试在 production live executable-Agent inventory 中没有模型事实，却假设 bare-host 默认模型存在。结果 E141：空 inventory 投影空列表；只有 Provider Connection 成功发现并原子写入后才列出精确模型。
 
 | 规则 | Catalog facts | discovery | 结果 | 覆盖 |
 |---|---:|---:|---|---|
-| T139 | 无 | - | 空列表，不回退 fixture defaults | ModelDirectory unit tests |
+| T139 | 无 | - | 空列表，不回退 fixture defaults | `current_model_references` decision-table tests |
 | T140 | 显式 Provider Connection | 成功 | list/retrieve exact model，missing 404 | Files/Models E2E M2 |
 
 | ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |

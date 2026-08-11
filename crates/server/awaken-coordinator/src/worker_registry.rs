@@ -1,7 +1,7 @@
 //! Coordinator-owned WorkerDirectory adapter construction.
 //!
 //! Backend selection stays at the server root and returns an explicit handle to
-//! the process composition. There is deliberately no process global and no
+//! process startup. There is deliberately no process global and no
 //! implicit volatile fallback.
 
 use std::path::Path;

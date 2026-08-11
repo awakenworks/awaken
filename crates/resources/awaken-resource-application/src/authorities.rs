@@ -1,8 +1,8 @@
-//! Canonical Resources application component.
+//! Canonical Resources authorities selected for one application.
 //!
 //! File, Memory, Skill, and reclamation retain their type-specific semantics and
-//! repositories. This component is their atomic application-composition value:
-//! callers cannot accidentally pair ports opened from different backend
+//! repositories. This value keeps their selection atomic: callers cannot
+//! accidentally pair authorities opened from different backend
 //! selections, and Runtime/Coordinator code receives no concrete database type.
 
 use std::sync::Arc;
@@ -12,26 +12,13 @@ use awaken_resource_contract::{
     SkillStore,
 };
 
-/// Resources-owned ports selected by an outer process adapter.
-pub struct ResourceDependencies {
-    /// Secret-free definitions and immutable configuration versions used by
-    /// Session resolution. The catalog belongs to Resources even when a legacy
-    /// concrete adapter also implements unrelated admin-store interfaces.
-    pub resource_catalog: Arc<dyn ResourceCatalog>,
-    pub file_store: Arc<dyn FileStore>,
-    pub file_catalog: Arc<dyn FileCatalog>,
-    pub memory_repository: Arc<dyn MemoryRepository>,
-    pub skill_store: Arc<dyn SkillStore>,
-    pub reclamation: Arc<dyn ResourceReclamationRepository>,
-}
-
-/// One complete Resources component.
+/// One complete set of Resources authorities.
 ///
 /// This is not a universal Resource aggregate or materializer. It preserves the
-/// independent per-kind ports while guaranteeing that one process selects them
+/// independent per-kind authorities while guaranteeing that one process selects them
 /// together exactly once.
 #[derive(Clone)]
-pub struct ResourceComponent {
+pub struct ResourceAuthorities {
     resource_catalog: Arc<dyn ResourceCatalog>,
     file_store: Arc<dyn FileStore>,
     file_catalog: Arc<dyn FileCatalog>,
@@ -40,19 +27,26 @@ pub struct ResourceComponent {
     reclamation: Arc<dyn ResourceReclamationRepository>,
 }
 
-#[must_use]
-pub fn build_resource_component(dependencies: ResourceDependencies) -> ResourceComponent {
-    ResourceComponent {
-        resource_catalog: dependencies.resource_catalog,
-        file_store: dependencies.file_store,
-        file_catalog: dependencies.file_catalog,
-        memory_repository: dependencies.memory_repository,
-        skill_store: dependencies.skill_store,
-        reclamation: dependencies.reclamation,
+impl ResourceAuthorities {
+    #[must_use]
+    pub fn new(
+        resource_catalog: Arc<dyn ResourceCatalog>,
+        file_store: Arc<dyn FileStore>,
+        file_catalog: Arc<dyn FileCatalog>,
+        memory_repository: Arc<dyn MemoryRepository>,
+        skill_store: Arc<dyn SkillStore>,
+        reclamation: Arc<dyn ResourceReclamationRepository>,
+    ) -> Self {
+        Self {
+            resource_catalog,
+            file_store,
+            file_catalog,
+            memory_repository,
+            skill_store,
+            reclamation,
+        }
     }
-}
 
-impl ResourceComponent {
     #[must_use]
     pub fn resource_catalog(&self) -> Arc<dyn ResourceCatalog> {
         self.resource_catalog.clone()

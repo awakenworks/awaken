@@ -433,7 +433,7 @@ fn memory_mount_store_id(mount: &awaken_provisioning_contract::MountRequirement)
     store_id
 }
 
-/// Test composition adapter for runtime-host's dependency-inverted MemoryMounter
+/// Test startup adapter for runtime-host's dependency-inverted MemoryMounter
 /// port. Production installs `awaken-sandbox-memoryd` from awaken-coordinator.
 struct TestMemoryMounter {
     fs: Arc<dyn awaken_memory_store::MemoryRepository>,
@@ -2140,7 +2140,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     // A blob to mount, and a first turn that builds + caches the thread's sandbox.
     let file_id = host
         .file_application()
-        .expect("test composition installs File application")
+        .expect("test startup installs File application")
         .create_uploaded_file(
             host.local_workspace(),
             "data.txt".into(),
@@ -2402,7 +2402,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         .expect("live Workdir environment");
     let file_id = host
         .file_application()
-        .expect("test composition installs File application")
+        .expect("test startup installs File application")
         .create_uploaded_file(
             host.local_workspace(),
             "data.txt".into(),
@@ -2466,7 +2466,7 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     let managed = managed_with_resource_source(host.clone());
     let file_id = host
         .file_application()
-        .expect("test composition installs File application")
+        .expect("test startup installs File application")
         .create_uploaded_file(
             host.local_workspace(),
             "query.txt".into(),
@@ -3786,7 +3786,7 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
     let binary = vec![0, 0xff, b'R', 0x80, b'\n'];
     let record = host
         .file_application()
-        .expect("test composition installs File application")
+        .expect("test startup installs File application")
         .create_uploaded_file(
             host.local_workspace(),
             "notes.txt".into(),
@@ -3963,7 +3963,7 @@ async fn file_activation_enforces_workspace_ownership_without_iam_policy_logic()
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let file_id = host
         .file_application()
-        .expect("test composition installs File application")
+        .expect("test startup installs File application")
         .create_uploaded_file(
             "workspace-a",
             "input.txt".into(),
@@ -5289,7 +5289,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
     );
 }
 
-/// Worker composition cause graph: C1 dispatch Session Runtime installed from
+/// Worker startup cause graph: C1 dispatch Session Runtime installed from
 /// the Managed adapter -> C2 outer builder released -> C3 validator present ->
 /// C4 exact credential materializer present -> E1 Repository material stages.
 /// Missing C4 rejects through the same runtime rather than a fallback path.
@@ -7741,7 +7741,10 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     assert!(remote.live_inbox("remote-live").await.is_none(), "L3");
 }
 
-/// Cause/effect design:
+/// FMECA: FM1 explicit warmup and Session creation use separate preparation
+/// registries, causing duplicate work or different readiness truth; FM2 Session
+/// creation reaches the provider before cache preparation succeeds.
+/// Cause/effect graph:
 /// C1=Session spec declares CacheVolume, C2=no eager preparation exists,
 /// C3=initializer succeeds, C4=the same identity is explicitly prewarmed later.
 /// E1=initialization precedes provider creation, E2=Session creation succeeds,
@@ -7787,9 +7790,12 @@ async fn session_creation_and_explicit_cache_warmup_share_one_preparation_path()
         .expect("cache preparation precedes Session environment creation");
     assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E1/E2");
 
-    host.prewarm_cache_volume("build-cache-v1", "/tmp/awaken-cache-volume-wiring")
-        .await
-        .expect("same identity is already prepared");
+    host.prewarm_cache_volume(crate::CacheVolumeWarmup::host_path(
+        "build-cache-v1",
+        "/tmp/awaken-cache-volume-wiring",
+    ))
+    .await
+    .expect("same identity is already prepared");
     assert_eq!(initializer.0.load(Ordering::SeqCst), 1, "E3");
     environment
         .dispose()

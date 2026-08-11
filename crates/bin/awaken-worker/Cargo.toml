@@ -68,7 +68,7 @@ toml.workspace = true
 [dev-dependencies]
 # The admin router tests drive the axum router directly (oneshot).
 tower = { version = "0.5", features = ["util"] }
-# Bare in-memory Host construction exists only for explicit test composition;
+# Bare in-memory Host construction exists only for explicit test startup;
 # production Worker builds keep the runtime-host test backend unlinked.
 awaken-runtime-host = { workspace = true, features = ["test-support"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }

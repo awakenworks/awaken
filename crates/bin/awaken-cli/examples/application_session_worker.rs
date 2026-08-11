@@ -1,4 +1,4 @@
-//! E2E composition fixture for the public application-factory seam.
+//! E2E startup fixture for the public application-factory seam.
 //!
 //! The executable contains no alternate Session protocol: it installs one
 //! application provisioner into the production `WorkerNodeBuilder`, then lets

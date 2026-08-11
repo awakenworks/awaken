@@ -1,4 +1,4 @@
-//! Last-mile process composition for authority-change reconciliation and
+//! Last-mile process startup for authority-change reconciliation and
 //! workspace-addressed routing.
 
 use std::sync::Arc;
@@ -14,7 +14,7 @@ pub(crate) fn finish(
     managed_rate_limiter: Arc<awaken_protocol_managed::ManagedRateLimiter>,
 ) -> Router {
     flat = flat.merge(mcp_export);
-    // One composition serves one resolved Organization. Install one shared
+    // One startup serves one resolved Organization. Install one shared
     // limiter before workspace-path dispatch so flat and rewritten Workspace
     // routes draw from the same organization buckets.
     flat = flat.layer(axum::middleware::from_fn_with_state(
@@ -129,7 +129,7 @@ mod tests {
         // Organization/Workspace cause graph:
         // O1 flat Managed create and O2 workspace-addressed Managed create both
         // enter the same post-rewrite flat router; Organization is fixed by the
-        // composition, while Workspace is only a resource scope. Therefore the
+        // startup, while Workspace is only a resource scope. Therefore the
         // first two mixed creates consume an explicit two-token test bucket and
         // O3 create three is one 429 — no per-Workspace bucket and no double
         // charge during the rewrite. The deliberately slow refill also makes

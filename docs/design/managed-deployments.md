@@ -15,7 +15,7 @@ Deployment API -> DeploymentApplication -> DeploymentRepository
                          |                    `- exact occurrence claim
                          |                    `- ManagedLifecycleFact outbox
                          v
-                LocalDeploymentSessionLauncher
+                ManagedDeploymentSessionLauncher
                     `- canonical Coordinator Session create command
 ```
 
@@ -44,7 +44,7 @@ modified, or genuinely new before describing the dependency graph.
 |---|---|---|
 | `DeploymentApplication` | repository restore, Workspace checks, revision CAS, persistent cursor, exact occurrence claim, Agent version resolution | restart-safe and replica-safe aggregate owner |
 | Managed Session store | Deployment, DeploymentRun, occurrence-claim migrations and SQLite/Postgres transactional adapters | CAS/capacity/claim and lifecycle fact commit atomically |
-| Coordinator composition | owns the public router, scheduler, repository projection, and ordinary Session launcher | one Deployment aggregate instance and no remote launch hop |
+| Coordinator process | owns the public router, scheduler, repository projection, and ordinary Session launcher | one Deployment aggregate instance and no remote launch hop |
 | `DeploymentSessionLauncher` request | carries the existing stable `deployment_run_id` | restart recovery resolves to at most one Session |
 | Agent archive operation | cascades terminal archive to live primary-Agent Deployments | no later scheduled run |
 | Managed periodic driver | evaluates Deployment then Dream policies every 15 seconds | one production timer |
@@ -69,7 +69,7 @@ HTTP adapter (official DTOs)
        |- ExecutableAgentRegistrationSource (latest/pinned version resolution)
        |- DeploymentRepository (revision CAS + capacity + occurrence claim + lifecycle fact)
        |- ManagedRateLimiter (create admission)
-       `- LocalDeploymentSessionLauncher
+       `- ManagedDeploymentSessionLauncher
             `- ManagedState (ordinary Session/Event authority)
 
 ManagedLifecycleFact outbox

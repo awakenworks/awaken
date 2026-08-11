@@ -1,4 +1,4 @@
-//! Typed optional collaborators for the one process assembly path.
+//! Typed services selected before a Control or Coordinator process starts.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use super::{
 };
 
 #[derive(Default)]
-pub(super) struct ProcessAssemblyOptions {
+pub(super) struct ProcessStartup {
     pub(super) service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
     pub(super) deployment: Option<awaken_runtime_host::DeploymentConfig>,
     pub(super) content_capture_ceiling: awaken_runtime_contract::ContentCapture,
@@ -36,7 +36,7 @@ pub(super) struct ProcessAssemblyOptions {
     pub(super) worker_observations: Option<worker_observation_wiring::WorkerObservationWiring>,
     pub(super) control_service_authenticator:
         Option<Arc<dyn awaken_service_auth_contract::ServiceRequestAuthenticator>>,
-    pub(super) control_service: Option<super::ControlServicePorts>,
+    pub(super) control_service: Option<super::ControlServices>,
 }
 
 pub(super) fn local_model_supply(

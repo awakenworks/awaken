@@ -54,7 +54,7 @@ async fn terminal_dream(app: &Router, id: &str) -> Value {
 #[tokio::test]
 async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane() {
     // Managed-overview cause/effect graph:
-    // C0 scope-less local scenario request -> E0 the composition edge stamps the
+    // C0 scope-less local scenario request -> E0 the startup edge stamps the
     // Host's default Workspace before every data and policy handler;
     // C1 Agent-referenced Session + user event -> E1 durable full event history;
     // C2 ordinary MemoryStore + selected Session -> E2 asynchronous Dream;

@@ -147,7 +147,7 @@ async fn worker_factory_mounts_the_environments_surface_absent_from_a_plain_moun
 async fn acp_sandboxed_factory_also_mounts_the_environments_surface() {
     // The sandboxed-ACP factory shares the environments merge (a session's networking
     // policy must reach the sandbox launch), so `/v1/environments` is present here too.
-    // Extracting its composition into `acp_scenarios` introduces no new branch or
+    // Extracting its startup into `acp_scenarios` introduces no new branch or
     // effect, so no new decision table applies; this end-to-end route observation
     // is the regression coverage for the structural move.
     let mut deployment = awaken_runtime_host::DeploymentConfig::ephemeral();

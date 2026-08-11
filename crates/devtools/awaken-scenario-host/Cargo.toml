@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 # The extracted service layer: SharedHost / ManagedHost / RunApplicationHost and all
-# host modules live here; this bin only composes them into router modes.
+# host modules live here; this binary only selects and serves scenario modes.
 awaken-runtime-host = { workspace = true, features = ["test-support"] }
 awaken-run-ingress-http.workspace = true
 awaken-config-service.workspace = true
@@ -44,15 +44,15 @@ awaken-run-executor-a2a = { workspace = true }
 awaken-agent-config.workspace = true
 awaken-config-store = { workspace = true, features = ["test-support"] }
 # Canonical Memory data plane used by API, mount, recall, extraction, history, and
-# redaction. The composition root selects its durable or ephemeral adapter once.
+# redaction. Scenario startup selects its durable or ephemeral adapter once.
 awaken-memory-store = { workspace = true }
-# Scenario resource modes are composition roots too: install the canonical
+# Scenario resource modes also install the canonical
 # in-memory lifecycle adapter explicitly instead of relying on Host-local truth.
 awaken-resource-store = { workspace = true, features = ["test-support"] }
 # ACP runtime (R3/R4): drive an external ACP CLI as a peer RunExecutor when a
 # session selects `runtime: "acp:*"`.
 awaken-run-executor-acp = { workspace = true }
-# Management plane (ADR-0043): the composition root resolves a run's inference
+# Management plane (ADR-0043): process startup resolves a run's inference
 # (adapter_kind + base_url + already-resolved credential) and builds the host's
 # model executor from it — the runtime never sees the credential binding (D6/D9).
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
@@ -114,7 +114,7 @@ awaken-coordinator = { workspace = true, features = ["test-support"] }
 # Reuse the production worker lifecycle/registration/heartbeat/dispatch wiring in
 # the worker-failover scenario; only its deterministic executor provider differs.
 awaken-worker = { workspace = true }
-# The composition root: the `management` scenario mode + the brain-admin surface moved
+# The `management` scenario mode + the brain-admin surface moved
 # to awaken-cli's library (Stage B2). Dev-dep cycle-free: awaken-cli dev-depends back
 # on this crate for the mock models its moved integration tests drive.
 awaken-cli = { workspace = true, features = ["test-support"] }
@@ -136,3 +136,6 @@ container-k8s = ["awaken-coordinator/container-k8s"]
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"

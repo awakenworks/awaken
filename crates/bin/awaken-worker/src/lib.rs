@@ -86,7 +86,7 @@ impl WorkerProcessConfig {
     }
 }
 
-/// Invalid explicit Worker composition.
+/// Invalid explicit Worker startup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkerNodeBuildError(String);
 
@@ -235,8 +235,8 @@ impl WorkerNodeBuilder {
         self
     }
 
-    /// Install the already-composed remote-attempt adapter. A2A construction and
-    /// transport credentials remain at the outer composition root.
+    /// Install the already-configured remote-attempt adapter. A2A construction and
+    /// transport credentials remain at the outer process startup.
     #[must_use]
     pub fn with_remote_attempt_executor(
         mut self,
@@ -362,7 +362,7 @@ impl WorkerNodeBuilder {
     }
 
     /// Install a Session container provider together with the capacity lifecycle
-    /// produced by the same downstream composition.
+    /// produced by the same downstream startup.
     #[must_use]
     pub fn with_session_container_provider_and_capacity(
         mut self,
@@ -380,7 +380,7 @@ impl WorkerNodeBuilder {
 
     /// Publish an isolation boundary enforced around this Worker process.
     ///
-    /// Platform compositions use this when the Worker already runs inside a
+    /// Platform deployments use this when the Worker already runs inside a
     /// sandboxed Pod/VM and executes children locally within that boundary. It
     /// affects standard manifest evidence only; it does not install a second
     /// Session container provider or change runtime realization.
@@ -917,7 +917,7 @@ impl WorkerNode {
             awaken_resource_worker_http::HttpMemoryMaterializationReferenceEncoder,
         ))
         .with_worker_stream_publisher(stream_publisher)
-        .with_dispatch_port(dispatch)
+        .with_worker_dispatch(dispatch)
         .with_skill_bundle_source(remote_skills)
         .with_web_search_provider_registry(self.web_search_providers);
         if let Some(remote_attempt) = self.remote_attempt {

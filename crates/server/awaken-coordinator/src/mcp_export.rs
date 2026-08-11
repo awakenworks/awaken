@@ -1,7 +1,7 @@
 //! Production MCP server assembly owned by the data plane.
 //!
 //! Export is opt-in: without a dedicated bearer token no route is mounted. The
-//! composition root supplies an explicit neutral descriptor/executable set, so
+//! process startup supplies an explicit neutral descriptor/executable set, so
 //! nothing from the runtime registry leaks implicitly.
 
 use std::sync::Arc;

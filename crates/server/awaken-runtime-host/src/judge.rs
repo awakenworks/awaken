@@ -17,7 +17,7 @@ use crate::host::SharedHost;
 use crate::run_exec::BoundRunExecutor;
 use crate::store::HostCommit;
 
-/// Host composition of the extension-owned Agent Grader. It resolves the fresh
+/// Host integration of the extension-owned Agent Grader. It resolves the fresh
 /// Grader Thread and supplies Host backend/durable context; prompt, identity,
 /// recovery, restrictions, and parsing remain in `awaken-ext-goal`.
 pub(crate) struct HostAgentGrader<'a> {

@@ -7,9 +7,9 @@
 //! the same `Arc<SharedHost>`, so a run started through one protocol can be
 //! resumed or observed through another on the *same thread*.
 //!
-//! The composition root (`awaken-coordinator`) assembles these into routers;
-//! this crate carries no wire assembly of its own beyond the per-plane routers
-//! it exposes (config / files / memory-stores / durable-ops).
+//! The product process (`awaken-coordinator`) exposes these through routers;
+//! this crate owns the Runtime services behind its config, files, memory-store,
+//! and durable-operation HTTP surfaces.
 
 mod acp_backend;
 mod acp_capability_probe;
@@ -63,8 +63,7 @@ mod test_mcp;
 mod tool_output_spill;
 mod unavailable_worker;
 mod web_search;
-mod worker_http;
-mod worker_ports;
+mod worker_services;
 
 use crate::session_environment::AgentSandbox as _;
 
@@ -85,8 +84,6 @@ pub use crate::authority::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
 };
 pub use crate::host::{CommittedStepReceipt, HostError, HostErrorKind, PendingTool};
-pub use crate::worker_http::respond as respond_host_http;
-
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
@@ -106,7 +103,7 @@ pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox
 use crate::skill_catalog::skill_store_run_error;
 pub use crate::skills::SkillForkPlacement;
 // The config data plane (ADR-0036/slice A): the service + its router + the
-// advertised-tools helper the composition root builds a config host from.
+// advertised-tools helper the process startup builds a config host from.
 pub use crate::acp_provision::PublishedAcpLaunchResolver;
 pub use crate::acp_serve::{AcpServeHost, AcpStop, AcpTurn};
 pub use crate::commit_ingest::claimed_commit_service;
@@ -120,7 +117,7 @@ pub use crate::deployment_config::{
     K8sNetworkPolicyEnforcement, PackageImageBuilder, SandboxSettings, SandboxTier, StoreKind,
     Wake, default_postgres_max_connections,
 };
-// The model-route seam (R1/R2/R5): a composition root supplies its own
+// The model-route seam (R1/R2/R5): a process startup supplies its own
 // `InferenceExecutorMaterializer` to map a session's model ref to a labeled executor.
 // The managed-vault OAuth seams (ADR-0043): the transport-level refresher, its
 // prepared configuration, and the live MCP credential probe.
@@ -164,7 +161,7 @@ fn to_run_error(err: HostError) -> RunError {
 /// carries no event ids here; the projection refills them from the pending tool.
 /// The Managed Agents `SessionRuntime` port implemented over the shared host.
 /// Holds only an `Arc<SharedHost>` plus runtime-side materialization SPIs, so it
-/// composes with any other adapter bound to the same host.
+/// configures with any other adapter bound to the same host.
 #[derive(Clone)]
 pub struct ManagedHost {
     host: Arc<SharedHost>,
@@ -383,7 +380,7 @@ impl ManagedHost {
 
     /// Install the fully configured Managed adapter used by durable dispatch.
     ///
-    /// Call this once at the composition root after all `with_*` configuration
+    /// Call this once at the process startup after all `with_*` configuration
     /// has been applied. Construction and configuration are deliberately free
     /// of shared-host side effects, so a partially configured adapter can never
     /// become visible to a concurrently claimed Run.
@@ -445,7 +442,7 @@ impl ManagedHost {
     /// Repository configuration in `inputs` remains authoritative; the per-item
     /// validation in `stage_resolved_input` checks only current ownership/state
     /// and the frozen version's integrity. No Agent binding or current config is
-    /// composed here.
+    /// configured here.
     async fn compile_effective_inputs(
         &self,
         thread: &str,
@@ -690,7 +687,7 @@ impl ManagedHost {
         self.with_credential_materializer(PinnedCredentialMaterializer::new(credentials, secrets))
     }
 
-    /// Reuse the composition root's canonical exact materializer for MCP and
+    /// Reuse the process startup's canonical exact materializer for MCP and
     /// Repository realization instead of constructing a peer over the same stores.
     #[must_use]
     pub fn with_credential_materializer(
@@ -1363,7 +1360,7 @@ impl SessionRuntime for ManagedHost {
             });
         }
         // Stage only the already-resolved manifest. Runtime never reads the Agent
-        // binding repository or composes defaults again.
+        // binding repository or configures defaults again.
         self.stage_resource_manifest(
             thread,
             &init.workspace_id,

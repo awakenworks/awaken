@@ -1,6 +1,6 @@
 //! The host Run-delegation service: run a child Agent behind the `agent_run` tool.
 //!
-//! This is the composition-root implementation of [`RunDelegationService`].
+//! This is the process-startup implementation of [`RunDelegationService`].
 //! The kernel routes the delegation tool to it; here, native (in-process Agent Run)
 //! and remote agents are peer backends selected only from the delegated Agent's
 //! immutable publication. This module owns child-Run admission; ordinary attempt

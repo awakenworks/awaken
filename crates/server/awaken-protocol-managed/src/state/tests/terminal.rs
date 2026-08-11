@@ -28,7 +28,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
             ..Default::default()
         },
     );
-    let state = ManagedState::from_application(application);
+    let state = ManagedState::from_application(Arc::new(application));
     let created = state
         .create_session(
             serde_json::from_value(serde_json::json!({ "agent": "assistant" })).unwrap(),
@@ -300,8 +300,17 @@ async fn delete_session_disposes_the_host_sandbox() {
     );
 }
 
-/// `POST /v1/sessions/{id}/archive` reaps the sandbox on the terminal
-/// transition only — a re-archive (idempotent) does not re-dispose.
+/// Archive FMECA and cause/effect graph. Failure modes are FM1 terminal fact
+/// commits without Runtime cleanup, FM2 replay disposes the same environment
+/// twice, and FM3 cleanup runs before the durable terminal fence. Causes: C1
+/// live Session, C2 first archive, C3 archived Session, C4 replay. Effects: E1
+/// terminal state/fact then one cleanup, E2 identical terminal state and no
+/// second cleanup. Cause graph: C1&&C2 -> E1; C3&&C4 -> E2.
+///
+/// | Rule | State | Command | Durable transition | Cleanup | Effect |
+/// |---|---|---|---|---|---|
+/// | A1 | live | archive | once | once, after fence | E1 |
+/// | A2 | archived | archive | none | none | E2 |
 #[tokio::test]
 async fn archive_session_disposes_on_the_terminal_transition_only() {
     let rt = EndSessionRecorder::default();

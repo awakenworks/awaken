@@ -628,7 +628,7 @@ impl ManagedState {
                 ));
                 let outcome = self
                     .application
-                    .run_streaming_attributed(
+                    .run_session_message(
                         agent_id,
                         session_id,
                         content.clone(),
@@ -643,9 +643,10 @@ impl ManagedState {
                         return Err(StateError::Run(error));
                     }
                 };
+                self.refresh_cached_projection(&outcome.session)?;
                 self.append_committed_step(
                     session_id,
-                    outcome,
+                    outcome.step,
                     sink.take_allocations(),
                     lifecycle_start,
                 )
@@ -885,8 +886,7 @@ impl ManagedState {
         for inbound in &req.events {
             let drives_turn = matches!(
                 inbound,
-                InboundEvent::UserMessage { .. }
-                    | InboundEvent::UserToolConfirmation { .. }
+                InboundEvent::UserToolConfirmation { .. }
                     | InboundEvent::UserCustomToolResult { .. }
                     | InboundEvent::UserToolResult { .. }
                     | InboundEvent::UserDefineOutcome { .. }
