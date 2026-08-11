@@ -20,12 +20,16 @@ use serde::{Deserialize, Serialize};
 /// These are deliberately separate from `ModelBinding`: the binding is routing
 /// identity used for exact candidate and credential lookup, whereas these values
 /// tune each call made through that exact route.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferenceOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffort>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speed: Option<InferenceSpeed>,
+    /// Exact geographic placement constraint for provider inference. The
+    /// adapter must honor or reject it before provider network I/O.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<String>,
 }
 
 impl InferenceOptions {
@@ -145,6 +149,17 @@ pub struct AgentDelegateBinding {
     pub recursive_self: bool,
 }
 
+/// Advisor intent frozen beside the ordinary delegate roster. Model
+/// route resolution is completed by the publication owner before execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAdvisorBinding {
+    /// Public model id retained for exact Agent/Session projection.
+    pub model: String,
+    /// Complete execution route frozen by the same publication resolver as the
+    /// primary model. Runtime never re-resolves advisor identity.
+    pub candidate: crate::resolved::ResolvedModelCandidate,
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum AgentDelegateBindingWire {
@@ -186,6 +201,8 @@ pub struct AgentBindings {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub delegates: Vec<AgentDelegateBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisor: Option<AgentAdvisorBinding>,
     /// Exact tool availability/confirmation policy compiled from authoring.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub toolsets: Vec<ToolsetPolicy>,

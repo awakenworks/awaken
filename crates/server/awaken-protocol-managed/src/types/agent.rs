@@ -108,6 +108,21 @@ pub enum MultiagentRosterEntry {
     Id(String),
     Reference(AgentRosterReference),
     SelfReference(SelfRosterReference),
+    Advisor(AdvisorRosterReference),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvisorRosterReference {
+    pub model: String,
+    #[serde(rename = "type")]
+    pub kind: AdvisorRosterReferenceKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum AdvisorRosterReferenceKind {
+    #[serde(rename = "advisor")]
+    Advisor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -61,7 +61,7 @@ pub(crate) fn build_chat_request(
     let tools = spec.tool_presentation.model_tools(&combined, opened);
     ChatRequest {
         model_binding: spec.model_binding.binding.clone(),
-        inference: spec.plugin_config.inference,
+        inference: spec.plugin_config.inference.clone(),
         messages,
         tools,
     }

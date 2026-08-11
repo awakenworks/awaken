@@ -83,7 +83,7 @@ async function main() {
       `delegated usage folds in the sub-agent (input): ${JSON.stringify(okUsage)}`);
     assert.equal(okUsage.cache_read_input_tokens, FAKE_USAGE.cache_read_input_tokens * INFERENCES,
       `delegated usage folds in the sub-agent (cache_read): ${JSON.stringify(okUsage)}`);
-    assert.equal(okUsage.cache_creation_input_tokens, FAKE_USAGE.cache_creation_input_tokens * INFERENCES,
+    assert.equal(okUsage.cache_creation?.ephemeral_5m_input_tokens, FAKE_USAGE.cache_creation_input_tokens * INFERENCES,
       `delegated usage folds in the sub-agent (cache_creation): ${JSON.stringify(okUsage)}`);
 
     // D4: the delegate call spawned a subagent child thread — announced by

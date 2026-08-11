@@ -31,7 +31,7 @@ impl<T> Page<T> {
 
 /// The Anthropic `PageCursorParams` query: `?limit=&page=`. `page` is the opaque
 /// cursor a prior `next_page` handed the client; both optional.
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 pub struct PageQuery {
     #[serde(default)]
     pub limit: Option<usize>,

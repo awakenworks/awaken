@@ -245,8 +245,10 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
         title: Some("My session".to_string()),
         metadata,
         tools: Default::default(),
+        budget: Default::default(),
         activity_epoch: 0,
         running_interval: None,
+        runtime_active_millis: 0,
         environment: Default::default(),
         mcp: SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {

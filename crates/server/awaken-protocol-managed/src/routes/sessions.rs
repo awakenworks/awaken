@@ -678,6 +678,19 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
+    if is_family("/v1/tunnels") && !has_beta(&req, crate::TUNNELS_BETA) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "invalid_request_error",
+                format!(
+                    "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
+                    beta = crate::TUNNELS_BETA,
+                ),
+            )),
+        )
+            .into_response();
+    }
     let is_managed = [
         "/v1/sessions",
         "/v1/agents",
@@ -881,10 +894,27 @@ async fn update_session(
         .unwrap_or_default();
     let title = body.title;
     let metadata = body.metadata;
+    let budget = match body.budget {
+        None => None,
+        Some(None) => Some(None),
+        Some(Some(limit)) => Some(Some(limit.max_list_cost_minor().map_err(|message| {
+            error_response(StateError::Run(RunError::bad_request(message)))
+        })?)),
+    };
     // Managed wire equivalence is stable across the application-layer move so
     // durable receipts written by a previous process version remain replayable.
-    let request_fingerprint =
-        awaken_session_contract::stable_fingerprint(&(&title, &metadata, &tools, &mcp_servers));
+    let request_fingerprint = match budget {
+        None => {
+            awaken_session_contract::stable_fingerprint(&(&title, &metadata, &tools, &mcp_servers))
+        }
+        Some(_) => awaken_session_contract::stable_fingerprint(&(
+            &title,
+            &metadata,
+            &tools,
+            &mcp_servers,
+            &budget,
+        )),
+    };
     let idempotency_key = parse_idempotency_key(&headers)?;
     let if_match = parse_if_match(&headers)?;
     let operation_id = idempotency_key
@@ -896,6 +926,7 @@ async fn update_session(
             awaken_session_application::SessionUpdateCommand {
                 title,
                 metadata,
+                budget,
                 tools: tools.map(|tools| crate::project::session_tool_configuration(&tools)),
                 mcp_candidates: mcp_servers.map(|servers| {
                     servers

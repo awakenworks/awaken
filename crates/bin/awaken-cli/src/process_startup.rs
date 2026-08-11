@@ -31,6 +31,7 @@ pub(super) struct ProcessStartup {
         Option<executable_environment_registration::ExecutableEnvironmentWiring>,
     pub(super) worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
+    pub(super) worker_placement_policy: Option<Arc<dyn awaken_dispatch::PlacementPolicy>>,
     pub(super) worker_directory: Option<awaken_coordinator::WorkerDirectoryHandle>,
     pub(super) runtime_authority: Option<Arc<dyn awaken_session_executor::RuntimeAuthority>>,
     pub(super) worker_observations: Option<worker_observation_wiring::WorkerObservationWiring>,
@@ -39,6 +40,7 @@ pub(super) struct ProcessStartup {
     pub(super) control_service: Option<super::ControlServices>,
     pub(super) additional_lifecycle_delivery:
         Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
+    pub(super) managed_services: super::ManagedServiceAdapters,
 }
 
 pub(super) fn local_model_supply(

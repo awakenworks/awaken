@@ -237,6 +237,12 @@ pub struct ControlRouterInput {
     pub data_subject_org: String,
     /// Control-owned Environment definition and sandbox-policy routes.
     pub environment_router: Router,
+    /// Cloud-only Tunnel command/query port. Kept optional so open/self-hosted
+    /// compositions expose no local Tunnel behavior.
+    pub managed_tunnel_application:
+        Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    /// Optional admission port installed inside IAM and audit.
+    pub managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Canonical local setup/session routes, mounted outside the protected
@@ -275,6 +281,8 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         data_subject_application,
         data_subject_org,
         environment_router,
+        managed_tunnel_application,
+        managed_request_limiter,
         iam,
         local_browser_auth,
         remote_iam,
@@ -391,10 +399,13 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         .merge(workspace_context)
         .merge(capabilities)
         .merge(environment_router);
+    if let Some(application) = managed_tunnel_application {
+        mgmt = mgmt.merge(awaken_protocol_managed::tunnels_router(application));
+    }
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
     }
-    mgmt = protect_management_router(mgmt, audit_plane, iam, remote_iam);
+    mgmt = protect_management_router(mgmt, audit_plane, iam, remote_iam, managed_request_limiter);
     if let Some(local_browser_auth) = local_browser_auth {
         mgmt = mgmt.merge(awaken_iam_host::local_browser_router(local_browser_auth));
     }
@@ -411,7 +422,17 @@ pub fn protect_management_router(
     audit_plane: ManagementAuditPlane,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
+    request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
 ) -> Router {
+    if let Some(request_limiter) = request_limiter {
+        // Axum layers wrap in reverse installation order. Install admission
+        // first so IAM and then audit are outside it; only an authenticated
+        // WorkspaceScope can reach the organization resolver.
+        router = router.layer(axum::middleware::from_fn_with_state(
+            request_limiter,
+            awaken_protocol_managed::enforce_managed_rate_limit,
+        ));
+    }
     if let Some(iam) = iam {
         // Layer order is outside-in in reverse application order: audit is
         // installed first, then IAM wraps it. Thus unauthenticated requests

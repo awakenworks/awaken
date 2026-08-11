@@ -56,7 +56,7 @@ pub fn compile_attempt_credential_bindings(
         .activation
         .snapshot
         .resolved_spec
-        .execution_candidates(request.activation.model_ref_override.as_deref());
+        .attempt_candidates(request.activation.model_ref_override.as_deref());
     awaken_runtime_contract::compile_candidate_credential_bindings(
         &candidates,
         request.inference_plaintext_holder.as_ref(),

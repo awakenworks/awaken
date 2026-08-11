@@ -22,6 +22,7 @@ mod application;
 mod authority;
 mod background;
 mod cache_volume;
+mod capabilities;
 mod commit_ingest;
 mod compact;
 mod config;
@@ -1483,12 +1484,31 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<awaken_session_contract::SessionUsage, RunError> {
         // Map the runtime's per-model tally onto the managed wire's session-level total
         // (the host is the context boundary; the managed crate never sees TokenUsage).
-        let total = self.host.thread_usage(thread).await.total();
+        let attributed = self.host.thread_usage(thread).await;
+        let total = attributed.total();
         Ok(awaken_session_contract::SessionUsage {
             input_tokens: total.prompt_tokens,
             output_tokens: total.completion_tokens,
             cache_read_tokens: total.cache_read_tokens,
             cache_creation_tokens: total.cache_creation_tokens,
+            by_model: attributed
+                .by_model
+                .into_iter()
+                .map(|(model, usage)| {
+                    (
+                        model,
+                        awaken_session_contract::SessionModelUsage {
+                            input_tokens: usage.prompt_tokens,
+                            output_tokens: usage.completion_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            cache_creation_tokens: usage.cache_creation_tokens,
+                        },
+                    )
+                })
+                .collect(),
+            active_seconds: 0,
+            web_fetch_requests: 0,
+            web_search_requests: 0,
         })
     }
 
@@ -1970,30 +1990,5 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
             .drain_mcp_projection(&generation)
             .await
             .map_err(to_run_error)
-    }
-}
-
-impl ManagedHost {
-    fn capabilities_for_workspace(&self, workspace: &str) -> AgentCapabilities {
-        AgentCapabilities {
-            builtin_tools: self
-                .host
-                .builtin_tools()
-                .into_iter()
-                .map(|(name, ask)| BuiltinTool { name, ask })
-                .collect(),
-            custom_tools: self
-                .host
-                .custom_tools()
-                .into_iter()
-                .map(|d| CustomTool {
-                    name: d.id,
-                    description: d.description,
-                    input_schema: d.parameters,
-                })
-                .collect(),
-            skills: self.host.skills.ids_in(workspace),
-            delegates: self.host.delegate_ids_in(workspace),
-        }
     }
 }

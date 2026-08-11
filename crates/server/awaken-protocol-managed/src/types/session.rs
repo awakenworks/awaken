@@ -13,6 +13,57 @@
 
 use awaken_agent_contract::{AcpSessionConfiguration, agent::content::ContentBlock};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonetaryAmount {
+    pub amount: String,
+    pub currency: Currency,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Currency {
+    USD,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BudgetLimit {
+    Limit { max_list_cost: MonetaryAmount },
+}
+
+impl BudgetLimit {
+    pub fn max_list_cost_minor(&self) -> Result<u64, String> {
+        let Self::Limit { max_list_cost } = self;
+        if max_list_cost.amount.is_empty()
+            || (max_list_cost.amount.len() > 1 && max_list_cost.amount.starts_with('0'))
+            || !max_list_cost
+                .amount
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+        {
+            return Err(
+                "max_list_cost.amount must be a canonical non-negative integer string".into(),
+            );
+        }
+        let amount = max_list_cost
+            .amount
+            .parse::<u64>()
+            .map_err(|_| "max_list_cost.amount exceeds the supported range".to_owned())?;
+        if amount == 0 {
+            return Err("max_list_cost.amount must be greater than zero".into());
+        }
+        Ok(amount)
+    }
+
+    pub fn from_minor(amount: u64) -> Self {
+        Self::Limit {
+            max_list_cost: MonetaryAmount {
+                amount: amount.to_string(),
+                currency: Currency::USD,
+            },
+        }
+    }
+}
 use serde_json::Value;
 
 use awaken_session_contract::AgentTool;
@@ -165,6 +216,8 @@ impl AgentRef {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionCreateParams {
     pub agent: AgentRef,
+    #[serde(default)]
+    pub budget: Option<BudgetLimit>,
     /// Events admitted atomically with Session creation. The state layer validates
     /// the entire collection before minting an id, then drives them through the
     /// same event command used by `POST .../events`.
@@ -210,6 +263,8 @@ pub struct SessionAgentUpdate {
 pub struct SessionUpdateParams {
     #[serde(default)]
     pub agent: Option<SessionAgentUpdate>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub budget: Option<Option<BudgetLimit>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub title: Option<Option<String>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
@@ -258,6 +313,8 @@ pub struct ModelConfig {
     pub speed: Option<ModelSpeed>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ModelEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<String>,
     /// Optional Awaken behavior carried beside the fully compatible Managed
     /// model fields. Official clients that do not need ACP-native options omit
     /// it and retain the exact SDK shape.
@@ -271,6 +328,34 @@ impl ModelConfig {
             id: id.into(),
             speed: None,
             effort: None,
+            inference_geo: None,
+            x_awaken: None,
+        }
+    }
+
+    /// Canonical neutral-to-Managed inference projection. Agent reads and
+    /// Session inheritance share this owner so a new immutable control cannot
+    /// drift between the two wire paths.
+    pub fn from_inference(
+        id: impl Into<String>,
+        inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
+    ) -> Self {
+        use awaken_runtime_contract::agent_bindings::{InferenceSpeed, ReasoningEffort};
+
+        Self {
+            id: id.into(),
+            speed: inference.speed.map(|value| match value {
+                InferenceSpeed::Standard => ModelSpeed::Standard,
+                InferenceSpeed::Fast => ModelSpeed::Fast,
+            }),
+            effort: inference.effort.map(|value| match value {
+                ReasoningEffort::Low => ModelEffort::Low,
+                ReasoningEffort::Medium => ModelEffort::Medium,
+                ReasoningEffort::High => ModelEffort::High,
+                ReasoningEffort::Xhigh => ModelEffort::Xhigh,
+                ReasoningEffort::Max => ModelEffort::Max,
+            }),
+            inference_geo: inference.inference_geo,
             x_awaken: None,
         }
     }
@@ -350,6 +435,8 @@ pub struct ModelConfigParams {
     #[serde(default)]
     pub effort: Option<ModelEffortInput>,
     #[serde(default)]
+    pub inference_geo: Option<String>,
+    #[serde(default)]
     pub x_awaken: Option<AwakenModelExtensions>,
 }
 
@@ -359,6 +446,7 @@ impl ModelConfigParams {
             id: id.into(),
             speed: None,
             effort: None,
+            inference_geo: None,
             x_awaken: None,
         }
     }
@@ -369,6 +457,7 @@ impl ModelConfigParams {
             id: self.id,
             speed: self.speed,
             effort: self.effort.map(ModelEffortInput::resolved),
+            inference_geo: self.inference_geo,
             x_awaken: self.x_awaken,
         }
     }
@@ -458,6 +547,8 @@ pub struct SessionThreadStats {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SessionThreadUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_creation: Option<SessionThreadCacheCreationUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
@@ -465,6 +556,10 @@ pub struct SessionThreadUsage {
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_cost: Option<MonetaryAmount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUsage>,
 }
 
 /// `BetaManagedAgentsCacheCreationUsage`.
@@ -498,14 +593,32 @@ pub struct SessionThread {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SessionStats {}
 
-/// `BetaManagedAgentsSessionUsage` — a session's accumulated token usage. Zero
-/// until the first turn commits usage.
+/// `BetaManagedAgentsServerToolUsage`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ServerToolUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_fetch_requests: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u64>,
+}
+
+/// `BetaManagedAgentsSessionUsage` — cumulative priced quantities.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Usage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_input_tokens: u64,
-    pub cache_creation_input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<SessionThreadCacheCreationUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_cost: Option<MonetaryAmount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUsage>,
 }
 
 /// `BetaManagedAgentsSpanModelUsage` — token usage for a *single* model request
@@ -525,9 +638,6 @@ pub struct SpanModelUsage {
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
-    Preparing,
-    Activating,
-    Failed,
     Running,
     Rescheduling,
     #[default]
@@ -539,9 +649,6 @@ impl SessionStatus {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Preparing => "preparing",
-            Self::Activating => "activating",
-            Self::Failed => "failed",
             Self::Running => "running",
             Self::Rescheduling => "rescheduling",
             Self::Idle => "idle",
@@ -556,6 +663,7 @@ pub struct Session {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub agent: SessionAgent,
+    pub budget: Option<BudgetLimit>,
     pub environment_id: String,
     pub created_at: String,
     pub updated_at: String,
@@ -745,6 +853,7 @@ pub struct SendEventsResponse {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
+    BudgetReached,
     RequiresAction { event_ids: Vec<String> },
     RetriesExhausted,
 }
@@ -985,6 +1094,8 @@ pub enum OutboundKind {
         metadata: std::collections::BTreeMap<String, String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         agent: Option<SessionAgent>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget: Option<Option<BudgetLimit>>,
     },
     /// A subagent child thread terminated (`session.thread_status_terminated`),
     /// e.g. when archived.
@@ -1308,9 +1419,9 @@ mod tests {
             }
             other => panic!("expected Set, got {other:?}"),
         }
-        // `{id, speed}` object model override, with a pinned version.
+        // `{id, speed, inference_geo}` object model override, with a pinned version.
         let o: AgentRef = serde_json::from_str(
-            r#"{"id":"assistant","type":"agent_with_overrides","version":2,"model":{"id":"claude-opus-4-8","speed":"fast"}}"#,
+            r#"{"id":"assistant","type":"agent_with_overrides","version":2,"model":{"id":"claude-opus-4-8","speed":"fast","inference_geo":"us"}}"#,
         )
         .unwrap();
         assert_eq!(o.version(), Some(2));
@@ -1318,8 +1429,26 @@ mod tests {
             ModelOverride::Set(cfg) => {
                 assert_eq!(cfg.id, "claude-opus-4-8");
                 assert_eq!(cfg.speed, Some(ModelSpeed::Fast));
+                assert_eq!(cfg.inference_geo.as_deref(), Some("us"));
             }
             other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn public_session_status_is_the_exact_sdk_union() {
+        // Cause/effect decision table: each public variant serializes to one SDK
+        // literal; internal preparation/failure phases have no representable
+        // variant and therefore cannot leak through this type.
+        let values = [
+            (SessionStatus::Rescheduling, "rescheduling"),
+            (SessionStatus::Running, "running"),
+            (SessionStatus::Idle, "idle"),
+            (SessionStatus::Terminated, "terminated"),
+        ];
+        assert_eq!(values.len(), 4);
+        for (status, expected) in values {
+            assert_eq!(serde_json::to_value(status).unwrap(), expected);
         }
     }
 
@@ -1459,10 +1588,16 @@ mod tests {
             is_error: None,
             model_usage: SpanModelUsage {
                 usage: Usage {
-                    input_tokens: 10,
-                    output_tokens: 20,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
+                    active_seconds: None,
+                    input_tokens: Some(10),
+                    output_tokens: Some(20),
+                    cache_read_input_tokens: Some(0),
+                    cache_creation: Some(SessionThreadCacheCreationUsage {
+                        ephemeral_1h_input_tokens: None,
+                        ephemeral_5m_input_tokens: Some(0),
+                    }),
+                    list_cost: None,
+                    server_tool_use: None,
                 },
                 speed: None,
             },

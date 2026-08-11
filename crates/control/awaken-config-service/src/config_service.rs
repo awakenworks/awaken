@@ -233,6 +233,7 @@ impl ConfigService {
             metadata,
             resolved.models.primary,
             resolved.models.candidates,
+            resolved.advisor,
         )
         .map_err(|e| PublishError::Compile(e.to_string()))?;
         let stored_inputs = defaults

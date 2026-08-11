@@ -597,6 +597,8 @@ fn persisted(id: &str, self_hosted: bool, application: bool, status: &str) -> Pe
         tools: Default::default(),
         activity_epoch: 0,
         running_interval: None,
+        runtime_active_millis: 0,
+        budget: Default::default(),
         environment: Default::default(),
         mcp: Default::default(),
         resources: Default::default(),

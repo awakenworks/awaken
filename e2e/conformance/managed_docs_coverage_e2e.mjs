@@ -13,6 +13,7 @@ const report = readFileSync(resolve(E2E, 'MANAGED_AGENTS_DOCS_COVERAGE.md'), 'ut
 
 const officialPages = [
   'agent-setup',
+  'budgets',
   'cloud-sandboxes-reference',
   'define-outcomes',
   'dreams',
@@ -21,6 +22,7 @@ const officialPages = [
   'files',
   'github',
   'mcp-connector',
+  'mcp-tunnels',
   'memory',
   'migration',
   'multiagent-orchestration',

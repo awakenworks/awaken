@@ -21,6 +21,12 @@ impl ManagedState {
             awaken_session_application::SessionActivityError::NotReady => StateError::Run(
                 RunError::classified("session_not_ready", "Session realization has not completed"),
             ),
+            awaken_session_application::SessionActivityError::BudgetReached => {
+                StateError::Run(RunError::classified(
+                    "budget_reached",
+                    "Session list-cost budget has been reached",
+                ))
+            }
             awaken_session_application::SessionActivityError::Conflict => StateError::Conflict,
             awaken_session_application::SessionActivityError::EpochExhausted => {
                 StateError::Run(RunError::internal("Session activity epoch is exhausted"))
@@ -945,8 +951,35 @@ impl ManagedState {
             .session_usage(session_id)
             .await
             .map_err(StateError::Run)?;
+        let budget = self
+            .application
+            .reconcile_managed_budget_usage(session_id, usage.clone())
+            .await
+            .map_err(|error| StateError::Run(RunError::unavailable(error.to_string())))?;
         if let Some(record) = self.sessions.lock().unwrap().get_mut(session_id) {
-            record.session.usage = session_usage_value(usage);
+            let mut projected_usage = session_usage_value(usage);
+            projected_usage.list_cost =
+                budget
+                    .session
+                    .budget
+                    .public_list_cost_minor()
+                    .map(|amount| crate::types::MonetaryAmount {
+                        amount: amount.to_string(),
+                        currency: crate::types::Currency::USD,
+                    });
+            record.session.usage = projected_usage;
+            if budget.reached_now {
+                let start = record.events.len();
+                record.events.push(Event {
+                    id: self.next_event_id(),
+                    kind: OutboundKind::SessionStatusIdle {
+                        stop_reason: StopReason::BudgetReached,
+                    },
+                    processed_at: Some(PROCESSED_AT.to_string()),
+                });
+                record.project_runtime_status(SessionStatus::Idle);
+                self.broadcast_committed_from(session_id, record, start);
+            }
         }
         Ok(SendEventsResponse { data: receipts })
     }

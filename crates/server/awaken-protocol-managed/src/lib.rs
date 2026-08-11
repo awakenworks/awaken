@@ -35,7 +35,7 @@ pub mod types;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-pub use common::headers::{MANAGED_BETA, USER_PROFILES_BETA};
+pub use common::headers::{MANAGED_BETA, TUNNELS_BETA, USER_PROFILES_BETA};
 pub use control::{ModelEntry, default_models, models_router, models_router_with_inventory};
 mod resources;
 pub use resources::{
@@ -48,11 +48,16 @@ mod dream;
 mod env_registry;
 mod preview;
 mod state;
+mod tunnel;
 /// The self-hosted environment work queue as a port ([`work_queue::WorkQueue`]),
 /// with an in-memory default; durable (sqlite/postgres) backends fold in behind it.
 mod work_queue;
 
-pub use rate_limit::{ManagedRateLimiter, ManagedRateLimits, enforce_managed_rate_limit};
+pub use rate_limit::{
+    ManagedOperation, ManagedRateLimitDecision, ManagedRateLimitRequest,
+    ManagedRateLimitUnavailable, ManagedRateLimiter, ManagedRateLimits, ManagedRequestLimiter,
+    ManagedRequestSource, enforce_managed_rate_limit,
+};
 pub use routes::agents_registry::{
     AgentRegistryState, ManagedAgentError, ManagedAgentRepository, agents_router,
 };
@@ -65,5 +70,7 @@ pub use routes::vaults::{VaultState, vault_router};
 pub use routes::{DREAMING_BETA, dreams_router};
 pub use routes::{
     MEMORY_BETA, SKILLS_BETA, enforce_managed_beta, replace_resource_manifest, router,
+    tunnels_router,
 };
 pub use state::{ManagedState, StateError};
+pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};

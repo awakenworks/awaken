@@ -360,7 +360,7 @@ impl InferenceExecutorMaterializer for CredentialInferenceMaterializer {
         let candidates = activation
             .snapshot
             .resolved_spec
-            .execution_candidates(activation.model_ref_override.as_deref())
+            .attempt_candidates(activation.model_ref_override.as_deref())
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();

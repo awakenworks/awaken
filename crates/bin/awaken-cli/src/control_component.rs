@@ -29,6 +29,8 @@ pub(super) async fn control_component_for_process(
     environment_author: Arc<dyn awaken_environment_contract::EnvironmentAuthor>,
     environment_application: Arc<awaken_environment_application::EnvironmentApplication>,
     environment_router: Router,
+    managed_tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
     content_capture_ceiling: awaken_runtime_contract::ContentCapture,
     iam: Option<Arc<ManagementAuthz>>,
@@ -90,6 +92,8 @@ pub(super) async fn control_component_for_process(
         environment_author,
         environment_application,
         environment_router,
+        managed_tunnel_application,
+        managed_request_limiter,
         data_subjects: control.data_subjects.clone(),
         erasure_jobs: control.erasure_jobs.clone(),
         coordinator_content_eraser,
@@ -189,6 +193,17 @@ pub(super) async fn prepare_control_routers(
         ))
     };
     let environment_application = environment_authoring.application();
+    let managed_rate_limiter = process
+        .managed_services
+        .request_limiter
+        .clone()
+        .unwrap_or_else(|| {
+            Arc::new(
+                awaken_protocol_managed::ManagedRateLimiter::for_organization(
+                    data_subject_org.clone(),
+                ),
+            )
+        });
     let component = control_component_for_process(
         &stores,
         &process.service_lifecycle,
@@ -215,6 +230,8 @@ pub(super) async fn prepare_control_routers(
                 environment_authoring.sandbox_policy_store(),
             ),
         ),
+        process.managed_services.tunnel_application.clone(),
+        Some(managed_rate_limiter),
         coordinator_content_eraser.unwrap_or_else(test_coordinator_content_eraser),
         content_capture_ceiling,
         iam,
@@ -275,9 +292,6 @@ pub(super) async fn prepare_control_routers(
             Some(component.publication_reconciler),
             worker_observations,
             execution_workspace,
-            Arc::new(
-                awaken_protocol_managed::ManagedRateLimiter::for_organization(data_subject_org),
-            ),
         ),
         private_router,
         Some(component.registration_supervisor),

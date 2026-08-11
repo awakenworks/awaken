@@ -67,6 +67,7 @@ ROUTE_OWNER_FILES = (
     "crates/server/awaken-protocol-managed/src/routes/dreams.rs",
     "crates/server/awaken-protocol-managed/src/routes/environments.rs",
     "crates/server/awaken-protocol-managed/src/routes/sessions.rs",
+    "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
     "crates/server/awaken-protocol-managed/src/routes/user_profiles.rs",
     "crates/server/awaken-protocol-managed/src/routes/vaults.rs",
     "crates/server/awaken-protocol-mcp/src/http.rs",

@@ -28,7 +28,8 @@ pub use awaken_worker::WorkerBootstrap;
 pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourceStoreBackend};
 use file_schema::FileConfig;
 use file_support::{
-    home_dir, is_postgres_url, override_port, read_management_database_url, validate_suite_hub_url,
+    home_dir, is_postgres_url, override_port, read_database_url_file, resolve_dispatch_backend,
+    resolve_runtime_database_url, select_store_url, validate_suite_hub_url,
 };
 pub use role::Role;
 pub use seal_key::SealKeySource;
@@ -201,6 +202,10 @@ impl ResolvedDeployment {
             &[
                 ("runtime_database_url", file.runtime_database_url.is_some()),
                 (
+                    "runtime_database_url_file",
+                    file.runtime_database_url_file.is_some(),
+                ),
+                (
                     "resource_database_url",
                     file.resource_database_url.is_some(),
                 ),
@@ -227,6 +232,10 @@ impl ResolvedDeployment {
             role,
             &[
                 ("runtime_database_url", file.runtime_database_url.is_some()),
+                (
+                    "runtime_database_url_file",
+                    file.runtime_database_url_file.is_some(),
+                ),
                 (
                     "resource_database_url",
                     file.resource_database_url.is_some(),
@@ -298,27 +307,12 @@ impl ResolvedDeployment {
             Role::Worker => true,
             Role::Control | Role::Coordinator => false,
         };
-        let dispatch_url = file.runtime_database_url.clone();
-        if dispatch_url
-            .as_ref()
-            .is_some_and(|url| !is_postgres_url(url))
-        {
-            return Err("runtime_database_url must be postgres://".to_owned());
-        }
-        let dispatch_backend = if dispatch_url.is_some() {
-            DispatchBackend::Postgres
-        } else {
-            DispatchBackend::Sqlite
-        };
-        if role == Role::Coordinator && dispatch_backend != DispatchBackend::Postgres {
-            return Err("Coordinator requires runtime_database_url".to_owned());
-        }
-        if role == Role::AllInOne
-            && !run_local_pool
-            && dispatch_backend != DispatchBackend::Postgres
-        {
-            return Err("run_local_pool=false requires runtime_database_url".to_owned());
-        }
+        let dispatch_url = resolve_runtime_database_url(
+            file.runtime_database_url.as_ref(),
+            file.runtime_database_url_file.as_deref(),
+        )?;
+        let dispatch_backend =
+            resolve_dispatch_backend(dispatch_url.as_ref(), role, run_local_pool)?;
         let control_service = ControlServiceConfig::resolve(
             role,
             file.control_internal_url.clone(),
@@ -435,7 +429,7 @@ impl ResolvedDeployment {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_WAKE_CHANNEL.to_owned()),
             nats_url: file.nats_url.clone(),
-            database_url: dispatch_url,
+            database_url: dispatch_url.clone(),
             postgres_max_connections,
             dispatch_owner,
             upstream: worker_server.clone(),
@@ -462,7 +456,7 @@ impl ResolvedDeployment {
         let shared_management_database = file
             .management_database_url_file
             .as_deref()
-            .map(read_management_database_url)
+            .map(|path| read_database_url_file(path, "management_database_url_file"))
             .transpose()?;
         if shared_management_database.is_some()
             && [
@@ -491,9 +485,16 @@ impl ResolvedDeployment {
             );
         }
         let store_url = |specific: &Option<String>| {
-            specific
-                .clone()
-                .or_else(|| shared_management_database.clone())
+            select_store_url(specific.as_ref(), None, shared_management_database.as_ref())
+        };
+        let execution_store_url = |specific: &Option<String>| {
+            select_store_url(
+                specific.as_ref(),
+                (role == Role::Coordinator)
+                    .then_some(dispatch_url.as_ref())
+                    .flatten(),
+                shared_management_database.as_ref(),
+            )
         };
         let control = awaken_control::ControlStoreConfig::from_values(
             &data_dir,
@@ -506,15 +507,15 @@ impl ResolvedDeployment {
         );
         let coordinator = CoordinatorStoreConfig {
             sessions: awaken_control::StoreBackend::resolve(
-                store_url(&file.sessions_db),
+                execution_store_url(&file.sessions_db),
                 data_dir.join("sessions.db"),
             ),
             captured_content: awaken_control::StoreBackend::resolve(
-                store_url(&file.captured_content_db),
+                execution_store_url(&file.captured_content_db),
                 data_dir.join("captured_content.db"),
             ),
         };
-        let resources = match store_url(&file.resource_database_url) {
+        let resources = match execution_store_url(&file.resource_database_url) {
             Some(url) if is_postgres_url(&url) => ResourceStoreBackend::Postgres(url),
             Some(_) => return Err("resource_database_url must be postgres://".to_owned()),
             None => ResourceStoreBackend::Embedded(data_dir.clone()),
@@ -1600,6 +1601,55 @@ mod tests {
         );
         assert!(!coordinator.run_local_pool, "P7");
         assert!(coordinator.runtime.disable_local_pool, "P7");
+    }
+
+    #[test]
+    fn coordinator_database_file_is_one_execution_store_coordinate() {
+        // Causes: C1 role=Coordinator; C2 the runtime database is supplied by a
+        // projected file; C3 no per-store execution URLs exist. Effects: E1 the
+        // file is read once as Postgres; E2 Runtime, Session, captured content,
+        // and Resources use that exact coordinate; E3 no SQLite authority is
+        // opened. Decision rule D1=C1+C2+C3 -> E1+E2+E3.
+        let dir = tempfile::tempdir().unwrap();
+        let database_file = dir.path().join("database-url");
+        std::fs::write(&database_file, "postgres://cloud/execution\n").unwrap();
+        let deployment = ResolvedDeployment::resolve_file(
+            ConfigOverrides {
+                role: Some(Role::Coordinator),
+                ..Default::default()
+            },
+            Some(dir.path().to_path_buf()),
+            dir.path().join("config.toml"),
+            FileConfig {
+                internal_bind: Some("127.0.0.1:8081".into()),
+                runtime_database_url_file: Some(database_file),
+                control_internal_url: Some("http://control:3000".into()),
+                control_service_token_file: Some("/run/control-service-token".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            deployment.runtime.database_url.as_deref(),
+            Some("postgres://cloud/execution"),
+            "D1"
+        );
+        for store in [
+            &deployment.coordinator.sessions,
+            &deployment.coordinator.captured_content,
+        ] {
+            assert!(
+                matches!(store, awaken_control::StoreBackend::Postgres(url) if url == "postgres://cloud/execution"),
+                "D1"
+            );
+        }
+        assert!(
+            matches!(
+                deployment.resources,
+                ResourceStoreBackend::Postgres(ref url) if url == "postgres://cloud/execution"
+            ),
+            "D1"
+        );
     }
 
     #[test]

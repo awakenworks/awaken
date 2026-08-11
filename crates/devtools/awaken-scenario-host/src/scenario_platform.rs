@@ -351,6 +351,7 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
         Some(
             awaken_executable_agent_contract::ExecutableAgentSessionProfile {
                 model: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
+                inference: snapshot.resolved_spec.plugin_config.inference.clone(),
                 execution_model_ref: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
                 backend_ref: snapshot.resolved_spec.model_binding.backend_ref.clone(),
                 system: None,
@@ -360,6 +361,10 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
                 mcp_servers,
                 skills: bindings.skills.clone(),
                 delegate_ids: Vec::new(),
+                advisor_model: bindings
+                    .advisor
+                    .as_ref()
+                    .map(|advisor| advisor.model.clone()),
                 resources: self.resources.clone(),
                 environment: None,
             },
