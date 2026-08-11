@@ -72,7 +72,7 @@ fi
 step "G1/G5/G2/G3 container tier against a real Docker daemon"
 if docker info >/dev/null 2>&1; then
   docker image inspect busybox:latest >/dev/null 2>&1 || docker pull busybox:latest >/dev/null
-  for t in docker_it docker_e2e pairwise_docker pool_docker hand_docker reaper_docker; do
+  for t in docker_it docker_e2e pairwise_docker pool_docker hand_docker; do
     run "docker:$t" cargo test -q -p awaken-sandbox-container --features docker --test "$t"
   done
   # The awaken-sandbox acp bridge as a real container ENTRYPOINT (the production image
@@ -154,27 +154,25 @@ if [ "${COVERAGE:-0}" = 1 ] && command -v cargo-llvm-cov >/dev/null; then
   echo "   loop body — no sub-agent child threads in deterministic unit tests; the"
   echo "   {id}:thread:{n} id scheme is validated by the events projection.)"
 
-  step "line coverage — execution-plane binary + container reaper"
+  step "line coverage — execution-plane binary + container lifecycle"
   CARGO_TARGET_DIR="$COV" \
     cargo llvm-cov --all-features -p awaken-sandbox --summary-only 2>/dev/null \
       | grep -E "bridge|hand|memoryd|TOTAL" || true
   CARGO_TARGET_DIR="$COV" \
     cargo llvm-cov -p awaken-sandbox-container --features docker,podman,k8s --summary-only 2>/dev/null \
-      | grep -E "reaper|TOTAL" || true
+      | grep -E "lease|recovery|TOTAL" || true
   # WHY the uncovered lines are NOT gaps: the execution-plane binary's uncovered
   # surface is exactly its OS-BOUNDARY code, which is integration-tested against REAL
   # substrates (a real binary / container / cluster) rather than unit tests, so
   # `llvm-cov` — which instruments the lib+tests, NOT the spawned real binary — cannot
   # attribute those lines. Specifically:
-  #   - reaper::spawn (the background sweep loop): fires in the managed container e2e
-  #     ("reaped <id> (Exited)"), never an in-process infinite loop under test;
-  #   - {reaper,memoryd}::from_env: exercised by the real binary via the container e2e;
+  #   - memoryd::from_env is exercised by the real binary via the container e2e;
   #   - memoryd::serve_fuse: needs /dev/fuse + SYS_ADMIN — the memoryd `kernel_vfs`
   #     fuse tests cover the FUSE path; the copy fallback + `serve` are unit-covered;
   #   - memoryd::shutdown_signal + the SIGTERM harvest: proven by the container e2e
   #     (`docker stop` -> SIGTERM -> "harvested N ...");
   #   - hand::serve tcp/reverse-dial/nats binds: proven by the k3d topology e2e
-  #     (direct/reverse/relay) + managed_colocated (unix). The pure logic (should_reap,
+  #     (direct/reverse/relay) + managed_colocated (unix). The pure logic (lease fencing,
   #     parse_hand_args, splice, copy round-trip) is unit-covered (bridge/lib ~90-96%).
   # No redundant/dead code was introduced; the docker/podman dial-retry is deliberately
   # per-adapter (distinct agent_addr impls), matching the existing adapter structure.

@@ -488,7 +488,7 @@ removed rather than synchronized with the persisted Catalog.
 This is a target invariant, not a claim that every historic runtime environment
 read has already been migrated. The Provider-proposal authoring path and Flow's
 parallel ACP inventory/default have been removed. Sandbox fallback, warm-pool,
-proxy, Kubernetes namespace, container Hand location and reaper settings have
+proxy, Kubernetes namespace and container Hand location have
 been consolidated into `DeploymentConfig::sandbox`. Content capture level and
 redaction are authored once in typed deployment configuration; enrollment
 signing is an internally generated process capability rather than an ambient
