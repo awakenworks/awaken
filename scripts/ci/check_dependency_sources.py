@@ -54,24 +54,33 @@ def dependency_specs(value: object, path: str = "") -> list[tuple[str, dict[str,
 
 def validate_manifest_data(data: dict[str, object], label: str) -> list[str]:
     violations: list[str] = []
+    revisions_by_repository: dict[str, set[str]] = {}
     for path, spec in dependency_specs(data):
         git_url = spec.get("git")
         if not isinstance(git_url, str):
             violations.append(f"{label}:{path}: git must be a URL string")
             continue
-        _, error = normalized_repository(git_url)
+        repository, error = normalized_repository(git_url)
         if error:
             violations.append(f"{label}:{path}: {error}")
         revision = spec.get("rev")
         if not isinstance(revision, str) or FULL_GIT_REV.fullmatch(revision) is None:
             violations.append(f"{label}:{path}: Git dependency must pin a full 40-character rev")
+        elif repository is not None:
+            revisions_by_repository.setdefault(repository, set()).add(revision)
         if "branch" in spec or "tag" in spec:
             violations.append(f"{label}:{path}: branch/tag pins are not reproducible dependency inputs")
+    for repository, revisions in sorted(revisions_by_repository.items()):
+        if len(revisions) > 1:
+            violations.append(
+                f"{label}: {repository} uses multiple revisions: {', '.join(sorted(revisions))}"
+            )
     return violations
 
 
 def validate_lock_data(data: dict[str, object], label: str) -> list[str]:
     violations: list[str] = []
+    revisions_by_repository: dict[str, set[str]] = {}
     packages = data.get("package", [])
     if not isinstance(packages, list):
         return [f"{label}: package must be an array"]
@@ -84,15 +93,22 @@ def validate_lock_data(data: dict[str, object], label: str) -> list[str]:
         name = package.get("name", "<unknown>")
         parsed = urlsplit(source.removeprefix("git+"))
         repository_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-        _, error = normalized_repository(repository_url)
+        repository, error = normalized_repository(repository_url)
         if error:
             violations.append(f"{label}:{name}: {error}")
         revisions = parse_qs(parsed.query).get("rev", [])
         if len(revisions) != 1 or FULL_GIT_REV.fullmatch(revisions[0]) is None:
             violations.append(f"{label}:{name}: locked Git source must retain one full rev")
             continue
+        if repository is not None:
+            revisions_by_repository.setdefault(repository, set()).add(revisions[0])
         if parsed.fragment != revisions[0]:
             violations.append(f"{label}:{name}: locked Git commit does not match requested rev")
+    for repository, revisions in sorted(revisions_by_repository.items()):
+        if len(revisions) > 1:
+            violations.append(
+                f"{label}: {repository} uses multiple revisions: {', '.join(sorted(revisions))}"
+            )
     return violations
 
 
@@ -123,6 +139,14 @@ def check_repository() -> list[str]:
 
 
 def self_test() -> int:
+    # Cause/effect design and decision table:
+    # canonical HTTPS | full exact rev | one rev/repository | effect
+    # yes             | yes            | yes                | accept
+    # no              | any            | any                | reject source custody
+    # yes             | no             | any                | reject floating input
+    # yes             | yes            | no                 | reject duplicate contract graphs
+    # Manifest and lock cases both exercise the last rule so dependency unity
+    # is enforced before compilation and again on Cargo's resolved graph.
     revision = "1" * 40
     allowed = "https://github.com/awakenworks/awaken-foundation"
     good_manifest = {"workspace": {"dependencies": {"x": {"git": allowed, "rev": revision}}}}
@@ -151,6 +175,20 @@ def self_test() -> int:
     if any(not any(fragment in hit for hit in manifest_hits) for fragment in expected):
         print("Self-test FAILED: manifest policy causes were not all detected", file=sys.stderr)
         return 1
+    duplicate_manifest = {
+        "workspace": {
+            "dependencies": {
+                "x": {"git": allowed, "rev": revision},
+                "y": {"git": allowed, "rev": "2" * 40},
+            }
+        }
+    }
+    if not any(
+        "multiple revisions" in hit
+        for hit in validate_manifest_data(duplicate_manifest, "duplicate-manifest")
+    ):
+        print("Self-test FAILED: duplicate manifest revisions were accepted", file=sys.stderr)
+        return 1
 
     good_lock = {
         "package": [
@@ -173,6 +211,21 @@ def self_test() -> int:
     }
     if not any("does not match" in hit for hit in validate_lock_data(bad_lock, "bad-lock")):
         print("Self-test FAILED: lock revision drift was not detected", file=sys.stderr)
+        return 1
+    duplicate_lock = {
+        "package": [
+            {"name": "x", "source": f"git+{allowed}?rev={revision}#{revision}"},
+            {
+                "name": "y",
+                "source": f"git+{allowed}?rev={'2' * 40}#{'2' * 40}",
+            },
+        ]
+    }
+    if not any(
+        "multiple revisions" in hit
+        for hit in validate_lock_data(duplicate_lock, "duplicate-lock")
+    ):
+        print("Self-test FAILED: duplicate lock revisions were accepted", file=sys.stderr)
         return 1
     print("OK - dependency-source self-test passed.")
     return 0
