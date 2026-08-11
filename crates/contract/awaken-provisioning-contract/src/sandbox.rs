@@ -463,6 +463,44 @@ pub struct PolicySelection<'a> {
     pub degraded_to: Option<IsolationClass>,
 }
 
+/// Metadata handed to the one injected checkpoint object adapter. It contains
+/// no storage URL, credential, or encryption material.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckpointObjectMetadata {
+    pub session_id: String,
+    pub generation_id: String,
+    pub suspend_effect_id: String,
+    pub expires_at_unix_ms: u64,
+}
+
+/// Result of an atomic object write. The adapter must expose the digest of the
+/// exact durable plaintext so providers can verify reads after process loss.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredCheckpointObject {
+    pub id: String,
+    pub digest: String,
+    pub size_bytes: u64,
+}
+
+/// Region/deployment-owned checkpoint byte custody. A filesystem adapter is
+/// suitable for standalone deployments; hosted composition injects encrypted
+/// object storage. This is a byte port, not a lifecycle state store.
+#[async_trait]
+pub trait SandboxCheckpointStore: Send + Sync {
+    async fn put(
+        &self,
+        metadata: &CheckpointObjectMetadata,
+        bytes: Vec<u8>,
+    ) -> Result<StoredCheckpointObject, SandboxError>;
+
+    async fn get(&self, id: &str) -> Result<Vec<u8>, SandboxError>;
+
+    async fn delete(&self, id: &str) -> Result<(), SandboxError>;
+}
+
+pub type SandboxCheckpointRequest = awaken_session_contract::SandboxCheckpointRequest;
+pub type SandboxCheckpointRef = awaken_session_contract::SandboxCheckpointRef;
+
 // A backend honors the spec's non-isolation requirements (network) — the isolation
 // floor is decided by the policy, so it is checked separately here.
 fn non_isolation_ok(caps: &SandboxCapabilities, spec: &SandboxSpec) -> bool {
@@ -599,6 +637,14 @@ pub trait SandboxProvider: Send + Sync {
     /// What this backend can enforce (probed at startup for selection).
     fn capabilities(&self) -> SandboxCapabilities;
 
+    /// Portable filesystem checkpoint formats this concrete provider fully
+    /// implements. Worker composition projects these into the existing
+    /// `WorkerManifest.checkpoint_formats` authority; no second capability field
+    /// is maintained on `SandboxCapabilities`.
+    fn checkpoint_formats(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// A cheap liveness probe run at selection time: `Ok` iff this backend is
     /// actually usable *right now* — bwrap/unprivileged-userns available, a container
     /// daemon reachable, etc. The default assumes readiness; the namespace/container
@@ -617,6 +663,20 @@ pub trait SandboxProvider: Send + Sync {
     /// hosts. For a local backend this re-opens the directory; for a remote one it
     /// rebuilds a client against the still-running pod/container.
     async fn adopt(&self, handle: &SandboxHandle) -> Result<Box<dyn Sandbox>, SandboxError>;
+
+    /// Create a distinct environment from one verified filesystem checkpoint.
+    /// The default fails closed so out-of-tree providers cannot accidentally
+    /// advertise continuation without implementing it.
+    async fn restore(
+        &self,
+        _spec: &SandboxSpec,
+        _checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        _store: &dyn SandboxCheckpointStore,
+    ) -> Result<Box<dyn Sandbox>, SandboxError> {
+        Err(SandboxError::new(
+            "sandbox provider does not implement checkpoint restore",
+        ))
+    }
 }
 
 /// A live sandbox environment. **Execute** (`spawn`), **mount/inject** (`attach`),
@@ -632,6 +692,19 @@ pub trait Sandbox: Send + Sync {
 
     /// A durable, serializable reference for reconnecting later (persist this).
     fn handle(&self) -> SandboxHandle;
+
+    /// Persist the complete mutable filesystem before disposal. Implementations
+    /// must omit independently governed mounts and credential material, enforce
+    /// `max_bytes`, and return only after the object adapter reports durability.
+    async fn checkpoint(
+        &self,
+        _request: &SandboxCheckpointRequest,
+        _store: &dyn SandboxCheckpointStore,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, SandboxError> {
+        Err(SandboxError::new(
+            "sandbox does not implement filesystem checkpointing",
+        ))
+    }
 
     /// **EXECUTE** — launch any process under OS-enforced isolation. Isolation is
     /// transparent to what the process does inside.

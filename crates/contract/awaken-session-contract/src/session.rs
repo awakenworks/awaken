@@ -541,13 +541,83 @@ pub trait SessionRuntime: Send + Sync {
     /// Adopt a previously persisted environment before reopening a Session.
     /// Implementations must validate that the binding belongs to `thread` and
     /// fail closed when it is malformed, unavailable, or owned elsewhere.
-    async fn restore_session_environment(
+    async fn adopt_session_environment(
         &self,
         _agent: &str,
         _thread: &str,
         _binding: &str,
     ) -> Result<(), RunError> {
         Ok(())
+    }
+
+    /// Close Runtime admission and prove that no primary, delegated,
+    /// shared-background, MCP, tool, Hand, or child-process effect can mutate
+    /// this exact environment generation.
+    async fn quiesce_session_environment(
+        &self,
+        _thread: &str,
+        _operation: &crate::SessionEnvironmentOperation,
+        _generation: &crate::SandboxGeneration,
+    ) -> Result<crate::QuiescenceReceipt, RunError> {
+        Err(RunError::unavailable_classified(
+            "session_environment_checkpoint_unsupported",
+            "Runtime does not implement Session environment quiescence",
+        ))
+    }
+
+    /// Persist one verified filesystem checkpoint. Replays with the same
+    /// operation id must return the same authoritative object receipt.
+    async fn checkpoint_session_environment(
+        &self,
+        _thread: &str,
+        _request: crate::SandboxCheckpointRequest,
+    ) -> Result<crate::CheckpointReceipt, RunError> {
+        Err(RunError::unavailable_classified(
+            "session_environment_checkpoint_unsupported",
+            "Runtime does not implement Session environment checkpointing",
+        ))
+    }
+
+    /// Dispose the source only after the aggregate committed ReadyToDispose.
+    async fn dispose_checkpoint_source(
+        &self,
+        _thread: &str,
+        _operation: &crate::SessionEnvironmentOperation,
+        _generation: &crate::SandboxGeneration,
+        _source_binding: &str,
+    ) -> Result<crate::SourceDisposedReceipt, RunError> {
+        Err(RunError::unavailable_classified(
+            "session_environment_checkpoint_unsupported",
+            "Runtime does not implement checkpoint source disposal",
+        ))
+    }
+
+    /// Restore a distinct environment from the exact durable checkpoint.
+    async fn restore_checkpointed_session_environment(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _operation: &crate::SessionEnvironmentOperation,
+        _generation: &crate::SandboxGeneration,
+        _checkpoint: &crate::SandboxCheckpointRef,
+    ) -> Result<crate::RestoreReceipt, RunError> {
+        Err(RunError::unavailable_classified(
+            "session_environment_checkpoint_unsupported",
+            "Runtime does not implement Session environment restore",
+        ))
+    }
+
+    /// Idempotently delete checkpoint bytes at a terminal edge. It never
+    /// restores the Environment merely to clean it up.
+    async fn delete_session_checkpoint(
+        &self,
+        _thread: &str,
+        _checkpoint: &crate::SandboxCheckpointRef,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable_classified(
+            "session_environment_checkpoint_unsupported",
+            "Runtime does not implement Session environment checkpoint deletion",
+        ))
     }
 
     /// Resolve the current versions of already-authorized Skill resource ids once
@@ -1064,6 +1134,7 @@ mod tests {
                 config_fingerprint: crate::EnvironmentFingerprint("env-1".into()),
                 sandbox: serde_json::json!({}),
                 sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
                 packages: Default::default(),
                 prepared_image: None,
                 network: crate::SessionNetworkPolicy::Unrestricted,

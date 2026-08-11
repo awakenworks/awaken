@@ -170,6 +170,11 @@ pub struct SharedHost {
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.
     pub(crate) session_provider: crate::session_environment::SessionEnvironmentProvider,
+    /// Deployment-owned byte custody for full-Environment checkpoints. Desired
+    /// lifecycle state remains in the Session aggregate; this port stores bytes
+    /// only. Hosted startup injects the regional encrypted adapter.
+    pub(crate) environment_checkpoint_store:
+        Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     /// Product-plane single-flight preparation for caller-owned CacheVolume
     /// paths. The selected Sandbox provider remains an opaque-path consumer.
     pub(crate) cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer,

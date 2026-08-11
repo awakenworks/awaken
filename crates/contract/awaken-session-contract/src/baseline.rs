@@ -128,6 +128,10 @@ pub struct EnvironmentSnapshot {
     /// Absence in older persisted rows preserves the historical eager behavior.
     #[serde(default)]
     pub sandbox_provisioning: SandboxProvisioning,
+    /// Frozen whole-Environment idle continuation policy. Historical Sessions
+    /// default to resident and therefore never acquire destructive new behavior.
+    #[serde(default)]
+    pub idle_retention: EnvironmentIdleRetentionPolicy,
     /// Exact package inputs frozen with this Environment revision. Providers
     /// provision them before workload launch or reject the spec fail-closed.
     #[serde(default)]
@@ -138,6 +142,78 @@ pub struct EnvironmentSnapshot {
     pub prepared_image: Option<String>,
     pub network: SessionNetworkPolicy,
     pub credential_realization: CredentialRealizationProfile,
+}
+
+/// Full-Environment behavior after the Session reaches a durable idle edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentIdleRetentionMode {
+    #[default]
+    Resident,
+    CheckpointAndRelease,
+}
+
+/// Expiry never silently reinterprets a corrupt live checkpoint. It only
+/// authorizes a new Sandbox from the already frozen Environment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentCheckpointExpiryBehavior {
+    #[default]
+    FreshFromFrozenEnvironment,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EnvironmentIdleRetentionPolicy {
+    #[serde(default)]
+    pub mode: EnvironmentIdleRetentionMode,
+    #[serde(default)]
+    pub checkpoint_after_secs: u64,
+    #[serde(default)]
+    pub retention_secs: u64,
+    #[serde(default)]
+    pub expiry_behavior: EnvironmentCheckpointExpiryBehavior,
+    #[serde(default)]
+    pub max_checkpoint_bytes: u64,
+    #[serde(default)]
+    pub max_checkpoint_duration_secs: u64,
+    /// Exact portable format required at both provider and Worker admission.
+    #[serde(default)]
+    pub checkpoint_format: String,
+}
+
+impl Default for EnvironmentIdleRetentionPolicy {
+    fn default() -> Self {
+        Self {
+            mode: EnvironmentIdleRetentionMode::Resident,
+            checkpoint_after_secs: 0,
+            retention_secs: 0,
+            expiry_behavior: EnvironmentCheckpointExpiryBehavior::FreshFromFrozenEnvironment,
+            max_checkpoint_bytes: 0,
+            max_checkpoint_duration_secs: 0,
+            checkpoint_format: String::new(),
+        }
+    }
+}
+
+impl EnvironmentIdleRetentionPolicy {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.mode == EnvironmentIdleRetentionMode::Resident {
+            return Ok(());
+        }
+        if self.checkpoint_after_secs == 0 {
+            return Err("checkpoint_after_secs must be positive");
+        }
+        if self.retention_secs <= self.checkpoint_after_secs {
+            return Err("retention_secs must exceed checkpoint_after_secs");
+        }
+        if self.max_checkpoint_bytes == 0 || self.max_checkpoint_duration_secs == 0 {
+            return Err("checkpoint bounds must be positive");
+        }
+        if self.checkpoint_format.trim().is_empty() {
+            return Err("checkpoint_format must be non-empty");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -541,6 +617,7 @@ mod tests {
             config_fingerprint: EnvironmentFingerprint(format!("config-{revision}")),
             sandbox: serde_json::json!({}),
             sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
             packages: Default::default(),
             prepared_image: None,
             network,
@@ -556,6 +633,67 @@ mod tests {
     }
 
     #[test]
+    fn idle_retention_validation_follows_the_decision_table() {
+        // Cause/effect graph: Resident ignores checkpoint-only values for legacy
+        // compatibility. CheckpointAndRelease requires C1 positive idle delay,
+        // C2 retention > idle delay, C3 positive size/time bounds and C4 an exact
+        // format. R1 Resident => E1 valid; R2 all C1..C4 => E1 valid; R3..R7 each
+        // violate one constraint => E2 reject before a Session can freeze it.
+        let resident = EnvironmentIdleRetentionPolicy::default();
+        assert_eq!(resident.validate(), Ok(()), "R1");
+
+        let valid = EnvironmentIdleRetentionPolicy {
+            mode: EnvironmentIdleRetentionMode::CheckpointAndRelease,
+            checkpoint_after_secs: 60,
+            retention_secs: 3_600,
+            expiry_behavior: EnvironmentCheckpointExpiryBehavior::FreshFromFrozenEnvironment,
+            max_checkpoint_bytes: 1_024,
+            max_checkpoint_duration_secs: 30,
+            checkpoint_format: "awaken-fs-tar-v1".into(),
+        };
+        assert_eq!(valid.validate(), Ok(()), "R2");
+        for (rule, invalid) in [
+            (
+                "R3",
+                EnvironmentIdleRetentionPolicy {
+                    checkpoint_after_secs: 0,
+                    ..valid.clone()
+                },
+            ),
+            (
+                "R4",
+                EnvironmentIdleRetentionPolicy {
+                    retention_secs: 60,
+                    ..valid.clone()
+                },
+            ),
+            (
+                "R5",
+                EnvironmentIdleRetentionPolicy {
+                    max_checkpoint_bytes: 0,
+                    ..valid.clone()
+                },
+            ),
+            (
+                "R6",
+                EnvironmentIdleRetentionPolicy {
+                    max_checkpoint_duration_secs: 0,
+                    ..valid.clone()
+                },
+            ),
+            (
+                "R7",
+                EnvironmentIdleRetentionPolicy {
+                    checkpoint_format: "  ".into(),
+                    ..valid.clone()
+                },
+            ),
+        ] {
+            assert!(invalid.validate().is_err(), "{rule}");
+        }
+    }
+
+    #[test]
     fn legacy_environment_snapshot_defaults_to_local_placement() {
         // Cause/effect decision table for persisted compatibility:
         // P1 explicit self_hosted=true -> external Worker reconciliation;
@@ -565,8 +703,14 @@ mod tests {
         let mut encoded =
             serde_json::to_value(environment(1, SessionNetworkPolicy::Unrestricted)).unwrap();
         encoded.as_object_mut().unwrap().remove("self_hosted");
+        encoded.as_object_mut().unwrap().remove("idle_retention");
         let decoded: EnvironmentSnapshot = serde_json::from_value(encoded).unwrap();
         assert!(!decoded.self_hosted, "P3");
+        assert_eq!(
+            decoded.idle_retention,
+            EnvironmentIdleRetentionPolicy::default(),
+            "P3: retained rows remain Resident"
+        );
 
         let mut explicit = environment(1, SessionNetworkPolicy::Unrestricted);
         explicit.self_hosted = true;

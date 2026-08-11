@@ -521,6 +521,37 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                 return Ok(());
             }
             session.environment.apply_receipt(&receipt);
+            if session.environment.generation().is_none()
+                && let Some(baseline) = session.frozen_baseline()
+            {
+                let retention_ms = baseline
+                    .environment
+                    .idle_retention
+                    .retention_secs
+                    .saturating_mul(1_000);
+                let expires_at_unix_ms = if retention_ms == 0 {
+                    u64::MAX
+                } else {
+                    now_unix_ms.saturating_add(retention_ms)
+                };
+                let environment_fingerprint = baseline.environment.config_fingerprint.0.clone();
+                let base_image_fingerprint = baseline
+                    .environment
+                    .prepared_image
+                    .clone()
+                    .unwrap_or_else(|| {
+                        awaken_session_contract::stable_fingerprint(&baseline.environment.sandbox)
+                    });
+                session.environment.assign_generation(
+                    awaken_session_contract::SandboxGeneration::new(
+                        session_id,
+                        now_unix_ms,
+                        expires_at_unix_ms,
+                        environment_fingerprint,
+                        base_image_fingerprint,
+                    ),
+                );
+            }
             let expected_revision = session.revision;
             let payload = awaken_session_contract::SessionMutationPayload::Replace(session);
             let payload_hash = payload.stable_hash();

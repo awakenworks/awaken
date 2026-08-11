@@ -64,6 +64,7 @@ pub(super) fn deferred_environment() -> awaken_session_contract::EnvironmentSnap
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("lazy-env-v1".into()),
         sandbox: serde_json::json!({}),
         sandbox_provisioning: awaken_session_contract::SandboxProvisioning::OnToolUse,
+        idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
         network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,

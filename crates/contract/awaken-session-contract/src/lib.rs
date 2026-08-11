@@ -56,10 +56,11 @@ pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 pub use baseline::{
     ApplicationContributionError, ApplicationContributionOutcome, ApplicationContributionReceipt,
     ApplicationContributionState, ApplicationSessionInput, CompiledSessionCreation,
-    ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentSnapshot, SandboxProvisioning,
-    SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs, SessionBaselineState,
-    SessionCreationFinalizeError, SessionCreationIntent, SessionMcpAuthoringContext,
-    SessionNetworkPolicy, SessionRuntimePlacement,
+    ControlSessionCreationInputs, EnvironmentCheckpointExpiryBehavior, EnvironmentFingerprint,
+    EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy, EnvironmentSnapshot,
+    SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs,
+    SessionBaselineState, SessionCreationFinalizeError, SessionCreationIntent,
+    SessionMcpAuthoringContext, SessionNetworkPolicy, SessionRuntimePlacement,
 };
 
 /// Rebuildable desired Environment capacity exported by Coordinator. The
@@ -77,8 +78,11 @@ pub use dream::{
     DreamProcessRecord, DreamProcessStore, DreamProcessStoreError, DreamStatus, DreamUsage,
 };
 pub use environment::{
-    SessionEnvironmentEffectKind, SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
-    SessionEnvironmentState,
+    CheckpointReceipt, QuiescenceReceipt, RestoreReceipt, SandboxCheckpointRef,
+    SandboxCheckpointRequest, SandboxGeneration, SessionEnvironmentEffectKind,
+    SessionEnvironmentOperation, SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
+    SessionEnvironmentState, SessionEnvironmentTransitionError, SourceDisposedReceipt,
+    SuspendPhase, checkpoint_source_disposal_authorized,
 };
 pub use lifecycle::{LifecycleFactDelivery, LifecycleFactNotifier, ManagedLifecycleFact};
 pub use mcp_attachment::{

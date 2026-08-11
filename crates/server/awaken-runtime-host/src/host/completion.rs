@@ -773,6 +773,7 @@ mod completion_tests {
                 "limits": {"memory_bytes": 67108864}
             }),
             sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
             packages: awaken_session_contract::EnvironmentPackages {
                 npm: vec!["tsx@4".into()],
                 ..Default::default()

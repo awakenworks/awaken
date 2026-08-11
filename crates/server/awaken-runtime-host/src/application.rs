@@ -967,6 +967,7 @@ mod network_policy_tests {
             config_fingerprint: awaken_session_contract::EnvironmentFingerprint("fp".into()),
             sandbox: serde_json::json!({}),
             sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
             packages: awaken_session_contract::EnvironmentPackages {
                 npm: vec!["tsx@4".into()],
                 pip: vec!["httpx==0.28".into()],

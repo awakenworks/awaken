@@ -36,6 +36,8 @@ use crate::{
     provision_repo_at, push_repo_at, rooted_raw_tools, scan_skill_dir_at,
 };
 
+mod checkpoint;
+
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
 }
@@ -361,6 +363,15 @@ impl LocalProvider {
                     {
                         sandbox.secret_paths.push(path);
                     }
+                    if matches!(
+                        req.source,
+                        pc::MountSource::Secret { .. }
+                            | pc::MountSource::MemoryStore { .. }
+                            | pc::MountSource::CacheVolume { .. }
+                    ) && let Ok(path) = sandbox.root.resolve(&req.mount_path)
+                    {
+                        sandbox.continuation_excluded_paths.push(path);
+                    }
                     sandbox.realized.push(m);
                     if let Some(guard) = guard {
                         sandbox.memory_mounts.lock().unwrap().push(guard);
@@ -407,6 +418,16 @@ impl LocalProvider {
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok())
             .unwrap_or_default();
+        sandbox.continuation_excluded_paths = handle
+            .extra
+            .as_ref()
+            .and_then(|value| value.get("continuation_excluded_paths"))
+            .cloned()
+            .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|path| sandbox.root.resolve(&path).ok())
+            .collect();
         Ok(sandbox)
     }
 
@@ -556,6 +577,7 @@ impl LocalProvider {
             realized: Vec::new(),
             secret_paths: Vec::new(),
             memory_mounts: std::sync::Mutex::new(Vec::new()),
+            continuation_excluded_paths: Vec::new(),
         }
     }
 }
@@ -564,6 +586,10 @@ impl LocalProvider {
 impl pc::SandboxProvider for LocalProvider {
     fn capabilities(&self) -> pc::SandboxCapabilities {
         Self::capabilities()
+    }
+
+    fn checkpoint_formats(&self) -> Vec<String> {
+        vec!["awaken-fs-tar-v1".into()]
     }
 
     async fn create(
@@ -578,6 +604,17 @@ impl pc::SandboxProvider for LocalProvider {
         handle: &pc::SandboxHandle,
     ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
         Ok(Box::new(self.adopt_sandbox(handle).await?))
+    }
+
+    async fn restore(
+        &self,
+        spec: &pc::SandboxSpec,
+        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<Box<dyn pc::Sandbox>, pc::SandboxError> {
+        Ok(Box::new(
+            self.restore_sandbox(spec, checkpoint, store).await?,
+        ))
     }
 }
 
@@ -602,6 +639,9 @@ pub struct LocalSandbox {
     /// Live memory-store mounts (FUSE / copy), torn down (unmount / harvest) at
     /// [`dispose`](pc::Sandbox::dispose) before the sandbox directory is reaped.
     memory_mounts: std::sync::Mutex<Vec<Box<dyn pc::MemoryMount>>>,
+    /// Host paths whose contents have an independent durable authority or carry
+    /// credentials. They are rematerialized from that authority after restore.
+    continuation_excluded_paths: Vec<PathBuf>,
 }
 
 impl LocalSandbox {
@@ -843,6 +883,7 @@ impl pc::Sandbox for LocalSandbox {
         h.extra = Some(json!({
             "outputs_path": self.outputs_path,
             "base_env": self.base_env,
+            "continuation_excluded_paths": self.continuation_excluded_paths.iter().filter_map(|path| path.strip_prefix(self.root.root()).ok()).map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
         }));
         h
     }
@@ -862,6 +903,14 @@ impl pc::Sandbox for LocalSandbox {
 
         let child = cmd.spawn().map_err(err)?;
         Ok(Box::new(LocalProcess::spawned(child)))
+    }
+
+    async fn checkpoint(
+        &self,
+        request: &pc::SandboxCheckpointRequest,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, pc::SandboxError> {
+        self.create_checkpoint(request, store).await
     }
 
     async fn attach(
@@ -1321,7 +1370,7 @@ mod shred_tests {
 mod workdir_helper_tests {
     use super::*;
     use awaken_provisioning_contract::{
-        IsolationClass, NetworkPolicy, ResourceLimits, SandboxSpec,
+        IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxProvider, SandboxSpec,
     };
 
     fn workdir_spec(scope: &str, deny_egress: bool) -> SandboxSpec {
@@ -1780,5 +1829,138 @@ mod workdir_helper_tests {
             .unwrap();
         sandbox.remove_inline("nested").unwrap();
         sandbox.remove_inline("nested").unwrap();
+    }
+
+    #[derive(Default)]
+    struct CheckpointStore {
+        objects: std::sync::Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    #[async_trait]
+    impl pc::SandboxCheckpointStore for CheckpointStore {
+        async fn put(
+            &self,
+            metadata: &pc::CheckpointObjectMetadata,
+            bytes: Vec<u8>,
+        ) -> Result<pc::StoredCheckpointObject, pc::SandboxError> {
+            let id = format!("{}/{}", metadata.generation_id, metadata.suspend_effect_id);
+            let digest = content_fingerprint(&bytes);
+            let size_bytes = bytes.len() as u64;
+            self.objects.lock().unwrap().insert(id.clone(), bytes);
+            Ok(pc::StoredCheckpointObject {
+                id,
+                digest,
+                size_bytes,
+            })
+        }
+
+        async fn get(&self, id: &str) -> Result<Vec<u8>, pc::SandboxError> {
+            self.objects
+                .lock()
+                .unwrap()
+                .get(id)
+                .cloned()
+                .ok_or_else(|| err("checkpoint object not found"))
+        }
+
+        async fn delete(&self, id: &str) -> Result<(), pc::SandboxError> {
+            self.objects.lock().unwrap().remove(id);
+            Ok(())
+        }
+    }
+
+    fn checkpoint_request() -> pc::SandboxCheckpointRequest {
+        let generation = awaken_session_contract::SandboxGeneration::new(
+            "checkpoint-session",
+            10,
+            10_000,
+            "environment",
+            "base-image",
+        );
+        pc::SandboxCheckpointRequest {
+            session_id: "checkpoint-session".into(),
+            operation: awaken_session_contract::SessionEnvironmentOperation::new(
+                "checkpoint-session",
+                "suspend",
+                &generation.id,
+                4,
+                None,
+            ),
+            generation,
+            format: "awaken-fs-tar-v1".into(),
+            created_at_unix_ms: 20,
+            expires_at_unix_ms: 10_000,
+            max_bytes: 1024 * 1024,
+        }
+    }
+
+    // Cause/effect design: C1=mutable nested file+mode, C5=durable store write,
+    // C6=source disposed, C7=valid object; provider-conformance rule P1 => a
+    // distinct live Sandbox contains identical bytes and executable metadata.
+    #[tokio::test]
+    async fn checkpoint_dispose_restore_preserves_mutable_filesystem() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path());
+        let spec = workdir_spec("checkpoint-session", false);
+        let sandbox = provider.create_sandbox(&spec).await.unwrap();
+        let file = sandbox.workspace_path().join("workspace/bin/tool");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"mutable state").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let store = CheckpointStore::default();
+        let receipt = sandbox
+            .checkpoint(&checkpoint_request(), &store)
+            .await
+            .unwrap();
+        sandbox.dispose().await.unwrap();
+        assert!(!sandbox.workspace_path().exists(), "source terminated");
+
+        let restored = provider
+            .restore(&spec, &receipt.checkpoint, &store)
+            .await
+            .unwrap();
+        let restored_root = crate::sandbox_dir(tmp.path(), "checkpoint-session");
+        let restored_file = restored_root.join("workspace/bin/tool");
+        assert_eq!(std::fs::read(&restored_file).unwrap(), b"mutable state");
+        assert_eq!(
+            std::fs::metadata(restored_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o750
+        );
+        restored.dispose().await.unwrap();
+    }
+
+    // Cause/effect design: C7=object bytes differ from the committed digest.
+    // FMECA corruption rule => fail closed, create no usable restored Sandbox,
+    // and preserve the durable checkpoint reference for operator recovery.
+    #[tokio::test]
+    async fn corrupt_checkpoint_is_rejected_before_restore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = LocalProvider::new(tmp.path());
+        let spec = workdir_spec("checkpoint-session", false);
+        let sandbox = provider.create_sandbox(&spec).await.unwrap();
+        std::fs::write(sandbox.workspace_path().join("value"), b"original").unwrap();
+        let store = CheckpointStore::default();
+        let receipt = sandbox
+            .checkpoint(&checkpoint_request(), &store)
+            .await
+            .unwrap();
+        sandbox.dispose().await.unwrap();
+        store
+            .objects
+            .lock()
+            .unwrap()
+            .insert(receipt.checkpoint.id.clone(), b"corrupt".to_vec());
+        assert!(
+            provider
+                .restore(&spec, &receipt.checkpoint, &store)
+                .await
+                .is_err()
+        );
     }
 }

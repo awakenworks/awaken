@@ -451,17 +451,18 @@ async fn snapshot_from_registration(
             awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
         ),
     };
-    let (sandbox, sandbox_provisioning) = match &registration.sandbox_policy {
+    let (sandbox, sandbox_provisioning, idle_retention) = match &registration.sandbox_policy {
         Some(policy) if policy.disabled => return Ok(None),
         Some(policy) => {
             let Ok(config) = serde_json::to_value(&policy.config) else {
                 return Ok(None);
             };
-            (config, policy.provisioning)
+            (config, policy.provisioning, policy.idle_retention.clone())
         }
         None => (
             serde_json::json!({}),
             awaken_session_contract::SandboxProvisioning::Eager,
+            Default::default(),
         ),
     };
     let prepared_image = match image_readiness {
@@ -485,6 +486,7 @@ async fn snapshot_from_registration(
             self_hosted,
             &sandbox,
             &sandbox_provisioning,
+            &idle_retention,
             &packages,
             &network,
             &credential_realization,
@@ -498,6 +500,7 @@ async fn snapshot_from_registration(
         config_fingerprint,
         sandbox,
         sandbox_provisioning,
+        idle_retention,
         packages,
         prepared_image,
         network,
@@ -1035,6 +1038,7 @@ mod tests {
                 ..Default::default()
             },
             provisioning: awaken_session_contract::SandboxProvisioning::OnToolUse,
+            idle_retention: Default::default(),
             disabled: false,
         };
         let mut revision_two = registration("policy", 2, EnvironmentConfig::SelfHosted);
@@ -1065,6 +1069,7 @@ mod tests {
             version: SandboxExecutionPolicyVersion(2),
             config: SandboxOverride::default(),
             provisioning: awaken_session_contract::SandboxProvisioning::Eager,
+            idle_retention: Default::default(),
             disabled: true,
         };
         let mut revision_three = registration("policy", 3, EnvironmentConfig::SelfHosted);

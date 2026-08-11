@@ -1,6 +1,6 @@
 # ADR-0074: Session Environment Suspension and Checkpointed Continuation
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-11
 - Amends: ADR-0056. Clarifies ADR-0073: `SessionEnvironment` remains the sole
   live environment owner; Hand process hibernation remains an orthogonal local
@@ -109,6 +109,7 @@ EnvironmentIdleRetentionPolicy {
   expiry_behavior: FreshFromFrozenEnvironment,
   max_checkpoint_bytes,
   max_checkpoint_duration_secs,
+  checkpoint_format,
 }
 ```
 
@@ -139,11 +140,12 @@ suspension or terminal release.
 | `SandboxProvider` | create, adopt, checkpoint, restore and dispose effects | Session status and retention policy |
 | Resource and MCP owners | exact pins, write-back/flush, generation staging and publication | filesystem checkpoint lifecycle |
 
-The provisioning contract extends its canonical capability vectors instead of
-adding a checkpoint-provider registry. `SandboxCapabilities` advertises an
-exact checkpoint format capability, `SandboxRequirements` can require it, and
-the existing monotonic admission predicate rejects a provider or Worker that
-cannot honor it.
+The provisioning contract extends the canonical `SandboxProvider` port with
+`checkpoint_formats`, while the existing `WorkerManifest.checkpoint_formats`
+and `PlacementRequirements.checkpoint_format` remain the scheduling source of
+truth. No second format field is added to `SandboxCapabilities`, and no
+checkpoint-provider registry is introduced. Admission rejects a provider or
+Worker that cannot honor the exact frozen format.
 
 ### D4: environment idleness is a whole-owner quiescence condition
 
@@ -354,6 +356,33 @@ Completion requires every decision-table rule, every state transition, and the
 before/during/after crash window of every external effect. Mock-only evidence is
 insufficient for source disposal and cross-environment restore.
 
+### D11: lease timing and idle release are independent policies
+
+The Sandbox lease is a liveness fence for a Worker owner. Idle retention is a
+Session business policy. Neither duration authorizes the other's transition,
+so the lease TTL is not required to be greater than
+`checkpoint_after_secs`, checkpoint duration, or checkpoint retention.
+
+The only timing constraints are local to each policy:
+
+```text
+renew_interval <= lease_ttl / 3
+recovery_grace >= lease_ttl + reconciliation_interval
+checkpoint_after > 0
+retention > checkpoint_after
+checkpoint execution <= max_checkpoint_duration
+```
+
+Lease expiry yields only `Fence`; it never disposes a Sandbox. A fenced live
+Sandbox remains protected while the Session aggregate references its binding.
+Only the ordered suspend saga may release it after checkpoint evidence is
+committed, and only terminal cleanup may release it under the terminal fence.
+This separation lets operators tune failure detection and cost independently:
+shorten lease TTL to detect a dead Worker faster; shorten
+`checkpoint_after_secs` to reclaim idle compute faster; lengthen retention to
+increase the continuation window. Changes to either setting still pass its own
+validation and do not introduce a cross-policy inequality.
+
 ## Consequences
 
 - Idle Sessions can release their complete execution environment without losing
@@ -379,10 +408,9 @@ insufficient for source disposal and cross-environment restore.
   referenced-set authorization.
 - Modified: `SessionEnvironmentState`, Environment execution policy/snapshot,
   Session activity and admission orchestration, `SessionRuntime`, Runtime Host
-  background classification and quiescence, `SandboxCapabilities`/
-  `SandboxRequirements`, canonical `SandboxProvider`, Worker capability
-  manifest, lease timing/fencing, referenced-set reconciliation, and terminal
-  checkpoint deletion.
+  background classification and quiescence, canonical `SandboxProvider`,
+  existing Worker checkpoint-format admission, lease timing/fencing,
+  referenced-set reconciliation, and terminal checkpoint deletion.
 - New: checkpoint/generation/operation value objects and receipts, provider
   checkpoint/restore implementations, suspend/restore application
   reconciliation, provider conformance tests, and full-environment integration

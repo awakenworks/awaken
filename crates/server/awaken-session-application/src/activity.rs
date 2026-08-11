@@ -8,6 +8,13 @@ use awaken_session_contract::{PersistedSession, RunError, SessionExecutionState,
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
 /// Failure from a Session activity transition.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SessionActivityError {
@@ -92,6 +99,20 @@ impl SessionApplication {
         &self,
         session_id: &str,
     ) -> Result<PersistedSession, SessionActivityError> {
+        match self.session_repository().get(session_id).await {
+            Ok(session) if session.is_terminal() => return Err(SessionActivityError::Terminal),
+            Ok(_) => {}
+            Err(awaken_session_contract::SessionRepositoryError::NotFound) => {
+                return Err(SessionActivityError::NotFound);
+            }
+            Err(error) => return Err(SessionActivityError::Unavailable(error.to_string())),
+        }
+        self.ensure_environment_resident(session_id, now_unix_ms())
+            .await
+            .map_err(|error| match error {
+                super::SessionContinuationError::Terminal => SessionActivityError::Terminal,
+                error => SessionActivityError::Unavailable(error.to_string()),
+            })?;
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
                 .owner(session_id)
@@ -116,6 +137,7 @@ impl SessionApplication {
                 .activity_epoch
                 .checked_add(1)
                 .ok_or(SessionActivityError::EpochExhausted)?;
+            session.environment.mark_active();
             // A driving event is also the trigger that makes a registered Worker
             // claim and realize a freshly prepared Session. Preserve that
             // stronger realization phase until it converges: replacing it with
@@ -171,6 +193,7 @@ impl SessionApplication {
             session
                 .transition_execution(SessionExecutionState::Idle)
                 .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
+            session.environment.mark_idle(now_unix_ms());
             match self
                 .commit_session_snapshot(&owner_scope, session, "settle-activity", Vec::new())
                 .await

@@ -8,7 +8,9 @@
 //! to a timeout so a well-behaved shutdown flushes them without a hang blocking
 //! exit forever.
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
@@ -19,6 +21,31 @@ use tracing::Instrument;
 #[derive(Default)]
 pub struct BackgroundRuns {
     tasks: Mutex<JoinSet<()>>,
+    activity: Arc<BackgroundActivity>,
+}
+
+#[derive(Default)]
+struct BackgroundActivity {
+    shared: std::sync::Mutex<HashMap<(String, String), usize>>,
+    changed: tokio::sync::Notify,
+}
+
+/// Every detached task must state whether it can mutate one Session
+/// Environment. This replaces inference from Tokio task identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BackgroundWorkClass {
+    // No current detached caller is allowed to touch a Session Environment;
+    // this variant is the mandatory admission token for future callers and is
+    // exercised by the quiescence conformance test.
+    #[allow(dead_code)]
+    SharedEnvironment {
+        session_id: String,
+        generation_id: String,
+    },
+    ExternalDurable {
+        durable_intent_id: String,
+    },
+    EphemeralCache,
 }
 
 impl BackgroundRuns {
@@ -36,13 +63,80 @@ impl BackgroundRuns {
     /// span of the *current* span, so the aux run's spans nest under the
     /// originating turn's trace. The child holds only the parent's id, so the turn
     /// span still closes on time while the aux run continues.
-    pub async fn spawn(&self, fut: impl Future<Output = ()> + Send + 'static) {
+    pub async fn spawn(
+        &self,
+        class: BackgroundWorkClass,
+        fut: impl Future<Output = ()> + Send + 'static,
+    ) {
         let span = tracing::info_span!(
             parent: &tracing::Span::current(),
             "aux.background",
             otel.kind = "internal"
         );
-        self.tasks.lock().await.spawn(fut.instrument(span));
+        let activity = self.activity.clone();
+        if let BackgroundWorkClass::SharedEnvironment {
+            session_id,
+            generation_id,
+        } = &class
+        {
+            *activity
+                .shared
+                .lock()
+                .expect("background activity mutex poisoned")
+                .entry((session_id.clone(), generation_id.clone()))
+                .or_default() += 1;
+        }
+        self.tasks.lock().await.spawn(
+            async move {
+                fut.await;
+                if let BackgroundWorkClass::SharedEnvironment {
+                    session_id,
+                    generation_id,
+                } = class
+                {
+                    let mut shared = activity
+                        .shared
+                        .lock()
+                        .expect("background activity mutex poisoned");
+                    let key = (session_id, generation_id);
+                    if let Some(count) = shared.get_mut(&key) {
+                        *count -= 1;
+                        if *count == 0 {
+                            shared.remove(&key);
+                        }
+                    }
+                    drop(shared);
+                    activity.changed.notify_waiters();
+                }
+            }
+            .instrument(span),
+        );
+    }
+
+    #[must_use]
+    pub fn has_shared_environment_work(&self, session_id: &str, generation_id: &str) -> bool {
+        self.activity
+            .shared
+            .lock()
+            .expect("background activity mutex poisoned")
+            .contains_key(&(session_id.to_string(), generation_id.to_string()))
+    }
+
+    /// Wait only for work that can mutate this exact environment generation.
+    /// External durable work and caches never retain Session compute.
+    pub async fn quiesce_shared_environment(
+        &self,
+        session_id: &str,
+        generation_id: &str,
+        timeout: Duration,
+    ) -> bool {
+        tokio::time::timeout(timeout, async {
+            while self.has_shared_environment_work(session_id, generation_id) {
+                self.activity.changed.notified().await;
+            }
+        })
+        .await
+        .is_ok()
     }
 
     /// Await all in-flight background tasks, up to `timeout`. Returns `true` if
@@ -70,7 +164,7 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         for _ in 0..5 {
             let c = counter.clone();
-            bg.spawn(async move {
+            bg.spawn(BackgroundWorkClass::EphemeralCache, async move {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 c.fetch_add(1, Ordering::SeqCst);
             })
@@ -84,7 +178,7 @@ mod tests {
     #[tokio::test]
     async fn drain_returns_false_when_a_task_outlives_the_timeout() {
         let bg = BackgroundRuns::new();
-        bg.spawn(async {
+        bg.spawn(BackgroundWorkClass::EphemeralCache, async {
             tokio::time::sleep(Duration::from_secs(30)).await;
         })
         .await;
@@ -98,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn a_panicking_task_does_not_break_drain() {
         let bg = BackgroundRuns::new();
-        bg.spawn(async {
+        bg.spawn(BackgroundWorkClass::EphemeralCache, async {
             panic!("boom");
         })
         .await;
@@ -106,6 +200,44 @@ mod tests {
         assert!(
             finished,
             "a panicked background task still counts as drained"
+        );
+    }
+
+    // Cause/effect design: C2=shared task active then complete; external durable
+    // and cache tasks coexist. R4 retains the environment only for the matching
+    // session+generation and then permits E2 when that exact count reaches zero.
+    #[tokio::test]
+    async fn shared_environment_quiescence_is_generation_scoped() {
+        let bg = BackgroundRuns::new();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let task_release = release.clone();
+        bg.spawn(
+            BackgroundWorkClass::SharedEnvironment {
+                session_id: "s1".into(),
+                generation_id: "g1".into(),
+            },
+            async move { task_release.notified().await },
+        )
+        .await;
+        bg.spawn(
+            BackgroundWorkClass::ExternalDurable {
+                durable_intent_id: "intent".into(),
+            },
+            async {},
+        )
+        .await;
+        assert!(
+            !bg.quiesce_shared_environment("s1", "g1", Duration::from_millis(10))
+                .await
+        );
+        assert!(
+            bg.quiesce_shared_environment("s1", "g2", Duration::from_millis(10))
+                .await
+        );
+        release.notify_waiters();
+        assert!(
+            bg.quiesce_shared_environment("s1", "g1", Duration::from_secs(1))
+                .await
         );
     }
 }

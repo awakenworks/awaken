@@ -464,6 +464,7 @@ async fn worker_reconciles_current_environment_shape_before_ready() {
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("config-v7".into()),
         sandbox: serde_json::json!({}),
         sandbox_provisioning: Default::default(),
+        idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: Some("registry.example/env@sha256:exact".into()),
         network: awaken_session_contract::SessionNetworkPolicy::None,

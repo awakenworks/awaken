@@ -376,6 +376,7 @@ mod tests {
                 version: reference.version,
                 config: Default::default(),
                 provisioning: Default::default(),
+                idle_retention: Default::default(),
                 disabled: false,
             })
         }

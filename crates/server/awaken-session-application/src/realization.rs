@@ -159,7 +159,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
             .await?;
         if let Some(binding) = projection.environment.binding() {
             self.runtime
-                .restore_session_environment(&projection.baseline.agent_id, session_id, binding)
+                .adopt_session_environment(&projection.baseline.agent_id, session_id, binding)
                 .await?;
         }
         Ok(())
@@ -192,6 +192,9 @@ impl SessionApplication {
                 "corrupt durable Session remains quarantined"
             );
         }
+        let continuation_failure_count = self
+            .reconcile_environment_continuations(now_unix_ms())
+            .await;
         let realizations = self.reconcile_session_realizations().await;
         let realization_failure_count = realizations.failures.len();
         for failure in realizations.failures {
@@ -210,11 +213,14 @@ impl SessionApplication {
         tracing::info!(
             pending_sessions = pending.max(realizations.pending),
             quarantined_sessions = quarantined.max(realizations.quarantined.len()),
-            retryable_failures = resource_failure_count + realization_failure_count,
+            retryable_failures =
+                resource_failure_count + continuation_failure_count + realization_failure_count,
             "Session recovery scan completed"
         );
         SessionRecoveryCycle {
-            retryable_failures: resource_failure_count + realization_failure_count,
+            retryable_failures: resource_failure_count
+                + continuation_failure_count
+                + realization_failure_count,
         }
     }
 
@@ -439,6 +445,14 @@ impl SessionApplication {
                     )
             });
             if session.is_terminal() || self.requires_external_realization(&session) {
+                continue;
+            }
+            if matches!(
+                session.environment,
+                awaken_session_contract::SessionEnvironmentState::Suspending { .. }
+                    | awaken_session_contract::SessionEnvironmentState::Hibernated { .. }
+                    | awaken_session_contract::SessionEnvironmentState::Restoring { .. }
+            ) {
                 continue;
             }
             // Recovery cause/effect decision table:

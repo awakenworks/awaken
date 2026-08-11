@@ -176,6 +176,8 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
                     awaken_session_contract::SessionEnvironmentState::Resident {
                         binding,
                         effect_id: None,
+                        generation: None,
+                        idle_since_unix_ms: None,
                     }
                 }
                 _ => awaken_session_contract::SessionEnvironmentState::Unmaterialized,
@@ -276,6 +278,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         ))),
         sandbox,
         sandbox_provisioning: Default::default(),
+        idle_retention: Default::default(),
         packages,
         prepared_image: None,
         network,
@@ -337,6 +340,8 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
             |binding| awaken_session_contract::SessionEnvironmentState::Resident {
                 binding,
                 effect_id: None,
+                generation: None,
+                idle_since_unix_ms: None,
             },
         ),
         mcp,

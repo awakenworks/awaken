@@ -22,7 +22,7 @@ use awaken_runtime_contract::tool::RawTool;
 use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
-use crate::background::BackgroundRuns;
+use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::judge::AuxAgentTool;
 use crate::store::HostCommit;
 
@@ -110,7 +110,7 @@ impl CompactBackend for HostCompactBackend {
         }
         let agent_tool = self.agent_tool.clone();
         self.background
-            .spawn(async move {
+            .spawn(BackgroundWorkClass::EphemeralCache, async move {
                 let _ = cell
                     .get_or_init(|| Self::execute(agent_tool, request))
                     .await;

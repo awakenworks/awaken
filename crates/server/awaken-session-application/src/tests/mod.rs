@@ -555,6 +555,7 @@ fn persisted(id: &str, self_hosted: bool, application: bool, status: &str) -> Pe
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-7".into()),
         sandbox: serde_json::json!({}),
         sandbox_provisioning: Default::default(),
+        idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
         network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
@@ -697,6 +698,7 @@ fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources
 /// | L4 | different | replacement | true | false | E4 epoch advances immediately |
 /// | L5 | any | any | true | true | invalid, no mutation |
 mod authority;
+mod continuation;
 mod creation;
 mod realization;
 mod run_admission;

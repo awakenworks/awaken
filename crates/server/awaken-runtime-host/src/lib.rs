@@ -30,12 +30,14 @@ pub use container_environment::package_image_provisioner;
 mod delegate;
 mod deployment_config;
 mod durable_operations;
+mod environment_continuation;
 mod host;
 mod hub;
 mod inference_routing;
 mod judge;
 mod lazy_sandbox;
 mod live_inbox;
+mod managed_adapter_error;
 mod managed_model_capability;
 mod managed_resource_projection;
 mod mcp;
@@ -71,7 +73,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_runtime_contract::live_inbox::{EditError, LiveInboxMessageId, MessageOrigin, Offer};
+use awaken_runtime_contract::live_inbox::{LiveInboxMessageId, MessageOrigin, Offer};
 use awaken_session_contract::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
@@ -102,6 +104,7 @@ pub use crate::redact::PiiRedactor;
 pub use crate::sandbox_source::{AcpLaunchRegistry, LaunchSource, resolve_sandbox_tier};
 use crate::skill_catalog::skill_store_run_error;
 pub use crate::skills::SkillForkPlacement;
+use managed_adapter_error::{to_live_inbox_error, to_run_error};
 // The config data plane (ADR-0036/slice A): the service + its router + the
 // advertised-tools helper the process startup builds a config host from.
 pub use crate::acp_provision::PublishedAcpLaunchResolver;
@@ -124,17 +127,6 @@ pub use crate::deployment_config::{
 pub use crate::mcp::ExtMcpProbe;
 // ── Managed Agents adapter over the shared host ─────────────────────────────
 
-/// Translate the runtime contract's edit refusal into the wire-facing error.
-/// `Closed` collapses into `Inactive`: from the client's view "the attempt is
-/// gone" and "no attempt is running" are the same condition.
-fn to_live_inbox_error(err: EditError) -> LiveInboxError {
-    match err {
-        EditError::Closed => LiveInboxError::Inactive,
-        EditError::UnknownMessage => LiveInboxError::UnknownMessage,
-        EditError::StaleOrder => LiveInboxError::StaleOrder,
-    }
-}
-
 /// Mint a fresh user message from plain text (Managed `user.message` content is
 /// concatenated to text before it enters the host).
 fn user_message(content: Vec<ContentBlock>) -> Message {
@@ -143,18 +135,6 @@ fn user_message(content: Vec<ContentBlock>) -> Message {
         Role::User,
         content,
     )
-}
-
-fn to_run_error(err: HostError) -> RunError {
-    match err.kind {
-        HostErrorKind::BadRequest | HostErrorKind::Conflict => RunError::bad_request(err.message),
-        HostErrorKind::Unavailable if err.code == "unavailable" => {
-            RunError::unavailable(err.message)
-        }
-        HostErrorKind::Unavailable => RunError::unavailable_classified(err.code, err.message),
-        HostErrorKind::Internal if err.code == "internal" => RunError::internal(err.message),
-        HostErrorKind::Internal => RunError::classified(err.code, err.message),
-    }
 }
 
 /// Map a neutral terminal state to the Managed idle `stop_reason`. `RequiresAction`
@@ -1384,7 +1364,7 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
-    async fn restore_session_environment(
+    async fn adopt_session_environment(
         &self,
         agent: &str,
         thread: &str,
@@ -1414,6 +1394,57 @@ impl SessionRuntime for ManagedHost {
             .await
             .map_err(to_run_error)?;
         Ok(())
+    }
+
+    async fn quiesce_session_environment(
+        &self,
+        thread: &str,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_contract::SandboxGeneration,
+    ) -> Result<awaken_session_contract::QuiescenceReceipt, RunError> {
+        self.quiesce_environment_continuation(thread, operation, generation)
+            .await
+    }
+
+    async fn checkpoint_session_environment(
+        &self,
+        thread: &str,
+        request: awaken_session_contract::SandboxCheckpointRequest,
+    ) -> Result<awaken_session_contract::CheckpointReceipt, RunError> {
+        self.checkpoint_environment_continuation(thread, request)
+            .await
+    }
+
+    async fn dispose_checkpoint_source(
+        &self,
+        thread: &str,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_contract::SandboxGeneration,
+        source_binding: &str,
+    ) -> Result<awaken_session_contract::SourceDisposedReceipt, RunError> {
+        self.dispose_environment_continuation_source(thread, operation, generation, source_binding)
+            .await
+    }
+
+    async fn restore_checkpointed_session_environment(
+        &self,
+        agent: &str,
+        thread: &str,
+        operation: &awaken_session_contract::SessionEnvironmentOperation,
+        generation: &awaken_session_contract::SandboxGeneration,
+        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+    ) -> Result<awaken_session_contract::RestoreReceipt, RunError> {
+        self.restore_environment_continuation(agent, thread, operation, generation, checkpoint)
+            .await
+    }
+
+    async fn delete_session_checkpoint(
+        &self,
+        _thread: &str,
+        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+    ) -> Result<(), RunError> {
+        self.delete_environment_continuation_checkpoint(checkpoint)
+            .await
     }
 
     /// Committed transcript from durable truth, so the adapter can rehydrate a

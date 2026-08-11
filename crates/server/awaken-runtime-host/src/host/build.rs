@@ -357,6 +357,7 @@ impl SharedHost {
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
             ),
+            environment_checkpoint_store: None,
             cache_volume_prewarmer: crate::cache_volume::CacheVolumePrewarmer::default(),
             backend_owned_session_provider: None,
             session_provider_explicit: false,
@@ -430,6 +431,17 @@ impl SharedHost {
         resolver: Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>,
     ) -> Self {
         self.worker_credential_resolver = Some(resolver);
+        self
+    }
+
+    /// Install the sole checkpoint-byte adapter. This does not install lifecycle
+    /// state; Session root CAS remains authoritative.
+    #[must_use]
+    pub fn with_environment_checkpoint_store(
+        mut self,
+        store: Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>,
+    ) -> Self {
+        self.environment_checkpoint_store = Some(store);
         self
     }
 

@@ -287,6 +287,45 @@ impl SessionEnvironmentProvider {
             }
         }
     }
+
+    pub(crate) async fn restore(
+        &self,
+        spec: &pc::SandboxSpec,
+        checkpoint: &awaken_session_contract::SandboxCheckpointRef,
+        store: &dyn pc::SandboxCheckpointStore,
+    ) -> Result<SessionEnvironment, pc::SandboxError> {
+        match self {
+            Self::Workdir(provider) => provider
+                .restore_sandbox(spec, checkpoint, store)
+                .await
+                .map(SessionEnvironment::workdir),
+            Self::Namespace(_) => Err(pc::SandboxError::new(
+                "namespace provider does not implement checkpoint restore",
+            )),
+            Self::Container {
+                provider,
+                extra_mounts,
+                hand_factory,
+                hand_bin,
+                hand_idle_after,
+                ..
+            } => {
+                let capabilities = provider.sandbox_capabilities();
+                let spec = container_spec(spec, extra_mounts)?;
+                let environment = provider
+                    .restore_environment(&spec, checkpoint, store)
+                    .await?;
+                SessionEnvironment::container(
+                    environment,
+                    hand_factory.clone(),
+                    hand_bin,
+                    *hand_idle_after,
+                    capabilities,
+                )
+                .await
+            }
+        }
+    }
 }
 
 fn container_spec(

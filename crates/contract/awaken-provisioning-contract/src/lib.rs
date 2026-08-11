@@ -53,11 +53,13 @@ pub use prepare::{
     EnvironmentPlan, PrepareError, prepare_environment, validate_mount_requirements,
 };
 pub use sandbox::{
-    BlobSource, ExitStatus, IsolationClass, IsolationPolicy, MemoryMount, MemoryMounter, OnUnmet,
-    PolicySelection, ProcessHandle, RepositoryHttpBasicCredential, RepositoryRealizationPlan,
-    RepositoryRealizer, Sandbox, SandboxCapabilities, SandboxError, SandboxHandle, SandboxProvider,
-    SandboxRequirements, SandboxStatus, SecretBroker, SelectionError, Signal,
-    capability_requirements_satisfied, select_provider, select_provider_with_policy,
+    BlobSource, CheckpointObjectMetadata, ExitStatus, IsolationClass, IsolationPolicy, MemoryMount,
+    MemoryMounter, OnUnmet, PolicySelection, ProcessHandle, RepositoryHttpBasicCredential,
+    RepositoryRealizationPlan, RepositoryRealizer, Sandbox, SandboxCapabilities,
+    SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore, SandboxError,
+    SandboxHandle, SandboxProvider, SandboxRequirements, SandboxStatus, SecretBroker,
+    SelectionError, Signal, StoredCheckpointObject, capability_requirements_satisfied,
+    select_provider, select_provider_with_policy,
 };
 pub use spec::{
     Command, EnvironmentKind, MaterializedCommand, MaterializedEnvValue, MaterializedEnvVar,
