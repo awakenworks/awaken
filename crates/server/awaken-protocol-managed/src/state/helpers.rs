@@ -19,6 +19,7 @@ pub(crate) fn lifecycle_fact(
         workspace_id,
         event_type: event_type.to_string(),
         timestamp,
+        runtime_interval: None,
     }
 }
 

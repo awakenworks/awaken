@@ -246,6 +246,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
         metadata,
         tools: Default::default(),
         activity_epoch: 0,
+        running_interval: None,
         environment: Default::default(),
         mcp: SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
@@ -284,6 +285,7 @@ fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {
         workspace_id: Some("ws_a".into()),
         event_type: event_type.into(),
         timestamp: 1_700_000_000,
+        runtime_interval: None,
     }
 }
 

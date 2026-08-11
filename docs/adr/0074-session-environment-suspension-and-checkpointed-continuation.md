@@ -133,7 +133,7 @@ suspension or terminal release.
 
 | Owner | Responsibility | Does not own |
 |---|---|---|
-| Session aggregate/application | desired environment state, generation, operation intent, checkpoint reference, root CAS and recovery | provider bytes, host paths, live processes |
+| Session aggregate/application | desired environment state, generation, operation intent, checkpoint reference, Running interval, root CAS and recovery | provider bytes, host paths, live processes, pricing |
 | WorkQueue and Worker claim | durable effect delivery, retries, lease/epoch fencing | Session desired state |
 | Runtime Host | shared-environment admission gate, quiescence proof, projection teardown/rebuild | durable lifecycle decisions |
 | `SessionEnvironmentProvider` | the one live Sandbox instance and provider selection | a second Session registry |
@@ -146,6 +146,15 @@ and `PlacementRequirements.checkpoint_format` remain the scheduling source of
 truth. No second format field is added to `SandboxCapabilities`, and no
 checkpoint-provider registry is introduced. Admission rejects a provider or
 Worker that cannot honor the exact frozen format.
+
+Customer-visible execution time is projected without adding another Session
+state machine. The aggregate retains one typed open Running interval across
+overlapping driving events. The transition to idle or terminal closes it and
+commits `session.runtime_interval_closed` through the existing
+`ManagedLifecycleFact` transactional outbox in the same root CAS. The fact is
+secret-free and pricing-neutral; downstream consumers may interpret it, but
+cannot author or repair Session execution state. Restore, checkpoint, queue,
+drain, and retention never open this interval.
 
 The canonical deployment builder returns the provider together with its
 never-used capacity, creation mounts, and CacheVolume initializer. A
@@ -414,11 +423,13 @@ validation and do not introduce a cross-policy inequality.
   terminal cleanup receipt pattern, and provider idempotent disposal after
   referenced-set authorization.
 - Modified: `SessionEnvironmentState`, Environment execution policy/snapshot,
-  Session activity and admission orchestration, `SessionRuntime`, Runtime Host
+  Session activity and admission orchestration, the existing lifecycle outbox,
+  `SessionRuntime`, Runtime Host
   background classification and quiescence, canonical `SandboxProvider`,
   existing Worker checkpoint-format admission, lease timing/fencing,
   referenced-set reconciliation, and terminal checkpoint deletion.
-- New: checkpoint/generation/operation value objects and receipts, provider
+- New: checkpoint/generation/operation value objects and receipts, the typed
+  pricing-neutral Session Running interval value, provider
   checkpoint/restore implementations, suspend/restore application
   reconciliation, provider conformance tests, and full-environment integration
   scenarios.

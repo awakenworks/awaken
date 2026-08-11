@@ -4,7 +4,9 @@ use awaken_session_contract::{ManagedLifecycleFact, PersistedSession, SessionDis
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError,
-    mutation::repository_failure, resource_reconciliation::mutation_failure,
+    activity::{now_unix_ms, runtime_interval_fact},
+    mutation::repository_failure,
+    resource_reconciliation::mutation_failure,
 };
 
 #[derive(Clone, Debug)]
@@ -77,8 +79,14 @@ impl SessionApplication {
             session
                 .archive(archived_at)
                 .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
+            let mut facts = session
+                .close_runtime_interval(now_unix_ms())
+                .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
+                .into_iter()
+                .collect::<Vec<_>>();
+            facts.push(fact.clone());
             match self
-                .commit_session_snapshot(&owner_scope, session, "archive", vec![fact.clone()])
+                .commit_session_snapshot(&owner_scope, session, "archive", facts)
                 .await
             {
                 Ok(session) => {
@@ -122,6 +130,12 @@ impl SessionApplication {
                 });
             }
             session.request_delete();
+            let mut facts = session
+                .close_runtime_interval(now_unix_ms())
+                .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
+                .into_iter()
+                .collect::<Vec<_>>();
+            facts.push(fact.clone());
             if session.resources.pending.is_none() {
                 session
                     .resources
@@ -129,7 +143,7 @@ impl SessionApplication {
                     .map_err(super::resource_reconciliation::internal)?;
             }
             match self
-                .commit_session_snapshot(&owner_scope, session, "delete-intent", vec![fact.clone()])
+                .commit_session_snapshot(&owner_scope, session, "delete-intent", facts)
                 .await
             {
                 Ok(session) => {

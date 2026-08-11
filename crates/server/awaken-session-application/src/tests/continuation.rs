@@ -546,6 +546,7 @@ async fn terminal_cleanup_deletes_checkpoint_without_restore() {
             workspace_id: Some("workspace".into()),
             event_type: "session.archived".into(),
             timestamp: 1,
+            runtime_interval: None,
         },
     )
     .await

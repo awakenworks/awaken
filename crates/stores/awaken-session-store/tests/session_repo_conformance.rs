@@ -85,6 +85,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
         metadata: std::collections::BTreeMap::from([("k".into(), "v".into())]),
         tools: Default::default(),
         activity_epoch: 0,
+        running_interval: None,
         environment: Default::default(),
         mcp: awaken_session_contract::SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
@@ -123,6 +124,7 @@ fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {
         workspace_id: Some("ws_a".into()),
         event_type: event_type.into(),
         timestamp: 1_700_000_000,
+        runtime_interval: None,
     }
 }
 
@@ -264,7 +266,21 @@ async fn environment_state_is_atomic_and_non_destructive<R: ManagedSessionReposi
 /// The lifecycle fact is committed in the same repository transaction as the
 /// aggregate and owner. Notification may crash afterwards without losing the fact.
 async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRepository>(r: &R) {
-    let created = fact("evt:create", "sesn_lifecycle", "session.created");
+    // Cause/effect rule: C1=root mutation and typed interval fact share one
+    // transaction; C2=process/adapter reload. E1=the aggregate and exact
+    // millisecond interval appear together; E2=the typed payload round-trips
+    // without the store maintaining a parallel event schema.
+    let mut created = fact(
+        "evt:create",
+        "sesn_lifecycle",
+        "session.runtime_interval_closed",
+    );
+    created.runtime_interval = Some(awaken_session_contract::SessionRuntimeInterval {
+        interval_id: "evt:create".into(),
+        activity_epoch: 7,
+        started_at_unix_ms: 1_700_000_000_100,
+        ended_at_unix_ms: 1_700_000_000_900,
+    });
     create_session(
         r,
         "ws_a",

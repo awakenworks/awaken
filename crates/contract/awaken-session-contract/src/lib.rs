@@ -84,7 +84,10 @@ pub use environment::{
     SessionEnvironmentState, SessionEnvironmentTransitionError, SourceDisposedReceipt,
     SuspendPhase, checkpoint_source_disposal_authorized,
 };
-pub use lifecycle::{LifecycleFactDelivery, LifecycleFactNotifier, ManagedLifecycleFact};
+pub use lifecycle::{
+    LifecycleFactDelivery, LifecycleFactNotifier, ManagedLifecycleFact, SessionRuntimeInterval,
+    SessionRuntimeIntervalStart,
+};
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,
     McpAttachmentState, McpDesiredSetFingerprint, McpGeneration, McpGenerationRef,

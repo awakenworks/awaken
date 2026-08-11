@@ -226,6 +226,7 @@ fn deleted_lifecycle_fact(session_id: &str, owner_scope: &str) -> ManagedLifecyc
         workspace_id: Some(owner_scope.to_string()),
         event_type: "session.deleted".into(),
         timestamp,
+        runtime_interval: None,
     }
 }
 

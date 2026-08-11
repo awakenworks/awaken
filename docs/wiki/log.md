@@ -91,3 +91,11 @@
 - Kept claim/settle operation order as the sole Worker lifecycle authority;
   downstream elapsed-time projections consume the feed and never create a
   second running-state machine.
+
+## 2026-08-11 (Session Running interval remains aggregate-owned)
+
+- Amended ADR-0074 so overlapping activity, idle settlement, and terminal
+  intent produce one typed, pricing-neutral Running interval through the
+  existing transactional lifecycle outbox.
+- Kept checkpoint, restore, queue, drain, and retention work outside that
+  interval and prohibited a Billing-specific Session event store.

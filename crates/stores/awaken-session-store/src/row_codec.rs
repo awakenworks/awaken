@@ -335,6 +335,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         metadata: serde_json::from_str(&row.metadata_json)?,
         tools: Default::default(),
         activity_epoch: 0,
+        running_interval: None,
         environment: row.environment_binding.map_or(
             awaken_session_contract::SessionEnvironmentState::Unmaterialized,
             |binding| awaken_session_contract::SessionEnvironmentState::Resident {

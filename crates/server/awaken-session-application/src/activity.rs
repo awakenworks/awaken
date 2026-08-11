@@ -4,15 +4,33 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::stream::sink::Sink;
-use awaken_session_contract::{PersistedSession, RunError, SessionExecutionState, StepOutcome};
+use awaken_session_contract::{
+    ManagedLifecycleFact, PersistedSession, RunError, SessionExecutionState,
+    SessionRuntimeInterval, StepOutcome,
+};
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
-fn now_unix_ms() -> u64 {
+pub(crate) fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
+}
+
+pub(crate) fn runtime_interval_fact(
+    owner_scope: &str,
+    session_id: &str,
+    interval: SessionRuntimeInterval,
+) -> ManagedLifecycleFact {
+    ManagedLifecycleFact {
+        id: interval.interval_id.clone(),
+        object_id: session_id.to_string(),
+        workspace_id: Some(owner_scope.to_string()),
+        event_type: "session.runtime_interval_closed".to_string(),
+        timestamp: i64::try_from(interval.ended_at_unix_ms / 1_000).unwrap_or(i64::MAX),
+        runtime_interval: Some(interval),
+    }
 }
 
 /// Failure from a Session activity transition.
@@ -148,6 +166,7 @@ impl SessionApplication {
                     .transition_execution(SessionExecutionState::Running)
                     .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
             }
+            session.begin_runtime_interval(now_unix_ms());
             match self
                 .commit_session_snapshot(&owner_scope, session, "begin-activity", Vec::new())
                 .await
@@ -193,12 +212,24 @@ impl SessionApplication {
             session
                 .transition_execution(SessionExecutionState::Idle)
                 .map_err(|error| SessionActivityError::Unavailable(error.to_string()))?;
-            session.environment.mark_idle(now_unix_ms());
+            let ended_at_unix_ms = now_unix_ms();
+            session.environment.mark_idle(ended_at_unix_ms);
+            let lifecycle_facts = session
+                .close_runtime_interval(ended_at_unix_ms)
+                .map(|interval| runtime_interval_fact(&owner_scope, session_id, interval))
+                .into_iter()
+                .collect::<Vec<_>>();
+            let emitted_runtime_interval = !lifecycle_facts.is_empty();
             match self
-                .commit_session_snapshot(&owner_scope, session, "settle-activity", Vec::new())
+                .commit_session_snapshot(&owner_scope, session, "settle-activity", lifecycle_facts)
                 .await
             {
-                Ok(session) => return Ok(session),
+                Ok(session) => {
+                    if emitted_runtime_interval {
+                        self.notify_lifecycle_fact();
+                    }
+                    return Ok(session);
+                }
                 Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
                     continue;
                 }

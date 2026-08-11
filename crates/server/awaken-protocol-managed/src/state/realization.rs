@@ -193,6 +193,7 @@ mod tests {
             metadata: Default::default(),
             tools: Default::default(),
             activity_epoch: 0,
+            running_interval: None,
             environment: Default::default(),
             mcp,
             resources,

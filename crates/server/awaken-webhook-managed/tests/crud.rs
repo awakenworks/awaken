@@ -818,6 +818,7 @@ async fn matching_fails_closed_when_a_subscription_secret_is_unresolvable() {
             workspace_id: Some("ws_a".into()),
             event_type: "run.completed".into(),
             timestamp: 1,
+            runtime_interval: None,
         })
         .await
         .unwrap_err();
@@ -1074,6 +1075,7 @@ async fn delivery_without_a_workspace_owner_does_not_fan_out() {
             workspace_id: None,
             event_type: "session.created".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("an unattributed fact is a successful no-op");
@@ -1190,6 +1192,7 @@ async fn a_stable_fact_id_is_enqueued_and_delivered_only_once_per_pending_row() 
             workspace_id: Some("ws_a".into()),
             event_type: "session.created".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("append lifecycle");
@@ -1240,6 +1243,7 @@ async fn failed_delivery_keeps_the_stable_fact_pending_for_recovery() {
             workspace_id: Some("ws_a".into()),
             event_type: "session.archived".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("append lifecycle");
@@ -1297,6 +1301,7 @@ async fn completion_failure_replays_the_same_stable_fact_identity() {
             workspace_id: Some("ws_a".into()),
             event_type: "session.archived".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("append lifecycle");
@@ -1365,6 +1370,7 @@ async fn rebuilding_the_sink_drains_rows_left_by_the_prior_process() {
             workspace_id: Some("ws_a".into()),
             event_type: "session.deleted".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("append lifecycle");
@@ -1411,6 +1417,7 @@ async fn session_local_outbox_is_drained_after_commit_before_notify_crash() {
             workspace_id: Some("ws_a".into()),
             event_type: "session.status_idled".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("append lifecycle");
@@ -1457,6 +1464,7 @@ async fn periodic_reconciliation_redelivers_without_restart_or_a_new_event() {
             workspace_id: Some("ws_a".into()),
             event_type: "session.status_idled".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("append lifecycle");
@@ -1522,6 +1530,7 @@ async fn committed_fact_identity_and_scope_are_projected_unchanged() {
             workspace_id: Some("ws_a".into()),
             event_type: "session.status_idled".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         },
         ManagedLifecycleFact {
             id: "session:sesn_2:status_terminated".into(),
@@ -1529,6 +1538,7 @@ async fn committed_fact_identity_and_scope_are_projected_unchanged() {
             workspace_id: Some("ws_a".into()),
             event_type: "session.status_terminated".into(),
             timestamp: 1_768_780_801,
+            runtime_interval: None,
         },
     ] {
         outbox
@@ -1747,6 +1757,7 @@ async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_notifier() 
             workspace_id: None,
             event_type: "session.created".into(),
             timestamp: 1_768_780_800,
+            runtime_interval: None,
         })
         .await
         .expect("commit lifecycle fact");
