@@ -333,8 +333,10 @@ fn standard_builder_derives_from_its_installed_materializer() {
 #[test]
 fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
     // Cause/effect design: C1=provider advertises hosted-csi-v1, C2=byte store
-    // installed. R1 C1+!C2 => reject before registration; R2 C1+C2 => exact
-    // format appears in the existing WorkerManifest authority and build succeeds.
+    // installed, C3=provider arrives as the canonical deployment components.
+    // R1 C1+!C2 => reject before registration; R2 C1+C2 => exact format appears
+    // in the existing WorkerManifest authority; R3 C1+C2+C3 => the decoration
+    // seam has identical admission semantics and creates no second capability.
     let base = || {
         WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
             "https://control.test",
@@ -362,6 +364,31 @@ fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
             .checkpoint_formats
             .contains("hosted-csi-v1"),
         "R2"
+    );
+
+    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
+        "https://control.test",
+    ))
+    .with_session_container_environment_components(
+        "hosted",
+        awaken_runtime_host::ContainerEnvironmentComponents {
+            provider: Arc::new(CheckpointContainerProvider),
+            capacity: None,
+            extra_mounts: Vec::new(),
+            cache_volume_initializer: None,
+        },
+    )
+    .with_hand_executor_factory(crate::relay_hand_executor_factory())
+    .with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))
+    .with_standard_manifest(Default::default())
+    .build()
+    .expect("R3");
+    assert!(
+        worker
+            .manifest()
+            .checkpoint_formats
+            .contains("hosted-csi-v1"),
+        "R3"
     );
 }
 

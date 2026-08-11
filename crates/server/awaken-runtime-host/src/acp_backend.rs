@@ -245,22 +245,21 @@ impl crate::host::SharedHost {
             let hand_factory = hand_factory.unwrap_or_else(|| {
                 panic!("container Session environments require a hand executor factory")
             });
-            let (provider, capacity, extra_mounts, cache_volume_initializer) =
-                crate::container_environment::build(
-                    tier,
-                    deployment.container_image.as_deref(),
-                    &deployment.sandbox,
-                )
-                .await
-                .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
-            if let Some(initializer) = cache_volume_initializer {
+            let components = crate::container_environment::build_container_environment(
+                tier,
+                deployment.container_image.as_deref(),
+                &deployment.sandbox,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+            if let Some(initializer) = components.cache_volume_initializer {
                 host.cache_volume_prewarmer =
                     crate::cache_volume::CacheVolumePrewarmer::new(initializer);
             }
             crate::session_environment::SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
-                provider,
-                capacity,
-                extra_mounts,
+                components.provider,
+                components.capacity,
+                components.extra_mounts,
                 hand_factory,
                 deployment.sandbox.container_hand_bin.clone(),
                 std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),

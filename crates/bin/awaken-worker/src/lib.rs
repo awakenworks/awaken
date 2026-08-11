@@ -377,6 +377,26 @@ impl WorkerNodeBuilder {
             backend: backend.into(),
             provider,
             capacity,
+            extra_mounts: Vec::new(),
+            cache_volume_initializer: None,
+        });
+        self
+    }
+
+    /// Install a decorated provider while preserving the capacity, creation
+    /// mounts, and cache owner returned by the canonical deployment builder.
+    #[must_use]
+    pub fn with_session_container_environment_components(
+        mut self,
+        backend: impl Into<String>,
+        components: awaken_runtime_host::ContainerEnvironmentComponents,
+    ) -> Self {
+        self.session_container_provider = Some(InstalledSessionContainerProvider {
+            backend: backend.into(),
+            provider: components.provider,
+            capacity: components.capacity,
+            extra_mounts: components.extra_mounts,
+            cache_volume_initializer: components.cache_volume_initializer,
         });
         self
     }
@@ -637,6 +657,8 @@ struct InstalledSessionContainerProvider {
     backend: String,
     provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
     capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+    extra_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+    cache_volume_initializer: Option<Arc<dyn awaken_runtime_host::CacheVolumeInitializer>>,
 }
 
 struct InstalledSandboxBoundary {
@@ -998,9 +1020,13 @@ impl WorkerNode {
                 .hand_executor_factory
                 .clone()
                 .expect("container provider was validated with a hand factory");
-            host = host.with_session_container_provider_and_capacity(
-                installed.provider,
-                installed.capacity,
+            host = host.with_session_container_environment_components(
+                awaken_runtime_host::ContainerEnvironmentComponents {
+                    provider: installed.provider,
+                    capacity: installed.capacity,
+                    extra_mounts: installed.extra_mounts,
+                    cache_volume_initializer: installed.cache_volume_initializer,
+                },
                 hand_factory,
             );
         }
