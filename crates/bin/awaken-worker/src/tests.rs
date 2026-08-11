@@ -14,6 +14,59 @@ struct ExternalCredentialResolver;
 
 struct UnusedContainerProvider;
 
+struct CheckpointContainerProvider;
+
+#[async_trait::async_trait]
+impl awaken_sandbox_container::ContainerEnvironmentProvider for CheckpointContainerProvider {
+    fn checkpoint_formats(&self) -> Vec<String> {
+        vec!["hosted-csi-v1".into()]
+    }
+
+    async fn create_environment(
+        &self,
+        _spec: &awaken_provisioning_contract::SandboxSpec,
+    ) -> Result<
+        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        unreachable!("builder tests do not create an environment")
+    }
+
+    async fn adopt_environment(
+        &self,
+        _handle: &awaken_provisioning_contract::SandboxHandle,
+    ) -> Result<
+        Arc<dyn awaken_sandbox_container::ContainerEnvironment>,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        unreachable!("builder tests do not adopt an environment")
+    }
+}
+
+struct UnusedCheckpointStore;
+
+#[async_trait::async_trait]
+impl awaken_provisioning_contract::SandboxCheckpointStore for UnusedCheckpointStore {
+    async fn put(
+        &self,
+        _metadata: &awaken_provisioning_contract::CheckpointObjectMetadata,
+        _bytes: Vec<u8>,
+    ) -> Result<
+        awaken_provisioning_contract::StoredCheckpointObject,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        unreachable!("builder tests do not write checkpoint bytes")
+    }
+
+    async fn get(&self, _id: &str) -> Result<Vec<u8>, awaken_provisioning_contract::SandboxError> {
+        unreachable!("builder tests do not read checkpoint bytes")
+    }
+
+    async fn delete(&self, _id: &str) -> Result<(), awaken_provisioning_contract::SandboxError> {
+        unreachable!("builder tests do not delete checkpoint bytes")
+    }
+}
+
 #[async_trait::async_trait]
 impl awaken_sandbox_container::ContainerEnvironmentProvider for UnusedContainerProvider {
     async fn create_environment(
@@ -231,6 +284,7 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -274,6 +328,41 @@ fn standard_builder_derives_from_its_installed_materializer() {
     .expect("installed standard topology is valid");
 
     assert!(worker.manifest().capabilities.contains("test-access/v1"));
+}
+
+#[test]
+fn checkpoint_provider_store_and_manifest_are_one_fail_closed_topology() {
+    // Cause/effect design: C1=provider advertises hosted-csi-v1, C2=byte store
+    // installed. R1 C1+!C2 => reject before registration; R2 C1+C2 => exact
+    // format appears in the existing WorkerManifest authority and build succeeds.
+    let base = || {
+        WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
+            "https://control.test",
+        ))
+        .with_session_container_provider("hosted", Arc::new(CheckpointContainerProvider))
+        .with_hand_executor_factory(crate::relay_hand_executor_factory())
+        .with_standard_manifest(Default::default())
+    };
+    assert_eq!(
+        base()
+            .build()
+            .err()
+            .expect("R1 must fail closed")
+            .to_string(),
+        "checkpoint-capable Session provider requires a checkpoint store",
+        "R1"
+    );
+    let worker = base()
+        .with_environment_checkpoint_store(Arc::new(UnusedCheckpointStore))
+        .build()
+        .expect("R2");
+    assert!(
+        worker
+            .manifest()
+            .checkpoint_formats
+            .contains("hosted-csi-v1"),
+        "R2"
+    );
 }
 
 #[test]
@@ -433,6 +522,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -511,6 +601,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -560,6 +651,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         worker_local_credential_resolver_installed: true,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -592,6 +684,7 @@ fn standard_manifest_advertises_only_installed_credential_mechanisms() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -648,6 +741,7 @@ fn standard_manifest_requires_complete_provider_evidence_for_worker_relay() {
             worker_local_credential_resolver_installed: false,
             remote_credential_realization: None,
             sandbox_override: Some((sandbox.clone(), "external-secure-provider")),
+            checkpoint_formats: Default::default(),
             resource_support: ResourceManifestSupport::None,
             application_capabilities: Default::default(),
             config: &StandardManifestConfig::default(),
@@ -699,6 +793,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -728,6 +823,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::Session,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -757,6 +853,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::SessionWithRepositoryCredentials,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -781,6 +878,7 @@ fn worker_manifest_advertises_only_installed_resource_seams() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
         config: &StandardManifestConfig::default(),
@@ -831,6 +929,7 @@ fn worker_manifest_includes_explicit_application_capabilities() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: std::collections::BTreeSet::from([
             "application:flow-envelope/v1".to_string(),
@@ -861,6 +960,7 @@ fn standard_manifest_uses_one_typed_metadata_source() {
         worker_local_credential_resolver_installed: false,
         remote_credential_realization: None,
         sandbox_override: None,
+        checkpoint_formats: Default::default(),
         resource_support: ResourceManifestSupport::None,
         application_capabilities: Default::default(),
         config: &config,
