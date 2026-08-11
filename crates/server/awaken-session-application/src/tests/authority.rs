@@ -558,6 +558,7 @@ async fn update_admission_uses_only_durable_session_status() {
     let command = |title: &str| SessionUpdateCommand {
         title: Some(Some(title.into())),
         metadata: None,
+        budget: None,
         tools: None,
         mcp_candidates: None,
         idempotency_key: None,
@@ -582,6 +583,103 @@ async fn update_admission_uses_only_durable_session_status() {
         );
         assert_eq!(repo.get(id).await.expect(rule), before, "{rule}");
     }
+}
+
+#[tokio::test]
+async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
+    // Cause/effect graph: C1 budget absent/active/removed; C2 requested limit
+    // absent/present; C3 a present limit is greater than exact consumed cost.
+    // Effects: E1 absent cannot acquire a budget; E2 active+C3 changes the cap;
+    // E3 active+!C3 rejects; E4 active+removal preserves snapshot/cursor and
+    // disables admission enforcement; E5 removed cannot become active again.
+    // Decision table: B1 absent+present=>E1; B2 active+present+C3=>E2; B3
+    // active+present+!C3=>E3; B4 active+absent=>E4; B5 removed+present=>E5.
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    let mut active = persisted("budget-active", false, false, "idle");
+    let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
+        snapshot_id: "prices-v1".into(),
+        version: 1,
+        effective_at_unix_ms: 1,
+        arithmetic_version: 1,
+        model_rates: std::collections::BTreeMap::new(),
+        runtime_rates: Default::default(),
+        fingerprint: "prices-v1-fingerprint".into(),
+    };
+    active.budget = awaken_session_contract::SessionBudgetState::Active {
+        max_list_cost_minor: 10,
+        consumed_numerator: 2
+            * awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD
+            * awaken_session_contract::SessionBudgetState::COST_DENOMINATOR,
+        usage_cursor: Default::default(),
+        snapshot,
+        reached_event_emitted: false,
+    };
+    create(repo.as_ref(), active).await;
+    create(
+        repo.as_ref(),
+        persisted("budget-absent", false, false, "idle"),
+    )
+    .await;
+    let app = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let command = |budget| SessionUpdateCommand {
+        title: None,
+        metadata: None,
+        budget: Some(budget),
+        tools: None,
+        mcp_candidates: None,
+        idempotency_key: None,
+        request_fingerprint: awaken_session_contract::stable_fingerprint(&budget),
+        if_match: None,
+    };
+
+    assert!(
+        matches!(
+            app.update_session("budget-absent", command(Some(3))).await,
+            Err(SessionUpdateError::Rejected(_))
+        ),
+        "B1/E1"
+    );
+    let updated = app
+        .update_session("budget-active", command(Some(3)))
+        .await
+        .expect("B2");
+    assert_eq!(
+        updated.session.budget.max_list_cost_minor(),
+        Some(3),
+        "B2/E2"
+    );
+    assert!(
+        matches!(
+            app.update_session("budget-active", command(Some(2))).await,
+            Err(SessionUpdateError::Rejected(_))
+        ),
+        "B3/E3"
+    );
+    let removed = app
+        .update_session("budget-active", command(None))
+        .await
+        .expect("B4");
+    assert!(
+        matches!(
+            removed.session.budget,
+            awaken_session_contract::SessionBudgetState::Removed { .. }
+        ),
+        "B4/E4"
+    );
+    assert!(removed.session.budget.can_admit_model_request(), "B4/E4");
+    assert!(
+        matches!(
+            app.update_session("budget-active", command(Some(4))).await,
+            Err(SessionUpdateError::Rejected(_))
+        ),
+        "B5/E5"
+    );
 }
 
 /// Cause/effect graph: C1 the Runtime presents the exact durable realization

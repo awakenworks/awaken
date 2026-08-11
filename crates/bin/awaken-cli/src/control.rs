@@ -66,6 +66,7 @@ pub async fn prepare_control_process(
         None,
         None,
         None,
+        ManagedServiceAdapters::default(),
     )
     .await
 }
@@ -156,6 +157,33 @@ pub async fn prepare_control_process_with_publication_resolver_web_search_and_li
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
     additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
 ) -> Result<PreparedProcess, String> {
+    prepare_control_process_with_managed_services(
+        deployment,
+        key,
+        resolver,
+        brokered_catalog,
+        web_search_providers,
+        web_search_publication_resolver,
+        additional_lifecycle_delivery,
+        ManagedServiceAdapters::default(),
+    )
+    .await
+}
+
+/// Hosted Control composition with the optional Cloud-only Managed adapters.
+/// Tunnel routes enter the canonical IAM/audit edge, and the same injected
+/// organization limiter wraps every public Managed route.
+#[allow(clippy::too_many_arguments)]
+pub async fn prepare_control_process_with_managed_services(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+    brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
+    web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
+    web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
+    additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
+    managed_services: ManagedServiceAdapters,
+) -> Result<PreparedProcess, String> {
     prepare_control_process_with_model_supply(
         deployment,
         key,
@@ -163,6 +191,7 @@ pub async fn prepare_control_process_with_publication_resolver_web_search_and_li
         brokered_catalog,
         Some((web_search_providers, web_search_publication_resolver)),
         additional_lifecycle_delivery,
+        managed_services,
     )
     .await
 }
@@ -177,6 +206,7 @@ async fn prepare_control_process_with_model_supply(
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
     additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
+    managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let identity = identity_wiring(
@@ -256,6 +286,7 @@ async fn prepare_control_process_with_model_supply(
             ),
             control_service: None,
             additional_lifecycle_delivery,
+            managed_services,
         },
     )
     .await;

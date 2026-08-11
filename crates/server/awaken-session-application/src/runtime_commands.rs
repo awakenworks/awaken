@@ -357,7 +357,14 @@ impl SessionApplication {
     }
 
     pub async fn session_usage(&self, thread: &str) -> Result<SessionUsage, RunError> {
-        self.runtime.session_usage(thread).await
+        let mut usage = self.runtime.session_usage(thread).await?;
+        let session = self
+            .session_repository()
+            .get(thread)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        usage.active_seconds = session.runtime_active_millis / 1_000;
+        Ok(usage)
     }
 
     pub async fn end_runtime_session(&self, thread: &str) -> Result<(), RunError> {

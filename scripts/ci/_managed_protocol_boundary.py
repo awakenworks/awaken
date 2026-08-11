@@ -91,6 +91,14 @@ ANTHROPIC_MANAGED_ROUTES = frozenset(
         ("DELETE", "/v1/skills/{}/versions/{}"),
         ("GET", "/v1/skills/{}/versions/{}/content"),
         ("GET", "/v1/skills/{}/versions/{}/files/{*}"),
+        ("GET", "/v1/tunnels"), ("POST", "/v1/tunnels"),
+        ("GET", "/v1/tunnels/{}"), ("POST", "/v1/tunnels/{}/archive"),
+        ("POST", "/v1/tunnels/{}/reveal_token"),
+        ("POST", "/v1/tunnels/{}/rotate_token"),
+        ("GET", "/v1/tunnels/{}/certificates"),
+        ("POST", "/v1/tunnels/{}/certificates"),
+        ("GET", "/v1/tunnels/{}/certificates/{}"),
+        ("POST", "/v1/tunnels/{}/certificates/{}/archive"),
     }
 )
 

@@ -14,6 +14,7 @@ mod agent_config;
 mod application_contribution;
 mod application_provisioning;
 mod baseline;
+mod budget;
 mod dream;
 mod environment;
 mod lifecycle;
@@ -61,6 +62,11 @@ pub use baseline::{
     SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs,
     SessionBaselineState, SessionCreationFinalizeError, SessionCreationIntent,
     SessionMcpAuthoringContext, SessionNetworkPolicy, SessionRuntimePlacement,
+};
+pub use budget::{
+    ManagedBudgetUsageCursor, ManagedListPriceError, ManagedListPriceProvider,
+    ManagedListPriceRequest, ManagedListPriceSnapshot, ManagedModelUsageCursor,
+    ManagedRuntimeListRates, ManagedTokenListRates, SessionBudgetState,
 };
 
 /// Rebuildable desired Environment capacity exported by Coordinator. The
@@ -112,8 +118,8 @@ pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, DelegatedRunSnapshot,
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
     LiveInboxSnapshot, McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionRuntime, SessionUsage,
-    StepOutcome, ToolPermissionDecision,
+    RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionModelUsage, SessionRuntime,
+    SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationSessionControl,

@@ -67,8 +67,13 @@ pub(super) async fn prepare_runtime_routers(
         (config::Role::Coordinator, _) => [0; 32],
         _ => unreachable!(),
     };
-    let managed_rate_limiter =
-        Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()));
+    let managed_rate_limiter = process
+        .managed_services
+        .request_limiter
+        .clone()
+        .unwrap_or_else(|| {
+            Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization(org_id.clone()))
+        });
     let mcp_bearer_token = process.mcp_bearer_token;
     // Cause/effect ownership rule: one selected ResourceAuthorities value is moved intact
     // into the Host. The management Skill API borrows the one additional view it
@@ -264,6 +269,7 @@ pub(super) async fn prepare_runtime_routers(
                         .expect("AllInOne owns Environment authoring")
                         .sandbox_policy_store(),
                 )),
+                process.managed_services.tunnel_application.clone(),
                 coordinator_content_eraser,
                 content_capture_ceiling,
                 iam.clone(),
@@ -558,6 +564,9 @@ pub(super) async fn prepare_runtime_routers(
     // published agent's model sees the authoritative config-plane truth (M2).
     session_application.set_config_source(executable_agent_catalog.clone());
     session_application.set_lifecycle_notifier(webhook_notifier);
+    if let Some(provider) = process.managed_services.list_price_provider.clone() {
+        session_application.set_managed_list_price_provider(provider);
+    }
     let session_application = Arc::new(session_application);
     let managed_state = Arc::new(ManagedState::from_application(session_application.clone()));
     // Workspace path addressing (ADR-0048 D3 / ADR-0051): wrap the fully-merged flat

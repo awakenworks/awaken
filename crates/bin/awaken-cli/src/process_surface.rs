@@ -11,7 +11,7 @@ pub(crate) fn finish(
     reconciler: Option<Arc<dyn awaken_config_service::PublicationBindingReconciler>>,
     worker_observations: Arc<dyn awaken_coordinator::WorkerObservationSource>,
     platform_workspace: String,
-    managed_rate_limiter: Arc<awaken_protocol_managed::ManagedRateLimiter>,
+    managed_rate_limiter: Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>,
 ) -> Router {
     flat = flat.merge(mcp_export);
     // One startup serves one resolved Organization. Install one shared

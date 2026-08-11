@@ -14,6 +14,51 @@ use axum::response::{IntoResponse, Response};
 
 use crate::types::ErrorResponse;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedOperation {
+    Create,
+    Read,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedRequestSource {
+    Http,
+    Deployment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedRateLimitRequest {
+    pub operation: ManagedOperation,
+    pub resource: &'static str,
+    pub operation_id: Option<String>,
+    pub source: ManagedRequestSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagedRateLimitDecision {
+    pub allowed: bool,
+    pub limit: u32,
+    pub remaining: u32,
+    pub retry_after: Option<u64>,
+    pub reset_after: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("Managed request limiter is unavailable: {message}")]
+pub struct ManagedRateLimitUnavailable {
+    pub message: String,
+}
+
+#[async_trait::async_trait]
+pub trait ManagedRequestLimiter: Send + Sync {
+    fn organization_id(&self) -> &str;
+
+    async fn admit(
+        &self,
+        request: ManagedRateLimitRequest,
+    ) -> Result<ManagedRateLimitDecision, ManagedRateLimitUnavailable>;
+}
+
 /// Anthropic's documented organization-level Managed Agents defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagedRateLimits {
@@ -28,12 +73,6 @@ impl Default for ManagedRateLimits {
             read_per_minute: 1_200,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ManagedOperation {
-    Create,
-    Read,
 }
 
 #[derive(Debug)]
@@ -53,7 +92,7 @@ impl Bucket {
         }
     }
 
-    fn take(&mut self, now: Duration) -> RateDecision {
+    fn take(&mut self, now: Duration) -> ManagedRateLimitDecision {
         let elapsed = now.saturating_sub(self.last_refill).as_secs_f64();
         let refill_per_second = f64::from(self.capacity) / 60.0;
         self.tokens = (self.tokens + elapsed * refill_per_second).min(f64::from(self.capacity));
@@ -68,7 +107,7 @@ impl Bucket {
         } else {
             Some(seconds_ceil((1.0 - self.tokens) / refill_per_second))
         };
-        RateDecision {
+        ManagedRateLimitDecision {
             allowed,
             limit: self.capacity,
             remaining: self.tokens.floor() as u32,
@@ -80,15 +119,6 @@ impl Bucket {
 
 fn seconds_ceil(seconds: f64) -> u64 {
     (seconds.ceil() as u64).max(1)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RateDecision {
-    allowed: bool,
-    limit: u32,
-    remaining: u32,
-    retry_after: Option<u64>,
-    reset_after: u64,
 }
 
 #[derive(Debug)]
@@ -123,18 +153,14 @@ impl ManagedRateLimiter {
         }
     }
 
-    fn check(&self, operation: ManagedOperation) -> RateDecision {
+    fn check(&self, operation: ManagedOperation) -> ManagedRateLimitDecision {
         self.check_at(operation, self.started_at.elapsed())
     }
 
     /// Admit a Session created internally by a Deployment. Scheduled/manual
     /// deployment launches bypass HTTP but consume the same organization Create
     /// bucket as `POST /v1/sessions`.
-    pub(crate) fn admit_internal_session_create(&self) -> bool {
-        self.check(ManagedOperation::Create).allowed
-    }
-
-    fn check_at(&self, operation: ManagedOperation, now: Duration) -> RateDecision {
+    fn check_at(&self, operation: ManagedOperation, now: Duration) -> ManagedRateLimitDecision {
         let mut buckets = self.buckets.lock().unwrap();
         match operation {
             ManagedOperation::Create => buckets.create.take(now),
@@ -148,17 +174,54 @@ impl ManagedRateLimiter {
     }
 }
 
+#[async_trait::async_trait]
+impl ManagedRequestLimiter for ManagedRateLimiter {
+    fn organization_id(&self) -> &str {
+        &self.organization_id
+    }
+
+    async fn admit(
+        &self,
+        request: ManagedRateLimitRequest,
+    ) -> Result<ManagedRateLimitDecision, ManagedRateLimitUnavailable> {
+        Ok(self.check(request.operation))
+    }
+}
+
 /// Enforce the two documented Managed Agents request buckets. Non-Managed routes
 /// and Managed mutation endpoints that are neither Create nor Read pass through.
 pub async fn enforce_managed_rate_limit(
-    State(limiter): State<std::sync::Arc<ManagedRateLimiter>>,
+    State(limiter): State<std::sync::Arc<dyn ManagedRequestLimiter>>,
     request: Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let Some(operation) = classify(request.method(), request.uri().path()) else {
+    let Some((operation, resource)) = classify(request.method(), request.uri().path()) else {
         return next.run(request).await;
     };
-    let decision = limiter.check(operation);
+    let operation_id = request
+        .headers()
+        .get("x-request-id")
+        .or_else(|| request.headers().get("idempotency-key"))
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let decision = match limiter
+        .admit(ManagedRateLimitRequest {
+            operation,
+            resource,
+            operation_id,
+            source: ManagedRequestSource::Http,
+        })
+        .await
+    {
+        Ok(decision) => decision,
+        Err(error) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse::new("api_error", error.to_string())),
+            )
+                .into_response();
+        }
+    };
     let mut response = if decision.allowed {
         next.run(request).await
     } else {
@@ -175,7 +238,7 @@ pub async fn enforce_managed_rate_limit(
     response
 }
 
-fn apply_headers(headers: &mut HeaderMap, decision: RateDecision) {
+fn apply_headers(headers: &mut HeaderMap, decision: ManagedRateLimitDecision) {
     insert_header(
         headers,
         "anthropic-ratelimit-requests-limit",
@@ -207,34 +270,36 @@ fn insert_header(headers: &mut HeaderMap, name: &'static str, value: u64) {
     }
 }
 
-fn classify(method: &Method, path: &str) -> Option<ManagedOperation> {
+fn classify(method: &Method, path: &str) -> Option<(ManagedOperation, &'static str)> {
     let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
-    if !is_managed_family(&segments) {
-        return None;
-    }
+    let resource = managed_family(&segments)?;
     if matches!(*method, Method::GET | Method::HEAD) {
-        return Some(ManagedOperation::Read);
+        return Some((ManagedOperation::Read, resource));
     }
-    (*method == Method::POST && is_create_endpoint(&segments)).then_some(ManagedOperation::Create)
+    (*method == Method::POST && is_create_endpoint(&segments))
+        .then_some((ManagedOperation::Create, resource))
 }
 
-fn is_managed_family(segments: &[&str]) -> bool {
-    segments.first() == Some(&"v1")
-        && matches!(
-            segments.get(1).copied(),
-            Some(
-                "agents"
-                    | "sessions"
-                    | "environments"
-                    | "deployments"
-                    | "deployment_runs"
-                    | "vaults"
-                    | "memory_stores"
-                    | "skills"
-                    | "user_profiles"
-                    | "dreams"
-            )
-        )
+fn managed_family(segments: &[&str]) -> Option<&'static str> {
+    if segments.first() != Some(&"v1") {
+        return None;
+    }
+    match segments.get(1).copied()? {
+        "agents" => Some("agents"),
+        "sessions" => Some("sessions"),
+        "environments" => Some("environments"),
+        "deployments" => Some("deployments"),
+        "deployment_runs" => Some("deployment_runs"),
+        "vaults" => Some("vaults"),
+        "memory_stores" => Some("memory_stores"),
+        "skills" => Some("skills"),
+        "user_profiles" => Some("user_profiles"),
+        "dreams" => Some("dreams"),
+        "files" => Some("files"),
+        "models" => Some("models"),
+        "tunnels" => Some("tunnels"),
+        _ => None,
+    }
 }
 
 fn is_create_endpoint(segments: &[&str]) -> bool {
@@ -254,6 +319,9 @@ fn is_create_endpoint(segments: &[&str]) -> bool {
             | ["v1", "memory_stores", _, "memories"]
             | ["v1", "skills", _, "versions"]
             | ["v1", "user_profiles", _, "enrollment_url"]
+            | ["v1", "files"]
+            | ["v1", "tunnels"]
+            | ["v1", "tunnels", _, "certificates"]
     )
 }
 
@@ -282,7 +350,7 @@ mod tests {
         // | C1 | Managed | GET/HEAD retrieve/list/stream | Read |
         // | C2 | Managed | POST exact collection/nested Create | Create |
         // | C3 | Managed | update/archive/action/delete | pass through |
-        // | C4 | Files, extension or non-Managed | any | pass through |
+        // | C4 | unknown extension or non-Managed | any | pass through |
         for path in [
             "/v1/agents",
             "/v1/sessions",
@@ -298,17 +366,23 @@ mod tests {
             "/v1/memory_stores/mem_1/memories",
             "/v1/skills/sk_1/versions",
             "/v1/user_profiles/usr_1/enrollment_url",
+            "/v1/files",
+            "/v1/tunnels",
+            "/v1/tunnels/tnl_1/certificates",
         ] {
             assert_eq!(
                 classify(&Method::POST, path),
-                Some(ManagedOperation::Create),
+                Some((
+                    ManagedOperation::Create,
+                    path.trim_start_matches("/v1/").split('/').next().unwrap()
+                )),
                 "C2 {path}"
             );
         }
         for method in [Method::GET, Method::HEAD] {
             assert_eq!(
                 classify(&method, "/v1/sessions/ses_1/events/stream"),
-                Some(ManagedOperation::Read),
+                Some((ManagedOperation::Read, "sessions")),
                 "C1"
             );
         }
@@ -320,9 +394,14 @@ mod tests {
         ] {
             assert_eq!(classify(&Method::POST, path), None, "C3 {path}");
         }
-        for path in ["/v1/files", "/v1/models", "/healthz"] {
+        for path in ["/v1/extensions", "/healthz"] {
             assert_eq!(classify(&Method::GET, path), None, "C4 {path}");
         }
+        assert_eq!(
+            classify(&Method::GET, "/v1/models"),
+            Some((ManagedOperation::Read, "models")),
+            "C1 models"
+        );
     }
 
     #[test]
@@ -377,7 +456,7 @@ mod tests {
         async fn accepted(body: String) -> String {
             body
         }
-        let limiter = Arc::new(ManagedRateLimiter::with_limits(
+        let limiter: Arc<dyn ManagedRequestLimiter> = Arc::new(ManagedRateLimiter::with_limits(
             "org_shared",
             ManagedRateLimits {
                 create_per_minute: 2,

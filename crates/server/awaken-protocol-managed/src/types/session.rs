@@ -13,6 +13,57 @@
 
 use awaken_agent_contract::{AcpSessionConfiguration, agent::content::ContentBlock};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonetaryAmount {
+    pub amount: String,
+    pub currency: Currency,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Currency {
+    USD,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BudgetLimit {
+    Limit { max_list_cost: MonetaryAmount },
+}
+
+impl BudgetLimit {
+    pub fn max_list_cost_minor(&self) -> Result<u64, String> {
+        let Self::Limit { max_list_cost } = self;
+        if max_list_cost.amount.is_empty()
+            || (max_list_cost.amount.len() > 1 && max_list_cost.amount.starts_with('0'))
+            || !max_list_cost
+                .amount
+                .bytes()
+                .all(|byte| byte.is_ascii_digit())
+        {
+            return Err(
+                "max_list_cost.amount must be a canonical non-negative integer string".into(),
+            );
+        }
+        let amount = max_list_cost
+            .amount
+            .parse::<u64>()
+            .map_err(|_| "max_list_cost.amount exceeds the supported range".to_owned())?;
+        if amount == 0 {
+            return Err("max_list_cost.amount must be greater than zero".into());
+        }
+        Ok(amount)
+    }
+
+    pub fn from_minor(amount: u64) -> Self {
+        Self::Limit {
+            max_list_cost: MonetaryAmount {
+                amount: amount.to_string(),
+                currency: Currency::USD,
+            },
+        }
+    }
+}
 use serde_json::Value;
 
 use awaken_session_contract::AgentTool;
@@ -165,6 +216,8 @@ impl AgentRef {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SessionCreateParams {
     pub agent: AgentRef,
+    #[serde(default)]
+    pub budget: Option<BudgetLimit>,
     /// Events admitted atomically with Session creation. The state layer validates
     /// the entire collection before minting an id, then drives them through the
     /// same event command used by `POST .../events`.
@@ -210,6 +263,8 @@ pub struct SessionAgentUpdate {
 pub struct SessionUpdateParams {
     #[serde(default)]
     pub agent: Option<SessionAgentUpdate>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub budget: Option<Option<BudgetLimit>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub title: Option<Option<String>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
@@ -458,6 +513,8 @@ pub struct SessionThreadStats {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SessionThreadUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_creation: Option<SessionThreadCacheCreationUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
@@ -465,6 +522,10 @@ pub struct SessionThreadUsage {
     pub input_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_cost: Option<MonetaryAmount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUsage>,
 }
 
 /// `BetaManagedAgentsCacheCreationUsage`.
@@ -498,14 +559,32 @@ pub struct SessionThread {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SessionStats {}
 
-/// `BetaManagedAgentsSessionUsage` — a session's accumulated token usage. Zero
-/// until the first turn commits usage.
+/// `BetaManagedAgentsServerToolUsage`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ServerToolUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_fetch_requests: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_search_requests: Option<u64>,
+}
+
+/// `BetaManagedAgentsSessionUsage` — cumulative priced quantities.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Usage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_input_tokens: u64,
-    pub cache_creation_input_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<SessionThreadCacheCreationUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_cost: Option<MonetaryAmount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUsage>,
 }
 
 /// `BetaManagedAgentsSpanModelUsage` — token usage for a *single* model request
@@ -556,6 +635,7 @@ pub struct Session {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub agent: SessionAgent,
+    pub budget: Option<BudgetLimit>,
     pub environment_id: String,
     pub created_at: String,
     pub updated_at: String,
@@ -745,6 +825,7 @@ pub struct SendEventsResponse {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StopReason {
     EndTurn,
+    BudgetReached,
     RequiresAction { event_ids: Vec<String> },
     RetriesExhausted,
 }
@@ -985,6 +1066,8 @@ pub enum OutboundKind {
         metadata: std::collections::BTreeMap<String, String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         agent: Option<SessionAgent>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        budget: Option<Option<BudgetLimit>>,
     },
     /// A subagent child thread terminated (`session.thread_status_terminated`),
     /// e.g. when archived.
@@ -1459,10 +1542,16 @@ mod tests {
             is_error: None,
             model_usage: SpanModelUsage {
                 usage: Usage {
-                    input_tokens: 10,
-                    output_tokens: 20,
-                    cache_read_input_tokens: 0,
-                    cache_creation_input_tokens: 0,
+                    active_seconds: None,
+                    input_tokens: Some(10),
+                    output_tokens: Some(20),
+                    cache_read_input_tokens: Some(0),
+                    cache_creation: Some(SessionThreadCacheCreationUsage {
+                        ephemeral_1h_input_tokens: None,
+                        ephemeral_5m_input_tokens: Some(0),
+                    }),
+                    list_cost: None,
+                    server_tool_use: None,
                 },
                 speed: None,
             },

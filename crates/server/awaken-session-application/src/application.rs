@@ -61,6 +61,7 @@ pub struct SessionApplication {
     resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
+    managed_list_prices: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     sessions_repo: Arc<dyn ManagedSessionRepository>,
     lifecycle_notifier: Option<Arc<dyn LifecycleFactNotifier>>,
     local_realization_owner: String,
@@ -123,6 +124,7 @@ impl SessionApplication {
             resource_purge_scheduler: None,
             resource_references: None,
             resource_files: None,
+            managed_list_prices: None,
             sessions_repo,
             lifecycle_notifier: None,
             local_realization_owner,
@@ -204,6 +206,23 @@ impl SessionApplication {
     #[must_use]
     pub(crate) fn session_repository(&self) -> &dyn ManagedSessionRepository {
         self.sessions_repo.as_ref()
+    }
+
+    pub async fn resolve_managed_list_price_snapshot(
+        &self,
+        request: awaken_session_contract::ManagedListPriceRequest,
+    ) -> Result<
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
+    > {
+        let provider = self.managed_list_prices.as_deref().ok_or_else(|| {
+            awaken_session_contract::ManagedListPriceError::Unavailable(
+                "no Managed list-price provider is configured".into(),
+            )
+        })?;
+        let snapshot = provider.resolve_snapshot(request.clone()).await?;
+        snapshot.validate(&request.model_refs)?;
+        Ok(snapshot)
     }
 
     /// Clone the durable aggregate port for Coordinator-side claim-fenced
@@ -325,6 +344,13 @@ impl SessionApplication {
         self.environments = source;
     }
 
+    pub fn set_managed_list_price_provider(
+        &mut self,
+        provider: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
+    ) {
+        self.managed_list_prices = Some(provider);
+    }
+
     pub fn set_lifecycle_notifier(&mut self, notifier: Arc<dyn LifecycleFactNotifier>) {
         self.lifecycle_notifier = Some(notifier);
     }
@@ -365,6 +391,56 @@ impl SessionApplication {
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) {
         self.config_source = Some(source);
+    }
+
+    /// Resolve the complete published multi-agent model roster before a
+    /// budgeted Session is committed. The executable catalog remains the only
+    /// Agent authority; this method merely projects its already-published
+    /// profiles into the price-snapshot request.
+    pub fn managed_session_model_refs(
+        &self,
+        workspace_id: &str,
+        root_agent_id: &str,
+        root_execution_model_ref: &str,
+    ) -> Result<Vec<String>, RunError> {
+        let mut models = std::collections::BTreeSet::from([root_execution_model_ref.to_owned()]);
+        let Some(source) = &self.config_source else {
+            return Ok(models.into_iter().collect());
+        };
+        let mut pending = source
+            .session_profile_in(workspace_id, root_agent_id)
+            .map(|profile| profile.delegate_ids)
+            .unwrap_or_default();
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(agent_id) = pending.pop() {
+            if !visited.insert(agent_id.clone()) {
+                continue;
+            }
+            let profile = source
+                .session_profile_in(workspace_id, &agent_id)
+                .ok_or_else(|| {
+                    RunError::bad_request(format!(
+                        "budget_price_roster_unavailable: agent `{agent_id}` has no executable profile"
+                    ))
+                })?;
+            let model = profile
+                .execution_model_ref
+                .or(profile.model)
+                .filter(|model| !model.trim().is_empty())
+                .ok_or_else(|| {
+                    RunError::bad_request(format!(
+                        "budget_price_roster_unavailable: agent `{agent_id}` has no model"
+                    ))
+                })?;
+            models.insert(model);
+            pending.extend(profile.delegate_ids);
+            if visited.len() > 25 {
+                return Err(RunError::bad_request(
+                    "budget_price_roster_unavailable: multi-agent roster exceeds 25 agents",
+                ));
+            }
+        }
+        Ok(models.into_iter().collect())
     }
 
     pub fn set_resource_catalog(

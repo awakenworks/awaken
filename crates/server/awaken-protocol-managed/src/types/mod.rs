@@ -41,6 +41,7 @@ pub mod page;
 mod presence;
 pub mod resource;
 pub mod session;
+pub mod tunnel;
 pub mod user_profile;
 pub mod vault;
 

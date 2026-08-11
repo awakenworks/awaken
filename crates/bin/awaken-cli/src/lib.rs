@@ -69,6 +69,7 @@ pub use console_assets::mount_with_navigation as mount_console_with_navigation;
 pub use control::{
     build_control_router, build_control_router_with_publication_resolver,
     build_control_router_with_publication_resolver_and_web_search, prepare_control_process,
+    prepare_control_process_with_managed_services,
     prepare_control_process_with_publication_resolver_and_web_search,
     prepare_control_process_with_publication_resolver_web_search_and_lifecycle_delivery,
 };
@@ -76,6 +77,7 @@ use control_component::{control_component_for_process, prepare_control_routers};
 pub use deployment_process::migrate_deployment_schema;
 use deployment_process::prepare_runtime_process;
 use identity::identity_wiring;
+pub use managed_platform::ManagedServiceAdapters;
 use process_startup::{ProcessStartup, local_model_supply};
 #[cfg(test)]
 use process_stores::role_hosts_resources;
@@ -97,6 +99,7 @@ pub use awaken_control::{
     ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
 };
 mod live_runtime_capabilities;
+mod managed_platform;
 use live_runtime_capabilities::LiveRuntimeCapabilities;
 
 /// The two legal startup modes are deliberately disjoint: production
@@ -654,6 +657,22 @@ pub async fn prepare_all_in_one_process(
         Some(key),
         config::Role::AllInOne,
         PublicationModelSupply::PublishedProviders,
+        ManagedServiceAdapters::default(),
+    )
+    .await
+}
+
+pub async fn prepare_all_in_one_process_with_managed_services(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    managed_services: ManagedServiceAdapters,
+) -> Result<PreparedProcess, String> {
+    prepare_runtime_process(
+        deployment,
+        Some(key),
+        config::Role::AllInOne,
+        PublicationModelSupply::PublishedProviders,
+        managed_services,
     )
     .await
 }
@@ -669,6 +688,21 @@ pub async fn prepare_coordinator_process(
         None,
         config::Role::Coordinator,
         PublicationModelSupply::PublishedProviders,
+        ManagedServiceAdapters::default(),
+    )
+    .await
+}
+
+pub async fn prepare_coordinator_process_with_managed_services(
+    deployment: &config::ResolvedDeployment,
+    managed_services: ManagedServiceAdapters,
+) -> Result<PreparedProcess, String> {
+    prepare_runtime_process(
+        deployment,
+        None,
+        config::Role::Coordinator,
+        PublicationModelSupply::PublishedProviders,
+        managed_services,
     )
     .await
 }
@@ -703,6 +737,7 @@ async fn build_all_in_one_router_with_model_supply(model_supply: PublicationMode
         Some(&key),
         config::Role::AllInOne,
         model_supply,
+        ManagedServiceAdapters::default(),
     )
     .await
     .unwrap_or_else(|error| panic!("prepare all-in-one process: {error}"))
@@ -1044,8 +1079,10 @@ mod runtime_session_store_tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
+            budget: Default::default(),
             activity_epoch: 0,
             running_interval: None,
+            runtime_active_millis: 0,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),

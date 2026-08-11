@@ -219,6 +219,7 @@ impl DeploymentApplication {
                 .and_then(|schedule| next_occurrence(schedule, now)),
             schedule: command.schedule,
             vault_ids: command.vault_ids,
+            budget_max_list_cost_minor: command.budget_max_list_cost_minor,
             status: DeploymentStatus::Active,
             paused_reason: None,
             archived_at: None,
@@ -346,6 +347,9 @@ impl DeploymentApplication {
         }
         if let Some(value) = command.vault_ids {
             candidate.vault_ids = value.unwrap_or_default();
+        }
+        if let Some(value) = command.budget_max_list_cost_minor {
+            candidate.budget_max_list_cost_minor = value;
         }
         validate_record(&candidate)?;
         let current_had_schedule = current.schedule.is_some();
@@ -1145,6 +1149,7 @@ fn launch_for(record: &DeploymentRecord, deployment_id: &str, run_id: &str) -> D
         initial_events: record.initial_events.clone(),
         resources: record.resources.clone(),
         vault_ids: record.vault_ids.clone(),
+        budget_max_list_cost_minor: record.budget_max_list_cost_minor,
     }
 }
 
@@ -1173,6 +1178,7 @@ mod tests {
                 upcoming_runs_at: Vec::new(),
             }),
             vault_ids: Vec::new(),
+            budget_max_list_cost_minor: None,
         }
     }
 

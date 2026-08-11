@@ -7,6 +7,7 @@ pub(super) async fn prepare_runtime_process(
     key: Option<&[u8; 32]>,
     role: config::Role,
     model_supply: PublicationModelSupply,
+    managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
     debug_assert!(matches!(
         role,
@@ -117,6 +118,7 @@ pub(super) async fn prepare_runtime_process(
             control_service_authenticator: None,
             control_service,
             additional_lifecycle_delivery: None,
+            managed_services,
         },
         None,
     )

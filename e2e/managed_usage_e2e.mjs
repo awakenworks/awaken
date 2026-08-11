@@ -49,7 +49,7 @@ async function main() {
     assert.equal(u.input_tokens, PER_TURN_INPUT, `1 turn input_tokens: ${JSON.stringify(u)}`);
     assert.equal(u.output_tokens, FAKE_USAGE.output_tokens, `1 turn output_tokens: ${JSON.stringify(u)}`);
     assert.equal(u.cache_read_input_tokens, FAKE_USAGE.cache_read_input_tokens, `1 turn cache_read: ${JSON.stringify(u)}`);
-    assert.equal(u.cache_creation_input_tokens, FAKE_USAGE.cache_creation_input_tokens, `1 turn cache_creation: ${JSON.stringify(u)}`);
+    assert.equal(u.cache_creation?.ephemeral_5m_input_tokens, FAKE_USAGE.cache_creation_input_tokens, `1 turn cache_creation: ${JSON.stringify(u)}`);
     pass(`session.usage after 1 turn = ${JSON.stringify(u)} (exact, incl. cache)`);
 
     // Second turn → every field accumulates across turns.
@@ -58,7 +58,7 @@ async function main() {
     assert.equal(u.input_tokens, PER_TURN_INPUT * 2, `2 turns input_tokens accumulate: ${JSON.stringify(u)}`);
     assert.equal(u.output_tokens, FAKE_USAGE.output_tokens * 2, `2 turns output_tokens accumulate: ${JSON.stringify(u)}`);
     assert.equal(u.cache_read_input_tokens, FAKE_USAGE.cache_read_input_tokens * 2, `2 turns cache_read accumulate: ${JSON.stringify(u)}`);
-    assert.equal(u.cache_creation_input_tokens, FAKE_USAGE.cache_creation_input_tokens * 2, `2 turns cache_creation accumulate: ${JSON.stringify(u)}`);
+    assert.equal(u.cache_creation?.ephemeral_5m_input_tokens, FAKE_USAGE.cache_creation_input_tokens * 2, `2 turns cache_creation accumulate: ${JSON.stringify(u)}`);
     pass(`session.usage accumulates across turns = ${JSON.stringify(u)}`);
   });
 

@@ -26,8 +26,10 @@ pub use session_services::{
 };
 include!("application.rs");
 mod activity;
+mod budget;
 mod live_inbox;
 pub use activity::{SessionActivityError, SessionMessageOutcome};
+pub use budget::BudgetSettlementOutcome;
 mod continuation;
 mod contribution;
 mod creation;

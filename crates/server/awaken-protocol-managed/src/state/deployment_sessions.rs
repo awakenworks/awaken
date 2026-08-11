@@ -177,6 +177,7 @@ mod tests {
             initial_events: Vec::new(),
             resources: Vec::new(),
             vault_ids: Vec::new(),
+            budget_max_list_cost_minor: None,
         };
         let missing = Arc::new(ManagedState::new(RehydrateFake::default()));
         let missing_launcher = crate::ManagedDeploymentSessionLauncher::new(missing);
@@ -229,6 +230,7 @@ mod tests {
             initial_events: Vec::new(),
             resources: Vec::new(),
             vault_ids: Vec::new(),
+            budget_max_list_cost_minor: None,
         };
 
         assert!(matches!(

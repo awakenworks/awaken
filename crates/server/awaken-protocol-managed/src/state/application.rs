@@ -218,6 +218,8 @@ mod tests {
             tools: Default::default(),
             activity_epoch: 0,
             running_interval: None,
+            runtime_active_millis: 0,
+            budget: Default::default(),
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
@@ -446,6 +448,7 @@ mod tests {
             .create_session(
                 crate::types::SessionCreateParams {
                     agent: crate::types::AgentRef::Id("assistant".into()),
+                    budget: None,
                     initial_events: Vec::new(),
                     application_contribution_required: true,
                     environment_id: None,
@@ -522,6 +525,7 @@ mod tests {
             .create_session(
                 crate::types::SessionCreateParams {
                     agent: crate::types::AgentRef::Id("assistant".into()),
+                    budget: None,
                     initial_events: Vec::new(),
                     application_contribution_required: true,
                     environment_id: None,

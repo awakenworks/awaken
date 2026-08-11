@@ -187,6 +187,8 @@ pub struct DeploymentRecord {
     pub resources: Vec<Value>,
     pub schedule: Option<DeploymentSchedule>,
     pub vault_ids: Vec<String>,
+    #[serde(default)]
+    pub budget_max_list_cost_minor: Option<u64>,
     pub status: DeploymentStatus,
     pub paused_reason: Option<DeploymentPauseReason>,
     pub archived_at: Option<String>,
@@ -229,6 +231,7 @@ pub struct CreateDeploymentCommand {
     pub resources: Vec<Value>,
     pub schedule: Option<DeploymentSchedule>,
     pub vault_ids: Vec<String>,
+    pub budget_max_list_cost_minor: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -242,6 +245,7 @@ pub struct UpdateDeploymentCommand {
     pub resources: Option<Option<Vec<Value>>>,
     pub schedule: Option<Option<DeploymentSchedule>>,
     pub vault_ids: Option<Option<Vec<String>>>,
+    pub budget_max_list_cost_minor: Option<Option<u64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -255,6 +259,7 @@ pub struct DeploymentLaunch {
     pub initial_events: Vec<Value>,
     pub resources: Vec<Value>,
     pub vault_ids: Vec<String>,
+    pub budget_max_list_cost_minor: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

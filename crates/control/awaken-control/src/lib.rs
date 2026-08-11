@@ -237,6 +237,10 @@ pub struct ControlRouterInput {
     pub data_subject_org: String,
     /// Control-owned Environment definition and sandbox-policy routes.
     pub environment_router: Router,
+    /// Cloud-only Tunnel command/query port. Kept optional so open/self-hosted
+    /// compositions expose no local Tunnel behavior.
+    pub managed_tunnel_application:
+        Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
     /// The embedded IAM guard, when enabled by typed deployment identity mode.
     pub iam: Option<Arc<ManagementAuthz>>,
     /// Canonical local setup/session routes, mounted outside the protected
@@ -275,6 +279,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         data_subject_application,
         data_subject_org,
         environment_router,
+        managed_tunnel_application,
         iam,
         local_browser_auth,
         remote_iam,
@@ -391,6 +396,9 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         .merge(workspace_context)
         .merge(capabilities)
         .merge(environment_router);
+    if let Some(application) = managed_tunnel_application {
+        mgmt = mgmt.merge(awaken_protocol_managed::tunnels_router(application));
+    }
     if let Some(iam) = iam.as_ref() {
         mgmt = mgmt.merge(crate::authz::token_router(iam.clone()));
     }

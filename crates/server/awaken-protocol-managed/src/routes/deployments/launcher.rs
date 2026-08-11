@@ -8,7 +8,7 @@ use awaken_deployment_application::{
 
 pub struct ManagedDeploymentSessionLauncher {
     state: Arc<crate::ManagedState>,
-    rate_limiter: Option<Arc<crate::ManagedRateLimiter>>,
+    rate_limiter: Option<Arc<dyn crate::ManagedRequestLimiter>>,
 }
 
 impl ManagedDeploymentSessionLauncher {
@@ -21,7 +21,7 @@ impl ManagedDeploymentSessionLauncher {
     }
 
     #[must_use]
-    pub fn with_rate_limiter(mut self, limiter: Arc<crate::ManagedRateLimiter>) -> Self {
+    pub fn with_rate_limiter(mut self, limiter: Arc<dyn crate::ManagedRequestLimiter>) -> Self {
         self.rate_limiter = Some(limiter);
         self
     }
@@ -60,14 +60,28 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 });
             }
         };
-        if self
-            .rate_limiter
-            .as_ref()
-            .is_some_and(|limiter| !limiter.admit_internal_session_create())
-        {
-            return failed(RunError::SessionRateLimitedError {
-                message: "organization Session creation rate limit exceeded".into(),
-            });
+        if let Some(limiter) = &self.rate_limiter {
+            match limiter
+                .admit(crate::ManagedRateLimitRequest {
+                    operation: crate::ManagedOperation::Create,
+                    resource: "sessions",
+                    operation_id: Some(request.deployment_run_id.clone()),
+                    source: crate::ManagedRequestSource::Deployment,
+                })
+                .await
+            {
+                Ok(decision) if !decision.allowed => {
+                    return failed(RunError::SessionRateLimitedError {
+                        message: "organization Session creation rate limit exceeded".into(),
+                    });
+                }
+                Err(error) => {
+                    return DeploymentLaunchOutcome::Unavailable {
+                        message: error.to_string(),
+                    };
+                }
+                Ok(_) => {}
+            }
         }
         if request.environment_id != "env_local" {
             match self
@@ -159,6 +173,9 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 skills: None,
                 model: None,
             }),
+            budget: request
+                .budget_max_list_cost_minor
+                .map(crate::types::BudgetLimit::from_minor),
             initial_events,
             application_contribution_required: false,
             environment_id: Some(request.environment_id),

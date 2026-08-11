@@ -894,8 +894,22 @@ impl RunError {
 /// The session-level token usage the managed wire reports (the port's neutral shape;
 /// the runtime's per-model `TokenUsage` totals are mapped onto this by the host, so
 /// this crate needs no runtime-plane type). Cumulative across all turns and models.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+    /// Exact per-model attribution used by list-cost accounting. Protocol
+    /// projections continue to expose the cumulative totals above.
+    pub by_model: std::collections::BTreeMap<String, SessionModelUsage>,
+    pub active_seconds: u64,
+    pub web_fetch_requests: u64,
+    pub web_search_requests: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionModelUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,

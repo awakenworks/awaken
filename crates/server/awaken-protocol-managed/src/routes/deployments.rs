@@ -205,6 +205,9 @@ fn project_deployment(view: DeploymentView) -> Result<Deployment, WireError> {
         id: view.id,
         object_type: "deployment",
         agent: crate::types::agent::AgentReference::new(record.agent.id, record.agent.version),
+        budget: record
+            .budget_max_list_cost_minor
+            .map(crate::types::BudgetLimit::from_minor),
         archived_at: record.archived_at,
         created_at: record.created_at,
         updated_at: record.updated_at,
@@ -300,6 +303,11 @@ async fn create_deployment(
         resources: values(params.resources)?,
         schedule: params.schedule.map(application_schedule).transpose()?,
         vault_ids: params.vault_ids,
+        budget_max_list_cost_minor: params
+            .budget
+            .map(|budget| budget.max_list_cost_minor())
+            .transpose()
+            .map_err(invalid)?,
     };
     application
         .create(command)
@@ -435,6 +443,11 @@ async fn update_deployment(
             .map(|schedule| schedule.map(application_schedule).transpose())
             .transpose()?,
         vault_ids: params.vault_ids,
+        budget_max_list_cost_minor: match params.budget {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(budget)) => Some(Some(budget.max_list_cost_minor().map_err(invalid)?)),
+        },
     };
     application
         .update(&request_scope(&scope), &id, command)

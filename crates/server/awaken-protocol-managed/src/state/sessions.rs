@@ -39,6 +39,10 @@ impl ManagedState {
         record.session.archived_at = persisted.archived_at().map(str::to_owned);
         record.session.agent.tools = crate::project::managed_tools(&persisted.tools);
         record.session.agent.mcp_servers = mcp_servers;
+        record.session.budget = persisted
+            .budget
+            .max_list_cost_minor()
+            .map(crate::types::BudgetLimit::from_minor);
         record.resource_state = persisted.resources.clone();
         Ok(())
     }
@@ -495,6 +499,41 @@ impl ManagedState {
             .as_ref()
             .and_then(|view| view.execution_model_ref.clone())
             .unwrap_or_else(|| resolved_model.id.clone());
+        let budget_state = match &req.budget {
+            Some(budget) => {
+                let max_list_cost_minor = budget
+                    .max_list_cost_minor()
+                    .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
+                let occurred_at_unix_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let model_refs = self
+                    .application
+                    .managed_session_model_refs(&owner_scope, &agent_id, &execution_model_ref)
+                    .map_err(StateError::Run)?;
+                let snapshot = self
+                    .application
+                    .resolve_managed_list_price_snapshot(
+                        awaken_session_contract::ManagedListPriceRequest {
+                            occurred_at_unix_ms,
+                            model_refs,
+                        },
+                    )
+                    .await
+                    .map_err(|error| {
+                        let run = match error {
+                            awaken_session_contract::ManagedListPriceError::Unavailable(_) => {
+                                RunError::unavailable(error.to_string())
+                            }
+                            _ => RunError::bad_request(error.to_string()),
+                        };
+                        StateError::Run(run)
+                    })?;
+                awaken_session_contract::SessionBudgetState::active(max_list_cost_minor, snapshot)
+            }
+            None => awaken_session_contract::SessionBudgetState::Absent,
+        };
         let application_required = req.application_contribution_required;
         let creation_intent = awaken_session_contract::SessionCreationIntent {
             control: awaken_session_contract::ControlSessionCreationInputs {
@@ -532,6 +571,7 @@ impl ManagedState {
                 title: req.title.clone(),
                 metadata: req.metadata.clone(),
                 tools: effective_tools.clone(),
+                budget: budget_state,
             })
             .await
             .map_err(Self::map_creation_error)?;
@@ -567,6 +607,10 @@ impl ManagedState {
                     |view| project::agent_multiagent_ids(&view.delegate_ids),
                 ),
             },
+            budget: persisted
+                .budget
+                .max_list_cost_minor()
+                .map(crate::types::BudgetLimit::from_minor),
             environment_id: environment_id.clone(),
             created_at: PROCESSED_AT.to_string(),
             updated_at: PROCESSED_AT.to_string(),
@@ -653,6 +697,10 @@ impl ManagedState {
         persisted: Option<PersistedSession>,
     ) -> Result<Session, StateError> {
         let caps = self.application.capabilities_for(id);
+        let projected_budget = persisted
+            .as_ref()
+            .and_then(|session| session.budget.max_list_cost_minor())
+            .map(crate::types::BudgetLimit::from_minor);
         let default_tools = project::agent_tools(&caps);
         let (
             agent_id,
@@ -725,6 +773,7 @@ impl ManagedState {
                 skills: project::agent_skills(&caps),
                 multiagent: project::agent_multiagent(&caps),
             },
+            budget: projected_budget,
             environment_id,
             created_at: PROCESSED_AT.to_string(),
             updated_at: PROCESSED_AT.to_string(),

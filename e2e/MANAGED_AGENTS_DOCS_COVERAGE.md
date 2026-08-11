@@ -13,7 +13,7 @@ coverage on top of that structural conformance.
 
 ## Exhaustive contract baseline (2026-07-29)
 
-The current English sitemap contains 26 Managed Agents pages. This document is the
+The pinned English sitemap contains 28 Managed Agents pages. This document is the
 single docs-driven coverage owner for all of them. `PROTOCOL_COMPATIBILITY_TEST_DESIGN.md`
 continues to own only the cross-protocol normalization method; tests must not duplicate
 the Managed state machine there or create one suite per documentation page.
@@ -27,7 +27,7 @@ cross-module contract, so it does not duplicate the state-machine suite.
 ### Page-by-page traceability (official sitemap snapshot: 2026-07-30)
 
 This is the canonical page inventory. The offline docs gate checks that these exact
-26 official slugs occur once, every row names executable evidence, and every row
+28 official slugs occur once, every row names executable evidence, and every row
 records a test-design method. `✅` means Awaken-owned behavior is executable locally;
 `◇` means the page also contains Anthropic-hosted infrastructure, Console UX, SDK
 client logic, branding, or operator responsibilities that Awaken cannot truthfully
@@ -36,6 +36,7 @@ execute, while the local API/security boundary is still covered.
 | Official page | Contract and scope | Executable evidence | Test design / status |
 |---|---|---|---|
 | [agent-setup](https://platform.claude.com/docs/en/managed-agents/agent-setup) | Agent defaults; model/effort; replace/clear/metadata merge; optimistic version; no-op; versions; frozen rosters; archive terminality | `management_agents_e2e.mjs`, `agent_publication_truth_e2e.ts`, `managed_agent_model_inherit_e2e.mjs` | Decision B; state transition + CAS + null/omit/empty partitions ✅ |
+| [budgets](https://platform.claude.com/docs/en/managed-agents/budgets) | Session/Deployment hard list-cost ceiling; immutable exact price snapshot; cumulative usage; one-way removal; threshold admission and budget-reached lifecycle | `management_sessions_family_e2e.mjs`, protocol `budget.rs`, Session application `budget.rs` | Exact integer cause/effect + threshold/replay/update/removal decision table ✅ |
 | [cloud-sandboxes-reference](https://platform.claude.com/docs/en/managed-agents/cloud-sandboxes-reference) | Cloud configuration and fail-closed provisioning; Anthropic's exact Ubuntu image, CPU/RAM/disk inventory is external infrastructure | `management_environments_e2e.mjs`, `managed_container_agent_e2e.mjs`, `sandbox_provisioning_e2e.mjs` | Config equivalence + real provider success/failure; hosted inventory explicitly non-applicable ◇ |
 | [define-outcomes](https://platform.claude.com/docs/en/managed-agents/define-outcomes) | Rubric admission; one active outcome; iterations/spans; satisfied/revision/max/failed/interrupted terminals; output scope | `managed_outcome_e2e.mjs`, `managed_outcome_lifecycle_e2e.mjs`, `managed_outcome_runtime_matrix_e2e.ts` | State-machine transition/pairing + boundary 1..20; G1-G4/H8 ✅ |
 | [dreams](https://platform.claude.com/docs/en/managed-agents/dreams) | Create/retrieve/list/cancel/archive; frozen JSONL with bounded retention; read-only inputs/new writable output; usage/errors/limits; mid-run input invalidation; automatic policy uses same job path | `managed_dream_e2e.ts`, protocol `tests/dreams.rs`, server `managed_dream_e2e.rs` | Dream lifecycle + failure injection + cleanup/restart + official SDK ✅ |
@@ -44,6 +45,7 @@ execute, while the local API/security boundary is still covered.
 | [files](https://platform.claude.com/docs/en/managed-agents/files) | Upload/download; create-time/live mounts; path defaults/parents; read-only inputs; copy identity; resource lifecycle/authorization | `managed_resources_api_e2e.mjs`, `management_files_models_e2e.mjs`, `managed_resource_mount_e2e.mjs`, `managed_resource_api_edge_e2e.mjs` | Union/path/boundary + authz + sandbox observation; Anthropic-only upload metadata noted ◇ |
 | [github](https://platform.claude.com/docs/en/managed-agents/github) | Token non-disclosure; repository mount/checkout; running-session credential rotation without repository replacement; clone/MCP use | `managed_git_repo_e2e.mjs`, `managed_resource_lifecycle_e2e.mjs`, `secret_nonleak_e2e.mjs`, `managed_full_chain_e2e.mjs` | Secret-flow + lifecycle mutation + real clone partitions ✅ |
 | [mcp-connector](https://platform.claude.com/docs/en/managed-agents/mcp-connector) | URL/name/count/reference validation; normalization; tool filters/policy; vault auth; typed retry/error; reconnect; oversized spill | `managed_mcp_e2e.ts`, `management_mcp_e2e.mjs`, `management_agents_e2e.mjs`, `managed_tool_result_e2e.mjs` | URL/cardinality/reference partitions + D2-D5 + failure taxonomy ✅ |
+| [mcp-tunnels](https://platform.claude.com/docs/en/managed-agents/mcp-tunnels) | Research-preview Tunnel/Certificate wire belongs to Awaken; domain/token/certificate/transport custody and lifecycle are Cloud-only | `management_tunnels_contract_e2e.mjs`, protocol `tunnels.rs`, Cloud Tunnel tests | SDK method/path/header contract locally; aggregate, secret and failure decision tables on Cloud Full target ◇ |
 | [memory](https://platform.claude.com/docs/en/managed-agents/memory) | Exclusive beta; 100KiB/2000 heads; max 8 attachments/4096-char guidance; RO/RW; segment prefix/depth/basic/full; CAS/history/redaction/lifecycle | `managed_memory_repository_durable_e2e.mjs`, `management_memory_stores_e2e.mjs`, `managed_memory_extraction_durable_e2e.mjs`, protocol `session_resources.rs` | ML1-ML7/MC1-MC4/M1-M4; boundary + CAS + restart + mount denial ✅ |
 | [migration](https://platform.claude.com/docs/en/managed-agents/migration) | Messages/Agent-SDK mapping to durable Agent/Environment/Session/events; built-in vs client tools; idle; pinning; resources/vaults/policies | `managed_full_lifecycle_e2e.mjs`, `managed_custom_e2e.mjs`, `management_agents_e2e.mjs`, `management_vaults_family_e2e.mjs` | End-to-end mapping + differential official-SDK DTO check; client-only planning/max-turns excluded ◇ |
 | [multiagent-orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration) | Shared sandbox/vault but isolated persistent threads; agent-scoped config; self; frozen version roster; one level; max 20; follow-up/archive/interrupt | `managed_delegation_e2e.mjs`, `management_agents_e2e.mjs`, protocol thread-selector tests | Roster 1/20/21 + nested/missing/archived partitions; thread state transitions ✅ |

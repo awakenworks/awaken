@@ -104,6 +104,7 @@ fn creation_command(
         title: None,
         metadata: Default::default(),
         tools: Default::default(),
+        budget: Default::default(),
     }
 }
 

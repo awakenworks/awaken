@@ -130,6 +130,19 @@ impl ManagedState {
         self
     }
 
+    /// Inject the sole versioned Managed reference-price authority. Budgeted
+    /// Session creation fails closed when this provider is absent.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_managed_list_price_provider(
+        mut self,
+        provider: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
+    ) -> Self {
+        self.application_mut()
+            .set_managed_list_price_provider(provider);
+        self
+    }
+
     /// Wire recoverable physical cleanup scheduling. Authorization has already
     /// completed at the edge; this service receives resource identity only.
     #[cfg(any(test, feature = "test-support"))]

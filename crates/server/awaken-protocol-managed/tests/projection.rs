@@ -165,7 +165,7 @@ impl SessionRuntime for ScriptFake {
         Err(RunError::internal("no outcome"))
     }
     async fn session_usage(&self, _t: &str) -> Result<SessionUsage, RunError> {
-        Ok(self.usage)
+        Ok(self.usage.clone())
     }
     fn model(&self) -> String {
         "test-model".into()
@@ -335,7 +335,7 @@ async fn a_compacted_turn_projects_the_compaction_marker() {
 // --- CE: usage accounting ----------------------------------------------------
 
 /// The session's `usage` object accumulates from the runtime's committed tally: a
-/// fresh session is zero, and after a turn a GET reflects the runtime's counts
+/// fresh session omits optional counters, and after a turn a GET reflects the runtime's counts
 /// (each wire field mapped from the neutral `SessionUsage`, none transposed).
 #[tokio::test]
 async fn session_usage_reflects_the_runtime_tally() {
@@ -344,13 +344,14 @@ async fn session_usage_reflects_the_runtime_tally() {
         output_tokens: 45,
         cache_read_tokens: 30,
         cache_creation_tokens: 12,
+        ..Default::default()
     };
     let app = router(Arc::new(ManagedState::new(
         ScriptFake::new(|| ended(vec![assistant_text("a", "hi")])).with_usage(usage),
     )));
     let id = create(&app).await;
 
-    // Zero until the first turn commits usage.
+    // Optional until the first turn commits usage, matching the official DTO.
     let before = json_call(
         &app,
         "GET",
@@ -358,7 +359,7 @@ async fn session_usage_reflects_the_runtime_tally() {
         serde_json::Value::Null,
     )
     .await;
-    assert_eq!(before["usage"]["input_tokens"], 0);
+    assert!(before["usage"]["input_tokens"].is_null());
 
     send_user(&app, &id, "go").await;
     let after = json_call(
@@ -370,9 +371,12 @@ async fn session_usage_reflects_the_runtime_tally() {
     .await;
     assert_eq!(after["usage"]["input_tokens"], 120);
     assert_eq!(after["usage"]["output_tokens"], 45);
-    // The neutral cache_read/cache_creation map onto the SDK's prefixed field names.
+    // The neutral cache fields map onto the official nested cache-creation shape.
     assert_eq!(after["usage"]["cache_read_input_tokens"], 30);
-    assert_eq!(after["usage"]["cache_creation_input_tokens"], 12);
+    assert_eq!(
+        after["usage"]["cache_creation"]["ephemeral_5m_input_tokens"],
+        12
+    );
 }
 
 // --- CE: all-empty-text assistant message dropped ----------------------------

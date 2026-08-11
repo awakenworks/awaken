@@ -42,29 +42,10 @@ const surfaces = [
   },
   {
     package: '@anthropic-ai/sdk',
-    roots: [
-      'resources/beta/agents.d.ts',
-      'resources/beta/agents/versions.d.ts',
-      'resources/beta/environments.d.ts',
-      'resources/beta/environments/work.d.ts',
-      'resources/beta/deployments.d.ts',
-      'resources/beta/deployment-runs.d.ts',
-      'resources/beta/dreams.d.ts',
-      'resources/beta/sessions.d.ts',
-      'resources/beta/sessions/events.d.ts',
-      'resources/beta/sessions/resources.d.ts',
-      'resources/beta/sessions/threads.d.ts',
-      'resources/beta/sessions/threads/events.d.ts',
-      'resources/beta/files.d.ts',
-      'resources/beta/memory-stores.d.ts',
-      'resources/beta/memory-stores/memories.d.ts',
-      'resources/beta/memory-stores/memory-versions.d.ts',
-      'resources/beta/skills.d.ts',
-      'resources/beta/skills/versions.d.ts',
-      'resources/beta/vaults.d.ts',
-      'resources/beta/vaults/credentials.d.ts',
-      'resources/beta/user-profiles.d.ts',
-    ],
+    // The SDK's Beta resource root is the declaration oracle. Its import
+    // closure automatically brings every present and future resource family
+    // into this gate; a new family therefore fails until it has one owner.
+    roots: ['resources/beta/beta.d.ts'],
     rules: [
       [
         /^resources\/beta\/agents\/versions\.d\.ts$/,
@@ -85,13 +66,17 @@ const surfaces = [
       [/resources\/beta\/dreams/, 'managed_dream_e2e.ts'],
       [/resources\/beta\/sessions/, 'management_sessions_family_e2e.mjs'],
       [/resources\/beta\/files/, 'management_files_models_e2e.mjs'],
+      [/resources\/beta\/models/, 'management_files_models_e2e.mjs'],
       [/resources\/beta\/memory-stores/, 'management_memory_stores_e2e.mjs'],
       [/resources\/beta\/skills/, 'management_skills_e2e.mjs'],
       [/resources\/beta\/vaults/, 'management_vaults_family_e2e.mjs'],
       [/resources\/beta\/user-profiles/, 'management_user_profiles_e2e.mjs'],
+      [/resources\/beta\/tunnels/, 'management_tunnels_contract_e2e.mjs'],
+      [/resources\/beta\/webhooks/, 'managed_contract_guard_e2e.mjs'],
+      [/^resources\/beta\/beta\.d\.ts$/, 'managed_contract_guard_e2e.mjs'],
     ],
     exclusions: [[
-      /^(client|internal\/|core\/|lib\/|tools\/|pagination|resource|error|uploads|version|index|resources\/messages|resources\/models)/,
+      /^(client|internal\/|core\/|lib\/|tools\/|pagination|resource|error|uploads|version|index|resources\/messages|resources\/models|resources\/beta\/messages)/,
       'shared SDK client/runtime or non-Managed Messages/Models machinery; no Awaken Managed wire DTO',
     ]],
   },

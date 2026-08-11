@@ -2035,6 +2035,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: false,
                 environment_id: None,
@@ -2085,6 +2086,7 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
             .create_session(
                 awaken_protocol_managed::types::SessionCreateParams {
                     agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                    budget: None,
                     initial_events: Vec::new(),
                     application_contribution_required: required,
                     environment_id: None,
@@ -2171,6 +2173,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: true,
                 environment_id: None,
@@ -2224,6 +2227,7 @@ async fn create_session_commits_the_owned_fact_then_notifies_once() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: false,
                 environment_id: None,
@@ -2262,6 +2266,7 @@ async fn archive_session_commits_the_terminated_fact_once() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: false,
                 environment_id: None,
@@ -2315,6 +2320,7 @@ async fn delete_session_commits_the_deleted_fact_with_the_owner() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: false,
                 environment_id: None,
