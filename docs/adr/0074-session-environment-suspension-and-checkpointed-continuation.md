@@ -133,12 +133,13 @@ suspension or terminal release.
 
 | Owner | Responsibility | Does not own |
 |---|---|---|
-| Session aggregate/application | desired environment state, generation, operation intent, checkpoint reference, root CAS and recovery | provider bytes, host paths, live processes |
+| Session aggregate/application | desired environment state, generation, operation intent, checkpoint reference, Running interval, root CAS and recovery | provider bytes, host paths, live processes, pricing |
 | WorkQueue and Worker claim | durable effect delivery, retries, lease/epoch fencing | Session desired state |
 | Runtime Host | shared-environment admission gate, quiescence proof, projection teardown/rebuild | durable lifecycle decisions |
 | `SessionEnvironmentProvider` | the one live Sandbox instance and provider selection | a second Session registry |
 | `SandboxProvider` | create, adopt, checkpoint, restore and dispose effects | Session status and retention policy |
 | Resource and MCP owners | exact pins, write-back/flush, generation staging and publication | filesystem checkpoint lifecycle |
+| Lifecycle delivery composition | ordered delivery to every configured consumer through the one transactional outbox fact id | Session state, pricing, or a second outbox |
 
 The provisioning contract extends the canonical `SandboxProvider` port with
 `checkpoint_formats`, while the existing `WorkerManifest.checkpoint_formats`
@@ -146,6 +147,27 @@ and `PlacementRequirements.checkpoint_format` remain the scheduling source of
 truth. No second format field is added to `SandboxCapabilities`, and no
 checkpoint-provider registry is introduced. Admission rejects a provider or
 Worker that cannot honor the exact frozen format.
+
+The checkpoint byte request carries the existing Workspace owner scope plus
+the immutable generation creation and expiry timestamps. Deployment adapters
+use that scope only to resolve an existing placement and key-custody authority.
+No tenant registry, storage URL,
+credential, or pricing data enters the Session aggregate or provider contract.
+
+Customer-visible execution time is projected without adding another Session
+state machine. The aggregate retains one typed open Running interval across
+overlapping driving events. The transition to idle or terminal closes it and
+commits `session.runtime_interval_closed` through the existing
+`ManagedLifecycleFact` transactional outbox in the same root CAS. The fact is
+secret-free and pricing-neutral; downstream consumers may interpret it, but
+cannot author or repair Session execution state. Restore, checkpoint, queue,
+drain, and retention never open this interval.
+
+When a deployment has more than one lifecycle consumer, the Control composition
+uses the contract's one ordered `CompositeLifecycleFactDelivery`. Every
+consumer is attempted; any failure leaves the stable fact pending for replay.
+Each consumer must therefore be idempotent by fact id. This extends the one
+outbox delivery port and does not add a Billing poller or delivery ledger.
 
 The canonical deployment builder returns the provider together with its
 never-used capacity, creation mounts, and CacheVolume initializer. A
@@ -358,6 +380,8 @@ beside each case. Required layers are:
    restore into a distinct environment;
 7. active-active Coordinator, stale Worker lease, Worker crash, terminal race,
    and duplicate driving-event tests.
+8. lifecycle fan-out tests proving every consumer is attempted and any failure
+   keeps the single outbox fact retryable.
 
 Completion requires every decision-table rule, every state transition, and the
 before/during/after crash window of every external effect. Mock-only evidence is
@@ -414,11 +438,13 @@ validation and do not introduce a cross-policy inequality.
   terminal cleanup receipt pattern, and provider idempotent disposal after
   referenced-set authorization.
 - Modified: `SessionEnvironmentState`, Environment execution policy/snapshot,
-  Session activity and admission orchestration, `SessionRuntime`, Runtime Host
+  Session activity and admission orchestration, the existing lifecycle outbox,
+  `SessionRuntime`, Runtime Host
   background classification and quiescence, canonical `SandboxProvider`,
   existing Worker checkpoint-format admission, lease timing/fencing,
   referenced-set reconciliation, and terminal checkpoint deletion.
-- New: checkpoint/generation/operation value objects and receipts, provider
+- New: checkpoint/generation/operation value objects and receipts, the typed
+  pricing-neutral Session Running interval value, provider
   checkpoint/restore implementations, suspend/restore application
   reconciliation, provider conformance tests, and full-environment integration
   scenarios.

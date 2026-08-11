@@ -486,6 +486,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                 workspace_id: Some(request.workspace_id.clone()),
                 event_type: "session.status_terminated".into(),
                 timestamp: i64::try_from(now_ms() / 1_000).unwrap_or(i64::MAX),
+                runtime_interval: None,
             };
             self.sessions
                 .terminate_session(&preparation.session_id, &archived_at, fact)

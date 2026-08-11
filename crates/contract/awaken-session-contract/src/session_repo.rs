@@ -235,6 +235,11 @@ pub struct PersistedSession {
     /// a stale completion from settling a newer turn.
     #[serde(default)]
     pub activity_epoch: u64,
+    /// One continuous authoritative Running interval. It is persisted in the
+    /// aggregate so process recovery and overlapping driving events cannot
+    /// fabricate gaps or emit two customer-usage intervals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_interval: Option<crate::SessionRuntimeIntervalStart>,
     /// Durable, secret-free execution-environment phase. Opaque bindings are
     /// interpreted only by the runtime that produced them; this aggregate owns
     /// their transition, not their substrate meaning.
@@ -286,6 +291,7 @@ impl PersistedSession {
             metadata,
             tools,
             activity_epoch: 0,
+            running_interval: None,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
@@ -314,6 +320,41 @@ impl PersistedSession {
         }
         self.execution = next;
         Ok(true)
+    }
+
+    /// Open the one continuous Running interval after the execution transition
+    /// has committed its logical owner. Replays and overlapping activities join
+    /// the existing interval.
+    pub fn begin_runtime_interval(&mut self, started_at_unix_ms: u64) -> bool {
+        if self.execution != SessionExecutionState::Running || self.running_interval.is_some() {
+            return false;
+        }
+        self.running_interval = Some(crate::SessionRuntimeIntervalStart {
+            interval_id: crate::stable_fingerprint(&(
+                "session-runtime-interval-v1",
+                self.session_id.as_str(),
+                self.activity_epoch,
+            )),
+            activity_epoch: self.activity_epoch,
+            started_at_unix_ms,
+        });
+        true
+    }
+
+    /// Close and remove the current interval. The returned value is committed
+    /// through the same root mutation's lifecycle outbox.
+    pub fn close_runtime_interval(
+        &mut self,
+        ended_at_unix_ms: u64,
+    ) -> Option<crate::SessionRuntimeInterval> {
+        self.running_interval
+            .take()
+            .map(|start| crate::SessionRuntimeInterval {
+                interval_id: start.interval_id,
+                activity_epoch: start.activity_epoch,
+                started_at_unix_ms: start.started_at_unix_ms,
+                ended_at_unix_ms: ended_at_unix_ms.max(start.started_at_unix_ms),
+            })
     }
 
     /// Archive one visible Session while terminating further execution.
@@ -569,6 +610,10 @@ pub enum SessionMutationValidationError {
     TombstoneRevisionMismatch,
     #[error("lifecycle fact targets another Session")]
     LifecycleSessionMismatch,
+    #[error("Session Running interval is inconsistent with execution state")]
+    RuntimeIntervalStateMismatch,
+    #[error("lifecycle runtime interval payload is inconsistent")]
+    RuntimeIntervalFactMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -667,12 +712,44 @@ impl SessionMutation {
             }
             SessionMutationPayload::Replace(_) | SessionMutationPayload::Delete(_) => {}
         }
+        if let SessionMutationPayload::Replace(session) = &self.payload
+            && session.running_interval.is_some()
+            && session.execution != SessionExecutionState::Running
+        {
+            return Err(SessionMutationValidationError::RuntimeIntervalStateMismatch);
+        }
         if self
             .lifecycle_facts
             .iter()
             .any(|fact| fact.object_id != session_id)
         {
             return Err(SessionMutationValidationError::LifecycleSessionMismatch);
+        }
+        if self.lifecycle_facts.iter().any(|fact| {
+            match (&fact.runtime_interval, fact.event_type.as_str()) {
+                (None, "session.runtime_interval_closed") => true,
+                (Some(interval), event_type) => {
+                    event_type != "session.runtime_interval_closed"
+                        || fact.id != interval.interval_id
+                        || interval.ended_at_unix_ms < interval.started_at_unix_ms
+                }
+                (None, _) => false,
+            }
+        }) {
+            return Err(SessionMutationValidationError::RuntimeIntervalFactMismatch);
+        }
+        if self
+            .lifecycle_facts
+            .iter()
+            .any(|fact| fact.runtime_interval.is_some())
+            && matches!(
+                &self.payload,
+                SessionMutationPayload::Replace(session)
+                    if session.execution == SessionExecutionState::Running
+                        || session.running_interval.is_some()
+            )
+        {
+            return Err(SessionMutationValidationError::RuntimeIntervalFactMismatch);
         }
         Ok(next)
     }
@@ -817,6 +894,7 @@ mod mutation_tests {
             metadata: Default::default(),
             tools: Default::default(),
             activity_epoch: 0,
+            running_interval: None,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
@@ -1332,6 +1410,7 @@ mod mutation_tests {
                     workspace_id: Some("workspace".into()),
                     event_type: "session.updated".into(),
                     timestamp: 1,
+                    runtime_interval: None,
                 }],
             };
             assert_eq!(
@@ -1340,6 +1419,119 @@ mod mutation_tests {
                 "decision rule {}",
                 rule.id
             );
+        }
+    }
+
+    #[test]
+    fn runtime_interval_mutation_decision_table_is_fail_closed() {
+        // Cause/effect graph: C1=open interval with Running/non-Running state;
+        // C2=closed payload absent/present; C3=event kind and stable id exact;
+        // C4=end precedes start. R1 Running+C1 => accept aggregate; R2
+        // non-Running+C1 => reject; R3 exact C2+C3+!C4 => accept fact; R4-R6
+        // missing/wrong-id/reversed payload => reject. This is the root-store
+        // boundary, so no adapter can persist a billable parallel truth.
+        let expected_revision = SessionRevision(7);
+        let valid_interval = crate::SessionRuntimeInterval {
+            interval_id: "interval-1".into(),
+            activity_epoch: 3,
+            started_at_unix_ms: 100,
+            ended_at_unix_ms: 200,
+        };
+        let mutation = |session: PersistedSession, fact: ManagedLifecycleFact| SessionMutation {
+            expected_revision,
+            idempotency: IdempotencyRecord {
+                key: format!("interval:{}", fact.id),
+                payload_hash: "payload".into(),
+            },
+            payload: SessionMutationPayload::Replace(session),
+            lifecycle_facts: vec![fact],
+        };
+        let fact = |interval: Option<crate::SessionRuntimeInterval>| ManagedLifecycleFact {
+            id: "interval-1".into(),
+            object_id: "session-1".into(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.runtime_interval_closed".into(),
+            timestamp: 1,
+            runtime_interval: interval,
+        };
+
+        let mut running = session("session-1", expected_revision);
+        running.execution = SessionExecutionState::Running;
+        running.activity_epoch = 3;
+        assert!(running.begin_runtime_interval(100), "R1 setup");
+        let ordinary_fact = ManagedLifecycleFact {
+            id: "ordinary".into(),
+            object_id: "session-1".into(),
+            workspace_id: Some("workspace".into()),
+            event_type: "session.updated".into(),
+            timestamp: 1,
+            runtime_interval: None,
+        };
+        assert_eq!(
+            mutation(running.clone(), ordinary_fact).validate(),
+            Ok(SessionRevision(8)),
+            "R1"
+        );
+
+        let mut idle_with_interval = running.clone();
+        idle_with_interval.execution = SessionExecutionState::Idle;
+        assert_eq!(
+            mutation(idle_with_interval, fact(Some(valid_interval.clone()))).validate(),
+            Err(SessionMutationValidationError::RuntimeIntervalStateMismatch),
+            "R2"
+        );
+        let mut closed = running;
+        closed.running_interval = None;
+        closed.execution = SessionExecutionState::Idle;
+        assert_eq!(
+            mutation(closed.clone(), fact(Some(valid_interval.clone()))).validate(),
+            Ok(SessionRevision(8)),
+            "R3"
+        );
+        assert_eq!(
+            mutation(closed.clone(), fact(None)).validate(),
+            Err(SessionMutationValidationError::RuntimeIntervalFactMismatch),
+            "R4"
+        );
+        let mut wrong_id = valid_interval.clone();
+        wrong_id.interval_id = "other".into();
+        assert_eq!(
+            mutation(closed.clone(), fact(Some(wrong_id))).validate(),
+            Err(SessionMutationValidationError::RuntimeIntervalFactMismatch),
+            "R5"
+        );
+        let mut reversed = valid_interval;
+        reversed.ended_at_unix_ms = 99;
+        assert_eq!(
+            mutation(closed, fact(Some(reversed))).validate(),
+            Err(SessionMutationValidationError::RuntimeIntervalFactMismatch),
+            "R6"
+        );
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::SessionExecutionState;
+
+    #[kani::proof]
+    fn terminal_execution_never_reopens() {
+        let terminal = if kani::any::<bool>() {
+            SessionExecutionState::ActivationFailed
+        } else {
+            SessionExecutionState::Terminated
+        };
+        let next = match kani::any::<u8>() % 7 {
+            0 => SessionExecutionState::Preparing,
+            1 => SessionExecutionState::Activating,
+            2 => SessionExecutionState::ActivationFailed,
+            3 => SessionExecutionState::Running,
+            4 => SessionExecutionState::Rescheduling,
+            5 => SessionExecutionState::Idle,
+            _ => SessionExecutionState::Terminated,
+        };
+        if terminal.can_transition_to(next) {
+            assert_eq!(terminal, next);
         }
     }
 }

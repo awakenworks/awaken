@@ -27,6 +27,7 @@ fn initial_idle_fact(owner_scope: &str, session_id: &str) -> ManagedLifecycleFac
         workspace_id: Some(owner_scope.to_string()),
         event_type: "session.status_idled".to_string(),
         timestamp: i64::try_from(now_unix_ms() / 1_000).unwrap_or(i64::MAX),
+        runtime_interval: None,
     }
 }
 

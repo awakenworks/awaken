@@ -596,6 +596,7 @@ fn persisted(id: &str, self_hosted: bool, application: bool, status: &str) -> Pe
         metadata: Default::default(),
         tools: Default::default(),
         activity_epoch: 0,
+        running_interval: None,
         environment: Default::default(),
         mcp: Default::default(),
         resources: Default::default(),

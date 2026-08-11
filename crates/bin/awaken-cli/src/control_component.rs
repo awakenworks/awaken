@@ -222,16 +222,24 @@ pub(super) async fn prepare_control_routers(
         remote_iam,
     )
     .await;
-    let webhook_delivery = {
+    let webhook_delivery: Arc<dyn awaken_session_contract::LifecycleFactDelivery> = {
         let control = stores
             .control
             .as_ref()
             .expect("Control process requires Control stores");
-        awaken_webhook_managed::config_plane_lifecycle_delivery(
+        let webhook = awaken_webhook_managed::config_plane_lifecycle_delivery(
             control.webhooks.clone(),
             control.secrets.clone(),
             process.org_id.clone(),
-        )
+        );
+        match process.additional_lifecycle_delivery {
+            Some(additional) => Arc::new(
+                awaken_session_contract::CompositeLifecycleFactDelivery::new(vec![
+                    additional, webhook,
+                ]),
+            ),
+            None => webhook,
+        }
     };
     let private_router = match process.control_service_authenticator {
         Some(authenticator) => {

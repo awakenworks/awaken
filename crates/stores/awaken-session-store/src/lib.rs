@@ -46,14 +46,7 @@ fn aggregate_str(session: &PersistedSession) -> Result<String, SessionRepository
 }
 
 fn lifecycle_str(fact: &ManagedLifecycleFact) -> String {
-    serde_json::json!({
-        "id": fact.id,
-        "object_id": fact.object_id,
-        "workspace_id": fact.workspace_id,
-        "event_type": fact.event_type,
-        "timestamp": fact.timestamp,
-    })
-    .to_string()
+    serde_json::to_string(fact).expect("Managed lifecycle fact serializes")
 }
 
 fn db_revision(revision: SessionRevision) -> Result<i64, SessionRepositoryError> {
@@ -70,25 +63,8 @@ fn corrupt(error: impl std::fmt::Display) -> SessionRepositoryError {
     SessionRepositoryError::Corrupt(error.to_string())
 }
 
-#[derive(serde::Deserialize)]
-struct EncodedLifecycleFact {
-    id: String,
-    #[serde(alias = "session_id")]
-    object_id: String,
-    workspace_id: Option<String>,
-    event_type: String,
-    timestamp: i64,
-}
-
 fn decode_lifecycle(data: &str) -> Result<ManagedLifecycleFact, serde_json::Error> {
-    let value: EncodedLifecycleFact = serde_json::from_str(data)?;
-    Ok(ManagedLifecycleFact {
-        id: value.id,
-        object_id: value.object_id,
-        workspace_id: value.workspace_id,
-        event_type: value.event_type,
-        timestamp: value.timestamp,
-    })
+    serde_json::from_str(data)
 }
 
 /// SQLite persistence for [`PersistedSession`]. One row per session, keyed by id.

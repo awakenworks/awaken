@@ -123,6 +123,7 @@ fn frozen_application_session(
         metadata: Default::default(),
         tools: Default::default(),
         activity_epoch: 0,
+        running_interval: None,
         environment: Default::default(),
         mcp: Default::default(),
         resources: resource_state,
