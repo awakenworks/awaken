@@ -479,6 +479,10 @@ async fn accept_reverse(addr: SocketAddr) -> Result<Box<dyn AgentChannel>, Runti
 
 #[async_trait]
 impl ContainerRuntime for K8sRuntime {
+    fn enforces_network_none(&self) -> bool {
+        self.restricted_egress_policy
+    }
+
     fn has_native_memory_mounts(&self) -> bool {
         true
     }
@@ -868,6 +872,19 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[tokio::test]
+    async fn restricted_egress_evidence_is_the_single_network_capability_source() {
+        // Cause/effect decision table: C1=the exact external restricted-egress
+        // policy is attested by composition. R1 !C1 => the runtime neither
+        // admits network-none plans nor advertises network isolation; R2 C1 =>
+        // the same field admits those plans and advertises the capability.
+        // This prevents placement and creation from consulting parallel facts.
+        let absent = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap());
+        assert!(!absent.enforces_network_none(), "R1");
+        let installed = absent.with_restricted_egress_policy(true);
+        assert!(installed.enforces_network_none(), "R2");
+    }
 
     #[tokio::test]
     async fn kube_client_accepts_an_http_proxy_from_deployment_environment() {

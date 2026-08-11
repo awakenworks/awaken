@@ -49,8 +49,8 @@ pub use writable::writable_dirs;
 
 /// Capabilities common to one concrete container runtime. Network denial is
 /// runtime evidence rather than an isolation-class assumption: Docker/Podman
-/// implement `network none`; the current Kubernetes adapter does not install or
-/// verify a NetworkPolicy and therefore reports false.
+/// implement `network none`; Kubernetes reports it only when composition supplies
+/// the exact versioned restricted-egress policy evidence used by Pod admission.
 fn container_capabilities(
     network_isolation: bool,
     package_provisioning: bool,
