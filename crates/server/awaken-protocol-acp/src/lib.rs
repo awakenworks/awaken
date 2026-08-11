@@ -314,6 +314,10 @@ pub struct TurnConfig<'a> {
     /// Exact publication-time profile that the live initialize/session
     /// handshake must reproduce before any configured option or prompt is sent.
     pub expected_capability: Option<AcpCapabilityExpectation>,
+    /// Per-step wall-clock bound for the prompt-free ACP handshake. This is not
+    /// the turn/job deadline: it only fences `initialize` and `session/new|load`
+    /// so a live child that never answers cannot retain a Run claim forever.
+    pub handshake_step_deadline: std::time::Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,6 +342,7 @@ impl<'a> TurnConfig<'a> {
             session_cwd: None,
             auth_method_id: None,
             expected_capability: None,
+            handshake_step_deadline: std::time::Duration::from_secs(30),
         }
     }
 }
