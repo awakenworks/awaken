@@ -99,3 +99,11 @@
   existing transactional lifecycle outbox.
 - Kept checkpoint, restore, queue, drain, and retention work outside that
   interval and prohibited a Billing-specific Session event store.
+
+## 2026-08-11 (Checkpoint custody receives authoritative ownership scope)
+
+- Extended the existing checkpoint byte request with the Session repository's
+  Workspace owner scope and immutable creation time so hosted custody can
+  resolve tenant DEKs without a Session mirror or guessed identity.
+- Kept URLs, credentials, pricing, and storage lifecycle out of the neutral
+  contract; the Session aggregate remains the only continuation authority.

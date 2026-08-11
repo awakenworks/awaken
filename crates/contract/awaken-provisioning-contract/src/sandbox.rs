@@ -467,9 +467,13 @@ pub struct PolicySelection<'a> {
 /// no storage URL, credential, or encryption material.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckpointObjectMetadata {
+    /// Workspace ownership scope used by hosted adapters to resolve the tenant
+    /// through their existing placement authority. It is not a storage key.
+    pub workspace_id: String,
     pub session_id: String,
     pub generation_id: String,
     pub suspend_effect_id: String,
+    pub created_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
 }
 

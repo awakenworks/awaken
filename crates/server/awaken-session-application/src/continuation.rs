@@ -153,6 +153,7 @@ impl SessionApplication {
                 }
                 let policy = &baseline.environment.idle_retention;
                 let request = awaken_session_contract::SandboxCheckpointRequest {
+                    workspace_id: owner_scope.clone(),
                     session_id: session_id.to_string(),
                     operation,
                     generation,

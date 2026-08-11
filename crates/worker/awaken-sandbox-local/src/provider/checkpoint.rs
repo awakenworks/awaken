@@ -99,9 +99,11 @@ impl LocalSandbox {
         let stored = store
             .put(
                 &pc::CheckpointObjectMetadata {
+                    workspace_id: request.workspace_id.clone(),
                     session_id: request.session_id.clone(),
                     generation_id: request.generation.id.clone(),
                     suspend_effect_id: request.operation.effect_id.clone(),
+                    created_at_unix_ms: request.created_at_unix_ms,
                     expires_at_unix_ms: request.expires_at_unix_ms,
                 },
                 bytes,

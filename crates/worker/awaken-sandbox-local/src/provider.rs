@@ -1878,6 +1878,7 @@ mod workdir_helper_tests {
             "base-image",
         );
         pc::SandboxCheckpointRequest {
+            workspace_id: "workspace-a".into(),
             session_id: "checkpoint-session".into(),
             operation: awaken_session_contract::SessionEnvironmentOperation::new(
                 "checkpoint-session",

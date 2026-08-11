@@ -147,6 +147,12 @@ truth. No second format field is added to `SandboxCapabilities`, and no
 checkpoint-provider registry is introduced. Admission rejects a provider or
 Worker that cannot honor the exact frozen format.
 
+The checkpoint byte request carries the existing Workspace owner scope plus
+the immutable generation creation and expiry timestamps. Hosted adapters use
+that scope only to resolve their existing tenant/region placement and DEK
+authority; standalone adapters may ignore it. No tenant registry, storage URL,
+credential, or pricing data enters the Session aggregate or provider contract.
+
 Customer-visible execution time is projected without adding another Session
 state machine. The aggregate retains one typed open Running interval across
 overlapping driving events. The transition to idle or terminal closes it and

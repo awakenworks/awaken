@@ -124,6 +124,7 @@ pub struct SandboxCheckpointRef {
 /// Exact bounds and aggregate identity for one idempotent checkpoint effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxCheckpointRequest {
+    pub workspace_id: String,
     pub session_id: String,
     pub operation: SessionEnvironmentOperation,
     pub generation: SandboxGeneration,

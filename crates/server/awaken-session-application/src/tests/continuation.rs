@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Default)]
@@ -13,6 +14,7 @@ struct ContinuationRuntime {
     disposals: AtomicUsize,
     restores: AtomicUsize,
     deletes: AtomicUsize,
+    checkpoint_scopes: Mutex<Vec<(String, u64)>>,
 }
 
 #[async_trait::async_trait]
@@ -41,6 +43,10 @@ impl SessionRuntime for ContinuationRuntime {
         request: awaken_session_contract::SandboxCheckpointRequest,
     ) -> Result<awaken_session_contract::CheckpointReceipt, RunError> {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
+        self.checkpoint_scopes
+            .lock()
+            .unwrap()
+            .push((request.workspace_id.clone(), request.created_at_unix_ms));
         if self.fail_checkpoint_once.swap(false, Ordering::SeqCst) {
             return Err(RunError::unavailable("injected upload crash"));
         }
@@ -220,8 +226,10 @@ fn hibernated_session(id: &str, expires_at_unix_ms: u64) -> PersistedSession {
 }
 
 // Cause/effect design: C1=due Resident, C2/C3=quiescent, C4=current epoch,
-// C5=checkpoint success, C6=termination success, C8=no terminal race. Decision
-// rule R3 => E2 through each phase then E4; replay in Hibernated emits no effect.
+// C5=checkpoint success, C6=termination success, C8=no terminal race,
+// C9=repository owner scope. Decision rule R3 => E2 through each phase then E4;
+// the byte adapter receives exact Workspace + creation time, and replay in
+// Hibernated emits no effect.
 #[tokio::test]
 async fn due_idle_environment_suspends_once_in_order() {
     let repo =
@@ -246,6 +254,10 @@ async fn due_idle_environment_suspends_once_in_order() {
     assert_eq!(runtime.quiesces.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.checkpoints.load(Ordering::SeqCst), 1);
     assert_eq!(runtime.disposals.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *runtime.checkpoint_scopes.lock().unwrap(),
+        [("workspace".into(), 2_000)]
+    );
 }
 
 // Cause/effect design: C5=upload failure after Quiescing committed. FMECA crash
