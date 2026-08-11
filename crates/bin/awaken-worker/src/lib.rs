@@ -120,6 +120,8 @@ pub struct WorkerNodeBuilder {
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     enclosing_sandbox_boundary: Option<InstalledSandboxBoundary>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
+    environment_checkpoint_store:
+        Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
@@ -147,6 +149,7 @@ impl WorkerNodeBuilder {
             acp_capability_observation_source: None,
             enclosing_sandbox_boundary: None,
             session_container_provider: None,
+            environment_checkpoint_store: None,
             mcp_attachment_realizer: None,
             web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             memory_mounter_factory: None,
@@ -374,7 +377,39 @@ impl WorkerNodeBuilder {
             backend: backend.into(),
             provider,
             capacity,
+            extra_mounts: Vec::new(),
+            cache_volume_initializer: None,
         });
+        self
+    }
+
+    /// Install a decorated provider while preserving the capacity, creation
+    /// mounts, and cache owner returned by the canonical deployment builder.
+    #[must_use]
+    pub fn with_session_container_environment_components(
+        mut self,
+        backend: impl Into<String>,
+        components: awaken_session_executor::ContainerEnvironmentComponents,
+    ) -> Self {
+        self.session_container_provider = Some(InstalledSessionContainerProvider {
+            backend: backend.into(),
+            provider: components.provider,
+            capacity: components.capacity,
+            extra_mounts: components.extra_mounts,
+            cache_volume_initializer: components.cache_volume_initializer,
+        });
+        self
+    }
+
+    /// Install the one checkpoint-byte custody adapter used by the selected
+    /// Session environment provider. Lifecycle truth remains in the Session;
+    /// this dependency stores bytes only.
+    #[must_use]
+    pub fn with_environment_checkpoint_store(
+        mut self,
+        store: Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>,
+    ) -> Self {
+        self.environment_checkpoint_store = Some(store);
         self
     }
 
@@ -467,6 +502,23 @@ impl WorkerNodeBuilder {
             self.memory_mounter_factory.is_some(),
             self.credential_materializer.as_ref(),
         ));
+        let provider_checkpoint_formats = self
+            .session_container_provider
+            .as_ref()
+            .map(|installed| installed.provider.checkpoint_formats())
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if !provider_checkpoint_formats.is_empty() && self.environment_checkpoint_store.is_none() {
+            return Err(WorkerNodeBuildError(
+                "checkpoint-capable Session provider requires a checkpoint store".to_string(),
+            ));
+        }
+        if self.environment_checkpoint_store.is_some() && provider_checkpoint_formats.is_empty() {
+            return Err(WorkerNodeBuildError(
+                "checkpoint store requires a checkpoint-capable Session provider".to_string(),
+            ));
+        }
         let sandbox_override = self
             .session_container_provider
             .as_ref()
@@ -504,6 +556,7 @@ impl WorkerNodeBuilder {
                         .as_ref()
                         .map(|remote| &remote.credential_realization),
                     sandbox_override,
+                    checkpoint_formats: provider_checkpoint_formats.clone(),
                     resource_support,
                     application_capabilities,
                     config: &self.standard_manifest_config,
@@ -521,6 +574,11 @@ impl WorkerNodeBuilder {
             }
         };
         validate_worker_manifest(&manifest)?;
+        if !provider_checkpoint_formats.is_subset(&manifest.checkpoint_formats) {
+            return Err(WorkerNodeBuildError(
+                "Worker manifest omits an installed provider checkpoint format".to_string(),
+            ));
+        }
         Ok(WorkerNode {
             upstream: self.upstream,
             manifest,
@@ -534,6 +592,7 @@ impl WorkerNodeBuilder {
             credential_observation_resolver,
             acp_capability_observation_source: self.acp_capability_observation_source,
             session_container_provider: self.session_container_provider,
+            environment_checkpoint_store: self.environment_checkpoint_store,
             mcp_attachment_realizer: self.mcp_attachment_realizer,
             web_search_providers: self.web_search_providers,
             memory_mounter_factory: self.memory_mounter_factory,
@@ -583,6 +642,8 @@ pub struct WorkerNode {
     acp_capability_observation_source:
         Option<Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>>,
     session_container_provider: Option<InstalledSessionContainerProvider>,
+    environment_checkpoint_store:
+        Option<Arc<dyn awaken_provisioning_contract::SandboxCheckpointStore>>,
     mcp_attachment_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     memory_mounter_factory: Option<RegisteredMemoryMounterFactory>,
@@ -596,6 +657,8 @@ struct InstalledSessionContainerProvider {
     backend: String,
     provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
     capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+    extra_mounts: Vec<awaken_provisioning_contract::MountRequirement>,
+    cache_volume_initializer: Option<Arc<dyn awaken_session_executor::CacheVolumeInitializer>>,
 }
 
 struct InstalledSandboxBoundary {
@@ -957,11 +1020,18 @@ impl WorkerNode {
                 .hand_executor_factory
                 .clone()
                 .expect("container provider was validated with a hand factory");
-            host = host.with_session_container_provider_and_capacity(
-                installed.provider,
-                installed.capacity,
+            host = host.with_session_container_environment_components(
+                awaken_session_executor::ContainerEnvironmentComponents {
+                    provider: installed.provider,
+                    capacity: installed.capacity,
+                    extra_mounts: installed.extra_mounts,
+                    cache_volume_initializer: installed.cache_volume_initializer,
+                },
                 hand_factory,
             );
+        }
+        if let Some(store) = self.environment_checkpoint_store {
+            host = host.with_environment_checkpoint_store(store);
         }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.

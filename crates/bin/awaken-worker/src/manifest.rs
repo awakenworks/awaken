@@ -159,6 +159,7 @@ pub(crate) struct StandardManifestInputs<'a> {
         Option<&'a awaken_runtime_contract::CredentialRealizationCapabilities>,
     pub(crate) sandbox_override:
         Option<(awaken_provisioning_contract::SandboxCapabilities, &'a str)>,
+    pub(crate) checkpoint_formats: BTreeSet<String>,
     pub(crate) resource_support: ResourceManifestSupport,
     pub(crate) application_capabilities: BTreeSet<String>,
     pub(crate) config: &'a StandardManifestConfig,
@@ -291,7 +292,10 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         sandbox_backends: BTreeSet::from([backend.to_string()]),
         dispatch_contract: VersionRange::exact(1),
         runtime_protocol: VersionRange::exact(1),
-        checkpoint_formats: BTreeSet::from(["stream-v1".to_string()]),
+        checkpoint_formats: BTreeSet::from(["stream-v1".to_string()])
+            .into_iter()
+            .chain(inputs.checkpoint_formats)
+            .collect(),
         capacity: WorkerCapacity {
             max_concurrent: inputs.config.max_concurrent,
             ..WorkerCapacity::default()

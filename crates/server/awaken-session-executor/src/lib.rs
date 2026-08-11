@@ -26,7 +26,9 @@ mod commit_ingest;
 mod compact;
 mod config;
 mod container_environment;
-pub use container_environment::package_image_provisioner;
+pub use container_environment::{
+    ContainerEnvironmentComponents, build_container_environment, package_image_provisioner,
+};
 mod delegate;
 mod deployment_config;
 mod durable_operations;

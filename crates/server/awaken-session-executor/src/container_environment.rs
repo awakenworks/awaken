@@ -29,6 +29,19 @@ struct BuiltContainerEnvironment {
     capacity: Option<Arc<dyn ContainerEnvironmentCapacity>>,
 }
 
+/// The one container-environment realization assembled from a deployment.
+///
+/// A downstream composition may decorate `provider` while retaining the exact
+/// capacity and cache-volume owners created by this canonical builder. This
+/// prevents product integrations from reproducing Kubernetes/Podman/Docker
+/// construction merely to add an infrastructure concern such as checkpointing.
+pub struct ContainerEnvironmentComponents {
+    pub provider: Arc<dyn ContainerEnvironmentProvider>,
+    pub capacity: Option<Arc<dyn ContainerEnvironmentCapacity>>,
+    pub extra_mounts: Vec<pc::MountRequirement>,
+    pub cache_volume_initializer: Option<Arc<dyn crate::CacheVolumeInitializer>>,
+}
+
 #[cfg(any(
     feature = "container-docker",
     feature = "container-podman",
@@ -210,19 +223,11 @@ pub async fn package_image_provisioner(
     feature = "container-podman",
     feature = "container-k8s"
 ))]
-pub(crate) async fn build(
+pub async fn build_container_environment(
     tier: SandboxTier,
     image: Option<&str>,
     settings: &crate::deployment_config::SandboxSettings,
-) -> Result<
-    (
-        Arc<dyn ContainerEnvironmentProvider>,
-        Option<Arc<dyn ContainerEnvironmentCapacity>>,
-        Vec<pc::MountRequirement>,
-        Option<Arc<dyn crate::CacheVolumeInitializer>>,
-    ),
-    String,
-> {
+) -> Result<ContainerEnvironmentComponents, String> {
     let built = match tier {
         #[cfg(feature = "container-docker")]
         SandboxTier::Docker => {
@@ -273,12 +278,12 @@ pub(crate) async fn build(
             built.provider.clone(),
         )) as Arc<dyn crate::CacheVolumeInitializer>
     });
-    Ok((
-        built.provider,
-        built.capacity,
-        Vec::new(),
+    Ok(ContainerEnvironmentComponents {
+        provider: built.provider,
+        capacity: built.capacity,
+        extra_mounts: Vec::new(),
         cache_volume_initializer,
-    ))
+    })
 }
 
 #[cfg(not(any(
@@ -286,19 +291,11 @@ pub(crate) async fn build(
     feature = "container-podman",
     feature = "container-k8s"
 )))]
-pub(crate) async fn build(
+pub async fn build_container_environment(
     tier: SandboxTier,
     _image: Option<&str>,
     _settings: &crate::deployment_config::SandboxSettings,
-) -> Result<
-    (
-        Arc<dyn ContainerEnvironmentProvider>,
-        Option<Arc<dyn ContainerEnvironmentCapacity>>,
-        Vec<pc::MountRequirement>,
-        Option<Arc<dyn crate::CacheVolumeInitializer>>,
-    ),
-    String,
-> {
+) -> Result<ContainerEnvironmentComponents, String> {
     Err(format!(
         "AWAKEN_SANDBOX_TIER={} needs its matching container feature",
         match tier {
