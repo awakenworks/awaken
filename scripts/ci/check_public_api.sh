@@ -44,7 +44,7 @@ crates=$(cargo metadata --no-deps --format-version 1 \
   | python3 -c "import json,sys; print('\n'.join(sorted(p['name'] for p in json.load(sys.stdin)['packages'])))")
 
 # Nightly 1.99 can document every current workspace member, including the
-# rust-version 1.96 scoped-migration dependency. Product adapters and composition
+# rust-version 1.96 scoped-migration dependency. Product adapters and startup
 # crates are intentionally included: a changing product surface still needs an
 # explicit reviewed snapshot update rather than an untracked exception.
 

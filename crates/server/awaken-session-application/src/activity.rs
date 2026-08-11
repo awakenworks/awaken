@@ -1,6 +1,10 @@
 //! Durable activity fencing for overlapping Session turns.
 
-use awaken_session_contract::{PersistedSession, SessionExecutionState};
+use std::sync::Arc;
+
+use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::stream::sink::Sink;
+use awaken_session_contract::{PersistedSession, RunError, SessionExecutionState, StepOutcome};
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
@@ -21,6 +25,13 @@ pub enum SessionActivityError {
     Unavailable(String),
 }
 
+/// One committed Runtime step together with the durable Session state after its
+/// activity fence has been settled.
+pub struct SessionMessageOutcome {
+    pub step: StepOutcome,
+    pub session: PersistedSession,
+}
+
 impl SessionActivityError {
     fn mutation(error: SessionMutationError) -> Self {
         match error {
@@ -32,9 +43,49 @@ impl SessionActivityError {
             SessionMutationError::Unavailable(message) => Self::Unavailable(message),
         }
     }
+
+    fn run_error(self) -> RunError {
+        match self {
+            Self::NotFound => RunError::bad_request("Session was not found"),
+            Self::Terminal => RunError::bad_request("Session no longer accepts new messages"),
+            Self::NotReady => RunError::unavailable_classified(
+                "session_not_ready",
+                "Session realization has not completed",
+            ),
+            Self::EpochExhausted => RunError::internal("Session activity epoch is exhausted"),
+            Self::Conflict => RunError::unavailable("Session activity changed concurrently"),
+            Self::Unavailable(message) => RunError::unavailable(message),
+        }
+    }
 }
 
 impl SessionApplication {
+    /// Execute one user message under the Session's durable activity fence.
+    /// Settlement is attempted after both successful and failed Runtime work so
+    /// protocol adapters and internal jobs cannot leave independent lifecycle
+    /// behavior behind.
+    pub async fn run_session_message(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+        content: Vec<ContentBlock>,
+        data_subject_id: Option<String>,
+        sink: Arc<dyn Sink>,
+    ) -> Result<SessionMessageOutcome, RunError> {
+        let activity = self
+            .begin_activity(session_id)
+            .await
+            .map_err(SessionActivityError::run_error)?;
+        let step = self
+            .run_streaming_attributed(agent_id, session_id, content, data_subject_id, sink)
+            .await;
+        let session = self
+            .settle_activity(session_id, activity.activity_epoch)
+            .await
+            .map_err(SessionActivityError::run_error)?;
+        step.map(|step| SessionMessageOutcome { step, session })
+    }
+
     /// Admit one driving event and return the committed aggregate carrying its
     /// monotonically increasing completion fence.
     pub async fn begin_activity(

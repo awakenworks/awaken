@@ -1,6 +1,6 @@
-//! Control process composition over the canonical deployment stores.
+//! Control process startup over the canonical deployment stores.
 //!
-//! This module owns only the control-only assembly choice. Router, IAM,
+//! This module owns only the control-only process choice. Router, IAM,
 //! ConfigService, publication persistence, and schema ownership remain in their
 //! existing modules.
 
@@ -40,36 +40,36 @@ fn spawn_hosted_model_catalog_reconciliation(
     });
 }
 
-/// Canonical hosted authoring/control assembly. It reuses the same stores,
+/// Canonical hosted authoring/control process. It reuses the same stores,
 /// resolver, IAM PEP and routes as the full local product, but deliberately
 /// omits every Session/Run/protocol/Worker data-plane route.
 pub async fn build_control_router(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
 ) -> Result<Router, String> {
-    build_control_assembly(deployment, key)
+    prepare_control_process(deployment, key)
         .await
-        .map(|assembly| assembly.public_router)
+        .map(|process| process.public_router)
 }
 
-/// Canonical hosted assembly, including the one-time local setup handoff owned
+/// Canonical hosted process, including the one-time local setup handoff owned
 /// by the shared identity wiring. The router-only entry point projects this
-/// value instead of maintaining a second composition path.
-pub async fn build_control_assembly(
+/// value instead of maintaining a second startup path.
+pub async fn prepare_control_process(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
-) -> Result<ProcessAssembly, String> {
-    build_control_assembly_with_model_composition(
+) -> Result<PreparedProcess, String> {
+    prepare_control_process_with_model_supply(
         deployment,
         key,
-        PublicationModelComposition::PublishedProviders,
+        PublicationModelSupply::PublishedProviders,
         None,
         None,
     )
     .await
 }
 
-/// Canonical hosted control assembly with a deployment-owned provider
+/// Canonical hosted control process with a deployment-owned provider
 /// publication resolver.
 ///
 /// Awaken continues to own Agent authoring, compilation, fingerprinting, and
@@ -96,9 +96,9 @@ pub async fn build_control_router_with_publication_resolver(
     .await
 }
 
-/// Hosted control assembly with deployment-owned model and WebSearch
-/// publication adapters. This remains the same canonical Control assembly;
-/// the closed composition supplies only existing open SPIs and provider facts.
+/// Hosted control process with deployment-owned model and WebSearch
+/// publication adapters. This remains the same canonical Control process;
+/// the closed startup supplies only existing open SPIs and provider facts.
 pub async fn build_control_router_with_publication_resolver_and_web_search(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
@@ -107,7 +107,7 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
 ) -> Result<Router, String> {
-    build_control_assembly_with_publication_resolver_and_web_search(
+    prepare_control_process_with_publication_resolver_and_web_search(
         deployment,
         key,
         resolver,
@@ -116,41 +116,41 @@ pub async fn build_control_router_with_publication_resolver_and_web_search(
         web_search_publication_resolver,
     )
     .await
-    .map(|assembly| assembly.public_router)
+    .map(|process| process.public_router)
 }
 
-/// Hosted control assembly with deployment-owned publication adapters and both
+/// Hosted control process with deployment-owned publication adapters and both
 /// role-owned listener surfaces. The public and private routers remain
 /// separate; embedders must expose the private router only on an internal
 /// listener protected by the configured service authenticator.
-pub async fn build_control_assembly_with_publication_resolver_and_web_search(
+pub async fn prepare_control_process_with_publication_resolver_and_web_search(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
     resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
     brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry,
     web_search_publication_resolver: Arc<dyn awaken_config_service::PluginPublicationResolver>,
-) -> Result<ProcessAssembly, String> {
-    build_control_assembly_with_model_composition(
+) -> Result<PreparedProcess, String> {
+    prepare_control_process_with_model_supply(
         deployment,
         key,
-        PublicationModelComposition::HostedPublication { resolver },
+        PublicationModelSupply::HostedPublication { resolver },
         brokered_catalog,
         Some((web_search_providers, web_search_publication_resolver)),
     )
     .await
 }
 
-async fn build_control_assembly_with_model_composition(
+async fn prepare_control_process_with_model_supply(
     deployment: &config::ResolvedDeployment,
     key: &[u8; 32],
-    model_composition: PublicationModelComposition,
+    model_supply: PublicationModelSupply,
     brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     web_search: Option<(
         awaken_ext_builtin_tools::WebSearchProviderRegistry,
         Arc<dyn awaken_config_service::PluginPublicationResolver>,
     )>,
-) -> Result<ProcessAssembly, String> {
+) -> Result<PreparedProcess, String> {
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     let identity = identity_wiring(
         deployment.identity_mode,
@@ -191,13 +191,13 @@ async fn build_control_assembly_with_model_composition(
         executable_environment_registration::ExecutableEnvironmentWiring::control(deployment)?;
     let worker_observations =
         worker_observation_wiring::WorkerObservationWiring::control(deployment)?;
-    let assembled = assemble_control_process_router(
+    let prepared = prepare_control_routers(
         stores,
         identity.iam,
         identity.remote_iam,
         identity.local_browser_auth,
-        model_composition,
-        ProcessAssemblyOptions {
+        model_supply,
+        ProcessStartup {
             service_lifecycle: service_lifecycle.clone(),
             deployment: None,
             content_capture_ceiling: deployment.runtime.content_capture.level,
@@ -231,11 +231,11 @@ async fn build_control_assembly_with_model_composition(
         },
     )
     .await;
-    Ok(ProcessAssembly {
-        public_router: assembled.public_router,
-        private_router: assembled.private_router,
+    Ok(PreparedProcess {
+        public_router: prepared.public_router,
+        private_router: prepared.private_router,
         local_setup: identity.local_setup,
-        registration_supervisor: assembled.registration_supervisor,
-        service_lifecycle: assembled.service_lifecycle,
+        registration_supervisor: prepared.registration_supervisor,
+        service_lifecycle: prepared.service_lifecycle,
     })
 }

@@ -1,4 +1,4 @@
-//! Context compaction: the composition-root wiring.
+//! Context compaction: the process-startup wiring.
 //!
 //! The policy half — when to fold ([`fold_point`]), the compactor agent's config
 //! and prompts, and the recall-symmetric [`CompactPlugin`] that injects the summary

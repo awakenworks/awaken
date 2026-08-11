@@ -13,6 +13,18 @@ use awaken_session_contract::{
 use super::*;
 
 struct NoopRuntime;
+struct SuccessfulRuntime;
+struct DiscardProgress;
+
+#[async_trait::async_trait]
+impl awaken_agent_contract::stream::sink::Sink for DiscardProgress {
+    async fn send(
+        &self,
+        _event: awaken_agent_contract::stream::event::Event,
+    ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 struct RecordingCleanupRuntime {
@@ -204,6 +216,60 @@ impl SessionRuntime for NoopRuntime {
 
     fn model(&self) -> String {
         "unused".into()
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for SuccessfulRuntime {
+    async fn run(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        Ok(awaken_session_contract::StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            false,
+            false,
+        ))
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: awaken_session_contract::ToolPermissionDecision,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("message test never resumes")
+    }
+
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _is_error: bool,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("message test never resumes")
+    }
+
+    async fn add_system(&self, _thread: &str, _text: &str) -> Result<(), RunError> {
+        unreachable!("message test never adds a system message")
+    }
+
+    async fn define_outcome(
+        &self,
+        _thread: &str,
+        _description: &str,
+        _rubric: &str,
+        _max_iterations: u32,
+    ) -> Result<awaken_session_contract::OutcomeReport, RunError> {
+        unreachable!("message test never defines an outcome")
+    }
+
+    fn model(&self) -> String {
+        "successful-test-model".into()
     }
 }
 
@@ -564,6 +630,14 @@ fn application(
         environments,
         SessionApplicationConfiguration::default(),
     )
+}
+
+fn application_with_runtime(
+    runtime: Arc<dyn SessionRuntime>,
+    repo: Arc<dyn ManagedSessionRepository>,
+    environments: Arc<dyn SessionEnvironmentSource>,
+) -> SessionApplication {
+    SessionApplication::new(runtime, Arc::new(NoopMcpRealizer), repo, environments)
 }
 
 fn application_with_configuration(

@@ -244,7 +244,7 @@ flowchart TD
     J["Existing: persist StoredPublication"]
 
     K["Existing: ExecutableAgentRegistrar.register"]
-    KA{"Composition mode"}
+    KA{"Deployment role"}
     KB["Existing: LocalExecutableAgentRegistrar"]
     KC["Existing: HttpExecutableAgentRegistrar"]
     KD["Existing: authenticated registration router"]
@@ -260,7 +260,7 @@ flowchart TD
 
     V{"Manual or scheduled trigger"}
     W["Existing: persist stable DeploymentRun"]
-    X["Existing: LocalDeploymentSessionLauncher carries deployment_run_id"]
+    X["Existing: ManagedDeploymentSessionLauncher carries deployment_run_id"]
     AA["Existing: create_session_with_initial_events"]
     AB["Existing: sole SessionInputResolver; SessionCreationIntent is the final freeze point"]
     AC["Existing: exact Environment, Skill, Resource, and credential pins"]
@@ -513,12 +513,12 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - Session binding, management audit, and webhook delivery consume narrow Control
   ports; AllInOne supplies local adapters and split Coordinator supplies one
   authenticated HTTP adapter;
-- `ResourceComponent` exposes the authoritative `ResourceCatalog` beside its
+- `ResourceAuthorities` exposes the authoritative `ResourceCatalog` beside its
   existing File, Memory, Skill, repository-verification, and lifecycle ports;
 - HTTP File commands and Runtime artifact harvesting call one
   `FileApplicationService`; the former Host-side command implementation is gone;
 - one `ResourcesApplication` derives File and purge application ports from one
-  `ResourceComponent`, and one Resources router mounts every public family.
+  `ResourceAuthorities`, and one Resources router mounts every public family.
 
 ### New boundary code (implemented)
 

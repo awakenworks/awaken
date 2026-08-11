@@ -23,7 +23,7 @@ pub(crate) enum SessionEnvironmentProvider {
 
 impl SessionEnvironmentProvider {
     /// Construct the in-process adapter for a non-container Deployment tier.
-    /// Both initial Host construction and async composition use this one mapping;
+    /// Both initial Host construction and asynchronous provider selection use this one mapping;
     /// container tiers return `None` because their provider requires async setup.
     pub(crate) fn for_host_tier(
         tier: crate::SandboxTier,

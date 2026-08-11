@@ -11,7 +11,17 @@ from typing import NamedTuple
 
 
 CONTEXTS = frozenset(
-    {"shared", "runtime", "control", "coordinator", "resources", "worker", "apps", "devtools"}
+    {
+        "shared",
+        "protocol",
+        "runtime",
+        "control",
+        "coordinator",
+        "resources",
+        "worker",
+        "apps",
+        "devtools",
+    }
 )
 LAYERS = frozenset(
     {"contract", "domain", "application", "interface", "infrastructure", "bootstrap", "tooling"}
@@ -21,9 +31,12 @@ LAYERS = frozenset(
 # edges are handled separately because a published contract is precisely the
 # legal cross-context seam.
 CONTEXT_DEPENDENCIES: dict[str, frozenset[str]] = {
-    # Shared application/infrastructure crates integrate cross-context ports.
+    # Shared application/infrastructure crates integrate cross-context contracts.
     # Their lower contract/domain layers remain protected by layer direction.
     "shared": CONTEXTS,
+    # Protocol crates translate public wire vocabularies across domain
+    # applications but own no domain state or persistence authority.
+    "protocol": CONTEXTS,
     "runtime": frozenset({"shared", "runtime"}),
     "control": frozenset({"shared", "runtime", "resources", "control"}),
     "coordinator": frozenset(
@@ -90,6 +103,16 @@ def dependency_violations(specs: list[CrateSpec]) -> list[str]:
                 continue
             if target.layer == "contract":
                 continue
+            # Process bootstrap is the only domain-owned layer allowed to mount
+            # a protocol/interface crate. Domain and application layers remain
+            # protocol-neutral; the protocol crate still points inward to their
+            # contracts and applications.
+            if (
+                source.layer == "bootstrap"
+                and target.context == "protocol"
+                and target.layer == "interface"
+            ):
+                continue
             allowed_contexts = CONTEXT_DEPENDENCIES[source.context]
             if target.context not in allowed_contexts:
                 errors.append(
@@ -110,17 +133,29 @@ def selftest() -> None:
 
     Causes: C1 metadata complete/valid, C2 dependency layer allowed, C3 dependency
     context allowed, C4 target is a contract, C5 source is bootstrap/tooling,
-    C6 source context is an application/devtool composition root.
+    C6 source context is a process application or developer tool, C7 source is
+    a protocol/interface crate projecting an application contract, C8 source is
+    process bootstrap mounting a protocol/interface adapter.
     Effects: E1 accept; E2 reject incomplete metadata; E3 reject domain-to-adapter;
     E4 reject application-to-adapter; E5 reject cross-context implementation;
-    E6 accept explicit contract seam; E7 accept composition/test assembly; E8
-    reject a domain bootstrap/tooling crate that uses its layer as a bypass.
+    E6 accept explicit contract boundary; E7 accept process/test startup; E8
+    reject a domain bootstrap/tooling crate that uses its layer as a bypass; E9
+    accept a protocol projection without classifying it as shared ownership; E10
+    accept protocol mounting only at process bootstrap.
+
+    FMECA: misclassifying a wire projection as `shared` hides its protocol owner
+    and permits unrelated contexts to treat transport DTOs as reusable domain
+    truth. R9 locks the explicit protocol/interface -> application direction;
+    application code importing the adapter would reverse the boundary. R10
+    therefore admits the outward adapter only at process bootstrap.
 
     | Rule | cross context | target contract | bootstrap/tooling | apps/devtools | Effect |
     | R5   | yes           | no              | no                | no            | E5     |
     | R6   | yes           | yes             | any               | any           | E6     |
     | R7   | yes           | no              | yes               | yes           | E7     |
     | R8   | yes           | no              | yes               | no            | E8     |
+    | R9   | protocol app  | application     | no                | no            | E9     |
+    | R10  | domain        | protocol iface  | bootstrap         | no            | E10    |
     """
     c = lambda n, x, l, a="owner", d=frozenset(): CrateSpec(n, x, l, a, d)
     assert metadata_violations(c("missing", "", "", "")), "R2"
@@ -148,3 +183,21 @@ def selftest() -> None:
     assert dependency_violations(
         [c("tool", "devtools", "tooling", d=frozenset({"infra"})), c("infra", "control", "infrastructure")]
     ) == [], "R7 devtool"
+    assert dependency_violations(
+        [
+            c("managed-http", "protocol", "interface", d=frozenset({"sessions"})),
+            c("sessions", "coordinator", "application"),
+        ]
+    ) == [], "R9 protocol projects an application"
+    assert dependency_violations(
+        [
+            c("coordinator-startup", "coordinator", "bootstrap", d=frozenset({"managed-http"})),
+            c("managed-http", "protocol", "interface"),
+        ]
+    ) == [], "R10 process bootstrap mounts protocol"
+    assert dependency_violations(
+        [
+            c("sessions", "coordinator", "application", d=frozenset({"managed-http"})),
+            c("managed-http", "protocol", "interface"),
+        ]
+    ), "R10 application remains protocol-neutral"

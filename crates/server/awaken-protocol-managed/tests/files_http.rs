@@ -142,15 +142,15 @@ async fn upload_download_metadata_and_delete_roundtrip() {
 }
 
 #[tokio::test]
-async fn upload_fails_closed_without_a_composition_root_lifecycle_port() {
-    // Rule R2: ResourceDependencies requires a lifecycle owner before the
+async fn upload_requires_complete_resource_lifecycle_authority() {
+    // Rule R2: Resource authorities require a lifecycle owner before the
     // canonical ResourcesApplication can exist. This is compile-time structural
-    // coverage; the HTTP adapter accepts only the already-complete File port.
-    fn requires_complete_port(
+    // coverage; the HTTP adapter accepts only the already-complete File service.
+    fn requires_file_service(
         _: std::sync::Arc<dyn awaken_resource_contract::FileApplicationService>,
     ) {
     }
-    requires_complete_port(support::resources::ephemeral_resources().files());
+    requires_file_service(support::resources::ephemeral_resources().files());
 }
 
 #[tokio::test]
@@ -237,8 +237,12 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
     // registered → scope query and content download still succeed. This pins the
     // File-over-Session lifecycle edge without relying on a GET-time harvest.
     let resources = support::resources::ephemeral_resources();
-    let ports = resources.ports();
-    let blob_id = ports.file_store().put(b"finished report").await.unwrap();
+    let authorities = resources.authorities();
+    let blob_id = authorities
+        .file_store()
+        .put(b"finished report")
+        .await
+        .unwrap();
     let record = FileRecord {
         id: "file_output".into(),
         workspace_id: "test".into(),
@@ -257,7 +261,11 @@ async fn harvested_output_is_scoped_downloadable_and_independent_of_live_session
         )),
         deleted: false,
     };
-    ports.file_catalog().create_file(record).await.unwrap();
+    authorities
+        .file_catalog()
+        .create_file(record)
+        .await
+        .unwrap();
     let router = files_router(resources.files());
 
     let (status, body) = get(&router, "/v1/files?scope_id=deleted-session").await;
@@ -349,7 +357,7 @@ async fn workspace_capacity_is_checked_before_accepting_more_bytes() {
     // A synthetic catalog record tests the boundary without allocating 500 GiB.
     let resources = support::resources::ephemeral_resources();
     resources
-        .ports()
+        .authorities()
         .file_catalog()
         .create_file(FileRecord {
             id: "file_capacity".into(),

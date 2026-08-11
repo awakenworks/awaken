@@ -6,7 +6,7 @@
 use super::*;
 
 impl ManagedState {
-    /// ResourceReclaimer entry point. Composition roots call this after durable
+    /// ResourceReclaimer entry point. Session owners call this after durable
     /// stores and the Runtime Host are wired. It scans only Session application
     /// state; authorization principals and policy objects never cross this seam.
     pub async fn reconcile_resource_activations(&self) -> usize {
@@ -128,7 +128,7 @@ impl ManagedState {
                 )
             })
             .collect::<Vec<_>>();
-        awaken_session_contract::SessionInputResolver::compose(&provisional, &[])
+        awaken_session_contract::SessionInputResolver::effective_bindings(&provisional, &[])
             .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
 
         let mut inputs = Vec::with_capacity(parsed.len());

@@ -41,7 +41,7 @@ impl DreamSessionSource for FixedSessionFacts {
         Vec::new()
     }
 
-    fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
+    async fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
         Some(DreamUsage {
             input_tokens: 12,
             output_tokens: 3,
@@ -63,7 +63,7 @@ impl DreamSessionSource for AlternateSessionFacts {
         Vec::new()
     }
 
-    fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
+    async fn session_usage(&self, _workspace_id: &str, _session_id: &str) -> Option<DreamUsage> {
         Some(DreamUsage {
             input_tokens: 99,
             output_tokens: 8,
@@ -714,7 +714,7 @@ async fn sqlite_repository_restores_terminal_dreams_after_restart() {
     )
     .unwrap();
     reopened.bind_session_source(Arc::new(AlternateSessionFacts));
-    let restored = reopened.retrieve("default", &id).unwrap();
+    let restored = reopened.retrieve("default", &id).await.unwrap();
     let restored = serde_json::to_value(restored).unwrap();
     assert_eq!(restored["status"], "completed");
     assert_eq!(restored["outputs"], completed["outputs"]);

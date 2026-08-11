@@ -58,7 +58,7 @@ pub trait CacheVolumeInitializer: Send + Sync {
 }
 
 /// Default preparation: make the caller-declared directory mountable. Product
-/// compositions that know how to populate it install a richer initializer.
+/// deployments that know how to populate it install a richer initializer.
 struct FilesystemCacheVolumeInitializer;
 
 #[async_trait]
@@ -312,7 +312,9 @@ mod tests {
         }
     }
 
-    /// Cause/effect design:
+    /// FMECA: FM1 concurrent equal demand starts duplicate initialization and
+    /// corrupts or wastes shared cache capacity; FM2 distinct keys collapse to
+    /// one Ready result and expose stale contents. Cause/effect graph:
     /// C1=same key+path overlaps, C2=different key or path, C3=initializer succeeds.
     /// E1=C1 joins one initialization, E2=C2 owns independent initialization,
     /// E3=all successful waiters observe Ready.
@@ -337,7 +339,9 @@ mod tests {
         assert_eq!(initializer.calls.load(Ordering::SeqCst), 2);
     }
 
-    /// Cause/effect design:
+    /// FMECA: FM1 a failed initialization is cached as Ready, making later
+    /// Sessions consume incomplete contents; FM2 retry never becomes reusable.
+    /// Cause/effect graph:
     /// C1=initializer fails, C2=a later request retries, C3=retry succeeds.
     /// E1=failure is not cached as Ready, E2=the later call runs the initializer
     /// again, E3=the successful result becomes reusable.

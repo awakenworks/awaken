@@ -9,8 +9,8 @@ use awaken_runtime_contract::resolved::{ModelBinding, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use axum::Router;
 
-use super::composition::mount;
 use super::deployment::resource_host;
+use super::scenario_platform::mount;
 use super::{DelegatingModel, FAKE_ACP_SCRIPT, scenario_model, scenario_shell_argv};
 
 /// A Native coordinator whose roster proves Native, recursive-self, and ACP
@@ -60,8 +60,9 @@ pub fn build_delegation_router() -> Router {
         launch,
     ));
     let acp = Arc::new(awaken_run_executor_acp::AcpRunExecutor::new(source));
-    let host = resource_host(model, model_ref)
-        .with_acp(acp)
-        .with_agent_publications(Arc::new(publications));
-    mount(Arc::new(host))
+    let platform = resource_host(model, model_ref).map_host(|host| {
+        host.with_acp(acp)
+            .with_agent_publications(Arc::new(publications))
+    });
+    mount(platform)
 }

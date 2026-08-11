@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 /// Project the one executable ACP catalog into the management read model. This
-/// composition edge is intentionally the only place that knows both contexts;
+/// startup edge is intentionally the only place that knows both contexts;
 /// neither Control nor the executor keeps a synchronized adapter list.
 fn runtime_capabilities(
     observations: &[awaken_acp_application::AcpHostObservation],

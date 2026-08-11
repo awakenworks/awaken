@@ -1,4 +1,4 @@
-//! Out-of-band memory extraction: the composition-root wiring.
+//! Out-of-band memory extraction: the process-startup wiring.
 //!
 //! The persistence half — the `write_memory` tool, the extractor agent's config
 //! and prompts, the file store, and bounded recall — lives in `awaken-ext-memory`
@@ -827,7 +827,7 @@ impl MemoryStoreHandle for BoundMemory {
 }
 
 impl crate::host::SharedHost {
-    /// The Memory content data-plane port used by an outer composition root to
+    /// The Memory content data-plane port used by an outer process startup to
     /// construct a worker-side mounter. It carries no principal or policy state.
     pub fn memory_repository(&self) -> Arc<dyn awaken_resource_contract::MemoryRepository> {
         self.memory_stores.fs_handle()
@@ -858,7 +858,7 @@ impl crate::host::SharedHost {
             .expect("memory mounter lock poisoned") = Some(mounter);
     }
 
-    /// Whether an outer composition root already selected the Memory mount
+    /// Whether an outer process startup already selected the Memory mount
     /// adapter. Default platform wiring must preserve an explicit selection.
     #[must_use]
     pub fn has_memory_mounter(&self) -> bool {
@@ -1002,7 +1002,7 @@ impl crate::host::SharedHost {
     }
 
     /// Install one already-resolved MemoryStore binding for a thread. This is an
-    /// ACL/composition seam for embedders: ownership and authorization must have
+    /// ACL/startup seam for embedders: ownership and authorization must have
     /// completed before calling it; the Runtime Host receives only the opaque store
     /// id, pinned config, and maximum access.
     pub fn bind_resolved_memory(
@@ -1027,7 +1027,7 @@ impl crate::host::SharedHost {
     }
 
     /// Test-support override for fixtures built through the volatile constructor.
-    /// Product composition injects this authority during SharedHost construction.
+    /// Product startup injects this authority during SharedHost construction.
     #[cfg(any(test, feature = "test-support"))]
     pub fn install_memory_extraction_repository(
         &self,

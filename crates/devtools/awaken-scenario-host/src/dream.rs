@@ -1,4 +1,4 @@
-//! Deterministic Dream scenario composition shared by Rust and TypeScript E2E.
+//! Deterministic Dream scenario platform shared by Rust and TypeScript E2E.
 //!
 //! The scenario uses the production MemoryStore mounter and a scripted model that
 //! performs a real output-file write through the ordinary tool loop.

@@ -1,4 +1,4 @@
-//! Composition-root wiring for skills.
+//! Runtime Skill catalog and execution setup.
 //!
 //! Skills bridge three things only the host sees together: the sandbox
 //! environment (to discover workspace skills and resolve `${SKILL_DIR}`), the

@@ -1,8 +1,9 @@
 //! Session-owned admission in front of the neutral Run application port.
 //!
 //! Runtime Host executes an already-admitted Run. Session creation/recovery is
-//! application policy, so it is composed here once for every public protocol.
+//! application policy, so it is configured here once for every public protocol.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
@@ -26,6 +27,20 @@ pub trait SessionRunAdmission: Send + Sync {
         thread_id: &str,
         agent_id: &str,
     ) -> Result<(), RunApplicationError>;
+}
+
+/// Protocol-independent request to create a Session from one published Agent
+/// profile. The Session application resolves Environment, MCP, Resources,
+/// credentials, tools, and immutable execution identity exactly once.
+pub struct CreateProfiledSessionCommand {
+    pub owner_scope: String,
+    pub session_id: String,
+    pub agent_id: String,
+    pub model: Option<String>,
+    pub application_contribution_required: bool,
+    pub title: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+    pub tools: Option<SessionToolConfiguration>,
 }
 
 pub struct RecoveredSessionProjection {
@@ -211,21 +226,29 @@ impl SessionApplication {
         Ok(())
     }
 
-    async fn create_default_run_session(
+    pub async fn create_profiled_session(
         &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<(), RunApplicationError> {
-        let profile = self.session_profile(workspace_id, agent_id);
-        if profile.is_none() && self.agent_unavailable(workspace_id, agent_id) {
+        command: CreateProfiledSessionCommand,
+    ) -> Result<awaken_session_contract::PersistedSession, RunError> {
+        let CreateProfiledSessionCommand {
+            owner_scope,
+            session_id,
+            agent_id,
+            model: requested_model,
+            application_contribution_required,
+            title,
+            metadata,
+            tools: requested_tools,
+        } = command;
+        let profile = self.session_profile(&owner_scope, &agent_id);
+        if self.agent_unavailable(&owner_scope, &agent_id) {
             return Err(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             )));
         }
-        let capabilities = self.capabilities_for(thread_id);
+        let capabilities = self.capabilities_for(&session_id);
         let capability_tools = SessionToolConfiguration::from_capabilities(&capabilities);
-        let tools = profile.as_ref().map_or_else(
+        let inherited_tools = profile.as_ref().map_or_else(
             || capability_tools.clone(),
             |profile| SessionToolConfiguration {
                 toolsets: if profile.toolsets.is_empty() {
@@ -236,11 +259,12 @@ impl SessionApplication {
                 client_tools: profile.client_tools.clone(),
             },
         );
+        let tools = requested_tools.unwrap_or(inherited_tools);
         let skills = profile
             .as_ref()
             .map(|profile| profile.skills.clone())
             .unwrap_or_default();
-        self.validate_session_skill_total(workspace_id, agent_id, profile.as_ref(), &skills)?;
+        self.validate_session_skill_total(&owner_scope, &agent_id, profile.as_ref(), &skills)?;
         let mcp_candidates = profile
             .as_ref()
             .into_iter()
@@ -288,7 +312,7 @@ impl SessionApplication {
             .await?
             .snapshot;
         let mut resources = self.resolve_session_inputs(
-            workspace_id,
+            &owner_scope,
             profile
                 .as_ref()
                 .map(|profile| profile.resources.as_slice())
@@ -296,18 +320,28 @@ impl SessionApplication {
             &[],
         )?;
         if !skills.is_empty() {
-            resources.skills = Some(self.resolve_session_skills(workspace_id, &skills).await?);
+            resources.skills = Some(self.resolve_session_skills(&owner_scope, &skills).await?);
         }
         self.pin_repository_credentials(
-            workspace_id,
+            &owner_scope,
             &environment.credential_realization.resource_holder,
             &mut resources,
         )
         .await
         .map_err(preparation_error)?;
-        let model = profile
-            .as_ref()
-            .and_then(|profile| profile.model.clone())
+        if let (Some(requested), Some(published)) = (
+            requested_model.as_deref(),
+            profile
+                .as_ref()
+                .and_then(|profile| profile.model.as_deref()),
+        ) && requested != published
+        {
+            return Err(RunError::bad_request(
+                "agent_model_override_unpublished: publish or update an Agent with this model id before creating the Session",
+            ));
+        }
+        let model = requested_model
+            .or_else(|| profile.as_ref().and_then(|profile| profile.model.clone()))
             .unwrap_or_else(|| self.model());
         let execution_model_ref = profile
             .as_ref()
@@ -317,7 +351,7 @@ impl SessionApplication {
             control: ControlSessionCreationInputs {
                 environment,
                 runtime_placement: self.runtime_placement(),
-                agent_id: agent_id.to_string(),
+                agent_id,
                 model,
                 execution_model_ref,
                 runtime: published_backend_ref.map(str::to_string),
@@ -333,19 +367,42 @@ impl SessionApplication {
                 resources,
                 initial_mcp,
             },
-            application: ApplicationContributionState::Absent,
+            application: if application_contribution_required {
+                ApplicationContributionState::Required
+            } else {
+                ApplicationContributionState::Absent
+            },
         };
         self.create_session(CreateSessionCommand {
-            owner_scope: workspace_id.to_string(),
-            session_id: thread_id.to_string(),
+            owner_scope,
+            session_id,
             intent,
-            title: None,
-            metadata: Default::default(),
+            title,
+            metadata,
             tools,
         })
         .await
-        .map_err(creation_error)?;
-        Ok(())
+        .map_err(creation_error)
+    }
+
+    async fn create_default_run_session(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+        agent_id: &str,
+    ) -> Result<(), RunApplicationError> {
+        self.create_profiled_session(CreateProfiledSessionCommand {
+            owner_scope: workspace_id.to_string(),
+            session_id: thread_id.to_string(),
+            agent_id: agent_id.to_string(),
+            model: None,
+            application_contribution_required: false,
+            title: None,
+            metadata: Default::default(),
+            tools: None,
+        })
+        .await
+        .map(|_| ())
     }
 
     pub async fn admit_run_session(

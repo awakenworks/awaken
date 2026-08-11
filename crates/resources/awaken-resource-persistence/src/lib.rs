@@ -8,9 +8,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use awaken_resource_application::{
-    ResourceDependencies, ResourcesApplication, build_resource_component,
-};
+use awaken_resource_application::{ResourceAuthorities, ResourcesApplication};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SchemaMode {
@@ -63,14 +61,14 @@ pub fn open_embedded(root: &Path) -> Result<ResourcesApplication, ResourcePersis
     );
     let skills = awaken_skill_store::FsSkillStore::open(root.join("skills"))
         .map_err(|error| ResourcePersistenceError::Skill(error.to_string()))?;
-    Ok(application(ResourceDependencies {
-        resource_catalog: resources.clone(),
-        file_store: files.clone(),
-        file_catalog: files,
-        memory_repository: Arc::new(memory),
-        skill_store: Arc::new(skills),
-        reclamation: resources,
-    }))
+    Ok(ResourcesApplication::new(ResourceAuthorities::new(
+        resources.clone(),
+        files.clone(),
+        files,
+        Arc::new(memory),
+        Arc::new(skills),
+        resources,
+    )))
 }
 
 /// Connect all Resources authorities to the same PostgreSQL installation.
@@ -108,14 +106,14 @@ pub async fn open_postgres(
         SchemaMode::Verify => awaken_skill_store::PgSkillStore::connect_existing(url).await,
     }
     .map_err(|error| ResourcePersistenceError::Skill(error.to_string()))?;
-    Ok(application(ResourceDependencies {
-        resource_catalog: resources.clone(),
-        file_store: files.clone(),
-        file_catalog: files,
-        memory_repository: Arc::new(memory),
-        skill_store: Arc::new(skills),
-        reclamation: resources,
-    }))
+    Ok(ResourcesApplication::new(ResourceAuthorities::new(
+        resources.clone(),
+        files.clone(),
+        files,
+        Arc::new(memory),
+        Arc::new(skills),
+        resources,
+    )))
 }
 
 /// Hermetic Resources application for tests and scenario processes.
@@ -126,18 +124,14 @@ pub fn ephemeral() -> Result<ResourcesApplication, ResourcePersistenceError> {
         awaken_resource_store::SqliteResourceStore::in_memory()
             .map_err(|error| ResourcePersistenceError::Catalog(error.to_string()))?,
     );
-    Ok(application(ResourceDependencies {
-        resource_catalog: resources.clone(),
-        file_store: files.clone(),
-        file_catalog: files,
-        memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-        skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-        reclamation: resources,
-    }))
-}
-
-fn application(dependencies: ResourceDependencies) -> ResourcesApplication {
-    ResourcesApplication::new(build_resource_component(dependencies))
+    Ok(ResourcesApplication::new(ResourceAuthorities::new(
+        resources.clone(),
+        files.clone(),
+        files,
+        Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+        Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+        resources,
+    )))
 }
 
 #[cfg(test)]
@@ -147,20 +141,20 @@ mod tests {
     #[test]
     fn embedded_selection_returns_one_complete_application() {
         // Cause/effect decision table:
-        // R1 writable root -> one application exposing all six backend ports and
+        // R1 writable root -> one application exposing all six authorities and
         // stable MemoryStore/purge service identities; R2 root is a file -> typed
         // startup error and no partial application. PostgreSQL Migrate/Verify are
         // covered by each adapter's integration suite; this test owns atomic
         // embedded selection and the no-parallel-application invariant.
         let root = tempfile::tempdir().expect("R1 root");
         let app = open_embedded(root.path()).expect("R1 complete Resources application");
-        let ports = app.ports();
-        let _ = ports.resource_catalog();
-        let _ = ports.file_store();
-        let _ = ports.file_catalog();
-        let _ = ports.memory_repository();
-        let _ = ports.skill_store();
-        let _ = ports.reclamation();
+        let authorities = app.authorities();
+        let _ = authorities.resource_catalog();
+        let _ = authorities.file_store();
+        let _ = authorities.file_catalog();
+        let _ = authorities.memory_repository();
+        let _ = authorities.skill_store();
+        let _ = authorities.reclamation();
         assert!(Arc::ptr_eq(&app.memory_stores(), &app.memory_stores()));
         assert!(Arc::ptr_eq(&app.purge_scheduler(), &app.purge_scheduler()));
 

@@ -1,4 +1,4 @@
-//! A composition-root registry mapping a human agent id to its compiled
+//! A process-startup registry mapping a human agent id to its compiled
 //! [`ExecutableAgentSnapshot`].
 //!
 //! Every locally-runnable agent — the main assistant, native delegates, and the

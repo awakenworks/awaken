@@ -240,7 +240,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let restarted = ManagedState::from_application(application);
+        let restarted = ManagedState::from_application(Arc::new(application));
 
         assert_eq!(
             restarted.reconcile_session_realizations().await,

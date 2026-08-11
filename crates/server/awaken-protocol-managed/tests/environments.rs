@@ -576,7 +576,7 @@ async fn snapshot_normalizes_the_networking_policy() {
 
 #[tokio::test]
 async fn environment_application_replay_converges_one_environment_and_healthcheck() {
-    // Causal graph: C1 one composition -> E1 every protocol accessor returns the
+    // Causal graph: C1 one startup -> E1 every protocol accessor returns the
     // same application allocation; C2 first stable command -> E2 Environment plus
     // healthcheck; C3 exact replay -> E3 same Environment and one healthcheck; C4
     // conflicting payload -> E4 registry rejection before another side effect.

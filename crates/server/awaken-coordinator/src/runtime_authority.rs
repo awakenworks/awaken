@@ -81,7 +81,7 @@ impl DurableRuntimeAuthority {
         Self::open_with_postgres_pool(deployment, schema, postgres_pool).await
     }
 
-    /// Open every Runtime persistence adapter over the composition root's one
+    /// Open every Runtime persistence adapter over the process's one
     /// process pool when Postgres is selected. SQLite callers pass no pool.
     pub async fn open_with_postgres_pool(
         deployment: &DeploymentConfig,

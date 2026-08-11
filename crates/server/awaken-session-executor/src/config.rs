@@ -311,7 +311,7 @@ pub(crate) fn server_config(
         .build()
 }
 
-/// The plugins this server composes, advertised with their config schema so a
+/// The plugins this server configures, advertised with their config schema so a
 /// config frontend can discover and author each section. One place declares a
 /// plugin's id and its schema, so registration and discovery cannot drift.
 pub fn platform_plugin_capabilities() -> Vec<PluginCapability> {
@@ -320,7 +320,7 @@ pub fn platform_plugin_capabilities() -> Vec<PluginCapability> {
 
 /// Capability projection for an externally extended WebSearch registry. The
 /// same descriptors used for dispatch derive this schema, so an embedding
-/// composition can advertise custom providers without modifying core enums.
+/// startup can advertise custom providers without modifying core enums.
 pub fn platform_plugin_capabilities_with_web_search(
     providers: &WebSearchProviderRegistry,
 ) -> Vec<PluginCapability> {
@@ -377,7 +377,7 @@ pub fn authorable_config_sections_with_web_search(
 }
 
 /// The server's base authorization gate (the declarative permission policy). A
-/// composition-root helper so a caller can wrap it (e.g. to observe file paths for
+/// process-startup helper so a caller can wrap it (e.g. to observe file paths for
 /// conditional skills) and re-inject it.
 pub(crate) fn server_gate() -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
     server_gate_allowing(&[])
@@ -651,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_runtime_registers_the_plugin_and_validates_config() {
-        // A1: the composed runtime has the plugin (a valid section resolves).
+        // A1: the configured runtime has the plugin (a valid section resolves).
         // A3: a malformed section fails closed at publish-time validation.
         let tmp = tempfile::tempdir().unwrap();
         let sandbox = awaken_sandbox_local::LocalProvider::new(tmp.path())

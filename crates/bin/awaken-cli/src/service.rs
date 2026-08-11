@@ -61,7 +61,7 @@ pub async fn run_service_binary(role: ServiceRole) -> ExitCode {
     }
 }
 
-/// Run the exact Control, Coordinator, or AllInOne composition selected by the
+/// Run the exact Control, Coordinator, or AllInOne startup selected by the
 /// caller. Role-specific binaries and `awaken <role>` both terminate here.
 pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), String> {
     let deployment_role = role.deployment_role();
@@ -109,30 +109,30 @@ pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), Str
     result
 }
 
-/// Serve a caller-composed Control assembly through Awaken's canonical public,
+/// Serve a caller-configured Control process through Awaken's canonical public,
 /// private, admin, health, failure-observation, and graceful-drain lifecycle.
 ///
 /// Closed deployments may inject publication SPIs while retaining this single
 /// service lifecycle and listener owner.
-pub async fn serve_control_assembly(
+pub async fn serve_prepared_control(
     deployment: ResolvedDeployment,
-    assembly: crate::ProcessAssembly,
+    process: crate::PreparedProcess,
 ) -> Result<(), String> {
     validate_prebuilt_control_deployment(&deployment)?;
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     awaken_observability::init(&deployment.observability);
-    let result = serve_process_assembly(deployment, ServiceRole::Control, assembly, None).await;
+    let result = serve_prepared_process(deployment, ServiceRole::Control, process, None).await;
     awaken_observability::shutdown();
     result
 }
 
 fn validate_prebuilt_control_deployment(deployment: &ResolvedDeployment) -> Result<(), String> {
     if deployment.role != Role::Control {
-        return Err("prebuilt Control assembly requires role = \"control\"".into());
+        return Err("prebuilt Control process requires role = \"control\"".into());
     }
     if deployment.mode != crate::config::OperatingMode::Server {
-        return Err("prebuilt Control assembly requires mode = \"server\"".into());
+        return Err("prebuilt Control process requires mode = \"server\"".into());
     }
     Ok(())
 }
@@ -185,39 +185,39 @@ async fn serve_resolved(
     role: ServiceRole,
     prepared_worker: Option<crate::PreparedLocalWorker>,
 ) -> Result<(), String> {
-    let assembly = match role {
+    let process = match role {
         ServiceRole::AllInOne => {
-            crate::build_all_in_one_assembly(
+            crate::prepare_all_in_one_process(
                 &deployment,
                 seal_key.as_ref().expect("AllInOne owns Control seal key"),
             )
             .await?
         }
         ServiceRole::Control => {
-            crate::build_control_assembly(
+            crate::prepare_control_process(
                 &deployment,
                 seal_key.as_ref().expect("Control owns Control seal key"),
             )
             .await?
         }
-        ServiceRole::Coordinator => crate::build_coordinator_assembly(&deployment).await?,
+        ServiceRole::Coordinator => crate::prepare_coordinator_process(&deployment).await?,
     };
-    serve_process_assembly(deployment, role, assembly, prepared_worker).await
+    serve_prepared_process(deployment, role, process, prepared_worker).await
 }
 
-async fn serve_process_assembly(
+async fn serve_prepared_process(
     deployment: ResolvedDeployment,
     role: ServiceRole,
-    assembly: crate::ProcessAssembly,
+    process: crate::PreparedProcess,
     prepared_worker: Option<crate::PreparedLocalWorker>,
 ) -> Result<(), String> {
-    let local_setup = assembly.local_setup;
-    let registration_supervisor = assembly.registration_supervisor;
-    let service_lifecycle = assembly.service_lifecycle;
-    let public_app = assembly.public_router.layer(axum::middleware::from_fn(
+    let local_setup = process.local_setup;
+    let registration_supervisor = process.registration_supervisor;
+    let service_lifecycle = process.service_lifecycle;
+    let public_app = process.public_router.layer(axum::middleware::from_fn(
         awaken_protocol_managed::enforce_managed_beta,
     ));
-    let private_app = assembly.private_router;
+    let private_app = process.private_router;
     let controller = crate::DrainController::new();
     controller.set_service_lifecycle(service_lifecycle.clone());
     if let Some(supervisor) = registration_supervisor {
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn service_roles_map_to_exact_deployment_authorities() {
-        // Cause/effect decision table: S1 AllInOne -> union composition and
+        // Cause/effect decision table: S1 AllInOne -> union startup and
         // `awaken`; S2 Control -> Control authority and role binary; S3
         // Coordinator -> Coordinator authority and role binary. Worker has no
         // representable ServiceRole and therefore cannot enter this lifecycle.

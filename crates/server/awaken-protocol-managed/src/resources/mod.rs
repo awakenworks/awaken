@@ -1,4 +1,4 @@
-//! One Resources HTTP adapter composition over the canonical application ports.
+//! Resources HTTP routes over the canonical application services.
 
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub struct ResourcesRouterInput {
 }
 
 /// Mount all public resource families once. File, Memory, and Skill retain their
-/// independent aggregates and routes; this function owns only HTTP composition.
+/// independent aggregates and routes; this function only joins their HTTP routes.
 pub fn resources_router(input: ResourcesRouterInput) -> Router {
     files_router(input.files)
         .merge(memory_stores_router(input.memories, input.memory_stores))
@@ -35,7 +35,7 @@ pub fn resources_router(input: ResourcesRouterInput) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_resource_application::ResourceDependencies;
+    use awaken_resource_application::ResourceAuthorities;
 
     #[tokio::test]
     async fn one_resources_router_mounts_each_public_family_once() {
@@ -49,22 +49,21 @@ mod tests {
         let catalog = Arc::new(
             awaken_resource_store::SqliteResourceStore::in_memory().expect("resource catalog"),
         );
-        let application = awaken_resource_application::ResourcesApplication::new(
-            awaken_resource_application::build_resource_component(ResourceDependencies {
-                resource_catalog: catalog.clone(),
-                file_store: files.clone(),
-                file_catalog: files,
-                memory_repository: Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
-                skill_store: Arc::new(awaken_skill_store::InMemorySkillStore::new()),
-                reclamation: catalog,
-            }),
-        );
-        let ports = application.ports();
+        let application =
+            awaken_resource_application::ResourcesApplication::new(ResourceAuthorities::new(
+                catalog.clone(),
+                files.clone(),
+                files,
+                Arc::new(awaken_memory_store::VolatileMemoryRepository::new()),
+                Arc::new(awaken_skill_store::InMemorySkillStore::new()),
+                catalog,
+            ));
+        let authorities = application.authorities();
         let router = resources_router(ResourcesRouterInput {
             files: application.files(),
-            memories: ports.memory_repository(),
+            memories: authorities.memory_repository(),
             memory_stores: application.memory_stores(),
-            skills: Some(ports.skill_store()),
+            skills: Some(authorities.skill_store()),
             purge: application.purge_scheduler(),
         });
         for (path, rule) in [

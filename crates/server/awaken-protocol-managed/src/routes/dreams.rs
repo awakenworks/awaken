@@ -49,6 +49,7 @@ async fn retrieve(
 ) -> Result<Json<Dream>, (StatusCode, Json<ErrorResponse>)> {
     state
         .retrieve(&scope(workspace), &id)
+        .await
         .map(Json)
         .map_err(error_response)
 }
@@ -61,6 +62,7 @@ async fn list(
     let params = parse_list_query(query.as_deref()).map_err(error_response)?;
     state
         .list(&scope(workspace), params)
+        .await
         .map(Json)
         .map_err(error_response)
 }
@@ -125,6 +127,7 @@ async fn archive(
 ) -> Result<Json<Dream>, (StatusCode, Json<ErrorResponse>)> {
     state
         .archive(&scope(workspace), &id)
+        .await
         .map(Json)
         .map_err(error_response)
 }

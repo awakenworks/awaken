@@ -1,4 +1,4 @@
-//! Coordinator-owned Session application state and ports.
+//! Coordinator-owned Session application state and required services.
 //!
 //! Protocol adapters retain DTO projection, route parsing, and transient stream
 //! caches.  This crate owns the application collaborators and durable Session
@@ -19,15 +19,15 @@ use awaken_session_contract::{
 
 mod mutation;
 pub use mutation::SessionMutationError;
-mod ports;
-pub use ports::{
+mod session_services;
+pub use session_services::{
     RepositoryCredentialIngress, ResolvedSessionEnvironment, SessionCredentialSource,
     SessionEnvironmentSource,
 };
 include!("application.rs");
 mod activity;
 mod live_inbox;
-pub use activity::SessionActivityError;
+pub use activity::{SessionActivityError, SessionMessageOutcome};
 mod contribution;
 mod creation;
 pub use creation::{CreateSessionCommand, SessionCreationError};
@@ -48,8 +48,8 @@ pub use resource_reconciliation::{
     SessionResourcePurgeGuard,
 };
 pub use run_admission::{
-    AdmittedRunApplication, RecoveredSessionProjection, SessionProjectionRecoveryError,
-    SessionRunAdmission,
+    AdmittedRunApplication, CreateProfiledSessionCommand, RecoveredSessionProjection,
+    SessionProjectionRecoveryError, SessionRunAdmission,
 };
 pub use runtime_commands::SessionRepositoryResourceInput;
 mod update;

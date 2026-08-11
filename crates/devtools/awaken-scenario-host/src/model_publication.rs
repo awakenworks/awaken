@@ -1,4 +1,4 @@
-//! Test composition adapter for the scenario host's live model catalog.
+//! Test model-publication adapter for the scenario host's live model catalog.
 
 use std::sync::Arc;
 

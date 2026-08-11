@@ -2,7 +2,7 @@
 //! e2e scenarios (echo/probe/tool/statemachine/memory/…). Each model scripts
 //! exactly the behavior its scenario asserts, so the server runs end-to-end in
 //! CI without an API key. Split from `lib.rs` (which keeps the routers and
-//! composition roots).
+//! process entry points).
 
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_agent_contract::agent::message::Role;

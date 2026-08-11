@@ -170,7 +170,7 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
             let incarnation_id = json_string_field(body, "incarnation_id");
             let manifest = json_object_field(body, "manifest");
             format!(
-                r#"{{"worker":{{"snapshot":{{"identity":{{"worker_id":"{worker_id}","incarnation_id":"{incarnation_id}","generation":1}},"state":"starting","manifest":{manifest},"capability_fingerprint":"composition-test","in_flight":0,"expires_at_ms":60000}},"heartbeat_sequence":0,"registered_at_ms":0,"heartbeat_at_ms":0,"drain_deadline_ms":null}}}}"#
+                r#"{{"worker":{{"snapshot":{{"identity":{{"worker_id":"{worker_id}","incarnation_id":"{incarnation_id}","generation":1}},"state":"starting","manifest":{manifest},"capability_fingerprint":"startup-test","in_flight":0,"expires_at_ms":60000}},"heartbeat_sequence":0,"registered_at_ms":0,"heartbeat_at_ms":0,"drain_deadline_ms":null}}}}"#
             )
         }
         "/v1/worker/heartbeat" => {
@@ -188,7 +188,7 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
             r#"{"mutation":"applied"}"#.to_string()
         }
         "/v1/worker/dispatch/claim" => r#"{"claimed":null}"#.to_string(),
-        _ => format!(r#"{{"error":"unexpected composition-test path: {path}"}}"#),
+        _ => format!(r#"{{"error":"unexpected startup-test path: {path}"}}"#),
     };
     write!(
         stream,

@@ -210,7 +210,7 @@ pub fn process_admin_router(ctrl: Arc<DrainController>) -> Router {
 /// at scrape time: `awaken_brain_active_streams` (connection load) and
 /// `awaken_brain_draining` (1 while draining, so an autoscaler/dashboard sees the
 /// scale-in state — complementary to the `/readyz` 503 the k8s Service routes on).
-/// Call once at the composition root, AFTER `awaken_observability::init`, and keep the
+/// Call once at the process startup, AFTER `awaken_observability::init`, and keep the
 /// returned handles for the process lifetime so the observable callbacks stay live.
 #[must_use]
 pub fn register_active_streams_gauge(

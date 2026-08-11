@@ -1,4 +1,4 @@
-//! Narrow Coordinator composition ports exposed by the runtime Host.
+//! Runtime services exposed to a database-less execution Worker.
 
 use std::sync::Arc;
 
@@ -82,15 +82,17 @@ mod tests {
     }
 
     #[test]
-    fn remote_artifact_port_removes_the_local_file_command_path() {
-        // Composition FMECA/cause-effect rule: C1 test/embedded Host owns a local
-        // File application; C2 composition installs the database-less Worker's
-        // remote artifact port. Effect E1 only the remote port remains and local
-        // File management authority is absent. Rule P1 C1+C2=>E1 prevents the
-        // Worker from selecting an unfenced parallel command path.
+    fn remote_artifact_publisher_removes_local_file_commands() {
+        // FMECA: a database-less Worker retaining local File commands could
+        // publish outside the Coordinator's fenced Resource authority.
+        // Cause/effect graph: C1 test/embedded Host owns a local File
+        // application; C2 startup installs the Worker's remote artifact
+        // publisher; E1 only remote publication remains and local File commands
+        // are absent. Decision rule P1: C1+C2 => E1. This prevents an unfenced
+        // parallel command path.
         let host = SharedHost::new(
             Arc::new(crate::NoModelConfiguredExecutor),
-            "composition-fixture",
+            "startup-fixture",
         );
         assert!(host.file_application().is_some(), "P1/C1");
         let host = host.with_artifact_publisher(Arc::new(RemotePublisher));
