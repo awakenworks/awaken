@@ -147,6 +147,13 @@ truth. No second format field is added to `SandboxCapabilities`, and no
 checkpoint-provider registry is introduced. Admission rejects a provider or
 Worker that cannot honor the exact frozen format.
 
+The canonical deployment builder returns the provider together with its
+never-used capacity, creation mounts, and CacheVolume initializer. A
+composition that adds a checkpoint implementation decorates only that provider
+and returns the complete component set to the same Worker builder. It must not
+reconstruct the Kubernetes/container provider or discard the paired capacity
+owners merely to add continuation.
+
 ### D4: environment idleness is a whole-owner quiescence condition
 
 The public Session becomes idle only after every activity that uses the shared
