@@ -131,12 +131,16 @@ pub async fn run_turn_with_config(
     //    capabilities (default `ClientCapabilities`), so those agent requests are
     //    refused fail-closed later. Read back the agent's capabilities to gate a
     //    session resume fail-closed (only load when the agent advertises it).
-    let init = initialize_agent(
-        &mut wire,
-        sink,
-        &mut seq,
-        resolver,
-        config.auth_method_id.as_deref(),
+    let init = handshake_step(
+        config.handshake_step_deadline,
+        "initialize",
+        initialize_agent(
+            &mut wire,
+            sink,
+            &mut seq,
+            resolver,
+            config.auth_method_id.as_deref(),
+        ),
     )
     .await?;
     let can_load = init.agent_capabilities.load_session;
@@ -157,7 +161,13 @@ pub async fn run_turn_with_config(
                 LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
             )
             .await?;
-            match pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver).await? {
+            match handshake_step(
+                config.handshake_step_deadline,
+                "session/load",
+                pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver),
+            )
+            .await?
+            {
                 RpcResponse::Result(result) => {
                     let resp: LoadSessionResponse = parse(result)?;
                     let supports_session_model = resp.models.is_some();
@@ -177,13 +187,17 @@ pub async fn run_turn_with_config(
                     // lifetime of one ACP process (Kimi Code is one example). No
                     // prompt has been sent yet, so opening a fresh session is a safe
                     // compatibility fallback and cannot replay agent work.
-                    let new_session = open_new_session(
-                        &mut wire,
-                        sink,
-                        &mut seq,
-                        resolver,
-                        &cwd,
-                        &config.mcp_servers,
+                    let new_session = handshake_step(
+                        config.handshake_step_deadline,
+                        "session/new",
+                        open_new_session(
+                            &mut wire,
+                            sink,
+                            &mut seq,
+                            resolver,
+                            &cwd,
+                            &config.mcp_servers,
+                        ),
                     )
                     .await?;
                     let session_id = new_session.session_id.clone();
@@ -197,13 +211,17 @@ pub async fn run_turn_with_config(
             }
         }
         _ => {
-            let new_session = open_new_session(
-                &mut wire,
-                sink,
-                &mut seq,
-                resolver,
-                &cwd,
-                &config.mcp_servers,
+            let new_session = handshake_step(
+                config.handshake_step_deadline,
+                "session/new",
+                open_new_session(
+                    &mut wire,
+                    sink,
+                    &mut seq,
+                    resolver,
+                    &cwd,
+                    &config.mcp_servers,
+                ),
             )
             .await?;
             let session_id = new_session.session_id.clone();
@@ -344,6 +362,21 @@ pub async fn run_turn_with_config(
     sink.append(seq, &AcpProjectedEvent::TurnEnd { reason })
         .await?;
     Ok(reason)
+}
+
+async fn handshake_step<T>(
+    deadline: std::time::Duration,
+    stage: &'static str,
+    operation: impl std::future::Future<Output = Result<T, AcpError>>,
+) -> Result<T, AcpError> {
+    tokio::time::timeout(deadline, operation)
+        .await
+        .map_err(|_| {
+            AcpError::Io(format!(
+                "ACP {stage} handshake timed out after {} ms",
+                deadline.as_millis()
+            ))
+        })?
 }
 
 /// Read messages until the response to `target_id` arrives, meanwhile projecting
@@ -611,6 +644,74 @@ mod tests {
             option.choices[1].description.as_deref(),
             Some("More reasoning")
         );
+    }
+
+    #[tokio::test]
+    async fn initialize_that_keeps_the_channel_open_cannot_hold_the_turn_forever() {
+        // FMECA: a live adapter process can stop replying before any prompt or
+        // projected fact (high occurrence impact, otherwise no Flow detection).
+        // Cause graph / decision table: open channel + missing initialize reply ->
+        // bounded IO failure; an explicit reply remains the ordinary handshake.
+        let (mut ours, theirs) = channel();
+        let adapter = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            assert_eq!(
+                io.read().await.unwrap()["method"],
+                AGENT_METHOD_NAMES.initialize
+            );
+            std::future::pending::<()>().await
+        });
+        let resolver = RecordingResolver::default();
+        let mut config = TurnConfig::new(&resolver);
+        config.handshake_step_deadline = std::time::Duration::from_millis(20);
+        let mut sink = RecordingSink::default();
+
+        let error = run_turn_with_config(ours.as_mut(), "not sent", &mut sink, &mut config, None)
+            .await
+            .expect_err("a silent initialize must be bounded");
+
+        assert!(
+            matches!(&error, AcpError::Io(detail) if detail.contains("initialize handshake timed out"))
+        );
+        assert!(sink.events.is_empty(), "no prompt-side effect occurred");
+        adapter.abort();
+    }
+
+    #[tokio::test]
+    async fn new_session_that_keeps_the_channel_open_cannot_hold_the_turn_forever() {
+        // Same failure mode after a successful initialize: the stage label must
+        // preserve causal diagnosis and the prompt must still remain unsent.
+        let (mut ours, theirs) = channel();
+        let adapter = tokio::spawn(async move {
+            let mut io = AgentIo::new(theirs);
+            assert_eq!(
+                io.read().await.unwrap()["method"],
+                AGENT_METHOD_NAMES.initialize
+            );
+            io.write_line(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+            )
+            .await;
+            assert_eq!(
+                io.read().await.unwrap()["method"],
+                AGENT_METHOD_NAMES.session_new
+            );
+            std::future::pending::<()>().await
+        });
+        let resolver = RecordingResolver::default();
+        let mut config = TurnConfig::new(&resolver);
+        config.handshake_step_deadline = std::time::Duration::from_millis(20);
+        let mut sink = RecordingSink::default();
+
+        let error = run_turn_with_config(ours.as_mut(), "not sent", &mut sink, &mut config, None)
+            .await
+            .expect_err("a silent session/new must be bounded");
+
+        assert!(
+            matches!(&error, AcpError::Io(detail) if detail.contains("session/new handshake timed out"))
+        );
+        assert!(sink.events.is_empty(), "no prompt-side effect occurred");
+        adapter.abort();
     }
 
     /// A scripted in-process ACP agent speaking real JSON-RPC over the duplex: it
