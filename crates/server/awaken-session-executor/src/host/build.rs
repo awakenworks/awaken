@@ -1120,6 +1120,39 @@ impl SharedHost {
         self
     }
 
+    /// Install the complete result of the canonical deployment builder after a
+    /// downstream composition has decorated its provider. Capacity, creation
+    /// mounts, and cache initialization remain paired with that same provider
+    /// construction instead of being rebuilt on a parallel path.
+    #[must_use]
+    pub fn with_session_container_environment_components(
+        mut self,
+        components: crate::ContainerEnvironmentComponents,
+        hand_factory: Arc<dyn crate::HandExecutorFactory>,
+    ) -> Self {
+        let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
+        self.session_provider = crate::session_environment::SessionEnvironmentProvider::
+            container_with_capacity_and_hand_idle(
+                components.provider,
+                components.capacity,
+                components.extra_mounts,
+                hand_factory,
+                hand_bin,
+                std::time::Duration::from_secs(
+                    self.deployment.sandbox.container_hand_idle_secs,
+                ),
+            );
+        if let Some(initializer) = components.cache_volume_initializer {
+            self.cache_volume_prewarmer =
+                crate::cache_volume::CacheVolumePrewarmer::new(initializer);
+        }
+        self.session_provider_explicit = true;
+        if let Some(mounter) = self.memory_mounter() {
+            self.session_provider.install_memory_mounter(mounter);
+        }
+        self
+    }
+
     /// Replace the default directory-only CacheVolume preparation with one
     /// product-specific initializer. Explicit warmup and Session creation keep
     /// sharing the same single-flight owner.

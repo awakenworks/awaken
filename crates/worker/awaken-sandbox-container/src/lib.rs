@@ -1643,6 +1643,12 @@ pub trait ContainerEnvironmentProvider: Send + Sync {
         }
     }
 
+    /// Exact filesystem-continuation formats implemented end to end by this
+    /// provider. The Worker projects these into its existing manifest authority.
+    fn checkpoint_formats(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     fn install_memory_mounter(&self, _mounter: Arc<dyn pc::MemoryMounter>) {}
 
     fn install_secret_broker(&self, _broker: Arc<dyn pc::SecretBroker>) {}
