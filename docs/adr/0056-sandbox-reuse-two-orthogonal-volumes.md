@@ -7,9 +7,9 @@
   owner for Workdir, namespace, Docker, Podman, and Kubernetes environments;
   `WarmContainerPool` supplies unused, shape-fenced container capacity; durable
   environment bindings support restart adoption and competing-adopter fencing;
-  Docker/Podman crash GC and Kubernetes owner references close substrate-specific
-  reclamation. Native, ACP, and delegated child attempts use the same
-  Session-owned environment. The unused generic `SandboxManager` was removed:
+  durable referenced-set reconciliation and Kubernetes owner references close
+  substrate-specific reclamation. Native, ACP, and delegated child attempts use
+  the same Session-owned environment. The unused generic `SandboxManager` was removed:
   its private in-memory registry duplicated the Session Environment owner without
   participating in any production call path.
 - Builds on: the `pc::Sandbox`/`SandboxProvider`/`SandboxHandle` contract and the
@@ -21,10 +21,6 @@
   (`awaken-sandbox-local::lib`); the brain–hand relay and dynamic placement
   registry (ADR-0044/0045/0046); the two existing mount kinds — content-hashed
   read-only `ResourceMount` and harvested read-write memory mount (ADR-0038).
-- Reference: the operational shape of an isolation-instance pool is validated by
-  DeerFlow's AIO warm-container pool (deterministic id, release-awaits, idle reaper,
-  orphan reconciliation, readiness-probe-before-adopt) — a reference architecture,
-  not a code dependency.
 
 ## Context
 
@@ -34,13 +30,13 @@ renew_lease,dispose,status,artifacts}`, `SandboxProvider::{capabilities,
 probe_ready,create,adopt}`), the never-downgrade selection and fail-closed
 preparation exist, and the reuse *decisions* are written as pure, tested
 functions (`reconcile_adoption(live, referenced) -> AdoptionPlan`,
-`LeaseLiveness::{Healthy,DueForRenewal,Dead}`). **None of the
-decision functions has a caller.** There is no warm pool, no lease-renewal loop,
+`LeaseLiveness::{Live,Expiring,Expired}`). **At the time of this decision, none
+of the decision functions has a caller.** There is no warm pool, no lease-renewal loop,
 no idle reaper. Separately, the resident host still provisions per session
 through the *deprecated* `Environment` cooperating-tool model, one fresh
 environment per session, no reuse.
 
-The two reuses have well-understood reference shapes:
+The storage-reuse lifecycle has a well-understood shape:
 
 - **Warm directory reuse** is the classic build-cache / checkout pattern: a stable
   path keyed per work unit, a single-active lock (an atomic `create_new` lock
@@ -48,12 +44,6 @@ The two reuses have well-understood reference shapes:
   and mtime-based idle GC — with the realized path treated as **opaque worker
   state**. This is application/product-domain machinery (it assumes "a code
   project worth keeping warm"), so it lives in the product plane, not the runtime.
-- **DeerFlow** implements the operational shape of an isolation-instance pool for
-  Docker/k3s containers: deterministic id `sha256(user:thread)`, release-awaits /
-  destroy-stops, an idle reaper, cross-process discovery, orphan reconciliation,
-  and readiness-probe-before-adopt (dead entries dropped; a failed health check
-  is treated as *unknown*, not dead).
-
 The load-bearing realization is that "reuse a warm sandbox" is really **two
 independent reuses at two lifecycles**, and conflating them into one `pc::Sandbox`
 object is why `attach`/`renew_lease`/pooling are half-built. Separating them is
@@ -156,10 +146,11 @@ owner per lifecycle instead of a generic manager beside the production path:
 - `WarmContainerPool` owns only never-used, mount-less, exact-shape container
   capacity. A container leaves the pool permanently when bound to a Session; used
   containers are never returned.
-- `SandboxReaper` owns only cross-restart garbage collection for prior runtime
-  owners. It never competes with the current process's Session or warm capacity.
-- `awaken-provisioning-contract::lease` remains the pure decision vocabulary. It
-  does not gain an I/O orchestrator merely to create a nominal caller.
+- `reconcile_adoption(live, referenced)` is the sole cross-restart disposal
+  decision: referenced environments are adopted, unreferenced environments are
+  disposed, and missing referenced environments are reported as orphans.
+- `awaken-provisioning-contract::lease` remains the pure liveness/fencing
+  vocabulary. Lease loss never becomes a second disposal authority.
 
 Workdir and Namespace remain unpooled. The Container tier probes every eagerly
 created candidate for `Ready`, exposes capacity through the separate
@@ -261,8 +252,8 @@ single-user host). Building all of it now is gold-plating.
 **Resolution — scenario-gated, slice-first delivery.**
 
 1. The Cache-Volume seam, Session-owned environment, exact-shape Container warm
-   capacity, restart reaper, and three-stage wiring are implemented and scenario
-   tested.
+   capacity, durable referenced-set reconciliation, and three-stage wiring are
+   implemented and scenario tested.
 2. `IsolationPolicy::DegradeWithConsent`, cross-node CacheVolume scheduling, and
    idle cache GC remain scenario-gated. None is implied by warmup.
 3. The two-axis separation is retained: storage warmth and isolation capacity do
@@ -271,9 +262,9 @@ single-user host). Building all of it now is gold-plating.
 ### Tension B — pure decision core vs orchestration (simple design: decision/IO split)
 
 The reuse *judgements* (`reconcile_adoption`, `LeaseLiveness`) and
-the reuse *orchestration* (the reaper loop, the pool, the Cache-Volume provisioner)
-are different kinds of thing, and mixing them is why `attach`/`renew_lease`/pooling
-are half-built. Keep the two cleanly separated.
+the reuse *orchestration* (referenced-set reconciliation, the pool, the
+Cache-Volume provisioner) are different kinds of thing, and mixing them is why
+`attach`/`renew_lease`/pooling are half-built. Keep the two cleanly separated.
 
 **Resolution — decisions are a pure kernel; orchestration is the impure shell.**
 
@@ -286,8 +277,9 @@ are half-built. Keep the two cleanly separated.
   rest of the contract) and are **self-contained to awaken** — no external product
   is a design input.
 - **The impure orchestration:** Session slots, the never-used container pool, the
-  cross-restart reaper, and the product Cache-Volume initializer. Each has a
-  bounded lifecycle; no generic `SandboxManager` mirrors their state.
+  cross-restart referenced-set reconciler, and the product Cache-Volume
+  initializer. Each has a bounded lifecycle; no generic `SandboxManager` mirrors
+  their state.
 - The boundary is mechanically enforced (guardrail G-K): the kernel crate may
   export pure functions and value types only — no `async`, no I/O, no product
   types — so orchestration can never leak into the decision core.
@@ -322,7 +314,7 @@ The rule in one line: **keep the judgement pure, the machinery separate.**
   + run marker. Enforcer: existing `select_provider` test + a degradation-emits-
   audit test.
 - **G-Pure (decision/IO split).** Reuse judgements stay in pure functions
-  (`reconcile_adoption`/`LeaseLiveness`); Session/pool/reaper orchestration owns
+  (`reconcile_adoption`/`LeaseLiveness`); Session/pool/reconciliation orchestration owns
   I/O without copying those decisions into another state registry.
 
 ## Consequences
@@ -340,7 +332,8 @@ The rule in one line: **keep the judgement pure, the machinery separate.**
   the worker contract stays a neutral isolation substrate, and warmth is a
   product-plane concern reached only through the opaque mount seam.
 - The unused generic lifecycle registry is gone; production call paths expose one
-  active Session owner, one unused-capacity owner, and one crash-GC owner.
+  active Session owner, one unused-capacity owner, and one durable disposal
+  authority.
 
 **Negative / accepted costs.**
 

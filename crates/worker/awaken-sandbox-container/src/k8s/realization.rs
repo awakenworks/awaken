@@ -32,7 +32,7 @@ where
     Ok(())
 }
 
-/// Stamp a Pod's immutable realization without treating the process-local reaper
+/// Stamp a Pod's immutable realization without treating the process-local runtime
 /// owner as part of that identity. The owner label is a transferable liveness
 /// lease: a replacement Worker must be able to adopt the same frozen Session Pod
 /// while every executable/mount/security field remains digest-fenced.
@@ -41,13 +41,13 @@ pub(super) fn stamp_pod_realization(pod: &mut Pod) -> Result<(), RuntimeError> {
         .metadata
         .labels
         .as_mut()
-        .and_then(|labels| labels.remove(crate::REAPER_OWNER_LABEL));
+        .and_then(|labels| labels.remove(crate::RUNTIME_OWNER_LABEL));
     let result = stamp_realization(pod);
     if let Some(owner) = owner {
         pod.metadata
             .labels
             .get_or_insert_with(Default::default)
-            .insert(crate::REAPER_OWNER_LABEL.to_string(), owner);
+            .insert(crate::RUNTIME_OWNER_LABEL.to_string(), owner);
     }
     result
 }
@@ -504,10 +504,10 @@ mod tests {
     }
 
     #[test]
-    fn reaper_owner_is_transferable_but_pod_realization_remains_fenced() {
+    fn runtime_owner_is_transferable_but_pod_realization_remains_fenced() {
         /* Worker-restart adoption decision table — F3:
          * C1 two Workers project the same frozen Pod; C2 only the process-local
-         * reaper owner differs; C3 an executable Pod field is same/different.
+         * runtime owner differs; C3 an executable Pod field is same/different.
          * C1+C2+same(C3) => E1 equal immutable digest while both owner labels are
          * retained for CAS transfer. C1+C2+different(C3) => E2 different digest,
          * so owner transfer cannot authorize a changed realization.
@@ -515,7 +515,7 @@ mod tests {
         let mut first = Pod::default();
         first.metadata.name = Some("session".into());
         first.metadata.labels = Some(std::collections::BTreeMap::from([(
-            crate::REAPER_OWNER_LABEL.into(),
+            crate::RUNTIME_OWNER_LABEL.into(),
             "worker-incarnation-a".into(),
         )]));
         first.spec = Some(PodSpec {
@@ -528,7 +528,7 @@ mod tests {
         });
         let mut replacement = first.clone();
         replacement.metadata.labels.as_mut().unwrap().insert(
-            crate::REAPER_OWNER_LABEL.into(),
+            crate::RUNTIME_OWNER_LABEL.into(),
             "worker-incarnation-b".into(),
         );
         stamp_pod_realization(&mut first).unwrap();

@@ -18,12 +18,12 @@ use crate::sandbox::{SandboxHandle, SandboxProvider};
 /// within `lease_ttl_secs`. `None` is an indefinite lease (dev/trusted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LeaseGrant {
-    /// Wall-clock ms after which the lease is reapable; `None` = never expires.
+    /// Wall-clock ms after which the owner is fenced; `None` = never expires.
     pub expires_ms: Option<u64>,
 }
 
 impl LeaseGrant {
-    /// An indefinite lease (never reaped on expiry).
+    /// An indefinite lease (no deadline-based fencing).
     #[must_use]
     pub fn indefinite() -> Self {
         Self { expires_ms: None }
@@ -39,12 +39,12 @@ impl LeaseGrant {
 
     /// Classify the lease at `now_ms`. `renew_margin_ms` is how close to expiry an
     /// owner should already be renewing — the band the pool heartbeat targets so a
-    /// live run is never reaped mid-flight.
+    /// live run is fenced only after multiple missed renewal opportunities.
     #[must_use]
     pub fn liveness(&self, now_ms: u64, renew_margin_ms: u64) -> LeaseLiveness {
         match self.expires_ms {
             None => LeaseLiveness::Live,
-            Some(exp) if now_ms >= exp => LeaseLiveness::Reapable,
+            Some(exp) if now_ms >= exp => LeaseLiveness::Expired,
             Some(exp) if exp.saturating_sub(now_ms) <= renew_margin_ms => LeaseLiveness::Expiring,
             Some(_) => LeaseLiveness::Live,
         }
@@ -58,28 +58,109 @@ pub enum LeaseLiveness {
     Live,
     /// Within the renew margin — the owner should renew now.
     Expiring,
-    /// Past its deadline — reclaimable; reap unless still referenced.
-    Reapable,
+    /// Past its deadline — the current owner must be fenced. Disposal remains a
+    /// separate referenced-set reconciliation decision.
+    Expired,
 }
 
-/// Why a sandbox is being reaped — recorded for observability and idempotent reap.
+/// Why the current owner is fenced from further Sandbox effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReapCause {
-    /// The lease was explicitly revoked (admin, or a superseding placement).
+pub enum LeaseFenceCause {
+    /// The lease was explicitly revoked by an authoritative control decision.
     Revoked,
     /// The lease deadline passed without renewal (owner vanished).
     Expired,
     /// The owner's transport to the sandbox was lost (channel closed) while the lease
     /// was still within its deadline — a "hung but alive" reclaim.
     TransportLost,
-    /// A newer sandbox superseded this one for the same binding.
-    Superseded,
-    /// The owning run settled and released it.
-    Released,
 }
 
-/// Point-in-time liveness signals for a leased sandbox, collapsed into a single reap
-/// decision by [`decide_reap`]. The caller supplies each from its own source (a
+/// A lease decision can preserve the current owner or fence it. It deliberately
+/// has no disposal variant: destruction is authorized only by the durable
+/// referenced-set reconciliation in [`reconcile_adoption`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseAction {
+    Keep,
+    Fence(LeaseFenceCause),
+}
+
+/// Validated timing for a finite Sandbox lease.
+///
+/// Idle retention is intentionally absent. It is Session policy, while this
+/// value object only proves that liveness has multiple renewal opportunities and
+/// that reference reconciliation cannot run out of recovery grace immediately
+/// after the lease deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeaseTimingPolicy {
+    renew_interval_ms: u64,
+    lease_ttl_ms: u64,
+    reconciliation_interval_ms: u64,
+    recovery_grace_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum LeaseTimingError {
+    #[error("lease timing values must all be non-zero")]
+    Zero,
+    #[error("lease TTL must provide at least three renewal intervals")]
+    InsufficientRenewalWindow,
+    #[error("recovery grace must cover the lease TTL and one reconciliation interval")]
+    InsufficientRecoveryGrace,
+}
+
+impl LeaseTimingPolicy {
+    pub fn new(
+        renew_interval_ms: u64,
+        lease_ttl_ms: u64,
+        reconciliation_interval_ms: u64,
+        recovery_grace_ms: u64,
+    ) -> Result<Self, LeaseTimingError> {
+        if renew_interval_ms == 0
+            || lease_ttl_ms == 0
+            || reconciliation_interval_ms == 0
+            || recovery_grace_ms == 0
+        {
+            return Err(LeaseTimingError::Zero);
+        }
+        if renew_interval_ms > lease_ttl_ms / 3 {
+            return Err(LeaseTimingError::InsufficientRenewalWindow);
+        }
+        if recovery_grace_ms < reconciliation_interval_ms
+            || lease_ttl_ms > recovery_grace_ms - reconciliation_interval_ms
+        {
+            return Err(LeaseTimingError::InsufficientRecoveryGrace);
+        }
+        Ok(Self {
+            renew_interval_ms,
+            lease_ttl_ms,
+            reconciliation_interval_ms,
+            recovery_grace_ms,
+        })
+    }
+
+    #[must_use]
+    pub fn renew_interval_ms(self) -> u64 {
+        self.renew_interval_ms
+    }
+
+    #[must_use]
+    pub fn lease_ttl_ms(self) -> u64 {
+        self.lease_ttl_ms
+    }
+
+    #[must_use]
+    pub fn reconciliation_interval_ms(self) -> u64 {
+        self.reconciliation_interval_ms
+    }
+
+    #[must_use]
+    pub fn recovery_grace_ms(self) -> u64 {
+        self.recovery_grace_ms
+    }
+}
+
+/// Point-in-time liveness signals for a leased sandbox, collapsed into a single
+/// ownership decision by [`decide_lease_action`]. The caller supplies each from its own source (a
 /// revoke API, an `AgentChannel` close, the wall clock).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LivenessSignals {
@@ -106,26 +187,25 @@ pub fn capped_expiry(default_ttl_ms: u64, now_ms: u64, grant: &LeaseGrant) -> u6
 /// elapsed deadline both fail closed; this check never renews the lease.
 #[must_use]
 pub fn egress_permitted(grant: &LeaseGrant, now_ms: u64, revoked: bool) -> bool {
-    !revoked && !matches!(grant.liveness(now_ms, 0), LeaseLiveness::Reapable)
+    !revoked && !matches!(grant.liveness(now_ms, 0), LeaseLiveness::Expired)
 }
 
-/// Decide whether to reap a leased sandbox, collapsing the signals with the fixed
-/// priority **Revoked > Expired(deadline) > TransportLost** (awaken-next parity): a
-/// revoke always wins; else a passed deadline; else a lost transport; else keep it
-/// alive. Pure — heartbeat is not a signal here (it renews the deadline upstream), so
-/// a within-deadline sandbox is only reaped on revoke or transport loss.
+/// Decide whether the current owner remains usable, collapsing the signals with
+/// the fixed priority **Revoked > Expired(deadline) > TransportLost**. Lease loss
+/// only fences effects; it never authorizes destruction of the mutable Sandbox.
+/// Heartbeat is not a signal here because it renews the deadline upstream.
 #[must_use]
-pub fn decide_reap(grant: &LeaseGrant, signals: LivenessSignals) -> Option<ReapCause> {
+pub fn decide_lease_action(grant: &LeaseGrant, signals: LivenessSignals) -> LeaseAction {
     if signals.revoked {
-        return Some(ReapCause::Revoked);
+        return LeaseAction::Fence(LeaseFenceCause::Revoked);
     }
-    if matches!(grant.liveness(signals.now_ms, 0), LeaseLiveness::Reapable) {
-        return Some(ReapCause::Expired);
+    if matches!(grant.liveness(signals.now_ms, 0), LeaseLiveness::Expired) {
+        return LeaseAction::Fence(LeaseFenceCause::Expired);
     }
     if signals.transport_lost {
-        return Some(ReapCause::TransportLost);
+        return LeaseAction::Fence(LeaseFenceCause::TransportLost);
     }
-    None
+    LeaseAction::Keep
 }
 
 /// The reconciliation outcome: what to do with each live sandbox after a restart.
@@ -233,6 +313,14 @@ pub async fn reconcile_and_apply(
 
 #[cfg(kani)]
 mod verification {
+    //! Machine-checked cause/effect design:
+    //! - P1 revoked=true => Fence(Revoked), masking deadline/transport;
+    //! - P2 !revoked && now>=expiry => Fence(Expired), masking transport;
+    //! - P3 live && transport_lost => Fence(TransportLost); otherwise Keep;
+    //! - T1 accepted timing => renew*3<=ttl;
+    //! - T2 accepted timing => ttl+reconcile<=recovery without overflow.
+    //! `LeaseAction` has no disposal member, so every P rule proves lease loss
+    //! cannot become destructive authority.
     use super::*;
 
     #[kani::proof]
@@ -257,14 +345,16 @@ mod verification {
         }
     }
 
+    /// P1-P3: explore every timestamp/boolean combination and prove the fixed
+    /// masking order while the output remains in the Keep/Fence domain.
     #[kani::proof]
-    fn reap_reason_obeys_fixed_fail_closed_priority() {
+    fn lease_loss_obeys_fixed_fail_closed_fence_priority() {
         let now = kani::any::<u64>();
         let expiry = kani::any::<u64>();
         let revoked = kani::any::<bool>();
         let transport_lost = kani::any::<bool>();
         let grant = LeaseGrant::until(expiry);
-        let got = decide_reap(
+        let got = decide_lease_action(
             &grant,
             LivenessSignals {
                 now_ms: now,
@@ -273,15 +363,44 @@ mod verification {
             },
         );
         let expected = if revoked {
-            Some(ReapCause::Revoked)
+            LeaseAction::Fence(LeaseFenceCause::Revoked)
         } else if now >= expiry {
-            Some(ReapCause::Expired)
+            LeaseAction::Fence(LeaseFenceCause::Expired)
         } else if transport_lost {
-            Some(ReapCause::TransportLost)
+            LeaseAction::Fence(LeaseFenceCause::TransportLost)
         } else {
-            None
+            LeaseAction::Keep
         };
         assert_eq!(got, expected);
+    }
+
+    /// T1: arbitrary accepted values preserve three complete renewal windows.
+    #[kani::proof]
+    fn valid_lease_timing_always_has_three_renewal_opportunities() {
+        let renew = kani::any::<u64>();
+        let ttl = kani::any::<u64>();
+        let reconcile = kani::any::<u64>();
+        let recovery = kani::any::<u64>();
+        if let Ok(policy) = LeaseTimingPolicy::new(renew, ttl, reconcile, recovery) {
+            assert!(policy.renew_interval_ms() <= policy.lease_ttl_ms() / 3);
+            assert!(policy.renew_interval_ms().saturating_mul(3) <= policy.lease_ttl_ms());
+        }
+    }
+
+    /// T2: arbitrary accepted values preserve one post-TTL reconciliation tick.
+    #[kani::proof]
+    fn valid_recovery_grace_covers_lease_and_reconciliation() {
+        let renew = kani::any::<u64>();
+        let ttl = kani::any::<u64>();
+        let reconcile = kani::any::<u64>();
+        let recovery = kani::any::<u64>();
+        if let Ok(policy) = LeaseTimingPolicy::new(renew, ttl, reconcile, recovery) {
+            assert!(policy.lease_ttl_ms() <= policy.recovery_grace_ms());
+            assert!(
+                policy.lease_ttl_ms() + policy.reconciliation_interval_ms()
+                    <= policy.recovery_grace_ms()
+            );
+        }
     }
 }
 
@@ -306,8 +425,8 @@ mod tests {
         let g = LeaseGrant::until(1_000);
         assert_eq!(g.liveness(500, 100), LeaseLiveness::Live);
         assert_eq!(g.liveness(950, 100), LeaseLiveness::Expiring);
-        assert_eq!(g.liveness(1_000, 100), LeaseLiveness::Reapable);
-        assert_eq!(g.liveness(1_200, 100), LeaseLiveness::Reapable);
+        assert_eq!(g.liveness(1_000, 100), LeaseLiveness::Expired);
+        assert_eq!(g.liveness(1_200, 100), LeaseLiveness::Expired);
     }
 
     #[test]
@@ -333,6 +452,39 @@ mod tests {
         assert!(!egress_permitted(&LeaseGrant::indefinite(), u64::MAX, true));
     }
 
+    // Cause/effect decision table:
+    // R1 all values non-zero + renew <= ttl/3 + ttl+reconcile <= recovery => valid;
+    // R2 any zero => Zero; R3 too few renewal windows => InsufficientRenewalWindow;
+    // R4 insufficient recovery window => InsufficientRecoveryGrace.
+    #[test]
+    fn lease_timing_policy_enforces_every_safety_boundary() {
+        let policy = LeaseTimingPolicy::new(20_000, 90_000, 60_000, 600_000).unwrap();
+        assert_eq!(policy.renew_interval_ms(), 20_000, "R1");
+        assert_eq!(policy.lease_ttl_ms(), 90_000, "R1");
+        assert_eq!(
+            LeaseTimingPolicy::new(0, 90_000, 60_000, 600_000),
+            Err(LeaseTimingError::Zero),
+            "R2"
+        );
+        assert_eq!(
+            LeaseTimingPolicy::new(31_000, 90_000, 60_000, 600_000),
+            Err(LeaseTimingError::InsufficientRenewalWindow),
+            "R3"
+        );
+        assert_eq!(
+            LeaseTimingPolicy::new(20_000, 90_000, 60_000, 149_999),
+            Err(LeaseTimingError::InsufficientRecoveryGrace),
+            "R4"
+        );
+        assert!(
+            LeaseTimingPolicy::new(30_000, 90_000, 60_000, 150_000).is_ok(),
+            "boundary"
+        );
+    }
+
+    // Referenced-set decision table (the sole disposal authority):
+    // A1 live∩referenced => adopt; A2 live∖referenced => reap;
+    // A3 referenced∖live => orphan. Sets are mutually classified by identity.
     #[test]
     fn reconcile_adopts_referenced_and_reaps_the_rest() {
         let live = vec![h("a"), h("b"), h("c")];
@@ -370,6 +522,29 @@ mod tests {
         assert_eq!(reconcile_adoption(&[], &[]), AdoptionPlan::default());
     }
 
+    // Cross-decision rule C1: lease expired + sandbox live + durable reference
+    // present => Fence(Expired) AND adopt, never reap. Cause: owner liveness and
+    // durable reachability disagree. Effects: effects are fenced, mutable state
+    // survives for recovery, and only a later reference removal can authorize
+    // disposal. This locks the lease/reclamation boundary rather than relying on
+    // enum shape alone.
+    #[test]
+    fn expired_lease_does_not_make_a_referenced_sandbox_reapable() {
+        let sandbox = h("still-referenced");
+        let action = decide_lease_action(&LeaseGrant::until(1_000), signals(1_000, false, false));
+        let plan = reconcile_adoption(
+            std::slice::from_ref(&sandbox),
+            std::slice::from_ref(&sandbox),
+        );
+
+        assert_eq!(action, LeaseAction::Fence(LeaseFenceCause::Expired), "C1");
+        assert_eq!(plan.adopt, vec![sandbox], "C1");
+        assert!(
+            plan.reap.is_empty(),
+            "C1: lease loss is not disposal authority"
+        );
+    }
+
     fn signals(now_ms: u64, revoked: bool, transport_lost: bool) -> LivenessSignals {
         LivenessSignals {
             now_ms,
@@ -378,10 +553,17 @@ mod tests {
         }
     }
 
+    // Lease-action decision table:
+    // F1 no fault/live => Keep; F2 revoked masks expired+transport;
+    // F3 expired masks transport; F4 transport-only => Fence(TransportLost);
+    // F5 indefinite/no fault => Keep. Effects never include disposal.
     #[test]
-    fn a_live_lease_with_no_faults_is_not_reaped() {
+    fn a_live_lease_with_no_faults_keeps_the_owner() {
         let g = LeaseGrant::until(1_000);
-        assert_eq!(decide_reap(&g, signals(500, false, false)), None);
+        assert_eq!(
+            decide_lease_action(&g, signals(500, false, false)),
+            LeaseAction::Keep
+        );
     }
 
     #[test]
@@ -389,13 +571,13 @@ mod tests {
         let g = LeaseGrant::until(1_000);
         // Even when also expired AND transport-lost, revoke wins.
         assert_eq!(
-            decide_reap(&g, signals(2_000, true, true)),
-            Some(ReapCause::Revoked)
+            decide_lease_action(&g, signals(2_000, true, true)),
+            LeaseAction::Fence(LeaseFenceCause::Revoked)
         );
         // And even while comfortably within the deadline.
         assert_eq!(
-            decide_reap(&g, signals(100, true, false)),
-            Some(ReapCause::Revoked)
+            decide_lease_action(&g, signals(100, true, false)),
+            LeaseAction::Fence(LeaseFenceCause::Revoked)
         );
     }
 
@@ -404,28 +586,31 @@ mod tests {
         let g = LeaseGrant::until(1_000);
         // Past deadline + transport lost, not revoked → Expired (deadline wins).
         assert_eq!(
-            decide_reap(&g, signals(1_500, false, true)),
-            Some(ReapCause::Expired)
+            decide_lease_action(&g, signals(1_500, false, true)),
+            LeaseAction::Fence(LeaseFenceCause::Expired)
         );
     }
 
     #[test]
-    fn transport_loss_reaps_a_within_deadline_lease() {
+    fn transport_loss_fences_a_within_deadline_lease() {
         let g = LeaseGrant::until(1_000);
         // Within the deadline, not revoked, but the transport is gone → hung-but-alive.
         assert_eq!(
-            decide_reap(&g, signals(500, false, true)),
-            Some(ReapCause::TransportLost)
+            decide_lease_action(&g, signals(500, false, true)),
+            LeaseAction::Fence(LeaseFenceCause::TransportLost)
         );
     }
 
     #[test]
-    fn an_indefinite_lease_is_only_reaped_on_revoke_or_transport_loss() {
+    fn an_indefinite_lease_is_only_fenced_on_revoke_or_transport_loss() {
         let g = LeaseGrant::indefinite();
-        assert_eq!(decide_reap(&g, signals(u64::MAX, false, false)), None);
         assert_eq!(
-            decide_reap(&g, signals(u64::MAX, false, true)),
-            Some(ReapCause::TransportLost)
+            decide_lease_action(&g, signals(u64::MAX, false, false)),
+            LeaseAction::Keep
+        );
+        assert_eq!(
+            decide_lease_action(&g, signals(u64::MAX, false, true)),
+            LeaseAction::Fence(LeaseFenceCause::TransportLost)
         );
     }
 }
@@ -535,6 +720,10 @@ mod actuator_tests {
         SandboxHandle::new("k8s", id)
     }
 
+    // Actuation rules derived from A1-A3:
+    // X1 adopt target succeeds => adopted; X2 unreferenced adopt+dispose succeeds
+    // => reaped; X3 referenced but absent => orphaned; X4 any provider failure
+    // => failed and independent targets continue. Only X2 invokes dispose.
     #[tokio::test]
     async fn reconcile_and_apply_adopts_reaps_and_reports_orphans() {
         let adopts = Arc::new(AtomicU32::new(0));

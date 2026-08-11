@@ -1072,14 +1072,14 @@ pub fn container_plan(
     })
 }
 
-/// The label every awaken-created container/pod carries, so the cross-restart reaper
-/// ([`crate::reaper`]) can discover the ones a crashed worker left behind.
-pub(crate) const REAPER_LABEL: &str = "awaken.sandbox";
-/// Identifies the worker-runtime instance that owns a container. A reaper only
-/// collects containers owned by a different (therefore restarted/crashed) instance;
-/// the current instance's normal process lifecycle owns its teardown and write-back.
+/// Stable label every managed Sandbox container/pod carries. The wire value is
+/// retained for compatibility with existing resources; it is discovery evidence,
+/// never disposal authorization.
+pub(crate) const MANAGED_SANDBOX_LABEL: &str = "awaken.sandbox";
+/// Identifies the runtime incarnation that currently owns a container. It fences
+/// realization/adoption only and cannot authorize garbage collection.
 #[cfg(any(feature = "docker", feature = "podman", feature = "k8s"))]
-pub(crate) const REAPER_OWNER_LABEL: &str = "awaken.sandbox.owner";
+pub(crate) const RUNTIME_OWNER_LABEL: &str = "awaken.sandbox.owner";
 
 pub(crate) fn runtime_owner_id() -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1102,24 +1102,6 @@ pub(crate) fn runtime_container_name(owner_id: &str, scope: &str) -> String {
     let scope = stage_name(scope);
     let scope = &scope[..scope.len().min(80)];
     format!("awaken-{}-{scope}", &owner[..16])
-}
-
-/// One awaken-managed container the reaper can judge. `age_secs` is computed by the runtime against its own clock,
-/// so the reaper's decision ([`crate::reaper::should_reap`]) stays a pure value test.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ManagedContainer {
-    /// The runtime's container id (what [`ContainerRuntime::remove`] takes).
-    pub id: String,
-    /// True when this exact runtime instance created the container. Its in-process
-    /// lifecycle still needs the container for channel drain and credential write-back,
-    /// so the cross-restart reaper must never compete with it.
-    pub owned_by_current_runtime: bool,
-    /// Whether the agent process (the container's main command) is still running. A
-    /// stopped container is finished work — its agent exited (brain done or gone).
-    pub running: bool,
-    /// Seconds since the container was created (the runtime's clock), the age cap for
-    /// a still-running but abandoned container (a hung agent, a leaked warm instance).
-    pub age_secs: u64,
 }
 
 fn err(e: RuntimeError) -> pc::SandboxError {
@@ -1925,20 +1907,6 @@ pub mod podman;
 pub mod pool;
 #[cfg(feature = "connection")]
 pub use pool::WarmContainerPool;
-
-/// Default maximum age of a still-running managed container before orphan
-/// reconciliation removes it.
-pub const DEFAULT_REAPER_MAX_AGE_SECS: u64 = 6 * 60 * 60;
-/// Default interval between orphan-reconciliation sweeps.
-pub const DEFAULT_REAPER_INTERVAL_SECS: u64 = 60;
-
-/// The cross-restart container reaper. Gated on `connection` for the background
-/// loop's timer. Kubernetes may additionally use native `ownerReferences`, but the
-/// reaper remains the fallback for ownerless local/control-plane deployments.
-#[cfg(feature = "connection")]
-pub mod reaper;
-#[cfg(feature = "connection")]
-pub use reaper::{ReapReason, SandboxReaper, should_reap};
 
 #[cfg(test)]
 mod tests;

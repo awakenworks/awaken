@@ -18,12 +18,6 @@ use crate::deployment_config::SandboxTier;
     feature = "container-k8s"
 ))]
 use crate::sandbox_source::container_image;
-#[cfg(any(
-    feature = "container-docker",
-    feature = "container-podman",
-    feature = "container-k8s"
-))]
-use crate::sandbox_source::spawn_container_reaper;
 
 #[cfg(any(
     feature = "container-docker",
@@ -233,13 +227,11 @@ pub(crate) async fn build(
         #[cfg(feature = "container-docker")]
         SandboxTier::Docker => {
             let runtime = Arc::new(docker_runtime(settings)?);
-            spawn_container_reaper(runtime.clone(), settings);
             finish(runtime.clone(), image, settings, Some(runtime))?
         }
         #[cfg(feature = "container-podman")]
         SandboxTier::Podman => {
             let runtime = Arc::new(podman_runtime(settings)?);
-            spawn_container_reaper(runtime.clone(), settings);
             finish(runtime.clone(), image, settings, Some(runtime))?
         }
         #[cfg(feature = "container-k8s")]
@@ -257,7 +249,6 @@ pub(crate) async fn build(
                     )
                     .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone()),
             );
-            spawn_container_reaper(runtime.clone(), settings);
             let package_provisioner = k8s_package_provisioner(settings).await?;
             finish(runtime, image, settings, package_provisioner)?
         }

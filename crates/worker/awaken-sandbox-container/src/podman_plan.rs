@@ -2,7 +2,7 @@
 
 use awaken_provisioning_contract as pc;
 
-use crate::{CgroupCaps, ContainerPlan, NetworkMode, REAPER_LABEL, writable_dirs};
+use crate::{CgroupCaps, ContainerPlan, MANAGED_SANDBOX_LABEL, NetworkMode, writable_dirs};
 
 /// The concrete rootfs a container/rootless-podman runtime realizes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,7 +86,7 @@ pub fn podman_run_argv(name: &str, plan: &ContainerPlan, rootfs: &RootfsPlan) ->
         .map(String::from)
         .collect();
     argv.extend(["--entrypoint".into(), String::new()]);
-    argv.extend(["--label".into(), format!("{REAPER_LABEL}=1")]);
+    argv.extend(["--label".into(), format!("{MANAGED_SANDBOX_LABEL}=1")]);
     argv.push("--read-only".into());
     for dir in writable_dirs(plan) {
         argv.extend([

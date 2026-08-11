@@ -101,13 +101,6 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .package_local_cache_ttl_secs
             .unwrap_or(sandbox_defaults.package_local_cache_ttl_secs),
         inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
-        reaper_enabled: file.sandbox_reaper_enabled.unwrap_or(true),
-        reaper_interval_secs: file
-            .sandbox_reaper_interval_secs
-            .unwrap_or(sandbox_defaults.reaper_interval_secs),
-        reaper_max_age_secs: file
-            .sandbox_reaper_max_age_secs
-            .unwrap_or(sandbox_defaults.reaper_max_age_secs),
     };
     if sandbox.k8s_namespace.trim().is_empty()
         || sandbox.container_hand_bin.trim().is_empty()
@@ -135,11 +128,6 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             "Kubernetes package provisioning requires package_image_builder and package_image_registry together"
                 .to_owned(),
         );
-    }
-    if sandbox.reaper_enabled
-        && (sandbox.reaper_interval_secs == 0 || sandbox.reaper_max_age_secs == 0)
-    {
-        return Err("sandbox reaper interval and max age must be non-zero when enabled".to_owned());
     }
     if sandbox.package_local_cache_ttl_secs == 0 {
         return Err("package image local cache TTL must be non-zero".to_owned());

@@ -301,7 +301,7 @@ async fn podman_reports_the_agent_exit_code() {
 }
 
 #[tokio::test]
-async fn podman_peer_adoption_renews_reaper_ownership() {
+async fn podman_peer_adoption_renews_only_a_live_environment() {
     let Some(runtime_a) = runtime().await else {
         return;
     };
@@ -334,21 +334,12 @@ async fn podman_peer_adoption_renews_reaper_ownership() {
     adopted
         .renew_lease()
         .await
-        .expect("renew adopted ownership");
+        .expect("renew the adopted live environment");
     let physical_id = handle
         .extra
         .as_ref()
         .and_then(|extra| extra["container_id"].as_str())
         .expect("physical container id");
-    assert!(
-        runtime_b
-            .list_managed()
-            .await
-            .unwrap()
-            .into_iter()
-            .any(|container| container.owned_by_current_runtime),
-        "the peer runtime protects the canonical id returned by podman ps"
-    );
     assert_eq!(
         runtime_b.inspect(physical_id).await.unwrap(),
         ContainerState::Running

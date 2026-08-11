@@ -48,7 +48,7 @@ retiring behavior at its existing authoritative owner.
 | `SessionApplication::begin_activity` / `settle_activity` | One driving-event epoch currently returns the Session to `Idle` when that event settles. It does not prove that delegated Runs, shared-context forks, auxiliary work, MCP calls, or child processes have reached a safe boundary. | Retain `activity_epoch` as the stale-completion fence, but make full-environment reclaim require the aggregate idle edge plus Runtime quiescence evidence. No persisted counter or second idle status is added. |
 | `awaken-runtime-host::BackgroundRuns` | It is one process-wide best-effort `JoinSet`, has no Session/generation identity or Environment relationship, swallows task failure, and drains only for process shutdown. It cannot be used as reclaim evidence. | Evolve this registry into the sole typed structured-background admission path, migrate every spawn caller, and require `SharedEnvironment`, `ExternalDurable`, or `EphemeralCache`. Remove unclassified detached spawns; do not add another background tracker. |
 | Session-owned Hand inactivity in `session_environment/container_skills.rs` | Its timer stops only a rebuildable Hand process and deliberately retains the Sandbox. Treating it as Session hibernation would create two timers and still lose mutable filesystem state on Sandbox disposal. | Keep the timer as a local optimization and reuse its stop/reap primitive during Environment quiescence. It never writes Session environment state and never authorizes disposal. |
-| Sandbox lease expiry and the container reaper | The current dead-man contract permits a backend to reap a Sandbox after lease expiry. For a checkpoint-required generation, unconditional reaping can destroy the only mutable copy before recovery checkpoints it. | Amend lease/reaper admission: an expired bound Sandbox is first fenced and surfaced to Session reconciliation; destructive reap is allowed only after durable checkpoint evidence, terminal intent, or an explicit non-continuable policy outcome. Reuse the existing reaper execution primitive after that decision. |
+| Sandbox lease expiry and the former container age reaper | The dead-man contract previously returned a reap cause, while a separate process-local reaper deleted prior-owner containers by exit/age without consulting durable Session references. Either path could destroy the only mutable copy. | Lease decisions now return only `Keep/Fence`; the age-based reaper, its settings, discovery scan, and parallel tests are removed. `reconcile_adoption(live, referenced)` is the sole cross-restart disposal decision, and terminal/checkpoint transitions remove the live reference before that decision. |
 | Existing terminal cleanup intent/receipt | It already fences admission, quiesces delegated work, and replays cleanup. A checkpoint-specific deletion saga would compete with that authority. | Add live-Sandbox and checkpoint deletion effects to the existing terminal intent/receipt set. Terminal intent rejects stale suspend/restore receipts and remains the only terminal owner. |
 
 The migration order is contract-first: extend the aggregate and provider
@@ -286,7 +286,7 @@ prioritization aid, not an authorization to accept data loss.
 | Failure mode | Local effect / end effect | S/O/D | RPN | Required prevention, detection, and recovery |
 |---|---|---:|---:|---|
 | Source disposed before checkpoint reference commits | Mutable filesystem is permanently lost | 5/2/4 | 40 | Type and transition invariants forbid dispose before `ReadyToDispose`; provider contract tests inject every crash boundary; retain source and alert on checkpoint failure. |
-| Lease reaper deletes an expired bound Sandbox | Worker loss becomes Session data loss | 5/3/4 | 60 | Fence expiry, route it to Session reconciliation, and permit destructive reap only with checkpoint/terminal evidence; alert on fenced-orphan age. |
+| Lease loss is mistaken for disposal authority | Worker loss becomes Session data loss | 5/3/4 | 60 | The lease action type has no dispose variant; route fenced environments to referenced-set reconciliation and permit disposal only after the durable live reference is absent. |
 | Stale Worker, epoch, generation, or realization lease applies a receipt | New work is overwritten or duplicate Environments become authoritative | 5/3/3 | 45 | Bind and verify all receipt identities under root CAS; reject stale evidence; property-test concurrent interleavings. |
 | Shared child/background work is omitted or misclassified | Snapshot is inconsistent while a writer remains active | 5/3/4 | 60 | One typed background admission API, generation-scoped activity guards, deny unclassified detached work, and runtime leak assertions. |
 | Hand/MCP/tool process survives quiescence | Post-checkpoint mutation or duplicate side effect | 4/2/3 | 24 | Close admission first, supervise bounded stop/reap, require exact quiescence receipt, and retain source on ambiguous termination. |
@@ -375,13 +375,14 @@ insufficient for source disposal and cross-environment restore.
 - Reused unchanged: Session root CAS/repository, `activity_epoch`, realization
   lease identity/fencing, durable WorkQueue/Worker claim recovery, immutable
   Environment and Resource pins, MCP generation protocol, process supervisor,
-  terminal cleanup receipt pattern, and the reaper's idempotent disposal
-  primitive after lifecycle authorization.
+  terminal cleanup receipt pattern, and provider idempotent disposal after
+  referenced-set authorization.
 - Modified: `SessionEnvironmentState`, Environment execution policy/snapshot,
   Session activity and admission orchestration, `SessionRuntime`, Runtime Host
   background classification and quiescence, `SandboxCapabilities`/
   `SandboxRequirements`, canonical `SandboxProvider`, Worker capability
-  manifest, lease-expiry/reaper admission, and terminal checkpoint deletion.
+  manifest, lease timing/fencing, referenced-set reconciliation, and terminal
+  checkpoint deletion.
 - New: checkpoint/generation/operation value objects and receipts, provider
   checkpoint/restore implementations, suspend/restore application
   reconciliation, provider conformance tests, and full-environment integration

@@ -296,9 +296,6 @@ pub awaken_runtime_host::SandboxSettings::package_local_cache_ttl_secs: u64
 pub awaken_runtime_host::SandboxSettings::package_registry_auth_file: core::option::Option<std::path::PathBuf>
 pub awaken_runtime_host::SandboxSettings::package_registry_insecure: bool
 pub awaken_runtime_host::SandboxSettings::podman_bin: alloc::string::String
-pub awaken_runtime_host::SandboxSettings::reaper_enabled: bool
-pub awaken_runtime_host::SandboxSettings::reaper_interval_secs: u64
-pub awaken_runtime_host::SandboxSettings::reaper_max_age_secs: u64
 pub awaken_runtime_host::SandboxSettings::warm_pool_idle_ttl_secs: u64
 pub awaken_runtime_host::SandboxSettings::warm_pool_size: usize
 pub awaken_runtime_host::SandboxSettings::warm_pool_total_size: usize

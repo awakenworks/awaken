@@ -281,12 +281,6 @@ pub struct SandboxSettings {
     pub package_local_cache_ttl_secs: u64,
     /// Whether locally launched ACP agents inherit the Worker process stderr.
     pub inherit_agent_stderr: bool,
-    /// Whether Docker/Podman orphan reconciliation is active.
-    pub reaper_enabled: bool,
-    /// Interval between orphan-reconciliation sweeps.
-    pub reaper_interval_secs: u64,
-    /// Maximum age of a still-running managed container before it is reaped.
-    pub reaper_max_age_secs: u64,
 }
 
 impl Default for SandboxSettings {
@@ -310,9 +304,6 @@ impl Default for SandboxSettings {
             package_image_builder: None,
             package_local_cache_ttl_secs: 7 * 24 * 60 * 60,
             inherit_agent_stderr: false,
-            reaper_enabled: true,
-            reaper_interval_secs: awaken_sandbox_container::DEFAULT_REAPER_INTERVAL_SECS,
-            reaper_max_age_secs: awaken_sandbox_container::DEFAULT_REAPER_MAX_AGE_SECS,
         }
     }
 }

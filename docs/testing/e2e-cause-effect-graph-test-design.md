@@ -172,7 +172,7 @@ The concrete selectors are anchored in `crates/bin/awaken-cli/src/{config,main,l
 - **F54** 资源生命周期:反向通道 create/list/delete(`GET /v1/files?scope_id=`)
 - **F55** k8s pids fail-closed(不可表达 → 拒)
 - **F56** 暖池复用
-- **F57** 沙箱 reaper 回收陈旧
+- **F57** lease loss仅围栏，持久化引用协调后才允许销毁
 
 ### 3.7 管理面
 - **F58** config CRUD + validate + resolve
@@ -353,7 +353,7 @@ MCP:           F77/F79 → E4(工具注入) ; F78 → 工具列表 version bump
 | **F50 容器 agent 往返** | — | — | — | — | — | — | — | — | — | — | ● | — | — | — |
 | **F51 acp sandboxed** | — | — | — | — | — | — | — | — | — | ● | ✓ | ✓ | — | ✓ |
 | **F55 k8s pids fail-closed** | — | — | — | — | — | — | — | — | — | — | — | ● | — | — |
-| **F56 暖池复用 / F57 reaper 回收** | — | — | — | — | — | — | — | — | — | ✓ | ● | ✓ | — | — |
+| **F56 暖池复用 / F57 lease围栏与引用协调** | — | — | — | — | — | — | — | — | — | ✓ | ● | ✓ | — | — |
 | **F58 config CRUD/validate/resolve** | ✓ | ● | — | — | ✓ | — | — | — | — | — | — | — | — | — |
 | **F59 vault 封印 / F74 egress bind** | — | ● | — | — | ✓ | — | — | ✓ | — | — | — | — | — | — |
 | **F60 seal-key 必需(拒启 N3)** | — | ● | ✓ | — | — | — | — | — | — | — | — | — | — | — |

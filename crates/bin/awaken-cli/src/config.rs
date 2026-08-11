@@ -1048,7 +1048,7 @@ mod tests {
         //
         // | Rule | file values | Effect |
         // |---|---|---|
-        // | S1 | all omitted | fail-closed fallback, no pool/proxy, default namespace/reaper |
+        // | S1 | all omitted | fail-closed fallback, no pool/proxy, default namespace/tools |
         // | S2 | all explicit valid | exact typed values projected losslessly |
         // | S3 | Hand idle seconds = 0 | disable Worker-local idle hibernation |
         let defaults = resolve(FileConfig::default(), ConfigOverrides::default())
@@ -1076,7 +1076,6 @@ mod tests {
         );
         assert_eq!(defaults.package_image_builder, None, "S1");
         assert!(!defaults.inherit_agent_stderr, "S1");
-        assert!(defaults.reaper_enabled, "S1");
 
         let selected = resolve(
             FileConfig {
@@ -1099,9 +1098,6 @@ mod tests {
                 package_image_builder: Some("k8s".into()),
                 package_local_cache_ttl_secs: Some(300),
                 sandbox_inherit_agent_stderr: Some(true),
-                sandbox_reaper_enabled: Some(true),
-                sandbox_reaper_interval_secs: Some(17),
-                sandbox_reaper_max_age_secs: Some(91),
                 ..FileConfig::default()
             },
             ConfigOverrides::default(),
@@ -1144,8 +1140,6 @@ mod tests {
         assert!(selected.package_registry_insecure, "S2");
         assert_eq!(selected.package_local_cache_ttl_secs, 300, "S2");
         assert!(selected.inherit_agent_stderr, "S2");
-        assert_eq!(selected.reaper_interval_secs, 17, "S2");
-        assert_eq!(selected.reaper_max_age_secs, 91, "S2");
 
         let disabled = resolve(
             FileConfig {
@@ -1161,16 +1155,13 @@ mod tests {
 
     #[test]
     fn sandbox_operator_policy_rejects_invalid_active_values() {
-        // Cause/effect graph: an empty namespace is never usable; an enabled
-        // reaper needs non-zero cadence and age. Disabling the reaper makes its
-        // dormant numeric values irrelevant.
+        // Cause/effect graph: substrate executables and namespace must be
+        // non-empty; package-registry modifiers require a configured registry.
         //
-        // | Rule | namespace | enabled | interval/max | Effect |
-        // |---|---|---:|---|---|
-        // | V1 | empty | either | any | reject |
-        // | V2 | valid | true | either zero | reject |
-        // | V3 | valid | false | zero/zero | accept |
-        // | V4 | builder/auth/insecure without registry | either | any | reject |
+        // | Rule | required string | registry | modifier | Effect |
+        // |---|---|---|---|---|
+        // | V1 | empty | any | any | reject |
+        // | V4 | valid | absent | builder/auth/insecure | reject |
         let resolve_error = |file: FileConfig| {
             ResolvedDeployment::resolve_file(
                 ConfigOverrides::default(),
@@ -1206,14 +1197,6 @@ mod tests {
         );
         assert!(
             resolve_error(FileConfig {
-                sandbox_reaper_interval_secs: Some(0),
-                ..FileConfig::default()
-            })
-            .contains("reaper"),
-            "V2"
-        );
-        assert!(
-            resolve_error(FileConfig {
                 package_image_builder: Some("docker".into()),
                 ..FileConfig::default()
             })
@@ -1236,16 +1219,6 @@ mod tests {
             .contains("package_image_registry"),
             "V4"
         );
-        let dormant = resolve(
-            FileConfig {
-                sandbox_reaper_enabled: Some(false),
-                sandbox_reaper_interval_secs: Some(0),
-                sandbox_reaper_max_age_secs: Some(0),
-                ..FileConfig::default()
-            },
-            ConfigOverrides::default(),
-        );
-        assert!(!dormant.runtime.sandbox.reaper_enabled, "V3");
     }
 
     #[test]

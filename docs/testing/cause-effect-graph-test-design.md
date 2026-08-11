@@ -548,46 +548,18 @@ C67 → E59     (C68∧~C74) → E60     C69 → ~E61(暖) → 恒新建/非池�
 
 ## 模块 M9 · 租约 / 回收 / 中毒 / 令牌(Lease · Reap · Poison · Token)
 
-`awaken-provisioning-contract::lease`、`awaken-sandbox-container::reaper`、`awaken-connection-plan`、`awaken-tool-relay`
+`awaken-provisioning-contract::lease`、`awaken-connection-plan`、`awaken-tool-relay`
 
-### 因(C74–C77)
+M9 的可执行测试设计由 `lease.rs` 中紧邻测试和 Kani harness 的注释
+直接拥有，集中页只保留检索索引，避免维护第二份判定表：
 
-| ID | 因 | 锚点 |
-|---|---|---|
-| C74 | 租约活性:Live / Expiring / Reapable | lease.rs:44 |
-| C75 | 回收信号优先级:Revoked > Expired > TransportLost | lease.rs:125 |
-| C76 | 协调三集:live∩ref(adopt)/ live∖ref(reap)/ ref∖live(orphan) | lease.rs:165 |
-| C77 | 跨重启:容器 Exited > AgedOut(`age>max`)/ native-GC 空 | reaper.rs:42 |
+- P1–P3：lease-loss 围栏优先级，输出域只有 Keep/Fence；
+- T1–T2：三次续租窗口与 recovery-grace 算术不变量；
+- A1–A3：live/reference 集合唯一决定 adopt/reap/orphan；
+- X1–X4：只有 unreferenced 的 X2 执行 dispose，失败逐项隔离。
 
-### 果(E64–E67)
-
-| ID | 果 | 锚点 |
-|---|---|---|
-| E64 | adopt(重连)已引用沙箱 / peer 再收养崩溃 worker 的活沙箱 | lease.rs:213 |
-| E65 | reap 未引用沙箱(adopt→dispose);`ReapCause::{Revoked,Expired,TransportLost}` | lease.rs:219 / mgr lib.rs:128 |
-| E66 | orphan 已引用但已死→重新放置 | lease.rs:196 |
-| E67 | 跨重启 reaper:清 Exited/AgedOut、留年轻活体、native-GC no-op;失败 remove 重试 | reaper.rs:94/102 |
-
-### 因果图与约束
-
-```
-C74=Reapable ∨ C75 → E65     C76(adopt) → E64     C76(orphan) → E66
-C77 → E67
-```
-
-- **O**{ReapCause};**M 优先级**:`decide_reap` Revoked>Expired>TransportLost;`should_reap` Exited>AgedOut。
-- **R**:C76 peer 再收养要求共享底座 tier(容器/k8s,沙箱寿命长于创建者);Workdir/local 恒 orphan(随属主死)。
-
-### 判定表 M9
-
-| 因\用例 | T60 | T61 | T62 |
-|---|---|---|---|
-| C74 Reapable | 1 | 0 | 0 |
-| C76 adopt(live∩ref) | 0 | 1 | 0 |
-| C76 orphan(ref∖live) | 0 | 0 | 1 |
-| **E65 reap** | 1 | 0 | 0 |
-| **E64 adopt** | 0 | 1 | 0 |
-| **E66 orphan 重放置** | 0 | 0 | 1 |
+对应严格形式化门禁与覆盖义务登记在 `scripts/ci/check_formal.sh` 和
+`formal/coverage.json`；二者只索引 harness，不复制原因—结果设计。
 
 ---
 
@@ -1062,8 +1034,8 @@ EF11 是唯一仍需外部部署实现才能关闭的高残余项：需要一个
 
 “直接”表示 crate 内存在 Rust 测试；“共享”表示 testkit 在拥有真实后端的 crate
 中执行。除两个纯 testkit 外，当前 100/102 crates 均有直接测试；公共 API gate
-覆盖全部 102 crates。下表列出每个 crate 的主导失效模式，而组合条件仍以上述
-M1–M15 判定表为唯一测试设计来源。
+覆盖全部 102 crates。下表列出每个 crate 的主导失效模式。除 M9 已迁移为对应
+Rust 测试/Kani harness 的紧邻注释外，组合条件仍以上述 M1–M15 判定表为来源。
 
 ### F1–F3：契约、控制面与 Session 编译
 
@@ -1144,7 +1116,7 @@ M1–M15 判定表为唯一测试设计来源。
 | `awaken-local-process` | env/file secret 生命周期错误 → 子进程泄漏 | typed last-mile、scoped file/env、dispose；直接，M5 | 5/1/1/5 |
 | `awaken-sandbox-container` | Docker/Podman/K8s 能力虚报，或 live gate 把宿主运行时故障当产品回归 → 隔离/no-bypass 虚证或测试假红 | provider-specific caps、fail-closed、strict substrate tests；Podman info×raw OCI 独立前提；直接，M8/M32/EF11 | 5/2/2/20 |
 | `awaken-sandbox-local` | namespace/FUSE 不可用却降级 → 隔离不足 | capability probe、policy-controlled reject/degrade；直接，M8 | 5/1/1/5 |
-| `awaken-sandbox-container` warm/reaper lifecycle | warm-capacity/shutdown/reap 竞态 → 复用污染或泄漏 | shape key、never-used capacity、shutdown fence、cross-restart reaper；直接，M9 | 5/1/1/5 |
+| `awaken-sandbox-container` warm/reference lifecycle | warm-capacity/shutdown/dispose 竞态 → 复用污染、泄漏或数据丢失 | shape key、never-used capacity、shutdown fence、durable referenced-set reconciliation；直接，M9 | 5/1/1/5 |
 | `awaken-sandbox-memoryd` | mount/writeback 丢失或越权 → 数据丢失/跨域 | scoped mount token、hash/teardown harvest；直接，M8 | 5/1/2/10 |
 | `awaken-tool-relay` | token 重放/撤销后调用，或重复 tool id 选错实现 → 未授权/错误工具执行 | opaque scoped token、lease/revoke；复用唯一 `RawToolRegistry` 且 duplicate ambiguous；直接，M9/M31 | 5/1/1/5 |
 

@@ -23,9 +23,8 @@ use tokio::process::{Child, Command as OsCommand};
 
 use crate::net::TcpAgentTransport;
 use crate::{
-    ContainerPlan, ContainerRuntime, ContainerState, ManagedContainer, PackageImageProvisioner,
-    REAPER_LABEL, REAPER_OWNER_LABEL, RuntimeAgentProcess, RuntimeError, podman_run_argv,
-    runtime_container_name,
+    ContainerPlan, ContainerRuntime, ContainerState, PackageImageProvisioner, RUNTIME_OWNER_LABEL,
+    RuntimeAgentProcess, RuntimeError, podman_run_argv, runtime_container_name,
 };
 
 static EXEC_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -208,9 +207,6 @@ pub struct PodmanRuntime {
     agent_port: u16,
     exec: Arc<dyn CommandExec>,
     owner_id: String,
-    /// Podman labels are immutable; successfully renewed/adopted containers are
-    /// protected from this incarnation's crash reaper through this ownership set.
-    adopted: std::sync::Mutex<std::collections::HashSet<String>>,
     package_builds: tokio::sync::Mutex<()>,
     package_registry: Option<String>,
     package_registry_auth_file: Option<PathBuf>,
@@ -240,7 +236,6 @@ impl PodmanRuntime {
             agent_port,
             exec: Arc::new(OsCommandExec),
             owner_id: crate::runtime_owner_id(),
-            adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
             package_builds: tokio::sync::Mutex::new(()),
             package_registry: None,
             package_registry_auth_file: None,
@@ -256,7 +251,6 @@ impl PodmanRuntime {
             agent_port,
             exec,
             owner_id: crate::runtime_owner_id(),
-            adopted: std::sync::Mutex::new(std::collections::HashSet::new()),
             package_builds: tokio::sync::Mutex::new(()),
             package_registry: None,
             package_registry_auth_file: None,
@@ -643,7 +637,7 @@ impl ContainerRuntime for PodmanRuntime {
                 i + 1..i + 1,
                 [
                     "--label".to_string(),
-                    format!("{REAPER_OWNER_LABEL}={}", self.owner_id),
+                    format!("{RUNTIME_OWNER_LABEL}={}", self.owner_id),
                     "-p".to_string(),
                     format!("127.0.0.1::{}", self.agent_port),
                 ],
@@ -818,89 +812,15 @@ impl ContainerRuntime for PodmanRuntime {
         if self.inspect(container_id).await? != ContainerState::Running {
             return Err(RuntimeError::NotFound(container_id.into()));
         }
-        // `podman ps` reports the canonical container ID while handles may carry a
-        // stable name. Protect both aliases so list/reap cannot miss an adoption.
-        let canonical = self
-            .run(&[
-                "inspect".into(),
-                "-f".into(),
-                "{{.Id}}".into(),
-                container_id.into(),
-            ])
-            .await?;
-        if canonical.is_empty() {
-            return Err(RuntimeError::NotFound(container_id.into()));
-        }
-        let mut adopted = self.adopted.lock().unwrap();
-        adopted.insert(container_id.to_string());
-        adopted.insert(canonical);
+        // Durable Session/realization state owns the lease; this adapter only
+        // proves the target is still live at the renewal boundary.
         Ok(())
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        let result = self
-            .run(&["rm".into(), "-f".into(), container_id.into()])
+        self.run(&["rm".into(), "-f".into(), container_id.into()])
             .await
-            .map(|_| ());
-        if result.is_ok() {
-            self.adopted.lock().unwrap().remove(container_id);
-        }
-        result
-    }
-
-    async fn list_managed(&self) -> Result<Vec<ManagedContainer>, RuntimeError> {
-        // Discover every awaken-labeled container (running or stopped) for the reaper.
-        // `-a` includes exited ones (finished work); JSON is the stable machine format.
-        let json = self
-            .run(&[
-                "ps".into(),
-                "-a".into(),
-                "--filter".into(),
-                format!("label={REAPER_LABEL}=1"),
-                "--format".into(),
-                "json".into(),
-            ])
-            .await?;
-        if json.is_empty() {
-            return Ok(Vec::new());
-        }
-        let rows: Vec<serde_json::Value> =
-            serde_json::from_str(&json).map_err(|e| RuntimeError::Backend(e.to_string()))?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        Ok(rows
-            .into_iter()
-            .filter_map(|r| {
-                // Podman ps json: `Id` (string), `State` (string e.g. "running"/"exited"),
-                // `Created` (unix seconds). Field names are stable across podman 3/4/5.
-                let id = r.get("Id")?.as_str()?.to_string();
-                let running = r
-                    .get("State")
-                    .and_then(|s| s.as_str())
-                    .map(|s| s.eq_ignore_ascii_case("running"))
-                    .unwrap_or(false);
-                let age_secs = r
-                    .get("Created")
-                    .and_then(serde_json::Value::as_i64)
-                    .map(|created| now.saturating_sub(created.max(0) as u64))
-                    .unwrap_or(0);
-                let owned_by_label = r
-                    .get("Labels")
-                    .and_then(serde_json::Value::as_object)
-                    .and_then(|labels| labels.get(REAPER_OWNER_LABEL))
-                    .and_then(serde_json::Value::as_str)
-                    == Some(self.owner_id.as_str());
-                let owned_by_adoption = self.adopted.lock().unwrap().contains(&id);
-                Some(ManagedContainer {
-                    id,
-                    owned_by_current_runtime: owned_by_label || owned_by_adoption,
-                    running,
-                    age_secs,
-                })
-            })
-            .collect())
+            .map(|_| ())
     }
 }
 
@@ -1330,7 +1250,7 @@ mod tests {
         let run = &calls[1];
         let name_at = run.iter().position(|a| a == &expected).unwrap();
         assert_eq!(run[name_at + 1], "--label");
-        assert!(run[name_at + 2].starts_with(&format!("{REAPER_OWNER_LABEL}=")));
+        assert!(run[name_at + 2].starts_with(&format!("{RUNTIME_OWNER_LABEL}=")));
         assert_eq!(run[name_at + 3], "-p");
         assert_eq!(run[name_at + 4], "127.0.0.1::7777");
     }
@@ -1428,11 +1348,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn artifacts_are_out_of_band_and_touch_lease_claims_a_live_container() {
+    async fn artifacts_are_out_of_band_and_touch_lease_requires_a_live_container() {
         let (rt, _) = runtime_with(9000, |_| ok("true"));
         assert!(rt.artifacts("cid").await.unwrap().is_empty());
         assert!(rt.touch_lease("cid").await.is_ok());
-        assert!(rt.adopted.lock().unwrap().contains("cid"));
     }
 
     #[tokio::test]
