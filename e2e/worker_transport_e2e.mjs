@@ -262,7 +262,7 @@ async function main() {
     const preparingText = await preparingResponse.text();
     assert.equal(preparingResponse.status, 200, `S7 preparing Session created: ${preparingText}`);
     const preparing = JSON.parse(preparingText);
-    assert.equal(preparing.status, 'preparing', 'S7 has no frozen baseline yet');
+    assert.equal(preparing.status, 'rescheduling', 'S7 has no frozen baseline yet');
     const beforeContribution = await postJson('/v1/worker/session/realization/begin', {
       command: { ...beginCommand(), session_id: preparing.id },
     });

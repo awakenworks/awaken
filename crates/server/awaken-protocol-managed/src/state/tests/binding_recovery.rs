@@ -767,7 +767,8 @@ fn wire_projection_preserves_the_durable_execution_state() {
     // Session-status cause/effect decision table. C1 the durable activity
     // aggregate is running; C2 it is rescheduling; C3 it is idle; C4 it is
     // preparing/activating/failed; C5 it is terminal. E1 public GET reports running; E2 reports rescheduling;
-    // E3 reports idle; E4 preserves the existing preparation vocabulary;
+    // E3 reports idle; E4 maps internal nonterminal preparation to rescheduling
+    // and internal activation failure to the official terminated state;
     // E5 reports terminated. Rules S1=C1=>E1, S2=C2=>E2, S3=C3=>E3,
     // S4=C4=>E4, S5=C5=>E5. Unknown durable values fail during decoding
     // instead of being projected as a healthy idle Session. This keeps
@@ -784,17 +785,17 @@ fn wire_projection_preserves_the_durable_execution_state() {
         (
             "S4a",
             SessionExecutionState::Preparing,
-            SessionStatus::Preparing,
+            SessionStatus::Rescheduling,
         ),
         (
             "S4b",
             SessionExecutionState::Activating,
-            SessionStatus::Activating,
+            SessionStatus::Rescheduling,
         ),
         (
             "S4c",
             SessionExecutionState::ActivationFailed,
-            SessionStatus::Failed,
+            SessionStatus::Terminated,
         ),
         (
             "S5",

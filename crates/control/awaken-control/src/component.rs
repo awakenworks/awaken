@@ -84,6 +84,12 @@ pub struct ControlDependencies {
     pub environment_application: Arc<awaken_environment_application::EnvironmentApplication>,
     /// Control-owned Environment definition and policy authoring surface.
     pub environment_router: Router,
+    /// Optional Cloud-only Tunnel application. The public wire stays in the
+    /// Managed ACL and is merged here before the canonical management IAM and
+    /// audit edge; an absent port means no Tunnel routes are mounted.
+    pub managed_tunnel_application:
+        Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    pub managed_request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     pub data_subjects: Arc<dyn DataSubjectRepo>,
     pub erasure_jobs: Arc<dyn ErasureJobRepo>,
     pub coordinator_content_eraser: Arc<dyn awaken_runtime_contract::ContentEraser>,
@@ -144,6 +150,8 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         environment_author,
         environment_application,
         environment_router,
+        managed_tunnel_application,
+        managed_request_limiter,
         data_subjects,
         erasure_jobs,
         coordinator_content_eraser,
@@ -273,6 +281,8 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         data_subject_application: data_subject_application.clone(),
         data_subject_org: data_subject_org.clone(),
         environment_router,
+        managed_tunnel_application,
+        managed_request_limiter,
         iam,
         local_browser_auth,
         remote_iam,

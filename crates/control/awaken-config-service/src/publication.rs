@@ -50,6 +50,57 @@ pub(crate) struct AgentPublicationDraft {
     pub(crate) config: AgentConfig,
     pub(crate) manifest: ResolutionManifest,
     pub(crate) models: ResolvedPublicationModels,
+    pub(crate) advisor: Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>,
+}
+
+fn validate_candidate_scope_and_proof(
+    workspace: &awaken_tenancy::ScopeId,
+    candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+) -> Result<(), PublishError> {
+    let candidate_scope = match &candidate.provisioning {
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider { scope_id, .. }
+        | awaken_runtime_contract::resolved::ModelProvisioning::Remote { scope_id, .. } => {
+            Some(scope_id)
+        }
+        _ => None,
+    };
+    if let Some(scope_id) = candidate_scope
+        && scope_id != workspace
+    {
+        return Err(PublishError::Unresolvable(
+            PublicationResolutionError::CandidateUnavailable {
+                binding: candidate.binding.clone(),
+                reason: format!(
+                    "resolved candidate belongs to Workspace {scope_id}, not trusted execution Workspace {workspace}"
+                ),
+            }
+            .to_string(),
+        ));
+    }
+    if matches!(
+        &candidate.provisioning,
+        awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
+            acp,
+            ..
+        } if acp.capability_fingerprint.trim().is_empty()
+            || acp.capability_adapter_version.trim().is_empty()
+    ) {
+        return Err(PublishError::Unresolvable(
+            "backend-owned publication requires a fresh exact ACP capability pin".into(),
+        ));
+    }
+    if matches!(
+        &candidate.provisioning,
+        awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+            security_fingerprint,
+            ..
+        } if security_fingerprint.trim().is_empty()
+    ) {
+        return Err(PublishError::Unresolvable(
+            "remote publication requires an exact Agent Card security fingerprint".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Read every authored configuration input once and prepare one publication.
@@ -68,55 +119,37 @@ pub(crate) async fn prepare_agent_publication(
         .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
     let mut bindings = std::collections::BTreeSet::new();
     for candidate in std::iter::once(&models.primary).chain(models.candidates.iter()) {
-        let candidate_scope = match &candidate.provisioning {
-            awaken_runtime_contract::resolved::ModelProvisioning::Provider { scope_id, .. }
-            | awaken_runtime_contract::resolved::ModelProvisioning::Remote { scope_id, .. } => {
-                Some(scope_id)
-            }
-            _ => None,
-        };
-        if let Some(scope_id) = candidate_scope
-            && scope_id != workspace
-        {
-            return Err(PublishError::Unresolvable(
-                PublicationResolutionError::CandidateUnavailable {
-                    binding: candidate.binding.clone(),
-                    reason: format!(
-                        "resolved candidate belongs to Workspace {scope_id}, not trusted execution Workspace {workspace}"
-                    ),
-                }
-                .to_string(),
-            ));
-        }
-        if matches!(
-            &candidate.provisioning,
-            awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned {
-                acp,
-                ..
-            } if acp.capability_fingerprint.trim().is_empty()
-                || acp.capability_adapter_version.trim().is_empty()
-        ) {
-            return Err(PublishError::Unresolvable(
-                "backend-owned publication requires a fresh exact ACP capability pin".into(),
-            ));
-        }
-        if matches!(
-            &candidate.provisioning,
-            awaken_runtime_contract::resolved::ModelProvisioning::Remote {
-                security_fingerprint,
-                ..
-            } if security_fingerprint.trim().is_empty()
-        ) {
-            return Err(PublishError::Unresolvable(
-                "remote publication requires an exact Agent Card security fingerprint".into(),
-            ));
-        }
+        validate_candidate_scope_and_proof(workspace, candidate)?;
         if !bindings.insert(candidate.binding.clone()) {
             return Err(PublishError::Unresolvable(
                 PublicationResolutionError::DuplicateBinding(candidate.binding.clone()).to_string(),
             ));
         }
     }
+    let advisor_model = config.multiagent.as_ref().and_then(|multiagent| {
+        multiagent
+            .agents
+            .iter()
+            .find_map(awaken_agent_config::MultiagentTarget::advisor_model)
+    });
+    let advisor = match advisor_model {
+        Some(model) => {
+            let selection = crate::parse_managed_model_id(model)
+                .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+            let resolved = model_resolver
+                .resolve_models(workspace, &selection, &[])
+                .await
+                .map_err(|error| PublishError::Unresolvable(error.to_string()))?;
+            if !resolved.candidates.is_empty() {
+                return Err(PublishError::Unresolvable(
+                    "advisor resolution must return exactly one model candidate".into(),
+                ));
+            }
+            validate_candidate_scope_and_proof(workspace, &resolved.primary)?;
+            Some(resolved.primary)
+        }
+        None => None,
+    };
     if let Some(backend_ref) = config.model_binding.backend_default_ref() {
         let valid = !backend_ref.trim().is_empty()
             && models.primary.binding.backend_ref == backend_ref
@@ -225,6 +258,7 @@ pub(crate) async fn prepare_agent_publication(
         config,
         manifest,
         models,
+        advisor,
     })
 }
 

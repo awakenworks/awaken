@@ -162,6 +162,14 @@ impl Default for ToolRecoveryPolicy {
 
 impl ToolRecoveryPolicy {
     #[must_use]
+    pub const fn replay_safe() -> Self {
+        Self {
+            mode: ToolRecoveryMode::ReplaySafe,
+            max_attempts: default_max_attempts(),
+        }
+    }
+
+    #[must_use]
     pub const fn durable_request() -> Self {
         Self {
             mode: ToolRecoveryMode::DurableRequest,

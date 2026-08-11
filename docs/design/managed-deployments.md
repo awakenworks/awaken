@@ -142,7 +142,8 @@ terminal and is not retried.
 ```text
 timer tick
   -> find active, non-archived due cron occurrences
-  -> retain exact scheduled_at; apply stable execution jitter (0s..10s)
+  -> retain exact scheduled_at; apply stable execution jitter in
+     0s..clamp(15% of the adjacent interval, 5s, 9m)
   -> if primary Agent is missing/archived: archive Deployment, no run
   -> transactionally fence expected revision and insert unique claim + started run + advanced cursor + fact
        lost claim -> discard process-local candidate, no Session

@@ -2,6 +2,7 @@
 //! live progress that is independent of committed truth (G1/G13).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -11,9 +12,12 @@ use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, RunExecutor};
-use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+use awaken_runtime_contract::llm::{
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ThreadUsage, TokenUsage, ToolCall,
+};
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+    ADVISOR_TOOL_ID, CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedModelCandidate,
+    ResolvedSpec, ToolDescriptor, ToolKind,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
@@ -23,6 +27,101 @@ use awaken_store_inmem::{MemoryCommitCoordinator, MemoryStreamSink, replay_lates
 
 /// A deterministic provider that always answers with fixed text.
 struct TextLlm(&'static str);
+
+struct AdvisorThenTextLlm {
+    primary_calls: AtomicUsize,
+}
+
+struct UnavailableAdvisorThenTextLlm {
+    primary_calls: AtomicUsize,
+    fail_provider: bool,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for AdvisorThenTextLlm {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        if request.model_binding.model_ref == "advisor-model" {
+            assert!(request.tools.is_empty(), "A1");
+            return Ok(ChatResponse {
+                output: AssistantOutput::text("independent advice"),
+                usage: Some(TokenUsage {
+                    prompt_tokens: 7,
+                    completion_tokens: 3,
+                    ..Default::default()
+                }),
+                stop_reason: None,
+            });
+        }
+        let output = if self.primary_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "advisor-call".into(),
+                tool_id: ADVISOR_TOOL_ID.into(),
+                arguments: serde_json::json!({}),
+            }])
+        } else {
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .any(|message| message.content.iter().any(|block| matches!(
+                        block,
+                        ContentBlock::ToolResult { content, .. }
+                            if awaken_agent_contract::agent::content::extract_text(content)
+                                == "independent advice"
+                    ))),
+                "A2"
+            );
+            AssistantOutput::text("primary done")
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for UnavailableAdvisorThenTextLlm {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        if request.model_binding.model_ref == "advisor-model" && self.fail_provider {
+            return Err(awaken_runtime_contract::llm::Error::Provider(
+                "advisor outage".into(),
+            ));
+        }
+        let output = if self.primary_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "advisor-call".into(),
+                tool_id: ADVISOR_TOOL_ID.into(),
+                arguments: serde_json::json!({}),
+            }])
+        } else {
+            assert!(
+                request
+                    .messages
+                    .iter()
+                    .any(|message| message.content.iter().any(
+                        |block| matches!(block, ContentBlock::ToolResult { content, .. }
+                        if awaken_agent_contract::agent::content::extract_text(content)
+                            == "Advisor consultation unavailable.")
+                    )),
+                "A2/A3"
+            );
+            AssistantOutput::text("primary survived")
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
 
 #[async_trait::async_trait]
 impl LlmExecutor for TextLlm {
@@ -78,6 +177,37 @@ fn activation(fingerprint: &str) -> RunActivation {
         data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
+}
+
+fn advisor_activation(with_candidate: bool) -> RunActivation {
+    let mut activation = activation("catalog-a");
+    activation.snapshot.resolved_spec.tool_descriptors = vec![
+        ToolDescriptor::pinned(
+            "managed:advisor",
+            ADVISOR_TOOL_ID,
+            "consult",
+            serde_json::json!({"type":"object"}),
+        )
+        .with_kind(ToolKind::Advisor),
+    ];
+    if with_candidate {
+        activation
+            .snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .advisor = Some(
+            awaken_runtime_contract::agent_bindings::AgentAdvisorBinding {
+                model: "claude-opus-5".into(),
+                candidate: ResolvedModelCandidate::host(ModelBinding::new(
+                    "provider-1",
+                    "advisor-model",
+                    "backend-1",
+                )),
+            },
+        );
+    }
+    activation
 }
 
 /// Test design for the split engine critical path.
@@ -162,6 +292,76 @@ async fn execution_requires_a_model_provider() {
         .execute(activation("catalog-a"), RuntimeRunContext::new())
         .await;
     assert!(matches!(result, Err(Error::Execution(_))));
+}
+
+#[tokio::test]
+async fn advisor_consultation_uses_exact_candidate_and_folds_usage_without_a_raw_tool() {
+    // Cause/effect graph: a published advisor candidate plus a primary advisor
+    // call causes an exact no-tools consultation; its text becomes the primary
+    // tool result and its usage joins the Session tally.
+    //
+    // Decision table:
+    // | Rule | candidate | advisor result | primary effect             |
+    // | A1   | exact     | text + usage   | continue with advice+usage |
+    let activation = advisor_activation(true);
+    let runtime = Runtime::new().with_llm(Arc::new(AdvisorThenTextLlm {
+        primary_calls: AtomicUsize::new(0),
+    }));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let result = runtime
+        .execute(
+            activation,
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("A1");
+    assert_eq!(result, RunState::Ended(EndCause::NaturalEnd), "A1");
+    let committed = commit.committed();
+    assert_eq!(
+        committed.messages.last().unwrap().text_content(),
+        "primary done"
+    );
+    let usage = ThreadUsage::from_committed_state(&committed.state);
+    assert_eq!(usage.by_model["advisor-model"].prompt_tokens, 7, "A1");
+    assert_eq!(usage.by_model["advisor-model"].completion_tokens, 3, "A1");
+}
+
+#[tokio::test]
+async fn advisor_unavailability_never_terminates_the_primary_turn() {
+    // Cause/effect graph: missing publication binding, provider failure, or a
+    // delegated child attempting the primary-only capability makes consultation
+    // unavailable. Every effect is the same redacted error tool result; the
+    // active model receives it and may complete normally.
+    //
+    // Decision table:
+    // | Rule | candidate | provider | terminal effect       |
+    // | A2   | absent    | n/a      | primary natural end   |
+    // | A3   | exact     | error    | primary natural end   |
+    // | A4   | exact     | child    | primary-only rejection|
+    for (rule, candidate, fail_provider, child) in [
+        ("A2", false, false, false),
+        ("A3", true, true, false),
+        ("A4", true, false, true),
+    ] {
+        let runtime = Runtime::new().with_llm(Arc::new(UnavailableAdvisorThenTextLlm {
+            primary_calls: AtomicUsize::new(0),
+            fail_provider,
+        }));
+        let mut activation = advisor_activation(candidate);
+        if child {
+            activation.delegation_origin = Some(
+                awaken_agent_contract::agent::delegation::DelegationOrigin::root(
+                    RunId("parent".into()),
+                    "parent-call",
+                ),
+            );
+        }
+        let result = runtime
+            .execute(activation, RuntimeRunContext::new())
+            .await
+            .expect(rule);
+        assert_eq!(result, RunState::Ended(EndCause::NaturalEnd), "{rule}");
+    }
 }
 
 #[tokio::test]

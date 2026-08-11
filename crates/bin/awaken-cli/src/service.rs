@@ -127,6 +127,26 @@ pub async fn serve_prepared_control(
     result
 }
 
+/// Serve a caller-configured canonical Coordinator through the same lifecycle
+/// and listener owner as the role binary.
+pub async fn serve_prepared_coordinator(
+    deployment: ResolvedDeployment,
+    process: crate::PreparedProcess,
+) -> Result<(), String> {
+    if deployment.role != Role::Coordinator {
+        return Err("prebuilt Coordinator process requires role = \"coordinator\"".into());
+    }
+    if deployment.mode != crate::config::OperatingMode::Server {
+        return Err("prebuilt Coordinator process requires mode = \"server\"".into());
+    }
+    warn_deprecations(&deployment);
+    deployment.ensure_data_layout()?;
+    awaken_observability::init(&deployment.observability);
+    let result = serve_prepared_process(deployment, ServiceRole::Coordinator, process, None).await;
+    awaken_observability::shutdown();
+    result
+}
+
 fn validate_prebuilt_control_deployment(deployment: &ResolvedDeployment) -> Result<(), String> {
     if deployment.role != Role::Control {
         return Err("prebuilt Control process requires role = \"control\"".into());

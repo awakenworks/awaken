@@ -42,6 +42,8 @@ pub enum SessionActivityError {
     Terminal,
     #[error("Session is not ready for activity")]
     NotReady,
+    #[error("Session list-cost budget has been reached")]
+    BudgetReached,
     #[error("Session activity epoch is exhausted")]
     EpochExhausted,
     #[error("Session revision conflict")]
@@ -76,6 +78,10 @@ impl SessionActivityError {
             Self::NotReady => RunError::unavailable_classified(
                 "session_not_ready",
                 "Session realization has not completed",
+            ),
+            Self::BudgetReached => RunError::classified(
+                "budget_reached",
+                "Session list-cost budget has been reached",
             ),
             Self::EpochExhausted => RunError::internal("Session activity epoch is exhausted"),
             Self::Conflict => RunError::unavailable("Session activity changed concurrently"),
@@ -150,6 +156,9 @@ impl SessionApplication {
                 SessionExecutionState::Preparing | SessionExecutionState::Activating
             ) {
                 return Err(SessionActivityError::NotReady);
+            }
+            if !session.budget.can_admit_model_request() {
+                return Err(SessionActivityError::BudgetReached);
             }
             session.activity_epoch = session
                 .activity_epoch

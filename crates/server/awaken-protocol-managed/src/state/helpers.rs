@@ -2,6 +2,7 @@
 //! usage projection, and content-block text extraction.
 
 use super::*;
+use crate::types::{ServerToolUsage, SessionThreadCacheCreationUsage};
 
 pub(crate) fn lifecycle_fact(
     id: String,
@@ -35,10 +36,19 @@ pub(crate) fn rubric_text(rubric: &crate::types::OutcomeRubric) -> String {
 /// output (+ prompt-cache) token counts across all turns. Emitted whenever a turn ran.
 pub(crate) fn session_usage_value(usage: SessionUsage) -> Usage {
     Usage {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        cache_read_input_tokens: usage.cache_read_tokens,
-        cache_creation_input_tokens: usage.cache_creation_tokens,
+        active_seconds: Some(usage.active_seconds),
+        input_tokens: Some(usage.input_tokens),
+        output_tokens: Some(usage.output_tokens),
+        cache_read_input_tokens: Some(usage.cache_read_tokens),
+        cache_creation: Some(SessionThreadCacheCreationUsage {
+            ephemeral_1h_input_tokens: None,
+            ephemeral_5m_input_tokens: Some(usage.cache_creation_tokens),
+        }),
+        list_cost: None,
+        server_tool_use: Some(ServerToolUsage {
+            web_fetch_requests: Some(usage.web_fetch_requests),
+            web_search_requests: Some(usage.web_search_requests),
+        }),
     }
 }
 

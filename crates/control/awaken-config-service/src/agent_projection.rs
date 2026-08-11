@@ -70,6 +70,7 @@ fn project(
         .ok();
     Some(ExecutableAgentSessionProfile {
         model: managed_model,
+        inference: spec.plugin_config.inference.clone(),
         execution_model_ref: Some(spec.model_binding.binding.model_ref.clone()),
         backend_ref: spec.model_binding.backend_ref.clone(),
         system: (!spec.instructions.is_empty()).then(|| spec.instructions.clone()),
@@ -77,7 +78,11 @@ fn project(
             .tool_descriptors
             .iter()
             .filter(|descriptor| {
-                descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                !matches!(
+                    descriptor.kind,
+                    awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                        | awaken_runtime_contract::resolved::ToolKind::Advisor
+                )
             })
             .map(|descriptor| descriptor.id.clone())
             .collect(),
@@ -120,6 +125,7 @@ fn project(
             .into_iter()
             .map(|binding| binding.agent_id.0)
             .collect(),
+        advisor_model: bindings.advisor.map(|advisor| advisor.model),
         resources: defaults.inputs,
         environment: defaults
             .environment

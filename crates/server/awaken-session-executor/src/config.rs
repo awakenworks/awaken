@@ -68,6 +68,7 @@ fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     // metadata and return instructions), not authorization; allow them without a
     // confirmation prompt. Any tool a skill then invokes is still gated.
     rules.push(allow("agent_run"));
+    rules.push(allow(awaken_runtime_contract::resolved::ADVISOR_TOOL_ID));
     rules.push(allow("list_skills"));
     rules.push(allow("Skill"));
     rules.extend(extra_allowed.iter().map(|id| allow(id)));

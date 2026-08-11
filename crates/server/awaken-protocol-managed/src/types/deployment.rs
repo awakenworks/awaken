@@ -122,6 +122,8 @@ pub struct DeploymentCreateParams {
     pub environment_id: String,
     pub name: String,
     #[serde(default)]
+    pub budget: Option<super::BudgetLimit>,
+    #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
@@ -140,6 +142,8 @@ pub struct DeploymentCreateParams {
 pub struct DeploymentUpdateParams {
     #[serde(default)]
     pub agent: Option<AgentRef>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub budget: Option<Option<super::BudgetLimit>>,
     #[serde(default)]
     pub environment_id: Option<String>,
     #[serde(default)]
@@ -256,6 +260,7 @@ pub struct Deployment {
     #[serde(rename = "type")]
     pub object_type: &'static str,
     pub agent: AgentReference,
+    pub budget: Option<super::BudgetLimit>,
     pub archived_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,

@@ -445,6 +445,7 @@ impl schemars::JsonSchema for ModelSelection {
 pub enum MultiagentTarget {
     Agent { id: String, version: Option<u64> },
     SelfReference,
+    Advisor { model: String },
 }
 
 impl MultiagentTarget {
@@ -453,6 +454,7 @@ impl MultiagentTarget {
         match self {
             Self::Agent { id, .. } => id,
             Self::SelfReference => owner_id,
+            Self::Advisor { .. } => "anthropic.advisor",
         }
     }
 
@@ -461,12 +463,21 @@ impl MultiagentTarget {
         match self {
             Self::Agent { version, .. } => *version,
             Self::SelfReference => None,
+            Self::Advisor { .. } => None,
         }
     }
 
     #[must_use]
     pub fn is_self_reference(&self) -> bool {
         matches!(self, Self::SelfReference)
+    }
+
+    #[must_use]
+    pub fn advisor_model(&self) -> Option<&str> {
+        match self {
+            Self::Advisor { model } => Some(model),
+            _ => None,
+        }
     }
 }
 
@@ -487,6 +498,9 @@ enum MultiagentTaggedTarget {
     },
     #[serde(rename = "self")]
     SelfReference,
+    Advisor {
+        model: String,
+    },
 }
 
 impl Serialize for MultiagentTarget {
@@ -502,6 +516,11 @@ impl Serialize for MultiagentTarget {
             Self::SelfReference => {
                 MultiagentTargetWire::Tagged(MultiagentTaggedTarget::SelfReference)
             }
+            Self::Advisor { model } => {
+                MultiagentTargetWire::Tagged(MultiagentTaggedTarget::Advisor {
+                    model: model.clone(),
+                })
+            }
         };
         wire.serialize(serializer)
     }
@@ -516,6 +535,9 @@ impl<'de> Deserialize<'de> for MultiagentTarget {
             }
             MultiagentTargetWire::Tagged(MultiagentTaggedTarget::SelfReference) => {
                 Self::SelfReference
+            }
+            MultiagentTargetWire::Tagged(MultiagentTaggedTarget::Advisor { model }) => {
+                Self::Advisor { model }
             }
         })
     }
@@ -533,10 +555,19 @@ impl MultiagentConfig {
     /// generic-config writes cannot bypass the HTTP edge without duplicating the
     /// rules in two bounded contexts.
     pub fn validate(&self, owner_id: &str) -> Result<(), String> {
-        if !(1..=20).contains(&self.agents.len()) {
-            return Err("agents must contain between 1 and 20 entries".into());
+        if self.agents.is_empty() {
+            return Err("agents must contain at least one entry".into());
+        }
+        let ordinary_count = self
+            .agents
+            .iter()
+            .filter(|target| target.advisor_model().is_none())
+            .count();
+        if ordinary_count > 20 {
+            return Err("agents supports at most 20 ordinary Agent entries".into());
         }
         let mut saw_self = false;
+        let mut saw_advisor = false;
         let mut seen = std::collections::BTreeSet::new();
         for (index, target) in self.agents.iter().enumerate() {
             let id = target.resolved_id(owner_id).trim();
@@ -548,8 +579,18 @@ impl MultiagentConfig {
                     return Err("at most one `self` entry is allowed".into());
                 }
                 saw_self = true;
+            } else if let Some(model) = target.advisor_model() {
+                if saw_advisor {
+                    return Err("at most one `advisor` entry is allowed".into());
+                }
+                if model.trim().is_empty() {
+                    return Err(format!("entry {index} advisor model must be non-empty"));
+                }
+                saw_advisor = true;
             } else if id == owner_id {
                 return Err("recursive invocation must use the `self` roster entry".into());
+            } else if id == "anthropic.advisor" {
+                return Err("`anthropic.advisor` is reserved for the advisor entry".into());
             }
             if target.version() == Some(0) {
                 return Err(format!("entry {index} version must be at least 1"));

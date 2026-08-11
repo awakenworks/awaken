@@ -185,7 +185,7 @@ async function main() {
       // | list archived/time partition            | filter before paging   |
       const rosterWorker = await client.beta.agents.create({
         name: 'roster-worker',
-        model: 'claude-sonnet-5',
+        model: { id: 'claude-sonnet-5', inference_geo: 'us' },
         betas: BETAS,
       });
       // Client-tool ownership decision table: C1 a client-executed descriptor
@@ -194,7 +194,7 @@ async function main() {
       // Choosing one owner by insertion order would create two execution paths.
       const overlappingTool = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'overlapping-tool-owner',
-        model: 'claude-sonnet-5',
+        model: { id: 'claude-sonnet-5', inference_geo: 'us' },
         tools: [
           { type: 'agent_toolset_20260401' },
           {
@@ -215,7 +215,9 @@ async function main() {
       const clientToolNames = ['client_bash', 'client_glob', 'client_read'];
       const rich = await json(baseUrl, 'POST', '/v1/agents', {
         name: 'rich-agent',
-        model: { id: 'claude-sonnet-5', speed: 'fast', effort: 'xhigh' },
+        model: {
+          id: 'claude-sonnet-5', speed: 'fast', effort: 'xhigh', inference_geo: 'us',
+        },
         description: 'all mutable fields',
         system: 'rich system',
         metadata: { team: 'platform' },
@@ -231,6 +233,10 @@ async function main() {
               name: 'write',
               enabled: false,
               permission_policy: { type: 'always_allow' },
+            }, {
+              name: 'web_search',
+              enabled: false,
+              permission_policy: { type: 'always_ask' },
             }],
             default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
           },
@@ -246,13 +252,17 @@ async function main() {
             input_schema: { type: 'object', properties: {} },
           })),
         ],
-        multiagent: { type: 'coordinator', agents: [rosterWorker.id] },
+        multiagent: {
+          type: 'coordinator',
+          agents: [rosterWorker.id, { type: 'advisor', model: 'claude-opus-5' }],
+        },
       });
       assert.equal(rich.status, 200, JSON.stringify(rich.body));
       assert.deepEqual(rich.body.model, {
         id: 'claude-sonnet-5',
         speed: 'fast',
         effort: { type: 'xhigh' },
+        inference_geo: 'us',
       });
       assert.deepEqual(
         rich.body.tools,
@@ -263,6 +273,10 @@ async function main() {
               name: 'write',
               enabled: false,
               permission_policy: { type: 'always_allow' },
+            }, {
+              name: 'web_search',
+              enabled: false,
+              permission_policy: { type: 'always_ask' },
             }],
             default_config: { enabled: true, permission_policy: { type: 'always_ask' } },
           },
@@ -283,7 +297,10 @@ async function main() {
       );
       assert.deepEqual(rich.body.multiagent, {
         type: 'coordinator',
-        agents: [{ type: 'agent', id: rosterWorker.id, version: 1 }],
+        agents: [
+          { type: 'agent', id: rosterWorker.id, version: 1 },
+          { type: 'advisor', model: 'claude-opus-5' },
+        ],
       });
       assert.deepEqual(rich.body.skills, [
         { type: 'anthropic', skill_id: 'xlsx', version: '1' },
@@ -294,7 +311,9 @@ async function main() {
       // roster union + current Agent lifecycle/version -> one resolved immutable
       // roster snapshot. `self` resolves to the owner revision; short-form Agent
       // ids resolve once to current; malformed, duplicate, missing, archived, or
-      // nested-coordinator targets fail before an Agent is persisted.
+      // nested-coordinator targets fail before an Agent is persisted. Exact
+      // inference geo and executor/advisor pairing are validated at that same
+      // publication boundary; the advisor is projected last and is not an Agent.
       //
       // | rule | roster cause | effect |
       // | R1 | one self | owner reference pinned to each owner revision |
@@ -302,6 +321,8 @@ async function main() {
       // | R3 | empty / 21 / duplicate / version 0 | 400, no Agent |
       // | R4 | missing version/id or archived target | 400, no Agent |
       // | R5 | referenced coordinator | 400 depth-limit violation |
+      // | R8 | coordinator/ordinary Agent geo differs | 400, no Agent |
+      // | R9 | unsupported executor/advisor model pair | 400, no Agent |
       const selfCoordinator = await client.beta.agents.create({
         name: 'self-coordinator',
         model: 'claude-sonnet-5',
@@ -345,10 +366,11 @@ async function main() {
         betas: BETAS,
       })).multiagent.agents, [
         { type: 'agent', id: rosterWorker.id, version: 1 },
+        { type: 'advisor', model: 'claude-opus-5' },
       ], 'R2 short-form target stays pinned after the target updates');
       const exactOld = await client.beta.agents.create({
         name: 'exact-old-coordinator',
-        model: 'claude-sonnet-5',
+        model: { id: 'claude-sonnet-5', inference_geo: 'us' },
         multiagent: {
           type: 'coordinator',
           agents: [{ type: 'agent', id: rosterWorker.id, version: 1 }],
@@ -426,6 +448,21 @@ async function main() {
         });
         assert.equal(rejected.status, 400, `R3/R4/R5: ${JSON.stringify(agents)} -> ${JSON.stringify(rejected.body)}`);
       }
+      const geoMismatch = await json(baseUrl, 'POST', '/v1/agents', {
+        name: 'geo-mismatch',
+        model: 'claude-sonnet-5',
+        multiagent: { type: 'coordinator', agents: [rosterWorker.id] },
+      });
+      assert.equal(geoMismatch.status, 400, 'R8 coordinator and exact roster geo must match');
+      const advisorMismatch = await json(baseUrl, 'POST', '/v1/agents', {
+        name: 'advisor-mismatch',
+        model: 'claude-opus-5',
+        multiagent: {
+          type: 'coordinator',
+          agents: [{ type: 'advisor', model: 'claude-opus-4-8' }],
+        },
+      });
+      assert.equal(advisorMismatch.status, 400, 'R9 unsupported advisor pair is atomic');
 
       // Causes: matching or stale CAS revision, same/different model id, and
       // omitted effort. Constraints: stale rejection precedes no-op detection;
@@ -433,7 +470,7 @@ async function main() {
       // or increment exactly one revision and never synthesize an effort value.
       const sameModel = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: rich.body.version,
-        model: { id: 'claude-sonnet-5', speed: 'standard' },
+        model: { id: 'claude-sonnet-5', speed: 'standard', inference_geo: 'us' },
       });
       assert.equal(sameModel.status, 200, JSON.stringify(sameModel.body));
       assert.equal(sameModel.body.version, rich.body.version + 1, 'B4');
@@ -441,10 +478,11 @@ async function main() {
         id: 'claude-sonnet-5',
         speed: 'standard',
         effort: { type: 'xhigh' },
+        inference_geo: 'us',
       }, 'same model preserves omitted effort');
       const matchingNoop = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: sameModel.body.version,
-        model: { id: 'claude-sonnet-5', speed: 'standard' },
+        model: { id: 'claude-sonnet-5', speed: 'standard', inference_geo: 'us' },
       });
       assert.equal(matchingNoop.body.version, sameModel.body.version, 'B3');
       const unconditionalNoop = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
@@ -453,18 +491,18 @@ async function main() {
       assert.equal(unconditionalNoop.body.version, sameModel.body.version, 'B5');
       assert.equal((await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: rich.body.version,
-        model: { id: 'claude-sonnet-5', speed: 'standard' },
+        model: { id: 'claude-sonnet-5', speed: 'standard', inference_geo: 'us' },
       })).status, 409, 'B2: a stale semantic no-op still conflicts');
       assert.equal((await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: 0,
       })).status, 400, 'version has an inclusive minimum of one');
       const changedModel = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {
         version: sameModel.body.version,
-        model: { id: 'claude-opus-5', speed: 'standard' },
+        model: { id: 'claude-opus-5', speed: 'standard', inference_geo: 'us' },
       });
       assert.equal(changedModel.body.version, sameModel.body.version + 1, 'B4');
       assert.deepEqual(changedModel.body.model, {
-        id: 'claude-opus-5', speed: 'standard',
+        id: 'claude-opus-5', speed: 'standard', inference_geo: 'us',
       }, 'changed model resets omitted effort to its default');
 
       const richUpdated = await json(baseUrl, 'POST', `/v1/agents/${rich.body.id}`, {

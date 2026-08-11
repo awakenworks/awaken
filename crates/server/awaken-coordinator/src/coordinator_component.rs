@@ -45,6 +45,7 @@ pub struct CoordinatorDependencies {
     pub model_inventory: Arc<dyn ExecutableAgentInventorySource>,
     pub dream_process_store: Arc<dyn DreamProcessStore>,
     pub worker_authenticator: Arc<dyn WorkerRequestAuthenticator>,
+    pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
     /// Coordinator-owned Worker identity/incarnation authority. The process
     /// startup opens one durable adapter and injects that exact instance.
     pub worker_directory: Arc<dyn crate::WorkerDirectory>,
@@ -71,6 +72,8 @@ pub struct CoordinatorDependencies {
 pub struct CoordinatorComponent {
     /// User, Session, Deployment, and Resources product surface.
     pub router: Router,
+    /// Official Managed data routes before the process IAM/audit/admission edge.
+    pub managed_router: Router,
     /// Control-to-Coordinator and Worker-to-Coordinator service surface. Process
     /// the process binds it to the private listener and never merges it into
     /// `router`.
@@ -113,6 +116,7 @@ pub async fn build_coordinator_component(
         model_inventory,
         dream_process_store,
         worker_authenticator,
+        worker_placement_policy,
         worker_directory,
         deployment_application,
         deployment_session_launcher,
@@ -139,7 +143,7 @@ pub async fn build_coordinator_component(
         worker_directory.clone(),
         worker_authenticator.clone(),
     );
-    let (data, worker_transport, dream_application) =
+    let (managed, data, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
             host,
             managed_state,
@@ -154,6 +158,7 @@ pub async fn build_coordinator_component(
                 resource_management_router,
                 memory_stores,
                 worker_authenticator,
+                worker_placement_policy,
                 worker_directory,
             },
         )?;
@@ -204,6 +209,7 @@ pub async fn build_coordinator_component(
 
     Ok(CoordinatorComponent {
         router: data,
+        managed_router: managed,
         private_router,
         management_router,
     })

@@ -295,11 +295,11 @@ async function main() {
     });
     const rejected = await waitForValue(
       () => client.beta.sessions.retrieve(secureSession.id, { betas: BETAS }),
-      (observed) => observed.status === 'failed',
+      (observed) => observed.status === 'terminated',
       'claim-fenced MCP custody failure status',
       { timeoutMs: 60_000 },
     );
-    assert.equal(rejected.status, 'failed', 'D1: realization failure is durable');
+    assert.equal(rejected.status, 'terminated', 'D1: realization failure is durable');
     assert.deepEqual(
       fixtureContainerIds(),
       beforeRejectedRealization,

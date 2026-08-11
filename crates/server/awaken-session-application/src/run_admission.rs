@@ -380,6 +380,7 @@ impl SessionApplication {
             title,
             metadata,
             tools,
+            budget: awaken_session_contract::SessionBudgetState::Absent,
         })
         .await
         .map_err(creation_error)

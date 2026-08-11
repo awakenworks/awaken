@@ -240,6 +240,15 @@ pub struct PersistedSession {
     /// fabricate gaps or emit two customer-usage intervals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_interval: Option<crate::SessionRuntimeIntervalStart>,
+    /// Cumulative wall-clock milliseconds across closed Running intervals.
+    /// Overlapping activities share one interval, so this is the authoritative
+    /// non-double-counted Session runtime quantity used by list-cost pricing.
+    #[serde(default)]
+    pub runtime_active_millis: u64,
+    /// Exact Managed list-cost budget and immutable price snapshot. All
+    /// Session threads share this root-owned admission and settlement fence.
+    #[serde(default)]
+    pub budget: crate::SessionBudgetState,
     /// Durable, secret-free execution-environment phase. Opaque bindings are
     /// interpreted only by the runtime that produced them; this aggregate owns
     /// their transition, not their substrate meaning.
@@ -283,6 +292,25 @@ impl PersistedSession {
         metadata: BTreeMap<String, String>,
         tools: crate::SessionToolConfiguration,
     ) -> Self {
+        Self::preparing_with_budget(
+            session_id,
+            intent,
+            title,
+            metadata,
+            tools,
+            crate::SessionBudgetState::Absent,
+        )
+    }
+
+    #[must_use]
+    pub fn preparing_with_budget(
+        session_id: impl Into<String>,
+        intent: crate::SessionCreationIntent,
+        title: Option<String>,
+        metadata: BTreeMap<String, String>,
+        tools: crate::SessionToolConfiguration,
+        budget: crate::SessionBudgetState,
+    ) -> Self {
         Self {
             session_id: session_id.into(),
             revision: SessionRevision::default(),
@@ -292,6 +320,8 @@ impl PersistedSession {
             tools,
             activity_epoch: 0,
             running_interval: None,
+            runtime_active_millis: 0,
+            budget,
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),
@@ -347,14 +377,18 @@ impl PersistedSession {
         &mut self,
         ended_at_unix_ms: u64,
     ) -> Option<crate::SessionRuntimeInterval> {
-        self.running_interval
-            .take()
-            .map(|start| crate::SessionRuntimeInterval {
+        self.running_interval.take().map(|start| {
+            let ended_at_unix_ms = ended_at_unix_ms.max(start.started_at_unix_ms);
+            self.runtime_active_millis = self
+                .runtime_active_millis
+                .saturating_add(ended_at_unix_ms.saturating_sub(start.started_at_unix_ms));
+            crate::SessionRuntimeInterval {
                 interval_id: start.interval_id,
                 activity_epoch: start.activity_epoch,
                 started_at_unix_ms: start.started_at_unix_ms,
-                ended_at_unix_ms: ended_at_unix_ms.max(start.started_at_unix_ms),
-            })
+                ended_at_unix_ms,
+            }
+        })
     }
 
     /// Archive one visible Session while terminating further execution.
@@ -895,6 +929,8 @@ mod mutation_tests {
             tools: Default::default(),
             activity_epoch: 0,
             running_interval: None,
+            runtime_active_millis: 0,
+            budget: Default::default(),
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),

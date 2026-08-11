@@ -36,7 +36,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
         )
         .await
         .expect("R1/E1 durable demand is accepted");
-    assert_eq!(created.status, SessionStatus::Preparing, "R1/E1");
+    assert_eq!(created.status, SessionStatus::Rescheduling, "R1/E1");
     let scan = repo.reconcilable_sessions().await.unwrap();
     assert_eq!(scan.sessions.len(), 1, "R1/E2");
     let persisted = &scan.sessions[0];
@@ -755,6 +755,8 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
         tools: Default::default(),
         activity_epoch: 0,
         running_interval: None,
+        runtime_active_millis: 0,
+        budget: Default::default(),
         environment: Default::default(),
         mcp,
         resources: awaken_session_contract::SessionResourceState::from_legacy(sample_inputs()),

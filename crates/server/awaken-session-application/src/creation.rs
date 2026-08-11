@@ -6,7 +6,7 @@
 
 use awaken_session_contract::{
     ApplicationContributionState, ApplicationSessionContributionFailure, IdempotencyRecord,
-    PersistedSession, RunError, SessionCreationIntent, SessionMutationPayload,
+    PersistedSession, RunError, SessionBudgetState, SessionCreationIntent, SessionMutationPayload,
     SessionToolConfiguration,
 };
 
@@ -20,6 +20,7 @@ pub struct CreateSessionCommand {
     pub title: Option<String>,
     pub metadata: std::collections::BTreeMap<String, String>,
     pub tools: SessionToolConfiguration,
+    pub budget: SessionBudgetState,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,6 +81,7 @@ impl SessionApplication {
             title,
             metadata,
             tools,
+            budget,
         } = command;
         let application_required =
             matches!(intent.application, ApplicationContributionState::Required);
@@ -95,8 +97,14 @@ impl SessionApplication {
                     .map_err(|error| RunError::bad_request(error.to_string()))?,
             )
         };
-        let mut persisted =
-            PersistedSession::preparing(session_id.clone(), intent, title, metadata, tools);
+        let mut persisted = PersistedSession::preparing_with_budget(
+            session_id.clone(),
+            intent,
+            title,
+            metadata,
+            tools,
+            budget,
+        );
         let payload = SessionMutationPayload::Replace(persisted.clone());
         let payload_hash = payload.stable_hash();
         persisted = self

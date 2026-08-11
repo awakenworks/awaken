@@ -209,6 +209,32 @@ impl ResolvedSpec {
             .collect()
     }
 
+    /// Complete candidate set whose credentials and executor routes must be
+    /// realized for one attempt. The advisor is not a model-pool fallback, but
+    /// it executes inside the same attempt and therefore shares the attempt's
+    /// claim fence and credential evidence. An identical advisor binding is
+    /// de-duplicated; publication rejects a same-binding/different-route pair.
+    #[must_use]
+    pub fn attempt_candidates(
+        &self,
+        model_ref_override: Option<&str>,
+    ) -> Vec<&ResolvedModelCandidate> {
+        let mut candidates = self.execution_candidates(model_ref_override);
+        if let Some(advisor) = self
+            .plugin_config
+            .agent
+            .advisor
+            .as_ref()
+            .map(|advisor| &advisor.candidate)
+            && !candidates
+                .iter()
+                .any(|candidate| candidate.binding == advisor.binding)
+        {
+            candidates.push(advisor);
+        }
+        candidates
+    }
+
     /// The ordered model bindings this run may use: the primary
     /// [`model_binding`](Self::model_binding) first, then any pool fallbacks in
     /// [`model_candidates`](Self::model_candidates). A single-model agent yields
@@ -232,6 +258,13 @@ impl ResolvedSpec {
     pub fn candidate_for_binding(&self, binding: &ModelBinding) -> Option<&ResolvedModelCandidate> {
         std::iter::once(&self.model_binding)
             .chain(self.model_candidates.iter())
+            .chain(
+                self.plugin_config
+                    .agent
+                    .advisor
+                    .as_ref()
+                    .map(|advisor| &advisor.candidate),
+            )
             .find(|candidate| &candidate.binding == binding)
     }
 
@@ -603,6 +636,9 @@ pub enum ToolKind {
     /// result through the normal durable resume ticket.
     ClientExecuted,
     AgentDelegation,
+    /// Model-facing consultation capability executed by the runtime against
+    /// the publication-pinned advisor candidate, never a host `RawTool`.
+    Advisor,
 }
 
 impl ToolKind {
@@ -680,6 +716,9 @@ impl ToolDescriptor {
 /// namespaced so it cannot collide with a catalog id or an MCP `mcp__…` id; the compile
 /// alias-collision check keeps an author from minting the same facing id.
 pub const TOOL_OPEN_ID: &str = "tool__open";
+
+/// Reserved model-facing name of the advisor service tool.
+pub const ADVISOR_TOOL_ID: &str = "advisor";
 
 /// Build the reserved `tool_open` descriptor from the still-deferred tools: its
 /// description lists each deferred tool's model-facing name + description so the model
@@ -1152,6 +1191,42 @@ mod tests {
         assert!(spec.select_execution_model("fallback"));
         assert_eq!(spec.model_binding.provider_identity_ref, "fallback-id");
         assert!(spec.model_candidates.is_empty());
+    }
+
+    #[test]
+    fn attempt_candidates_add_advisor_without_turning_it_into_a_fallback() {
+        // Cause/effect graph: the primary pool controls model failover, while a
+        // distinct advisor still needs attempt-fenced credentials and routing.
+        // An advisor identical to the primary is one route, not two claims.
+        //
+        // Decision table:
+        // | Rule | pool       | advisor  | attempt set | failover set |
+        // | C1   | primary+fb | absent   | 2           | 2            |
+        // | C2   | primary+fb | distinct | 3           | 2            |
+        // | C3   | primary+fb | primary  | 2           | 2            |
+        let mut spec = crate::snapshot::ExecutableAgentSnapshot::builder("agent")
+            .model(ModelBinding::new("primary-id", "primary", "native"))
+            .model_candidates([ModelBinding::new("fallback-id", "fallback", "native")])
+            .build()
+            .resolved_spec;
+        assert_eq!(spec.attempt_candidates(None).len(), 2, "C1");
+
+        let advisor =
+            ResolvedModelCandidate::host(ModelBinding::new("advisor-id", "advisor", "native"));
+        spec.plugin_config.agent.advisor = Some(crate::agent_bindings::AgentAdvisorBinding {
+            model: "claude-opus-5".into(),
+            candidate: advisor.clone(),
+        });
+        assert_eq!(spec.attempt_candidates(None).len(), 3, "C2");
+        assert_eq!(spec.candidate_bindings().len(), 2, "C2");
+        assert_eq!(spec.candidate_for_binding(&advisor.binding), Some(&advisor));
+
+        spec.plugin_config.agent.advisor = Some(crate::agent_bindings::AgentAdvisorBinding {
+            model: "claude-primary".into(),
+            candidate: spec.model_binding.clone(),
+        });
+        assert_eq!(spec.attempt_candidates(None).len(), 2, "C3");
+        assert_eq!(spec.candidate_bindings().len(), 2, "C3");
     }
 
     #[test]

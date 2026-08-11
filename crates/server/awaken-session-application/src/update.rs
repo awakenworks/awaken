@@ -16,6 +16,7 @@ use super::{
 pub struct SessionUpdateCommand {
     pub title: Option<Option<String>>,
     pub metadata: Option<Option<BTreeMap<String, Option<String>>>>,
+    pub budget: Option<Option<u64>>,
     pub tools: Option<SessionToolConfiguration>,
     pub mcp_candidates: Option<Vec<McpAttachmentCandidate>>,
     pub idempotency_key: Option<String>,
@@ -32,12 +33,13 @@ pub struct SessionUpdateChanges {
     pub metadata: bool,
     pub tools: bool,
     pub mcp: bool,
+    pub budget: bool,
 }
 
 impl SessionUpdateChanges {
     #[must_use]
     pub fn any(self) -> bool {
-        self.title || self.metadata || self.tools || self.mcp
+        self.title || self.metadata || self.tools || self.mcp || self.budget
     }
 
     #[must_use]
@@ -234,6 +236,7 @@ impl SessionApplication {
         let initial_title = session.title.clone();
         let initial_metadata = session.metadata.clone();
         let initial_tools = session.tools.clone();
+        let initial_budget = session.budget.clone();
         let command_receipt_key = command_record.as_ref().map(|record| record.key.clone());
         let mut mcp_changed = false;
         if let Some(candidates) = command.mcp_candidates.clone() {
@@ -325,15 +328,76 @@ impl SessionApplication {
         if let Some(tools) = &command.tools {
             session.tools = tools.clone();
         }
+        if let Some(requested) = command.budget {
+            use awaken_session_contract::SessionBudgetState;
+            session.budget = match (session.budget, requested) {
+                (
+                    SessionBudgetState::Active {
+                        consumed_numerator,
+                        usage_cursor,
+                        snapshot,
+                        reached_event_emitted,
+                        ..
+                    },
+                    Some(max_list_cost_minor),
+                ) => {
+                    let threshold = u128::from(max_list_cost_minor)
+                        * SessionBudgetState::MICROS_PER_MINOR_USD
+                        * SessionBudgetState::COST_DENOMINATOR;
+                    if threshold <= consumed_numerator {
+                        return Err(SessionUpdateError::Rejected(RunError::bad_request(
+                            "updated max_list_cost must be greater than consumed list cost",
+                        )));
+                    }
+                    SessionBudgetState::Active {
+                        max_list_cost_minor,
+                        consumed_numerator,
+                        usage_cursor,
+                        snapshot,
+                        reached_event_emitted,
+                    }
+                }
+                (
+                    SessionBudgetState::Active {
+                        consumed_numerator,
+                        usage_cursor,
+                        snapshot,
+                        ..
+                    },
+                    None,
+                ) => SessionBudgetState::Removed {
+                    consumed_numerator,
+                    usage_cursor,
+                    snapshot,
+                },
+                (SessionBudgetState::Absent, _) => {
+                    return Err(SessionUpdateError::Rejected(RunError::bad_request(
+                        "a budget cannot be added to a Session created without one",
+                    )));
+                }
+                (removed @ SessionBudgetState::Removed { .. }, None) => removed,
+                (SessionBudgetState::Removed { .. }, Some(_)) => {
+                    return Err(SessionUpdateError::Rejected(RunError::bad_request(
+                        "a removed Session budget cannot be re-added",
+                    )));
+                }
+            };
+        }
 
         let changes = SessionUpdateChanges {
             title: session.title != initial_title,
             metadata: session.metadata != initial_metadata,
             tools: session.tools != initial_tools,
             mcp: mcp_changed,
+            budget: session.budget != initial_budget,
         };
         let mut command_applied = true;
-        if changes.title || changes.metadata || changes.tools || command_record.is_some() {
+        if changes.title
+            || changes.metadata
+            || changes.tools
+            || changes.budget
+            || command_record.is_some()
+        {
             session = match command_record {
                 Some(record) => {
                     let (committed, applied) = self

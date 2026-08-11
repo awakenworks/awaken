@@ -177,3 +177,7 @@ async function main() {
 }
 
 main();
+// SDK-root cause/effect graph: an official Beta declaration family is present
+// and therefore must have exactly one behavior owner; an unmapped family makes
+// the compatibility claim fail. Decision table: known mapped family -> continue;
+// unknown or duplicate family -> fail before any compatibility result is printed.

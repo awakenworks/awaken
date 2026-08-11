@@ -63,6 +63,7 @@ impl ConfigService {
             snapshot_metadata(&resolved),
             resolved.models.primary,
             resolved.models.candidates,
+            resolved.advisor,
         )
         .map(|_| ())
         .map_err(|error| ValidationIssue {
@@ -132,6 +133,7 @@ impl ConfigService {
             metadata,
             resolved.models.primary,
             resolved.models.candidates,
+            resolved.advisor,
         )
         .map_err(|error| PublishError::Compile(error.to_string()))?;
         let session_profile =

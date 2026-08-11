@@ -90,6 +90,10 @@ impl ManagedState {
                     .changes
                     .agent()
                     .then(|| record.session.agent.clone()),
+                budget: outcome
+                    .changes
+                    .budget
+                    .then(|| record.session.budget.clone()),
             },
             processed_at: Some(PROCESSED_AT.to_string()),
         });

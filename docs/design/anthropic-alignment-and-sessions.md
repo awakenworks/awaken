@@ -61,6 +61,49 @@ Treat public sessions as product projections over runtime/server state:
 Do not add a product `SessionRecord` to runtime core unless the same value object
 is required for non-product runtime execution.
 
+## Managed model and coordinator compatibility
+
+The public model object is translated through the existing provider-neutral
+`InferenceOptions` value. `effort`, `speed`, and `inference_geo` are frozen in
+the published Agent revision and copied into each Session/thread snapshot. Geo
+is a placement constraint, not route identity: an execution adapter must either
+prove it can honor the exact value or reject the request before provider network
+I/O. A coordinator and all ordinary roster agents must have identical explicit
+geo pins, or all omit the pin. This validation belongs to the canonical Agent
+publication path, not to a Cloud-only shadow registry.
+
+The versioned `agent_toolset_20260401` has exactly eight built-in names: `bash`,
+`read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, and `web_search`.
+`web_search` reuses the one WebSearch plugin/provider registry and its existing
+credential, egress, usage, and Billing seams; the Managed adapter only selects
+it through the official toolset policy.
+
+Multiagent authoring and execution continue through the one `AgentConfig` roster
+and Session thread/event authority. An advisor is a typed roster member with the
+reserved name `anthropic.advisor`, not a second agent resource. At most one may
+be present and it is projected last. Only the primary thread may consult it;
+the consultation creates an exempt child thread, emits the ordinary thread
+lifecycle/message events, contributes to the same Session usage, then
+terminates. Consultation failure or interruption terminates only that advisor
+thread and never fails the primary turn. Client projection redacts advice when
+the selected advisor policy requires it, while the primary runtime receives the
+full result.
+
+The first executable Advisor slice uses the reserved `advisor` service tool,
+the publication-pinned candidate, the attempt's existing ownership/credential
+fence, a no-tools consultation, shared Session usage, primary-only admission,
+and fail-soft tool output. It deliberately does not invent a parallel raw-tool
+or model-resolution path. Separate persisted advisor child-Thread lifecycle
+events and client-selectable redaction are still a release gate; until that
+projection is implemented and differentially tested, the implementation may
+claim Advisor consultation compatibility but not full Advisor observability
+equivalence.
+
+Public Session status is restricted to the official
+`rescheduling | running | idle | terminated` union. Provisioning and internal
+failure phases remain internal state and are projected to the nearest official
+observable state/event rather than leaking adapter-private enum members.
+
 ## Events
 
 Runtime emits neutral facts/events. The product adapter projects them:

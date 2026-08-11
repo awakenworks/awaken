@@ -132,6 +132,7 @@ fn published_inference_controls_reach_each_model_call_unchanged() {
     controlled.plugin_config.inference = InferenceOptions {
         effort: Some(ReasoningEffort::Xhigh),
         speed: Some(InferenceSpeed::Fast),
+        inference_geo: None,
     };
     let request = build_chat_request(
         &controlled,

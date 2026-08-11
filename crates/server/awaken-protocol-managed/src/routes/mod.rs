@@ -14,6 +14,7 @@ pub mod deployments;
 pub mod dreams;
 pub mod environments;
 pub mod sessions;
+pub mod tunnels;
 pub mod user_profiles;
 pub mod vaults;
 
@@ -25,3 +26,4 @@ pub(crate) use sessions::ManagedJson;
 pub use sessions::{
     MEMORY_BETA, SKILLS_BETA, enforce_managed_beta, replace_resource_manifest, router,
 };
+pub use tunnels::tunnels_router;

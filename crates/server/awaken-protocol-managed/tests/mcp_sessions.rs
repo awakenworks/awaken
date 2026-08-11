@@ -970,7 +970,7 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
             .expect("recoverable failed intent");
         if kind == RunErrorKind::Unavailable {
             assert_eq!(read_status, StatusCode::OK, "R3 queryable retry");
-            assert_eq!(read["status"], "preparing", "R3");
+            assert_eq!(read["status"], "rescheduling", "R3");
             assert_eq!(failed.execution, SessionExecutionState::Preparing, "R3");
             assert_eq!(failed.realization_progress.attempts, 1, "R3");
             assert_eq!(
@@ -2035,6 +2035,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: false,
                 environment_id: None,
@@ -2062,12 +2063,12 @@ async fn minting_namespace_cannot_alias_committed_truth() {
 /// | Rule | C1 | wire status | Runtime prepare | idled fact | contribution |
 /// |---|---|---|---|---|---|
 /// | A1 | 0 | idle | once | once | NotRequired |
-/// | A2 | 1 | preparing | never | never | Accepted |
+/// | A2 | 1 | rescheduling | never | never | Accepted |
 #[tokio::test]
 async fn application_required_creation_is_generated_from_the_decision_table() {
     for (required, expected_status, expected_prepares, expected_facts, rule) in [
         (false, SessionStatus::Idle, 1, 1, "A1"),
-        (true, SessionStatus::Preparing, 0, 0, "A2"),
+        (true, SessionStatus::Rescheduling, 0, 0, "A2"),
     ] {
         let prepared = Arc::new(Mutex::new(Vec::new()));
         let notifier = Arc::new(CountingLifecycleNotifier::default());
@@ -2085,6 +2086,7 @@ async fn application_required_creation_is_generated_from_the_decision_table() {
             .create_session(
                 awaken_protocol_managed::types::SessionCreateParams {
                     agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                    budget: None,
                     initial_events: Vec::new(),
                     application_contribution_required: required,
                     environment_id: None,
@@ -2171,6 +2173,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: true,
                 environment_id: None,
@@ -2184,7 +2187,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
         )
         .await
         .expect("create preparing Session");
-    assert_eq!(session.status, SessionStatus::Preparing);
+    assert_eq!(session.status, SessionStatus::Rescheduling);
     assert!(prepared.lock().unwrap().is_empty());
 
     state
@@ -2224,6 +2227,7 @@ async fn create_session_commits_the_owned_fact_then_notifies_once() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: false,
                 environment_id: None,
@@ -2262,6 +2266,7 @@ async fn archive_session_commits_the_terminated_fact_once() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: false,
                 environment_id: None,
@@ -2315,6 +2320,7 @@ async fn delete_session_commits_the_deleted_fact_with_the_owner() {
         .create_session(
             awaken_protocol_managed::types::SessionCreateParams {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
+                budget: None,
                 initial_events: Vec::new(),
                 application_contribution_required: false,
                 environment_id: None,

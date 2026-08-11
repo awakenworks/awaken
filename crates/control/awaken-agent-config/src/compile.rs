@@ -7,7 +7,7 @@ use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use sha2::{Digest, Sha256};
 
-use crate::config::{AgentConfig, AgentKind};
+use crate::config::{AgentConfig, AgentKind, MultiagentTarget};
 
 /// A compilation failure, before anything is published (the design's Failure
 /// Rules: reject, never partially publish).
@@ -88,7 +88,7 @@ pub fn compile_resolved(
         .cloned()
         .map(ResolvedModelCandidate::host)
         .collect();
-    compile_with_models(config, tools, metadata, primary, candidates)
+    compile_with_models(config, tools, metadata, primary, candidates, None)
 }
 
 /// Compile a publication whose complete model candidates were resolved by the
@@ -100,8 +100,9 @@ pub fn compile_published(
     metadata: AgentSnapshotMetadata,
     primary: ResolvedModelCandidate,
     candidates: Vec<ResolvedModelCandidate>,
+    advisor: Option<ResolvedModelCandidate>,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
-    compile_with_models(config, tools, metadata, Some(primary), candidates)
+    compile_with_models(config, tools, metadata, Some(primary), candidates, advisor)
 }
 
 fn compile_with_models(
@@ -110,6 +111,7 @@ fn compile_with_models(
     mut metadata: AgentSnapshotMetadata,
     primary: Option<ResolvedModelCandidate>,
     candidates: Vec<ResolvedModelCandidate>,
+    advisor: Option<ResolvedModelCandidate>,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -184,10 +186,12 @@ fn compile_with_models(
     // need to repeat `agent_run` in `tool_ids`, and a target-less Agent cannot
     // accidentally publish the delegation tool. The semantic role, not a concrete
     // builtin id, joins the config domain to the extension catalog.
-    let has_delegation_targets = config
-        .multiagent
-        .as_ref()
-        .is_some_and(|multiagent| !multiagent.agents.is_empty());
+    let has_delegation_targets = config.multiagent.as_ref().is_some_and(|multiagent| {
+        multiagent
+            .agents
+            .iter()
+            .any(|target| target.advisor_model().is_none())
+    });
     if has_delegation_targets {
         let mut delegation = tools
             .iter()
@@ -212,6 +216,31 @@ fn compile_with_models(
         }
     } else {
         descriptors.retain(|tool| tool.kind != ToolKind::AgentDelegation);
+    }
+
+    let has_advisor = config.multiagent.as_ref().is_some_and(|multiagent| {
+        multiagent
+            .agents
+            .iter()
+            .any(|target| target.advisor_model().is_some())
+    });
+    if has_advisor {
+        if !seen.insert(awaken_runtime_contract::resolved::ADVISOR_TOOL_ID.into()) {
+            return Err(CompileError::InvalidBinding {
+                agent: config.id.clone(),
+                axis: "multiagent",
+                reason: "advisor reserved tool identity collides with an authored tool".into(),
+            });
+        }
+        descriptors.push(
+            ToolDescriptor::pinned(
+                "managed:advisor",
+                awaken_runtime_contract::resolved::ADVISOR_TOOL_ID,
+                "Consult the configured advisor model for a second opinion before continuing.",
+                serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+            )
+            .with_kind(ToolKind::Advisor),
+        );
     }
 
     // Execution recovery is keyed by canonical identity and is resolved into the
@@ -245,6 +274,14 @@ fn compile_with_models(
         .filter_map(|o| o.alias.as_deref().map(|a| (o.target.as_str(), a)))
         .collect();
     for ov in &config.tool_overrides {
+        if ov.target == awaken_runtime_contract::resolved::ADVISOR_TOOL_ID {
+            return Err(CompileError::InvalidToolOverride {
+                agent: config.id.clone(),
+                reason:
+                    "the reserved advisor service tool cannot be aliased, deferred, or rewritten"
+                        .to_string(),
+            });
+        }
         if !ov.target.starts_with("mcp__") && !descriptors.iter().any(|d| d.id == ov.target) {
             return Err(CompileError::InvalidToolOverride {
                 agent: config.id.clone(),
@@ -317,6 +354,18 @@ fn compile_with_models(
             reason: "fallback candidates do not match the resolved authoring order".into(),
         });
     }
+    if let Some(advisor) = &advisor
+        && let Some(existing) = std::iter::once(&model)
+            .chain(candidates.iter())
+            .find(|candidate| candidate.binding == advisor.binding)
+        && existing != advisor
+    {
+        return Err(CompileError::InvalidResolvedModels {
+            agent: config.id.clone(),
+            reason: "advisor and model pool resolve the same binding to different provisioning"
+                .into(),
+        });
+    }
 
     // Capability gate (ADR-0057 D2): the execution kind — derived from the now-concrete
     // `backend_ref` — must be able to honor the declared capabilities. A remote (a2a)
@@ -337,7 +386,11 @@ fn compile_with_models(
         }
     }
 
-    let bindings = normalize_agent_bindings(config, resolved_toolsets)?;
+    // The normalized binding consumes the resolved advisor candidate, while
+    // the content address must independently prove that exact route. Retain one
+    // immutable copy for fingerprinting; runtime never re-resolves it.
+    let advisor_for_fingerprint = advisor.clone();
+    let bindings = normalize_agent_bindings(config, resolved_toolsets, advisor)?;
 
     if !metadata.is_legacy_default() {
         let mut inputs = std::mem::take(&mut metadata.resolution.inputs);
@@ -358,7 +411,14 @@ fn compile_with_models(
 
     // Compile authoring integrations into the typed runtime contract. Empty
     // bindings are explicit capability absence.
-    let fingerprint = fingerprint_of(config, &descriptors, &metadata, &model, &candidates)?;
+    let fingerprint = fingerprint_of(
+        config,
+        &descriptors,
+        &metadata,
+        &model,
+        &candidates,
+        advisor_for_fingerprint.as_ref(),
+    )?;
     Ok(ExecutableAgentSnapshot::builder(&config.id)
         .instructions(config.instructions.clone())
         .resolved_model(model)
@@ -369,7 +429,7 @@ fn compile_with_models(
         .plugins(config.plugin_ids.clone())
         .plugin_config(config.plugin_config.clone())
         .agent_bindings(bindings)
-        .inference_options(config.inference)
+        .inference_options(config.inference.clone())
         .context_policy(config.context_policy.clone())
         .tool_presentation(presentation)
         .fingerprint(fingerprint)
@@ -380,6 +440,7 @@ fn compile_with_models(
 fn normalize_agent_bindings(
     config: &AgentConfig,
     toolsets: Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>,
+    advisor_candidate: Option<ResolvedModelCandidate>,
 ) -> Result<AgentBindings, CompileError> {
     let invalid = |axis, reason| CompileError::InvalidBinding {
         agent: config.id.clone(),
@@ -448,6 +509,7 @@ fn normalize_agent_bindings(
                 multiagent
                     .agents
                     .iter()
+                    .filter(|target| target.advisor_model().is_none())
                     .map(
                         |target| awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
                             agent_id: awaken_runtime_contract::snapshot::AgentId(
@@ -460,6 +522,33 @@ fn normalize_agent_bindings(
                     .collect()
             })
             .unwrap_or_default(),
+        advisor: match config.multiagent.as_ref().and_then(|multiagent| {
+            multiagent
+                .agents
+                .iter()
+                .find_map(MultiagentTarget::advisor_model)
+        }) {
+            Some(model) => Some(
+                awaken_runtime_contract::agent_bindings::AgentAdvisorBinding {
+                    model: model.to_string(),
+                    candidate: advisor_candidate.ok_or_else(|| {
+                        invalid(
+                            "multiagent",
+                            "advisor model has no exact published execution candidate".into(),
+                        )
+                    })?,
+                },
+            ),
+            None => {
+                if advisor_candidate.is_some() {
+                    return Err(invalid(
+                        "multiagent",
+                        "an advisor execution candidate exists without advisor authoring".into(),
+                    ));
+                }
+                None
+            }
+        },
         toolsets,
     })
 }
@@ -556,6 +645,7 @@ fn fingerprint_of(
     metadata: &AgentSnapshotMetadata,
     primary: &ResolvedModelCandidate,
     candidates: &[ResolvedModelCandidate],
+    advisor: Option<&ResolvedModelCandidate>,
 ) -> Result<String, CompileError> {
     let mut behavioral = config.clone();
     behavioral.name = None;
@@ -574,6 +664,14 @@ fn fingerprint_of(
         bytes.extend_from_slice(
             &serde_json::to_vec(&(primary, candidates))
                 .map_err(|err| CompileError::Serialize(err.to_string()))?,
+        );
+    }
+    // Advisor is a new managed publication capability and therefore has no
+    // legacy fingerprint to preserve. Its exact provider route and credential
+    // revision are behavioral even when the public advisor model id is equal.
+    if let Some(advisor) = advisor {
+        bytes.extend_from_slice(
+            &serde_json::to_vec(advisor).map_err(|err| CompileError::Serialize(err.to_string()))?,
         );
     }
     Ok(format!("{:x}", Sha256::digest(&bytes)))
@@ -1272,10 +1370,24 @@ mod tests {
                 },
             )
         };
-        let first =
-            compile_published(&cfg, &[], metadata(), candidate("credential-a"), vec![]).unwrap();
-        let second =
-            compile_published(&cfg, &[], metadata(), candidate("credential-b"), vec![]).unwrap();
+        let first = compile_published(
+            &cfg,
+            &[],
+            metadata(),
+            candidate("credential-a"),
+            vec![],
+            None,
+        )
+        .unwrap();
+        let second = compile_published(
+            &cfg,
+            &[],
+            metadata(),
+            candidate("credential-b"),
+            vec![],
+            None,
+        )
+        .unwrap();
         assert_ne!(first.fingerprint, second.fingerprint);
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
@@ -1596,6 +1708,192 @@ mod tests {
                 "M3/M4"
             );
         }
+    }
+
+    #[test]
+    fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
+        // Cause/effect graph: advisor authoring selects the reserved service
+        // capability and its publication candidate; ordinary targets alone
+        // select agent_run. Cardinality counts the advisor separately from the
+        // official maximum of 20 ordinary roster Agents.
+        //
+        // Decision table:
+        // | Rule | ordinary | advisor | candidate | effect                     |
+        // | V1   | 0        | 1       | exact     | advisor only, no agent_run |
+        // | V2   | 20       | 1       | exact     | both capabilities         |
+        // | V3   | 0        | 1       | absent    | reject publication        |
+        // | V4   | 0        | 2       | exact     | reject roster             |
+        // | V5   | 0        | 1       | route B   | different fingerprint     |
+        // | V6   | collision| 1       | ambiguous | reject publication        |
+        use crate::config::{MultiagentConfig, MultiagentTarget};
+
+        let delegation = tool("agent_run")
+            .with_kind(awaken_runtime_contract::resolved::ToolKind::AgentDelegation);
+        let advisor_candidate = ResolvedModelCandidate::host(
+            awaken_runtime_contract::resolved::ModelBinding::new("p", "advisor", "b"),
+        );
+        let mut cfg = config(&[]);
+        cfg.multiagent = Some(MultiagentConfig {
+            agents: vec![MultiagentTarget::Advisor {
+                model: "claude-opus-5".into(),
+            }],
+        });
+        let primary = ResolvedModelCandidate::host(cfg.model_binding.resolved().unwrap().clone());
+        let advisor_only = compile_published(
+            &cfg,
+            std::slice::from_ref(&delegation),
+            AgentSnapshotMetadata::default(),
+            primary.clone(),
+            vec![],
+            Some(advisor_candidate.clone()),
+        )
+        .expect("V1");
+        let advisor_only_fingerprint = advisor_only.fingerprint.clone();
+        assert!(
+            advisor_only
+                .resolved_spec
+                .plugin_config
+                .agent
+                .delegates
+                .is_empty()
+        );
+        assert_eq!(
+            advisor_only
+                .resolved_spec
+                .plugin_config
+                .agent
+                .advisor
+                .as_ref()
+                .unwrap()
+                .candidate,
+            advisor_candidate,
+            "V1"
+        );
+        assert!(
+            advisor_only
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .any(|descriptor| descriptor.kind == ToolKind::Advisor)
+        );
+        assert!(
+            !advisor_only
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .any(|descriptor| descriptor.kind == ToolKind::AgentDelegation)
+        );
+
+        let alternate_advisor = ResolvedModelCandidate::host(
+            awaken_runtime_contract::resolved::ModelBinding::new("p", "advisor", "route-b"),
+        );
+        let alternate = compile_published(
+            &cfg,
+            std::slice::from_ref(&delegation),
+            AgentSnapshotMetadata::default(),
+            primary.clone(),
+            vec![],
+            Some(alternate_advisor),
+        )
+        .expect("V5");
+        assert_ne!(alternate.fingerprint, advisor_only_fingerprint, "V5");
+
+        let ambiguous_advisor = ResolvedModelCandidate {
+            binding: primary.binding.clone(),
+            provisioning: awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+                scope_id: "workspace-a".into(),
+                credential: None,
+                security_fingerprint: "different-route".into(),
+            },
+        };
+        assert!(
+            matches!(
+                compile_published(
+                    &cfg,
+                    std::slice::from_ref(&delegation),
+                    AgentSnapshotMetadata::default(),
+                    primary.clone(),
+                    vec![],
+                    Some(ambiguous_advisor),
+                ),
+                Err(CompileError::InvalidResolvedModels { .. })
+            ),
+            "V6"
+        );
+
+        cfg.multiagent = Some(MultiagentConfig {
+            agents: (0..20)
+                .map(|index| MultiagentTarget::Agent {
+                    id: format!("worker-{index}"),
+                    version: Some(1),
+                })
+                .chain(std::iter::once(MultiagentTarget::Advisor {
+                    model: "claude-opus-5".into(),
+                }))
+                .collect(),
+        });
+        let both = compile_published(
+            &cfg,
+            std::slice::from_ref(&delegation),
+            AgentSnapshotMetadata::default(),
+            primary.clone(),
+            vec![],
+            Some(advisor_candidate.clone()),
+        )
+        .expect("V2");
+        assert_eq!(both.resolved_spec.plugin_config.agent.delegates.len(), 20);
+        assert!(
+            both.resolved_spec
+                .tool_descriptors
+                .iter()
+                .any(|descriptor| descriptor.kind == ToolKind::AgentDelegation)
+        );
+
+        assert!(
+            matches!(
+                compile_published(
+                    &cfg,
+                    std::slice::from_ref(&delegation),
+                    AgentSnapshotMetadata::default(),
+                    primary.clone(),
+                    vec![],
+                    None,
+                ),
+                Err(CompileError::InvalidBinding {
+                    axis: "multiagent",
+                    ..
+                })
+            ),
+            "V3"
+        );
+
+        cfg.multiagent = Some(MultiagentConfig {
+            agents: vec![
+                MultiagentTarget::Advisor {
+                    model: "claude-opus-5".into(),
+                },
+                MultiagentTarget::Advisor {
+                    model: "claude-fable-5".into(),
+                },
+            ],
+        });
+        assert!(
+            matches!(
+                compile_published(
+                    &cfg,
+                    std::slice::from_ref(&delegation),
+                    AgentSnapshotMetadata::default(),
+                    primary,
+                    vec![],
+                    Some(advisor_candidate),
+                ),
+                Err(CompileError::InvalidBinding {
+                    axis: "multiagent",
+                    ..
+                })
+            ),
+            "V4"
+        );
     }
 
     // --- CEG 03 / B2 (glob_match) --------------------------------------------

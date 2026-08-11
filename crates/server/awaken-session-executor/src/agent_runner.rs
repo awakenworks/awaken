@@ -138,9 +138,9 @@ pub(crate) fn child_attempt_executor(
 ) -> Result<Arc<dyn RunAttemptExecutor>, AgentRunError> {
     let backends = snapshot
         .resolved_spec
-        .candidate_bindings()
+        .attempt_candidates(None)
         .into_iter()
-        .map(|candidate| Backend::from_ref(&candidate.backend_ref))
+        .map(|candidate| Backend::from_ref(&candidate.binding.backend_ref))
         .collect::<Vec<_>>();
     let acp = backends
         .iter()
@@ -185,7 +185,7 @@ fn bind_direct_child_credentials(
     let candidates = activation
         .snapshot
         .resolved_spec
-        .execution_candidates(activation.model_ref_override.as_deref())
+        .attempt_candidates(activation.model_ref_override.as_deref())
         .into_iter()
         .filter(|candidate| {
             matches!(
