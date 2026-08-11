@@ -53,6 +53,8 @@ struct SandboxPolicyCreate {
     #[serde(default)]
     provisioning: awaken_session_contract::SandboxProvisioning,
     #[serde(default)]
+    idle_retention: awaken_session_contract::EnvironmentIdleRetentionPolicy,
+    #[serde(default)]
     disabled: bool,
 }
 
@@ -63,6 +65,8 @@ struct SandboxPolicyPublish {
     config: awaken_provisioning_contract::SandboxOverride,
     #[serde(default)]
     provisioning: awaken_session_contract::SandboxProvisioning,
+    #[serde(default)]
+    idle_retention: awaken_session_contract::EnvironmentIdleRetentionPolicy,
     #[serde(default)]
     disabled: bool,
 }
@@ -117,6 +121,7 @@ async fn create_sandbox_policy(
         version: SandboxExecutionPolicyVersion::INITIAL,
         config: input.config,
         provisioning: input.provisioning,
+        idle_retention: input.idle_retention,
         disabled: input.disabled,
     };
     policy_store(&state)?
@@ -140,6 +145,7 @@ async fn publish_sandbox_policy(
         version: SandboxExecutionPolicyVersion(next),
         config: input.config,
         provisioning: input.provisioning,
+        idle_retention: input.idle_retention,
         disabled: input.disabled,
     };
     policy_store(&state)?
@@ -300,6 +306,7 @@ mod tests {
                 ..Default::default()
             },
             provisioning: Default::default(),
+            idle_retention: Default::default(),
             disabled: false,
         };
         let mut second = first.clone();

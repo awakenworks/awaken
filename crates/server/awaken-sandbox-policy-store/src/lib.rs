@@ -34,6 +34,10 @@ fn validate(policy: &SandboxExecutionPolicy) -> Result<(), SandboxExecutionPolic
             "network belongs to the Environment contract".into(),
         ));
     }
+    policy
+        .idle_retention
+        .validate()
+        .map_err(|message| SandboxExecutionPolicyError::Invalid(message.into()))?;
     Ok(())
 }
 
@@ -352,6 +356,7 @@ mod tests {
                 ..Default::default()
             },
             provisioning: Default::default(),
+            idle_retention: Default::default(),
             disabled: false,
         }
     }

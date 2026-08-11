@@ -28,6 +28,7 @@ fn session_environment(
         config_fingerprint,
         sandbox,
         sandbox_provisioning: Default::default(),
+        idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
         network,
@@ -845,6 +846,7 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                     ),
                     sandbox: serde_json::json!({}),
                     sandbox_provisioning: Default::default(),
+                    idle_retention: Default::default(),
                     packages: Default::default(),
                     prepared_image: None,
                     network: if with_environment_inputs {

@@ -1100,6 +1100,12 @@ impl SessionApplication {
             if let Some(error) = teardown_error {
                 return Err(SessionPreparationError::Rejected(error));
             }
+            if let Some(checkpoint) = session.environment.checkpoint().cloned() {
+                self.runtime()
+                    .delete_session_checkpoint(session_id, &checkpoint)
+                    .await
+                    .map_err(SessionPreparationError::Rejected)?;
+            }
             if !self
                 .retire_session_repositories(owner_scope, session_id, &session.resources)
                 .await

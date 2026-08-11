@@ -32,6 +32,9 @@ pub struct SandboxExecutionPolicy {
     pub config: SandboxOverride,
     #[serde(default)]
     pub provisioning: SandboxProvisioning,
+    /// Frozen into the Environment snapshot together with this exact version.
+    #[serde(default)]
+    pub idle_retention: awaken_session_contract::EnvironmentIdleRetentionPolicy,
     #[serde(default)]
     pub disabled: bool,
 }

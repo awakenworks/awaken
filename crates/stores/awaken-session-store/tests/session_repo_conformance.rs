@@ -38,6 +38,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
         config_fingerprint: awaken_session_contract::EnvironmentFingerprint("env-4".into()),
         sandbox: json!({"isolation": "namespace"}),
         sandbox_provisioning: Default::default(),
+        idle_retention: Default::default(),
         packages: Default::default(),
         prepared_image: None,
         network: awaken_session_contract::SessionNetworkPolicy::None,

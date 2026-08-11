@@ -158,7 +158,7 @@ impl SessionRuntime for RehydrateFake {
         Ok(())
     }
 
-    async fn restore_session_environment(
+    async fn adopt_session_environment(
         &self,
         agent: &str,
         thread: &str,

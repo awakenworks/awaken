@@ -35,7 +35,7 @@ use awaken_sandbox_local::LocalProvider;
 
 use crate::agent_catalog::AgentCatalog;
 use crate::agent_runner::run_configured_agent_with_id;
-use crate::background::BackgroundRuns;
+use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::judge::AuxAgentTool;
 use crate::store::HostCommit;
 
@@ -709,9 +709,14 @@ impl BoundMemory {
         let bound = self.clone();
         self.runtime
             .background
-            .spawn(async move {
-                bound.drive_recoverable().await;
-            })
+            .spawn(
+                BackgroundWorkClass::ExternalDurable {
+                    durable_intent_id: format!("memory-extraction:{thread}"),
+                },
+                async move {
+                    bound.drive_recoverable().await;
+                },
+            )
             .await;
         true
     }
