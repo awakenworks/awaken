@@ -241,7 +241,7 @@ impl RunAttemptExecutor for CaptureContextAttemptExecutor {
     }
 }
 
-/// Host composition adapter for the ordinary `RunExecutor` port. It binds one
+/// Host startup adapter for the ordinary `RunExecutor` port. It binds one
 /// Thread's backend routing, durable ingress, and live-context construction;
 /// Runtime extensions still submit an ordinary `RunActivation` and remain
 /// independent of `SharedHost`.

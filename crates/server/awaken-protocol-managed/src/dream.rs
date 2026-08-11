@@ -35,16 +35,27 @@ impl DreamSessionSource for crate::ManagedState {
         sessions.into_iter().take(limit).map(|(_, id)| id).collect()
     }
 
-    fn session_usage(&self, workspace_id: &str, session_id: &str) -> Option<DreamUsage> {
-        let session = self
-            .list_sessions_scoped(workspace_id)
-            .into_iter()
-            .find(|session| session.id == session_id)?;
+    async fn session_usage(&self, workspace_id: &str, session_id: &str) -> Option<DreamUsage> {
+        if self
+            .resolve_owner(session_id)
+            .await
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some(workspace_id)
+        {
+            return None;
+        }
+        let usage = self
+            .session_application()
+            .session_usage(session_id)
+            .await
+            .ok()?;
         Some(DreamUsage {
-            cache_creation_input_tokens: session.usage.cache_creation_input_tokens,
-            cache_read_input_tokens: session.usage.cache_read_input_tokens,
-            input_tokens: session.usage.input_tokens,
-            output_tokens: session.usage.output_tokens,
+            cache_creation_input_tokens: usage.cache_creation_tokens,
+            cache_read_input_tokens: usage.cache_read_tokens,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
         })
     }
 }

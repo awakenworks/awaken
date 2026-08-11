@@ -10,7 +10,7 @@ use awaken_resource_contract::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Pure Session-control-plane composer. Runtime receives only this resolved output
+/// Pure Session input resolver. Runtime receives only this resolved output
 /// and never reads the Agent binding repository itself.
 pub struct SessionInputResolver;
 
@@ -321,9 +321,10 @@ fn validate_resolved_inputs(inputs: &mut [ResolvedInput]) -> Result<(), SessionI
 }
 
 impl SessionInputResolver {
-    /// Compose typed Agent defaults and Session attachments. Only an explicit
-    /// `replaces` removes an Agent binding; all remaining id/path collisions fail.
-    pub fn compose(
+    /// Derive the effective bindings from typed Agent defaults and Session
+    /// attachments. Only an explicit `replaces` removes an Agent binding; all
+    /// remaining id/path collisions fail.
+    pub fn effective_bindings(
         agent_defaults: &[InputBinding],
         session_attachments: &[SessionInputAttachment],
     ) -> Result<Vec<InputBinding>, SessionInputError> {
@@ -362,7 +363,7 @@ impl SessionInputResolver {
         Ok(effective)
     }
 
-    /// Compose and resolve the current Memory/Repository configuration exactly
+    /// Derive and resolve the current Memory/Repository configuration exactly
     /// once. The caller supplies a trusted Workspace after the edge PEP has made
     /// its authorization decision; this method contains no authorization policy.
     pub fn resolve_inputs(
@@ -371,7 +372,7 @@ impl SessionInputResolver {
         agent_defaults: &[InputBinding],
         session_attachments: &[SessionInputAttachment],
     ) -> Result<ResolvedSessionResources, SessionInputError> {
-        let inputs = Self::compose(agent_defaults, session_attachments)?
+        let inputs = Self::effective_bindings(agent_defaults, session_attachments)?
             .into_iter()
             .map(|binding| {
                 let source = match binding.target {
@@ -505,7 +506,7 @@ mod tests {
             awaken_resource_contract::ResourceAccess::ReadWrite,
         );
         assert!(matches!(
-            SessionInputResolver::compose(
+            SessionInputResolver::effective_bindings(
                 &defaults,
                 &[SessionInputAttachment {
                     binding: file.clone(),
@@ -577,7 +578,7 @@ mod tests {
             awaken_resource_contract::ResourceAccess::ReadOnly,
         );
         assert!(matches!(
-            SessionInputResolver::compose(&[unsafe_binding], &[]),
+            SessionInputResolver::effective_bindings(&[unsafe_binding], &[]),
             Err(SessionInputError::UnsafeMountPath(_))
         ));
 

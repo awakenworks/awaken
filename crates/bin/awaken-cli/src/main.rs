@@ -1,4 +1,4 @@
-//! `awaken` — product launcher, operator commands, and AllInOne composition.
+//! `awaken` — product launcher, operator commands, and AllInOne startup.
 
 use std::process::ExitCode;
 

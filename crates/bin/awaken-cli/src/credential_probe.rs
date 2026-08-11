@@ -1,7 +1,7 @@
-//! Provider credential validation adapter used only by Control composition.
+//! Provider credential validation adapter used only by Control startup.
 
 /// The live credential probe backed by provider-genai. Keeping this adapter in
-/// the composition root lets the admin contract remain SDK-free.
+/// the process startup lets the admin contract remain SDK-free.
 pub(crate) struct GenaiProbe;
 
 #[async_trait::async_trait]

@@ -1,6 +1,6 @@
 //! Control-to-Coordinator executable Agent registration boundary.
 //!
-//! The values in this crate are transport commands composed from existing
+//! The values in this crate are transport commands configured from existing
 //! publication and Session projection values. They are not a second Agent model,
 //! catalog implementation, persistence API, or RPC framework.
 
@@ -175,6 +175,30 @@ pub trait ExecutableAgentInventorySource: Send + Sync {
     ) -> Result<Vec<ExecutableAgentRegistration>, ExecutableAgentRegistrationError>;
 }
 
+/// Model references reachable from the current executable Agent publications in
+/// one Workspace. Primary and fallback candidates share this one normalization
+/// rule for Dream readiness and every public model projection.
+pub async fn current_model_references(
+    registrations: &dyn ExecutableAgentInventorySource,
+    workspace_id: &str,
+) -> Result<Vec<String>, ExecutableAgentRegistrationError> {
+    let mut model_references = registrations
+        .current_registrations(workspace_id)
+        .await?
+        .into_iter()
+        .flat_map(|registration| {
+            let spec = registration.snapshot.resolved_spec;
+            std::iter::once(spec.model_binding)
+                .chain(spec.model_candidates)
+                .map(|candidate| candidate.binding.model_ref)
+        })
+        .filter(|model_reference| !model_reference.trim().is_empty())
+        .collect::<Vec<_>>();
+    model_references.sort();
+    model_references.dedup();
+    Ok(model_references)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +207,23 @@ mod tests {
         AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
         AgentSnapshotMetadata, ExecutableAgentSnapshot,
     };
+
+    struct Inventory(Vec<ExecutableAgentRegistration>);
+
+    #[async_trait]
+    impl ExecutableAgentInventorySource for Inventory {
+        async fn current_registrations(
+            &self,
+            workspace_id: &str,
+        ) -> Result<Vec<ExecutableAgentRegistration>, ExecutableAgentRegistrationError> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|registration| registration.workspace_id == workspace_id)
+                .cloned()
+                .collect())
+        }
+    }
 
     fn registration() -> ExecutableAgentRegistration {
         let mut snapshot = ExecutableAgentSnapshot::builder("agent-a")
@@ -204,6 +245,54 @@ mod tests {
             snapshot,
             session_profile: ExecutableAgentSessionProfile::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn executable_model_reference_decision_table() {
+        // FMECA: a missing Workspace match could leak another tenant's models;
+        // repeated primary/fallback references could expose inconsistent model
+        // choices; a blank reference could create an unusable route. Causes are
+        // C1 current registration in scope, C2 primary/fallback reference, C3
+        // duplicate, C4 blank, C5 another scope. Effects are E1 include, E2
+        // sort/deduplicate, E3 omit. Cause graph: (C1 && C2 && !C4) -> E1;
+        // C3 -> E2; (C4 || C5) -> E3.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // |---|---|---|---|---|---|---|
+        // | M1 | yes | primary+fallback | no | no | no | E1 sorted refs |
+        // | M2 | yes | either | yes | no | no | E2 one ref |
+        // | M3 | yes | either | any | yes | no | E3 omitted |
+        // | M4 | no | any | any | any | yes | E3 omitted |
+        let registration = |workspace: &str, agent: &str, primary: &str, fallbacks: &[&str]| {
+            ExecutableAgentRegistration {
+                workspace_id: workspace.into(),
+                agent_id: agent.into(),
+                source_revision: 1,
+                snapshot: ExecutableAgentSnapshot::builder(agent)
+                    .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                        "provider", primary, "native",
+                    ))
+                    .model_candidates(fallbacks.iter().map(|model| {
+                        awaken_runtime_contract::resolved::ModelBinding::new(
+                            "provider", *model, "native",
+                        )
+                    }))
+                    .build(),
+                session_profile: ExecutableAgentSessionProfile::default(),
+            }
+        };
+        let inventory = Inventory(vec![
+            registration("workspace-a", "agent-a", "model-b", &["model-a", ""]),
+            registration("workspace-a", "agent-b", "model-a", &["model-c"]),
+            registration("workspace-b", "agent-c", "model-secret", &[]),
+        ]);
+
+        assert_eq!(
+            current_model_references(&inventory, "workspace-a")
+                .await
+                .unwrap(),
+            vec!["model-a", "model-b", "model-c"]
+        );
     }
 
     #[test]

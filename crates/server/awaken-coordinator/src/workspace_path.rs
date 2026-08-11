@@ -39,7 +39,7 @@ pub fn with_workspace_path_addressing(flat: Router) -> Router {
 
 /// Stamp the platform-provisioned local workspace on flat requests. Explicit
 /// path/key tenancy wins; this middleware only fills a missing trusted scope.
-/// The value is generated and persisted by the composition root, never compiled.
+/// The value is generated and persisted during process startup, never compiled.
 pub fn with_platform_workspace(flat: Router, workspace: String) -> Router {
     flat.layer(axum::middleware::from_fn_with_state(
         workspace,

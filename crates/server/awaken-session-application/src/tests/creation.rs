@@ -2,6 +2,30 @@ use super::*;
 
 struct AdmissionEnvironment;
 
+struct ProfiledAgent {
+    unavailable: bool,
+}
+
+impl awaken_executable_agent_contract::ExecutableAgentProfileSource for ProfiledAgent {
+    fn session_profile_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        (workspace_id == "workspace" && agent_id == "profiled").then(|| {
+            awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                model: Some("published-model".into()),
+                execution_model_ref: Some("execution-model".into()),
+                ..Default::default()
+            }
+        })
+    }
+
+    fn agent_unavailable_in(&self, workspace_id: &str, agent_id: &str) -> bool {
+        self.unavailable && workspace_id == "workspace" && agent_id == "profiled"
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionEnvironmentSource for AdmissionEnvironment {
     async fn get(
@@ -248,5 +272,96 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
         error.kind,
         awaken_session_contract::RunErrorKind::BadRequest,
         "A3/E3"
+    );
+}
+
+/// Profiled-Session FMECA and cause/effect graph. Failure modes are FM1 a
+/// requested model bypasses the published Agent, FM2 an unavailable Agent is
+/// admitted, and FM3 an application-owned Session realizes before its
+/// contribution. Causes: C1 profile exists, C2 Agent available, C3 requested
+/// model absent/equal, C4 requested model differs, C5 application contribution
+/// required. Effects: E1 freeze the published execution identity, E2 reject
+/// without a row, E3 remain Preparing for contribution. Graph:
+/// C1&&C2&&C3&&!C5 -> E1; C1&&C2&&C3&&C5 -> E1+E3; C4||!C2 -> E2.
+///
+/// | Rule | Profile | Available | Requested model | Contribution | Effect |
+/// |---|---|---|---|---|---|
+/// | P1 | yes | yes | absent/equal | absent | E1 realized |
+/// | P2 | yes | yes | equal | required | E1 + E3 |
+/// | P3 | yes | yes | different | any | E2 |
+/// | P4 | yes | no | any | any | E2 |
+#[tokio::test]
+async fn profiled_session_creation_enforces_publication_and_contribution_rules() {
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("profiled Session repository"),
+    );
+    let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
+    available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+    let command = |session_id: &str, model: Option<&str>, required| CreateProfiledSessionCommand {
+        owner_scope: "workspace".into(),
+        session_id: session_id.into(),
+        agent_id: "profiled".into(),
+        model: model.map(str::to_owned),
+        application_contribution_required: required,
+        title: None,
+        metadata: Default::default(),
+        tools: None,
+    };
+
+    let realized = available
+        .create_profiled_session(command("profiled-realized", None, false))
+        .await
+        .expect("P1");
+    assert_eq!(realized.model(), Some("published-model"), "P1/E1");
+    assert_eq!(
+        realized.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "P1/E1"
+    );
+
+    let awaiting = available
+        .create_profiled_session(command("profiled-awaiting", Some("published-model"), true))
+        .await
+        .expect("P2");
+    assert!(
+        matches!(
+            awaiting.baseline,
+            awaken_session_contract::SessionBaselineState::Preparing(_)
+        ),
+        "P2/E3"
+    );
+
+    let mismatched = available
+        .create_profiled_session(command(
+            "profiled-mismatch",
+            Some("unpublished-model"),
+            false,
+        ))
+        .await;
+    assert!(mismatched.is_err(), "P3/E2");
+    assert!(
+        matches!(
+            repository.get("profiled-mismatch").await,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        ),
+        "P3/E2"
+    );
+
+    let mut unavailable = application(repository.clone(), Arc::new(AdmissionEnvironment));
+    unavailable.set_config_source(Arc::new(ProfiledAgent { unavailable: true }));
+    assert!(
+        unavailable
+            .create_profiled_session(command("profiled-unavailable", None, false))
+            .await
+            .is_err(),
+        "P4/E2"
+    );
+    assert!(
+        matches!(
+            repository.get("profiled-unavailable").await,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        ),
+        "P4/E2"
     );
 }

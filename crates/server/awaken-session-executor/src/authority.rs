@@ -1,7 +1,7 @@
 //! Runtime-facing durable authority contracts.
 //!
 //! The Runtime Host owns execution semantics, but it does not select or open a
-//! database. A Coordinator composition injects one implementation of these
+//! database. A Coordinator startup injects one implementation of these
 //! contracts. Database-less Workers leave the authority absent and use their
 //! remote, claim-fenced transports instead.
 
@@ -22,7 +22,7 @@ use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 
 /// One local authoritative commit boundary selected by the Coordinator.
 ///
-/// This composes the canonical commit, committed-view, recovery, and lifecycle
+/// This configures the canonical commit, committed-view, recovery, and lifecycle
 /// ports rather than mirroring their methods in a second facade. It adds only
 /// queries whose authoritative implementations may require asynchronous shared
 /// storage reads.
@@ -82,7 +82,7 @@ pub trait LocalCommitQueries<S>: Send + Sync {
 
 /// One canonical delegation adapter for a Coordinator-owned commit source.
 /// Implementations of the commit/read/recovery ports live in `store.rs`, the
-/// architecture-approved adapter owner; composition roots only select queries.
+/// architecture-approved adapter owner; process startups only select queries.
 pub struct LocalCommitAdapter<S, Q> {
     pub(crate) store: Arc<S>,
     pub(crate) queries: Q,

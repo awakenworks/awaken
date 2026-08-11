@@ -92,7 +92,7 @@ pub(crate) struct RunScheduler {
     pub(crate) session_resources: Option<awaken_session_contract::SessionResourceManifest>,
 }
 
-/// Execution-edge adapters already installed by the host composition root.
+/// Execution-edge adapters already installed by the host process startup.
 ///
 /// A delegated child selects only through its immutable `backend_ref`; this
 /// value carries implementations and credential-realization evidence, never a

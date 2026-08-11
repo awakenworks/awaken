@@ -1,4 +1,4 @@
-//! Local and ephemeral adapters for the process composition root.
+//! Local and ephemeral stores for product-process startup.
 
 use super::*;
 
@@ -57,7 +57,7 @@ pub(super) fn in_memory_control_stores() -> ProcessStores {
 }
 
 #[cfg(test)]
-pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServicePorts) {
+pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServices) {
     let mut stores = in_memory_process_stores();
     let control = stores
         .control
@@ -84,7 +84,7 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServicePor
     );
     (
         stores,
-        ControlServicePorts {
+        ControlServices {
             audit,
             credentials,
             webhooks,
@@ -94,7 +94,7 @@ pub(super) fn in_memory_split_coordinator() -> (ProcessStores, ControlServicePor
 }
 
 /// Keep the Managed Session aggregate durable whenever the runtime itself is
-/// durable, even when the rest of the process composition intentionally remains
+/// durable, even when the rest of the process startup intentionally remains
 /// ephemeral. A restarted runtime can only rehydrate a governed Session when its
 /// configuration and owner fence survive beside the committed thread facts.
 #[cfg(test)]
@@ -116,7 +116,7 @@ pub(super) fn process_stores_for_runtime_storage(
     let coordinator = stores
         .coordinator
         .as_mut()
-        .expect("test composition owns Coordinator");
+        .expect("test startup owns Coordinator");
     coordinator.sessions = sessions.clone();
     coordinator.deployments = sessions.clone();
     coordinator.memory_extractions = sessions.clone();
@@ -124,7 +124,7 @@ pub(super) fn process_stores_for_runtime_storage(
     stores
 }
 
-/// Local SQLite is a backend selection, not a second store assembly.
+/// Local SQLite is a backend selection, not a second store process.
 pub(super) async fn open_local_process_stores(
     dir: &std::path::Path,
     key: &[u8; 32],

@@ -1,4 +1,4 @@
-//! Deterministic model adapter over the production split-Control composition.
+//! Deterministic model adapter over the production split-Control deployment.
 //!
 //! This module adds no alternate Control service. It loads the same typed
 //! deployment as the product command and supplies only the existing model
@@ -17,7 +17,7 @@ use axum::routing::post;
 use crate::model_publication::{DistributedProviderPublicationResolver, scenario_model_catalog};
 
 pub async fn build_distributed_control_router() -> Router {
-    // The scenario process is a thin composition adapter, not a second config
+    // The scenario process is a thin model adapter, not a second config
     // owner. Its deployment fixture supplies the same explicit file used by the
     // production Control migration command; omission retains the normal default
     // path for focused unit tests.

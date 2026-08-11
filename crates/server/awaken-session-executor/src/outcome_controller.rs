@@ -11,7 +11,7 @@ use crate::run_exec::BoundRunExecutor;
 
 impl SharedHost {
     /// Translate Managed's request into the extension application service. Host
-    /// retains only locking, backend/context composition, id generation, and DTO
+    /// retains only locking, backend/context selection, id generation, and DTO
     /// projection; all Outcome transitions and prompts live in `awaken-ext-goal`.
     pub async fn define_outcome(
         &self,

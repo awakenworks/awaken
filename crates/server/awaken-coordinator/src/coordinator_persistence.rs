@@ -1,4 +1,4 @@
-//! Coordinator-owned Postgres persistence composition.
+//! Coordinator-owned PostgreSQL persistence selection.
 //!
 //! The migration command and both standalone/AllInOne startup reuse this one
 //! component boundary. Operational migration applies bundles without publishing
@@ -62,13 +62,13 @@ pub async fn migrate_postgres_schema(deployment: &DeploymentConfig) -> Result<()
     Ok(())
 }
 
-/// Initialize only the runtime backends selected by a scenario composition.
+/// Initialize only the runtime backends selected by a scenario deployment.
 ///
 /// Test-support scenario routers inject one explicit reference runtime authority
 /// and their own in-memory `WorkerDirectory`; opening and then discarding a
 /// production directory here would create a second authority and would
 /// incorrectly require SQLite storage for an intentionally ephemeral fixture.
-/// Production composition roots use [`open`] or [`open_existing`] and therefore
+/// Production startup uses [`open`] or [`open_existing`] and therefore
 /// still receive the durable authorities returned by this module.
 #[cfg(any(test, feature = "test-support"))]
 pub async fn init_scenario_runtime(

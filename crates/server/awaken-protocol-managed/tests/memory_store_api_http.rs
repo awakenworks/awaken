@@ -21,7 +21,7 @@ mod support;
 fn router() -> Router {
     let resources = support::resources::ephemeral_resources();
     memory_stores_router(
-        resources.ports().memory_repository(),
+        resources.authorities().memory_repository(),
         resources.memory_stores(),
     )
 }
@@ -241,7 +241,7 @@ async fn unknown_store_is_fail_closed_on_every_verb() {
 async fn workspace_and_lifecycle_are_intrinsic_resource_guards() {
     let resources = support::resources::ephemeral_resources();
     let router = memory_stores_router(
-        resources.ports().memory_repository(),
+        resources.authorities().memory_repository(),
         resources.memory_stores(),
     );
     let (status, created) = call_scoped(

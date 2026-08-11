@@ -19,8 +19,8 @@ mod provider;
 use container_skills::{ContainerSkillCache, RefreshingHandExecutor};
 pub(crate) use provider::SessionEnvironmentProvider;
 
-/// Composition port that binds a live hand channel to the runtime's neutral tool
-/// executor. The framing implementation belongs to an outer composition crate;
+/// Session environment service that binds a live hand channel to the runtime's tool
+/// executor. The framing implementation belongs to an outer startup crate;
 /// this host owns only the Session lifecycle and never imports the relay adapter.
 pub trait HandExecutorFactory: Send + Sync {
     fn bind(

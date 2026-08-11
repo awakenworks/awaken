@@ -873,7 +873,7 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
 
 /// Cause/effect graph: C1 a baseline is frozen; C2 its explicit Runtime
 /// placement is Local or Worker; C3 a retained pre-placement row is marked
-/// LegacyUnspecified; C4 the process composition is local or registered;
+/// LegacyUnspecified; C4 the process startup is local or registered;
 /// C5 an application contribution independently requires Worker custody.
 /// The realization lease is intentionally absent from the causes: it is an
 /// assignment fence, never placement policy. Effects are E1 local physical

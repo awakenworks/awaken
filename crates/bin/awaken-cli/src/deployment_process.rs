@@ -1,13 +1,13 @@
-//! Deployment-selected runtime process and migration assembly.
+//! Deployment-selected runtime process and migration process.
 
 use super::*;
 
-pub(super) async fn build_runtime_process_assembly(
+pub(super) async fn prepare_runtime_process(
     deployment: &config::ResolvedDeployment,
     key: Option<&[u8; 32]>,
     role: config::Role,
-    model_composition: PublicationModelComposition,
-) -> Result<ProcessAssembly, String> {
+    model_supply: PublicationModelSupply,
+) -> Result<PreparedProcess, String> {
     debug_assert!(matches!(
         role,
         config::Role::AllInOne | config::Role::Coordinator
@@ -78,7 +78,7 @@ pub(super) async fn build_runtime_process_assembly(
     let worker_authenticator = worker_transport_security::authenticator(deployment)?;
     let control_service = if role == config::Role::Coordinator {
         let (url, token_source) = deployment.control_service.coordinator_credentials()?;
-        Some(ControlServicePorts::remote(Arc::new(
+        Some(ControlServices::remote(Arc::new(
             awaken_coordinator::control_service_boundary::HttpControlServiceClient::with_token_source(
                 url,
                 token_source,
@@ -87,13 +87,13 @@ pub(super) async fn build_runtime_process_assembly(
     } else {
         None
     };
-    let assembled = assemble_runtime_process_router(
+    let prepared = prepare_runtime_routers(
         stores,
         identity.iam,
         identity.remote_iam,
         identity.local_browser_auth,
-        model_composition,
-        ProcessAssemblyOptions {
+        model_supply,
+        ProcessStartup {
             service_lifecycle: service_lifecycle.clone(),
             deployment: Some(deployment.runtime.clone()),
             content_capture_ceiling: deployment.runtime.content_capture.level,
@@ -120,12 +120,12 @@ pub(super) async fn build_runtime_process_assembly(
         None,
     )
     .await?;
-    Ok(ProcessAssembly {
-        public_router: assembled.public_router,
-        private_router: assembled.private_router,
+    Ok(PreparedProcess {
+        public_router: prepared.public_router,
+        private_router: prepared.private_router,
         local_setup: identity.local_setup,
-        registration_supervisor: assembled.registration_supervisor,
-        service_lifecycle: assembled.service_lifecycle,
+        registration_supervisor: prepared.registration_supervisor,
+        service_lifecycle: prepared.service_lifecycle,
     })
 }
 

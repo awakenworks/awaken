@@ -102,27 +102,27 @@ pub(super) async fn control_component_for_process(
     .await
 }
 
-/// Standalone Control process assembly. It opens no Managed Execution path and
+/// Standalone Control process. It opens no Managed Execution path and
 /// asks the same Control component builder used by AllInOne for the complete
 /// authoring application.
-pub(super) async fn assemble_control_process_router(
+pub(super) async fn prepare_control_routers(
     stores: ProcessStores,
     iam: Option<Arc<ManagementAuthz>>,
     remote_iam: Option<Arc<RemoteManagementAuthz>>,
     local_browser_auth: Option<awaken_control::LocalBrowserAuth>,
-    model_composition: PublicationModelComposition,
-    assembly: ProcessAssemblyOptions,
-) -> ProcessRouterAssembly {
-    debug_assert_eq!(assembly.role, config::Role::Control);
+    model_supply: PublicationModelSupply,
+    process: ProcessStartup,
+) -> ProcessRouters {
+    debug_assert_eq!(process.role, config::Role::Control);
     let (_, executable_agent_registrar, _, _, coordinator_content_eraser) =
-        executable_agent_registration::process_parts(assembly.executable_agent_wiring);
-    let executable_environment_registrar = assembly
+        executable_agent_registration::process_parts(process.executable_agent_wiring);
+    let executable_environment_registrar = process
         .executable_environment_wiring
         .map(|wiring| wiring.registrar)
         .expect("Control process requires executable Environment registrar wiring");
-    let content_capture_ceiling = assembly.content_capture_ceiling;
-    let data_subject_org = assembly.org_id.clone().unwrap_or_else(local_org_id);
-    let enrollment_signing_key = match assembly.enrollment_signing_key {
+    let content_capture_ceiling = process.content_capture_ceiling;
+    let data_subject_org = process.org_id.clone().unwrap_or_else(local_org_id);
+    let enrollment_signing_key = match process.enrollment_signing_key {
         Some(key) => key,
         #[cfg(any(test, feature = "test-support"))]
         None => [0xA5; 32],
@@ -133,29 +133,29 @@ pub(super) async fn assemble_control_process_router(
         SharedHost::provision_local_workspace,
         SharedHost::provision_local_workspace_at,
     );
-    let model_supply = assembly.model_supply.clone();
-    let cloud_models_enabled = model_supply.cloud_models_enabled;
-    let worker_observations = assembly
+    let model_capabilities = process.model_supply.clone();
+    let cloud_models_enabled = model_capabilities.cloud_models_enabled;
+    let worker_observations = process
         .worker_observations
         .expect("Control process requires explicit Worker observation wiring")
         .source;
     let brokered_client = brokered_inference_client(
         cloud_models_enabled,
         remote_iam.as_ref(),
-        assembly.cloud_api_base_url.as_deref(),
+        process.cloud_api_base_url.as_deref(),
         &execution_workspace,
     );
-    let model_assembly = publication_model_assembly(
-        model_composition,
+    let model_services = resolve_model_services(
+        model_supply,
         &stores,
         cloud_models_enabled,
         worker_observations.clone(),
     );
-    let web_search_providers = assembly
+    let web_search_providers = process
         .web_search_providers
         .unwrap_or_else(awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins);
     let web_search_publication_resolver =
-        assembly.web_search_publication_resolver.unwrap_or_else(|| {
+        process.web_search_publication_resolver.unwrap_or_else(|| {
             Arc::new(
                 crate::web_search_publication::WebSearchPublicationResolver::new(
                     web_search_providers.clone(),
@@ -163,7 +163,7 @@ pub(super) async fn assemble_control_process_router(
             )
         });
     let runtimes = Arc::new(LiveRuntimeCapabilities {
-        initial: assembly.local_acp_observations.clone(),
+        initial: process.local_acp_observations.clone(),
         workers: worker_observations.clone(),
         credentials: stores
             .control
@@ -191,20 +191,20 @@ pub(super) async fn assemble_control_process_router(
     let environment_application = environment_authoring.application();
     let component = control_component_for_process(
         &stores,
-        &assembly.service_lifecycle,
+        &process.service_lifecycle,
         &execution_workspace,
         &data_subject_org,
         enrollment_signing_key,
         executable_agent_registrar,
         None,
-        model_assembly.publication_resolver,
+        model_services.publication_resolver,
         web_search_publication_resolver,
         &web_search_providers,
         brokered_client,
-        assembly.brokered_catalog,
-        model_supply,
-        assembly.role.exposes_managed_runtime(),
-        &assembly.local_acp_observations,
+        process.brokered_catalog,
+        model_capabilities,
+        process.role.exposes_managed_runtime(),
+        &process.local_acp_observations,
         runtimes,
         None,
         environment_application.clone(),
@@ -230,10 +230,10 @@ pub(super) async fn assemble_control_process_router(
         awaken_webhook_managed::config_plane_lifecycle_delivery(
             control.webhooks.clone(),
             control.secrets.clone(),
-            assembly.org_id.clone(),
+            process.org_id.clone(),
         )
     };
-    let private_router = match assembly.control_service_authenticator {
+    let private_router = match process.control_service_authenticator {
         Some(authenticator) => {
             awaken_coordinator::control_service_boundary::router_with_authenticator(
                 component.management_audit.clone(),
@@ -253,14 +253,14 @@ pub(super) async fn assemble_control_process_router(
     .register_periodic(
         component.publication_reconciler.clone(),
         std::time::Duration::from_secs(5),
-        &assembly.service_lifecycle,
+        &process.service_lifecycle,
     );
     let mcp_export = awaken_coordinator::mcp_export::router(
         awaken_admin_assistant::admin_tool_descriptors(),
         component.admin_tools,
-        assembly.mcp_bearer_token,
+        process.mcp_bearer_token,
     );
-    ProcessRouterAssembly::new(
+    ProcessRouters::new(
         process_surface::finish(
             component.router,
             mcp_export,
@@ -273,7 +273,7 @@ pub(super) async fn assemble_control_process_router(
         ),
         private_router,
         Some(component.registration_supervisor),
-        assembly.service_lifecycle,
+        process.service_lifecycle,
     )
 }
 
@@ -290,13 +290,13 @@ async fn standalone_control_uses_the_authored_capture_ceiling() {
     // Constraint: consent may only narrow the authored ceiling.
     // Decision rule R1 = C1+C2+C3+C4 -> E1+E2. This pins the policy input that
     // standalone Control must carry independently of Runtime deployment state.
-    let app = assemble_control_process_router(
+    let app = prepare_control_routers(
         in_memory_control_stores(),
         None,
         None,
         None,
-        PublicationModelComposition::PublishedProviders,
-        ProcessAssemblyOptions {
+        PublicationModelSupply::PublishedProviders,
+        ProcessStartup {
             role: config::Role::Control,
             content_capture_ceiling: awaken_runtime_contract::ContentCapture::Off,
             executable_environment_wiring: Some(
@@ -336,7 +336,7 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
     // Cause/effect graph: C1 posture={local, hosted}; C2 both use the same
     // canonical Control component. Effects: E1 local exposes catalog/BYOK/profile
     // authoring without Cloud models; E2 hosted exposes Cloud models and denies
-    // those three authoring capabilities. Constraint: ProcessAssemblyOptions has
+    // those three authoring capabilities. Constraint: ProcessStartup has
     // one ModelSupplyCapabilityView source of truth and no parallel mode flag.
     // Decision table: R1 C1=local+C2 -> E1; R2 C1=hosted+C2 -> E2.
     let cases = [
@@ -356,13 +356,13 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
     ];
 
     for (rule, expected) in cases {
-        let app = assemble_control_process_router(
+        let app = prepare_control_routers(
             in_memory_control_stores(),
             None,
             None,
             None,
-            PublicationModelComposition::PublishedProviders,
-            ProcessAssemblyOptions {
+            PublicationModelSupply::PublishedProviders,
+            ProcessStartup {
                 role: config::Role::Control,
                 model_supply: expected.clone(),
                 executable_environment_wiring: Some(
@@ -406,16 +406,16 @@ async fn standalone_control_projects_the_exact_model_supply_posture() {
 async fn standalone_control_rejects_missing_environment_registration_wiring() {
     // Cause/effect graph: C1 role=Control; C2 executable Agent wiring is explicit;
     // C3 executable Environment wiring is absent. Effect E1 is a
-    // composition failure before any authoring router can return a fake success.
+    // startup failure before any authoring router can return a fake success.
     // Decision rule W1 = C1+C3 -> E1. The positive configured rules are owned by
     // the adjacent standalone Control tests.
-    let _ = assemble_control_process_router(
+    let _ = prepare_control_routers(
         in_memory_control_stores(),
         None,
         None,
         None,
-        PublicationModelComposition::PublishedProviders,
-        ProcessAssemblyOptions {
+        PublicationModelSupply::PublishedProviders,
+        ProcessStartup {
             role: config::Role::Control,
             executable_agent_wiring: Some(
                 executable_agent_registration::ExecutableAgentWiring::local(),

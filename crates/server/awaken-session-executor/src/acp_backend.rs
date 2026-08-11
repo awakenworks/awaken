@@ -288,7 +288,7 @@ impl crate::host::SharedHost {
 
     /// The hub-backed launch observer for this host: republishes an ACP agent's
     /// bring-up (install → launch → initialize → ready → failed) onto the per-thread
-    /// hub, so a composition root wires it onto the [`AcpRunExecutor`] it builds and
+    /// hub, so a process startup wires it onto the [`AcpRunExecutor`] it builds and
     /// any protocol adapter observing the thread can render progress.
     #[must_use]
     pub fn acp_launch_observer(&self) -> Arc<dyn awaken_run_executor_acp::LaunchObserver> {
@@ -296,7 +296,7 @@ impl crate::host::SharedHost {
     }
 
     /// Serve `acp:*` sessions on an explicitly supplied projecting resolver. This is
-    /// the test/dev composition seam; production uses
+    /// the test/dev startup seam; production uses
     /// [`with_acp_from_deployment`](Self::with_acp_from_deployment).
     #[must_use]
     pub fn with_projected_acp(
@@ -308,7 +308,7 @@ impl crate::host::SharedHost {
         // A projected resolver owns both the opaque process-secret requirement and
         // its broker. Bound ACP launches from the Session Environment, so install
         // that broker on the same authoritative provider before moving the resolver
-        // into the launch registry. This is last-mile composition, not a second
+        // into the launch registry. This is last-mile startup, not a second
         // materialization path: the resolver still emits only the opaque reference.
         let secret_broker = resolver.secret_broker();
         let source =
@@ -434,7 +434,7 @@ mod tests {
             _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
             _operation_scope: &str,
         ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
-            panic!("the native-only composition test never opens a container")
+            panic!("the native-only startup test never opens a container")
         }
     }
 
@@ -563,8 +563,8 @@ mod tests {
     }
 
     #[test]
-    fn a_session_blob_root_composes_a_recovering_acp_backend() {
-        // With a session-blob root set, the projecting-ACP composition wires the
+    fn a_session_blob_root_enables_acp_recovery() {
+        // With a session-blob root set, the projecting-ACP startup wires the
         // session-home recovery into the executor and still routes acp:* threads.
         let cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
         let blobs = std::env::temp_dir().join(format!("acp-blobs-{}", std::process::id()));

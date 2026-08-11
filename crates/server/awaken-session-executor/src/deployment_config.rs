@@ -1,4 +1,4 @@
-//! The deployment configuration surface, built once by a typed composition root.
+//! The deployment configuration surface, built once by a typed process startup.
 //!
 //! Historically the deployment axes — durable ingress, the commit/dispatch store
 //! backends, the cross-node wake, the worker role — were read via scattered
@@ -6,7 +6,7 @@
 //! dependency: the library reaches into process env, which cannot be unit-tested
 //! without mutating it and gives no single place to read a deployment's shape.
 //!
-//! [`DeploymentConfig`] is that single typed surface. The composition root builds
+//! [`DeploymentConfig`] is that single typed surface. The process startup builds
 //! one from a typed configuration file (or explicitly for an embedding), and the
 //! library reads it rather than process-global deployment configuration.
 
@@ -91,7 +91,7 @@ impl AcpWorkerProfile {
     }
 
     /// Atomically install the startup acquisition plan produced by the ACP
-    /// application service. Composition roots share this projection instead of
+    /// application service. Process starters share this projection instead of
     /// maintaining separate per-CLI loops.
     pub fn apply_launch_argv(
         &mut self,
@@ -177,7 +177,7 @@ pub enum PackageImageBuilder {
     Kubernetes,
 }
 
-/// Versioned operator evidence that the Kubernetes composition enforces the
+/// Versioned operator evidence that the Kubernetes startup enforces the
 /// egress-posture labels emitted by the canonical K8s sandbox adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum K8sNetworkPolicyEnforcement {
@@ -201,7 +201,7 @@ impl std::str::FromStr for K8sNetworkPolicyEnforcement {
 
 impl SandboxTier {
     /// Whether this tier runs the agent inside a container image (vs. the local or
-    /// namespace tiers on the worker host) — the composition root builds a container
+    /// namespace tiers on the worker host) — the process startup builds a container
     /// ACP source.
     #[must_use]
     pub fn is_container(self) -> bool {
@@ -246,7 +246,7 @@ pub struct SandboxSettings {
     /// Kubernetes namespace used by the K8s container adapter.
     pub k8s_namespace: String,
     /// Exact external NetworkPolicy contract installed by the Kubernetes
-    /// composition. Absence means the adapter may not claim or realize network
+    /// startup. Absence means the adapter may not claim or realize network
     /// isolation even though it still emits posture labels.
     pub k8s_network_policy_enforcement: Option<K8sNetworkPolicyEnforcement>,
     /// Existing namespace-local Secrets used by kubelet for private image pulls.
@@ -343,7 +343,7 @@ impl Default for ContentCaptureSettings {
     }
 }
 
-/// The deployment axes a single binary composes from — parsed once, injected into
+/// The deployment axes a single binary configures from — parsed once, injected into
 /// the runtime rather than re-read from the environment at each call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploymentConfig {
@@ -365,7 +365,7 @@ pub struct DeploymentConfig {
     /// The shared database url for Postgres backends (`DeploymentConfig::database_url`).
     pub database_url: Option<String>,
     /// Exact maximum size of each runtime Postgres pool. Resolved once by the
-    /// composition root and injected into commit/dispatch stores.
+    /// process startup and injected into commit/dispatch stores.
     pub postgres_max_connections: NonZeroU32,
     /// The dispatch lease owner (`AWAKEN_DISPATCH_OWNER`), distinct per process/node.
     pub dispatch_owner: String,
@@ -377,7 +377,7 @@ pub struct DeploymentConfig {
     /// The ACP sandbox and per-Session configuration root.
     /// `None` selects a process-scoped temporary root.
     pub sandbox_dir: Option<PathBuf>,
-    /// Sandbox/container operator policy, resolved once by the composition root.
+    /// Sandbox/container operator policy, resolved once by the process startup.
     pub sandbox: SandboxSettings,
     /// Deployment content-capture ceiling and redaction behavior.
     pub content_capture: ContentCaptureSettings,
@@ -455,7 +455,7 @@ impl DeploymentConfig {
         }
     }
 
-    /// Environment-independent defaults for embedding composition roots.
+    /// Environment-independent defaults for embedding process startups.
     #[must_use]
     pub fn ephemeral() -> Self {
         Self {
@@ -484,7 +484,7 @@ impl DeploymentConfig {
     /// Whether a durable ingress is backed by a persistent queue (Postgres, an
     /// on-disk SQLite dir, or an injected backend). A durable ingress on a volatile
     /// in-memory queue silently drops queued/crashed/scheduled runs on restart, so
-    /// the composition root refuses to serve one — the no-data-loss invariant.
+    /// the process startup refuses to serve one — the no-data-loss invariant.
     /// `injected` is passed in because an assembled shard fan-out lives outside this
     /// config (it owns its own durability contract).
     pub fn durable_needs_persistence_error(&self, injected: bool) -> Option<&'static str> {
@@ -551,7 +551,7 @@ mod tests {
          * E3 fail-closed parse error. Rules: T1 local/none=>Local+!E2;
          * T2 namespace=>Namespace+!E2; T3 docker/podman/k8s=>E1+E2;
          * T4 kubernetes=>K8s+E2; T5 unknown=>E3. Omission is owned by each
-         * composition schema and selects the domain default Namespace. */
+         * startup schema and selects the domain default Namespace. */
         assert_eq!(SandboxTier::default(), SandboxTier::Namespace);
         assert!(!SandboxTier::Namespace.is_container());
         assert!(!SandboxTier::Local.is_container());

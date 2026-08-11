@@ -1,4 +1,4 @@
-//! Production dream worker composed from existing authorities.
+//! Production Dream worker driven by the Resource, Session, and Runtime authorities.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -6,8 +6,6 @@ use std::sync::Arc;
 use awaken_dream_application::{
     DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
 };
-use awaken_protocol_managed::ManagedState;
-use awaken_protocol_managed::types::{InboundEvent, SendEventsRequest, SessionStatus};
 use awaken_provisioning_contract::{
     MemoryWriteConsistency, MountAccess, MountLifetime, MountRequirement, MountSource,
 };
@@ -15,8 +13,10 @@ use awaken_resource_contract::{
     CreateMemoryStoreCommand, Memory, MemoryRepository, MemoryStoreApplicationService,
     MemoryStoreId, ResourceCatalog, ResourceState,
 };
+use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_contract::{
     ApplicationSessionContribution, ApplicationSessionContributionApi, ApplicationSessionInput,
+    ManagedLifecycleFact, SessionExecutionState, SessionToolConfiguration,
 };
 
 use crate::SharedHost;
@@ -83,7 +83,7 @@ impl ExclusiveMemoryStoreWriterLease {
 }
 
 pub(crate) struct BuiltInDreamAgent {
-    managed: Arc<ManagedState>,
+    sessions: Arc<SessionApplication>,
     host: Arc<SharedHost>,
     memory: Arc<dyn MemoryRepository>,
     catalog: Arc<dyn ResourceCatalog>,
@@ -92,14 +92,14 @@ pub(crate) struct BuiltInDreamAgent {
 
 impl BuiltInDreamAgent {
     pub(crate) fn new(
-        managed: Arc<ManagedState>,
+        sessions: Arc<SessionApplication>,
         host: Arc<SharedHost>,
         memory: Arc<dyn MemoryRepository>,
         catalog: Arc<dyn ResourceCatalog>,
         stores: Arc<dyn MemoryStoreApplicationService>,
     ) -> Self {
         Self {
-            managed,
+            sessions,
             host,
             memory,
             catalog,
@@ -115,8 +115,8 @@ impl BuiltInDreamAgent {
         let mut file_ids = Vec::with_capacity(request.session_ids.len());
         for session_id in &request.session_ids {
             let messages = self
-                .managed
-                .dream_transcript(&request.workspace_id, session_id)
+                .sessions
+                .session_transcript(&request.workspace_id, session_id)
                 .await
                 .map_err(|error| {
                     DreamFailure::new(
@@ -156,41 +156,37 @@ impl BuiltInDreamAgent {
         transcripts: Vec<(String, Vec<u8>)>,
     ) -> Result<String, DreamFailure> {
         let session_id = format!("sesn_dream_{}", request.job_id);
-        let create = serde_json::from_value(serde_json::json!({
-            "agent": {
-                "id": request.agent_id.clone(),
-                "type": "agent_with_overrides",
-                "model": request.model,
-                "tools": [{
-                    "type": "agent_toolset_20260401",
-                    "default_config": {
-                        "enabled": false,
-                        "permission_policy": {"type":"always_allow"}
-                    },
-                    "configs": [
-                        {"name":"read", "enabled":true, "permission_policy":{"type":"always_allow"}},
-                        {"name":"write", "enabled":true, "permission_policy":{"type":"always_allow"}},
-                        {"name":"edit", "enabled":true, "permission_policy":{"type":"always_allow"}},
-                        {"name":"glob", "enabled":true, "permission_policy":{"type":"always_allow"}},
-                        {"name":"grep", "enabled":true, "permission_policy":{"type":"always_allow"}},
-                        {"name":"move", "enabled":true, "permission_policy":{"type":"always_allow"}},
-                        {"name":"delete", "enabled":true, "permission_policy":{"type":"always_allow"}}
-                    ]
-                }]
-            },
-            "application_contribution_required": true,
-            "metadata": {
-                "awaken.session.origin": "dream",
-                "awaken.dream_job_id": request.job_id,
-            }
-        }))
-        .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-        self.managed
-            .create_application_session(
-                session_id.clone(),
-                create,
-                Some(request.workspace_id.clone()),
-            )
+        let tools = SessionToolConfiguration {
+            toolsets: vec![awaken_agent_contract::ToolsetPolicy {
+                source: awaken_agent_contract::ToolsetSource::Agent,
+                default: awaken_agent_contract::ToolExecutionPolicy {
+                    enabled: false,
+                    permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAllow,
+                },
+                overrides: ["read", "write", "edit", "glob", "grep", "move", "delete"]
+                    .into_iter()
+                    .map(|name| awaken_agent_contract::ToolPolicyOverride {
+                        name: name.into(),
+                        policy: awaken_agent_contract::ToolExecutionPolicy::default(),
+                    })
+                    .collect(),
+            }],
+            client_tools: Vec::new(),
+        };
+        self.sessions
+            .create_profiled_session(CreateProfiledSessionCommand {
+                owner_scope: request.workspace_id.clone(),
+                session_id: session_id.clone(),
+                agent_id: request.agent_id.clone(),
+                model: Some(request.model.id.clone()),
+                application_contribution_required: true,
+                title: None,
+                metadata: BTreeMap::from([
+                    ("awaken.session.origin".into(), "dream".into()),
+                    ("awaken.dream_job_id".into(), request.job_id.clone()),
+                ]),
+                tools: Some(tools),
+            })
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
 
@@ -253,8 +249,7 @@ impl BuiltInDreamAgent {
             network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
             ..Default::default()
         };
-        self.managed
-            .session_application()
+        self.sessions
             .contribute_application(ApplicationSessionContribution {
                 session_id: session_id.clone(),
                 application_fingerprint: input.fingerprint(),
@@ -262,8 +257,7 @@ impl BuiltInDreamAgent {
             })
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-        self.managed
-            .session_application()
+        self.sessions
             .realize_session(&session_id)
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
@@ -304,17 +298,19 @@ impl BuiltInDreamAgent {
 #[async_trait::async_trait]
 impl DreamExecutor for BuiltInDreamAgent {
     async fn validate_inputs(&self, request: &DreamRequest) -> Result<(), DreamFailure> {
-        self.managed
-            .validate_dream_agent(&request.workspace_id, &request.agent_id)
-            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+        if request.agent_id != awaken_dream_application::BUILT_IN_DREAM_AGENT_ID {
+            self.sessions
+                .validate_profiled_agent(&request.workspace_id, &request.agent_id)
+                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
+        }
         self.catalog
             .resolve_memory_store(&request.workspace_id, &request.source_memory_store_id)
             .map_err(|error| {
                 DreamFailure::new("input_memory_store_unavailable", error.to_string())
             })?;
         for session_id in &request.session_ids {
-            self.managed
-                .dream_transcript(&request.workspace_id, session_id)
+            self.sessions
+                .session_transcript(&request.workspace_id, session_id)
                 .await
                 .map_err(|error| {
                     DreamFailure::new(
@@ -337,8 +333,8 @@ impl DreamExecutor for BuiltInDreamAgent {
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         if existing_result.is_some() {
             let session_exists = self
-                .managed
-                .dream_transcript(&request.workspace_id, &expected_session_id)
+                .sessions
+                .session_transcript(&request.workspace_id, &expected_session_id)
                 .await
                 .is_ok();
             let session_id = expected_session_id;
@@ -436,8 +432,8 @@ impl DreamExecutor for BuiltInDreamAgent {
             request.job_id
         );
         let already_executed = self
-            .managed
-            .dream_transcript(&request.workspace_id, &preparation.session_id)
+            .sessions
+            .session_transcript(&request.workspace_id, &preparation.session_id)
             .await
             .ok()
             .is_some_and(|messages| {
@@ -448,10 +444,11 @@ impl DreamExecutor for BuiltInDreamAgent {
             });
         if already_executed {
             let session = self
-                .managed
-                .get_session(&preparation.session_id)
+                .sessions
+                .session(&preparation.session_id)
+                .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-            if session.status == SessionStatus::Failed {
+            if session.execution == SessionExecutionState::ActivationFailed {
                 return Err(DreamFailure::new(
                     "internal_error",
                     "the recovered Dream Agent Session failed",
@@ -463,17 +460,13 @@ impl DreamExecutor for BuiltInDreamAgent {
             trigger,
         )];
         let run = self
-            .managed
-            .send_events(
+            .sessions
+            .run_session_message(
+                &request.agent_id,
                 &preparation.session_id,
-                SendEventsRequest {
-                    events: vec![InboundEvent::UserMessage {
-                        content,
-                        session_thread_id: None,
-                        model: None,
-                    }],
-                    user_profile_id: None,
-                },
+                content,
+                None,
+                Arc::new(DiscardDreamProgress),
             )
             .await;
         run.map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
@@ -486,8 +479,16 @@ impl DreamExecutor for BuiltInDreamAgent {
         preparation: Option<&DreamPreparation>,
     ) -> Result<(), DreamFailure> {
         if let Some(preparation) = preparation {
-            self.managed
-                .archive_session(&preparation.session_id)
+            let archived_at = awaken_session_contract::epoch_millis_to_rfc3339(now_ms());
+            let fact = ManagedLifecycleFact {
+                id: format!("session:{}:terminated", preparation.session_id),
+                object_id: preparation.session_id.clone(),
+                workspace_id: Some(request.workspace_id.clone()),
+                event_type: "session.status_terminated".into(),
+                timestamp: i64::try_from(now_ms() / 1_000).unwrap_or(i64::MAX),
+            };
+            self.sessions
+                .terminate_session(&preparation.session_id, &archived_at, fact)
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             for file_id in &preparation.transcript_file_ids {
@@ -511,20 +512,21 @@ impl DreamExecutor for BuiltInDreamAgent {
         preparation: Option<&DreamPreparation>,
     ) -> Result<(), DreamFailure> {
         if let Some(preparation) = preparation {
-            let _ = self
-                .managed
-                .send_events(
-                    &preparation.session_id,
-                    SendEventsRequest {
-                        events: vec![InboundEvent::UserInterrupt {
-                            session_thread_id: None,
-                        }],
-                        user_profile_id: None,
-                    },
-                )
-                .await;
+            let _ = self.sessions.interrupt(&preparation.session_id).await;
         }
         self.cleanup(request, preparation).await
+    }
+}
+
+struct DiscardDreamProgress;
+
+#[async_trait::async_trait]
+impl awaken_agent_contract::stream::sink::Sink for DiscardDreamProgress {
+    async fn send(
+        &self,
+        _event: awaken_agent_contract::stream::event::Event,
+    ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
+        Ok(())
     }
 }
 

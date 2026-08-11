@@ -4,12 +4,10 @@
 //! [`Page`](https://docs.anthropic.com/en/api/models-list) (`data` + `has_more` +
 //! `first_id` / `last_id`), NOT the vault family's cursor page.
 //!
-//! The directory is injected by the composition root. Production uses a live,
+//! The executable Agent inventory is injected by the process entry point. Production uses a live,
 //! Workspace-aware executable projection; [`default_models`] remains only for
 //! bare-host fixtures that have no configuration plane.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::Router;
@@ -73,20 +71,31 @@ impl ModelEntry {
     }
 }
 
-/// Rebuildable deployment model directory. Implementations derive entries from
-/// executable configuration; the HTTP adapter owns no catalog or fallback list.
-pub type ModelDirectoryFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Vec<ModelEntry>, String>> + Send + 'a>>;
-
-pub trait ModelDirectory: Send + Sync {
-    fn list<'a>(&'a self, workspace_id: &'a str) -> ModelDirectoryFuture<'a>;
+#[derive(Clone)]
+enum AvailableModels {
+    Fixed(Arc<Vec<ModelEntry>>),
+    ExecutableAgents(Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>),
 }
 
-struct StaticModelDirectory(Vec<ModelEntry>);
-
-impl ModelDirectory for StaticModelDirectory {
-    fn list<'a>(&'a self, _workspace_id: &'a str) -> ModelDirectoryFuture<'a> {
-        Box::pin(async { Ok(self.0.clone()) })
+impl AvailableModels {
+    async fn in_workspace(&self, workspace_id: &str) -> Result<Vec<ModelEntry>, String> {
+        match self {
+            Self::Fixed(models) => Ok(models.as_ref().clone()),
+            Self::ExecutableAgents(registrations) => {
+                awaken_executable_agent_contract::current_model_references(
+                    registrations.as_ref(),
+                    workspace_id,
+                )
+                .await
+                .map(|references| {
+                    references
+                        .into_iter()
+                        .map(|model_reference| ModelEntry::new(&model_reference, &model_reference))
+                        .collect()
+                })
+                .map_err(|error| error.to_string())
+            }
+        }
     }
 }
 
@@ -106,26 +115,32 @@ pub fn default_models() -> Vec<ModelEntry> {
 
 /// Mount the Models API over a fixed model directory.
 pub fn models_router(models: Arc<Vec<ModelEntry>>) -> Router {
-    models_router_with_directory(Arc::new(StaticModelDirectory(models.as_ref().clone())))
+    models_router_for(AvailableModels::Fixed(models))
 }
 
-/// Mount the Models API over a live Workspace-aware directory.
-pub fn models_router_with_directory(directory: Arc<dyn ModelDirectory>) -> Router {
+/// Mount the Models API over the live Workspace-aware executable Agent inventory.
+pub fn models_router_with_inventory(
+    registrations: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
+) -> Router {
+    models_router_for(AvailableModels::ExecutableAgents(registrations))
+}
+
+fn models_router_for(models: AvailableModels) -> Router {
     Router::new()
         .route("/v1/models", get(list_models))
         .route("/v1/models/{*id}", get(get_model))
-        .with_state(directory)
+        .with_state(models)
 }
 
 /// `GET /v1/models` — the full directory as a `Page<BetaModelInfo>` (one page:
 /// `has_more:false`). `first_id` / `last_id` bracket the page for the SDK's
 /// id-cursor paginator; both `null` when the directory is empty.
 async fn list_models(
-    State(directory): State<Arc<dyn ModelDirectory>>,
+    State(available): State<AvailableModels>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
 ) -> impl IntoResponse {
     let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
-    let Ok(models) = directory.list(&workspace).await else {
+    let Ok(models) = available.in_workspace(&workspace).await else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(json!({ "error": "model directory unavailable" })),
@@ -148,12 +163,12 @@ async fn list_models(
 /// `GET /v1/models/{id}` — one model as `BetaModelInfo`, or `404`. Doubles as the
 /// SDK's alias-resolution endpoint (an exact id here resolves to itself).
 async fn get_model(
-    State(directory): State<Arc<dyn ModelDirectory>>,
+    State(available): State<AvailableModels>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
     let workspace = scope.map_or_else(|| "default".into(), |Extension(scope)| scope.0);
-    let Ok(models) = directory.list(&workspace).await else {
+    let Ok(models) = available.in_workspace(&workspace).await else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(json!({ "error": "model directory unavailable" })),

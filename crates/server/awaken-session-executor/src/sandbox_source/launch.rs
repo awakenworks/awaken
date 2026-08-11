@@ -129,12 +129,12 @@ impl AcpLaunchRegistry {
 /// test argv, or an exact per-run route from the Worker's launch registry.
 ///
 /// This is the public factory input to the parent module's channel-source
-/// builder: a composition root picks `Projected` to serve each run's
+/// builder: a process startup picks `Projected` to serve each run's
 /// config-plane-selected CLI, or `Fixed` for a trusted/test single argv.
 #[derive(Clone)]
 pub enum LaunchSource {
     /// One newline-fixture CLI for every `acp:*` thread (explicit trusted/test
-    /// composition only).
+    /// startup only).
     Fixed(AcpLaunch),
     /// One official JSON-RPC ACP fixture for every `acp:*` thread. This differs
     /// only in codec selection; launch and Session-environment ownership stay on

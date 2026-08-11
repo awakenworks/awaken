@@ -219,7 +219,7 @@ impl SessionApplication {
     }
 
     /// Run the sole Session lifecycle supervisor for this application instance.
-    /// The process composition owns spawning, cancellation, readiness, and join;
+    /// The process startup owns spawning, cancellation, readiness, and join;
     /// this application owns only the convergence sequence and one-shot fence.
     pub async fn run_lifecycle_supervisor(
         self: std::sync::Arc<Self>,

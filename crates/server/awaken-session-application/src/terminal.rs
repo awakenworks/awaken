@@ -15,9 +15,42 @@ pub struct SessionDispositionMutation {
 }
 
 impl SessionApplication {
-    /// Commit the archive fact once. Cleanup is a separate idempotent application
-    /// phase so an interface can publish the committed terminal wire frame before
-    /// potentially slow external teardown.
+    /// Commit one terminal Session transition and release every remaining
+    /// Resource exactly once. Public protocols may add wire projections after
+    /// this application boundary, but no caller reproduces cleanup ordering.
+    pub async fn terminate_session(
+        &self,
+        session_id: &str,
+        archived_at: &str,
+        fact: ManagedLifecycleFact,
+    ) -> Result<SessionDispositionMutation, SessionPreparationError> {
+        let transition = self
+            .begin_archive(session_id, archived_at, fact)
+            .await
+            .map_err(mutation_failure)?;
+        let release_required = transition.transitioned
+            || transition.session.resources.pending.is_some()
+            || transition
+                .session
+                .resources
+                .activations
+                .iter()
+                .any(|activation| {
+                    activation.state == awaken_session_contract::ActivationState::Active
+                });
+        if release_required {
+            self.release_terminal_resources(&transition.owner_scope, session_id)
+                .await?;
+        }
+        if transition.transitioned {
+            self.notify_lifecycle_fact();
+        }
+        Ok(transition)
+    }
+
+    /// Commit the archive fact once. [`Self::terminate_session`] follows this
+    /// durable fence with idempotent cleanup; recovery may call the cleanup phase
+    /// again without writing another terminal fact.
     pub async fn begin_archive(
         &self,
         session_id: &str,

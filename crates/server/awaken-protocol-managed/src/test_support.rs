@@ -1,4 +1,4 @@
-//! Explicit test-only composition for the split Environment owners.
+//! Explicit test-only startup for the split Environment owners.
 
 use std::sync::Arc;
 
