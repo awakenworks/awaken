@@ -301,8 +301,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
             cloud_login_enabled: remote_iam.is_some(),
             authenticated: remote_iam
                 .as_ref()
-                .and_then(|authz| authz.cloud_user_token())
-                .is_some(),
+                .is_some_and(|authz| authz.cloud_user_token().is_ok_and(|token| token.is_some())),
         },
         models: model_supply,
         surfaces: awaken_admin_config_api::ProductSurfaceCapabilityView {

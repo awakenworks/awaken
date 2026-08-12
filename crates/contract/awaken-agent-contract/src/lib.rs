@@ -30,7 +30,7 @@ pub use mcp_target::{
 };
 pub use model_spec::ModelSpec;
 pub use model_target::ModelTarget;
-pub use secret::{RedactedString, StructuredCredentialMaterial};
+pub use secret::{RedactedString, RedactedStringSource, StructuredCredentialMaterial};
 pub use skill::{ANTHROPIC_SKILL_IDS, AgentSkillBinding, AgentSkillKind, validate_agent_skills};
 pub use stream::event::Event as StreamEvent;
 pub use stream::sink::Sink as StreamSink;
