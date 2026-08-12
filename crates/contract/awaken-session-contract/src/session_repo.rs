@@ -281,31 +281,17 @@ pub struct PersistedSession {
 }
 
 impl PersistedSession {
-    /// Create the sole durable preparation aggregate before any realization I/O.
-    /// Protocol adapters lower wire input into the typed intent and metadata;
-    /// aggregate shape and defaults remain owned here.
+    /// Construct a complete Session root after the creation compiler has
+    /// consumed every authoring input. New creation persists this shape in one
+    /// insert. Historical interrupted rows remain representable only through
+    /// deserialization; no creation API can produce another one.
     #[must_use]
-    pub fn preparing(
+    #[allow(clippy::too_many_arguments)]
+    pub fn frozen_with_budget(
         session_id: impl Into<String>,
-        intent: crate::SessionCreationIntent,
-        title: Option<String>,
-        metadata: BTreeMap<String, String>,
-        tools: crate::SessionToolConfiguration,
-    ) -> Self {
-        Self::preparing_with_budget(
-            session_id,
-            intent,
-            title,
-            metadata,
-            tools,
-            crate::SessionBudgetState::Absent,
-        )
-    }
-
-    #[must_use]
-    pub fn preparing_with_budget(
-        session_id: impl Into<String>,
-        intent: crate::SessionCreationIntent,
+        baseline: crate::SessionBaseline,
+        resources: crate::SessionResourceState,
+        mcp: crate::SessionMcpAttachmentSet,
         title: Option<String>,
         metadata: BTreeMap<String, String>,
         tools: crate::SessionToolConfiguration,
@@ -314,7 +300,7 @@ impl PersistedSession {
         Self {
             session_id: session_id.into(),
             revision: SessionRevision::default(),
-            baseline: crate::SessionBaselineState::Preparing(intent),
+            baseline: crate::SessionBaselineState::Frozen(baseline),
             title,
             metadata,
             tools,
@@ -323,8 +309,8 @@ impl PersistedSession {
             runtime_active_millis: 0,
             budget,
             environment: Default::default(),
-            mcp: Default::default(),
-            resources: Default::default(),
+            mcp,
+            resources,
             realization: None,
             realization_progress: Default::default(),
             execution: SessionExecutionState::Preparing,
@@ -932,26 +918,30 @@ mod mutation_tests {
     }
 
     #[test]
-    fn preparing_constructor_owns_the_initial_aggregate_shape() {
-        // Cause/effect graph: C1 the adapter supplies typed creation intent and
-        // secret-free presentation fields; C2 no durable mutation has occurred.
-        // Effects: E1 every caller gets the same Preparing/Active state, zero
-        // revision/activity, empty effect aggregates, and exact supplied data;
-        // E2 no protocol can invent a different initial lifecycle shape.
+    fn frozen_constructor_owns_the_complete_initial_aggregate_shape() {
+        // Cause/effect graph: C1 complete typed creation input is compiled; C2
+        // no durable mutation has occurred. Effects: E1 every caller gets one
+        // frozen baseline with Preparing execution, zero revision/activity,
+        // complete effect aggregates, and exact presentation data; E2 no
+        // protocol can construct a durable partially-authored root.
         //
         // | Rule | typed input | prior mutation | Effect |
-        // | C1 | present | no | E1 canonical aggregate |
+        // | C1 | complete/frozen | no | E1 canonical aggregate |
         // | C2 | wire-specific defaults | no | E2 impossible at constructor |
         let fixture = session("constructor-source", SessionRevision(0));
         let crate::SessionBaselineState::Preparing(intent) = fixture.baseline else {
             panic!("fixture carries a creation intent");
         };
+        let compiled = intent.finalize().expect("complete fixture compiles");
         let metadata = BTreeMap::from([("key".to_string(), "value".to_string())]);
-        let prepared = PersistedSession::preparing(
+        let prepared = PersistedSession::frozen_with_budget(
             "constructor",
-            intent,
+            compiled.baseline,
+            Default::default(),
+            Default::default(),
             Some("title".into()),
             metadata.clone(),
+            Default::default(),
             Default::default(),
         );
         assert_eq!(prepared.session_id, "constructor", "C1/E1");
@@ -963,6 +953,7 @@ mod mutation_tests {
         );
         assert_eq!(prepared.disposition, SessionDisposition::Active, "C1/E1");
         assert_eq!(prepared.activity_epoch, 0, "C1/E1");
+        assert!(prepared.frozen_baseline().is_some(), "C1/E1");
         assert_eq!(prepared.title.as_deref(), Some("title"), "C1/E1");
         assert_eq!(prepared.metadata, metadata, "C1/E1");
         assert!(prepared.mcp.attachments.is_empty(), "C1/E1");

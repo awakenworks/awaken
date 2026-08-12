@@ -1594,7 +1594,6 @@ pub struct awaken_protocol_managed::ManagedState
 impl awaken_protocol_managed::ManagedState
 pub async fn awaken_protocol_managed::ManagedState::archive_session(&self, &str) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::check_bind(&self, &awaken_protocol_managed::types::SessionCreateParams) -> core::result::Result<(), awaken_protocol_managed::StateError>
-pub async fn awaken_protocol_managed::ManagedState::create_application_session(&self, impl core::convert::Into<alloc::string::String>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::create_session(&self, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::create_session_with_initial_events(&alloc::sync::Arc<Self>, awaken_protocol_managed::types::SessionCreateParams, core::option::Option<alloc::string::String>) -> core::result::Result<awaken_protocol_managed::types::Session, awaken_protocol_managed::StateError>
 pub async fn awaken_protocol_managed::ManagedState::delete_session(&self, &str) -> core::result::Result<(), awaken_protocol_managed::StateError>

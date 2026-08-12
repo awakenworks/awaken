@@ -486,6 +486,8 @@ impl McpAttachmentRealizer for NoopMcpRealizer {}
 #[derive(Default)]
 struct RecordingEnvironmentSource {
     dispatched: Mutex<BTreeSet<String>>,
+    awakened: Mutex<BTreeSet<String>>,
+    retired: Mutex<BTreeSet<String>>,
     failures: Mutex<BTreeSet<String>>,
 }
 
@@ -544,6 +546,40 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
             .unwrap()
             .insert(session_id.to_string());
         Ok(format!("work:{session_id}"))
+    }
+
+    async fn wake_session_work(
+        &self,
+        _environment_id: &str,
+        session_id: &str,
+    ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError> {
+        self.awakened.lock().unwrap().insert(session_id.to_string());
+        Ok(format!("work:{session_id}"))
+    }
+
+    async fn retire_session_work(
+        &self,
+        _environment_id: &str,
+        session_id: &str,
+    ) -> Result<
+        Option<awaken_session_contract::work_queue::WorkItem>,
+        awaken_session_contract::work_queue::WorkQueueError,
+    > {
+        self.retired.lock().unwrap().insert(session_id.to_string());
+        Ok(None)
+    }
+
+    async fn acquire_session_work(
+        &self,
+        _environment_id: &str,
+        _session_id: &str,
+        _worker_owner: &str,
+        _now_ms: u64,
+    ) -> Result<
+        Option<awaken_session_contract::work_queue::SessionWorkLease>,
+        awaken_session_contract::work_queue::WorkQueueError,
+    > {
+        Ok(None)
     }
 }
 

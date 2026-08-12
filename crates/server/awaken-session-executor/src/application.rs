@@ -1,9 +1,9 @@
-//! Application-owned, claim-bound additions to one Session environment.
+//! Claim-bound Runtime projections of one frozen Session.
 //!
 //! The host remains the sole owner of Session realization. An embedding
-//! application may prepare mounts, environment values, prompt context, and MCP
-//! servers after a dispatch is claimed, but the result is staged into the same
-//! Session slot and realized by the same Native/ACP backend path.
+//! application supplies no late desired state: mounts, environment values,
+//! prompts, and MCP generations come only from the frozen Control projection
+//! and are installed into the same Session slot for the Native/ACP backend path.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -325,7 +325,7 @@ mod acp_context_tests {
         let slots = crate::session_slot::SessionRuntimeSlots::default();
         let executor =
             SessionPromptAttemptExecutor::new(Arc::new(UnusedExecutor), slots.clone(), "session-1");
-        // Construction happens before the claim-fenced Application plan is
+        // Construction happens before the claim-fenced frozen projection is
         // accepted; realization installs the one authoritative slot later.
         slots.update("session-1", |slot| {
             slot.baseline = Some(crate::session_slot::FrozenBaselineRuntimeProjection {
@@ -333,7 +333,7 @@ mod acp_context_tests {
                 agent_id: "agent".into(),
                 mounts: Vec::new(),
                 env: Vec::new(),
-                prompts: vec!["frozen application prompt".into()],
+                prompts: vec!["frozen session prompt".into()],
             });
         });
         let projected = executor.project(activation("genai"));
@@ -341,7 +341,7 @@ mod acp_context_tests {
         assert_eq!(projected.input[0].role, Role::System, "E1");
         assert_eq!(
             projected.input[0].text_content(),
-            "frozen application prompt",
+            "frozen session prompt",
             "E1"
         );
 
@@ -501,7 +501,7 @@ impl crate::SharedHost {
     /// can outlive the initial lease even when no MCP attachment exists.
     /// A failed renewal revokes that Session's process-local projection before
     /// the batch continues. Session authority is narrower than Worker registry
-    /// authority: an expired or terminal application Run must not fence unrelated
+    /// authority: an expired or terminal Session realization must not fence unrelated
     /// in-flight Sessions from the same Worker incarnation.
     pub async fn renew_due_session_realizations(
         &self,

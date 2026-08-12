@@ -17,6 +17,30 @@ pub struct SessionDispositionMutation {
 }
 
 impl SessionApplication {
+    async fn retire_terminal_work(
+        &self,
+        session: &PersistedSession,
+    ) -> Result<(), SessionPreparationError> {
+        let Some(baseline) = session
+            .frozen_baseline()
+            .filter(|baseline| baseline.environment.self_hosted)
+        else {
+            return Ok(());
+        };
+        self.environments
+            .retire_session_work(&baseline.environment.environment_id, &session.session_id)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                SessionPreparationError::Rejected(
+                    awaken_session_contract::RunError::unavailable_classified(
+                        "session_work_retire_failed",
+                        format!("Session Work could not be retired: {error}"),
+                    ),
+                )
+            })
+    }
+
     /// Commit one terminal Session transition and release every remaining
     /// Resource exactly once. Public protocols may add wire projections after
     /// this application boundary, but no caller reproduces cleanup ordering.
@@ -30,6 +54,7 @@ impl SessionApplication {
             .begin_archive(session_id, archived_at, fact)
             .await
             .map_err(mutation_failure)?;
+        self.retire_terminal_work(&transition.session).await?;
         let release_required = transition.transitioned
             || transition.session.resources.pending.is_some()
             || transition
@@ -147,6 +172,7 @@ impl SessionApplication {
                 .await
             {
                 Ok(session) => {
+                    self.retire_terminal_work(&session).await?;
                     return Ok(SessionDispositionMutation {
                         owner_scope,
                         session,

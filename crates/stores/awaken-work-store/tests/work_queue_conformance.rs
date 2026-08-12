@@ -13,7 +13,7 @@
 //! Postgres joins the same suite behind its DB harness (`pg_tests.sh`).
 
 use awaken_session_contract::work_queue::{
-    HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkQueue, WorkState,
+    HeartbeatCondition, HeartbeatResult, LeaseHeartbeat, WorkMutationResult, WorkQueue, WorkState,
 };
 use awaken_work_store::{InMemoryWorkQueue, LEASE_TTL_MS, SqliteWorkQueue};
 
@@ -163,7 +163,7 @@ async fn stop_frees_next<Q: WorkQueue>(q: &Q) {
         q.claim("env", "w", 0).await.expect("claim").is_none(),
         "capped while active"
     );
-    q.stop("env", &first.id).await.expect("stop");
+    q.stop("env", &first.id, "w").await.expect("stop");
     assert!(
         q.claim("env", "w", 0).await.expect("claim").is_some(),
         "next claimable after stop"
@@ -315,6 +315,105 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
     ));
 }
 
+/// Session ownership FMECA/cause-effect graph. Causes: C1 exact Session is
+/// queued/stopped/active; C2 caller is current owner/other owner; C3 lease is
+/// live/expired; C4 trigger is reconciliation enqueue, driving-event wake, or
+/// terminal retire. Effects: E1 one monotonic lease; E2 stale mutations fail
+/// closed; E3 reconciliation never resurrects completed Work; E4 driving event
+/// explicitly wakes it; E5 terminal projection revokes all ownership.
+///
+/// | Rule | State | Owner | Trigger | Effect |
+/// |---|---|---|---|---|
+/// | L1 | queued | A | acquire | E1 epoch 1 |
+/// | L2 | active/live | A | acquire | E1 renew, same epoch |
+/// | L3 | active/live | B | acquire/ack/stop | E2 |
+/// | L4 | stopped | n/a | enqueue/acquire | E3 |
+/// | L5 | stopped | B | wake+acquire | E4, epoch 2 |
+/// | L6 | active | Coordinator | retire | E5 |
+async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
+    let id = q.enqueue_session("env", "session").await.expect("L1");
+    let first = q
+        .acquire_session("env", "session", "owner-a", 0)
+        .await
+        .expect("L1")
+        .expect("L1 lease");
+    assert_eq!(
+        (first.work_id.as_str(), first.epoch),
+        (id.as_str(), 1),
+        "L1/E1"
+    );
+
+    let renewed = q
+        .acquire_session("env", "session", "owner-a", 10)
+        .await
+        .expect("L2")
+        .expect("L2 lease");
+    assert_eq!(renewed.epoch, first.epoch, "L2/E1");
+    assert!(
+        renewed.expires_at_unix_ms > first.expires_at_unix_ms,
+        "L2/E1"
+    );
+    assert!(
+        q.acquire_session("env", "session", "owner-b", 11)
+            .await
+            .expect("L3")
+            .is_none(),
+        "L3/E2"
+    );
+    assert!(matches!(
+        q.ack("env", &id, "owner-b").await.expect("L3 ack"),
+        WorkMutationResult::PreconditionFailed
+    ));
+    assert!(
+        q.ack("env", &id, "owner-a")
+            .await
+            .expect("L2 ack")
+            .is_accepted()
+    );
+    assert!(matches!(
+        q.stop("env", &id, "owner-b").await.expect("L3 stop"),
+        WorkMutationResult::PreconditionFailed
+    ));
+    assert!(
+        q.stop("env", &id, "owner-a")
+            .await
+            .expect("L4 stop")
+            .is_accepted()
+    );
+
+    assert_eq!(q.enqueue_session("env", "session").await.expect("L4"), id);
+    assert_eq!(
+        q.get("env", &id).await.unwrap().unwrap().state,
+        WorkState::Stopped,
+        "L4/E3"
+    );
+    assert!(
+        q.acquire_session("env", "session", "owner-b", 20)
+            .await
+            .expect("L4")
+            .is_none(),
+        "L4/E3 exact acquire cannot bypass explicit wake"
+    );
+    assert_eq!(q.wake_session("env", "session").await.expect("L5"), id);
+    let replacement = q
+        .acquire_session("env", "session", "owner-b", 20)
+        .await
+        .expect("L5")
+        .expect("L5 lease");
+    assert_eq!(replacement.epoch, 2, "L5/E4");
+    assert!(
+        q.retire_session("env", "session")
+            .await
+            .expect("L6")
+            .is_some()
+    );
+    assert_eq!(
+        q.get("env", &id).await.unwrap().unwrap().state,
+        WorkState::Stopped,
+        "L6/E5"
+    );
+}
+
 /// Run the whole contract against a freshly-built backend `Q`.
 async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     single_active_cap(&fresh()).await;
@@ -325,6 +424,7 @@ async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     remove_env_purges(&fresh()).await;
     session_enqueue_is_idempotent(&fresh()).await;
     heartbeat_compare_and_extend(&fresh()).await;
+    session_ownership_lifecycle_is_single_and_fenced(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────

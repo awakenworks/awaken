@@ -935,16 +935,6 @@ fn realization_owner_follows_the_frozen_placement_decision_table() {
         );
         value
     };
-    let preparing_application = {
-        let mut value = preparing.clone();
-        let awaken_session_contract::SessionBaselineState::Preparing(intent) = &mut value.baseline
-        else {
-            unreachable!("fixture is preparing")
-        };
-        intent.application = awaken_session_contract::ApplicationContributionState::Required;
-        value
-    };
-
     for (rule, value, local_expected, registered_expected) in [
         ("P1", preparing, false, false),
         ("P2", frozen(SessionRuntimePlacement::Local), false, false),

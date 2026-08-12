@@ -908,6 +908,7 @@ fn mount_with_managed_over_and_models(
             policy: worker_placement_policy
                 .unwrap_or_else(|| worker_placement::shared_worker_placement_policy()),
             sessions: session_application.clone(),
+            session_work: session_application.clone(),
             authenticator: worker_authenticator.clone(),
             recovery: host.worker_recovery_source(),
             completion: host.worker_completion_sink(),

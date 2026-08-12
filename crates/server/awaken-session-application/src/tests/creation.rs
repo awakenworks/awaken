@@ -68,6 +68,38 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
     ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError> {
         unreachable!("local admission does not dispatch WorkQueue work")
     }
+
+    async fn wake_session_work(
+        &self,
+        _environment_id: &str,
+        _session_id: &str,
+    ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError> {
+        unreachable!("local admission does not wake WorkQueue work")
+    }
+
+    async fn retire_session_work(
+        &self,
+        _environment_id: &str,
+        _session_id: &str,
+    ) -> Result<
+        Option<awaken_session_contract::work_queue::WorkItem>,
+        awaken_session_contract::work_queue::WorkQueueError,
+    > {
+        unreachable!("local admission does not retire WorkQueue work")
+    }
+
+    async fn acquire_session_work(
+        &self,
+        _environment_id: &str,
+        _session_id: &str,
+        _worker_owner: &str,
+        _now_ms: u64,
+    ) -> Result<
+        Option<awaken_session_contract::work_queue::SessionWorkLease>,
+        awaken_session_contract::work_queue::WorkQueueError,
+    > {
+        Ok(None)
+    }
 }
 
 fn creation_command(session_id: &str) -> CreateSessionCommand {
@@ -203,6 +235,43 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
         repository.pending_lifecycle().await.unwrap().is_empty(),
         "W1/E3"
     );
+}
+
+#[tokio::test]
+async fn creation_persists_only_a_complete_frozen_root_before_later_cas_failure() {
+    /* Cause/effect graph: C1 all creation inputs compile; C2 the first root
+     * insert commits; C3 the later activation CAS is unavailable. Effects: E1
+     * create reports retryable failure; E2 durable truth is already Frozen with
+     * its Resource/MCP state; E3 no Preparing authoring intent can be stranded.
+     * Constraint: physical realization and Work projection remain later,
+     * replayable effects.
+     *
+     * | Rule | Compile | Insert | Later CAS | Result |
+     * |---|---|---|---|---|
+     * | A1 | pass | pass | fail | E1 + E2 + E3 |
+     */
+    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("test repository"),
+    );
+    let faulting = Arc::new(FaultingSessionRepository::new(durable.clone()));
+    faulting.fail_once("activate");
+    let app = application_with_configuration(
+        faulting,
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            ..Default::default()
+        },
+    );
+    let mut command = creation_command("atomic-create");
+    command.intent.control.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+
+    assert!(app.create_session(command).await.is_err(), "A1/E1");
+    let committed = durable.get("atomic-create").await.expect("A1/E2");
+    assert!(committed.frozen_baseline().is_some(), "A1/E2+E3");
+    assert!(committed.resources.pending.is_some(), "A1/E2");
 }
 
 #[tokio::test]
