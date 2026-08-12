@@ -46,7 +46,7 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 
 - Status: accepted target; Slice 0 contract closure required, not a current invariant
 - Owner: [ADR-0066](../adr/0066-session-service-binding-and-realization.md)
-- Fact: the target scoped Session persistence row carries one consumed preparation intent, one immutable finalized baseline, the existing versioned Resource state, and one MCP-only attachment set under replace/tombstone root mutation. Claim-time application input returns to Control through a fenced contribution; Agent/Session/application MCP share one normalizer; the existing Managed full-replacement API diffs into the same generations. A Session realization lease fences local/remote stage, CAS Active, publish, drain, and recovery. Generic Service and a public realizer are deferred.
+- Fact: the scoped Session persistence row carries one consumed complete creation intent, one immutable finalized baseline, the existing versioned Resource state, and one MCP-only attachment set under replace/tombstone root mutation. Agent and Session MCP inputs share one normalizer; the existing Managed full-replacement API diffs into the same generations. A self-hosted Session uses the Environment WorkQueue, and a Session realization lease fences local/remote stage, CAS Active, publish, drain, and recovery (ADR-0075).
 - Links: [architecture invariants](../INVARIANTS.md); [remote Worker protocol](../design/remote-worker-protocol.md)
 - Verification: planned root-CAS/store conformance, old-path deletion, Environment pin/network-intersection, MCP create/call/add/replace/remove/recovery, Native/ACP parity, stale-ownership, and out-of-policy target tests.
 

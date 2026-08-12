@@ -19,7 +19,7 @@ async fn root_mutation_cause_effect_decision_table() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
-    create(repo.as_ref(), persisted("mutation", false, false, "idle")).await;
+    create(repo.as_ref(), persisted("mutation", false, "idle")).await;
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
@@ -102,7 +102,7 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     );
-    let original = persisted("create-root", false, false, "preparing");
+    let original = persisted("create-root", false, "preparing");
     let payload = awaken_session_contract::SessionMutationPayload::Replace(original.clone());
     let record = awaken_session_contract::IdempotencyRecord {
         key: "create-root:one".into(),
@@ -177,19 +177,11 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
+    create(repo.as_ref(), persisted("archive-race", false, "idle")).await;
+    create(repo.as_ref(), persisted("delete-live", false, "idle")).await;
     create(
         repo.as_ref(),
-        persisted("archive-race", false, false, "idle"),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        persisted("delete-live", false, false, "idle"),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        persisted("delete-failed", false, false, "activation_failed"),
+        persisted("delete-failed", false, "activation_failed"),
     )
     .await;
     let app = application(
@@ -283,7 +275,7 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
-    create(repo.as_ref(), persisted("activity", false, false, "idle")).await;
+    create(repo.as_ref(), persisted("activity", false, "idle")).await;
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
@@ -361,7 +353,7 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
         "A5"
     );
 
-    let mut exhausted = persisted("activity-exhausted", false, false, "idle");
+    let mut exhausted = persisted("activity-exhausted", false, "idle");
     exhausted.activity_epoch = u64::MAX;
     create(repo.as_ref(), exhausted).await;
     let exhausted_before = repo
@@ -388,7 +380,7 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
 
     create(
         repo.as_ref(),
-        persisted("activity-preparing", false, false, "preparing"),
+        persisted("activity-preparing", false, "preparing"),
     )
     .await;
     assert_eq!(
@@ -461,7 +453,7 @@ async fn session_message_execution_always_settles_its_activity() {
     );
     create(
         success_repo.as_ref(),
-        persisted("message-success", false, false, "idle"),
+        persisted("message-success", false, "idle"),
     )
     .await;
     let success = application_with_runtime(
@@ -489,7 +481,7 @@ async fn session_message_execution_always_settles_its_activity() {
     );
     create(
         failure_repo.as_ref(),
-        persisted("message-failure", false, false, "idle"),
+        persisted("message-failure", false, "idle"),
     )
     .await;
     let failure = application(
@@ -511,7 +503,7 @@ async fn session_message_execution_always_settles_its_activity() {
     assert_eq!(settled.execution, SessionExecutionState::Idle, "M2");
     assert_eq!(settled.activity_epoch, 1, "M2");
 
-    let mut terminal = persisted("message-terminal", false, false, "idle");
+    let mut terminal = persisted("message-terminal", false, "idle");
     terminal.execution = SessionExecutionState::Terminated;
     create(failure_repo.as_ref(), terminal).await;
     let terminal_before = failure_repo
@@ -558,19 +550,11 @@ async fn update_admission_uses_only_durable_session_status() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
+    create(repo.as_ref(), persisted("update-idle", false, "idle")).await;
+    create(repo.as_ref(), persisted("update-running", false, "running")).await;
     create(
         repo.as_ref(),
-        persisted("update-idle", false, false, "idle"),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        persisted("update-running", false, false, "running"),
-    )
-    .await;
-    create(
-        repo.as_ref(),
-        persisted("update-terminal", false, false, "terminated"),
+        persisted("update-terminal", false, "terminated"),
     )
     .await;
     let app = application(
@@ -620,7 +604,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
-    let mut active = persisted("budget-active", false, false, "idle");
+    let mut active = persisted("budget-active", false, "idle");
     let snapshot = awaken_session_contract::ManagedListPriceSnapshot {
         snapshot_id: "prices-v1".into(),
         version: 1,
@@ -640,11 +624,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
         reached_event_emitted: false,
     };
     create(repo.as_ref(), active).await;
-    create(
-        repo.as_ref(),
-        persisted("budget-absent", false, false, "idle"),
-    )
-    .await;
+    create(repo.as_ref(), persisted("budget-absent", false, "idle")).await;
     let app = application(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
@@ -739,7 +719,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
-    let mut session = persisted("binding-fence", false, false, "idle");
+    let mut session = persisted("binding-fence", false, "idle");
     let current = awaken_session_contract::SessionRealizationLease {
         owner: "runtime-a".into(),
         runtime_incarnation: "runtime-a/boot-1".into(),
@@ -756,7 +736,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     sink.persist(receipt("binding-fence", "sandbox-a", Some(&current)))
         .await
         .expect("B2");
-    let mut renewed_session = persisted("binding-renewed", false, false, "idle");
+    let mut renewed_session = persisted("binding-renewed", false, "idle");
     renewed_session.realization = Some(awaken_session_contract::SessionRealizationLease {
         expires_at_unix_ms: u64::MAX,
         ..current.clone()
@@ -775,7 +755,7 @@ async fn environment_binding_persistence_is_fenced_by_exact_realization() {
     .expect("B3 monotonic renewal authorizes admitted work");
     create(
         repo.as_ref(),
-        persisted("binding-unassigned", false, false, "idle"),
+        persisted("binding-unassigned", false, "idle"),
     )
     .await;
     sink.persist(receipt("binding-unassigned", "sandbox-legacy", None))
@@ -898,7 +878,7 @@ async fn activation_restages_a_generation_renewed_while_its_stage_was_in_flight(
         expires_at_unix_ms: renewed_expiry,
         ..asserted_lease.clone()
     };
-    let mut session = persisted("in-flight-renewal", false, false, "activating");
+    let mut session = persisted("in-flight-renewal", false, "activating");
     session.realization = Some(current_lease.clone());
     session.mcp = awaken_session_contract::SessionMcpAttachmentSet::from_initial(
         vec![awaken_session_contract::McpAttachmentDraft {
@@ -1051,27 +1031,25 @@ fn native_only_lazy_provisioning_decision_table() {
 
 #[tokio::test]
 async fn durable_session_truth_owns_one_work_projection_path() {
-    // Cause/effect graph: C1 frozen Environment is self-hosted; C2 Session
-    // has no Application-owned execution; C3 Session is nonterminal; C4 the
-    // projection command is replayed. Effects: E1 only C1+C2+C3 dispatches;
+    // Cause/effect graph: C1 frozen Environment is self-hosted; C2 Session is
+    // nonterminal; C3 the projection command is replayed. Effects: E1 only
+    // C1+C2 dispatches;
     // E2 replay uses the same idempotent port and creates no second identity.
     //
-    // | Rule | self-hosted | application | terminal | replay | effect |
-    // | R1 | yes | no | no | no | project one |
-    // | R2 | yes | no | no | yes | retain one |
-    // | R3 | no | no | no | any | skip |
-    // | R4 | yes | yes | no | any | skip |
-    // | R5 | yes | no | yes | any | skip |
+    // | Rule | self-hosted | terminal | replay | effect |
+    // | R1 | yes | no | no | project one |
+    // | R2 | yes | no | yes | retain one |
+    // | R3 | no | no | any | skip |
+    // | R4 | yes | yes | any | skip |
     let repo = awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
         .expect("session repository");
-    create(&repo, persisted("external", true, false, "idle")).await;
-    create(&repo, persisted("local", false, false, "idle")).await;
-    create(&repo, persisted("application", true, true, "idle")).await;
-    create(&repo, persisted("terminal", true, false, "terminated")).await;
+    create(&repo, persisted("external", true, "idle")).await;
+    create(&repo, persisted("local", false, "idle")).await;
+    create(&repo, persisted("terminal", true, "terminated")).await;
     let environments = RecordingEnvironmentSource::default();
 
     let first = reconcile_work_dispatches(&repo, &environments).await;
-    assert_eq!(first.settled, 1, "R1/R3/R4/R5");
+    assert_eq!(first.settled, 1, "R1/R3/R4");
     assert!(first.failures.is_empty());
     assert_eq!(environments.dispatched.lock().unwrap().len(), 1, "R1");
 
@@ -1092,9 +1070,9 @@ async fn work_dispatch_reconciliation_isolates_each_session_failure() {
     // W2 C1+C3=>E1+E3 without aborting W1; W3 C4=>E4.
     let repo = awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
         .expect("session repository");
-    create(&repo, persisted("external-failed", true, false, "idle")).await;
-    create(&repo, persisted("external-settled", true, false, "idle")).await;
-    create(&repo, persisted("local-skip", false, false, "idle")).await;
+    create(&repo, persisted("external-failed", true, "idle")).await;
+    create(&repo, persisted("external-settled", true, "idle")).await;
+    create(&repo, persisted("local-skip", false, "idle")).await;
     let environments = RecordingEnvironmentSource::default();
     environments.fail_for("external-failed");
 

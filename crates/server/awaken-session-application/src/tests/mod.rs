@@ -547,7 +547,7 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
     }
 }
 
-fn persisted(id: &str, self_hosted: bool, application: bool, status: &str) -> PersistedSession {
+fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
     let environment = awaken_session_contract::EnvironmentSnapshot {
         environment_id: "env-worker".into(),
         revision: awaken_environment_contract::EnvironmentRevision(7),
@@ -578,12 +578,6 @@ fn persisted(id: &str, self_hosted: bool, application: bool, status: &str) -> Pe
                     agent_id: "agent".into(),
                     model: "model".into(),
                     runtime: None,
-                    application: application.then(|| {
-                        awaken_session_contract::ApplicationContributionReceipt {
-                            plan_fingerprint: "plan".into(),
-                            input_fingerprint: "input".into(),
-                        }
-                    }),
                     delegate_ids: Vec::new(),
                     toolsets: Vec::new(),
                     mounts: Vec::new(),

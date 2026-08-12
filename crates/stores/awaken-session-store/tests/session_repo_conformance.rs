@@ -72,7 +72,6 @@ fn session(id: &str, title: &str) -> PersistedSession {
                     agent_id: "assistant".into(),
                     model: "kimi".into(),
                     runtime: Some("acp:custom".into()),
-                    application: None,
                     delegate_ids: vec!["researcher".into()],
                     toolsets: Vec::new(),
                     mounts: Vec::new(),

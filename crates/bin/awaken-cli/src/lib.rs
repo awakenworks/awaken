@@ -1052,9 +1052,9 @@ mod runtime_session_store_tests {
     use super::*;
     use awaken_config_service::ModelPublicationResolver;
     use awaken_session_contract::{
-        ApplicationContributionState, ControlSessionCreationInputs, EnvironmentFingerprint,
-        EnvironmentRevision, EnvironmentSnapshot, IdempotencyRecord, PersistedSession,
-        SessionBaselineState, SessionCreationIntent, SessionNetworkPolicy, stable_fingerprint,
+        ControlSessionCreationInputs, EnvironmentFingerprint, EnvironmentRevision,
+        EnvironmentSnapshot, IdempotencyRecord, PersistedSession, SessionBaselineState,
+        SessionCreationIntent, SessionNetworkPolicy, stable_fingerprint,
     };
 
     fn creation_intent() -> SessionCreationIntent {
@@ -1100,7 +1100,6 @@ mod runtime_session_store_tests {
                 resources: Default::default(),
                 initial_mcp: Vec::new(),
             },
-            application: ApplicationContributionState::Absent,
         }
     }
 

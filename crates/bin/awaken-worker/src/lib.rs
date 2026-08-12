@@ -940,11 +940,7 @@ impl WorkerNode {
             },
             None => None,
         };
-        let (application_decorator, application_provisioner) = application
-            .map(RegisteredWorkerApplication::into_parts)
-            .map_or((None, None), |(decorator, provisioner)| {
-                (Some(decorator), provisioner)
-            });
+        let application_decorator = application.map(RegisteredWorkerApplication::into_parts);
         // Route the dispatch pool's claim/settle over HTTP to the cell server.
         let (dispatch, stream_publisher) = awaken_worker_runtime::worker_transports_with_upstream(
             &upstream,
@@ -995,19 +991,14 @@ impl WorkerNode {
         if let Some(decorator) = application_decorator {
             host = host.with_application_attempt_decorator(decorator);
         }
-        // Every registered Worker realizes the frozen Session projection through
-        // Control. Application contribution is optional; realization ownership
-        // is not. Wiring the client only with a provisioner created a second,
-        // unfenced ordinary-Worker path.
-        host = host.with_application_session_control(Arc::new(
-            awaken_worker_runtime::WorkerControlApplicationSessionClient::new(
+        // Every registered Worker realizes the already-frozen Session projection
+        // through Control; WorkQueue remains the sole Session ownership path.
+        host = host.with_session_control(Arc::new(
+            awaken_worker_runtime::WorkerControlSessionClient::new(
                 control.clone(),
                 registration.snapshot.identity.clone(),
             ),
         ));
-        if let Some(provisioner) = application_provisioner {
-            host = host.with_application_session_provisioner(provisioner);
-        }
         if let Some(gate) = self.application_gate {
             host = host.with_gate_override(gate);
         }

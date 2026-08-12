@@ -2,15 +2,15 @@
 //! its thread, opening (or reusing) the session through the host.
 
 use super::*;
-mod application;
 mod claimed_dispatch;
+mod claimed_session;
 #[cfg(test)]
 mod dispatched_mcp_tests;
 mod resolver;
 mod session_realization;
 #[cfg(test)]
 pub(super) mod test_support;
-use application::install_claimed_session_projection;
+use claimed_session::install_claimed_session_projection;
 pub(crate) use resolver::HostWorkerResolver;
 
 #[cfg(test)]
@@ -233,14 +233,7 @@ mod tests {
         );
     }
 
-    struct CountingProvisioner {
-        calls: Arc<AtomicUsize>,
-        refreshes: Arc<AtomicUsize>,
-        phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
-    }
-
-    struct RecordingContributor {
-        calls: Arc<AtomicUsize>,
+    struct RecordingSessionControl {
         resume_calls: Arc<AtomicUsize>,
         phases: Arc<std::sync::Mutex<Vec<&'static str>>>,
         projection: Arc<std::sync::Mutex<Option<awaken_session_contract::FrozenSessionProjection>>>,
@@ -253,32 +246,6 @@ mod tests {
         calls: std::sync::Mutex<Vec<&'static str>>,
         fail_stage: std::sync::atomic::AtomicBool,
         required_runtime: Option<(std::sync::Weak<SharedHost>, String)>,
-    }
-
-    fn recording_environment() -> awaken_session_contract::EnvironmentSnapshot {
-        let holder = awaken_runtime_contract::PlaintextHolder::new(
-            awaken_runtime_contract::PlaintextBoundary::Worker,
-            "test.worker",
-        );
-        awaken_session_contract::EnvironmentSnapshot {
-            environment_id: "env".into(),
-            revision: awaken_session_contract::EnvironmentRevision(1),
-            self_hosted: false,
-            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-                "env-fingerprint".into(),
-            ),
-            sandbox: serde_json::json!({}),
-            sandbox_provisioning: Default::default(),
-            idle_retention: Default::default(),
-            packages: Default::default(),
-            prepared_image: None,
-            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-            credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
-                inference_holder: holder.clone(),
-                mcp_holder: holder.clone(),
-                resource_holder: holder,
-            },
-        }
     }
 
     #[async_trait::async_trait]
@@ -432,7 +399,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl awaken_run_ingress_contract::ClaimedSessionControl for RecordingContributor {
+    impl awaken_run_ingress_contract::ClaimedSessionControl for RecordingSessionControl {
         async fn resume_frozen(
             &self,
             claim: &awaken_run_ingress::RunClaim,
@@ -455,102 +422,10 @@ mod tests {
                 }
             }))
         }
-
-        async fn contribute(
-            &self,
-            _claim: &awaken_run_ingress::RunClaim,
-            contribution: awaken_session_contract::ApplicationSessionContribution,
-        ) -> Result<
-            awaken_run_ingress_contract::ClaimedSessionContributionReceipt,
-            awaken_run_ingress_contract::ClaimedSessionControlError,
-        > {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.phases.lock().unwrap().push("contribute");
-            let input = contribution.input;
-            let baseline = awaken_session_contract::SessionBaseline::compile(
-                awaken_session_contract::SessionBaselineInputs {
-                    environment: recording_environment(),
-                    runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
-                    mcp_authoring: Default::default(),
-                    // The Control projection and the claimed publication name
-                    // the same immutable Agent. A different id is a projection
-                    // conflict and is covered by the Session projection tests.
-                    agent_id: "agent-a".into(),
-                    model: "model".into(),
-                    runtime: None,
-                    application: Some(
-                        awaken_session_contract::ApplicationContributionReceipt::from_input(
-                            contribution.application_fingerprint,
-                            &input,
-                        ),
-                    ),
-                    delegate_ids: Vec::new(),
-                    toolsets: Vec::new(),
-                    mounts: input.mounts,
-                    env: input.env,
-                    prompts: input.prompts,
-                },
-            );
-            let mcp = self.mcp_stage.as_ref().map_or_else(Vec::new, |stage| {
-                vec![
-                    serde_json::from_value(serde_json::json!({
-                        "attachment_id": stage.generation.attachment_id,
-                        "name": stage.name,
-                        "generation": stage.generation.generation,
-                        "target": stage.target,
-                        "origin": "application",
-                        "credential": stage.credential,
-                        "selected_plaintext_holder": stage.selected_plaintext_holder,
-                        "state": "realizing",
-                        "publication_acknowledged": false,
-                        "realization": null,
-                        "attempts": 1,
-                        "last_error": null
-                    }))
-                    .expect("test MCP projection"),
-                ]
-            });
-            let projection = awaken_session_contract::FrozenSessionProjection {
-                workspace_id: "workspace".into(),
-                revision: awaken_session_contract::SessionRevision(2),
-                baseline,
-                environment: Default::default(),
-                resource_revision: 0,
-                resources: Default::default(),
-                mcp,
-                toolsets: Vec::new(),
-            };
-            *self.projection.lock().unwrap() = Some(projection.clone());
-            let lease = awaken_session_contract::SessionRealizationLease {
-                owner: "worker-a".into(),
-                runtime_incarnation: "worker-a".into(),
-                epoch: 1,
-                expires_at_unix_ms: self
-                    .mcp_stage
-                    .as_ref()
-                    .map_or(u64::MAX, |stage| stage.generation.lease_expires_at_unix_ms),
-            };
-            Ok(
-                awaken_run_ingress_contract::ClaimedSessionContributionReceipt {
-                    contribution: awaken_session_contract::ApplicationSessionContributionReceipt {
-                        outcome: awaken_session_contract::ApplicationContributionOutcome::Committed,
-                        projection: projection.clone(),
-                    },
-                    realization: awaken_session_contract::SessionRealizationDirective {
-                        projection,
-                        lease,
-                        action: awaken_session_contract::SessionRealizationAction::Stage {
-                            prepare_session: true,
-                            mcp_stages: self.mcp_stage.clone().into_iter().collect(),
-                        },
-                    },
-                },
-            )
-        }
     }
 
     #[async_trait::async_trait]
-    impl awaken_session_contract::SessionRealizationControl for RecordingContributor {
+    impl awaken_session_contract::SessionRealizationControl for RecordingSessionControl {
         async fn begin_session_realization(
             &self,
             command: awaken_session_contract::BeginSessionRealization,
@@ -604,7 +479,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .clone()
-                    .expect("contribution projection"),
+                    .expect("frozen Session projection"),
                 lease: command.lease,
                 action: awaken_session_contract::SessionRealizationAction::Publish {
                     publish: command
@@ -631,7 +506,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .clone()
-                    .expect("contribution projection"),
+                    .expect("frozen Session projection"),
                 lease: command.lease,
                 action: awaken_session_contract::SessionRealizationAction::Complete,
             })
@@ -643,54 +518,6 @@ mod tests {
         ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
             self.phases.lock().unwrap().push("fail");
             Ok(())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl awaken_session_contract::ApplicationSessionProvisioner for CountingProvisioner {
-        async fn prepare(
-            &self,
-            activation: &RunActivation,
-            session_id: &str,
-            ownership: Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>,
-        ) -> Result<
-            awaken_session_contract::ApplicationSessionContribution,
-            awaken_session_contract::ApplicationSessionProvisionError,
-        > {
-            ownership.verify_current().await.map_err(|error| {
-                awaken_session_contract::ApplicationSessionProvisionError::retryable(
-                    error.to_string(),
-                )
-            })?;
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.phases.lock().unwrap().push("prepare");
-            Ok(awaken_session_contract::ApplicationSessionContribution {
-                session_id: session_id.to_owned(),
-                application_fingerprint: format!(
-                    "application:{}",
-                    activation.snapshot.fingerprint.0
-                ),
-                input: Default::default(),
-            })
-        }
-
-        async fn refresh_frozen(
-            &self,
-            _activation: &RunActivation,
-            _session_id: &str,
-            ownership: Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>,
-        ) -> Result<
-            awaken_session_contract::ApplicationSessionMaterialRefresh,
-            awaken_session_contract::ApplicationSessionProvisionError,
-        > {
-            ownership.verify_current().await.map_err(|error| {
-                awaken_session_contract::ApplicationSessionProvisionError::retryable(
-                    error.to_string(),
-                )
-            })?;
-            self.refreshes.fetch_add(1, Ordering::SeqCst);
-            self.phases.lock().unwrap().push("refresh");
-            Ok(awaken_session_contract::ApplicationSessionMaterialRefresh::Refreshed)
         }
     }
 
@@ -725,7 +552,6 @@ mod tests {
                 agent_id: "agent-a".into(),
                 model: "model".into(),
                 runtime: None,
-                application: None,
                 delegate_ids: Vec::new(),
                 toolsets: Vec::new(),
                 mounts: Vec::new(),
@@ -745,36 +571,33 @@ mod tests {
         }
     }
 
-    /// Cause/effect graph: C1 an authenticated remote Run claim is current; C2
-    /// its Session is already frozen; C3 no application provisioner is installed;
-    /// C4 the ordinary Worker has the claimed Session-control client. C1+C2+C4
-    /// cause E1 resume the canonical realization, E2 install the exact baseline
-    /// and lease, and E3 create the Worker environment without contribution.
-    /// C4 absent is the co-located local-pool row, covered by the cold legacy test.
+    /// Cause/effect graph: C1 an authenticated Run claim is current; C2 its
+    /// Session is already frozen; C3 the Worker has the claimed Session-control
+    /// client. C1+C2+C3 cause E1 resume the canonical realization, E2 install
+    /// the exact baseline and lease, and E3 create the Worker environment.
+    /// C3 absent is the co-located local-pool row, covered by the cold legacy test.
     ///
-    /// | Rule | Claim | Frozen | Provisioner | Control | Effect |
-    /// |---|---|---|---|---|---|
-    /// | O1 | live | ordinary | absent | present | resume/realize, no contribution |
-    /// | O2 | stale | any | any | present | reject before realization |
-    /// | O3 | live | preparing application | absent | present | fail closed |
-    /// | O4 | live | local pre-realized | absent | absent | local-pool replay |
-    /// | O5 | live ordinary Run (no Session pointer) | n/a | absent | present | bypass Session control |
+    /// | Rule | Claim | Frozen | Control | Effect |
+    /// |---|---|---|---|---|
+    /// | O1 | live | yes | present | resume and realize frozen projection |
+    /// | O2 | stale | any | present | reject before realization |
+    /// | O3 | live | no | present | fail closed |
+    /// | O4 | live | local pre-realized | absent | local-pool replay |
+    /// | O5 | live Run without Session pointer | n/a | present | bypass Session control |
     #[tokio::test]
-    async fn ordinary_remote_worker_uses_claimed_session_realization_without_an_application() {
+    async fn claimed_worker_uses_only_frozen_session_realization() {
         use awaken_run_ingress::{Clock, DispatchQueue};
 
         let dispatch = Arc::new(
             awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
                 .expect("in-memory dispatch"),
         );
-        let contribution_calls = Arc::new(AtomicUsize::new(0));
         let resume_calls = Arc::new(AtomicUsize::new(0));
         let projection = Arc::new(std::sync::Mutex::new(Some(ordinary_frozen_projection())));
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub")
                 .with_dispatch_store(dispatch.clone())
-                .with_application_session_control(Arc::new(RecordingContributor {
-                    calls: contribution_calls.clone(),
+                .with_session_control(Arc::new(RecordingSessionControl {
                     resume_calls: resume_calls.clone(),
                     phases: Arc::new(std::sync::Mutex::new(Vec::new())),
                     projection,
@@ -811,7 +634,6 @@ mod tests {
         .await
         .expect("O1 canonical realization");
 
-        assert_eq!(contribution_calls.load(Ordering::SeqCst), 0, "O1/E3");
         assert_eq!(resume_calls.load(Ordering::SeqCst), 1, "O1/E1");
         assert!(
             host.session_environment("ordinary-remote").await.is_some(),
@@ -853,308 +675,6 @@ mod tests {
         .await
         .expect("O5 ordinary Run bypasses Session realization");
         assert_eq!(resume_calls.load(Ordering::SeqCst), 1, "O5");
-    }
-
-    #[tokio::test]
-    async fn claimed_application_contribution_is_acknowledged_before_session_realization() {
-        use awaken_run_ingress::{Clock, DispatchQueue};
-
-        // Cause graph: live exact claim -> provisioner succeeds -> Control client
-        // exists -> contribution receipt carries a frozen projection -> install it
-        // before Session environment realization. A missing client must fail closed;
-        // the stale-claim table row is generated by the adjacent test.
-        //
-        // | Rule | Claim live | Provisioner | Contributor | Effect |
-        // |---|---|---|---|---|
-        // | W1 | T | success | installed, exact Agent | receipt, realization, then material refresh before Run |
-        // | W2 | T | success | missing | reject before environment |
-        // | W3 | F | - | any | reject before provisioner |
-        // | W4 | T | success + initial MCP + legacy dispatch copy | installed | Control alone stages/activates/publishes/acks, then renews |
-        // | W5 | T | initial MCP stage fails | installed | fail; no publish/environment |
-        // | W6 | T | active MCP lease due | installed | same canonical driver renews generation |
-        // | W7 | T | renewal loses Session authority | installed | revoke local projection, preserve durable Environment; Worker remains healthy |
-        // | W8 | T | Session already frozen | installed | refresh before adoption/rebuild and again after realization |
-        for (rule, install_contributor, with_initial_mcp, fail_mcp_stage) in [
-            ("W1", true, false, false),
-            ("W2", false, false, false),
-            ("W4", true, true, false),
-            ("W5", true, true, true),
-        ] {
-            let storage = tempfile::tempdir().expect("storage");
-            let dispatch = Arc::new(
-                awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
-                    .expect("in-memory dispatch"),
-            );
-            let calls = Arc::new(AtomicUsize::new(0));
-            let refreshes = Arc::new(AtomicUsize::new(0));
-            let contribution_calls = Arc::new(AtomicUsize::new(0));
-            let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
-            let projection = Arc::new(std::sync::Mutex::new(None));
-            let fail_begin = Arc::new(AtomicBool::new(false));
-            let host = SharedHost::new(Arc::new(AdoptionModel), "stub")
-                .with_store_dir(storage.path())
-                .with_dispatch_store(dispatch.clone())
-                .with_application_session_provisioner(Arc::new(CountingProvisioner {
-                    calls: calls.clone(),
-                    refreshes: refreshes.clone(),
-                    phases: phases.clone(),
-                }));
-            let mcp_realizer = Arc::new(RecordingMcpRealizer::default());
-            mcp_realizer
-                .fail_stage
-                .store(fail_mcp_stage, Ordering::SeqCst);
-            let initial_mcp_expiry = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64
-                + 1_000;
-            let mcp_stage = with_initial_mcp.then(|| {
-                let generation = awaken_session_contract::McpGenerationRef {
-                    session_id: format!("thread-application-{rule}"),
-                    attachment_id: awaken_session_contract::McpAttachmentId("mcp-docs".into()),
-                    generation: awaken_session_contract::McpGeneration(1),
-                    runtime_incarnation: "worker-a".into(),
-                    lease_epoch: 1,
-                    lease_expires_at_unix_ms: initial_mcp_expiry,
-                };
-                awaken_session_contract::StageMcpAttachment {
-                    workspace_id: "workspace".into(),
-                    generation,
-                    realization_id: "realize-docs-1".into(),
-                    stage_idempotency_key: "stage-docs-1".into(),
-                    name: "docs".into(),
-                    target: awaken_session_contract::McpTarget::parse_http(
-                        "https://mcp.example.test/sse",
-                    )
-                    .unwrap(),
-                    credential: None,
-                    prompts_as_skills: false,
-                    selected_plaintext_holder: None,
-                }
-            });
-            let dispatched_mcp_stage = mcp_stage.clone();
-            let host = if install_contributor {
-                host.with_application_session_control(Arc::new(RecordingContributor {
-                    calls: contribution_calls.clone(),
-                    resume_calls: Arc::new(AtomicUsize::new(0)),
-                    phases: phases.clone(),
-                    projection,
-                    mcp_stage,
-                    fail_begin: fail_begin.clone(),
-                }))
-            } else {
-                host
-            };
-            let host = Arc::new(host);
-            let _managed = crate::ManagedHost::new(host.clone())
-                .with_mcp_attachment_realizer(mcp_realizer.clone())
-                .install_dispatch_session_runtime();
-            let thread = format!("thread-application-{rule}");
-            let run = format!("run-application-{rule}");
-            let mut run_dispatch =
-                awaken_run_ingress::RunDispatch::new(test_activation(&thread, &run))
-                    .for_session(awaken_agent_contract::agent::thread::Id(thread.clone()));
-            if let Some(stage) = dispatched_mcp_stage {
-                let runtime = crate::provisioning::encode_session_runtime_envelope(
-                    recording_environment(),
-                    Some(Vec::new()),
-                    vec![stage],
-                )
-                .expect("legacy application runtime envelope");
-                run_dispatch = run_dispatch.with_session_runtime(runtime);
-            }
-            dispatch.enqueue(run_dispatch).await.expect("enqueue");
-            let now = awaken_run_ingress::SystemClock.now_ms();
-            let claimed = dispatch
-                .claim("worker-a", 30_000, now, &Default::default())
-                .await
-                .expect("claim")
-                .expect("claimed run");
-            let resolver = HostWorkerResolver {
-                host: Arc::downgrade(&host),
-            };
-            let result = resolver.worker_for_claimed(&claimed).await;
-
-            if rule == "W1" {
-                resolver
-                    .worker_for_claimed(&claimed)
-                    .await
-                    .expect("W8 resumes the frozen projection");
-                assert_eq!(calls.load(Ordering::SeqCst), 1, "W8");
-                assert_eq!(refreshes.load(Ordering::SeqCst), 3, "W8");
-                assert_eq!(contribution_calls.load(Ordering::SeqCst), 1, "W8");
-            }
-
-            if rule == "W4" {
-                assert_eq!(
-                    host.renew_due_session_realizations(
-                        initial_mcp_expiry,
-                        initial_mcp_expiry + 1_000,
-                    )
-                    .await
-                    .expect("W6"),
-                    1,
-                    "W6"
-                );
-                let durable_environment = host
-                    .session_environment_handle(&thread)
-                    .await
-                    .expect("W7 durable Environment before revocation");
-                let durable_binding = serde_json::to_string(&durable_environment)
-                    .expect("W7 durable Environment binding");
-                fail_begin.store(true, Ordering::SeqCst);
-                assert_eq!(
-                    host.renew_due_session_realizations(
-                        initial_mcp_expiry + 1_000,
-                        initial_mcp_expiry + 2_000,
-                    )
-                    .await
-                    .expect("W7 isolates the rejected Session renewal"),
-                    0,
-                    "W7"
-                );
-                assert!(!host.session_slots.contains(&thread), "W7");
-                let (adopted, rebuild) = host
-                    .adopt_bound_session_environment(
-                        &thread,
-                        Some(&durable_binding),
-                        &awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor,
-                        false,
-                    )
-                    .await
-                    .expect("W7 preserved Environment remains adoptable");
-                assert!(!rebuild, "W7");
-                assert_eq!(
-                    adopted.expect("W7 adopted Environment").handle(),
-                    durable_environment,
-                    "W7"
-                );
-            }
-
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                usize::from(install_contributor),
-                "{rule}"
-            );
-            assert_eq!(
-                contribution_calls.load(Ordering::SeqCst),
-                usize::from(install_contributor),
-                "{rule}"
-            );
-            assert_eq!(
-                refreshes.load(Ordering::SeqCst),
-                usize::from(install_contributor && !fail_mcp_stage) + 2 * usize::from(rule == "W1"),
-                "{rule}"
-            );
-            let succeeds = install_contributor && !fail_mcp_stage;
-            assert_eq!(result.is_ok(), succeeds, "{rule}");
-            let expected_phases: &[&str] = if fail_mcp_stage {
-                &["prepare", "contribute", "fail"]
-            } else if rule == "W4" {
-                &[
-                    "prepare",
-                    "contribute",
-                    "activate",
-                    "acknowledge",
-                    "refresh",
-                    "begin",
-                    "activate",
-                    "acknowledge",
-                    "begin",
-                ]
-            } else if install_contributor {
-                &[
-                    "prepare",
-                    "contribute",
-                    "activate",
-                    "acknowledge",
-                    "refresh",
-                    "refresh",
-                    "refresh",
-                ]
-            } else {
-                &[]
-            };
-            assert_eq!(phases.lock().unwrap().as_slice(), expected_phases, "{rule}");
-            let expected_mcp: &[&str] = if fail_mcp_stage {
-                &["stage"]
-            } else if rule == "W4" {
-                &["stage", "publish", "stage", "publish"]
-            } else if with_initial_mcp {
-                &["stage", "publish"]
-            } else {
-                &[]
-            };
-            assert_eq!(
-                mcp_realizer.calls.lock().unwrap().as_slice(),
-                expected_mcp,
-                "{rule}"
-            );
-            assert_eq!(
-                host.session_environment(&thread).await.is_some(),
-                succeeds && rule != "W4",
-                "{rule}"
-            );
-        }
-    }
-
-    /// Cause/effect rule W3 from the table above: a Session Run with a stale
-    /// claim must fail before application preparation, refresh, or Environment
-    /// creation. The explicit Session pointer distinguishes it from a plain Run.
-    #[tokio::test]
-    async fn stale_claim_is_rejected_before_application_provisioning() {
-        use awaken_run_ingress::{Clock, DispatchQueue};
-
-        let storage = tempfile::tempdir().expect("storage");
-        let dispatch = Arc::new(
-            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
-                .expect("in-memory dispatch"),
-        );
-        let calls = Arc::new(AtomicUsize::new(0));
-        let refreshes = Arc::new(AtomicUsize::new(0));
-        let phases = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
-                .with_store_dir(storage.path())
-                .with_dispatch_store(dispatch.clone())
-                .with_application_session_provisioner(Arc::new(CountingProvisioner {
-                    calls: calls.clone(),
-                    refreshes: refreshes.clone(),
-                    phases: phases.clone(),
-                })),
-        );
-        dispatch
-            .enqueue(
-                awaken_run_ingress::RunDispatch::new(test_activation(
-                    "thread-stale-application",
-                    "run-stale-application",
-                ))
-                .for_session(awaken_agent_contract::agent::thread::Id(
-                    "thread-stale-application".into(),
-                )),
-            )
-            .await
-            .expect("enqueue");
-        let now = awaken_run_ingress::SystemClock.now_ms();
-        let mut claimed = dispatch
-            .claim("worker-a", 30_000, now, &Default::default())
-            .await
-            .expect("claim")
-            .expect("claimed run");
-        claimed.lease.epoch += 1;
-        let resolver = HostWorkerResolver {
-            host: Arc::downgrade(&host),
-        };
-
-        assert!(resolver.worker_for_claimed(&claimed).await.is_err());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert_eq!(refreshes.load(Ordering::SeqCst), 0);
-        assert!(phases.lock().unwrap().is_empty());
-        assert!(
-            host.session_environment("thread-stale-application")
-                .await
-                .is_none()
-        );
     }
 
     #[tokio::test]

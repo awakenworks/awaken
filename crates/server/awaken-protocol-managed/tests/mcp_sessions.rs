@@ -11,9 +11,7 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
-use awaken_protocol_managed::{
-    ManagedState, VaultState, router, types::SessionStatus, vault_router,
-};
+use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
 use awaken_session_contract::{
     LifecycleFactNotifier, ManagedSessionRepository, OutcomeReport, PersistedSession, RunError,
     RunErrorKind, SessionExecutionState, SessionInit, SessionRuntime, StepOutcome,
@@ -2037,7 +2035,6 @@ async fn minting_namespace_cannot_alias_committed_truth() {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
                 budget: None,
                 initial_events: Vec::new(),
-                application_contribution_required: false,
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),
@@ -2052,166 +2049,6 @@ async fn minting_namespace_cannot_alias_committed_truth() {
     assert!(session.id.starts_with("sesn_fnv1a64:"));
     assert_ne!(session.id, "sesn_0");
     assert_ne!(session.id, "sesn_1");
-}
-
-/// Cause graph for the public creation switch:
-/// C1 = a registered application contribution is required. C1 freezes only the
-/// preparation intent; !C1 compiles and realizes immediately. The two effects
-/// are mutually exclusive, so creation cannot publish idle while still waiting
-/// for an application or invoke Runtime before that contribution exists.
-///
-/// | Rule | C1 | wire status | Runtime prepare | idled fact | contribution |
-/// |---|---|---|---|---|---|
-/// | A1 | 0 | idle | once | once | NotRequired |
-/// | A2 | 1 | rescheduling | never | never | Accepted |
-#[tokio::test]
-async fn application_required_creation_is_generated_from_the_decision_table() {
-    for (required, expected_status, expected_prepares, expected_facts, rule) in [
-        (false, SessionStatus::Idle, 1, 1, "A1"),
-        (true, SessionStatus::Rescheduling, 0, 0, "A2"),
-    ] {
-        let prepared = Arc::new(Mutex::new(Vec::new()));
-        let notifier = Arc::new(CountingLifecycleNotifier::default());
-        let repository = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
-        let state = ManagedState::new_with_mcp(PreparingFake {
-            captured: prepared.clone(),
-            staged: Arc::new(Mutex::new(Vec::new())),
-            observed_durable: Arc::new(Mutex::new(Vec::new())),
-            repo: None,
-            fail_with: None,
-        })
-        .with_session_repo(repository.clone())
-        .with_lifecycle_notifier(notifier.clone());
-        let session = state
-            .create_session(
-                awaken_protocol_managed::types::SessionCreateParams {
-                    agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
-                    budget: None,
-                    initial_events: Vec::new(),
-                    application_contribution_required: required,
-                    environment_id: None,
-                    title: None,
-                    metadata: Default::default(),
-                    mcp_servers: Vec::new(),
-                    vault_ids: Vec::new(),
-                    resources: Vec::new(),
-                },
-                Some("workspace-application".into()),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{rule}: {error:?}"));
-        assert_eq!(session.status, expected_status, "{rule}");
-        assert_eq!(prepared.lock().unwrap().len(), expected_prepares, "{rule}");
-        let facts = repository.pending_lifecycle().await.unwrap();
-        assert_eq!(facts.len(), expected_facts, "{rule}: outbox authority");
-        assert_eq!(
-            notifier.count(),
-            expected_facts,
-            "{rule}: notifier is only a post-commit wake hint"
-        );
-        if let Some(fact) = facts.first() {
-            assert_eq!(fact.object_id, session.id, "{rule}");
-            assert_eq!(
-                fact.workspace_id.as_deref(),
-                Some("workspace-application"),
-                "{rule}"
-            );
-            assert_eq!(fact.event_type, "session.status_idled", "{rule}");
-        }
-
-        let contribution = awaken_session_contract::ApplicationSessionContribution {
-            session_id: session.id,
-            application_fingerprint: "application-v1".into(),
-            input: Default::default(),
-        };
-        let outcome =
-            awaken_session_contract::ApplicationSessionContributionApi::contribute_application(
-                state.session_application().as_ref(),
-                contribution,
-            )
-            .await;
-        if required {
-            assert!(outcome.is_ok(), "{rule}");
-        } else {
-            assert!(
-                matches!(
-                    outcome,
-                    Err(
-                        awaken_session_contract::ApplicationSessionContributionFailure::NotRequired
-                    )
-                ),
-                "{rule}"
-            );
-        }
-    }
-}
-
-/// A Preparing Session has no hidden wall-clock owner: it remains inert until
-/// the claim-fenced contribution arrives, or the ordinary Session delete command
-/// terminates it. Delete is the one cancellation path and a later contribution
-/// cannot resurrect the aggregate.
-#[tokio::test]
-async fn preparing_session_can_be_cancelled_without_runtime_realization() {
-    // Causal graph:
-    // create(required) -> Preparing --contribution--> Frozen/idle
-    //                              \--delete-------> tombstone/not found
-    //
-    // | current   | trigger              | Runtime prepare | terminal result |
-    // | Preparing | no command           | never           | remains waiting |
-    // | Preparing | valid contribution   | once            | idle            |
-    // | Preparing | delete               | never           | not found       |
-    // | deleted   | late contribution    | never           | NotFound        |
-    let prepared = Arc::new(Mutex::new(Vec::new()));
-    let state = ManagedState::new_with_mcp(PreparingFake {
-        captured: prepared.clone(),
-        staged: Arc::new(Mutex::new(Vec::new())),
-        observed_durable: Arc::new(Mutex::new(Vec::new())),
-        repo: None,
-        fail_with: None,
-    });
-    let session = state
-        .create_session(
-            awaken_protocol_managed::types::SessionCreateParams {
-                agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
-                budget: None,
-                initial_events: Vec::new(),
-                application_contribution_required: true,
-                environment_id: None,
-                title: None,
-                metadata: Default::default(),
-                mcp_servers: Vec::new(),
-                vault_ids: Vec::new(),
-                resources: Vec::new(),
-            },
-            Some("workspace-application".into()),
-        )
-        .await
-        .expect("create preparing Session");
-    assert_eq!(session.status, SessionStatus::Rescheduling);
-    assert!(prepared.lock().unwrap().is_empty());
-
-    state
-        .delete_session(&session.id)
-        .await
-        .expect("delete is the Preparing cancellation command");
-    assert!(matches!(
-        state.get_session(&session.id),
-        Err(awaken_protocol_managed::StateError::NotFound)
-    ));
-    let late = awaken_session_contract::ApplicationSessionContributionApi::contribute_application(
-        state.session_application().as_ref(),
-        awaken_session_contract::ApplicationSessionContribution {
-            session_id: session.id,
-            application_fingerprint: "late-plan".into(),
-            input: Default::default(),
-        },
-    )
-    .await;
-    assert!(matches!(
-        late,
-        Err(awaken_session_contract::ApplicationSessionContributionFailure::NotFound)
-    ));
-    assert!(prepared.lock().unwrap().is_empty());
 }
 
 /// ADR-0048 / S10: Session creation commits the lifecycle fact and Session in
@@ -2229,7 +2066,6 @@ async fn create_session_commits_the_owned_fact_then_notifies_once() {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
                 budget: None,
                 initial_events: Vec::new(),
-                application_contribution_required: false,
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),
@@ -2268,7 +2104,6 @@ async fn archive_session_commits_the_terminated_fact_once() {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
                 budget: None,
                 initial_events: Vec::new(),
-                application_contribution_required: false,
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),
@@ -2322,7 +2157,6 @@ async fn delete_session_commits_the_deleted_fact_with_the_owner() {
                 agent: awaken_protocol_managed::types::AgentRef::Id("assistant".into()),
                 budget: None,
                 initial_events: Vec::new(),
-                application_contribution_required: false,
                 environment_id: None,
                 title: None,
                 metadata: Default::default(),

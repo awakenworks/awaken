@@ -40,14 +40,13 @@ mod tests {
         CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
     };
     use awaken_session_contract::{
-        AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationContributionReceipt,
-        BeginSessionRealization, EnvironmentFingerprint, EnvironmentSnapshot,
-        FailSessionRealization, IdempotencyRecord, McpAttachmentDraft, McpAttachmentOrigin,
-        McpAttachmentState, McpGenerationRef, McpRealizationReceipt, McpTarget, OutcomeReport,
-        SessionBaseline, SessionBaselineInputs, SessionBaselineState, SessionMcpAttachmentSet,
-        SessionNetworkPolicy, SessionRealizationAction, SessionRealizationControl,
-        SessionResourceState, SessionRevision, SessionRuntime, StageMcpAttachment, StepOutcome,
-        ToolPermissionDecision,
+        AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
+        EnvironmentFingerprint, EnvironmentSnapshot, FailSessionRealization, IdempotencyRecord,
+        McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGenerationRef,
+        McpRealizationReceipt, McpTarget, OutcomeReport, SessionBaseline, SessionBaselineInputs,
+        SessionBaselineState, SessionMcpAttachmentSet, SessionNetworkPolicy,
+        SessionRealizationAction, SessionRealizationControl, SessionResourceState, SessionRevision,
+        SessionRuntime, StageMcpAttachment, StepOutcome, ToolPermissionDecision,
     };
 
     struct NoopRuntime;
@@ -136,7 +135,6 @@ mod tests {
     }
 
     fn persisted_session(id: &str) -> PersistedSession {
-        let application_input = awaken_session_contract::ApplicationSessionInput::default();
         let baseline = SessionBaseline::compile(SessionBaselineInputs {
             environment: EnvironmentSnapshot {
                 environment_id: "env".into(),
@@ -160,10 +158,6 @@ mod tests {
             agent_id: "agent".into(),
             model: "model".into(),
             runtime: None,
-            application: Some(ApplicationContributionReceipt::from_input(
-                "application-plan".into(),
-                &application_input,
-            )),
             delegate_ids: Vec::new(),
             toolsets: Vec::new(),
             mounts: Vec::new(),
@@ -180,7 +174,7 @@ mod tests {
                 target: McpTarget::parse_http("https://mcp.example.test").unwrap(),
                 credential: None,
                 prompts_as_skills: false,
-                origin: McpAttachmentOrigin::Application,
+                origin: McpAttachmentOrigin::Session,
             }],
             Some(holder()),
         )

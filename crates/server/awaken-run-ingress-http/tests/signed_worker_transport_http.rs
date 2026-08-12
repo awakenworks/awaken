@@ -28,8 +28,7 @@ use awaken_worker_transport_security::{
 };
 
 #[derive(Default)]
-struct RecordingApplicationContributions {
-    contributions: Mutex<Vec<awaken_session_contract::ApplicationSessionContribution>>,
+struct RecordingSessionControl {
     projection: Mutex<Option<awaken_session_contract::FrozenSessionProjection>>,
     activations: Mutex<usize>,
     acknowledgements: Mutex<usize>,
@@ -38,85 +37,57 @@ struct RecordingApplicationContributions {
     begin_failure: Mutex<Option<awaken_session_contract::SessionRealizationControlFailure>>,
 }
 
-#[async_trait::async_trait]
-impl awaken_session_contract::ApplicationSessionContributionApi
-    for RecordingApplicationContributions
-{
-    async fn contribute_application(
-        &self,
-        contribution: awaken_session_contract::ApplicationSessionContribution,
-    ) -> Result<
-        awaken_session_contract::ApplicationSessionContributionReceipt,
-        awaken_session_contract::ApplicationSessionContributionFailure,
-    > {
-        self.contributions
-            .lock()
-            .unwrap()
-            .push(contribution.clone());
-        let holder = awaken_runtime_contract::PlaintextHolder::new(
-            awaken_runtime_contract::PlaintextBoundary::Worker,
-            "test.worker",
-        );
-        let input_receipt = awaken_session_contract::ApplicationContributionReceipt::from_input(
-            contribution.application_fingerprint,
-            &contribution.input,
-        );
-        let baseline = awaken_session_contract::SessionBaseline::compile(
-            awaken_session_contract::SessionBaselineInputs {
-                environment: awaken_session_contract::EnvironmentSnapshot {
-                    environment_id: "env".into(),
-                    revision: awaken_session_contract::EnvironmentRevision(1),
-                    self_hosted: false,
-                    config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-                        "env-fingerprint".into(),
-                    ),
-                    sandbox: serde_json::json!({}),
-                    sandbox_provisioning: Default::default(),
-                    idle_retention: Default::default(),
-                    packages: Default::default(),
-                    prepared_image: None,
-                    network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-                    credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
-                        inference_holder: holder.clone(),
-                        mcp_holder: holder.clone(),
-                        resource_holder: holder,
-                    },
+fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
+    let holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        "test.worker",
+    );
+    let baseline = awaken_session_contract::SessionBaseline::compile(
+        awaken_session_contract::SessionBaselineInputs {
+            environment: awaken_session_contract::EnvironmentSnapshot {
+                environment_id: "env".into(),
+                revision: awaken_session_contract::EnvironmentRevision(1),
+                self_hosted: true,
+                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                    "env-fingerprint".into(),
+                ),
+                sandbox: serde_json::json!({}),
+                sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
+                packages: Default::default(),
+                prepared_image: None,
+                network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                    inference_holder: holder.clone(),
+                    mcp_holder: holder.clone(),
+                    resource_holder: holder,
                 },
-                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
-                mcp_authoring: Default::default(),
-                agent_id: "agent".into(),
-                model: "model".into(),
-                runtime: None,
-                application: Some(input_receipt),
-                delegate_ids: Vec::new(),
-                toolsets: Vec::new(),
-                mounts: contribution.input.mounts,
-                env: contribution.input.env,
-                prompts: contribution.input.prompts,
             },
-        );
-        let projection = awaken_session_contract::FrozenSessionProjection {
-            workspace_id: "workspace".into(),
-            revision: awaken_session_contract::SessionRevision(2),
-            baseline,
-            environment: Default::default(),
-            resource_revision: 0,
-            resources: Default::default(),
-            mcp: Vec::new(),
+            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+            mcp_authoring: Default::default(),
+            agent_id: "agent".into(),
+            model: "model".into(),
+            runtime: None,
+            delegate_ids: Vec::new(),
             toolsets: Vec::new(),
-        };
-        *self.projection.lock().unwrap() = Some(projection.clone());
-        Ok(
-            awaken_session_contract::ApplicationSessionContributionReceipt {
-                outcome: awaken_session_contract::ApplicationContributionOutcome::Committed,
-                projection,
-            },
-        )
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+        },
+    );
+    awaken_session_contract::FrozenSessionProjection {
+        workspace_id: "workspace".into(),
+        revision: awaken_session_contract::SessionRevision(2),
+        baseline,
+        environment: Default::default(),
+        resource_revision: 0,
+        resources: Default::default(),
+        mcp: Vec::new(),
+        toolsets: Vec::new(),
     }
 }
-
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for RecordingApplicationContributions {
+impl awaken_session_contract::SessionRealizationControl for RecordingSessionControl {
     async fn begin_session_realization(
         &self,
         command: awaken_session_contract::BeginSessionRealization,
@@ -376,7 +347,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let authenticator: Arc<dyn WorkerRequestAuthenticator> = Arc::new(authenticator);
     let directory = Arc::new(TestWorkerDirectory::default());
     let dispatch = Arc::new(MemoryDispatchStore::new());
-    let contributions = Arc::new(RecordingApplicationContributions::default());
+    let session_control = Arc::new(RecordingSessionControl::default());
+    *session_control.projection.lock().unwrap() = Some(frozen_projection());
     let service = WorkerDispatchService::new(
         dispatch.clone(),
         authenticator.clone(),
@@ -384,7 +356,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         Arc::new(FixedWorkerLeasePolicy::new(30_000)),
     )
     .with_worker_directory(directory.clone(), 30_000)
-    .with_application_session_control(contributions.clone());
+    .with_session_control(session_control.clone());
     let warmup = awaken_session_contract::EnvironmentSnapshot {
         environment_id: "signed-env".into(),
         revision: awaken_session_contract::EnvironmentRevision(3),
@@ -518,91 +490,59 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
 
     // Cause graph: signed exact incarnation -> live registry lease -> identity
-    // owns exact Run claim -> guarded Run thread equals Session -> invoke the one
-    // Control contribution port while the epoch guard is held. Every failed cause
-    // rejects before the port and therefore before any Session mutation.
+    // owns the exact Run claim -> guarded Run thread equals Session -> resume the
+    // already-frozen projection while the epoch guard is held. Every failed
+    // cause rejects before Control mutation.
     //
     // | Rule | Identity | Claim owner/epoch | Session=thread | Effect |
     // |---|---|---|---|---|
-    // | T1 | exact/live | exact/live | T | one contribution + receipt |
-    // | T2 | exact/live | wrong owner | T | reject, no contribution |
-    // | T3 | exact/live | exact/live | F | reject, no contribution |
-    // | T4 | exact/live | stale/expired | T | reject, no contribution |
-    // | T5 | exact/live | Session lease exact | - | activate reaches same control |
-    // | T6 | wrong incarnation | Session lease exact | - | reject before control |
-    // | T7 | exact/live | Session lease expired | - | reject before control |
-    // | T8 | exact/live | Session lease exact | - | acknowledge reaches same control |
-    // | T9 | exact/live | Session lease exact | - | failure reaches same control |
-    // | T10 | exact/live | explicit renewal within registry lease | - | begin reaches control |
-    // | T11 | exact/live | implicit/non-renew begin | - | reject before control |
-    // | T12 | exact/live | renewal beyond registry lease | - | reject before control |
-    // | T13 | exact/live | exact/live | frozen Session | resume without contribution |
-    // | T14 | exact/live | exact/live | wrong Session | reject resume before control |
-    // | T15 | exact/live | exact/live | contribution/resume | mark claim-authorized reassignment |
-    // | T16 | exact/live | renew+reassign | - | reject contradictory authority before control |
-    // | T17 | exact/live | explicit renewal | Control NotReady | preserve typed terminal reply |
+    // | T1 | exact/live | exact/live | yes | resume frozen projection |
+    // | T2 | exact/live | wrong owner | yes | reject before Control |
+    // | T3 | exact/live | exact/live | no | reject before Control |
+    // | T4 | exact/live | stale/expired | yes | reject before Control |
+    // | T5 | exact/live | Session lease exact | - | activate reaches Control |
+    // | T6 | wrong incarnation | Session lease exact | - | reject before Control |
+    // | T7 | exact/live | Session lease expired | - | reject before Control |
+    // | T8 | exact/live | Session lease exact | - | acknowledge reaches Control |
+    // | T9 | exact/live | Session lease exact | - | failure reaches Control |
+    // | T10 | exact/live | explicit renewal within registry lease | - | begin reaches Control |
+    // | T11 | exact/live | implicit/non-renew begin | - | reject before Control |
+    // | T12 | exact/live | renewal beyond registry lease | - | reject before Control |
+    // | T13 | exact/live | exact/live | wrong Session | reject resume before Control |
+    // | T14 | exact/live | exact/live | frozen Session | mark claim-authorized reassignment |
+    // | T15 | exact/live | renew+reassign | - | reject contradictory authority |
+    // | T16 | exact/live | explicit renewal | Control NotReady | preserve typed reply |
     let client = WorkerControlClient::new(upstream.clone());
-    let contribution = awaken_session_contract::ApplicationSessionContribution {
-        session_id: "signed-thread".into(),
-        application_fingerprint: "plan-a".into(),
-        input: awaken_session_contract::ApplicationSessionInput::default(),
-    };
-    let receipt = client
-        .contribute_application(&registered.snapshot.identity, &claim, contribution.clone())
-        .await
-        .expect("T1 exact signed claim contributes");
-    assert_eq!(
-        receipt.contribution.outcome,
-        awaken_session_contract::ApplicationContributionOutcome::Committed
-    );
-    assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T1");
     let resumed = client
-        .resume_application_session(&registered.snapshot.identity, &claim, "signed-thread")
+        .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
         .await
-        .expect("T13 claim-bound frozen Session resume")
-        .expect("T13 frozen Session has a realization directive");
-    assert_eq!(resumed.projection, receipt.contribution.projection, "T13");
-    assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T13");
-    {
-        let begins = contributions.begins.lock().unwrap();
-        assert!(begins[0].target.reassign_existing_lease, "T15 contribution");
-        assert!(begins[1].target.reassign_existing_lease, "T15 resume");
-    }
+        .expect("T1 exact signed claim resumes")
+        .expect("T1 frozen Session has a realization directive");
+    assert_eq!(resumed.projection, frozen_projection(), "T1");
+    assert!(
+        session_control.begins.lock().unwrap()[0]
+            .target
+            .reassign_existing_lease,
+        "T14"
+    );
     assert!(
         client
-            .resume_application_session(&registered.snapshot.identity, &claim, "another-session",)
+            .resume_session(&registered.snapshot.identity, &claim, "another-session")
             .await
             .is_err(),
-        "T14"
+        "T13"
     );
     let mut wrong_owner = claim.clone();
     wrong_owner.owner = "another-owner".into();
     assert!(
         client
-            .contribute_application(
-                &registered.snapshot.identity,
-                &wrong_owner,
-                contribution.clone(),
-            )
+            .resume_session(&registered.snapshot.identity, &wrong_owner, "signed-thread")
             .await
             .is_err(),
         "T2"
     );
-    let mut wrong_session = contribution.clone();
-    wrong_session.session_id = "another-session".into();
-    assert!(
-        client
-            .contribute_application(&registered.snapshot.identity, &claim, wrong_session)
-            .await
-            .is_err(),
-        "T3"
-    );
-    assert_eq!(
-        contributions.contributions.lock().unwrap().len(),
-        1,
-        "T2/T3"
-    );
-    let realization_lease = receipt.realization.lease.clone();
+    assert_eq!(session_control.begins.lock().unwrap().len(), 1, "T2/T13");
+    let realization_lease = resumed.lease.clone();
     let renewal = awaken_session_contract::BeginSessionRealization {
         session_id: "signed-thread".into(),
         target: awaken_session_contract::SessionRealizationTarget {
@@ -617,8 +557,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .begin_session_realization(&registered.snapshot.identity, renewal.clone())
         .await
         .expect("T10");
-    assert_eq!(contributions.begins.lock().unwrap().len(), 3, "T10");
-    *contributions.begin_failure.lock().unwrap() =
+    assert_eq!(session_control.begins.lock().unwrap().len(), 2, "T10");
+    *session_control.begin_failure.lock().unwrap() =
         Some(awaken_session_contract::SessionRealizationControlFailure::NotReady);
     assert!(
         matches!(
@@ -627,9 +567,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
                 .await,
             Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
         ),
-        "T17"
+        "T16"
     );
-    *contributions.begin_failure.lock().unwrap() = None;
+    *session_control.begin_failure.lock().unwrap() = None;
     let mut implicit = renewal.clone();
     implicit.target.renew_existing_lease = false;
     assert!(
@@ -648,7 +588,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T12"
     );
-    assert_eq!(contributions.begins.lock().unwrap().len(), 4, "T11/T12/T17");
+    assert_eq!(
+        session_control.begins.lock().unwrap().len(),
+        3,
+        "T11/T12/T16"
+    );
     let mut contradictory = excessive;
     contradictory.target.lease_expires_at_unix_ms = realization_lease.expires_at_unix_ms;
     contradictory.target.reassign_existing_lease = true;
@@ -657,9 +601,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .begin_session_realization(&registered.snapshot.identity, contradictory)
             .await
             .is_err(),
-        "T16"
+        "T15"
     );
-    assert_eq!(contributions.begins.lock().unwrap().len(), 4, "T16/T17");
+    assert_eq!(session_control.begins.lock().unwrap().len(), 3, "T15/T16");
     client
         .activate_session_realization(
             &registered.snapshot.identity,
@@ -672,7 +616,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("T5");
-    assert_eq!(*contributions.activations.lock().unwrap(), 1, "T5");
+    assert_eq!(*session_control.activations.lock().unwrap(), 1, "T5");
 
     let wrong_identity = WorkerIdentity::new("signed-http-worker", "another-boot", 999);
     assert!(
@@ -690,7 +634,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T6"
     );
-    assert_eq!(*contributions.activations.lock().unwrap(), 1, "T6");
+    assert_eq!(*session_control.activations.lock().unwrap(), 1, "T6");
 
     let mut expired_lease = realization_lease.clone();
     expired_lease.expires_at_unix_ms = 0;
@@ -709,7 +653,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T7"
     );
-    assert_eq!(*contributions.activations.lock().unwrap(), 1, "T7");
+    assert_eq!(*session_control.activations.lock().unwrap(), 1, "T7");
 
     client
         .acknowledge_session_realization(
@@ -723,7 +667,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("T8");
-    assert_eq!(*contributions.acknowledgements.lock().unwrap(), 1, "T8");
+    assert_eq!(*session_control.acknowledgements.lock().unwrap(), 1, "T8");
 
     client
         .fail_session_realization(
@@ -738,7 +682,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         )
         .await
         .expect("T9");
-    assert_eq!(*contributions.failures.lock().unwrap(), 1, "T9");
+    assert_eq!(*session_control.failures.lock().unwrap(), 1, "T9");
 
     clock.set(20_000);
     WorkerControlClient::new(upstream.clone())
@@ -764,10 +708,10 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     );
     assert!(
         WorkerControlClient::new(upstream)
-            .contribute_application(&registered.snapshot.identity, &claim, contribution)
+            .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
             .await
             .is_err(),
         "T4"
     );
-    assert_eq!(contributions.contributions.lock().unwrap().len(), 1, "T4");
+    assert_eq!(session_control.begins.lock().unwrap().len(), 3, "T4");
 }

@@ -57,8 +57,7 @@ mod realization_renewal_tests {
 /// The single Session-baseline prompt projection boundary for foreground,
 /// durable, Native, ACP, and A2A attempts.
 ///
-/// A contribution may freeze after a durable dispatch was authored, so mutating
-/// only Host `pending_system` state cannot affect that already-serialized
+/// Mutating only Host `pending_system` state cannot affect an already-serialized
 /// activation. Wrapping the authoritative attempt router keeps one mechanism for
 /// every topology. Deterministic message ids make a retried uncommitted attempt
 /// byte-for-byte stable; committed history prevents later turns from reinjecting
@@ -518,9 +517,9 @@ impl crate::SharedHost {
         if due.is_empty() {
             return Ok(0);
         }
-        let control = self.application_session_control.as_ref().ok_or_else(|| {
+        let control = self.session_control.as_ref().ok_or_else(|| {
             crate::HostError::internal(
-                "active application Session projection has no Control renewal client",
+                "active Worker Session projection has no Control renewal client",
             )
         })?;
         let mut renewed = 0;
@@ -553,7 +552,7 @@ impl crate::SharedHost {
                     self.install_session_realization_lease(session_id, directive.lease.clone());
                     return Ok::<bool, crate::HostError>(true);
                 };
-                crate::host::HostWorkerResolver::drive_application_session(
+                crate::host::HostWorkerResolver::drive_session_realization(
                     self,
                     control.as_ref(),
                     session_id,
@@ -911,48 +910,6 @@ fn validate_baseline_projection(
 
 #[cfg(test)]
 mod network_policy_tests {
-    /// Cause/effect graph: a Worker authors the canonical Session input directly;
-    /// an exact credential reference is retained, no plaintext secret is added,
-    /// and the network restriction is not translated by Runtime Host.
-    ///
-    /// | Rule | Credential ref | Network input | Effect |
-    /// |---|---|---|---|
-    /// | C1 | exact id/revision | allowlist | byte-faithful, secret-free input |
-    #[test]
-    fn canonical_application_contribution_is_secret_free_and_lossless() {
-        let contribution = awaken_session_contract::ApplicationSessionContribution {
-            session_id: "session".into(),
-            application_fingerprint: "flow-plan".into(),
-            input: awaken_session_contract::ApplicationSessionInput {
-                mcp_inputs: vec![serde_json::json!({
-                    "name": "flow",
-                    "type": "url",
-                    "url": "http://flow.invalid/mcp",
-                    "credential_source_id": "run-credential",
-                    "credential_revision": 3,
-                })],
-                network_restriction: Some(
-                    awaken_session_contract::SessionNetworkPolicy::Allowlist {
-                        hosts: vec!["A.example".into(), "b.example".into()],
-                    },
-                ),
-                ..Default::default()
-            },
-        };
-        assert_eq!(
-            contribution.input.network_restriction,
-            Some(awaken_session_contract::SessionNetworkPolicy::Allowlist {
-                hosts: vec!["A.example".into(), "b.example".into()],
-            })
-        );
-        assert_eq!(contribution.input.mcp_inputs[0]["credential_revision"], 3);
-        assert!(
-            !contribution.input.mcp_inputs[0]
-                .to_string()
-                .contains("Bearer")
-        );
-    }
-
     /// Package projection cause/effect decision table: R1 an unprepared exact
     /// Environment projects package managers losslessly and no image override;
     /// R2 a prepared immutable image suppresses startup package installation and

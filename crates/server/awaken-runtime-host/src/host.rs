@@ -159,13 +159,9 @@ pub struct SharedHost {
     /// Optional application wrapper around the complete per-Session attempt
     /// router. It cannot replace or bypass the built-in backend registry.
     pub(crate) application_attempt_decorator: Option<AttemptExecutorDecorator>,
-    /// Optional claim-time projection into the authoritative Session environment.
-    pub(crate) application_session_provisioner:
-        Option<Arc<dyn awaken_session_contract::ApplicationSessionProvisioner>>,
-    /// Outbound Control command paired with the provisioner. A Worker must
-    /// never fall back to installing its locally produced plan.
-    pub(crate) application_session_control:
-        Option<Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>>,
+    /// Outbound claim-fenced Control client used to realize an already-frozen
+    /// Session projection on this Worker.
+    pub(crate) session_control: Option<Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>>,
     pub(crate) provider: LocalProvider,
     /// Provider for the Session-owned environment shared by Native/ACP/children.
     /// Kept separate from deliberately-fresh housekeeping sandboxes.

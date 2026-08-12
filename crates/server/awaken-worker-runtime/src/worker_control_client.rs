@@ -166,37 +166,7 @@ impl WorkerControlClient {
             .await
     }
 
-    pub async fn contribute_application(
-        &self,
-        identity: &WorkerIdentity,
-        claim: &RunClaim,
-        contribution: awaken_session_contract::ApplicationSessionContribution,
-    ) -> Result<awaken_run_ingress_contract::ClaimedSessionContributionReceipt, String> {
-        let body = self
-            .post(
-                "/v1/worker/session/application-contribution",
-                json!({
-                    "identity": identity,
-                    "claim": claim,
-                    "contribution": contribution,
-                }),
-            )
-            .await?;
-        let contribution =
-            serde_json::from_value(body.get("receipt").cloned().unwrap_or(Value::Null))
-                .map_err(|error| format!("application contribution receipt decode: {error}"))?;
-        let realization =
-            serde_json::from_value(body.get("realization").cloned().unwrap_or(Value::Null))
-                .map_err(|error| format!("Session realization directive decode: {error}"))?;
-        Ok(
-            awaken_run_ingress_contract::ClaimedSessionContributionReceipt {
-                contribution,
-                realization,
-            },
-        )
-    }
-
-    pub async fn resume_application_session(
+    pub async fn resume_session(
         &self,
         identity: &WorkerIdentity,
         claim: &RunClaim,
@@ -204,7 +174,7 @@ impl WorkerControlClient {
     ) -> Result<Option<awaken_session_contract::SessionRealizationDirective>, String> {
         let body = self
             .post(
-                "/v1/worker/session/application-resume",
+                "/v1/worker/session/resume",
                 json!({
                     "identity": identity,
                     "claim": claim,

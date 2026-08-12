@@ -254,17 +254,16 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         } else {
             None
         };
-        // Application Sessions realize MCP exclusively through Control's frozen
+        // Claimed Sessions realize MCP exclusively through Control's frozen
         // directive below. The dispatch envelope remains a compatibility carrier
         // for ordinary Sessions; replaying its MCP stages as well would advance a
         // second process-local lease fence outside the canonical phase protocol.
-        let dispatched_mcp_stages = if host.application_session_control.is_some()
-            && claimed.request.session_thread_id.is_some()
-        {
-            None
-        } else {
-            dispatched_mcp_stages
-        };
+        let dispatched_mcp_stages =
+            if host.session_control.is_some() && claimed.request.session_thread_id.is_some() {
+                None
+            } else {
+                dispatched_mcp_stages
+            };
         install_claimed_session_projection(
             &host,
             claimed,

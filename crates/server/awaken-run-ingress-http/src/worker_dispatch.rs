@@ -122,8 +122,7 @@ pub struct WorkerDispatchService {
     recovery: Option<Arc<dyn RunRecoverySource>>,
     completion: Option<Arc<dyn CompletionSink>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
-    application_session_control:
-        Option<Arc<dyn awaken_session_contract::ApplicationSessionControl>>,
+    session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     max_attempts: u64,
 }
@@ -148,7 +147,7 @@ impl WorkerDispatchService {
             recovery: None,
             completion: None,
             stream_sink: None,
-            application_session_control: None,
+            session_control: None,
             local_credential_capabilities: Default::default(),
             max_attempts: 5,
         }
@@ -185,11 +184,11 @@ impl WorkerDispatchService {
     /// Install the Coordinator-owned Session application service behind the same
     /// authenticated Worker and exact-claim boundary as dispatch/recovery.
     #[must_use]
-    pub fn with_application_session_control(
+    pub fn with_session_control(
         mut self,
-        control: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
+        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
     ) -> Self {
-        self.application_session_control = Some(control);
+        self.session_control = Some(control);
         self
     }
 
@@ -287,7 +286,7 @@ pub struct RegisteredDispatchDependencies {
     pub checkpoint: Arc<dyn StreamCheckpointStore>,
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
-    pub sessions: Arc<dyn awaken_session_contract::ApplicationSessionControl>,
+    pub sessions: Arc<dyn awaken_session_contract::SessionRealizationControl>,
     pub authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub recovery: Arc<dyn RunRecoverySource>,
     pub completion: Arc<dyn CompletionSink>,
@@ -319,7 +318,7 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         .with_recovery_source(recovery)
         .with_completion_sink(completion)
         .with_stream_sink(stream_sink)
-        .with_application_session_control(sessions),
+        .with_session_control(sessions),
     ))
 }
 
@@ -372,14 +371,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/checkpoint/put", post(put_checkpoint))
         .route("/v1/worker/checkpoint/delete", post(delete_checkpoint))
         .route("/v1/worker/recovery/snapshot", post(recovery_snapshot))
-        .route(
-            "/v1/worker/session/application-contribution",
-            post(application_contribution),
-        )
-        .route(
-            "/v1/worker/session/application-resume",
-            post(application_resume),
-        )
+        .route("/v1/worker/session/resume", post(session_resume))
         .route(
             "/v1/worker/session/realization/begin",
             post(begin_session_realization),
@@ -470,23 +462,16 @@ fn checkpoint_store(
 }
 
 #[derive(Deserialize)]
-struct ApplicationContributionReq {
-    claim: RunClaim,
-    identity: WorkerIdentity,
-    contribution: awaken_session_contract::ApplicationSessionContribution,
-}
-
-#[derive(Deserialize)]
-struct ApplicationResumeReq {
+struct SessionResumeReq {
     claim: RunClaim,
     identity: WorkerIdentity,
     session_id: String,
 }
 
-async fn application_resume(
+async fn session_resume(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<ApplicationResumeReq>,
+    Json(request): Json<SessionResumeReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
@@ -518,9 +503,9 @@ async fn application_resume(
             ));
         }
         let control = service
-            .application_session_control
+            .session_control
             .as_ref()
-            .ok_or_else(|| HostError::internal("application Session control is not configured"))?;
+            .ok_or_else(|| HostError::internal("Session control is not configured"))?;
         let registry_expiry = authority
             .snapshot
             .as_ref()
@@ -563,84 +548,6 @@ async fn application_resume(
     respond(result)
 }
 
-async fn application_contribution(
-    State(service): State<Arc<WorkerDispatchService>>,
-    Extension(worker): Extension<VerifiedWorkerContext>,
-    Json(request): Json<ApplicationContributionReq>,
-) -> (StatusCode, Json<Value>) {
-    let result = async {
-        let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
-        if authority.owner != request.claim.owner {
-            return Err(HostError::bad_request(
-                "authenticated worker does not own the application contribution claim",
-            ));
-        }
-        let guard = service
-            .dispatch
-            .lock_commit_epoch(&request.claim)
-            .await
-            .map_err(|error| HostError::internal(error.to_string()))?
-            .ok_or_else(|| HostError::bad_request("application contribution claim is stale"))?;
-        if !guard.is_live_at(authority.now_ms) {
-            return Err(HostError::bad_request(
-                "application contribution claim lease has expired",
-            ));
-        }
-        let dispatch = guard.request();
-        if dispatch.run_id() != &request.claim.run_id {
-            return Err(HostError::bad_request(
-                "guarded dispatch does not match the application contribution claim",
-            ));
-        }
-        if dispatch.thread_id().0 != request.contribution.session_id {
-            return Err(HostError::bad_request(
-                "application contribution Session does not match the claimed Run",
-            ));
-        }
-        let control = service
-            .application_session_control
-            .as_ref()
-            .ok_or_else(|| HostError::internal("application Session control is not configured"))?;
-        let receipt = control
-            .contribute_application(request.contribution)
-            .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
-        if !guard.is_live_at(service.clock.now_ms()) {
-            return Err(HostError::bad_request(
-                "application contribution claim expired before realization assignment",
-            ));
-        }
-        let registry_expiry = authority
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.expires_at_ms)
-            .unwrap_or(u64::MAX);
-        let realization_expiry = authority
-            .now_ms
-            .saturating_add(authority.lease_ms)
-            .min(registry_expiry);
-        let realization = control
-            .begin_session_realization(awaken_session_contract::BeginSessionRealization {
-                session_id: dispatch.thread_id().0.clone(),
-                target: awaken_session_contract::SessionRealizationTarget {
-                    owner: request.identity.worker_id.clone(),
-                    runtime_incarnation: request.identity.lease_owner(),
-                    lease_expires_at_unix_ms: realization_expiry,
-                    renew_existing_lease: false,
-                    reassign_existing_lease: true,
-                },
-            })
-            .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
-        // `guard` remains live through the complete aggregate command. Dropping it
-        // only after the receipt prevents renew/reclaim from crossing the CAS.
-        drop(guard);
-        Ok(json!({ "receipt": receipt, "realization": realization }))
-    }
-    .await;
-    respond(result)
-}
-
 #[derive(Deserialize)]
 struct SessionRealizationReq<T> {
     identity: WorkerIdentity,
@@ -669,13 +576,13 @@ async fn verify_session_realization_authority(
     Ok(())
 }
 
-fn application_session_control(
+fn session_control(
     service: &WorkerDispatchService,
-) -> Result<&Arc<dyn awaken_session_contract::ApplicationSessionControl>, HostError> {
+) -> Result<&Arc<dyn awaken_session_contract::SessionRealizationControl>, HostError> {
     service
-        .application_session_control
+        .session_control
         .as_ref()
-        .ok_or_else(|| HostError::internal("application Session control is not configured"))
+        .ok_or_else(|| HostError::internal("Session control is not configured"))
 }
 
 async fn begin_session_realization(
@@ -710,7 +617,7 @@ async fn begin_session_realization(
                 "Session realization renewal exceeds authenticated Worker authority",
             )));
         }
-        let realization = application_session_control(&service)
+        let realization = session_control(&service)
             .map_err(RealizationHttpError::from)?
             .begin_session_realization(request.command)
             .await
@@ -735,7 +642,7 @@ async fn activate_session_realization(
         )
         .await
         .map_err(RealizationHttpError::from)?;
-        let realization = application_session_control(&service)
+        let realization = session_control(&service)
             .map_err(RealizationHttpError::from)?
             .activate_session_realization(request.command)
             .await
@@ -762,7 +669,7 @@ async fn acknowledge_session_realization(
         )
         .await
         .map_err(RealizationHttpError::from)?;
-        let realization = application_session_control(&service)
+        let realization = session_control(&service)
             .map_err(RealizationHttpError::from)?
             .acknowledge_session_realization(request.command)
             .await
@@ -787,7 +694,7 @@ async fn fail_session_realization(
         )
         .await
         .map_err(RealizationHttpError::from)?;
-        application_session_control(&service)
+        session_control(&service)
             .map_err(RealizationHttpError::from)?
             .fail_session_realization(request.command)
             .await

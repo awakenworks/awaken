@@ -249,37 +249,6 @@ async function main() {
       'S6 passed the transport fence and reached the sole Session control port',
     );
 
-    const preparingResponse = await fetch(`${BASE}/v1/sessions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'anthropic-beta': 'managed-agents-2026-04-01',
-      },
-      body: JSON.stringify({
-        agent: 'assistant',
-        application_contribution_required: true,
-      }),
-    });
-    const preparingText = await preparingResponse.text();
-    assert.equal(preparingResponse.status, 200, `S7 preparing Session created: ${preparingText}`);
-    const preparing = JSON.parse(preparingText);
-    assert.equal(preparing.status, 'rescheduling', 'S7 has no frozen baseline yet');
-    const beforeContribution = await postJson('/v1/worker/session/realization/begin', {
-      command: { ...beginCommand(), session_id: preparing.id },
-    });
-    assert.equal(beforeContribution.status, 409, `S7: ${beforeContribution.text}`);
-    assert.equal(
-      beforeContribution.json?.realization_error?.kind,
-      'not_ready',
-      'S7 typed control result',
-    );
-    assert.doesNotMatch(
-      beforeContribution.text,
-      /renewal exceeds authenticated Worker authority/u,
-      'S7 reaches the Session aggregate after the transport fence',
-    );
-    assert.match(beforeContribution.text, /not ready|not frozen|preparing/ui, 'S7 fails closed as NotReady');
-
     const wrongLease = {
       owner: 'another-worker',
       runtime_incarnation: incarnation,

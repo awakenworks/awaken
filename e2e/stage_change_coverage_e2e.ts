@@ -36,7 +36,6 @@ const scenarios: Scenario[] = [
   { id: 'pg_wake', file: 'e2e/durable_pg_wake_e2e.mjs', postgres: true },
   { id: 'credential_reference_worker', file: 'e2e/credential_reference_worker_e2e.ts' },
   { id: 'credential_materialization_worker', file: 'e2e/credential_materialization_worker_e2e.ts', postgres: true },
-  { id: 'application_session_worker', file: 'e2e/application_session_worker_e2e.ts' },
   { id: 'acp_projected_local', file: 'e2e/acp_projected_local_e2e.mjs' },
   { id: 'acp_projected_container', file: 'e2e/acp_projected_container_e2e.mjs' },
   { id: 'child_recovery', file: 'e2e/durable_child_sandbox_recovery_e2e.ts' },
@@ -131,17 +130,6 @@ const obligations: Obligation[] = [
   { id: 'D4-E04', stage: '4 credential injection', behavior: 'an envelope addressed to another Worker trust domain fails closed', scenario: 'credential_materialization_worker' },
   { id: 'D4-E05', stage: '4 credential injection', behavior: 'the exact recipient, target, use, payload and claim epoch resolve once and commit one provider reply', scenario: 'credential_materialization_worker' },
 
-  { id: 'D4-A01', stage: '4 application Session contribution', behavior: 'a Managed creation intent remains preparing until its registered Worker contributes', scenario: 'application_session_worker' },
-  { id: 'D4-A02', stage: '4 application Session contribution', behavior: 'the claim-fenced application plan crosses the authenticated Worker control boundary', scenario: 'application_session_worker' },
-  { id: 'D4-A03', stage: '4 application Session contribution', behavior: 'the one realization driver projects the frozen application prompt into the claimed model attempt', scenario: 'application_session_worker' },
-  { id: 'D4-A04', stage: '4 application Session contribution', behavior: 'realization acknowledgement makes durable and Managed wire status idle', scenario: 'application_session_worker' },
-  { id: 'D4-A05', stage: '4 application Session contribution', behavior: 'loss of continuing Worker authority revokes every process-local Session projection', scenario: 'application_session_worker' },
-  { id: 'D4-A06', stage: '4 application Session contribution', behavior: 'application-authored MCP crosses the frozen attachment and common remote realization path', scenario: 'application_session_worker' },
-  { id: 'D4-A07', stage: '4 application Session contribution', behavior: 'a due Worker Session lease restages and republishes its exact MCP generation through the common phase driver', scenario: 'application_session_worker' },
-  { id: 'D4-A08', stage: '4 application Session contribution', behavior: 'application-authored non-secret environment values cross the frozen baseline into the Worker projection', scenario: 'application_session_worker' },
-  { id: 'D4-A09', stage: '4 application Session contribution', behavior: 'Session MCP overrides a same-name Application input while unrelated Application MCP remains in the one attachment set', scenario: 'application_session_worker' },
-  { id: 'D4-A10', stage: '4 application Session contribution', behavior: 'an actual MCP effect remains authorized exactly once after lease-only renewal of the installed generation', scenario: 'application_session_worker' },
-  { id: 'D4-A11', stage: '4 application Session contribution', behavior: 'post-renewal MCP remains permission-gated and performs no tools/call before explicit approval', scenario: 'application_session_worker' },
 
   { id: 'D5-01', stage: '5 durable child lifecycle', behavior: 'child has a first-class stable run identity', scenario: 'child_recovery' },
   { id: 'D5-02', stage: '5 durable child lifecycle', behavior: 'hard process crash occurs while child inference is in flight', scenario: 'child_recovery' },
@@ -260,11 +248,6 @@ const obligations: Obligation[] = [
   // | G42-P01..P06 | yes | yes | n/a | freeze/realize/recover one generation |
   // | G43-P01..P06 | yes | yes | n/a | materialize exact binding or reject |
   // | G43-P07 | yes | yes | no | reject before launch; never downgrade |
-  { id: 'G42-P01', stage: '9 guardrail promotion evidence', behavior: 'preparing Session remains invisible until the claim-fenced application contribution freezes one root revision', scenario: 'application_session_worker' },
-  { id: 'G42-P02', stage: '9 guardrail promotion evidence', behavior: 'application and Session MCP inputs converge into one normalized attachment authority', scenario: 'application_session_worker' },
-  { id: 'G42-P03', stage: '9 guardrail promotion evidence', behavior: 'lease renewal republishes only the exact current MCP generation', scenario: 'application_session_worker' },
-  { id: 'G42-P04', stage: '9 guardrail promotion evidence', behavior: 'ownership loss revokes process-local realization without changing durable Session truth', scenario: 'application_session_worker' },
-  { id: 'G42-P06', stage: '9 guardrail promotion evidence', behavior: 'post-renewal MCP tools/call proves the exact admitted projection remains usable rather than merely present', scenario: 'application_session_worker' },
   { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'legacy Session rows establish one canonical root and ignore stale retained columns after restart', scenario: 'managed_session_legacy_upgrade' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
   { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope', scenario: 'credential_materialization_worker' },

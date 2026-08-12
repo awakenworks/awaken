@@ -235,7 +235,6 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
                 toolsets: Vec::new(),
                 model: "kimi-k2".into(),
                 runtime: None,
-                application: None,
                 delegate_ids: Vec::new(),
                 mounts: Vec::new(),
                 env: Vec::new(),

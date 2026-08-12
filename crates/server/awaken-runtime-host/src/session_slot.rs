@@ -130,8 +130,7 @@ pub(crate) struct SessionRuntimeSlot {
     pub has_mcp_projection: bool,
     /// The thread entered through the Session application API and its durable
     /// dispatch must therefore cross the claimed Session realization boundary.
-    /// This identity exists before an Application contribution can freeze the
-    /// Environment; it carries no desired-state data of its own.
+    /// It carries no desired-state data of its own.
     pub session_dispatch: bool,
     /// Exact Control-frozen baseline projected for realization. It is never
     /// authored or mutated locally.

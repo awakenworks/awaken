@@ -179,7 +179,7 @@ impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
 
 impl HostWorkerResolver {
     #[cfg(test)]
-    pub(crate) async fn realize_application_session(
+    pub(crate) async fn realize_session(
         host: &SharedHost,
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: &str,
@@ -190,7 +190,7 @@ impl HostWorkerResolver {
     ) -> Result<(), awaken_run_ingress::Error> {
         let realization = host.session_slots.realization_lock(session_id);
         let _realization = realization.lock().await;
-        Self::drive_application_session(
+        Self::drive_session_realization(
             host,
             control,
             session_id,
@@ -205,7 +205,7 @@ impl HostWorkerResolver {
     /// Drive one already-serialized directive. Callers that coordinate a lease
     /// renewal acquire the Session's realization lock before entering here so a
     /// heartbeat never creates a parallel phase driver.
-    pub(crate) async fn drive_application_session(
+    pub(crate) async fn drive_session_realization(
         host: &SharedHost,
         control: &dyn awaken_session_contract::SessionRealizationControl,
         session_id: &str,
@@ -445,21 +445,6 @@ mod tests {
                 ),
             )
         }
-
-        async fn contribute(
-            &self,
-            _claim: &awaken_run_ingress::RunClaim,
-            _contribution: awaken_session_contract::ApplicationSessionContribution,
-        ) -> Result<
-            awaken_run_ingress_contract::ClaimedSessionContributionReceipt,
-            awaken_run_ingress_contract::ClaimedSessionControlError,
-        > {
-            Err(
-                awaken_run_ingress_contract::ClaimedSessionControlError::new(
-                    "not used by the renewal concurrency fixture",
-                ),
-            )
-        }
     }
 
     #[async_trait::async_trait]
@@ -548,7 +533,6 @@ mod tests {
                 agent_id: "agent-a".into(),
                 model: "model".into(),
                 runtime: None,
-                application: None,
                 delegate_ids: Vec::new(),
                 toolsets: Vec::new(),
                 mounts: Vec::new(),
@@ -802,8 +786,7 @@ mod tests {
             ..Default::default()
         });
         let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub")
-                .with_application_session_control(control.clone()),
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_session_control(control.clone()),
         );
         let _managed = crate::ManagedHost::new(host.clone())
             .with_mcp_attachment_realizer(realizer.clone())
@@ -820,7 +803,7 @@ mod tests {
         let initial_host = host.clone();
         let initial_control = control.clone();
         let initial = tokio::spawn(async move {
-            HostWorkerResolver::realize_application_session(
+            HostWorkerResolver::realize_session(
                 &initial_host,
                 initial_control.as_ref(),
                 thread,
@@ -979,7 +962,7 @@ mod tests {
         let _managed = crate::ManagedHost::new(host.clone())
             .with_mcp_attachment_realizer(realizer.clone())
             .install_dispatch_session_runtime();
-        HostWorkerResolver::realize_application_session(
+        HostWorkerResolver::realize_session(
             &host,
             &control,
             thread,
@@ -1012,7 +995,7 @@ mod tests {
                 .unwrap_or(false),
             "R2 fixture is the publish-to-final-resolve gap"
         );
-        HostWorkerResolver::realize_application_session(
+        HostWorkerResolver::realize_session(
             &host,
             &control,
             thread,
@@ -1064,7 +1047,7 @@ mod tests {
         let _managed = crate::ManagedHost::new(first_use_host.clone())
             .with_mcp_attachment_realizer(first_use_realizer.clone())
             .install_dispatch_session_runtime();
-        HostWorkerResolver::realize_application_session(
+        HostWorkerResolver::realize_session(
             &first_use_host,
             &RecoveryControl {
                 projection: first_use_projection,
@@ -1090,7 +1073,7 @@ mod tests {
         let _managed = crate::ManagedHost::new(unpinned_host.clone())
             .with_mcp_attachment_realizer(unpinned_realizer.clone())
             .install_dispatch_session_runtime();
-        let error = HostWorkerResolver::realize_application_session(
+        let error = HostWorkerResolver::realize_session(
             &unpinned_host,
             &RecoveryControl {
                 projection: frozen_projection(),
@@ -1120,7 +1103,7 @@ mod tests {
         );
 
         let cold = SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path());
-        let error = HostWorkerResolver::realize_application_session(
+        let error = HostWorkerResolver::realize_session(
             &cold, &control, thread, directive, None, None, false,
         )
         .await
@@ -1153,7 +1136,7 @@ mod tests {
         );
         let _managed =
             crate::ManagedHost::new(rebuild_host.clone()).install_dispatch_session_runtime();
-        HostWorkerResolver::realize_application_session(
+        HostWorkerResolver::realize_session(
             &rebuild_host,
             &RecoveryControl {
                 projection: rebuild_frozen,
@@ -1200,7 +1183,7 @@ mod tests {
         );
         let _managed =
             crate::ManagedHost::new(continuity_host.clone()).install_dispatch_session_runtime();
-        HostWorkerResolver::realize_application_session(
+        HostWorkerResolver::realize_session(
             &continuity_host,
             &RecoveryControl {
                 projection: continuity_frozen,

@@ -814,7 +814,6 @@ pub awaken_protocol_managed::types::session::SessionAgentUpdate::mcp_servers: co
 pub awaken_protocol_managed::types::session::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
 pub struct awaken_protocol_managed::types::session::SessionCreateParams
 pub awaken_protocol_managed::types::session::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
-pub awaken_protocol_managed::types::session::SessionCreateParams::application_contribution_required: bool
 pub awaken_protocol_managed::types::session::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::session::SessionCreateParams::environment_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SessionCreateParams::initial_events: alloc::vec::Vec<awaken_protocol_managed::types::InboundEvent>
@@ -1448,7 +1447,6 @@ pub awaken_protocol_managed::types::SessionAgentUpdate::mcp_servers: core::optio
 pub awaken_protocol_managed::types::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
 pub struct awaken_protocol_managed::types::SessionCreateParams
 pub awaken_protocol_managed::types::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
-pub awaken_protocol_managed::types::SessionCreateParams::application_contribution_required: bool
 pub awaken_protocol_managed::types::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::SessionCreateParams::environment_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SessionCreateParams::initial_events: alloc::vec::Vec<awaken_protocol_managed::types::InboundEvent>

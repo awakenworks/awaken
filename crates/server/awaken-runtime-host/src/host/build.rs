@@ -406,8 +406,7 @@ impl SharedHost {
             remote_attempt_executor: None,
             remote_credential_realization: Default::default(),
             application_attempt_decorator: None,
-            application_session_provisioner: None,
-            application_session_control: None,
+            session_control: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
                 sandbox_root.clone(),
@@ -579,26 +578,14 @@ impl SharedHost {
         self
     }
 
-    /// Install the only application hook that may add claim-bound material to
-    /// the authoritative Session environment before it is created or adopted.
+    /// Install the sole outbound claim-fenced client for frozen Session
+    /// realization on a Worker.
     #[must_use]
-    pub fn with_application_session_provisioner(
-        mut self,
-        provisioner: Arc<dyn awaken_session_contract::ApplicationSessionProvisioner>,
-    ) -> Self {
-        self.application_session_provisioner = Some(provisioner);
-        self
-    }
-
-    /// Install the sole outbound claim-fenced contribution client. It is paired
-    /// with `ApplicationSessionProvisioner`; neither is useful as a local
-    /// Session-authoring path.
-    #[must_use]
-    pub fn with_application_session_control(
+    pub fn with_session_control(
         mut self,
         control: Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>,
     ) -> Self {
-        self.application_session_control = Some(control);
+        self.session_control = Some(control);
         self
     }
 

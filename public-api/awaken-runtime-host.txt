@@ -385,8 +385,6 @@ pub fn awaken_runtime_host::SharedHost::with_acp_tool_exporter(self, alloc::sync
 pub fn awaken_runtime_host::SharedHost::with_admin_tools(self, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_agent_publications(self, alloc::sync::Arc<dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_application_attempt_decorator(self, awaken_runtime_host::AttemptExecutorDecorator) -> Self
-pub fn awaken_runtime_host::SharedHost::with_application_session_control(self, alloc::sync::Arc<dyn awaken_run_ingress_contract::claimed_session::ClaimedSessionControl>) -> Self
-pub fn awaken_runtime_host::SharedHost::with_application_session_provisioner(self, alloc::sync::Arc<dyn awaken_session_contract::application_provisioning::ApplicationSessionProvisioner>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_artifact_publisher(self, alloc::sync::Arc<dyn awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim>>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_cache_volume_initializer(self, alloc::sync::Arc<dyn awaken_runtime_host::CacheVolumeInitializer>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_capture_sink(self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>) -> Self
@@ -410,6 +408,7 @@ pub fn awaken_runtime_host::SharedHost::with_session_blob_root(self, impl core::
 pub fn awaken_runtime_host::SharedHost::with_session_container_environment_components(self, awaken_runtime_host::ContainerEnvironmentComponents, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_container_provider(self, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_container_provider_and_capacity(self, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>, core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>, alloc::sync::Arc<dyn awaken_runtime_host::HandExecutorFactory>) -> Self
+pub fn awaken_runtime_host::SharedHost::with_session_control(self, alloc::sync::Arc<dyn awaken_run_ingress_contract::claimed_session::ClaimedSessionControl>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_session_secret_broker(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SecretBroker>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skill_bundle_source(self, alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>) -> Self
 pub fn awaken_runtime_host::SharedHost::with_skill_catalog_application(self, alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillCatalogApplication>) -> Self

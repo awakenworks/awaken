@@ -151,23 +151,16 @@ impl SessionApplication {
     /// process topology; explicit frozen facts remain immutable across restarts.
     #[must_use]
     pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
-        match &session.baseline {
-            awaken_session_contract::SessionBaselineState::Preparing(intent) => !matches!(
-                intent.application,
-                awaken_session_contract::ApplicationContributionState::Absent
-            ),
-            awaken_session_contract::SessionBaselineState::Frozen(baseline) => {
-                baseline.application.is_some()
-                    || match baseline.runtime_placement {
-                        SessionRuntimePlacement::LegacyUnspecified => {
-                            self.configuration.execution_placement
-                                == SessionExecutionPlacement::RegisteredWorker
-                        }
-                        SessionRuntimePlacement::Local => false,
-                        SessionRuntimePlacement::Worker => true,
-                    }
-            }
-        }
+        session
+            .frozen_baseline()
+            .is_some_and(|baseline| match baseline.runtime_placement {
+                SessionRuntimePlacement::LegacyUnspecified => {
+                    self.configuration.execution_placement
+                        == SessionExecutionPlacement::RegisteredWorker
+                }
+                SessionRuntimePlacement::Local => false,
+                SessionRuntimePlacement::Worker => true,
+            })
     }
 
     /// Claim the one lifecycle supervisor for this application instance.

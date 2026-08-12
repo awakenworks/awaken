@@ -606,9 +606,8 @@ impl ManagedHost {
         use crate::provisioning::ResourceBindingCheck;
 
         // This method is entered only through the SessionRuntime application
-        // port. Preserve that neutral identity before dispatch: an Application-
-        // required Session has no frozen Environment yet, but the claiming
-        // Worker must still enter the Control contribution/realization path.
+        // port. Preserve that neutral identity before dispatch so a claiming
+        // Worker enters the frozen Session realization path.
         self.host
             .session_slots
             .update(thread, |slot| slot.session_dispatch = true);

@@ -31,7 +31,6 @@ pub struct McpDesiredSetFingerprint(pub String);
 #[serde(rename_all = "snake_case")]
 pub enum McpAttachmentOrigin {
     Session,
-    Application,
     Agent,
 }
 
@@ -307,8 +306,7 @@ pub(crate) fn resolve_mcp_draft_precedence(
 ) -> Result<Vec<McpAttachmentDraft>, McpAttachmentError> {
     fn rank(origin: McpAttachmentOrigin) -> u8 {
         match origin {
-            McpAttachmentOrigin::Session => 3,
-            McpAttachmentOrigin::Application => 2,
+            McpAttachmentOrigin::Session => 2,
             McpAttachmentOrigin::Agent => 1,
         }
     }
@@ -1020,24 +1018,19 @@ mod tests {
     #[test]
     fn create_time_mcp_precedence_cases_follow_the_decision_table() {
         // Cause graph: candidates first compete by exact logical name using
-        // Session > Application > Agent; the selected set then requires unique
-        // canonical targets. Equal-rank duplicate names never use order as a
+        // Session > Agent; the selected set then requires unique canonical
+        // targets. Equal-rank duplicate names never use order as a
         // hidden tie-breaker.
         //
         // | Rule | Same name sources | Selected | Target collision | Effect |
         // |---|---|---|---|---|
-        // | P1 | Session+Application+Agent | Session | no | success |
-        // | P2 | Application+Agent | Application | no | success |
+        // | P1 | Agent+Session | Session | no | success |
+        // | P2 | Session+Agent (reverse order) | Session | no | success |
         // | P3 | same rank twice | - | no | DuplicateName |
         // | P4 | different names | both | yes | DuplicateTarget |
         // | P5 | distinct names/targets | both | no | canonical name order |
         let p1 = resolve_mcp_draft_precedence(vec![
             origin_draft("calc", "https://agent", McpAttachmentOrigin::Agent),
-            origin_draft(
-                "calc",
-                "https://application",
-                McpAttachmentOrigin::Application,
-            ),
             origin_draft("calc", "https://session", McpAttachmentOrigin::Session),
         ])
         .unwrap();
@@ -1045,15 +1038,11 @@ mod tests {
         assert_eq!(p1[0].target.http_url(), Some("https://session"), "P1");
 
         let p2 = resolve_mcp_draft_precedence(vec![
+            origin_draft("calc", "https://session", McpAttachmentOrigin::Session),
             origin_draft("calc", "https://agent", McpAttachmentOrigin::Agent),
-            origin_draft(
-                "calc",
-                "https://application",
-                McpAttachmentOrigin::Application,
-            ),
         ])
         .unwrap();
-        assert_eq!(p2[0].target.http_url(), Some("https://application"), "P2");
+        assert_eq!(p2[0].target.http_url(), Some("https://session"), "P2");
 
         assert!(
             matches!(
@@ -1070,7 +1059,7 @@ mod tests {
             matches!(
                 resolve_mcp_draft_precedence(vec![
                     origin_draft("a", "https://same", McpAttachmentOrigin::Session),
-                    origin_draft("b", "https://same", McpAttachmentOrigin::Application),
+                    origin_draft("b", "https://same", McpAttachmentOrigin::Agent),
                 ]),
                 Err(McpAttachmentError::DuplicateTarget(_))
             ),
@@ -1079,7 +1068,7 @@ mod tests {
 
         let p5 = resolve_mcp_draft_precedence(vec![
             origin_draft("z", "https://z", McpAttachmentOrigin::Agent),
-            origin_draft("a", "https://a", McpAttachmentOrigin::Application),
+            origin_draft("a", "https://a", McpAttachmentOrigin::Session),
         ])
         .unwrap();
         assert_eq!(

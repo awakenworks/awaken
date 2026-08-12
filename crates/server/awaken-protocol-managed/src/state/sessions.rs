@@ -171,35 +171,6 @@ impl ManagedState {
         Ok(session)
     }
 
-    /// Create the Control-owned half of an externally dispatched application
-    /// Session under the dispatcher's exact durable thread identity.
-    ///
-    /// Only application-contribution Sessions may cross this embedding seam:
-    /// their Runtime projection is realized by the claim-owning Worker, while
-    /// this aggregate remains the sole author of the frozen baseline and
-    /// realization generations. Ordinary public Session creation continues to
-    /// mint its own identity through [`Self::create_session`].
-    pub async fn create_application_session(
-        &self,
-        session_id: impl Into<String>,
-        req: SessionCreateParams,
-        workspace_id: Option<String>,
-    ) -> Result<Session, StateError> {
-        let session_id = session_id.into();
-        if session_id.trim().is_empty() {
-            return Err(StateError::Run(RunError::bad_request(
-                "application Session id is empty",
-            )));
-        }
-        if !req.application_contribution_required {
-            return Err(StateError::Run(RunError::bad_request(
-                "externally identified Session requires an application contribution",
-            )));
-        }
-        self.create_session_with_identity(req, workspace_id, Some(session_id))
-            .await
-    }
-
     pub(super) async fn create_session_with_identity(
         &self,
         mut req: SessionCreateParams,
@@ -560,7 +531,6 @@ impl ManagedState {
             }
             None => awaken_session_contract::SessionBudgetState::Absent,
         };
-        let application_required = req.application_contribution_required;
         let creation_intent = awaken_session_contract::SessionCreationIntent {
             control: awaken_session_contract::ControlSessionCreationInputs {
                 environment,
@@ -579,11 +549,6 @@ impl ManagedState {
                 prompts: Vec::new(),
                 resources: resolved_resources,
                 initial_mcp: mcp_drafts,
-            },
-            application: if application_required {
-                awaken_session_contract::ApplicationContributionState::Required
-            } else {
-                awaken_session_contract::ApplicationContributionState::Absent
             },
         };
         // The adapter has finished lowering wire policy. The Session application

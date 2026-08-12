@@ -5,7 +5,6 @@ pub awaken_worker::WorkerShutdown::Prompt
 pub struct awaken_worker::RegisteredWorkerApplication
 impl awaken_worker::RegisteredWorkerApplication
 pub fn awaken_worker::RegisteredWorkerApplication::new(awaken_runtime_host::host::AttemptExecutorDecorator) -> Self
-pub fn awaken_worker::RegisteredWorkerApplication::with_session_provisioner(self, alloc::sync::Arc<dyn awaken_session_contract::application_provisioning::ApplicationSessionProvisioner>) -> Self
 pub struct awaken_worker::RegisteredWorkerContext
 impl awaken_worker::RegisteredWorkerContext
 pub fn awaken_worker::RegisteredWorkerContext::identity(&self) -> &awaken_worker_contract::WorkerIdentity

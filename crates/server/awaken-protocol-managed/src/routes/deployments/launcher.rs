@@ -178,7 +178,6 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 .budget_max_list_cost_minor
                 .map(crate::types::BudgetLimit::from_minor),
             initial_events,
-            application_contribution_required: false,
             environment_id: Some(request.environment_id),
             title: None,
             metadata,

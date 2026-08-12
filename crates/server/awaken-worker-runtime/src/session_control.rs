@@ -1,18 +1,16 @@
-//! Worker-side Session application control over the authenticated Coordinator transport.
+//! Worker-side Session realization control over the authenticated Coordinator transport.
 
-use awaken_run_ingress_contract::{
-    ClaimedSessionContributionReceipt, ClaimedSessionControl, ClaimedSessionControlError,
-};
+use awaken_run_ingress_contract::{ClaimedSessionControl, ClaimedSessionControlError};
 use awaken_run_ingress_contract::{RunClaim, WorkerIdentity};
 
 /// Standard client using the same registered identity-bound Worker transport as
 /// lifecycle, dispatch, recovery, and claimed commits.
-pub struct WorkerControlApplicationSessionClient {
+pub struct WorkerControlSessionClient {
     control: crate::WorkerControlClient,
     identity: WorkerIdentity,
 }
 
-impl WorkerControlApplicationSessionClient {
+impl WorkerControlSessionClient {
     #[must_use]
     pub fn new(control: crate::WorkerControlClient, identity: WorkerIdentity) -> Self {
         Self { control, identity }
@@ -20,7 +18,7 @@ impl WorkerControlApplicationSessionClient {
 }
 
 #[async_trait::async_trait]
-impl ClaimedSessionControl for WorkerControlApplicationSessionClient {
+impl ClaimedSessionControl for WorkerControlSessionClient {
     async fn resume_frozen(
         &self,
         claim: &RunClaim,
@@ -30,25 +28,14 @@ impl ClaimedSessionControl for WorkerControlApplicationSessionClient {
         ClaimedSessionControlError,
     > {
         self.control
-            .resume_application_session(&self.identity, claim, session_id)
-            .await
-            .map_err(ClaimedSessionControlError::new)
-    }
-
-    async fn contribute(
-        &self,
-        claim: &RunClaim,
-        contribution: awaken_session_contract::ApplicationSessionContribution,
-    ) -> Result<ClaimedSessionContributionReceipt, ClaimedSessionControlError> {
-        self.control
-            .contribute_application(&self.identity, claim, contribution)
+            .resume_session(&self.identity, claim, session_id)
             .await
             .map_err(ClaimedSessionControlError::new)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRealizationControl for WorkerControlApplicationSessionClient {
+impl awaken_session_contract::SessionRealizationControl for WorkerControlSessionClient {
     async fn begin_session_realization(
         &self,
         command: awaken_session_contract::BeginSessionRealization,

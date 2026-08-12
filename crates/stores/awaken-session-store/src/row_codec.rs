@@ -291,7 +291,6 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         agent_id: row.agent_id,
         model: row.model,
         runtime: runtime.runtime,
-        application: None,
         delegate_ids: runtime.delegate_ids,
         toolsets: Vec::new(),
         mounts: Vec::new(),

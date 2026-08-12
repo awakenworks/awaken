@@ -31,7 +31,6 @@ mod live_inbox;
 pub use activity::{SessionActivityError, SessionMessageOutcome};
 pub use budget::BudgetSettlementOutcome;
 mod continuation;
-mod contribution;
 mod creation;
 pub use continuation::SessionContinuationError;
 pub use creation::{CreateSessionCommand, SessionCreationError};

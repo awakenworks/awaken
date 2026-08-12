@@ -82,19 +82,17 @@ impl SessionRuntime for EndSessionRecorder {
     }
 }
 
-/// Cause/effect graph: C1 deployment disables the local pool; C2 the
-/// Session has no application contribution; C3 its Environment definition
-/// is otherwise local. C1 freezes the application-selected Runtime placement fact,
+/// Cause/effect graph: C1 deployment disables the local pool; C2 the Session's
+/// Environment definition is otherwise local. C1 freezes the selected Runtime placement fact,
 /// which causes E1 one dispatch-only Runtime projection, E2 no local
 /// realization lease, and E3 no resident environment binding. Without C1,
 /// the canonical local phase driver owns realization (covered by the
 /// existing create/realization tests).
 ///
-/// | Rule | No local pool | Application | Environment | Projection | Local lease/binding |
-/// |---|---|---|---|---|---|
-/// | P1 | yes | absent | local | once | none |
-/// | P2 | no | absent | local | local phase driver | local |
-/// | P3 | any | required | any | wait for contribution | none |
+/// | Rule | No local pool | Environment | Projection | Local lease/binding |
+/// |---|---|---|---|---|
+/// | P1 | yes | local | once | none |
+/// | P2 | no | local | local phase driver | local |
 mod binding_recovery;
 mod external_identity;
 mod terminal;

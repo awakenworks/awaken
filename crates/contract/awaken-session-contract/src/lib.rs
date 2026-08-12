@@ -11,8 +11,6 @@
 //! single definition site for neutral Session and cross-Session process semantics.
 
 mod agent_config;
-mod application_contribution;
-mod application_provisioning;
 mod baseline;
 mod budget;
 mod dream;
@@ -43,25 +41,15 @@ pub use agent_config::{
     AgentToolPermissionPolicy, CustomToolInputSchema, ObjectSchemaKind, is_agent_toolset_member,
     resolved_toolsets, toolset_policies,
 };
-pub use application_contribution::{
-    ApplicationSessionContribution, ApplicationSessionContributionApi,
-    ApplicationSessionContributionFailure, ApplicationSessionContributionReceipt,
-    FrozenSessionProjection,
-};
-pub use application_provisioning::{
-    ApplicationSessionMaterialRefresh, ApplicationSessionProvisionError,
-    ApplicationSessionProvisionFailureKind, ApplicationSessionProvisioner,
-};
 pub use awaken_agent_contract::stable_fingerprint;
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 pub use baseline::{
-    ApplicationContributionError, ApplicationContributionOutcome, ApplicationContributionReceipt,
-    ApplicationContributionState, ApplicationSessionInput, CompiledSessionCreation,
-    ControlSessionCreationInputs, EnvironmentCheckpointExpiryBehavior, EnvironmentFingerprint,
-    EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy, EnvironmentSnapshot,
-    SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint, SessionBaselineInputs,
-    SessionBaselineState, SessionCreationFinalizeError, SessionCreationIntent,
-    SessionMcpAuthoringContext, SessionNetworkPolicy, SessionRuntimePlacement,
+    CompiledSessionCreation, ControlSessionCreationInputs, EnvironmentCheckpointExpiryBehavior,
+    EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,
+    EnvironmentSnapshot, SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint,
+    SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
+    SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
+    SessionRuntimePlacement,
 };
 pub use budget::{
     ManagedBudgetUsageCursor, ManagedListPriceError, ManagedListPriceProvider,
@@ -122,8 +110,8 @@ pub use session::{
     SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 pub use session_realization::{
-    AcknowledgeSessionRealization, ActivateSessionRealization, ApplicationSessionControl,
-    BeginSessionRealization, FailSessionRealization, SessionProjectionSynchronizer,
+    AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
+    FailSessionRealization, FrozenSessionProjection, SessionProjectionSynchronizer,
     SessionRealizationAction, SessionRealizationControl, SessionRealizationControlFailure,
     SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationProgress,
     SessionRealizationTarget, drive_session_realization, realization_generation_authorizes,

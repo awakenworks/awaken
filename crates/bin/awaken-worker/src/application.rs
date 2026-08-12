@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use awaken_runtime_host::AttemptExecutorDecorator;
-use awaken_session_contract::ApplicationSessionProvisioner;
 use awaken_worker_contract::{RegisteredWorker, WorkerIdentity, WorkerSnapshot};
 use awaken_worker_transport_security::WorkerUpstream;
 
@@ -48,38 +47,20 @@ impl RegisteredWorkerContext {
 
 /// The complete application assembly created from one registered Worker identity.
 ///
-/// The provisioner adds claim-bound material to the Host's authoritative Session
-/// environment; the decorator wraps the authoritative Native/ACP/A2A router.
+/// The decorator wraps the authoritative Native/ACP/A2A router. Session setup
+/// and ownership stay on the standard Environment Work path.
 pub struct RegisteredWorkerApplication {
     decorator: AttemptExecutorDecorator,
-    session_provisioner: Option<Arc<dyn ApplicationSessionProvisioner>>,
 }
 
 impl RegisteredWorkerApplication {
     #[must_use]
     pub fn new(decorator: AttemptExecutorDecorator) -> Self {
-        Self {
-            decorator,
-            session_provisioner: None,
-        }
+        Self { decorator }
     }
 
-    #[must_use]
-    pub fn with_session_provisioner(
-        mut self,
-        provisioner: Arc<dyn ApplicationSessionProvisioner>,
-    ) -> Self {
-        self.session_provisioner = Some(provisioner);
-        self
-    }
-
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        AttemptExecutorDecorator,
-        Option<Arc<dyn ApplicationSessionProvisioner>>,
-    ) {
-        (self.decorator, self.session_provisioner)
+    pub(crate) fn into_parts(self) -> AttemptExecutorDecorator {
+        self.decorator
     }
 }
 
