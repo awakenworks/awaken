@@ -1482,7 +1482,14 @@ mod process_role_surface_tests {
         let coordinator_data = tempfile::tempdir().expect("coordinator test data");
         let mut coordinator_deployment =
             config::local_test_deployment(coordinator_data.path().to_owned());
-        coordinator_deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+        // Session execution ownership decision table:
+        // C1=split Coordinator, C2=local pool disabled, C3=the configured sandbox
+        // cannot be realized (K8s without an image). R1(C1+C2+C3)->startup serves
+        // Coordinator APIs without probing/constructing a local sandbox; registered
+        // Workers remain the only Session physical-effect owners.
+        coordinator_deployment.runtime.disable_local_pool = true;
+        coordinator_deployment.runtime.sandbox_tier = awaken_runtime_host::SandboxTier::K8s;
+        coordinator_deployment.runtime.container_image = None;
         let executable_environment_wiring =
             executable_environment_registration::ExecutableEnvironmentWiring::local(
                 coordinator_stores
