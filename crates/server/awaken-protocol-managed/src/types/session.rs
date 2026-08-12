@@ -172,7 +172,7 @@ pub struct AgentRefObject {
 #[serde(untagged)]
 pub enum AgentRef {
     Id(String),
-    Object(AgentRefObject),
+    Object(Box<AgentRefObject>),
 }
 
 impl AgentRef {
@@ -195,17 +195,17 @@ impl AgentRef {
     /// one; every other form reports [`ModelOverride::Absent`].
     pub fn model_override(&self) -> ModelOverride {
         match self {
-            AgentRef::Object(AgentRefObject {
-                kind: Some(AgentRefKind::AgentWithOverrides),
-                model,
-                ..
-            }) => match model {
-                None => ModelOverride::Absent,
-                Some(None) => ModelOverride::Cleared,
-                Some(Some(input)) => {
-                    ModelOverride::Set(input.clone().into_config().into_resolved())
+            AgentRef::Object(object)
+                if matches!(object.kind.as_ref(), Some(AgentRefKind::AgentWithOverrides)) =>
+            {
+                match &object.model {
+                    None => ModelOverride::Absent,
+                    Some(None) => ModelOverride::Cleared,
+                    Some(Some(input)) => {
+                        ModelOverride::Set(input.clone().into_config().into_resolved())
+                    }
                 }
-            },
+            }
             _ => ModelOverride::Absent,
         }
     }

@@ -955,9 +955,19 @@ fn realization_owner_follows_the_application_placement_decision_table() {
         );
         value
     };
+    let preparing_application = {
+        let mut value = preparing.clone();
+        let awaken_session_contract::SessionBaselineState::Preparing(intent) = &mut value.baseline
+        else {
+            unreachable!("fixture is preparing")
+        };
+        intent.application = awaken_session_contract::ApplicationContributionState::Required;
+        value
+    };
 
     for (rule, value, local_expected, registered_expected) in [
         ("P1", preparing, false, false),
+        ("P1b", preparing_application, true, true),
         (
             "P2",
             frozen(SessionRuntimePlacement::Local, false),
@@ -1162,4 +1172,158 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
         !repo.get("ack-replaced").await.unwrap().mcp.attachments[0].publication_acknowledged,
         "A3/E3"
     );
+}
+
+#[tokio::test]
+async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outcome() {
+    /* Cause/effect graph: C1 an admitted activity is Running with one open
+     * aggregate interval; C2 realization activates and acknowledges exact
+     * Resource/publication generations; C3 realization fails retryably below
+     * budget; C4 realization fails permanently or after budget. Effects: E1
+     * activation/acknowledgement preserve Running and the exact interval; E2
+     * activity settlement alone transitions Idle and emits one interval fact;
+     * E3 a retry retains Running plus the open interval for recovery; E4 a
+     * terminal failure atomically transitions ActivationFailed, closes the
+     * interval, accumulates runtime, and emits one fact. Constraints: the root
+     * CAS owns execution and interval together; realization never authors a
+     * second billing path; stale lease cases are covered by the realization
+     * authority table.
+     *
+     * | Rule | Running | Realization outcome | Retry budget | Effect |
+     * |---|---|---|---|---|
+     * | R1 | yes | activate + acknowledge | n/a | E1 |
+     * | R2 | yes | activity settles | n/a | E2 |
+     * | R3 | yes | retryable failure | available | E3 |
+     * | R4 | yes | permanent failure | n/a | E4 |
+     *
+     * This test covers R1, R2, and R4. R3's durable retry/lease-expiry rule is
+     * covered by `retryable_initial_realization_is_fenced_and_budgeted_durably`;
+     * the production branch is identical for Running except it deliberately
+     * retains the already-open interval. */
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    let application = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a/boot-2".into(),
+        epoch: 2,
+        expires_at_unix_ms: u64::MAX,
+    };
+    let interval = |id: &str| awaken_session_contract::SessionRuntimeIntervalStart {
+        interval_id: format!("interval:{id}"),
+        activity_epoch: 1,
+        started_at_unix_ms: 1,
+    };
+
+    let mut recovering = persisted("running-realization", false, false, "running");
+    recovering.activity_epoch = 1;
+    recovering.running_interval = Some(interval("running-realization"));
+    recovering.realization = Some(lease.clone());
+    recovering
+        .resources
+        .prepare("running-realization", file_resources("running-realization"))
+        .expect("R1 pending Resource generation");
+    let prepared_resource_revision = recovering.resources.revision;
+    create(repo.as_ref(), recovering).await;
+
+    let activated =
+        awaken_session_contract::SessionRealizationControl::activate_session_realization(
+            &application,
+            awaken_session_contract::ActivateSessionRealization {
+                session_id: "running-realization".into(),
+                lease: lease.clone(),
+                prepared_resource_revision: Some(prepared_resource_revision),
+                mcp_receipts: Vec::new(),
+            },
+        )
+        .await
+        .expect("R1 activation");
+    assert!(
+        matches!(
+            activated.action,
+            awaken_session_contract::SessionRealizationAction::Publish { .. }
+        ),
+        "R1/E1"
+    );
+    let activated_truth = repo.get("running-realization").await.unwrap();
+    assert_eq!(
+        activated_truth.execution,
+        SessionExecutionState::Running,
+        "R1/E1"
+    );
+    assert_eq!(
+        activated_truth.running_interval,
+        Some(interval("running-realization")),
+        "R1/E1"
+    );
+
+    awaken_session_contract::SessionRealizationControl::acknowledge_session_realization(
+        &application,
+        awaken_session_contract::AcknowledgeSessionRealization {
+            session_id: "running-realization".into(),
+            lease: lease.clone(),
+            published: Vec::new(),
+            drained: Vec::new(),
+        },
+    )
+    .await
+    .expect("R1 acknowledgement");
+    let acknowledged = repo.get("running-realization").await.unwrap();
+    assert_eq!(
+        acknowledged.execution,
+        SessionExecutionState::Running,
+        "R1/E1"
+    );
+    assert_eq!(
+        acknowledged.running_interval,
+        Some(interval("running-realization")),
+        "R1/E1"
+    );
+
+    let settled = application
+        .settle_activity("running-realization", 1)
+        .await
+        .expect("R2 activity settlement");
+    assert_eq!(settled.execution, SessionExecutionState::Idle, "R2/E2");
+    assert!(settled.running_interval.is_none(), "R2/E2");
+
+    let mut failed = persisted("running-realization-failed", false, false, "running");
+    failed.activity_epoch = 1;
+    failed.running_interval = Some(interval("running-realization-failed"));
+    failed.realization = Some(lease.clone());
+    create(repo.as_ref(), failed).await;
+    application
+        .fail_session_realization(awaken_session_contract::FailSessionRealization {
+            session_id: "running-realization-failed".into(),
+            lease,
+            prepared_resource_revision: None,
+            retryable: false,
+            reason: "permanent realization failure".into(),
+        })
+        .await
+        .expect("R4 terminal realization failure");
+    let failed_truth = repo.get("running-realization-failed").await.unwrap();
+    assert_eq!(
+        failed_truth.execution,
+        SessionExecutionState::ActivationFailed,
+        "R4/E4"
+    );
+    assert!(failed_truth.running_interval.is_none(), "R4/E4");
+    assert!(failed_truth.runtime_active_millis > 0, "R4/E4");
+    let facts = repo.pending_lifecycle().await.expect("R2/R4 outbox");
+    for session_id in ["running-realization", "running-realization-failed"] {
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| fact.object_id == session_id && fact.runtime_interval.is_some())
+                .count(),
+            1,
+            "{session_id} emits exactly one interval fact"
+        );
+    }
 }

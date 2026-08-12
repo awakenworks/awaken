@@ -10,6 +10,7 @@ pub awaken_protocol_managed::project::ProjectedEvent::kind: awaken_protocol_mana
 pub fn awaken_protocol_managed::project::agent_client_tools(&[awaken_agent_contract::toolset::ClientToolDescriptor]) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>, alloc::string::String>
 pub fn awaken_protocol_managed::project::agent_multiagent(&awaken_session_contract::session::AgentCapabilities) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
 pub fn awaken_protocol_managed::project::agent_multiagent_ids(&[alloc::string::String]) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
+pub fn awaken_protocol_managed::project::agent_multiagent_roster(&[alloc::string::String], core::option::Option<&str>) -> core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
 pub fn awaken_protocol_managed::project::agent_skills(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub fn awaken_protocol_managed::project::agent_tools(&awaken_session_contract::session::AgentCapabilities) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
 pub fn awaken_protocol_managed::project::managed_tools(&awaken_session_contract::tool_configuration::SessionToolConfiguration) -> alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
@@ -20,6 +21,8 @@ pub fn awaken_protocol_managed::project::session_tool_configuration(&[awaken_ses
 pub fn awaken_protocol_managed::project::validate_custom_tool(&awaken_session_contract::session::CustomTool) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_protocol_managed::types
 pub mod awaken_protocol_managed::types::agent
+pub enum awaken_protocol_managed::types::agent::AdvisorRosterReferenceKind
+pub awaken_protocol_managed::types::agent::AdvisorRosterReferenceKind::Advisor
 pub enum awaken_protocol_managed::types::agent::AgentMcpServer
 pub awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio
 pub awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio::args: alloc::vec::Vec<alloc::string::String>
@@ -57,11 +60,15 @@ pub enum awaken_protocol_managed::types::agent::MultiagentConfig
 pub awaken_protocol_managed::types::agent::MultiagentConfig::Coordinator
 pub awaken_protocol_managed::types::agent::MultiagentConfig::Coordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::agent::MultiagentRosterEntry>
 pub enum awaken_protocol_managed::types::agent::MultiagentRosterEntry
+pub awaken_protocol_managed::types::agent::MultiagentRosterEntry::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterReference)
 pub awaken_protocol_managed::types::agent::MultiagentRosterEntry::Id(alloc::string::String)
 pub awaken_protocol_managed::types::agent::MultiagentRosterEntry::Reference(awaken_protocol_managed::types::agent::AgentRosterReference)
 pub awaken_protocol_managed::types::agent::MultiagentRosterEntry::SelfReference(awaken_protocol_managed::types::agent::SelfRosterReference)
 pub enum awaken_protocol_managed::types::agent::SelfRosterReferenceKind
 pub awaken_protocol_managed::types::agent::SelfRosterReferenceKind::SelfReference
+pub struct awaken_protocol_managed::types::agent::AdvisorRosterReference
+pub awaken_protocol_managed::types::agent::AdvisorRosterReference::kind: awaken_protocol_managed::types::agent::AdvisorRosterReferenceKind
+pub awaken_protocol_managed::types::agent::AdvisorRosterReference::model: alloc::string::String
 pub struct awaken_protocol_managed::types::agent::Agent
 pub awaken_protocol_managed::types::agent::Agent::archived_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::agent::Agent::created_at: alloc::string::String
@@ -213,6 +220,7 @@ pub awaken_protocol_managed::types::deployment::TriggerContext::Schedule::schedu
 pub struct awaken_protocol_managed::types::deployment::Deployment
 pub awaken_protocol_managed::types::deployment::Deployment::agent: awaken_protocol_managed::types::agent::AgentReference
 pub awaken_protocol_managed::types::deployment::Deployment::archived_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::deployment::Deployment::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::deployment::Deployment::created_at: alloc::string::String
 pub awaken_protocol_managed::types::deployment::Deployment::description: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::deployment::Deployment::environment_id: alloc::string::String
@@ -229,6 +237,7 @@ pub awaken_protocol_managed::types::deployment::Deployment::updated_at: alloc::s
 pub awaken_protocol_managed::types::deployment::Deployment::vault_ids: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_protocol_managed::types::deployment::DeploymentCreateParams
 pub awaken_protocol_managed::types::deployment::DeploymentCreateParams::agent: awaken_protocol_managed::types::AgentRef
+pub awaken_protocol_managed::types::deployment::DeploymentCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::deployment::DeploymentCreateParams::description: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::deployment::DeploymentCreateParams::environment_id: alloc::string::String
 pub awaken_protocol_managed::types::deployment::DeploymentCreateParams::initial_events: alloc::vec::Vec<awaken_protocol_managed::types::deployment::DeploymentInitialEvent>
@@ -248,6 +257,7 @@ pub awaken_protocol_managed::types::deployment::DeploymentRun::session_id: core:
 pub awaken_protocol_managed::types::deployment::DeploymentRun::trigger_context: awaken_protocol_managed::types::deployment::TriggerContext
 pub struct awaken_protocol_managed::types::deployment::DeploymentUpdateParams
 pub awaken_protocol_managed::types::deployment::DeploymentUpdateParams::agent: core::option::Option<awaken_protocol_managed::types::AgentRef>
+pub awaken_protocol_managed::types::deployment::DeploymentUpdateParams::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::deployment::DeploymentUpdateParams::description: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::deployment::DeploymentUpdateParams::environment_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::deployment::DeploymentUpdateParams::initial_events: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::deployment::DeploymentInitialEvent>>
@@ -460,7 +470,7 @@ pub awaken_protocol_managed::types::resource::SessionResourceManifest::resources
 pub mod awaken_protocol_managed::types::session
 pub enum awaken_protocol_managed::types::session::AgentRef
 pub awaken_protocol_managed::types::session::AgentRef::Id(alloc::string::String)
-pub awaken_protocol_managed::types::session::AgentRef::Object(awaken_protocol_managed::types::AgentRefObject)
+pub awaken_protocol_managed::types::session::AgentRef::Object(alloc::boxed::Box<awaken_protocol_managed::types::AgentRefObject>)
 impl awaken_protocol_managed::types::AgentRef
 pub fn awaken_protocol_managed::types::AgentRef::id(&self) -> &str
 pub fn awaken_protocol_managed::types::AgentRef::model_override(&self) -> awaken_protocol_managed::types::ModelOverride
@@ -469,9 +479,17 @@ pub enum awaken_protocol_managed::types::session::AgentRefKind
 pub awaken_protocol_managed::types::session::AgentRefKind::Agent
 pub awaken_protocol_managed::types::session::AgentRefKind::AgentWithOverrides
 pub awaken_protocol_managed::types::session::AgentRefKind::Other
+pub enum awaken_protocol_managed::types::session::BudgetLimit
+pub awaken_protocol_managed::types::session::BudgetLimit::Limit
+pub awaken_protocol_managed::types::session::BudgetLimit::Limit::max_list_cost: awaken_protocol_managed::types::MonetaryAmount
+impl awaken_protocol_managed::types::BudgetLimit
+pub fn awaken_protocol_managed::types::BudgetLimit::from_minor(u64) -> Self
+pub fn awaken_protocol_managed::types::BudgetLimit::max_list_cost_minor(&self) -> core::result::Result<u64, alloc::string::String>
 pub enum awaken_protocol_managed::types::session::ConfirmResult
 pub awaken_protocol_managed::types::session::ConfirmResult::Allow
 pub awaken_protocol_managed::types::session::ConfirmResult::Deny
+pub enum awaken_protocol_managed::types::session::Currency
+pub awaken_protocol_managed::types::session::Currency::USD
 pub enum awaken_protocol_managed::types::session::InboundEvent
 pub awaken_protocol_managed::types::session::InboundEvent::SystemMessage
 pub awaken_protocol_managed::types::session::InboundEvent::SystemMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
@@ -583,6 +601,7 @@ pub awaken_protocol_managed::types::session::OutboundKind::SessionThreadStatusTe
 pub awaken_protocol_managed::types::session::OutboundKind::SessionThreadStatusTerminated::session_thread_id: alloc::string::String
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::agent: core::option::Option<awaken_protocol_managed::types::SessionAgent>
+pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::SessionUpdated::title: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutboundKind::SpanModelRequestEnd
@@ -653,10 +672,7 @@ pub awaken_protocol_managed::types::session::RetryStatus::Exhausted
 pub awaken_protocol_managed::types::session::RetryStatus::Retrying
 pub awaken_protocol_managed::types::session::RetryStatus::Terminal
 pub enum awaken_protocol_managed::types::session::SessionStatus
-pub awaken_protocol_managed::types::session::SessionStatus::Activating
-pub awaken_protocol_managed::types::session::SessionStatus::Failed
 pub awaken_protocol_managed::types::session::SessionStatus::Idle
-pub awaken_protocol_managed::types::session::SessionStatus::Preparing
 pub awaken_protocol_managed::types::session::SessionStatus::Rescheduling
 pub awaken_protocol_managed::types::session::SessionStatus::Running
 pub awaken_protocol_managed::types::session::SessionStatus::Terminated
@@ -668,6 +684,7 @@ pub awaken_protocol_managed::types::session::SessionThreadStatus::Rescheduling
 pub awaken_protocol_managed::types::session::SessionThreadStatus::Running
 pub awaken_protocol_managed::types::session::SessionThreadStatus::Terminated
 pub enum awaken_protocol_managed::types::session::StopReason
+pub awaken_protocol_managed::types::session::StopReason::BudgetReached
 pub awaken_protocol_managed::types::session::StopReason::EndTurn
 pub awaken_protocol_managed::types::session::StopReason::RequiresAction
 pub awaken_protocol_managed::types::session::StopReason::RequiresAction::event_ids: alloc::vec::Vec<alloc::string::String>
@@ -723,18 +740,24 @@ pub fn awaken_protocol_managed::types::McpServer::serialize<S: serde_core::ser::
 pub struct awaken_protocol_managed::types::session::ModelConfig
 pub awaken_protocol_managed::types::session::ModelConfig::effort: core::option::Option<awaken_protocol_managed::types::ModelEffort>
 pub awaken_protocol_managed::types::session::ModelConfig::id: alloc::string::String
+pub awaken_protocol_managed::types::session::ModelConfig::inference_geo: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::ModelConfig::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 pub awaken_protocol_managed::types::session::ModelConfig::x_awaken: core::option::Option<awaken_protocol_managed::types::AwakenModelExtensions>
 impl awaken_protocol_managed::types::ModelConfig
+pub fn awaken_protocol_managed::types::ModelConfig::from_inference(impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
 pub fn awaken_protocol_managed::types::ModelConfig::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_managed::types::session::ModelConfigParams
 pub awaken_protocol_managed::types::session::ModelConfigParams::effort: core::option::Option<awaken_protocol_managed::types::ModelEffortInput>
 pub awaken_protocol_managed::types::session::ModelConfigParams::id: alloc::string::String
+pub awaken_protocol_managed::types::session::ModelConfigParams::inference_geo: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::ModelConfigParams::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 pub awaken_protocol_managed::types::session::ModelConfigParams::x_awaken: core::option::Option<awaken_protocol_managed::types::AwakenModelExtensions>
 impl awaken_protocol_managed::types::ModelConfigParams
 pub fn awaken_protocol_managed::types::ModelConfigParams::into_resolved(self) -> awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfigParams::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_protocol_managed::types::session::MonetaryAmount
+pub awaken_protocol_managed::types::session::MonetaryAmount::amount: alloc::string::String
+pub awaken_protocol_managed::types::session::MonetaryAmount::currency: awaken_protocol_managed::types::Currency
 pub struct awaken_protocol_managed::types::session::OutcomeEvaluation
 pub awaken_protocol_managed::types::session::OutcomeEvaluation::completed_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::OutcomeEvaluation::description: alloc::string::String
@@ -751,9 +774,13 @@ pub awaken_protocol_managed::types::session::SendEventsRequest::events: alloc::v
 pub awaken_protocol_managed::types::session::SendEventsRequest::user_profile_id: core::option::Option<alloc::string::String>
 pub struct awaken_protocol_managed::types::session::SendEventsResponse
 pub awaken_protocol_managed::types::session::SendEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::EventReceipt>
+pub struct awaken_protocol_managed::types::session::ServerToolUsage
+pub awaken_protocol_managed::types::session::ServerToolUsage::web_fetch_requests: core::option::Option<u64>
+pub awaken_protocol_managed::types::session::ServerToolUsage::web_search_requests: core::option::Option<u64>
 pub struct awaken_protocol_managed::types::session::Session
 pub awaken_protocol_managed::types::session::Session::agent: awaken_protocol_managed::types::SessionAgent
 pub awaken_protocol_managed::types::session::Session::archived_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::session::Session::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::session::Session::created_at: alloc::string::String
 pub awaken_protocol_managed::types::session::Session::deployment_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::Session::environment_id: alloc::string::String
@@ -788,6 +815,7 @@ pub awaken_protocol_managed::types::session::SessionAgentUpdate::tools: core::op
 pub struct awaken_protocol_managed::types::session::SessionCreateParams
 pub awaken_protocol_managed::types::session::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::session::SessionCreateParams::application_contribution_required: bool
+pub awaken_protocol_managed::types::session::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::session::SessionCreateParams::environment_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SessionCreateParams::initial_events: alloc::vec::Vec<awaken_protocol_managed::types::InboundEvent>
 pub awaken_protocol_managed::types::session::SessionCreateParams::mcp_servers: alloc::vec::Vec<awaken_protocol_managed::types::McpServer>
@@ -836,12 +864,16 @@ pub awaken_protocol_managed::types::session::SessionThreadStats::active_seconds:
 pub awaken_protocol_managed::types::session::SessionThreadStats::duration_seconds: core::option::Option<f64>
 pub awaken_protocol_managed::types::session::SessionThreadStats::startup_seconds: core::option::Option<f64>
 pub struct awaken_protocol_managed::types::session::SessionThreadUsage
+pub awaken_protocol_managed::types::session::SessionThreadUsage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::SessionThreadUsage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
 pub awaken_protocol_managed::types::session::SessionThreadUsage::cache_read_input_tokens: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::SessionThreadUsage::input_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::session::SessionThreadUsage::list_cost: core::option::Option<awaken_protocol_managed::types::MonetaryAmount>
 pub awaken_protocol_managed::types::session::SessionThreadUsage::output_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::session::SessionThreadUsage::server_tool_use: core::option::Option<awaken_protocol_managed::types::ServerToolUsage>
 pub struct awaken_protocol_managed::types::session::SessionUpdateParams
 pub awaken_protocol_managed::types::session::SessionUpdateParams::agent: core::option::Option<awaken_protocol_managed::types::SessionAgentUpdate>
+pub awaken_protocol_managed::types::session::SessionUpdateParams::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::session::SessionUpdateParams::metadata: core::option::Option<core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>>
 pub awaken_protocol_managed::types::session::SessionUpdateParams::title: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::session::SessionUpdateParams::vault_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
@@ -849,10 +881,42 @@ pub struct awaken_protocol_managed::types::session::SpanModelUsage
 pub awaken_protocol_managed::types::session::SpanModelUsage::speed: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SpanModelUsage::usage: awaken_protocol_managed::types::Usage
 pub struct awaken_protocol_managed::types::session::Usage
-pub awaken_protocol_managed::types::session::Usage::cache_creation_input_tokens: u64
-pub awaken_protocol_managed::types::session::Usage::cache_read_input_tokens: u64
-pub awaken_protocol_managed::types::session::Usage::input_tokens: u64
-pub awaken_protocol_managed::types::session::Usage::output_tokens: u64
+pub awaken_protocol_managed::types::session::Usage::active_seconds: core::option::Option<u64>
+pub awaken_protocol_managed::types::session::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
+pub awaken_protocol_managed::types::session::Usage::cache_read_input_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::session::Usage::input_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::session::Usage::list_cost: core::option::Option<awaken_protocol_managed::types::MonetaryAmount>
+pub awaken_protocol_managed::types::session::Usage::output_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::session::Usage::server_tool_use: core::option::Option<awaken_protocol_managed::types::ServerToolUsage>
+pub mod awaken_protocol_managed::types::tunnel
+pub struct awaken_protocol_managed::types::tunnel::CertificateCreateParams
+pub awaken_protocol_managed::types::tunnel::CertificateCreateParams::ca_certificate_pem: alloc::string::String
+pub struct awaken_protocol_managed::types::tunnel::Tunnel
+pub awaken_protocol_managed::types::tunnel::Tunnel::archived_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::tunnel::Tunnel::created_at: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::Tunnel::display_name: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::tunnel::Tunnel::domain: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::Tunnel::id: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::Tunnel::kind: alloc::string::String
+pub struct awaken_protocol_managed::types::tunnel::TunnelCertificate
+pub awaken_protocol_managed::types::tunnel::TunnelCertificate::archived_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::tunnel::TunnelCertificate::created_at: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::TunnelCertificate::expires_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::tunnel::TunnelCertificate::fingerprint: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::TunnelCertificate::id: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::TunnelCertificate::kind: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::TunnelCertificate::tunnel_id: alloc::string::String
+pub struct awaken_protocol_managed::types::tunnel::TunnelCreateParams
+pub awaken_protocol_managed::types::tunnel::TunnelCreateParams::display_name: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_managed::types::tunnel::TunnelListQuery
+pub awaken_protocol_managed::types::tunnel::TunnelListQuery::include_archived: bool
+pub awaken_protocol_managed::types::tunnel::TunnelListQuery::page: awaken_protocol_managed::types::page::PageQuery
+pub struct awaken_protocol_managed::types::tunnel::TunnelRotateTokenParams
+pub awaken_protocol_managed::types::tunnel::TunnelRotateTokenParams::reason: core::option::Option<alloc::string::String>
+pub struct awaken_protocol_managed::types::tunnel::TunnelToken
+pub awaken_protocol_managed::types::tunnel::TunnelToken::id: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::TunnelToken::kind: alloc::string::String
+pub awaken_protocol_managed::types::tunnel::TunnelToken::tunnel_token: alloc::string::String
 pub mod awaken_protocol_managed::types::user_profile
 pub enum awaken_protocol_managed::types::user_profile::Relationship
 pub awaken_protocol_managed::types::user_profile::Relationship::External
@@ -1031,7 +1095,7 @@ pub awaken_protocol_managed::types::vault::VaultUpdateParams::display_name: core
 pub awaken_protocol_managed::types::vault::VaultUpdateParams::metadata: core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>
 pub enum awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::AgentRef::Id(alloc::string::String)
-pub awaken_protocol_managed::types::AgentRef::Object(awaken_protocol_managed::types::AgentRefObject)
+pub awaken_protocol_managed::types::AgentRef::Object(alloc::boxed::Box<awaken_protocol_managed::types::AgentRefObject>)
 impl awaken_protocol_managed::types::AgentRef
 pub fn awaken_protocol_managed::types::AgentRef::id(&self) -> &str
 pub fn awaken_protocol_managed::types::AgentRef::model_override(&self) -> awaken_protocol_managed::types::ModelOverride
@@ -1040,9 +1104,17 @@ pub enum awaken_protocol_managed::types::AgentRefKind
 pub awaken_protocol_managed::types::AgentRefKind::Agent
 pub awaken_protocol_managed::types::AgentRefKind::AgentWithOverrides
 pub awaken_protocol_managed::types::AgentRefKind::Other
+pub enum awaken_protocol_managed::types::BudgetLimit
+pub awaken_protocol_managed::types::BudgetLimit::Limit
+pub awaken_protocol_managed::types::BudgetLimit::Limit::max_list_cost: awaken_protocol_managed::types::MonetaryAmount
+impl awaken_protocol_managed::types::BudgetLimit
+pub fn awaken_protocol_managed::types::BudgetLimit::from_minor(u64) -> Self
+pub fn awaken_protocol_managed::types::BudgetLimit::max_list_cost_minor(&self) -> core::result::Result<u64, alloc::string::String>
 pub enum awaken_protocol_managed::types::ConfirmResult
 pub awaken_protocol_managed::types::ConfirmResult::Allow
 pub awaken_protocol_managed::types::ConfirmResult::Deny
+pub enum awaken_protocol_managed::types::Currency
+pub awaken_protocol_managed::types::Currency::USD
 pub enum awaken_protocol_managed::types::InboundEvent
 pub awaken_protocol_managed::types::InboundEvent::SystemMessage
 pub awaken_protocol_managed::types::InboundEvent::SystemMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
@@ -1154,6 +1226,7 @@ pub awaken_protocol_managed::types::OutboundKind::SessionThreadStatusTerminated:
 pub awaken_protocol_managed::types::OutboundKind::SessionThreadStatusTerminated::session_thread_id: alloc::string::String
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::agent: core::option::Option<awaken_protocol_managed::types::SessionAgent>
+pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::SessionUpdated::title: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutboundKind::SpanModelRequestEnd
@@ -1224,10 +1297,7 @@ pub awaken_protocol_managed::types::RetryStatus::Exhausted
 pub awaken_protocol_managed::types::RetryStatus::Retrying
 pub awaken_protocol_managed::types::RetryStatus::Terminal
 pub enum awaken_protocol_managed::types::SessionStatus
-pub awaken_protocol_managed::types::SessionStatus::Activating
-pub awaken_protocol_managed::types::SessionStatus::Failed
 pub awaken_protocol_managed::types::SessionStatus::Idle
-pub awaken_protocol_managed::types::SessionStatus::Preparing
 pub awaken_protocol_managed::types::SessionStatus::Rescheduling
 pub awaken_protocol_managed::types::SessionStatus::Running
 pub awaken_protocol_managed::types::SessionStatus::Terminated
@@ -1239,6 +1309,7 @@ pub awaken_protocol_managed::types::SessionThreadStatus::Rescheduling
 pub awaken_protocol_managed::types::SessionThreadStatus::Running
 pub awaken_protocol_managed::types::SessionThreadStatus::Terminated
 pub enum awaken_protocol_managed::types::StopReason
+pub awaken_protocol_managed::types::StopReason::BudgetReached
 pub awaken_protocol_managed::types::StopReason::EndTurn
 pub awaken_protocol_managed::types::StopReason::RequiresAction
 pub awaken_protocol_managed::types::StopReason::RequiresAction::event_ids: alloc::vec::Vec<alloc::string::String>
@@ -1294,18 +1365,24 @@ pub fn awaken_protocol_managed::types::McpServer::serialize<S: serde_core::ser::
 pub struct awaken_protocol_managed::types::ModelConfig
 pub awaken_protocol_managed::types::ModelConfig::effort: core::option::Option<awaken_protocol_managed::types::ModelEffort>
 pub awaken_protocol_managed::types::ModelConfig::id: alloc::string::String
+pub awaken_protocol_managed::types::ModelConfig::inference_geo: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::ModelConfig::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 pub awaken_protocol_managed::types::ModelConfig::x_awaken: core::option::Option<awaken_protocol_managed::types::AwakenModelExtensions>
 impl awaken_protocol_managed::types::ModelConfig
+pub fn awaken_protocol_managed::types::ModelConfig::from_inference(impl core::convert::Into<alloc::string::String>, awaken_runtime_contract::agent_bindings::InferenceOptions) -> Self
 pub fn awaken_protocol_managed::types::ModelConfig::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_protocol_managed::types::ModelConfigParams
 pub awaken_protocol_managed::types::ModelConfigParams::effort: core::option::Option<awaken_protocol_managed::types::ModelEffortInput>
 pub awaken_protocol_managed::types::ModelConfigParams::id: alloc::string::String
+pub awaken_protocol_managed::types::ModelConfigParams::inference_geo: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::ModelConfigParams::speed: core::option::Option<awaken_protocol_managed::types::ModelSpeed>
 pub awaken_protocol_managed::types::ModelConfigParams::x_awaken: core::option::Option<awaken_protocol_managed::types::AwakenModelExtensions>
 impl awaken_protocol_managed::types::ModelConfigParams
 pub fn awaken_protocol_managed::types::ModelConfigParams::into_resolved(self) -> awaken_protocol_managed::types::ModelConfig
 pub fn awaken_protocol_managed::types::ModelConfigParams::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_protocol_managed::types::MonetaryAmount
+pub awaken_protocol_managed::types::MonetaryAmount::amount: alloc::string::String
+pub awaken_protocol_managed::types::MonetaryAmount::currency: awaken_protocol_managed::types::Currency
 pub struct awaken_protocol_managed::types::OutcomeEvaluation
 pub awaken_protocol_managed::types::OutcomeEvaluation::completed_at: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::OutcomeEvaluation::description: alloc::string::String
@@ -1331,9 +1408,13 @@ pub awaken_protocol_managed::types::SendEventsRequest::events: alloc::vec::Vec<a
 pub awaken_protocol_managed::types::SendEventsRequest::user_profile_id: core::option::Option<alloc::string::String>
 pub struct awaken_protocol_managed::types::SendEventsResponse
 pub awaken_protocol_managed::types::SendEventsResponse::data: alloc::vec::Vec<awaken_protocol_managed::types::EventReceipt>
+pub struct awaken_protocol_managed::types::ServerToolUsage
+pub awaken_protocol_managed::types::ServerToolUsage::web_fetch_requests: core::option::Option<u64>
+pub awaken_protocol_managed::types::ServerToolUsage::web_search_requests: core::option::Option<u64>
 pub struct awaken_protocol_managed::types::Session
 pub awaken_protocol_managed::types::Session::agent: awaken_protocol_managed::types::SessionAgent
 pub awaken_protocol_managed::types::Session::archived_at: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::types::Session::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::Session::created_at: alloc::string::String
 pub awaken_protocol_managed::types::Session::deployment_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::Session::environment_id: alloc::string::String
@@ -1368,6 +1449,7 @@ pub awaken_protocol_managed::types::SessionAgentUpdate::tools: core::option::Opt
 pub struct awaken_protocol_managed::types::SessionCreateParams
 pub awaken_protocol_managed::types::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::SessionCreateParams::application_contribution_required: bool
+pub awaken_protocol_managed::types::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
 pub awaken_protocol_managed::types::SessionCreateParams::environment_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SessionCreateParams::initial_events: alloc::vec::Vec<awaken_protocol_managed::types::InboundEvent>
 pub awaken_protocol_managed::types::SessionCreateParams::mcp_servers: alloc::vec::Vec<awaken_protocol_managed::types::McpServer>
@@ -1416,12 +1498,16 @@ pub awaken_protocol_managed::types::SessionThreadStats::active_seconds: core::op
 pub awaken_protocol_managed::types::SessionThreadStats::duration_seconds: core::option::Option<f64>
 pub awaken_protocol_managed::types::SessionThreadStats::startup_seconds: core::option::Option<f64>
 pub struct awaken_protocol_managed::types::SessionThreadUsage
+pub awaken_protocol_managed::types::SessionThreadUsage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::SessionThreadUsage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
 pub awaken_protocol_managed::types::SessionThreadUsage::cache_read_input_tokens: core::option::Option<u64>
 pub awaken_protocol_managed::types::SessionThreadUsage::input_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::SessionThreadUsage::list_cost: core::option::Option<awaken_protocol_managed::types::MonetaryAmount>
 pub awaken_protocol_managed::types::SessionThreadUsage::output_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::SessionThreadUsage::server_tool_use: core::option::Option<awaken_protocol_managed::types::ServerToolUsage>
 pub struct awaken_protocol_managed::types::SessionUpdateParams
 pub awaken_protocol_managed::types::SessionUpdateParams::agent: core::option::Option<awaken_protocol_managed::types::SessionAgentUpdate>
+pub awaken_protocol_managed::types::SessionUpdateParams::budget: core::option::Option<core::option::Option<awaken_protocol_managed::types::BudgetLimit>>
 pub awaken_protocol_managed::types::SessionUpdateParams::metadata: core::option::Option<core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>>
 pub awaken_protocol_managed::types::SessionUpdateParams::title: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::SessionUpdateParams::vault_ids: core::option::Option<alloc::vec::Vec<alloc::string::String>>
@@ -1429,10 +1515,13 @@ pub struct awaken_protocol_managed::types::SpanModelUsage
 pub awaken_protocol_managed::types::SpanModelUsage::speed: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SpanModelUsage::usage: awaken_protocol_managed::types::Usage
 pub struct awaken_protocol_managed::types::Usage
-pub awaken_protocol_managed::types::Usage::cache_creation_input_tokens: u64
-pub awaken_protocol_managed::types::Usage::cache_read_input_tokens: u64
-pub awaken_protocol_managed::types::Usage::input_tokens: u64
-pub awaken_protocol_managed::types::Usage::output_tokens: u64
+pub awaken_protocol_managed::types::Usage::active_seconds: core::option::Option<u64>
+pub awaken_protocol_managed::types::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
+pub awaken_protocol_managed::types::Usage::cache_read_input_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::Usage::input_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::Usage::list_cost: core::option::Option<awaken_protocol_managed::types::MonetaryAmount>
+pub awaken_protocol_managed::types::Usage::output_tokens: core::option::Option<u64>
+pub awaken_protocol_managed::types::Usage::server_tool_use: core::option::Option<awaken_protocol_managed::types::ServerToolUsage>
 pub fn awaken_protocol_managed::types::paginate<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> &str) -> awaken_protocol_managed::types::page::Page<T>
 pub fn awaken_protocol_managed::types::paginate_by<T: core::clone::Clone>(alloc::vec::Vec<T>, &awaken_protocol_managed::types::page::PageQuery, impl core::ops::function::Fn(&T) -> alloc::string::String) -> awaken_protocol_managed::types::page::Page<T>
 pub enum awaken_protocol_managed::ManagedAgentError
@@ -1440,6 +1529,18 @@ pub awaken_protocol_managed::ManagedAgentError::Conflict(alloc::string::String)
 pub awaken_protocol_managed::ManagedAgentError::Invalid(alloc::string::String)
 pub awaken_protocol_managed::ManagedAgentError::NotFound
 pub awaken_protocol_managed::ManagedAgentError::Storage(alloc::string::String)
+pub enum awaken_protocol_managed::ManagedOperation
+pub awaken_protocol_managed::ManagedOperation::Create
+pub awaken_protocol_managed::ManagedOperation::Read
+pub enum awaken_protocol_managed::ManagedRequestSource
+pub awaken_protocol_managed::ManagedRequestSource::Deployment
+pub awaken_protocol_managed::ManagedRequestSource::Http
+pub enum awaken_protocol_managed::ManagedTunnelApplicationError
+pub awaken_protocol_managed::ManagedTunnelApplicationError::Conflict(alloc::string::String)
+pub awaken_protocol_managed::ManagedTunnelApplicationError::Forbidden
+pub awaken_protocol_managed::ManagedTunnelApplicationError::Invalid(alloc::string::String)
+pub awaken_protocol_managed::ManagedTunnelApplicationError::NotFound
+pub awaken_protocol_managed::ManagedTunnelApplicationError::Unavailable(alloc::string::String)
 pub enum awaken_protocol_managed::StateError
 pub awaken_protocol_managed::StateError::Archived
 pub awaken_protocol_managed::StateError::Conflict
@@ -1462,14 +1563,30 @@ pub fn awaken_protocol_managed::EnvironmentAuthoringState::sandbox_policy_store(
 pub struct awaken_protocol_managed::ManagedDeploymentSessionLauncher
 impl awaken_protocol_managed::ManagedDeploymentSessionLauncher
 pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::new(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> Self
-pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::with_rate_limiter(self, alloc::sync::Arc<awaken_protocol_managed::ManagedRateLimiter>) -> Self
+pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::with_rate_limiter(self, alloc::sync::Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>) -> Self
 impl awaken_deployment_application::DeploymentSessionLauncher for awaken_protocol_managed::ManagedDeploymentSessionLauncher
 pub fn awaken_protocol_managed::ManagedDeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_deployment_application::model::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_deployment_application::model::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_protocol_managed::ManagedRateLimitDecision
+pub awaken_protocol_managed::ManagedRateLimitDecision::allowed: bool
+pub awaken_protocol_managed::ManagedRateLimitDecision::limit: u32
+pub awaken_protocol_managed::ManagedRateLimitDecision::remaining: u32
+pub awaken_protocol_managed::ManagedRateLimitDecision::reset_after: u64
+pub awaken_protocol_managed::ManagedRateLimitDecision::retry_after: core::option::Option<u64>
+pub struct awaken_protocol_managed::ManagedRateLimitRequest
+pub awaken_protocol_managed::ManagedRateLimitRequest::operation: awaken_protocol_managed::ManagedOperation
+pub awaken_protocol_managed::ManagedRateLimitRequest::operation_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::ManagedRateLimitRequest::resource: &'static str
+pub awaken_protocol_managed::ManagedRateLimitRequest::source: awaken_protocol_managed::ManagedRequestSource
+pub awaken_protocol_managed::ManagedRateLimitRequest::workspace_id: alloc::string::String
+pub struct awaken_protocol_managed::ManagedRateLimitUnavailable
+pub awaken_protocol_managed::ManagedRateLimitUnavailable::message: alloc::string::String
 pub struct awaken_protocol_managed::ManagedRateLimiter
 impl awaken_protocol_managed::ManagedRateLimiter
 pub fn awaken_protocol_managed::ManagedRateLimiter::for_organization(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_protocol_managed::ManagedRateLimiter::organization_id(&self) -> &str
 pub fn awaken_protocol_managed::ManagedRateLimiter::with_limits(impl core::convert::Into<alloc::string::String>, awaken_protocol_managed::ManagedRateLimits) -> Self
+impl awaken_protocol_managed::ManagedRequestLimiter for awaken_protocol_managed::ManagedRateLimiter
+pub fn awaken_protocol_managed::ManagedRateLimiter::admit<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedRateLimitRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::ManagedRateLimitDecision, awaken_protocol_managed::ManagedRateLimitUnavailable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_protocol_managed::ManagedRateLimits
 pub awaken_protocol_managed::ManagedRateLimits::create_per_minute: u32
 pub awaken_protocol_managed::ManagedRateLimits::read_per_minute: u32
@@ -1520,6 +1637,9 @@ pub async fn awaken_protocol_managed::ManagedState::reconcile_work_dispatches(&s
 impl awaken_dream_application::DreamSessionSource for awaken_protocol_managed::ManagedState
 pub fn awaken_protocol_managed::ManagedState::eligible_sessions<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, usize) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_managed::ManagedState::session_usage<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::option::Option<awaken_session_contract::dream::DreamUsage>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub struct awaken_protocol_managed::ManagedTunnelScope
+pub awaken_protocol_managed::ManagedTunnelScope::operation_id: core::option::Option<alloc::string::String>
+pub awaken_protocol_managed::ManagedTunnelScope::workspace_id: alloc::string::String
 pub struct awaken_protocol_managed::ModelEntry
 pub awaken_protocol_managed::ModelEntry::context_window: core::option::Option<u32>
 pub awaken_protocol_managed::ModelEntry::display_name: alloc::string::String
@@ -1556,6 +1676,7 @@ pub const awaken_protocol_managed::DREAMING_BETA: &str
 pub const awaken_protocol_managed::MANAGED_BETA: &str
 pub const awaken_protocol_managed::MEMORY_BETA: &str
 pub const awaken_protocol_managed::SKILLS_BETA: &str
+pub const awaken_protocol_managed::TUNNELS_BETA: &str
 pub const awaken_protocol_managed::USER_PROFILES_BETA: &str
 pub trait awaken_protocol_managed::ManagedAgentRepository: core::marker::Send + core::marker::Sync
 pub fn awaken_protocol_managed::ManagedAgentRepository::archive<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -1565,12 +1686,27 @@ pub fn awaken_protocol_managed::ManagedAgentRepository::list<'life0, 'life1, 'li
 pub fn awaken_protocol_managed::ManagedAgentRepository::retrieve<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::ManagedAgentRepository::update<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_protocol_managed::types::agent::AgentUpdateParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_protocol_managed::ManagedAgentRepository::versions<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::agent::Agent>, awaken_protocol_managed::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub trait awaken_protocol_managed::ManagedRequestLimiter: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_managed::ManagedRequestLimiter::admit<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedRateLimitRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::ManagedRateLimitDecision, awaken_protocol_managed::ManagedRateLimitUnavailable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl awaken_protocol_managed::ManagedRequestLimiter for awaken_protocol_managed::ManagedRateLimiter
+pub fn awaken_protocol_managed::ManagedRateLimiter::admit<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedRateLimitRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::ManagedRateLimitDecision, awaken_protocol_managed::ManagedRateLimitUnavailable>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_protocol_managed::ManagedTunnelApplication: core::marker::Send + core::marker::Sync
+pub fn awaken_protocol_managed::ManagedTunnelApplication::archive_certificate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::TunnelCertificate, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::archive_tunnel<'life0, 'life1, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::Tunnel, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::create_certificate<'life0, 'life1, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::TunnelCertificate, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::create_tunnel<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, core::option::Option<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::Tunnel, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::list_certificates<'life0, 'life1, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str, bool) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::tunnel::TunnelCertificate>, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::list_tunnels<'life0, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, bool) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::tunnel::Tunnel>, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::retrieve_certificate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::TunnelCertificate, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::retrieve_tunnel<'life0, 'life1, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::Tunnel, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::reveal_token<'life0, 'life1, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::TunnelToken, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_protocol_managed::ManagedTunnelApplication::rotate_token<'life0, 'life1, 'async_trait>(&'life0 self, awaken_protocol_managed::ManagedTunnelScope, &'life1 str, core::option::Option<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::tunnel::TunnelToken, awaken_protocol_managed::ManagedTunnelApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_managed::agents_router(alloc::sync::Arc<awaken_protocol_managed::AgentRegistryState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::default_models() -> alloc::vec::Vec<awaken_protocol_managed::ModelEntry>
 pub fn awaken_protocol_managed::deployments_router(alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::dreams_router(alloc::sync::Arc<awaken_dream_application::DreamApplication>) -> axum::routing::Router
 pub async fn awaken_protocol_managed::enforce_managed_beta(axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
-pub async fn awaken_protocol_managed::enforce_managed_rate_limit(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedRateLimiter>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
+pub async fn awaken_protocol_managed::enforce_managed_rate_limit(axum::extract::state::State<alloc::sync::Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub fn awaken_protocol_managed::environment_authoring_router(alloc::sync::Arc<awaken_protocol_managed::EnvironmentAuthoringState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::environment_work_router(alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::files_router(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> axum::routing::Router
@@ -1581,5 +1717,6 @@ pub async fn awaken_protocol_managed::replace_resource_manifest(axum::extract::s
 pub fn awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput) -> axum::routing::Router
 pub fn awaken_protocol_managed::router(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> axum::routing::Router
 pub fn awaken_protocol_managed::skills_router(core::option::Option<alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>>, alloc::sync::Arc<dyn awaken_resource_contract::lifecycle::ResourcePurgeScheduler>) -> axum::routing::Router
+pub fn awaken_protocol_managed::tunnels_router(alloc::sync::Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::user_profiles_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_protocol_managed::vault_router(alloc::sync::Arc<awaken_protocol_managed::VaultState>) -> axum::routing::Router

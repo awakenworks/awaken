@@ -164,7 +164,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
             request.deployment_run_id.clone(),
         );
         let create = crate::types::SessionCreateParams {
-            agent: crate::types::AgentRef::Object(crate::types::AgentRefObject {
+            agent: crate::types::AgentRef::Object(Box::new(crate::types::AgentRefObject {
                 id: request.agent.id,
                 kind: Some(crate::types::AgentRefKind::Agent),
                 version: Some(agent_version),
@@ -173,7 +173,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 mcp_servers: None,
                 skills: None,
                 model: None,
-            }),
+            })),
             budget: request
                 .budget_max_list_cost_minor
                 .map(crate::types::BudgetLimit::from_minor),

@@ -26,6 +26,7 @@ pub awaken_ext_mcp::error::McpError::DuplicateServerName(alloc::string::String)
 pub awaken_ext_mcp::error::McpError::EmptyServerName
 pub awaken_ext_mcp::error::McpError::InvalidRefreshInterval
 pub awaken_ext_mcp::error::McpError::InvalidToolIdComponent(alloc::string::String)
+pub awaken_ext_mcp::error::McpError::InvalidToolSchema(alloc::string::String)
 pub awaken_ext_mcp::error::McpError::NamespaceCollision
 pub awaken_ext_mcp::error::McpError::NamespaceCollision::existing: alloc::string::String
 pub awaken_ext_mcp::error::McpError::NamespaceCollision::name: alloc::string::String
@@ -232,6 +233,7 @@ pub awaken_ext_mcp::McpError::DuplicateServerName(alloc::string::String)
 pub awaken_ext_mcp::McpError::EmptyServerName
 pub awaken_ext_mcp::McpError::InvalidRefreshInterval
 pub awaken_ext_mcp::McpError::InvalidToolIdComponent(alloc::string::String)
+pub awaken_ext_mcp::McpError::InvalidToolSchema(alloc::string::String)
 pub awaken_ext_mcp::McpError::NamespaceCollision
 pub awaken_ext_mcp::McpError::NamespaceCollision::existing: alloc::string::String
 pub awaken_ext_mcp::McpError::NamespaceCollision::name: alloc::string::String

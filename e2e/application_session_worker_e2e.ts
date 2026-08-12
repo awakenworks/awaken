@@ -13,6 +13,8 @@
 //   C10 = a tool effect is requested after a lease-only renewal
 //   C11 = the exact renewed MCP projection remains locally installed
 //   C12 = the public permission boundary explicitly approves that effect
+//   C13 = the Preparing Session admits the Run before contribution can freeze it
+//   C14 = the Worker installs the standard registered Resource adapters
 //
 // Decision table:
 //   C1 C2 C3 C4 C5 C6 C7 C8 | result
@@ -27,6 +29,8 @@
 //    1  1  1  1  1  1  1  0 + C10 C11 C12 | the already-admitted MCP effect returns 42
 //    1  1  1  1  1  1  1  0 + C10 C11 !C12 | requires_action; no tools/call
 //    1  1  1  1  1  1  1  0 + C10 !C11 | fail closed; never report a fabricated tool result
+//    1  1  1  1  1  1  1  0 + !C13 | contribution cannot be claimed; fail closed without a turn
+//    1  1  1  1  1  1  1  0 + C13 !C14 | frozen continuation remains pending; no false assignment
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -170,12 +174,16 @@ async function main(): Promise<void> {
     try {
       observed = await waitForProjection(client, session.id);
     } catch (error) {
-      const [dispatches, currentSession] = await Promise.all([
+      const [dispatches, currentSession, currentEvents, committedMessages] = await Promise.all([
         fetch(`${BASE}/v1/durable/threads/${session.id}/dispatches`).then((response) => response.text()),
         client.beta.sessions.retrieve(session.id, { betas: BETAS }).catch((cause) => ({ cause: String(cause) })),
+        events(client, session.id).catch((cause) => [{ cause: String(cause) }]),
+        fetch(`${BASE}/v1/durable/threads/${session.id}/messages`).then((response) => response.text()),
       ]);
       throw new Error(
         `${error}\ndispatches: ${dispatches}\nsession: ${JSON.stringify(currentSession)}`
+        + `\nevents: ${JSON.stringify(currentEvents)}`
+        + `\ncommitted messages: ${committedMessages}`
         + `\nWorker output:\n${workerOutput}`,
       );
     }
@@ -245,13 +253,28 @@ async function main(): Promise<void> {
     const callsBeforeRenewedEffect = applicationMcp.calls.filter(
       (call: any) => call.method === 'tools/call',
     ).length;
-    await client.beta.sessions.events.send(session.id, {
-      events: [{
-        type: 'user.message',
-        content: [{ type: 'text', text: 'exercise renewed application MCP' }],
-      }],
-      betas: BETAS,
-    });
+    try {
+      await client.beta.sessions.events.send(session.id, {
+        events: [{
+          type: 'user.message',
+          content: [{ type: 'text', text: 'exercise renewed application MCP' }],
+        }],
+        betas: BETAS,
+      });
+    } catch (error) {
+      const [dispatches, currentSession, currentEvents, committedMessages] = await Promise.all([
+        fetch(`${BASE}/v1/durable/threads/${session.id}/dispatches`).then((response) => response.text()),
+        client.beta.sessions.retrieve(session.id, { betas: BETAS }).catch((cause) => ({ cause: String(cause) })),
+        events(client, session.id).catch((cause) => [{ cause: String(cause) }]),
+        fetch(`${BASE}/v1/durable/threads/${session.id}/messages`).then((response) => response.text()),
+      ]);
+      throw new Error(
+        `${error}\ndispatches: ${dispatches}\nsession: ${JSON.stringify(currentSession)}`
+        + `\nevents: ${JSON.stringify(currentEvents)}`
+        + `\ncommitted messages: ${committedMessages}`
+        + `\nWorker output:\n${workerOutput}`,
+      );
+    }
     const renewedToolUse = await waitForMcpToolUse(client, session.id);
     assert.equal(renewedToolUse.evaluated_permission, 'ask', 'C10+!C12 requires explicit approval');
     assert.equal(

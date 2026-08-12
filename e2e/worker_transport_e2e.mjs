@@ -210,8 +210,8 @@ async function main() {
     // | S3 | true | wrong incarnation | bounded | reject at C3 |
     // | S4 | true | exact | expired | reject at C4 |
     // | S5 | true | exact | beyond registry | reject at C4 |
-    // | S6 | true | exact | bounded | reaches control; unknown Session |
-    // | S7 | true | exact | bounded | preparing Session remains NotReady |
+    // | S6 | true | exact | bounded | reaches control; 404 `not_found` |
+    // | S7 | true | exact | bounded | preparing Session; 409 `not_ready` |
     const incarnation = `${workerIdentity.worker_id}:${workerIdentity.generation}:${workerIdentity.incarnation_id}`;
     const boundedExpiry = Date.now() + 5_000;
     const beginCommand = (overrides = {}) => ({
@@ -241,7 +241,8 @@ async function main() {
     const admitted = await postJson('/v1/worker/session/realization/begin', {
       command: beginCommand(),
     });
-    assert.equal(admitted.status, 400, `S6: ${admitted.text}`);
+    assert.equal(admitted.status, 404, `S6: ${admitted.text}`);
+    assert.equal(admitted.json?.realization_error?.kind, 'not_found', 'S6 typed control result');
     assert.doesNotMatch(
       admitted.text,
       /renewal exceeds authenticated Worker authority/u,
@@ -266,7 +267,12 @@ async function main() {
     const beforeContribution = await postJson('/v1/worker/session/realization/begin', {
       command: { ...beginCommand(), session_id: preparing.id },
     });
-    assert.equal(beforeContribution.status, 400, `S7: ${beforeContribution.text}`);
+    assert.equal(beforeContribution.status, 409, `S7: ${beforeContribution.text}`);
+    assert.equal(
+      beforeContribution.json?.realization_error?.kind,
+      'not_ready',
+      'S7 typed control result',
+    );
     assert.doesNotMatch(
       beforeContribution.text,
       /renewal exceeds authenticated Worker authority/u,

@@ -11,7 +11,7 @@
 // Decision table:
 // | resource | identity | operation | observable behavior |
 // | file | existing | delete | file_deleted then metadata 404 |
-// | model | existing | list/retrieve | typed BetaModelInfo |
+// | model | executable publication | list/retrieve | typed BetaModelInfo |
 // | model | missing | retrieve | 404 without catalog mutation |
 
 import assert from 'node:assert/strict';
@@ -28,7 +28,7 @@ async function drain(pagePromise) {
 
 async function main() {
   try {
-    await withScenarioServer('management', 'mcp', 38134, async (baseUrl, upstream) => {
+    await withScenarioServer('management-providers', 'mcp', 38134, async (baseUrl, upstream) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // -- Files: upload → delete → 404 -------------------------------------
@@ -50,9 +50,10 @@ async function main() {
       // -- Models: list + retrieve + alias-miss 404 -------------------------
       // Model-directory cause/effect rules: M1 no authored catalog facts ->
       // the production live directory is empty (never fixture defaults); M2 an
-      // explicit Provider Connection discovers the fake provider's exact model
-      // -> `/v1/models` projects it. The shared fake provider owns inference and
-      // discovery, avoiding a second model-server implementation.
+      // explicit Provider Connection discovers the fake provider's exact model;
+      // M3 an Agent publication freezes that catalog route into the Coordinator's
+      // executable inventory -> `/v1/models` projects it. The shared fake provider
+      // owns inference and discovery, avoiding a second model-server implementation.
       const connected = await fetch(`${baseUrl}/v1/config/provider-connections`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -68,6 +69,28 @@ async function main() {
         }),
       });
       assert.equal(connected.status, 201, await connected.text());
+      const authored = await fetch(`${baseUrl}/v1/config/agents/files-models-agent`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          id: 'files-models-agent',
+          name: 'Files Models E2E',
+          instructions: 'Exercise the executable model directory.',
+          model: {
+            mode: 'pinned',
+            provider_identity_ref: 'anthropic',
+            model_ref: 'claude-opus-4-8',
+            backend_ref: 'genai',
+          },
+          tools: [],
+        }),
+      });
+      assert.equal(authored.status, 200, await authored.text());
+      const published = await fetch(
+        `${baseUrl}/v1/config/agents/files-models-agent/publish`,
+        { method: 'POST' },
+      );
+      assert.equal(published.status, 200, await published.text());
       const models = await drain(client.beta.models.list({ betas: BETAS }));
       assert.ok(models.length >= 1, 'models list is non-empty');
       assert.ok(

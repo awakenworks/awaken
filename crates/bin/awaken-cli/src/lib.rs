@@ -70,6 +70,7 @@ pub use control::{
     build_control_router, build_control_router_with_publication_resolver,
     build_control_router_with_publication_resolver_and_web_search, prepare_control_process,
     prepare_control_process_with_managed_services,
+    prepare_control_process_with_publication_resolver,
     prepare_control_process_with_publication_resolver_and_web_search,
     prepare_control_process_with_publication_resolver_web_search_and_lifecycle_delivery,
 };

@@ -254,7 +254,35 @@ wait_roles || { diagnostics; exit 1; }
 node "$DRIVER" batch "$API_URL" "$SESSION_ID" "$ENVIRONMENT_ID" ADR71-CHAOS-SLOW 12 &
 BATCH_PID=$!
 sleep 1
-kubectl -n "$NS" delete pod worker-0 --grace-period=0 --force >/dev/null 2>&1
+# A Pod deletion first withdraws Kubernetes networking and may leave userspace
+# briefly alive, which can turn an impending process crash into a genuine
+# provider transport error committed by the still-current claim. That tests a
+# compound network-partition semantic, not C3's hard Worker-process crash.
+# Stop the exact CRI container instead: execution stops before it can author
+# another fact, the Pod identity remains observable, and the durable
+# lease/restart path must reclaim the unfinished Run. Container PID namespaces
+# protect PID 1 from a sibling `kubectl exec` process, so the owning k3d node is
+# the only reliable hard-crash injection boundary.
+WORKER_ZERO_NODE=$(kubectl -n "$NS" get pod worker-0 -o jsonpath='{.spec.nodeName}')
+WORKER_ZERO_CONTAINER=$(kubectl -n "$NS" get pod worker-0 \
+  -o jsonpath='{.status.containerStatuses[0].containerID}')
+WORKER_ZERO_CONTAINER=${WORKER_ZERO_CONTAINER#containerd://}
+WORKER_ZERO_RESTARTS_BEFORE=$(kubectl -n "$NS" get pod worker-0 \
+  -o jsonpath='{.status.containerStatuses[0].restartCount}')
+[[ "$WORKER_ZERO_NODE" == "k3d-${CLUSTER}-"* ]] \
+  && [[ "$WORKER_ZERO_CONTAINER" =~ ^[0-9a-f]{64}$ ]] \
+  && [[ "$WORKER_ZERO_RESTARTS_BEFORE" =~ ^[0-9]+$ ]] \
+  || { err "invalid worker-0 CRI crash target"; exit 1; }
+docker exec "$WORKER_ZERO_NODE" crictl stop --timeout 0 "$WORKER_ZERO_CONTAINER" >/dev/null
+for _ in $(seq 1 90); do
+  WORKER_ZERO_RESTARTS_AFTER=$(kubectl -n "$NS" get pod worker-0 \
+    -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || true)
+  [[ "$WORKER_ZERO_RESTARTS_AFTER" =~ ^[0-9]+$ ]] \
+    && [ "$WORKER_ZERO_RESTARTS_AFTER" -gt "$WORKER_ZERO_RESTARTS_BEFORE" ] && break
+  sleep 1
+done
+[ "${WORKER_ZERO_RESTARTS_AFTER:-0}" -gt "$WORKER_ZERO_RESTARTS_BEFORE" ] \
+  || { err "worker-0 container did not restart after hard process crash"; exit 1; }
 wait "$BATCH_PID"
 wait_roles || { diagnostics; exit 1; }
 kubectl -n "$NS" delete pod "$(kubectl -n "$NS" get pod -l app=provider -o jsonpath='{.items[0].metadata.name}')" --grace-period=0 --force >/dev/null 2>&1
