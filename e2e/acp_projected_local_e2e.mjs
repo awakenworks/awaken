@@ -358,11 +358,11 @@ async function main() {
     });
     const secureFailure = await waitForValue(
       () => codexClient.beta.sessions.retrieve(secureSession.id, { betas: BETAS }),
-      (observed) => observed.status === 'failed',
+      (observed) => observed.status === 'terminated',
       'claim-fenced Namespace MCP custody failure status',
       { timeoutMs: 60_000 },
     );
-    assert.equal(secureFailure.status, 'failed', 'M1: realization failure is durable');
+    assert.equal(secureFailure.status, 'terminated', 'M1: realization failure is durable');
     assert.equal(
       fixture.calls.length,
       0,

@@ -580,6 +580,11 @@ fn to_genai_options(request: &ChatRequest, _streaming: bool) -> Result<ChatOptio
             "inference speed `fast` is not supported by the configured genai adapter".into(),
         ));
     }
+    if let Some(geo) = &request.inference.inference_geo {
+        return Err(Error::InvalidRequest(format!(
+            "inference_geo `{geo}` is not supported by the configured genai adapter"
+        )));
+    }
     let mut options = ChatOptions::default();
     if let Some(effort) = request.inference.effort {
         options = options.with_reasoning_effort(match effort {
@@ -1148,13 +1153,15 @@ mod hermetic_tests {
         // pre-I/O rejection. No branch may silently discard a requested mode.
         //
         // Decision table:
-        // | effort | speed    | provider behavior                         |
-        // | high   | standard | genai reasoning_effort=High              |
-        // | none   | omitted  | default options                          |
-        // | any    | fast     | invalid_request before network execution |
+        // | effort | speed    | geo  | provider behavior                         |
+        // | high   | standard | none | genai reasoning_effort=High              |
+        // | none   | omitted  | none | default options                          |
+        // | any    | fast     | none | invalid_request before network execution |
+        // | any    | any      | set  | invalid_request before network execution |
         let standard = controlled_request(InferenceOptions {
             effort: Some(ReasoningEffort::High),
             speed: Some(InferenceSpeed::Standard),
+            inference_geo: None,
         });
         let options = to_genai_options(&standard, false).unwrap();
         assert!(matches!(
@@ -1168,9 +1175,19 @@ mod hermetic_tests {
         let fast = controlled_request(InferenceOptions {
             effort: Some(ReasoningEffort::Max),
             speed: Some(InferenceSpeed::Fast),
+            inference_geo: None,
         });
         let error = to_genai_options(&fast, false).unwrap_err();
         assert_eq!(error.code(), "invalid_request");
+
+        let geo = controlled_request(InferenceOptions {
+            effort: None,
+            speed: None,
+            inference_geo: Some("us".into()),
+        });
+        let error = to_genai_options(&geo, false).unwrap_err();
+        assert_eq!(error.code(), "invalid_request");
+        assert!(error.to_string().contains("inference_geo `us`"));
     }
 
     /// One SSE frame: `event:`/`data:` lines terminated by a blank line. The

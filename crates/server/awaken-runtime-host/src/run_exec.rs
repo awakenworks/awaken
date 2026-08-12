@@ -364,10 +364,12 @@ impl SessionAttemptExecutor {
         registry
             .register_native(native)
             .expect("fresh Session registry has one native slot");
-        for binding in resolved
-            .iter()
-            .flat_map(|resolved| resolved.candidate_bindings())
-        {
+        for binding in resolved.iter().flat_map(|resolved| {
+            resolved
+                .attempt_candidates(None)
+                .into_iter()
+                .map(|candidate| &candidate.binding)
+        }) {
             let executor = match Backend::from_ref(&binding.backend_ref) {
                 Backend::Native => continue,
                 Backend::Acp { .. } => acp.clone(),
@@ -430,7 +432,7 @@ impl SharedHost {
         let candidates = activation
             .snapshot
             .resolved_spec
-            .execution_candidates(activation.model_ref_override.as_deref());
+            .attempt_candidates(activation.model_ref_override.as_deref());
         let holder = self.inference_plaintext_holder(activation)?;
         let epoch = LOCAL_ATTEMPT_EPOCH
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)

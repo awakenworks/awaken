@@ -145,6 +145,7 @@ fn empty_agent_view(backend_ref: &str) -> ExecutableAgentSessionProfile {
     ExecutableAgentSessionProfile {
         environment: None,
         model: None,
+        inference: Default::default(),
         execution_model_ref: None,
         backend_ref: backend_ref.into(),
         system: None,
@@ -154,6 +155,7 @@ fn empty_agent_view(backend_ref: &str) -> ExecutableAgentSessionProfile {
         mcp_servers: Vec::new(),
         skills: Vec::new(),
         delegate_ids: Vec::new(),
+        advisor_model: None,
         resources: Vec::new(),
     }
 }

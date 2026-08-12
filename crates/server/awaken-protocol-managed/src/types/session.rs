@@ -313,6 +313,8 @@ pub struct ModelConfig {
     pub speed: Option<ModelSpeed>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ModelEffort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<String>,
     /// Optional Awaken behavior carried beside the fully compatible Managed
     /// model fields. Official clients that do not need ACP-native options omit
     /// it and retain the exact SDK shape.
@@ -326,6 +328,34 @@ impl ModelConfig {
             id: id.into(),
             speed: None,
             effort: None,
+            inference_geo: None,
+            x_awaken: None,
+        }
+    }
+
+    /// Canonical neutral-to-Managed inference projection. Agent reads and
+    /// Session inheritance share this owner so a new immutable control cannot
+    /// drift between the two wire paths.
+    pub fn from_inference(
+        id: impl Into<String>,
+        inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
+    ) -> Self {
+        use awaken_runtime_contract::agent_bindings::{InferenceSpeed, ReasoningEffort};
+
+        Self {
+            id: id.into(),
+            speed: inference.speed.map(|value| match value {
+                InferenceSpeed::Standard => ModelSpeed::Standard,
+                InferenceSpeed::Fast => ModelSpeed::Fast,
+            }),
+            effort: inference.effort.map(|value| match value {
+                ReasoningEffort::Low => ModelEffort::Low,
+                ReasoningEffort::Medium => ModelEffort::Medium,
+                ReasoningEffort::High => ModelEffort::High,
+                ReasoningEffort::Xhigh => ModelEffort::Xhigh,
+                ReasoningEffort::Max => ModelEffort::Max,
+            }),
+            inference_geo: inference.inference_geo,
             x_awaken: None,
         }
     }
@@ -405,6 +435,8 @@ pub struct ModelConfigParams {
     #[serde(default)]
     pub effort: Option<ModelEffortInput>,
     #[serde(default)]
+    pub inference_geo: Option<String>,
+    #[serde(default)]
     pub x_awaken: Option<AwakenModelExtensions>,
 }
 
@@ -414,6 +446,7 @@ impl ModelConfigParams {
             id: id.into(),
             speed: None,
             effort: None,
+            inference_geo: None,
             x_awaken: None,
         }
     }
@@ -424,6 +457,7 @@ impl ModelConfigParams {
             id: self.id,
             speed: self.speed,
             effort: self.effort.map(ModelEffortInput::resolved),
+            inference_geo: self.inference_geo,
             x_awaken: self.x_awaken,
         }
     }
@@ -604,9 +638,6 @@ pub struct SpanModelUsage {
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
-    Preparing,
-    Activating,
-    Failed,
     Running,
     Rescheduling,
     #[default]
@@ -618,9 +649,6 @@ impl SessionStatus {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Preparing => "preparing",
-            Self::Activating => "activating",
-            Self::Failed => "failed",
             Self::Running => "running",
             Self::Rescheduling => "rescheduling",
             Self::Idle => "idle",
@@ -1391,9 +1419,9 @@ mod tests {
             }
             other => panic!("expected Set, got {other:?}"),
         }
-        // `{id, speed}` object model override, with a pinned version.
+        // `{id, speed, inference_geo}` object model override, with a pinned version.
         let o: AgentRef = serde_json::from_str(
-            r#"{"id":"assistant","type":"agent_with_overrides","version":2,"model":{"id":"claude-opus-4-8","speed":"fast"}}"#,
+            r#"{"id":"assistant","type":"agent_with_overrides","version":2,"model":{"id":"claude-opus-4-8","speed":"fast","inference_geo":"us"}}"#,
         )
         .unwrap();
         assert_eq!(o.version(), Some(2));
@@ -1401,8 +1429,26 @@ mod tests {
             ModelOverride::Set(cfg) => {
                 assert_eq!(cfg.id, "claude-opus-4-8");
                 assert_eq!(cfg.speed, Some(ModelSpeed::Fast));
+                assert_eq!(cfg.inference_geo.as_deref(), Some("us"));
             }
             other => panic!("expected Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn public_session_status_is_the_exact_sdk_union() {
+        // Cause/effect decision table: each public variant serializes to one SDK
+        // literal; internal preparation/failure phases have no representable
+        // variant and therefore cannot leak through this type.
+        let values = [
+            (SessionStatus::Rescheduling, "rescheduling"),
+            (SessionStatus::Running, "running"),
+            (SessionStatus::Idle, "idle"),
+            (SessionStatus::Terminated, "terminated"),
+        ];
+        assert_eq!(values.len(), 4);
+        for (status, expected) in values {
+            assert_eq!(serde_json::to_value(status).unwrap(), expected);
         }
     }
 

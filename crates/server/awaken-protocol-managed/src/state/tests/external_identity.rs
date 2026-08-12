@@ -31,7 +31,7 @@ async fn externally_identified_application_session_follows_the_causal_decision_t
     assert_eq!(created.id, "flow/run-1", "E1 exact identity");
     assert_eq!(
         created.status,
-        SessionStatus::Preparing,
+        SessionStatus::Rescheduling,
         "E1 waits for contribution"
     );
     let replayed = state

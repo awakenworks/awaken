@@ -138,7 +138,7 @@ async function main(): Promise<void> {
       mcp_servers: [{ name: 'application-calc', type: 'url', url: sessionMcp.url }],
       betas: BETAS,
     } as any);
-    assert.equal(session.status, 'preparing', 'required application leaves one durable preparation intent');
+    assert.equal(session.status, 'rescheduling', 'required application remains within the official status union');
     const binary = buildWorker();
     const runningWorker = spawn(binary, [], {
       cwd: ROOT,

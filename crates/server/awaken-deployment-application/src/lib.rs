@@ -28,7 +28,8 @@ use awaken_executable_agent_contract::{
 use chrono_tz::Tz;
 
 const DEFAULT_SCHEDULED_LIMIT: usize = 1_000;
-const MAX_JITTER_MS: u64 = 10_000;
+const MIN_JITTER_BOUND_MS: u64 = 5_000;
+const MAX_JITTER_BOUND_MS: u64 = 9 * 60_000;
 
 type ScheduledCandidate = (
     String,
@@ -665,7 +666,9 @@ impl DeploymentApplication {
             };
             loop {
                 let next = cron.next_after_in(cursor, timezone);
-                let due = cursor.saturating_add(execution_jitter_ms(deployment_id, cursor));
+                let interval_ms = next.unwrap_or(cursor).saturating_sub(cursor);
+                let due =
+                    cursor.saturating_add(execution_jitter_ms(deployment_id, cursor, interval_ms));
                 if due > now {
                     break;
                 }
@@ -1129,13 +1132,21 @@ fn active_cron(record: &DeploymentRecord) -> Option<(Cron, Tz)> {
     parsed_schedule(record.schedule.as_ref()?)
 }
 
-fn execution_jitter_ms(deployment_id: &str, scheduled_ms: u64) -> u64 {
+fn execution_jitter_bound_ms(interval_ms: u64) -> u64 {
+    interval_ms
+        .saturating_mul(15)
+        .checked_div(100)
+        .unwrap_or_default()
+        .clamp(MIN_JITTER_BOUND_MS, MAX_JITTER_BOUND_MS)
+}
+
+fn execution_jitter_ms(deployment_id: &str, scheduled_ms: u64, interval_ms: u64) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in deployment_id.bytes().chain(scheduled_ms.to_le_bytes()) {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    hash % (MAX_JITTER_MS + 1)
+    hash % (execution_jitter_bound_ms(interval_ms) + 1)
 }
 
 fn launch_for(record: &DeploymentRecord, deployment_id: &str, run_id: &str) -> DeploymentLaunch {
@@ -1274,15 +1285,34 @@ mod tests {
     }
 
     #[test]
-    fn jitter_is_stable_and_bounded_at_extreme_time() {
-        // Cause/effect decision table: J1 same identity -> identical delay;
-        // J2 different schedule instant including u64::MAX -> no panic/wrap in
-        // jitter calculation and delay <=10s. The caller's saturating due-time
-        // addition then fails late rather than firing an overflowed occurrence.
-        let delay = execution_jitter_ms("depl-a", u64::MAX);
-        assert_eq!(delay, execution_jitter_ms("depl-a", u64::MAX), "J1");
-        assert!(delay <= MAX_JITTER_MS, "J2");
-        assert_eq!(u64::MAX.saturating_add(delay), u64::MAX, "J2");
+    fn jitter_is_stable_and_obeys_all_interval_bounds() {
+        // Cause/effect graph: identity + exact scheduled instant select a stable
+        // point within the interval-derived bound. Interval <33.34s reaches the
+        // 5s floor; ordinary intervals use 15%; intervals >60m reach the 9m cap;
+        // extreme timestamps/intervals saturate without wrap.
+        //
+        // Decision table:
+        // | Rule | interval       | bound | effects                         |
+        // | J1   | 10s            | 5s    | stable delay in 0..=5s          |
+        // | J2   | 15m            | 135s  | stable delay in 0..=15%         |
+        // | J3   | 24h            | 9m    | stable delay in 0..=9m          |
+        // | J4   | u64::MAX       | 9m    | no arithmetic/due-time wrap     |
+        for (rule, interval, bound) in [
+            ("J1", 10_000, MIN_JITTER_BOUND_MS),
+            ("J2", 15 * 60_000, 135_000),
+            ("J3", 24 * 60 * 60_000, MAX_JITTER_BOUND_MS),
+            ("J4", u64::MAX, MAX_JITTER_BOUND_MS),
+        ] {
+            assert_eq!(execution_jitter_bound_ms(interval), bound, "{rule}");
+            let delay = execution_jitter_ms("depl-a", u64::MAX, interval);
+            assert_eq!(
+                delay,
+                execution_jitter_ms("depl-a", u64::MAX, interval),
+                "{rule}"
+            );
+            assert!(delay <= bound, "{rule}");
+            assert_eq!(u64::MAX.saturating_add(delay), u64::MAX, "{rule}");
+        }
     }
 
     struct OutcomeLauncher {
@@ -1473,7 +1503,8 @@ mod tests {
         }
         assert!(application.tick(MONDAY_0900).unwrap().is_empty(), "S1");
         let scheduled = MONDAY_0900 + 15 * 60_000;
-        let due = scheduled.saturating_add(execution_jitter_ms(&deployment.id, scheduled));
+        let due =
+            scheduled.saturating_add(execution_jitter_ms(&deployment.id, scheduled, 15 * 60_000));
         assert!(application.tick(due - 1).unwrap().is_empty(), "S2");
         let fired = application.tick(due).unwrap();
         assert_eq!(fired.len(), 1, "S3");
@@ -1626,7 +1657,8 @@ mod tests {
                 calls: calls.clone(),
             }));
         }
-        let due = scheduled.saturating_add(execution_jitter_ms(&deployment.id, scheduled));
+        let due =
+            scheduled.saturating_add(execution_jitter_ms(&deployment.id, scheduled, 15 * 60_000));
         let (left_runs, right_runs) =
             tokio::join!(left.tick_and_launch(due), right.tick_and_launch(due));
         assert_eq!(
@@ -1697,6 +1729,7 @@ mod tests {
         let missing_due = missing_scheduled.saturating_add(execution_jitter_ms(
             &missing_deployment.id,
             missing_scheduled,
+            15 * 60_000,
         ));
         assert!(
             missing
@@ -1936,7 +1969,7 @@ mod tests {
 
         let scheduled = DeploymentApplication::new();
         let deployment = scheduled.create(command(true)).await.unwrap();
-        let scheduled_at = now_ms().saturating_sub(MAX_JITTER_MS);
+        let scheduled_at = now_ms().saturating_sub(MAX_JITTER_BOUND_MS);
         {
             let mut deployments = scheduled.deployments.lock().unwrap();
             let record = deployments.get_mut(&deployment.id).unwrap();

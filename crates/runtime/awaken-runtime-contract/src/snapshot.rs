@@ -83,6 +83,14 @@ impl ExecutableAgentSnapshot {
     pub fn validate_embedded_native(&self) -> Result<(), String> {
         for candidate in std::iter::once(&self.resolved_spec.model_binding)
             .chain(self.resolved_spec.model_candidates.iter())
+            .chain(
+                self.resolved_spec
+                    .plugin_config
+                    .agent
+                    .advisor
+                    .as_ref()
+                    .map(|advisor| &advisor.candidate),
+            )
         {
             if !matches!(
                 Backend::from_ref(&candidate.binding.backend_ref),

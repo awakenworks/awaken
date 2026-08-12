@@ -27,6 +27,8 @@ pub struct ExecutableAgentEnvironment {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExecutableAgentSessionProfile {
     pub model: Option<String>,
+    /// Provider-neutral controls frozen from the same publication as `model`.
+    pub inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
     pub execution_model_ref: Option<String>,
     pub backend_ref: String,
     pub system: Option<String>,
@@ -36,6 +38,7 @@ pub struct ExecutableAgentSessionProfile {
     pub mcp_servers: Vec<ExecutableAgentMcpServer>,
     pub skills: Vec<AgentSkillBinding>,
     pub delegate_ids: Vec<String>,
+    pub advisor_model: Option<String>,
     pub resources: Vec<InputBinding>,
     pub environment: Option<ExecutableAgentEnvironment>,
 }

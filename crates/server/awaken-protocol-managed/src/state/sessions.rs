@@ -10,9 +10,10 @@ use crate::types::AgentRef;
 impl ManagedState {
     pub(super) const fn wire_session_status(execution: SessionExecutionState) -> SessionStatus {
         match execution {
-            SessionExecutionState::Preparing => SessionStatus::Preparing,
-            SessionExecutionState::Activating => SessionStatus::Activating,
-            SessionExecutionState::ActivationFailed => SessionStatus::Failed,
+            SessionExecutionState::Preparing | SessionExecutionState::Activating => {
+                SessionStatus::Rescheduling
+            }
+            SessionExecutionState::ActivationFailed => SessionStatus::Terminated,
             SessionExecutionState::Running => SessionStatus::Running,
             SessionExecutionState::Rescheduling => SessionStatus::Rescheduling,
             SessionExecutionState::Idle => SessionStatus::Idle,
@@ -287,10 +288,11 @@ impl ManagedState {
                     "agent_model_required: a session override cannot clear `model`",
                 )));
             }
-            ModelOverride::Absent => config_view
-                .as_ref()
-                .and_then(|view| view.model.clone())
-                .map(ModelConfig::new),
+            ModelOverride::Absent => config_view.as_ref().and_then(|view| {
+                view.model
+                    .clone()
+                    .map(|id| ModelConfig::from_inference(id, view.inference.clone()))
+            }),
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = req.agent.version().unwrap_or(1);
@@ -298,6 +300,25 @@ impl ManagedState {
             .as_ref()
             .map(|view| view.delegate_ids.clone())
             .unwrap_or_default();
+        let selected_geo = selected_model
+            .as_ref()
+            .and_then(|model| model.inference_geo.as_deref());
+        for delegate_id in &delegate_ids {
+            let delegate = self
+                .application
+                .session_profile(&owner_scope, delegate_id)
+                .ok_or_else(|| {
+                    StateError::Run(RunError::bad_request(format!(
+                        "multiagent_unavailable: Agent `{delegate_id}` has no executable profile"
+                    )))
+                })?;
+            if delegate.inference.inference_geo.as_deref() != selected_geo {
+                return Err(StateError::Run(RunError::bad_request(format!(
+                    "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
+                    selected_geo, delegate.inference.inference_geo
+                ))));
+            }
+        }
         // Anthropic requires MCP declarations and toolsets to be a bijective
         // reference: every declared server has a toolset and every toolset names
         // a declared server. Validate create-time overrides before provisioning.
@@ -604,7 +625,12 @@ impl ManagedState {
                 ),
                 multiagent: config_view.as_ref().map_or_else(
                     || project::agent_multiagent(&caps),
-                    |view| project::agent_multiagent_ids(&view.delegate_ids),
+                    |view| {
+                        project::agent_multiagent_roster(
+                            &view.delegate_ids,
+                            view.advisor_model.as_deref(),
+                        )
+                    },
                 ),
             },
             budget: persisted

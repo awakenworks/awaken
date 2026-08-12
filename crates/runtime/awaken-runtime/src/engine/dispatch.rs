@@ -39,10 +39,7 @@ pub(super) async fn run_tool_calls(
             // relationship after an owner crash.
             ToolRecoveryPolicy::durable_request()
         } else if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
-            ToolRecoveryPolicy {
-                mode: ToolRecoveryMode::ReplaySafe,
-                ..ToolRecoveryPolicy::default()
-            }
+            ToolRecoveryPolicy::replay_safe()
         } else {
             resolved
                 .spec
@@ -245,16 +242,51 @@ pub(super) async fn run_tool_calls(
                             }
                             Some(Err(error)) => delegation_error_output(&call.call_id, error)?,
                             None => {
-                                let operation_id = format!("{}:{}", batch.id.0, call.call_id);
-                                execute_tool(
-                                    runtime,
-                                    Some(env),
-                                    &call,
-                                    context,
-                                    run_id,
-                                    operation_id,
-                                )
-                                .await
+                                let advisor_call =
+                                    resolved.spec.tool_descriptors.iter().any(|descriptor| {
+                                        descriptor.id == call.tool_id
+                                            && descriptor.kind == ToolKind::Advisor
+                                    });
+                                if advisor_call {
+                                    let (output, usage) = if delegation_origin.is_some() {
+                                        (
+                                            ToolOutput::error(
+                                                &call.call_id,
+                                                "Advisor consultation unavailable.",
+                                            ),
+                                            None,
+                                        )
+                                    } else {
+                                        consult_advisor(
+                                            runtime,
+                                            resolved,
+                                            &ledger.transcript,
+                                            &call,
+                                            context,
+                                        )
+                                        .await
+                                    };
+                                    if let Some((model, usage)) = usage {
+                                        fold_thread_usage(
+                                            store,
+                                            &mut ledger.staged_state,
+                                            "advisor usage state drifted; skipping record",
+                                            |tally| tally.record(&model, usage),
+                                        );
+                                    }
+                                    output
+                                } else {
+                                    let operation_id = format!("{}:{}", batch.id.0, call.call_id);
+                                    execute_tool(
+                                        runtime,
+                                        Some(env),
+                                        &call,
+                                        context,
+                                        run_id,
+                                        operation_id,
+                                    )
+                                    .await
+                                }
                             }
                         }
                     }

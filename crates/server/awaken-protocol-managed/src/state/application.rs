@@ -732,6 +732,7 @@ mod tests {
         let view = awaken_executable_agent_contract::ExecutableAgentSessionProfile {
             environment: None,
             model: None,
+            inference: Default::default(),
             execution_model_ref: None,
             backend_ref: "genai".into(),
             system: None,
@@ -746,6 +747,7 @@ mod tests {
             ],
             skills: Vec::new(),
             delegate_ids: Vec::new(),
+            advisor_model: None,
             resources: Vec::new(),
         };
         let candidates = initial_mcp_candidates(

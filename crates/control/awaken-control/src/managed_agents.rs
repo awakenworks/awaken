@@ -179,12 +179,26 @@ impl ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         config: &mut AgentConfig,
     ) -> Result<(), ManagedAgentError> {
+        let coordinator_geo = config.inference.inference_geo.clone();
         let Some(multiagent) = config.multiagent.as_mut() else {
             return Ok(());
         };
         multiagent
             .validate(&config.id)
             .map_err(ManagedAgentError::Invalid)?;
+        if let Some(advisor_model) = multiagent
+            .agents
+            .iter()
+            .find_map(MultiagentTarget::advisor_model)
+        {
+            let executor_model = render_managed_model_id(&config.model_binding)
+                .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
+            if !advisor_pair_supported(&executor_model, advisor_model) {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "unsupported advisor model pairing: executor `{executor_model}`, advisor `{advisor_model}`"
+                )));
+            }
+        }
         for target in &mut multiagent.agents {
             let MultiagentTarget::Agent { id, version } = target else {
                 continue;
@@ -222,10 +236,60 @@ impl ConfigPlaneManagedAgentRepository {
                     "multiagent Agent `{id}` is itself a coordinator; delegation depth is limited to one referenced level"
                 )));
             }
+            if selected.config.inference.inference_geo != coordinator_geo {
+                return Err(ManagedAgentError::Invalid(format!(
+                    "multiagent inference_geo mismatch: coordinator is {:?}, Agent `{id}` is {:?}",
+                    coordinator_geo, selected.config.inference.inference_geo
+                )));
+            }
             *version = Some(selected.revision);
         }
         Ok(())
     }
+}
+
+fn advisor_pair_supported(executor: &str, advisor: &str) -> bool {
+    let allowed: &[&str] = match executor {
+        "claude-haiku-4-5" | "claude-sonnet-4-6" => &[
+            "claude-mythos-5",
+            "claude-fable-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+        ],
+        "claude-sonnet-5" => &[
+            "claude-mythos-5",
+            "claude-fable-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-sonnet-5",
+        ],
+        "claude-opus-4-6" => &[
+            "claude-mythos-5",
+            "claude-fable-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-5",
+        ],
+        "claude-opus-4-7" | "claude-opus-4-8" => &[
+            "claude-mythos-5",
+            "claude-fable-5",
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+        ],
+        "claude-opus-5" | "claude-fable-5" | "claude-mythos-5" => {
+            &["claude-mythos-5", "claude-fable-5", "claude-opus-5"]
+        }
+        _ => return false,
+    };
+    allowed.contains(&advisor)
 }
 
 fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
@@ -299,6 +363,9 @@ fn typed_multiagent(value: WireMultiagent) -> MultiagentConfig {
                     version: reference.version,
                 },
                 MultiagentRosterEntry::SelfReference(_) => MultiagentTarget::SelfReference,
+                MultiagentRosterEntry::Advisor(advisor) => MultiagentTarget::Advisor {
+                    model: advisor.model,
+                },
             })
             .collect(),
     }
@@ -309,7 +376,11 @@ fn config_from_create(
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
-    let inference = inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
+    let inference = inference_from_wire(
+        model.speed,
+        model.effort.map(|value| value.resolved()),
+        model.inference_geo,
+    );
     let mut model_binding = parse_managed_model_id(&model.id)
         .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
     apply_model_extensions(&mut model_binding, model.x_awaken)?;
@@ -362,6 +433,16 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
     if config.max_steps == 0 {
         return Err(ManagedAgentError::Invalid(
             "x_awaken.max_steps must be greater than or equal to 1".into(),
+        ));
+    }
+    if config
+        .inference
+        .inference_geo
+        .as_deref()
+        .is_some_and(|geo| geo.trim().is_empty())
+    {
+        return Err(ManagedAgentError::Invalid(
+            "model.inference_geo must not be empty".into(),
         ));
     }
     if config.mcp_servers.len() > 20 {
@@ -466,7 +547,11 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
     Ok(())
 }
 
-fn inference_from_wire(speed: Option<ModelSpeed>, effort: Option<ModelEffort>) -> InferenceOptions {
+fn inference_from_wire(
+    speed: Option<ModelSpeed>,
+    effort: Option<ModelEffort>,
+    inference_geo: Option<String>,
+) -> InferenceOptions {
     InferenceOptions {
         speed: speed.map(|value| match value {
             ModelSpeed::Standard => InferenceSpeed::Standard,
@@ -479,6 +564,7 @@ fn inference_from_wire(speed: Option<ModelSpeed>, effort: Option<ModelEffort>) -
             ModelEffort::Xhigh => ReasoningEffort::Xhigh,
             ModelEffort::Max => ReasoningEffort::Max,
         }),
+        inference_geo,
     }
 }
 
@@ -516,25 +602,13 @@ fn model_config(
     inference: InferenceOptions,
     acp: Option<&awaken_runtime_contract::resolved::AcpSessionConfiguration>,
 ) -> ModelConfig {
-    ModelConfig {
-        id: model,
-        speed: inference.speed.map(|value| match value {
-            InferenceSpeed::Standard => ModelSpeed::Standard,
-            InferenceSpeed::Fast => ModelSpeed::Fast,
-        }),
-        effort: inference.effort.map(|value| match value {
-            ReasoningEffort::Low => ModelEffort::Low,
-            ReasoningEffort::Medium => ModelEffort::Medium,
-            ReasoningEffort::High => ModelEffort::High,
-            ReasoningEffort::Xhigh => ModelEffort::Xhigh,
-            ReasoningEffort::Max => ModelEffort::Max,
-        }),
-        x_awaken: acp
-            .filter(|configuration| !configuration.is_empty())
+    let mut projected = ModelConfig::from_inference(model, inference);
+    projected.x_awaken =
+        acp.filter(|configuration| !configuration.is_empty())
             .map(|configuration| AwakenModelExtensions {
                 acp: Some(configuration.clone()),
-            }),
-    }
+            });
+    projected
 }
 
 fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
@@ -626,29 +700,41 @@ fn project(revision: AgentConfigRevision) -> Agent {
             .map(AgentSkill::from_binding)
             .collect(),
         tools,
-        multiagent: config.multiagent.map(|value| WireMultiagent::Coordinator {
-            agents: value
+        multiagent: config.multiagent.map(|value| {
+            let mut advisor = None;
+            let mut agents = value
                 .agents
                 .into_iter()
-                .map(|target| match target {
+                .filter_map(|target| match target {
                     MultiagentTarget::Agent { id, version } => {
-                        MultiagentRosterEntry::Reference(
+                        Some(MultiagentRosterEntry::Reference(
                             awaken_protocol_managed::types::agent::AgentRosterReference {
                                 id,
                                 kind: awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent,
                                 version: Some(version.unwrap_or(1)),
                             },
-                        )
+                        ))
                     }
-                    MultiagentTarget::SelfReference => MultiagentRosterEntry::Reference(
+                    MultiagentTarget::SelfReference => Some(MultiagentRosterEntry::Reference(
                         awaken_protocol_managed::types::agent::AgentRosterReference {
                             id: id.clone(),
                             kind: awaken_protocol_managed::types::agent::AgentRosterReferenceKind::Agent,
                             version: Some(revision_number),
                         },
-                    ),
+                    )),
+                    MultiagentTarget::Advisor { model } => {
+                        advisor = Some(MultiagentRosterEntry::Advisor(
+                            awaken_protocol_managed::types::agent::AdvisorRosterReference {
+                                model,
+                                kind: awaken_protocol_managed::types::agent::AdvisorRosterReferenceKind::Advisor,
+                            },
+                        ));
+                        None
+                    }
                 })
-                .collect(),
+                .collect::<Vec<_>>();
+            agents.extend(advisor);
+            WireMultiagent::Coordinator { agents }
         }),
         x_awaken,
         version: revision.revision,
@@ -820,8 +906,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             let prior_effort = config.inference.effort;
             let prior_acp =
                 acp_configuration_to_preserve(&config, &model.id, model.x_awaken.is_none());
-            config.inference =
-                inference_from_wire(model.speed, model.effort.map(|value| value.resolved()));
+            config.inference = inference_from_wire(
+                model.speed,
+                model.effort.map(|value| value.resolved()),
+                model.inference_geo,
+            );
             if preserve_effort {
                 config.inference.effort = prior_effort;
             }
@@ -1041,7 +1130,7 @@ mod tests {
     use awaken_config_store::SqliteConfigStore;
     use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
-    use awaken_runtime_contract::resolved::ModelBinding;
+    use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor, ToolKind};
     use serde_json::json;
 
     use super::*;
@@ -1494,7 +1583,7 @@ mod tests {
         //
         // Decision table:
         // | create controls       | persisted response | executable snapshot |
-        // | fast + {type:xhigh}   | exact typed values | exact typed values   |
+        // | fast + xhigh + us     | exact typed values | exact typed values   |
         // | repository restart    | values preserved   | republished values   |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
@@ -1505,7 +1594,8 @@ mod tests {
             params.model = serde_json::from_value(json!({
                 "id": "claude-opus-4-8",
                 "speed": "fast",
-                "effort": {"type": "xhigh"}
+                "effort": {"type": "xhigh"},
+                "inference_geo": "us"
             }))
             .unwrap();
             let created = repository.create("workspace-a", params).await.unwrap();
@@ -1519,6 +1609,7 @@ mod tests {
                 InferenceOptions {
                     speed: Some(InferenceSpeed::Fast),
                     effort: Some(ReasoningEffort::Xhigh),
+                    inference_geo: Some("us".into()),
                 }
             );
             created.id
@@ -1529,6 +1620,7 @@ mod tests {
         let restored = repository.retrieve("workspace-a", &id, None).await.unwrap();
         assert_eq!(restored.model.speed, Some(ModelSpeed::Fast));
         assert_eq!(restored.model.effort, Some(ModelEffort::Xhigh));
+        assert_eq!(restored.model.inference_geo.as_deref(), Some("us"));
         plane
             .publish(&ScopeId::from("workspace-a"), &id)
             .await
@@ -1541,7 +1633,146 @@ mod tests {
             InferenceOptions {
                 speed: Some(InferenceSpeed::Fast),
                 effort: Some(ReasoningEffort::Xhigh),
+                inference_geo: Some("us".into()),
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn multiagent_geo_is_validated_against_exact_published_roster() {
+        // Cause/effect graph: each Agent publication freezes an optional geo;
+        // resolving a coordinator roster loads the exact referenced revisions
+        // and compares them before the coordinator write/publish boundary.
+        //
+        // Decision table:
+        // | Rule | coordinator | delegate | effect                         |
+        // | G1   | us          | us       | create and freeze exact roster |
+        // | G2   | global      | us       | 400-equivalent, no Agent       |
+        // | G3   | omitted     | us       | 400-equivalent, no Agent       |
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let plane = ConfigPlane::new(
+            Arc::new(ConfigService::new(
+                Arc::new(TestModelResolver),
+                Arc::new(LocalExecutableAgentRegistrar::new(catalog)),
+            )),
+            Arc::new(SqliteConfigStore::open(path.to_str().unwrap()).expect("config store")),
+            Arc::new(StaticToolCatalog(vec![
+                ToolDescriptor::pinned(
+                    "managed",
+                    "agent_run",
+                    "Run an exact roster Agent",
+                    json!({"type": "object"}),
+                )
+                .with_kind(ToolKind::AgentDelegation),
+            ])),
+        );
+        let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
+        let mut worker = create_params("worker");
+        worker.model = serde_json::from_value(json!({
+            "id": "model-a",
+            "inference_geo": "us"
+        }))
+        .unwrap();
+        let worker = repository.create("workspace-a", worker).await.unwrap();
+
+        let coordinator = |geo: Option<&str>| {
+            let mut params = create_params("coordinator");
+            params.model = match geo {
+                Some(geo) => serde_json::from_value(json!({
+                    "id": "model-a",
+                    "inference_geo": geo
+                }))
+                .unwrap(),
+                None => ModelInput::Id("model-a".into()),
+            };
+            params.multiagent = Some(
+                serde_json::from_value(json!({
+                    "type": "coordinator",
+                    "agents": [{"type":"agent", "id":worker.id.clone()}]
+                }))
+                .unwrap(),
+            );
+            params
+        };
+        let accepted = repository
+            .create("workspace-a", coordinator(Some("us")))
+            .await
+            .expect("G1");
+        assert_eq!(accepted.model.inference_geo.as_deref(), Some("us"), "G1");
+        for (rule, geo) in [("G2", Some("global")), ("G3", None)] {
+            let error = repository
+                .create("workspace-a", coordinator(geo))
+                .await
+                .expect_err(rule);
+            assert!(
+                matches!(error, ManagedAgentError::Invalid(ref message) if message.contains("inference_geo mismatch")),
+                "{rule}: {error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn advisor_pairing_and_projection_follow_the_official_matrix() {
+        // Cause/effect graph: Managed advisor DTO -> canonical roster validation
+        // -> official executor/advisor compatibility matrix -> exact advisor
+        // publication. Projection always places the reserved advisor last.
+        //
+        // Decision table:
+        // | Rule | executor     | advisor      | effect                       |
+        // | D1   | sonnet-5    | opus-5      | publish, advisor projected    |
+        // | D2   | opus-4-6    | opus-4-6    | supported matrix edge         |
+        // | D3   | opus-5      | opus-4-8    | reject before Agent mutation  |
+        // | D4   | unknown     | opus-5      | reject before Agent mutation  |
+        assert!(
+            advisor_pair_supported("claude-opus-4-6", "claude-opus-4-6"),
+            "D2"
+        );
+        assert!(
+            !advisor_pair_supported("claude-opus-5", "claude-opus-4-8"),
+            "D3"
+        );
+        assert!(!advisor_pair_supported("unknown", "claude-opus-5"), "D4");
+
+        let temp = tempfile::tempdir().unwrap();
+        let repository = ConfigPlaneManagedAgentRepository::new(
+            plane(temp.path().join("config.sqlite").to_str().unwrap()),
+            "workspace-a",
+        );
+        let mut accepted = create_params("advisor-compatible");
+        accepted.model = ModelInput::Id("claude-sonnet-5".into());
+        accepted.multiagent = Some(
+            serde_json::from_value(json!({
+                "type": "coordinator",
+                "agents": [{"type":"advisor", "model":"claude-opus-5"}]
+            }))
+            .unwrap(),
+        );
+        let created = repository
+            .create("workspace-a", accepted)
+            .await
+            .expect("D1");
+        let projected = serde_json::to_value(created.multiagent).unwrap();
+        assert_eq!(projected["agents"][0]["type"], "advisor", "D1");
+        assert_eq!(projected["agents"][0]["model"], "claude-opus-5", "D1");
+
+        let mut rejected = create_params("advisor-incompatible");
+        rejected.model = ModelInput::Id("claude-opus-5".into());
+        rejected.multiagent = Some(
+            serde_json::from_value(json!({
+                "type": "coordinator",
+                "agents": [{"type":"advisor", "model":"claude-opus-4-8"}]
+            }))
+            .unwrap(),
+        );
+        assert!(
+            matches!(
+                repository.create("workspace-a", rejected).await,
+                Err(ManagedAgentError::Invalid(ref message))
+                    if message.contains("unsupported advisor model pairing")
+            ),
+            "D3"
         );
     }
 

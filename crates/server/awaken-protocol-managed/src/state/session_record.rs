@@ -103,8 +103,8 @@ mod tests {
     fn runtime_status_projection_decision_table_preserves_application_authority() {
         // Cause/effect graph: C1=the durable application status is an ordinary
         // Runtime phase (idle/running); C2=it is a realization/recovery phase
-        // (preparing/activating/rescheduling); C3=it is terminal
-        // (failed/terminated); C4=a delayed Runtime lifecycle hint arrives.
+        // (rescheduling, including internal prepare/activate); C3=it is terminal;
+        // C4=a delayed Runtime lifecycle hint arrives.
         // E1=the disposable wire status follows the Runtime hint; E2=the wire
         // status retains the application's stronger state. Constraint: exactly
         // one of C1/C2/C3 is true. Decision table:
@@ -118,13 +118,7 @@ mod tests {
                 "R1/{initial:?}"
             );
         }
-        for initial in [
-            SessionStatus::Preparing,
-            SessionStatus::Activating,
-            SessionStatus::Rescheduling,
-            SessionStatus::Failed,
-            SessionStatus::Terminated,
-        ] {
+        for initial in [SessionStatus::Rescheduling, SessionStatus::Terminated] {
             assert!(
                 !SessionRecord::accepts_runtime_status(initial),
                 "R2-R3/{initial:?}"

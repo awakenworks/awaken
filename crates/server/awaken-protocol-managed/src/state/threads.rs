@@ -69,10 +69,8 @@ impl ManagedState {
         match status {
             SessionStatus::Idle => SessionThreadStatus::Idle,
             SessionStatus::Rescheduling => SessionThreadStatus::Rescheduling,
-            SessionStatus::Failed | SessionStatus::Terminated => SessionThreadStatus::Terminated,
-            SessionStatus::Running | SessionStatus::Preparing | SessionStatus::Activating => {
-                SessionThreadStatus::Running
-            }
+            SessionStatus::Terminated => SessionThreadStatus::Terminated,
+            SessionStatus::Running => SessionThreadStatus::Running,
         }
     }
 
@@ -274,10 +272,7 @@ mod tests {
                 SessionThreadStatus::Rescheduling,
             ),
             (SessionStatus::Terminated, SessionThreadStatus::Terminated),
-            (SessionStatus::Failed, SessionThreadStatus::Terminated),
             (SessionStatus::Running, SessionThreadStatus::Running),
-            (SessionStatus::Preparing, SessionThreadStatus::Running),
-            (SessionStatus::Activating, SessionThreadStatus::Running),
         ];
 
         for (source, expected) in cases {

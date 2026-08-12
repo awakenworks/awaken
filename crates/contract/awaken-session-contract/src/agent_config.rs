@@ -78,8 +78,16 @@ pub struct AgentToolDefaultConfig {
 
 /// The official Managed Agent toolset's versioned membership. It lives beside
 /// the wire value so every adapter normalizes the same closed set.
-pub const AGENT_TOOLSET_TOOL_IDS: [&str; 7] =
-    ["bash", "read", "write", "edit", "glob", "grep", "web_fetch"];
+pub const AGENT_TOOLSET_TOOL_IDS: [&str; 8] = [
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "web_fetch",
+    "web_search",
+];
 
 #[must_use]
 pub fn is_agent_toolset_member(name: &str) -> bool {
@@ -226,4 +234,64 @@ pub fn resolved_toolsets(policies: &[awaken_agent_contract::ToolsetPolicy]) -> V
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_agent_toolset_has_one_exact_eight_member_source() {
+        // Cause/effect graph: the official versioned toolset declaration is the
+        // closed membership source; policy normalization must materialize every
+        // member once and must not create a second WebSearch representation.
+        //
+        // Decision table:
+        // | Rule | authored overrides      | effects                         |
+        // | T1   | none                    | exact eight unique defaults     |
+        // | T2   | web_search disabled     | same member, disabled once      |
+        // | T3   | unknown name            | retained for admission reject  |
+        assert_eq!(
+            AGENT_TOOLSET_TOOL_IDS,
+            [
+                "bash",
+                "read",
+                "write",
+                "edit",
+                "glob",
+                "grep",
+                "web_fetch",
+                "web_search",
+            ],
+            "T1"
+        );
+        let policies = toolset_policies(&[AgentTool::AgentToolset20260401 {
+            configs: vec![AgentToolConfig {
+                name: "web_search".into(),
+                enabled: Some(false),
+                permission_policy: None,
+            }],
+            default_config: None,
+        }]);
+        let overrides = &policies[0].overrides;
+        assert_eq!(overrides.len(), 8, "T1");
+        assert_eq!(
+            overrides
+                .iter()
+                .filter(|entry| entry.name == "web_search")
+                .count(),
+            1,
+            "T2"
+        );
+        assert!(
+            !overrides
+                .iter()
+                .find(|entry| entry.name == "web_search")
+                .expect("official member")
+                .policy
+                .enabled,
+            "T2"
+        );
+        assert!(!is_agent_toolset_member("parallel_web_search"), "T3");
+    }
 }

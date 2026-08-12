@@ -121,7 +121,7 @@ pub fn self_hosted_inference_holder(
     for candidate in activation
         .snapshot
         .resolved_spec
-        .execution_candidates(activation.model_ref_override.as_deref())
+        .attempt_candidates(activation.model_ref_override.as_deref())
     {
         let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(_),

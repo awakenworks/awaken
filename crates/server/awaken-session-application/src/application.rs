@@ -409,7 +409,12 @@ impl SessionApplication {
         };
         let mut pending = source
             .session_profile_in(workspace_id, root_agent_id)
-            .map(|profile| profile.delegate_ids)
+            .map(|profile| {
+                if let Some(advisor) = profile.advisor_model {
+                    models.insert(advisor);
+                }
+                profile.delegate_ids
+            })
             .unwrap_or_default();
         let mut visited = std::collections::BTreeSet::new();
         while let Some(agent_id) = pending.pop() {

@@ -2,6 +2,112 @@
 
 use super::*;
 
+struct AdvisorDeltaSink;
+
+#[async_trait]
+impl DeltaSink for AdvisorDeltaSink {
+    async fn on_text(&self, _chunk: &str) {}
+}
+
+/// Execute the publication-pinned advisor through the existing model
+/// port. The primary transcript receives only the final tool result; advisor
+/// streaming is intentionally suppressed so partial/private advice cannot leak
+/// onto the primary live stream.
+pub(super) async fn consult_advisor(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    transcript: &[Message],
+    call: &ToolCall,
+    context: &RuntimeRunContext,
+) -> (
+    ToolOutput,
+    Option<(String, awaken_runtime_contract::llm::TokenUsage)>,
+) {
+    let Some(advisor) = resolved.spec.plugin_config.agent.advisor.as_ref() else {
+        return (
+            ToolOutput::error(&call.call_id, "Advisor consultation unavailable."),
+            None,
+        );
+    };
+    let mut messages = Vec::with_capacity(transcript.len() + 2);
+    let advisor_system = if resolved.spec.instructions.is_empty() {
+        "You are an advisor. Review the conversation and provide a concise, independent second opinion to the primary agent."
+            .to_string()
+    } else {
+        format!(
+            "You are an advisor. Review the conversation and provide a concise, independent second opinion to the primary agent. The primary agent's instructions are:\n{}",
+            resolved.spec.instructions
+        )
+    };
+    messages.push(ChatMessage {
+        role: Role::System,
+        content: vec![ContentBlock::text(advisor_system)],
+    });
+    // The last message is the primary assistant's request to invoke the
+    // advisor. Sending that unresolved function call to a second provider would
+    // violate provider transcript pairing, so the advisor sees the complete
+    // conversation immediately before the invocation plus an explicit request.
+    let history = transcript
+        .last()
+        .is_some_and(|message| message.role == Role::Assistant)
+        .then(|| &transcript[..transcript.len().saturating_sub(1)])
+        .unwrap_or(transcript);
+    messages.extend(history.iter().map(to_chat_message));
+    messages.push(ChatMessage {
+        role: Role::User,
+        content: vec![ContentBlock::text(
+            "Provide your advice for the primary agent now.",
+        )],
+    });
+    let request = ChatRequest {
+        model_binding: advisor.candidate.binding.clone(),
+        inference: resolved.spec.plugin_config.inference.clone(),
+        messages,
+        tools: Vec::new(),
+    };
+    let Some(llm) = runtime.llm() else {
+        return (
+            ToolOutput::error(&call.call_id, "Advisor consultation unavailable."),
+            None,
+        );
+    };
+    match infer_with_retry(
+        llm,
+        request,
+        runtime.retry_policy(),
+        runtime.circuit_breaker(),
+        &AdvisorDeltaSink,
+        None,
+        None,
+        &context.capture.decision,
+        context.content_sink(),
+        runtime.metrics(),
+        None,
+    )
+    .await
+    {
+        Ok(response) if response.output.tool_calls().is_empty() => {
+            let text = response.output.text_content();
+            if text.trim().is_empty() {
+                return (
+                    ToolOutput::error(&call.call_id, "Advisor consultation unavailable."),
+                    None,
+                );
+            }
+            (
+                ToolOutput::ok(&call.call_id, text),
+                response
+                    .usage
+                    .map(|usage| (advisor.candidate.binding.model_ref.clone(), usage)),
+            )
+        }
+        Ok(_) | Err(_) => (
+            ToolOutput::error(&call.call_id, "Advisor consultation unavailable."),
+            None,
+        ),
+    }
+}
+
 /// Apply the Session's one model-visible tool-output policy before the result is
 /// persisted in a ToolBatch or appended to the transcript. Keeping this beside
 /// the loop lets fresh, recovered, and resumed paths share it without teaching

@@ -790,7 +790,7 @@ async function main(): Promise<void> {
     // This process topology always uses its authenticated registered Worker, so
     // create returns the first row and the turn below crosses the second row.
     assert.deepEqual(session.body.resources, [], 'unacknowledged inputs are not active');
-    assert.equal(session.body.status, 'preparing');
+    assert.equal(session.body.status, 'rescheduling');
     const turn = await json(
       'POST',
       scoped(WORKSPACE, `sessions/${session.body.id}/events`),

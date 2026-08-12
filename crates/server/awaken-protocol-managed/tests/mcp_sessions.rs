@@ -970,7 +970,7 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
             .expect("recoverable failed intent");
         if kind == RunErrorKind::Unavailable {
             assert_eq!(read_status, StatusCode::OK, "R3 queryable retry");
-            assert_eq!(read["status"], "preparing", "R3");
+            assert_eq!(read["status"], "rescheduling", "R3");
             assert_eq!(failed.execution, SessionExecutionState::Preparing, "R3");
             assert_eq!(failed.realization_progress.attempts, 1, "R3");
             assert_eq!(
@@ -2063,12 +2063,12 @@ async fn minting_namespace_cannot_alias_committed_truth() {
 /// | Rule | C1 | wire status | Runtime prepare | idled fact | contribution |
 /// |---|---|---|---|---|---|
 /// | A1 | 0 | idle | once | once | NotRequired |
-/// | A2 | 1 | preparing | never | never | Accepted |
+/// | A2 | 1 | rescheduling | never | never | Accepted |
 #[tokio::test]
 async fn application_required_creation_is_generated_from_the_decision_table() {
     for (required, expected_status, expected_prepares, expected_facts, rule) in [
         (false, SessionStatus::Idle, 1, 1, "A1"),
-        (true, SessionStatus::Preparing, 0, 0, "A2"),
+        (true, SessionStatus::Rescheduling, 0, 0, "A2"),
     ] {
         let prepared = Arc::new(Mutex::new(Vec::new()));
         let notifier = Arc::new(CountingLifecycleNotifier::default());
@@ -2187,7 +2187,7 @@ async fn preparing_session_can_be_cancelled_without_runtime_realization() {
         )
         .await
         .expect("create preparing Session");
-    assert_eq!(session.status, SessionStatus::Preparing);
+    assert_eq!(session.status, SessionStatus::Rescheduling);
     assert!(prepared.lock().unwrap().is_empty());
 
     state

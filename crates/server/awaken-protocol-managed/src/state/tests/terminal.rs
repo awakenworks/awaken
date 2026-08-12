@@ -36,7 +36,7 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
         )
         .await
         .expect("R1/E1 durable demand is accepted");
-    assert_eq!(created.status, SessionStatus::Preparing, "R1/E1");
+    assert_eq!(created.status, SessionStatus::Rescheduling, "R1/E1");
     let scan = repo.reconcilable_sessions().await.unwrap();
     assert_eq!(scan.sessions.len(), 1, "R1/E2");
     let persisted = &scan.sessions[0];
