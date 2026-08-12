@@ -711,17 +711,40 @@ impl ToolDescriptor {
         description: impl Into<String>,
         parameters: serde_json::Value,
     ) -> Self {
+        Self::try_pinned(prefix, id, description, parameters)
+            .expect("trusted tool descriptors must carry a valid object parameter schema")
+    }
+
+    /// Fallible constructor for descriptors originating outside the trusted
+    /// process, such as MCP or protocol clients. It shares the exact canonical
+    /// schema and content-hash path with [`Self::pinned`].
+    pub fn try_pinned(
+        prefix: &str,
+        id: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Result<Self, ToolSchemaError> {
+        let parameters = normalize_model_tool_schema(parameters)?;
         let id = id.into();
         let description = description.into();
         let content_hash = content_hash(prefix, &id, &description, &parameters);
-        Self {
+        Ok(Self {
             id,
             description,
             parameters,
             content_hash,
             kind: ToolKind::Regular,
             recovery_policy: crate::tool::ToolRecoveryPolicy::default(),
-        }
+        })
+    }
+
+    /// Return the one provider-compatible projection of this descriptor's
+    /// parameter schema. Persisted legacy descriptors may predate explicit
+    /// empty `properties`; normalize that equivalent shape at the descriptor
+    /// authority instead of teaching every provider adapter a compatibility
+    /// rule. Structurally invalid schemas still fail before network I/O.
+    pub fn model_parameters(&self) -> Result<serde_json::Value, ToolSchemaError> {
+        normalize_model_tool_schema(self.parameters.clone())
     }
 
     /// Build a tool whose result is owned by the calling protocol client. This
@@ -760,6 +783,128 @@ impl ToolDescriptor {
         self.recovery_policy = recovery;
         self
     }
+}
+
+/// Why a model-visible tool parameter schema cannot be projected safely.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("invalid model tool schema at {path}: {reason}")]
+pub struct ToolSchemaError {
+    path: String,
+    reason: String,
+}
+
+impl ToolSchemaError {
+    fn new(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
+/// Canonicalize one model-visible JSON Schema before hashing or provider
+/// projection. Tool arguments are always an object. Missing object
+/// `properties` and array `items` are compatibility-equivalent omissions and
+/// receive explicit empty values; contradictory types fail closed.
+pub fn normalize_model_tool_schema(
+    mut schema: serde_json::Value,
+) -> Result<serde_json::Value, ToolSchemaError> {
+    let root = schema
+        .as_object_mut()
+        .ok_or_else(|| ToolSchemaError::new("$", "root must be a JSON object"))?;
+    match root.get("type") {
+        None => {
+            root.insert("type".into(), serde_json::Value::String("object".into()));
+        }
+        Some(serde_json::Value::String(kind)) if kind == "object" => {}
+        Some(_) => {
+            return Err(ToolSchemaError::new(
+                "$.type",
+                "tool arguments must have type `object`",
+            ));
+        }
+    }
+    normalize_model_tool_schema_node(&mut schema, "$")?;
+    Ok(schema)
+}
+
+fn normalize_model_tool_schema_node(
+    schema: &mut serde_json::Value,
+    path: &str,
+) -> Result<(), ToolSchemaError> {
+    let Some(object) = schema.as_object_mut() else {
+        return Ok(());
+    };
+    match object.get("type").and_then(serde_json::Value::as_str) {
+        Some("object") => match object.get("properties") {
+            None => {
+                object.insert(
+                    "properties".into(),
+                    serde_json::Value::Object(serde_json::Map::new()),
+                );
+            }
+            Some(serde_json::Value::Object(_)) => {}
+            Some(_) => {
+                return Err(ToolSchemaError::new(
+                    format!("{path}.properties"),
+                    "`properties` must be a JSON object",
+                ));
+            }
+        },
+        Some("array") if !object.contains_key("items") => {
+            object.insert(
+                "items".into(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
+        }
+        _ => {}
+    }
+
+    // Traverse only JSON Schema subschema keywords. Values under `default`,
+    // `const`, `enum`, `examples`, and extension metadata are instance data,
+    // even when an object in that data happens to contain a `type` field.
+    for keyword in [
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+    ] {
+        if let Some(entries) = object
+            .get_mut(keyword)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for (key, value) in entries {
+                normalize_model_tool_schema_node(value, &format!("{path}.{keyword}.{key}"))?;
+            }
+        }
+    }
+    for keyword in [
+        "items",
+        "contains",
+        "additionalProperties",
+        "unevaluatedProperties",
+        "propertyNames",
+        "not",
+        "if",
+        "then",
+        "else",
+    ] {
+        if let Some(value) = object.get_mut(keyword) {
+            normalize_model_tool_schema_node(value, &format!("{path}.{keyword}"))?;
+        }
+    }
+    for keyword in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(items) = object
+            .get_mut(keyword)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for (index, item) in items.iter_mut().enumerate() {
+                normalize_model_tool_schema_node(item, &format!("{path}.{keyword}[{index}]"))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Reserved id of the meta-tool that loads a deferred tool (ADR-0053). Double-underscore
@@ -978,7 +1123,7 @@ mod tests {
     use super::{
         AcpSpec, Backend, BackendModelSelection, ContextPolicy, InferencePlacementMechanism,
         ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolFacet,
-        ToolPresentation,
+        ToolPresentation, content_hash, normalize_model_tool_schema,
     };
 
     #[test]
@@ -1381,13 +1526,94 @@ mod tests {
     }
 
     #[test]
+    fn model_tool_schema_normalization_decision_table() {
+        // Cause graph: C1=root is an object, C2=root type is object,
+        // C3=properties is missing/object/invalid, C4=nested array lacks items.
+        // Effects: E1=canonical schema, E2=preserve valid fields,
+        // E3=reject before provider I/O.
+        //
+        // | Rule | C1 | C2 | C3      | C4 | Effect |
+        // | R1   | Y  | Y  | missing | -  | E1     |
+        // | R2   | Y  | -  | missing | -  | E1     |
+        // | R3   | Y  | Y  | object  | Y  | E1+E2  |
+        // | R4   | Y  | Y  | invalid | -  | E3     |
+        // | R5   | N  | -  | -       | -  | E3     |
+        // | R6   | Y  | N  | -       | -  | E3     |
+        let missing_properties =
+            normalize_model_tool_schema(serde_json::json!({"type":"object"})).expect("R1");
+        assert_eq!(missing_properties["properties"], serde_json::json!({}));
+
+        let empty = normalize_model_tool_schema(serde_json::json!({})).expect("R2");
+        assert_eq!(empty["type"], "object");
+        assert_eq!(empty["properties"], serde_json::json!({}));
+
+        let nested = normalize_model_tool_schema(serde_json::json!({
+            "type":"object",
+            "properties": {
+                "filters": {
+                    "type":"object",
+                    "properties": {
+                        "literal": {
+                            "const": {"type":"object"}
+                        }
+                    }
+                },
+                "names": {"type":"array"}
+            },
+            "additionalProperties": false
+        }))
+        .expect("R3");
+        assert!(nested["properties"]["filters"]["properties"].is_object());
+        assert_eq!(
+            nested["properties"]["names"]["items"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            nested["properties"]["filters"]["properties"]["literal"]["const"],
+            serde_json::json!({"type":"object"}),
+            "R3 preserves instance-valued schema metadata"
+        );
+        assert_eq!(nested["additionalProperties"], false);
+
+        assert!(
+            normalize_model_tool_schema(serde_json::json!({"type":"object","properties":[]}))
+                .is_err(),
+            "R4"
+        );
+        assert!(
+            normalize_model_tool_schema(serde_json::json!(null)).is_err(),
+            "R5"
+        );
+        assert!(
+            normalize_model_tool_schema(serde_json::json!({"type":"string"})).is_err(),
+            "R6"
+        );
+    }
+
+    #[test]
+    fn pinned_descriptor_hashes_the_canonical_provider_schema() {
+        // R1: a legacy-compatible empty object and an explicit zero-argument
+        // object describe the same provider surface, so they must converge to
+        // one schema and one content identity.
+        let omitted = ToolDescriptor::pinned("p", "t", "desc", serde_json::json!({}));
+        let explicit = ToolDescriptor::pinned(
+            "p",
+            "t",
+            "desc",
+            serde_json::json!({"type":"object","properties":{}}),
+        );
+        assert_eq!(omitted.parameters, explicit.parameters);
+        assert_eq!(omitted.content_hash, explicit.content_hash);
+    }
+
+    #[test]
     fn content_hash_is_length_prefixed_against_field_concatenation_collisions() {
         // Without length-prefixing, ("ab","c") and ("a","bc") would concatenate to
         // the same byte stream and collide. The id is part of the readable prefix,
         // so vary the description/schema boundary where the digest actually matters.
-        let a = ToolDescriptor::pinned("p", "t", "ab", serde_json::json!("c"));
-        let b = ToolDescriptor::pinned("p", "t", "a", serde_json::json!("bc"));
-        assert_ne!(a.content_hash, b.content_hash);
+        let a = content_hash("p", "t", "ab", &serde_json::json!("c"));
+        let b = content_hash("p", "t", "a", &serde_json::json!("bc"));
+        assert_ne!(a, b);
     }
 
     #[test]
