@@ -120,8 +120,12 @@ async fn durable_management_audit(
     };
     let call_id = parts
         .headers
-        .get("idempotency-key")
-        .or_else(|| parts.headers.get("x-request-id"))
+        // `Idempotency-Key` belongs to the domain command behind this edge. In
+        // particular, Managed Session replacement owns replay and response
+        // semantics in its root aggregate. Reinterpreting that key as an audit
+        // call identity creates a second dedupe authority and rejects a valid
+        // domain replay before its handler can project the committed response.
+        .get("x-request-id")
         .and_then(|value| value.to_str().ok())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
@@ -432,7 +436,7 @@ pub fn protect_management_router(
             awaken_protocol_managed::enforce_managed_rate_limit,
         ));
     }
-    if let Some(iam) = iam {
+    if iam.is_some() || remote_iam.is_some() {
         // Layer order is outside-in in reverse application order: audit is
         // installed first, then IAM wraps it. Thus unauthenticated requests
         // never create audit intents, while admitted requests carry the
@@ -441,23 +445,34 @@ pub fn protect_management_router(
             audit_plane,
             durable_management_audit,
         ));
+    } else {
+        router = router.layer(axum::middleware::from_fn_with_state(
+            audit_plane,
+            durable_management_audit,
+        ));
+    }
+    protect_authorized_router(router, iam, remote_iam)
+}
+
+/// Apply the one IAM authentication/authorization edge without adding
+/// management audit or organization admission. Runtime protocol routes use
+/// this projection; authoring and management routes use
+/// [`protect_management_router`], which delegates to the same edge after its
+/// additional policies are installed.
+pub fn protect_authorized_router(
+    mut router: Router,
+    iam: Option<Arc<ManagementAuthz>>,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
+) -> Router {
+    if let Some(iam) = iam {
         router = router.layer(axum::middleware::from_fn_with_state(
             iam,
             crate::authz::management_guard,
         ));
     } else if let Some(remote_iam) = remote_iam {
         router = router.layer(axum::middleware::from_fn_with_state(
-            audit_plane,
-            durable_management_audit,
-        ));
-        router = router.layer(axum::middleware::from_fn_with_state(
             remote_iam,
             crate::authz::cloud_management_guard,
-        ));
-    } else {
-        router = router.layer(axum::middleware::from_fn_with_state(
-            audit_plane,
-            durable_management_audit,
         ));
     }
     router

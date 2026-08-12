@@ -170,6 +170,7 @@ pub async fn awaken_protocol_acp::Supervisor::supervise_with_config(&mut dyn awa
 pub struct awaken_protocol_acp::TurnConfig<'a>
 pub awaken_protocol_acp::TurnConfig::auth_method_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_acp::TurnConfig::expected_capability: core::option::Option<awaken_protocol_acp::AcpCapabilityExpectation>
+pub awaken_protocol_acp::TurnConfig::handshake_step_deadline: core::time::Duration
 pub awaken_protocol_acp::TurnConfig::mcp_servers: alloc::vec::Vec<awaken_protocol_acp::SessionMcpServer>
 pub awaken_protocol_acp::TurnConfig::resolver: &'a dyn awaken_protocol_acp::PermissionResolver
 pub awaken_protocol_acp::TurnConfig::session_config_options: alloc::vec::Vec<awaken_protocol_acp::SessionConfigOptionSelection>

@@ -27,8 +27,8 @@ pub use acp_scenarios::{
 };
 pub use delegation::build_delegation_router;
 pub use deployment::{install_scenario_runtime_authority, scenario_deployment};
-pub use distributed_control::build_distributed_control_router;
 pub use distributed_control::build_distributed_provider_router;
+pub use distributed_control::serve_distributed_control;
 pub use dream::{build_dream_router, build_dream_router_and_host};
 pub use model_routing::{build_model_route_router, scenario_model};
 pub use scenario_platform::build_unscoped_resource_router;

@@ -31,11 +31,13 @@ pub awaken_executable_agent_contract::ExecutableAgentRegistration::workspace_id:
 impl awaken_executable_agent_contract::ExecutableAgentRegistration
 pub fn awaken_executable_agent_contract::ExecutableAgentRegistration::validate(&self) -> core::result::Result<(), awaken_executable_agent_contract::ExecutableAgentRegistrationError>
 pub struct awaken_executable_agent_contract::ExecutableAgentSessionProfile
+pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::advisor_model: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::backend_ref: alloc::string::String
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::client_tools: alloc::vec::Vec<awaken_agent_contract::toolset::ClientToolDescriptor>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::delegate_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::environment: core::option::Option<awaken_executable_agent_contract::ExecutableAgentEnvironment>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::execution_model_ref: core::option::Option<alloc::string::String>
+pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::mcp_servers: alloc::vec::Vec<awaken_executable_agent_contract::ExecutableAgentMcpServer>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::model: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::resources: alloc::vec::Vec<awaken_resource_contract::input::InputBinding>

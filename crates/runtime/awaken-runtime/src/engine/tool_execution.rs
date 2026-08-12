@@ -47,11 +47,14 @@ pub(super) async fn consult_advisor(
     // advisor. Sending that unresolved function call to a second provider would
     // violate provider transcript pairing, so the advisor sees the complete
     // conversation immediately before the invocation plus an explicit request.
-    let history = transcript
+    let history = if transcript
         .last()
         .is_some_and(|message| message.role == Role::Assistant)
-        .then(|| &transcript[..transcript.len().saturating_sub(1)])
-        .unwrap_or(transcript);
+    {
+        &transcript[..transcript.len().saturating_sub(1)]
+    } else {
+        transcript
+    };
     messages.extend(history.iter().map(to_chat_message));
     messages.push(ChatMessage {
         role: Role::User,

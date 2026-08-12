@@ -197,6 +197,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .with_session_provisioner(Arc::new(ApplicationProvisioner)),
         )
     }))
+    // Install the same registered Resource adapter factory as the production
+    // Worker. The initial contribution Run has no frozen resource manifest yet;
+    // every continuation does, so omitting this existing adapter makes the
+    // canonical manifest correctly withhold `session-resources/v1` and leaves
+    // the continuation unassignable.
+    .with_registered_memory_mounter_factory(awaken_cli::registered_memory_mounter_factory())
     .with_standard_manifest(Default::default())
     .without_admin_surface()
     .build()?

@@ -371,17 +371,14 @@ fn agent_reference_records(
             .session_profile
             .skills
             .iter()
-            .filter_map(|skill| {
-                (skill.kind == awaken_agent_contract::AgentSkillKind::Custom).then(|| {
-                    ResourceReferenceRecord {
-                        target: ResourceTarget::new(
-                            &registration.workspace_id,
-                            ResourceKind::Skill,
-                            &skill.skill_id,
-                        ),
-                        reference: reference(),
-                    }
-                })
+            .filter(|skill| skill.kind == awaken_agent_contract::AgentSkillKind::Custom)
+            .map(|skill| ResourceReferenceRecord {
+                target: ResourceTarget::new(
+                    &registration.workspace_id,
+                    ResourceKind::Skill,
+                    &skill.skill_id,
+                ),
+                reference: reference(),
             }),
     );
     records.sort();

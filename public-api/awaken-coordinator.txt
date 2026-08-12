@@ -131,6 +131,7 @@ pub fn awaken_coordinator::ClaimFencedArtifactPublisher::new(alloc::sync::Arc<dy
 impl awaken_resource_contract::execution::ArtifactPublisher<awaken_run_ingress_contract::dispatch::RunClaim> for awaken_coordinator::ClaimFencedArtifactPublisher
 pub fn awaken_coordinator::ClaimFencedArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::execution::ArtifactPublication<awaken_run_ingress_contract::dispatch::RunClaim>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::execution::ArtifactPublicationReceipt, awaken_resource_contract::execution::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_coordinator::CoordinatorComponent
+pub awaken_coordinator::CoordinatorComponent::managed_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::management_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::private_router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::router: axum::routing::Router
@@ -155,6 +156,7 @@ pub awaken_coordinator::CoordinatorDependencies::sessions: alloc::sync::Arc<dyn 
 pub awaken_coordinator::CoordinatorDependencies::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::CoordinatorDependencies::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
 pub awaken_coordinator::CoordinatorDependencies::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
+pub awaken_coordinator::CoordinatorDependencies::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
 pub awaken_coordinator::CoordinatorDependencies::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>
 pub struct awaken_coordinator::CoordinatorPersistence
 pub awaken_coordinator::CoordinatorPersistence::runtime_authority: alloc::sync::Arc<dyn awaken_runtime_host::authority::RuntimeAuthority>
@@ -171,6 +173,7 @@ pub awaken_coordinator::ManagedRoutingExtensions::resource_management_router: ax
 pub awaken_coordinator::ManagedRoutingExtensions::worker_authenticator: alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_file_application: alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>
+pub awaken_coordinator::ManagedRoutingExtensions::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
 pub awaken_coordinator::ManagedRoutingExtensions::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>
 pub struct awaken_coordinator::ReferenceIndexedMemoryExtractions
 impl awaken_coordinator::ReferenceIndexedMemoryExtractions
@@ -186,7 +189,7 @@ pub fn awaken_coordinator::a2a_attempt_executor(core::option::Option<awaken_cred
 pub async fn awaken_coordinator::build_coordinator_component(awaken_coordinator::CoordinatorDependencies) -> core::result::Result<awaken_coordinator::CoordinatorComponent, awaken_coordinator::CoordinatorBuildError>
 pub fn awaken_coordinator::install_platform_memory_data_plane(&awaken_runtime_host::host::SharedHost)
 pub async fn awaken_coordinator::migrate_postgres_coordinator_schema(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<(), alloc::string::String>
-pub fn awaken_coordinator::mount_with_managed_application_access_models_and_dreams(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>, alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>, awaken_coordinator::ManagedApplicationServices, awaken_coordinator::ManagedRoutingExtensions) -> core::result::Result<(axum::routing::Router, axum::routing::Router, alloc::sync::Arc<awaken_dream_application::DreamApplication>), awaken_coordinator::WorkerTransportBuildError>
+pub fn awaken_coordinator::mount_with_managed_application_access_models_and_dreams(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>, alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>, awaken_coordinator::ManagedApplicationServices, awaken_coordinator::ManagedRoutingExtensions) -> core::result::Result<(axum::routing::Router, axum::routing::Router, axum::routing::Router, alloc::sync::Arc<awaken_dream_application::DreamApplication>), awaken_coordinator::WorkerTransportBuildError>
 pub async fn awaken_coordinator::open_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub async fn awaken_coordinator::open_existing_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub async fn awaken_coordinator::prepare_local_acp(awaken_acp_application::LocalAcpPreparation) -> core::result::Result<awaken_acp_application::PreparedAcpCapabilities, alloc::string::String>

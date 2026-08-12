@@ -362,6 +362,55 @@ fn resource_pep_maps_only_resource_routes_and_is_total_by_method() {
 }
 
 #[test]
+fn embedded_resource_profile_authorizes_every_preset_reader_role() {
+    // Cause/effect decision table:
+    // C1 role has file.read (admin/workspace_admin/workspace_user) -> E1 the
+    // qualified resource action is allowed at its bound Workspace; C2 the same
+    // principal asks to write as workspace_user -> E2 default-deny. This pins
+    // profile grants, qualified resource-role bindings, and scope ancestry as
+    // one policy path instead of duplicating the HTTP middleware assertions.
+    for (index, role) in ["admin", "workspace_admin", "workspace_user"]
+        .into_iter()
+        .enumerate()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let iam = embedded_iam(dir.path());
+        let service_id = format!("resource-profile-{index}");
+        iam.mint_service_token(TokenSpec {
+            token_id: format!("tok_resource_profile_{index}"),
+            service_id: service_id.clone(),
+            workspace_id: BOOTSTRAP_WORKSPACE.to_owned(),
+            role: role.to_owned(),
+            created_at: None,
+            expires_at: None,
+        })
+        .unwrap();
+        let principal = PrincipalRef::Service { service_id };
+        let scope = ScopeRef::Workspace {
+            workspace_id: WorkspaceId(BOOTSTRAP_WORKSPACE.to_owned()),
+        };
+        let read = AuthorizationRequest::direct(
+            principal.clone(),
+            qualify_resource_action(FILE_READ),
+            scope.clone(),
+        );
+        let read = iam.state.lock().unwrap().authz.authorize(&read);
+        assert_eq!(
+            read.decision,
+            AuthorizationDecision::Allow,
+            "C1 {role}: {read:?}"
+        );
+
+        if role == "workspace_user" {
+            let write =
+                AuthorizationRequest::direct(principal, qualify_resource_action(FILE_WRITE), scope);
+            let write = iam.state.lock().unwrap().authz.authorize(&write);
+            assert_eq!(write.decision, AuthorizationDecision::Deny, "C2: {write:?}");
+        }
+    }
+}
+
+#[test]
 fn only_canonical_utc_timestamps_pass_the_expiry_shape_check() {
     assert!(canonical_timestamp_shape("2027-01-01T00:00:00Z"));
     assert!(!canonical_timestamp_shape("banana"));
@@ -505,9 +554,10 @@ async fn local_browser_session_enters_the_existing_management_pdp() {
 }
 
 // Cause/effect graph for the local console's Resource API edge:
-// setup token -> HttpOnly session -> resource PDP -> trusted workspace stamp;
-// no bearer and no session -> 401. This proves the Console can manage Memory
-// and Skills without ever receiving the durable admin API token.
+// setup token -> HttpOnly session -> the canonical management PEP selects the
+// resource namespace -> trusted workspace stamp; no bearer and no session ->
+// 401. This proves the Console can manage Memory and Skills without receiving
+// the durable admin API token or traversing a second resource middleware.
 #[tokio::test]
 async fn local_browser_session_enters_the_existing_resource_pdp() {
     async fn echo(
@@ -546,7 +596,7 @@ async fn local_browser_session_enters_the_existing_resource_pdp() {
         .to_owned();
     let app = Router::new()
         .fallback(echo)
-        .layer(axum::middleware::from_fn_with_state(iam, resource_guard));
+        .layer(axum::middleware::from_fn_with_state(iam, management_guard));
 
     let admitted = app
         .clone()

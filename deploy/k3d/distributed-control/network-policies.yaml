@@ -45,14 +45,15 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
-        - podSelector:
-            matchExpressions:
-              - { key: app, operator: In, values: [awaken-api, coordinator] }
+        - podSelector: { matchLabels: { app: awaken-api } }
       ports: [{ protocol: TCP, port: 3000 }]
+    - from:
+        - podSelector: { matchLabels: { app: coordinator } }
+      ports: [{ protocol: TCP, port: 3001 }]
   egress:
     - to:
         - podSelector: { matchLabels: { app: coordinator } }
-      ports: [{ protocol: TCP, port: 3000 }]
+      ports: [{ protocol: TCP, port: 3001 }]
     - to:
         - podSelector: { matchLabels: { database-role: primary } }
       ports: [{ protocol: TCP, port: 5432 }]
@@ -65,14 +66,17 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
+        - podSelector: { matchLabels: { app: awaken-api } }
+      ports: [{ protocol: TCP, port: 3000 }]
+    - from:
         - podSelector:
             matchExpressions:
-              - { key: app, operator: In, values: [awaken-api, control, worker] }
-      ports: [{ protocol: TCP, port: 3000 }]
+              - { key: app, operator: In, values: [control, worker] }
+      ports: [{ protocol: TCP, port: 3001 }]
   egress:
     - to:
         - podSelector: { matchLabels: { app: control } }
-      ports: [{ protocol: TCP, port: 3000 }]
+      ports: [{ protocol: TCP, port: 3001 }]
     - to:
         - podSelector: { matchLabels: { database-role: primary } }
       ports: [{ protocol: TCP, port: 5432 }]
@@ -86,7 +90,7 @@ spec:
   egress:
     - to:
         - podSelector: { matchLabels: { app: coordinator } }
-      ports: [{ protocol: TCP, port: 3000 }]
+      ports: [{ protocol: TCP, port: 3001 }]
     - to:
         - podSelector: { matchLabels: { app: provider } }
       ports: [{ protocol: TCP, port: 3000 }]

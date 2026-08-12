@@ -90,6 +90,7 @@ pub awaken_deployment_application::AgentSelector::id: alloc::string::String
 pub awaken_deployment_application::AgentSelector::version: core::option::Option<u64>
 pub struct awaken_deployment_application::CreateDeploymentCommand
 pub awaken_deployment_application::CreateDeploymentCommand::agent: awaken_deployment_application::AgentSelector
+pub awaken_deployment_application::CreateDeploymentCommand::budget_max_list_cost_minor: core::option::Option<u64>
 pub awaken_deployment_application::CreateDeploymentCommand::description: core::option::Option<alloc::string::String>
 pub awaken_deployment_application::CreateDeploymentCommand::environment_id: alloc::string::String
 pub awaken_deployment_application::CreateDeploymentCommand::initial_events: alloc::vec::Vec<serde_json::value::Value>
@@ -125,6 +126,7 @@ impl awaken_deployment_contract::AgentArchiveCascade for awaken_deployment_appli
 pub fn awaken_deployment_application::DeploymentApplication::archive_agent_dependents<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_deployment_application::DeploymentLaunch
 pub awaken_deployment_application::DeploymentLaunch::agent: awaken_deployment_application::DeploymentAgent
+pub awaken_deployment_application::DeploymentLaunch::budget_max_list_cost_minor: core::option::Option<u64>
 pub awaken_deployment_application::DeploymentLaunch::deployment_id: alloc::string::String
 pub awaken_deployment_application::DeploymentLaunch::deployment_run_id: alloc::string::String
 pub awaken_deployment_application::DeploymentLaunch::environment_id: alloc::string::String
@@ -136,6 +138,7 @@ pub awaken_deployment_application::DeploymentLaunch::workspace_id: alloc::string
 pub struct awaken_deployment_application::DeploymentRecord
 pub awaken_deployment_application::DeploymentRecord::agent: awaken_deployment_application::DeploymentAgent
 pub awaken_deployment_application::DeploymentRecord::archived_at: core::option::Option<alloc::string::String>
+pub awaken_deployment_application::DeploymentRecord::budget_max_list_cost_minor: core::option::Option<u64>
 pub awaken_deployment_application::DeploymentRecord::created_at: alloc::string::String
 pub awaken_deployment_application::DeploymentRecord::description: core::option::Option<alloc::string::String>
 pub awaken_deployment_application::DeploymentRecord::environment_id: alloc::string::String
@@ -168,6 +171,7 @@ pub awaken_deployment_application::DeploymentView::id: alloc::string::String
 pub awaken_deployment_application::DeploymentView::record: awaken_deployment_application::DeploymentRecord
 pub struct awaken_deployment_application::UpdateDeploymentCommand
 pub awaken_deployment_application::UpdateDeploymentCommand::agent: core::option::Option<awaken_deployment_application::AgentSelector>
+pub awaken_deployment_application::UpdateDeploymentCommand::budget_max_list_cost_minor: core::option::Option<core::option::Option<u64>>
 pub awaken_deployment_application::UpdateDeploymentCommand::description: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_deployment_application::UpdateDeploymentCommand::environment_id: core::option::Option<alloc::string::String>
 pub awaken_deployment_application::UpdateDeploymentCommand::initial_events: core::option::Option<alloc::vec::Vec<serde_json::value::Value>>

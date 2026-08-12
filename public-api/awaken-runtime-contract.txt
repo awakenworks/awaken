@@ -103,6 +103,23 @@ pub fn awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::normal
 pub fn awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<alloc::string::String>) -> Self
 pub enum awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransportKind
 pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransportKind::SandboxStdio
+pub enum awaken_runtime_contract::agent_bindings::InferenceGeography
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Apac
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Au
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Ca
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Cn
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Eu
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Hk
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Jp
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Uk
+pub awaken_runtime_contract::agent_bindings::InferenceGeography::Us
+impl awaken_runtime_contract::agent_bindings::InferenceGeography
+pub const fn awaken_runtime_contract::agent_bindings::InferenceGeography::as_str(self) -> &'static str
+impl core::fmt::Display for awaken_runtime_contract::agent_bindings::InferenceGeography
+pub fn awaken_runtime_contract::agent_bindings::InferenceGeography::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::str::traits::FromStr for awaken_runtime_contract::agent_bindings::InferenceGeography
+pub type awaken_runtime_contract::agent_bindings::InferenceGeography::Err = alloc::string::String
+pub fn awaken_runtime_contract::agent_bindings::InferenceGeography::from_str(&str) -> core::result::Result<Self, Self::Err>
 pub enum awaken_runtime_contract::agent_bindings::InferenceSpeed
 pub awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast
 pub awaken_runtime_contract::agent_bindings::InferenceSpeed::Standard
@@ -112,7 +129,11 @@ pub awaken_runtime_contract::agent_bindings::ReasoningEffort::Low
 pub awaken_runtime_contract::agent_bindings::ReasoningEffort::Max
 pub awaken_runtime_contract::agent_bindings::ReasoningEffort::Medium
 pub awaken_runtime_contract::agent_bindings::ReasoningEffort::Xhigh
+pub struct awaken_runtime_contract::agent_bindings::AgentAdvisorBinding
+pub awaken_runtime_contract::agent_bindings::AgentAdvisorBinding::candidate: awaken_runtime_contract::resolved::ResolvedModelCandidate
+pub awaken_runtime_contract::agent_bindings::AgentAdvisorBinding::model: alloc::string::String
 pub struct awaken_runtime_contract::agent_bindings::AgentBindings
+pub awaken_runtime_contract::agent_bindings::AgentBindings::advisor: core::option::Option<awaken_runtime_contract::agent_bindings::AgentAdvisorBinding>
 pub awaken_runtime_contract::agent_bindings::AgentBindings::delegates: alloc::vec::Vec<awaken_runtime_contract::agent_bindings::AgentDelegateBinding>
 pub awaken_runtime_contract::agent_bindings::AgentBindings::mcp_servers: alloc::vec::Vec<awaken_runtime_contract::agent_bindings::AgentMcpServerBinding>
 pub awaken_runtime_contract::agent_bindings::AgentBindings::skills: alloc::vec::Vec<awaken_agent_contract::skill::AgentSkillBinding>
@@ -137,6 +158,7 @@ pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::comm
 pub awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransport::kind: awaken_runtime_contract::agent_bindings::AgentSandboxStdioMcpTransportKind
 pub struct awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_runtime_contract::agent_bindings::InferenceOptions::effort: core::option::Option<awaken_runtime_contract::agent_bindings::ReasoningEffort>
+pub awaken_runtime_contract::agent_bindings::InferenceOptions::inference_geo: core::option::Option<awaken_runtime_contract::agent_bindings::InferenceGeography>
 pub awaken_runtime_contract::agent_bindings::InferenceOptions::speed: core::option::Option<awaken_runtime_contract::agent_bindings::InferenceSpeed>
 impl awaken_runtime_contract::agent_bindings::InferenceOptions
 pub fn awaken_runtime_contract::agent_bindings::InferenceOptions::is_default(&self) -> bool
@@ -869,6 +891,14 @@ pub enum awaken_runtime_contract::resolved::ContextPolicy
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepAll
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast
 pub awaken_runtime_contract::resolved::ContextPolicy::KeepLast::keep_last: usize
+pub enum awaken_runtime_contract::resolved::InferencePlacementMechanism
+pub awaken_runtime_contract::resolved::InferencePlacementMechanism::AnthropicRequestBody
+pub awaken_runtime_contract::resolved::InferencePlacementMechanism::FrozenRegionalRoute
+impl awaken_runtime_contract::resolved::InferencePlacementMechanism
+pub const fn awaken_runtime_contract::resolved::InferencePlacementMechanism::as_str(self) -> &'static str
+impl core::str::traits::FromStr for awaken_runtime_contract::resolved::InferencePlacementMechanism
+pub type awaken_runtime_contract::resolved::InferencePlacementMechanism::Err = alloc::string::String
+pub fn awaken_runtime_contract::resolved::InferencePlacementMechanism::from_str(&str) -> core::result::Result<Self, Self::Err>
 pub enum awaken_runtime_contract::resolved::ModelProvisioning
 pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned
 pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::acp: awaken_runtime_contract::resolved::AcpExecutionProfile
@@ -887,6 +917,7 @@ pub awaken_runtime_contract::resolved::ModelProvisioning::Remote::credential: co
 pub awaken_runtime_contract::resolved::ModelProvisioning::Remote::scope_id: awaken_tenancy::ScopeId
 pub awaken_runtime_contract::resolved::ModelProvisioning::Remote::security_fingerprint: alloc::string::String
 pub enum awaken_runtime_contract::resolved::ToolKind
+pub awaken_runtime_contract::resolved::ToolKind::Advisor
 pub awaken_runtime_contract::resolved::ToolKind::AgentDelegation
 pub awaken_runtime_contract::resolved::ToolKind::ClientExecuted
 pub awaken_runtime_contract::resolved::ToolKind::Regular
@@ -908,7 +939,11 @@ pub struct awaken_runtime_contract::resolved::InferenceEndpoint
 pub awaken_runtime_contract::resolved::InferenceEndpoint::adapter_kind: alloc::string::String
 pub awaken_runtime_contract::resolved::InferenceEndpoint::api_dialect: alloc::string::String
 pub awaken_runtime_contract::resolved::InferenceEndpoint::base_url: alloc::string::String
+pub awaken_runtime_contract::resolved::InferenceEndpoint::processing_placement: core::option::Option<awaken_runtime_contract::resolved::InferencePlacement>
 pub awaken_runtime_contract::resolved::InferenceEndpoint::upstream_model: alloc::string::String
+pub struct awaken_runtime_contract::resolved::InferencePlacement
+pub awaken_runtime_contract::resolved::InferencePlacement::geography: awaken_runtime_contract::agent_bindings::InferenceGeography
+pub awaken_runtime_contract::resolved::InferencePlacement::mechanism: awaken_runtime_contract::resolved::InferencePlacementMechanism
 pub struct awaken_runtime_contract::resolved::ModelBinding
 pub awaken_runtime_contract::resolved::ModelBinding::backend_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelBinding::model_ref: alloc::string::String
@@ -953,6 +988,7 @@ pub awaken_runtime_contract::resolved::ResolvedSpec::plugin_ids: alloc::vec::Vec
 pub awaken_runtime_contract::resolved::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_runtime_contract::resolved::ResolvedSpec::tool_presentation: awaken_runtime_contract::resolved::ToolPresentation
 impl awaken_runtime_contract::resolved::ResolvedSpec
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::attempt_candidates(&self, core::option::Option<&str>) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ModelBinding>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_binding(&self, &awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_model(&self, &str) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
@@ -967,7 +1003,9 @@ pub awaken_runtime_contract::resolved::ToolDescriptor::parameters: serde_json::v
 pub awaken_runtime_contract::resolved::ToolDescriptor::recovery_policy: awaken_runtime_contract::tool::ToolRecoveryPolicy
 impl awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::client_executed(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::model_parameters(&self) -> core::result::Result<serde_json::value::Value, awaken_runtime_contract::resolved::ToolSchemaError>
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
+pub fn awaken_runtime_contract::resolved::ToolDescriptor::try_pinned(&str, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> core::result::Result<Self, awaken_runtime_contract::resolved::ToolSchemaError>
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_kind(self, awaken_runtime_contract::resolved::ToolKind) -> Self
 pub fn awaken_runtime_contract::resolved::ToolDescriptor::with_recovery(self, awaken_runtime_contract::tool::ToolRecoveryPolicy) -> Self
 pub struct awaken_runtime_contract::resolved::ToolFacet
@@ -983,7 +1021,10 @@ pub fn awaken_runtime_contract::resolved::ToolPresentation::model_tools(&self, &
 pub fn awaken_runtime_contract::resolved::ToolPresentation::present(&self, &[awaken_runtime_contract::resolved::ToolDescriptor]) -> awaken_runtime_contract::resolved::PresentedTools
 pub fn awaken_runtime_contract::resolved::ToolPresentation::resolve<'a>(&'a self, &'a str) -> &'a str
 pub fn awaken_runtime_contract::resolved::ToolPresentation::targets(&self) -> impl core::iter::traits::iterator::Iterator<Item = &str>
+pub struct awaken_runtime_contract::resolved::ToolSchemaError
+pub const awaken_runtime_contract::resolved::ADVISOR_TOOL_ID: &str
 pub const awaken_runtime_contract::resolved::TOOL_OPEN_ID: &str
+pub fn awaken_runtime_contract::resolved::normalize_model_tool_schema(serde_json::value::Value) -> core::result::Result<serde_json::value::Value, awaken_runtime_contract::resolved::ToolSchemaError>
 pub mod awaken_runtime_contract::resolver
 pub enum awaken_runtime_contract::resolver::Error
 pub awaken_runtime_contract::resolver::Error::FingerprintMismatch
@@ -1201,6 +1242,7 @@ pub awaken_runtime_contract::tool::ToolRecoveryPolicy::max_attempts: u16
 pub awaken_runtime_contract::tool::ToolRecoveryPolicy::mode: awaken_runtime_contract::tool::ToolRecoveryMode
 impl awaken_runtime_contract::tool::ToolRecoveryPolicy
 pub const fn awaken_runtime_contract::tool::ToolRecoveryPolicy::durable_request() -> Self
+pub const fn awaken_runtime_contract::tool::ToolRecoveryPolicy::replay_safe() -> Self
 pub fn awaken_runtime_contract::tool::ToolRecoveryPolicy::validate(&self, awaken_runtime_contract::tool::ToolRecoveryCapability) -> core::result::Result<(), awaken_runtime_contract::tool::ToolRecoveryError>
 impl core::default::Default for awaken_runtime_contract::tool::ToolRecoveryPolicy
 pub fn awaken_runtime_contract::tool::ToolRecoveryPolicy::default() -> Self
@@ -1668,6 +1710,7 @@ pub struct awaken_runtime_contract::InferenceEndpoint
 pub awaken_runtime_contract::InferenceEndpoint::adapter_kind: alloc::string::String
 pub awaken_runtime_contract::InferenceEndpoint::api_dialect: alloc::string::String
 pub awaken_runtime_contract::InferenceEndpoint::base_url: alloc::string::String
+pub awaken_runtime_contract::InferenceEndpoint::processing_placement: core::option::Option<awaken_runtime_contract::resolved::InferencePlacement>
 pub awaken_runtime_contract::InferenceEndpoint::upstream_model: alloc::string::String
 pub struct awaken_runtime_contract::LiveInbox
 impl awaken_runtime_contract::live_inbox::LiveInbox
@@ -1767,6 +1810,7 @@ pub awaken_runtime_contract::ResolvedSpec::plugin_ids: alloc::vec::Vec<alloc::st
 pub awaken_runtime_contract::ResolvedSpec::tool_descriptors: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_runtime_contract::ResolvedSpec::tool_presentation: awaken_runtime_contract::resolved::ToolPresentation
 impl awaken_runtime_contract::resolved::ResolvedSpec
+pub fn awaken_runtime_contract::resolved::ResolvedSpec::attempt_candidates(&self, core::option::Option<&str>) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_bindings(&self) -> alloc::vec::Vec<&awaken_runtime_contract::resolved::ModelBinding>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_binding(&self, &awaken_runtime_contract::resolved::ModelBinding) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedSpec::candidate_for_model(&self, &str) -> core::option::Option<&awaken_runtime_contract::resolved::ResolvedModelCandidate>
@@ -1904,6 +1948,7 @@ pub awaken_runtime_contract::ToolRecoveryPolicy::max_attempts: u16
 pub awaken_runtime_contract::ToolRecoveryPolicy::mode: awaken_runtime_contract::tool::ToolRecoveryMode
 impl awaken_runtime_contract::tool::ToolRecoveryPolicy
 pub const fn awaken_runtime_contract::tool::ToolRecoveryPolicy::durable_request() -> Self
+pub const fn awaken_runtime_contract::tool::ToolRecoveryPolicy::replay_safe() -> Self
 pub fn awaken_runtime_contract::tool::ToolRecoveryPolicy::validate(&self, awaken_runtime_contract::tool::ToolRecoveryCapability) -> core::result::Result<(), awaken_runtime_contract::tool::ToolRecoveryError>
 impl core::default::Default for awaken_runtime_contract::tool::ToolRecoveryPolicy
 pub fn awaken_runtime_contract::tool::ToolRecoveryPolicy::default() -> Self

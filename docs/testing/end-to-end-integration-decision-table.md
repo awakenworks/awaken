@@ -43,7 +43,7 @@ E117–E127 的定义及因果边见
 | C134 | Provider credential 的已证明 endpoint 与新 connection endpoint 相同/不同 | E132 相同可复用；不同返回 422，须新 secret/OAuth proof，不能把 provider 相同当兼容 |
 | C135 | Cloud 上游返回 malformed/unsupported projection | E133 整次 refresh 503 且旧快照不变；不是调用方 422 |
 | C136 | 协议路由要求 beta，header 缺失/存在 | E134 缺失先返回 400；存在才允许业务/PEP 断言，不能把 beta gate 当授权结果 |
-| C137 | PDP 返回 Deny / RequireApproval / Allow | E135 前两者在 management/resource PEP 均 403 fail-closed；仅 Allow 进入 handler |
+| C137 | 唯一前门 PEP 按路由选择 management/resource 动作命名空间，PDP 返回 Deny / RequireApproval / Allow | E135 前两者均 403 fail-closed；仅一次鉴权且仅 Allow 进入 handler |
 
 ### 约束与判定表 M16
 
@@ -148,16 +148,16 @@ executable registration R1–R6、ProviderConnection compatibility tests，以�
 
 ## M22：Models API 的显式配置前提
 
-原因 C143：测试在 production live executable-Agent inventory 中没有模型事实，却假设 bare-host 默认模型存在。结果 E141：空 inventory 投影空列表；只有 Provider Connection 成功发现并原子写入后才列出精确模型。
+原因 C143：测试在 production live executable-Agent inventory 中没有模型事实，却假设 bare-host 默认模型存在。结果 E141：空 inventory 投影空列表；Provider Connection 先成功发现并原子写入 Catalog，Agent publication 再把精确候选冻结并注册进 executable inventory 后才列出该模型。Provider Catalog 不是第二个 Coordinator 模型目录。
 
 | 规则 | Catalog facts | discovery | 结果 | 覆盖 |
 |---|---:|---:|---|---|
 | T139 | 无 | - | 空列表，不回退 fixture defaults | `current_model_references` decision-table tests |
-| T140 | 显式 Provider Connection | 成功 | list/retrieve exact model，missing 404 | Files/Models E2E M2 |
+| T140 | 显式 Provider Connection + Agent publication | 成功 | list/retrieve exact executable model，missing 404 | Files/Models E2E M2/M3 |
 
 | ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
 |---|---|---|---|---|
-| EF35 | E2E 假设默认模型并把空 live Catalog 当实现故障 → 无法验证真正 discovery→catalog→projection 流程 | 共享 fake provider 同时提供 inference/discovery；测试显式创建 Provider Connection | M22 T139–T140 | 3/4/5/60 |
+| EF35 | E2E 假设默认模型并把空 live Catalog 当实现故障 → 无法验证真正 discovery→catalog→publication→projection 流程 | 共享 fake provider 同时提供 inference/discovery；测试显式创建 Provider Connection 并通过普通 Agent publication 冻结 executable candidate | M22 T139–T140 | 3/4/5/60 |
 
 ## M23：主 Agent 归档与 Deployment 聚合的单实例接线
 
@@ -355,3 +355,50 @@ executable registration R1–R6、ProviderConnection compatibility tests，以�
 | ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
 |---|---|---|---|---|
 | EF60 | 用删除前的旧库存快照生成缺失报告，并发成功创建会被误报为 dangling row，触发错误告警或人工补偿 | 分离删除候选与诊断权威：首快照 bounded delete，删除后第二快照判定 missing | M33 T190 + M30 T178 | 4/3/4/48 |
+
+## M34：Worker 故障转移中的 realization 与计费区间
+
+原因 C172–C174：用户活动已打开一个 `Running` 区间；替换 Worker 对精确
+Session projection 执行 activate/acknowledge；realization 可能成功、可重试失败或
+永久失败。结果 E174–E176：成功只完成物理 projection，不抢占 activity fence；
+可重试失败保留同一区间等待重领；永久失败在同一 root CAS 中关闭区间、累计时长并
+写入唯一 lifecycle outbox。
+
+静态结构不变：`SessionApplication(realization + activity) → PersistedSession root CAS
+→ ManagedSessionRepository lifecycle outbox`。动态时序为 `admit activity → Running +
+interval → replacement Worker realization → [success: preserve Running → settle Idle |
+retry: expire lease, preserve Running | terminal: ActivationFailed + close interval + fact]`。
+
+| 规则 | Running | realization 结果 | retry budget | 结果 | 覆盖 |
+|---|---:|---|---|---|---|
+| T191 | 1 | activate + acknowledge 成功 | - | 保持 Running 和原 interval；activity settle 后恰好一个 fact | `realization_preserves_or_closes_the_activity_interval_by_terminal_outcome` R1/R2 |
+| T192 | 1 | retryable 失败 | 未耗尽 | lease 过期供重领，Running/interval 不变 | realization retry budget decision table |
+| T193 | 1 | permanent 或 retry exhausted | 任意 | ActivationFailed；interval 原子关闭并恰好一个 fact | `realization_preserves_or_closes_the_activity_interval_by_terminal_outcome` R4 |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF61 | Worker 恢复成功把 Session 强制改为 Idle，导致活动仍执行但计费区间状态不一致；失败路径又可能泄漏开放区间 | realization 成功保留 Running；terminal failure 复用 aggregate `close_runtime_interval` 与唯一 outbox，在同一 CAS 收敛 | M34 T191–T193 + 真实 k3d Coordinator/Worker replacement | 8/4/4/128 |
+
+## M35：Worker 终止模式与 committed error proof
+
+原因 C175–C177：Worker 可能正常缩容、进程硬崩溃，或在 Pod 网络先撤销而旧进程仍
+短暂存活；Run 可能自然完成或以 typed `EndCause::Error` 完成。结果 E177–E180：正常
+缩容先关闭 claim admission 并有界 drain；硬崩溃不提交未完成输出且由 lease reclaim；
+测试不把网络分区伪装成进程崩溃；committed error 直接成为协议错误解释，不被第二个
+proof error 遮蔽。
+
+静态结构：`Kubelet preStop → Worker /admin/drain → DispatchPool admission fence`；
+硬崩溃证据为 `k3d node CRI → exact Worker container`，恢复仍为 `Coordinator dispatch
+lease → replacement Worker → committed snapshot`。动态时序分别为 `preStop → drain →
+SIGTERM` 与 `CRI stop → lease expiry → reclaim → one terminal commit`。
+
+| 规则 | 终止/终态 | 注入或证据 | 结果 | 覆盖 |
+|---|---|---|---|---|
+| T194 | 正常 scale-in | HTTP preStop + 20s grace | 先拒绝新 claim，15s 内完成在途工作 | rendered deployment contract + Worker lifecycle tests |
+| T195 | Worker hard crash | exact CRI stop + restartCount 增长 | 无旧进程提交；lease 后重领并唯一完成 | real k3d stage 7 |
+| T196 | Pod 网络先撤销 | 不作为 hard-crash 注入 | 分类为 compound transport fault，不产生假恢复结论 | injector contract review |
+| T197 | NaturalEnd / Error | assistant absent / typed Failure present | NaturalEnd fail-closed；Error proof 成功并从 RunState 投影 | committed-step proof P9/P11 |
+
+| ID | 失效模式与影响 | 消解/处理 | 判定表与测试证据 | S/O/D/RPN |
+|---|---|---|---|---|
+| EF62 | 先删 Pod/网络再等进程结束，会让仍持有效 claim 的旧 Worker 提交 provider transport error；同时 proof 又把 typed error 遮蔽成“无 assistant output” | 正常路径接现有 HTTP drain；hard crash 从 CRI 原子停精确容器；proof 直接信任 committed `EndCause::Error` | M35 T194–T197 | 7/4/4/112 |

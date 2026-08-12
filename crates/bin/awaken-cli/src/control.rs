@@ -98,6 +98,28 @@ pub async fn build_control_router_with_publication_resolver(
     .await
 }
 
+/// Canonical hosted Control process with a deployment-owned provider
+/// publication resolver and the built-in WebSearch publication policy.
+pub async fn prepare_control_process_with_publication_resolver(
+    deployment: &config::ResolvedDeployment,
+    key: &[u8; 32],
+    resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
+) -> Result<PreparedProcess, String> {
+    let providers = awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins();
+    let publication_resolver = Arc::new(
+        crate::web_search_publication::WebSearchPublicationResolver::new(providers.clone()),
+    );
+    prepare_control_process_with_publication_resolver_and_web_search(
+        deployment,
+        key,
+        resolver,
+        None,
+        providers,
+        publication_resolver,
+    )
+    .await
+}
+
 /// Hosted control process with deployment-owned model and WebSearch
 /// publication adapters. This remains the same canonical Control process;
 /// the closed startup supplies only existing open SPIs and provider facts.

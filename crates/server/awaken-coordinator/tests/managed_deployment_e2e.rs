@@ -39,6 +39,36 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
     (status, value)
 }
 
+async fn wait_for_session_events(
+    app: &Router,
+    session_id: &str,
+    predicate: impl Fn(&Value) -> bool,
+) -> Option<(StatusCode, Value)> {
+    // Cause/effect decision table: W1 the detached ordinary Event command commits
+    // before the monotonic deadline -> return its public projection; W2 the
+    // projection is not ready yet -> retry without driving product state; W3 the
+    // deadline expires -> return no evidence and let the calling rule fail with
+    // its domain context. A fixed iteration/millisecond loop duplicated in both
+    // tests was not a valid deployment realization deadline.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let response = call(
+            app,
+            "GET",
+            &format!("/v1/sessions/{session_id}/events"),
+            None,
+        )
+        .await;
+        if response.0 == StatusCode::OK && predicate(&response.1) {
+            return Some(response);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse() {
     // Cause/effect decision table:
@@ -49,7 +79,11 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
     let workspace_id = host.local_workspace().to_string();
     let managed = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
-    let app = awaken_coordinator::mount_with_managed(host, managed.clone());
+    // The public Session scope guard must observe the same trusted Workspace as
+    // the internal Deployment launcher. Omitting this edge stamp proves only a
+    // cross-tenant 404, not the launch or initial-Event contract.
+    let app = awaken_coordinator::mount_with_managed(host, managed.clone())
+        .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
     let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
     let request: DeploymentLaunch = serde_json::from_value(json!({
         "deployment_id": "depl_retry",
@@ -77,28 +111,22 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
         outcomes => panic!("R1/R2 unexpected outcomes: {outcomes:?}"),
     };
     assert_eq!(first_id, second_id, "R1/R2");
-    let mut user_messages = 0;
-    for _ in 0..200 {
-        let (status, events) = call(
-            &app,
-            "GET",
-            &format!("/v1/sessions/{first_id}/events"),
-            None,
-        )
-        .await;
-        if status == StatusCode::OK {
-            user_messages = events["data"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|event| event["type"] == "user.message")
-                .count();
-            if user_messages > 0 {
-                break;
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    }
+    let events = wait_for_session_events(&app, &first_id, |events| {
+        events["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|event| event["type"] == "user.message")
+    })
+    .await
+    .expect("R2 initial Event batch commits before the deployment deadline")
+    .1;
+    let user_messages = events["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|event| event["type"] == "user.message")
+        .count();
     assert_eq!(user_messages, 1, "R2 initial Event batch");
 
     let mut changed = request;
@@ -129,8 +157,10 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         managed.clone(),
     )));
     let deployment_api = deployments_router(deployments.clone())
+        .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
+    let app = awaken_coordinator::mount_with_managed(host, managed.clone())
+        .merge(deployment_api)
         .layer(axum::Extension(WorkspaceScope(workspace_id)));
-    let app = awaken_coordinator::mount_with_managed(host, managed.clone()).merge(deployment_api);
 
     let (status, deployment) = call(
         &app,
@@ -161,22 +191,10 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     assert_eq!(status, StatusCode::OK, "D2: {manual}");
     assert!(manual["error"].is_null(), "D2 XOR");
     let session_id = manual["session_id"].as_str().unwrap();
-    let mut observed = None;
-    for _ in 0..200 {
-        let response = call(
-            &app,
-            "GET",
-            &format!("/v1/sessions/{session_id}/events"),
-            None,
-        )
-        .await;
-        if response.0 == StatusCode::OK && response.1.to_string().contains("deployment seed event")
-        {
-            observed = Some(response);
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    }
+    let observed = wait_for_session_events(&app, session_id, |events| {
+        events.to_string().contains("deployment seed event")
+    })
+    .await;
     let (status, events) = match observed {
         Some(observed) => observed,
         None => panic!(

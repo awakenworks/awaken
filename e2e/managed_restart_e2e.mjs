@@ -86,9 +86,15 @@ async function main() {
   assert.deepEqual(dbsAfter, dbsBefore, 'the committed durable store survived the restart');
   pass('committed truth persisted on disk across a real process restart');
 
-  // Approve on the fresh process: the adapter rehydrates the session from durable
-  // truth (ADR-0039) and the host recovers the awaiting run from the SQLite file, so
-  // the run resumes and completes end-to-end — no in-memory session state needed.
+  // Continuation recovery cause/effect graph: C1 committed awaiting Run and
+  // Session survive; C2 process incarnation changes while the logical owner is
+  // stable; C3 confirmation is the first post-restart driving event. Effects:
+  // E1 canonical admission advances the realization lease before the billable
+  // activity opens; E2 the host recovers the SQLite Run and resumes once; E3 the
+  // pre-restart workspace remains visible.
+  //
+  // | Rule | awaiting truth | new incarnation | first event   | effects    |
+  // | R1   | yes            | yes             | confirmation  | E1+E2+E3   |
   try {
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],

@@ -175,6 +175,10 @@ pub enum awaken_session_contract::LiveInboxError
 pub awaken_session_contract::LiveInboxError::Inactive
 pub awaken_session_contract::LiveInboxError::StaleOrder
 pub awaken_session_contract::LiveInboxError::UnknownMessage
+pub enum awaken_session_contract::ManagedListPriceError
+pub awaken_session_contract::ManagedListPriceError::InvalidSnapshot(alloc::string::String)
+pub awaken_session_contract::ManagedListPriceError::MissingModel(alloc::string::String)
+pub awaken_session_contract::ManagedListPriceError::Unavailable(alloc::string::String)
 pub enum awaken_session_contract::McpAttachmentError
 pub awaken_session_contract::McpAttachmentError::CounterExhausted
 pub awaken_session_contract::McpAttachmentError::CredentialHolderNotAllowed(alloc::string::String)
@@ -244,6 +248,27 @@ pub awaken_session_contract::SandboxProvisioning::OnToolUse
 pub enum awaken_session_contract::SessionBaselineState
 pub awaken_session_contract::SessionBaselineState::Frozen(awaken_session_contract::SessionBaseline)
 pub awaken_session_contract::SessionBaselineState::Preparing(awaken_session_contract::SessionCreationIntent)
+pub enum awaken_session_contract::SessionBudgetState
+pub awaken_session_contract::SessionBudgetState::Absent
+pub awaken_session_contract::SessionBudgetState::Active
+pub awaken_session_contract::SessionBudgetState::Active::consumed_numerator: u128
+pub awaken_session_contract::SessionBudgetState::Active::max_list_cost_minor: u64
+pub awaken_session_contract::SessionBudgetState::Active::reached_event_emitted: bool
+pub awaken_session_contract::SessionBudgetState::Active::snapshot: awaken_session_contract::ManagedListPriceSnapshot
+pub awaken_session_contract::SessionBudgetState::Active::usage_cursor: awaken_session_contract::ManagedBudgetUsageCursor
+pub awaken_session_contract::SessionBudgetState::Removed
+pub awaken_session_contract::SessionBudgetState::Removed::consumed_numerator: u128
+pub awaken_session_contract::SessionBudgetState::Removed::snapshot: awaken_session_contract::ManagedListPriceSnapshot
+pub awaken_session_contract::SessionBudgetState::Removed::usage_cursor: awaken_session_contract::ManagedBudgetUsageCursor
+impl awaken_session_contract::SessionBudgetState
+pub const awaken_session_contract::SessionBudgetState::COST_DENOMINATOR: u128
+pub const awaken_session_contract::SessionBudgetState::MICROS_PER_MINOR_USD: u128
+pub fn awaken_session_contract::SessionBudgetState::active(u64, awaken_session_contract::ManagedListPriceSnapshot) -> Self
+pub fn awaken_session_contract::SessionBudgetState::can_admit_model_request(&self) -> bool
+pub fn awaken_session_contract::SessionBudgetState::max_list_cost_minor(&self) -> core::option::Option<u64>
+pub fn awaken_session_contract::SessionBudgetState::public_list_cost_minor(&self) -> core::option::Option<u64>
+pub fn awaken_session_contract::SessionBudgetState::reconcile_cumulative_usage(&mut self, awaken_session_contract::ManagedBudgetUsageCursor) -> core::result::Result<bool, awaken_session_contract::ManagedListPriceError>
+pub fn awaken_session_contract::SessionBudgetState::usage_cursor(&self) -> core::option::Option<&awaken_session_contract::ManagedBudgetUsageCursor>
 pub enum awaken_session_contract::SessionCreationFinalizeError
 pub awaken_session_contract::SessionCreationFinalizeError::ApplicationMcpCountMismatch
 pub awaken_session_contract::SessionCreationFinalizeError::ApplicationRequired
@@ -691,6 +716,11 @@ pub awaken_session_contract::LiveInboxSnapshot::messages: alloc::vec::Vec<awaken
 pub awaken_session_contract::LiveInboxSnapshot::version: u64
 impl awaken_session_contract::LiveInboxSnapshot
 pub fn awaken_session_contract::LiveInboxSnapshot::inactive() -> Self
+pub struct awaken_session_contract::ManagedBudgetUsageCursor
+pub awaken_session_contract::ManagedBudgetUsageCursor::active_seconds: u64
+pub awaken_session_contract::ManagedBudgetUsageCursor::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_session_contract::ManagedModelUsageCursor>
+pub awaken_session_contract::ManagedBudgetUsageCursor::web_fetch_requests: u64
+pub awaken_session_contract::ManagedBudgetUsageCursor::web_search_requests: u64
 pub struct awaken_session_contract::ManagedLifecycleFact
 pub awaken_session_contract::ManagedLifecycleFact::event_type: alloc::string::String
 pub awaken_session_contract::ManagedLifecycleFact::id: alloc::string::String
@@ -698,6 +728,34 @@ pub awaken_session_contract::ManagedLifecycleFact::object_id: alloc::string::Str
 pub awaken_session_contract::ManagedLifecycleFact::runtime_interval: core::option::Option<awaken_session_contract::SessionRuntimeInterval>
 pub awaken_session_contract::ManagedLifecycleFact::timestamp: i64
 pub awaken_session_contract::ManagedLifecycleFact::workspace_id: core::option::Option<alloc::string::String>
+pub struct awaken_session_contract::ManagedListPriceRequest
+pub awaken_session_contract::ManagedListPriceRequest::model_refs: alloc::vec::Vec<alloc::string::String>
+pub awaken_session_contract::ManagedListPriceRequest::occurred_at_unix_ms: u64
+pub struct awaken_session_contract::ManagedListPriceSnapshot
+pub awaken_session_contract::ManagedListPriceSnapshot::arithmetic_version: u32
+pub awaken_session_contract::ManagedListPriceSnapshot::effective_at_unix_ms: u64
+pub awaken_session_contract::ManagedListPriceSnapshot::fingerprint: alloc::string::String
+pub awaken_session_contract::ManagedListPriceSnapshot::model_rates: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_session_contract::ManagedTokenListRates>
+pub awaken_session_contract::ManagedListPriceSnapshot::runtime_rates: awaken_session_contract::ManagedRuntimeListRates
+pub awaken_session_contract::ManagedListPriceSnapshot::snapshot_id: alloc::string::String
+pub awaken_session_contract::ManagedListPriceSnapshot::version: u32
+impl awaken_session_contract::ManagedListPriceSnapshot
+pub fn awaken_session_contract::ManagedListPriceSnapshot::usage_cost_numerator(&self, awaken_session_contract::ManagedBudgetUsageCursor) -> core::result::Result<u128, awaken_session_contract::ManagedListPriceError>
+pub fn awaken_session_contract::ManagedListPriceSnapshot::validate(&self, &[alloc::string::String]) -> core::result::Result<(), awaken_session_contract::ManagedListPriceError>
+pub struct awaken_session_contract::ManagedModelUsageCursor
+pub awaken_session_contract::ManagedModelUsageCursor::cache_creation_tokens: u64
+pub awaken_session_contract::ManagedModelUsageCursor::cache_read_tokens: u64
+pub awaken_session_contract::ManagedModelUsageCursor::input_tokens: u64
+pub awaken_session_contract::ManagedModelUsageCursor::output_tokens: u64
+pub struct awaken_session_contract::ManagedRuntimeListRates
+pub awaken_session_contract::ManagedRuntimeListRates::active_micros_per_million_seconds: u64
+pub awaken_session_contract::ManagedRuntimeListRates::web_fetch_micros_per_request: u64
+pub awaken_session_contract::ManagedRuntimeListRates::web_search_micros_per_request: u64
+pub struct awaken_session_contract::ManagedTokenListRates
+pub awaken_session_contract::ManagedTokenListRates::cache_creation_micros_per_million: u64
+pub awaken_session_contract::ManagedTokenListRates::cache_read_micros_per_million: u64
+pub awaken_session_contract::ManagedTokenListRates::input_micros_per_million: u64
+pub awaken_session_contract::ManagedTokenListRates::output_micros_per_million: u64
 pub struct awaken_session_contract::McpAttachmentDraft
 pub awaken_session_contract::McpAttachmentDraft::credential: core::option::Option<awaken_credential_contract::CredentialAccess>
 pub awaken_session_contract::McpAttachmentDraft::name: alloc::string::String
@@ -757,6 +815,7 @@ pub awaken_session_contract::Pending::tool_use_id: alloc::string::String
 pub struct awaken_session_contract::PersistedSession
 pub awaken_session_contract::PersistedSession::activity_epoch: u64
 pub awaken_session_contract::PersistedSession::baseline: awaken_session_contract::SessionBaselineState
+pub awaken_session_contract::PersistedSession::budget: awaken_session_contract::SessionBudgetState
 pub awaken_session_contract::PersistedSession::disposition: awaken_session_contract::SessionDisposition
 pub awaken_session_contract::PersistedSession::environment: awaken_session_contract::SessionEnvironmentState
 pub awaken_session_contract::PersistedSession::execution: awaken_session_contract::SessionExecutionState
@@ -767,6 +826,7 @@ pub awaken_session_contract::PersistedSession::realization_progress: awaken_sess
 pub awaken_session_contract::PersistedSession::resources: awaken_session_contract::SessionResourceState
 pub awaken_session_contract::PersistedSession::revision: awaken_session_contract::SessionRevision
 pub awaken_session_contract::PersistedSession::running_interval: core::option::Option<awaken_session_contract::SessionRuntimeIntervalStart>
+pub awaken_session_contract::PersistedSession::runtime_active_millis: u64
 pub awaken_session_contract::PersistedSession::session_id: alloc::string::String
 pub awaken_session_contract::PersistedSession::terminal_cleanup: awaken_session_contract::SessionTerminalCleanupState
 pub awaken_session_contract::PersistedSession::title: core::option::Option<alloc::string::String>
@@ -788,6 +848,7 @@ pub fn awaken_session_contract::PersistedSession::needs_reconciliation(&self) ->
 pub fn awaken_session_contract::PersistedSession::needs_resource_reconciliation(&self) -> bool
 pub fn awaken_session_contract::PersistedSession::needs_work_dispatch(&self) -> bool
 pub fn awaken_session_contract::PersistedSession::preparing(impl core::convert::Into<alloc::string::String>, awaken_session_contract::SessionCreationIntent, core::option::Option<alloc::string::String>, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, awaken_session_contract::SessionToolConfiguration) -> Self
+pub fn awaken_session_contract::PersistedSession::preparing_with_budget(impl core::convert::Into<alloc::string::String>, awaken_session_contract::SessionCreationIntent, core::option::Option<alloc::string::String>, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, awaken_session_contract::SessionToolConfiguration, awaken_session_contract::SessionBudgetState) -> Self
 pub fn awaken_session_contract::PersistedSession::request_delete(&mut self) -> bool
 pub fn awaken_session_contract::PersistedSession::transition_execution(&mut self, awaken_session_contract::SessionExecutionState) -> core::result::Result<bool, awaken_session_contract::SessionExecutionTransitionError>
 pub fn awaken_session_contract::PersistedSession::visible_mcp_servers(&self) -> alloc::vec::Vec<awaken_session_contract::VisibleMcpServer>
@@ -988,6 +1049,11 @@ impl core::default::Default for awaken_session_contract::SessionMcpAttachmentSet
 pub fn awaken_session_contract::SessionMcpAttachmentSet::default() -> Self
 pub struct awaken_session_contract::SessionMcpAuthoringContext
 pub awaken_session_contract::SessionMcpAuthoringContext::ordered_vault_ids: alloc::vec::Vec<alloc::string::String>
+pub struct awaken_session_contract::SessionModelUsage
+pub awaken_session_contract::SessionModelUsage::cache_creation_tokens: u64
+pub awaken_session_contract::SessionModelUsage::cache_read_tokens: u64
+pub awaken_session_contract::SessionModelUsage::input_tokens: u64
+pub awaken_session_contract::SessionModelUsage::output_tokens: u64
 pub struct awaken_session_contract::SessionMutation
 pub awaken_session_contract::SessionMutation::expected_revision: awaken_session_contract::SessionRevision
 pub awaken_session_contract::SessionMutation::idempotency: awaken_session_contract::IdempotencyRecord
@@ -1099,10 +1165,14 @@ pub awaken_session_contract::SessionToolConfiguration::toolsets: alloc::vec::Vec
 impl awaken_session_contract::SessionToolConfiguration
 pub fn awaken_session_contract::SessionToolConfiguration::from_capabilities(&awaken_session_contract::AgentCapabilities) -> Self
 pub struct awaken_session_contract::SessionUsage
+pub awaken_session_contract::SessionUsage::active_seconds: u64
+pub awaken_session_contract::SessionUsage::by_model: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_session_contract::SessionModelUsage>
 pub awaken_session_contract::SessionUsage::cache_creation_tokens: u64
 pub awaken_session_contract::SessionUsage::cache_read_tokens: u64
 pub awaken_session_contract::SessionUsage::input_tokens: u64
 pub awaken_session_contract::SessionUsage::output_tokens: u64
+pub awaken_session_contract::SessionUsage::web_fetch_requests: u64
+pub awaken_session_contract::SessionUsage::web_search_requests: u64
 pub struct awaken_session_contract::SkillBundleSourceError(_)
 impl awaken_session_contract::SkillBundleSourceError
 pub fn awaken_session_contract::SkillBundleSourceError::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -1148,7 +1218,7 @@ pub struct awaken_session_contract::VisibleMcpServer
 pub awaken_session_contract::VisibleMcpServer::name: alloc::string::String
 pub awaken_session_contract::VisibleMcpServer::prompts_as_skills: bool
 pub awaken_session_contract::VisibleMcpServer::target: awaken_agent_contract::mcp_target::McpTarget
-pub const awaken_session_contract::AGENT_TOOLSET_TOOL_IDS: [&str; 7]
+pub const awaken_session_contract::AGENT_TOOLSET_TOOL_IDS: [&str; 8]
 pub const awaken_session_contract::DREAM_MAX_INSTRUCTIONS_CHARS: usize
 pub const awaken_session_contract::DREAM_MAX_SESSIONS: usize
 pub const awaken_session_contract::DREAM_SUPPORTED_MODELS: &[&str]
@@ -1182,6 +1252,8 @@ pub fn awaken_session_contract::LiveInboxApplication::remove<'life0, 'life1, 'li
 pub fn awaken_session_contract::LiveInboxApplication::reorder<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::LiveInboxApplication::replace<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::LiveInboxApplication::snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::LiveInboxSnapshot, awaken_session_contract::LiveInboxApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub trait awaken_session_contract::ManagedListPriceProvider: core::marker::Send + core::marker::Sync
+pub fn awaken_session_contract::ManagedListPriceProvider::resolve_snapshot<'life0, 'async_trait>(&'life0 self, awaken_session_contract::ManagedListPriceRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::ManagedListPriceSnapshot, awaken_session_contract::ManagedListPriceError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_session_contract::ManagedSessionRepository: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::ManagedSessionRepository::append_lifecycle<'life0, 'async_trait>(&'life0 self, awaken_session_contract::ManagedLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::ManagedSessionRepository::commit_mutation<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_session_contract::SessionMutation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionMutationResult, awaken_session_contract::SessionRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

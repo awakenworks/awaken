@@ -180,7 +180,7 @@ impl ConfigPlaneManagedAgentRepository {
         workspace_id: &str,
         config: &mut AgentConfig,
     ) -> Result<(), ManagedAgentError> {
-        let coordinator_geo = config.inference.inference_geo.clone();
+        let coordinator_geo = config.inference.inference_geo;
         let Some(multiagent) = config.multiagent.as_mut() else {
             return Ok(());
         };

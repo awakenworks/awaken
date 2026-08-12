@@ -176,6 +176,10 @@ The worker-drain axis is independent: `disable_local_pool=false` lets the local
 pool claim; `disable_local_pool=true` leaves the same durable queue exclusively
 for an authenticated external Worker. Scenario fixtures project that axis into
 the same `DeploymentConfig` before Host construction, never as a later override.
+Production exposes the canonical Worker transport only on its private listener.
+The single-listener Scenario composition merges that exact transport only when
+`disable_local_pool=true`; local-pool scenarios do not expose the unused private
+surface, and no test-only Worker protocol implementation exists.
 
 Constructing an ephemeral Host and adding storage afterward is forbidden: it mints
 a process-specific owner before durability exists and creates a second resource

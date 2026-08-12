@@ -1152,6 +1152,7 @@ impl SharedHost {
                     .collect()
             })
             .unwrap_or_default();
+        let generated_config = installed.is_none();
         let mut config = installed.unwrap_or_else(|| {
             server_config(
                 "assistant",
@@ -1164,10 +1165,16 @@ impl SharedHost {
                 context_policy,
             )
         });
-        if self
-            .session_slots
-            .read(thread, |slot| slot.toolsets.is_some())
-            .unwrap_or(false)
+        // Session tool policy is transported in the frozen runtime envelope and
+        // applied to the Runtime gate above. It may augment a generated fallback
+        // config, but it must never rewrite an immutable publication carried by a
+        // claimed activation: doing so makes the next turn appear to replace the
+        // Session's retained publication and terminalizes a valid continuation.
+        if generated_config
+            && self
+                .session_slots
+                .read(thread, |slot| slot.toolsets.is_some())
+                .unwrap_or(false)
         {
             config.resolved_spec.plugin_config.agent.toolsets = toolsets;
         }

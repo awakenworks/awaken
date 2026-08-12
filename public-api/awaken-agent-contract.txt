@@ -550,6 +550,7 @@ pub fn awaken_agent_contract::secret::RedactedString::drop(&mut self)
 pub struct awaken_agent_contract::secret::StructuredCredentialMaterial
 pub awaken_agent_contract::secret::StructuredCredentialMaterial::fields: alloc::collections::btree::map::BTreeMap<alloc::string::String, awaken_agent_contract::secret::RedactedString>
 pub awaken_agent_contract::secret::StructuredCredentialMaterial::type_id: alloc::string::String
+pub type awaken_agent_contract::secret::RedactedStringSource = (dyn core::ops::function::Fn() -> core::result::Result<awaken_agent_contract::secret::RedactedString, alloc::string::String> + core::marker::Send + core::marker::Sync)
 pub mod awaken_agent_contract::skill
 pub enum awaken_agent_contract::skill::AgentSkillKind
 pub awaken_agent_contract::skill::AgentSkillKind::Anthropic
@@ -1080,3 +1081,4 @@ pub fn awaken_agent_contract::StreamSink::send<'life0, 'async_trait>(&'life0 sel
 pub fn awaken_agent_contract::classify_run_lifecycle_event(&awaken_agent_contract::agent::run::RunState, core::option::Option<&awaken_agent_contract::agent::run::RunState>) -> awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind
 pub fn awaken_agent_contract::stable_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String
 pub fn awaken_agent_contract::validate_agent_skills(&[awaken_agent_contract::skill::AgentSkillBinding]) -> core::result::Result<(), alloc::string::String>
+pub type awaken_agent_contract::RedactedStringSource = (dyn core::ops::function::Fn() -> core::result::Result<awaken_agent_contract::secret::RedactedString, alloc::string::String> + core::marker::Send + core::marker::Sync)

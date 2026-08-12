@@ -618,6 +618,50 @@ async fn interrupt_is_a_noop_when_nothing_runs() {
 }
 
 #[tokio::test]
+async fn runtime_constructor_installs_the_exact_file_content_source() {
+    struct ConstructorFileSource;
+
+    #[async_trait::async_trait]
+    impl crate::FileContentSource<awaken_run_ingress::RunClaim> for ConstructorFileSource {
+        async fn read(
+            &self,
+            workspace_id: &str,
+            file_id: &str,
+            _claim: Option<&awaken_run_ingress::RunClaim>,
+        ) -> Result<Option<(String, Vec<u8>)>, awaken_resource_contract::FileContentSourceError>
+        {
+            let bytes = format!("{workspace_id}/{file_id}").into_bytes();
+            Ok(Some((awaken_resource_contract::content_id(&bytes), bytes)))
+        }
+    }
+
+    // Cause/effect decision table: R1 production Runtime constructor + exact
+    // File content port -> that same port serves immutable bytes; R2 no
+    // post-construction override -> the default-feature CLI remains compilable
+    // without exposing the volatile fixture mutator. Unavailable-source failure
+    // semantics are owned by awaken-resource-contract and tested there.
+    let host = SharedHost::new_with_runtime_resources_and_deployment(
+        Arc::new(MemoryHostModel),
+        "stub",
+        Arc::new(ConstructorFileSource),
+        Arc::new(
+            awaken_memory_store::SqliteMemoryRepository::open(":memory:")
+                .expect("open test Memory repository"),
+        ),
+        SharedHost::test_memory_extraction_repository(None),
+        crate::DeploymentConfig::ephemeral(),
+    );
+    let (_, bytes) = host
+        .worker_file_content_source()
+        .read("workspace-runtime", "file-runtime", None)
+        .await
+        .expect("read through exact constructor port")
+        .expect("constructor source returns one File");
+
+    assert_eq!(bytes, b"workspace-runtime/file-runtime");
+}
+
+#[tokio::test]
 async fn attributed_run_meets_deployment_capture_with_control_consent() {
     struct SubjectConsent;
     #[derive(Default)]
@@ -7533,6 +7577,56 @@ async fn host_accepts_only_backend_projections_that_match_the_publication() {
         error.to_string().contains("no immutable Agent publication"),
         "H4"
     );
+}
+
+#[tokio::test]
+async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+
+    // Cause/effect decision table:
+    // | publication | frozen Session policy | effect |
+    // | present     | present               | Runtime gate receives policy; publication unchanged |
+    // | generated   | present               | generated execution config may carry policy |
+    // The second rule is owned by the fallback construction path. This test owns
+    // the distributed continuation boundary: a second claim must compare the
+    // same immutable publication instead of a Session-augmented copy.
+    let publication = crate::config::server_config(
+        "assistant",
+        "stub",
+        &HashSet::new(),
+        &HashSet::new(),
+        &[],
+        &Default::default(),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    let publications =
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication.clone()])
+            .expect("valid publication");
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
+    host.session_slots.update("policy-session", |slot| {
+        slot.toolsets = Some(vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides: vec![ToolPolicyOverride {
+                name: "write".into(),
+                policy: ToolExecutionPolicy {
+                    enabled: true,
+                    permission: ToolPermissionRequirement::AlwaysAsk,
+                },
+            }],
+        }]);
+    });
+
+    let context = host
+        .ctx_for("policy-session", Some("assistant"))
+        .await
+        .expect("build Session from immutable publication");
+    assert_eq!(context.config, publication);
 }
 
 #[tokio::test]

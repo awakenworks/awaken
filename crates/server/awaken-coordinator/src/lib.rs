@@ -441,6 +441,37 @@ fn ephemeral_dream_process_store() -> Arc<dyn awaken_session_contract::DreamProc
     Arc::new(awaken_dream_application::InMemoryDreamProcessStore::default())
 }
 
+#[cfg(feature = "test-support")]
+fn with_scenario_session_lifecycle(
+    router: Router,
+    session_application: Arc<awaken_session_application::SessionApplication>,
+) -> Router {
+    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    coordinator_component::register_session_lifecycle(&lifecycle, session_application);
+    // The Router owns the same process-lifecycle handle as the Scenario surface.
+    // Dropping the test server drops the composition; the Tokio runtime then
+    // tears down its registered tasks just as process shutdown does.
+    router.layer(axum::Extension(lifecycle))
+}
+
+#[cfg(feature = "test-support")]
+fn with_scenario_worker_transport(
+    public: Router,
+    worker_private: Router,
+    remote_worker_required: bool,
+) -> Router {
+    // Production keeps the Worker transport on its private listener. The
+    // single-listener Scenario surface exposes that exact router only for the
+    // coordinator-only deployment axis whose local pool is disabled; ordinary
+    // Scenario servers retain the same isolation instead of publishing an
+    // unused private API.
+    if remote_worker_required {
+        public.merge(worker_private)
+    } else {
+        public
+    }
+}
+
 /// Assemble the data plane with the same secret-free Resource Catalog used by
 /// the Managed Session ACL. Authorization remains an outer middleware concern;
 /// this only shares resource identity/configuration/lifecycle truth.
@@ -506,16 +537,18 @@ pub fn mount_with_managed_and_application_access_and_models(
     application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
     model_inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
 ) -> Router {
+    let remote_worker_required = !host.runs_local_dispatch_pool();
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_catalog.clone());
     let session_application = managed_state.session_application();
+    let supervised_sessions = session_application.clone();
     let worker_file_application = host
         .file_application()
         .expect("test-support File application");
     let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
         host.skill_store().expect("test-support Skill store"),
     ));
-    let (managed, data, _, _) = mount_with_managed_over_and_models(
+    let (managed, data, worker_private, _) = mount_with_managed_over_and_models(
         host,
         managed_state,
         ManagedApplicationServices {
@@ -538,7 +571,9 @@ pub fn mount_with_managed_and_application_access_and_models(
         },
     )
     .expect("test-support Worker transport must assemble");
-    managed.merge(data)
+    let public =
+        with_scenario_worker_transport(managed.merge(data), worker_private, remote_worker_required);
+    with_scenario_session_lifecycle(public, supervised_sessions)
 }
 
 /// Router-owned services that must move together into the managed data plane.
@@ -694,7 +729,9 @@ fn mount_with_managed_over(
     resource_catalog: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+    let remote_worker_required = !host.runs_local_dispatch_pool();
     let session_application = managed_state.session_application();
+    let supervised_sessions = session_application.clone();
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_catalog.clone());
     let worker_file_application = host
@@ -703,7 +740,7 @@ fn mount_with_managed_over(
     let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
         host.skill_store().expect("test-support Skill store"),
     ));
-    let (managed, public, _worker_private, dreams) = mount_with_managed_over_and_models(
+    let (managed, public, worker_private, dreams) = mount_with_managed_over_and_models(
         host,
         managed_state,
         ManagedApplicationServices {
@@ -726,7 +763,15 @@ fn mount_with_managed_over(
         },
     )
     .expect("test-support Worker transport must assemble");
-    (managed.merge(public), dreams)
+    let public = with_scenario_worker_transport(
+        managed.merge(public),
+        worker_private,
+        remote_worker_required,
+    );
+    (
+        with_scenario_session_lifecycle(public, supervised_sessions),
+        dreams,
+    )
 }
 
 fn mount_with_managed_over_and_models(

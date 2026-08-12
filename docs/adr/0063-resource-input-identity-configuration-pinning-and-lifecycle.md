@@ -4,6 +4,7 @@
 - Date: 2026-07-21
 - Amended: 2026-08-01 — logical File identity and canonical Resources application
 - Amended: 2026-08-10 — typed application-contributed Session inputs
+- Amended: 2026-08-12 — one front-door IAM enforcement path
 - Builds on: [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
   (resource injection and provisioning descriptors),
   [ADR-0041](0041-sandbox-execution-environment-provider.md) (sandbox lifecycle),
@@ -453,3 +454,20 @@ rejected before sandbox realization.
   control plane and leaks product configuration into execution.
 - One generic resource store: rejected because creation, consistency, deletion,
   and reclamation invariants differ by resource family.
+
+## Amendment: one front-door IAM enforcement path (2026-08-12)
+
+D4's separate resource PEP described a separate policy namespace, not a license
+to place two authentication/authorization middleware layers on the same HTTP
+request. That implementation shape is superseded. Every public domain router is
+wrapped exactly once by the canonical front-door IAM edge. Its one route-family
+classifier selects either the management action profile or the resource action
+profile before calling the same local or Cloud IAM adapter.
+
+The static boundary remains unchanged: File, MemoryStore, Skill, Session, and
+A2A services receive only a trusted `WorkspaceScope` and never receive identity
+or policy types. The dynamic boundary is now unambiguous: authenticate once,
+fence the requested Workspace once, select the action namespace, obtain one PDP
+decision, stamp the Workspace only on Allow, and enter the handler. Deny,
+approval, transport failure, and an unmapped route terminate at that same edge.
+No `resource_guard` compatibility layer remains.

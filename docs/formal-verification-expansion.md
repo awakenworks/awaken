@@ -118,8 +118,11 @@ pure kernels.
 - Durable management audit (2): the config store records a pending stable call
   before the action, then commits the draft and pending→committed transition in one
   SQLite/PostgreSQL transaction. A committed call replay is a business no-op and a
-  conflicting reuse of the identity fails closed. Structured tracing is now only
-  an observability projection, not the audit authority.
+  conflicting reuse of the identity fails closed. The stable audit-call identity
+  is the explicit `X-Request-ID`; `Idempotency-Key` remains owned by the domain
+  command and is never reinterpreted as a second middleware dedupe authority.
+  Structured tracing is now only an observability projection, not the audit
+  authority.
 
 These changes close the three previously documented cross-process transaction
 gaps. They do not claim eventual network delivery or exactly-once third-party

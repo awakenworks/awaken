@@ -236,6 +236,7 @@ impl SharedHost {
     pub fn new_with_runtime_resources_and_deployment(
         llm: Arc<dyn LlmExecutor>,
         model_ref: impl Into<String>,
+        file_content_source: Arc<dyn crate::FileContentSource<awaken_run_ingress::RunClaim>>,
         memory_repository: Arc<dyn awaken_resource_contract::MemoryRepository>,
         extraction_repository: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>,
         deployment: crate::DeploymentConfig,
@@ -245,9 +246,7 @@ impl SharedHost {
             model_ref.into(),
             None,
             Some(WorkerContentAdapters {
-                file_content_source: Arc::new(
-                    awaken_resource_contract::UnavailableFileContentSource,
-                ),
+                file_content_source,
                 memory_repository,
             }),
             Some(extraction_repository),

@@ -67,11 +67,12 @@ stringData:
   control.toml: |
     data_dir = "/var/lib/awaken/control"
     bind = "0.0.0.0:3000"
+    internal_bind = "0.0.0.0:3001"
     mode = "server"
     role = "control"
     no_browser = true
     identity_mode = "no-login"
-    coordinator_internal_url = "http://coordinator:3000"
+    coordinator_internal_url = "http://coordinator:3001"
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
     control_service_token_file = "/etc/awaken-auth/control-service-token"
     control_seal_key_file = "/etc/awaken-auth/seal-key"
@@ -84,6 +85,7 @@ stringData:
   coordinator.toml: |
     data_dir = "/var/lib/awaken/coordinator"
     bind = "0.0.0.0:3000"
+    internal_bind = "0.0.0.0:3001"
     mode = "server"
     role = "coordinator"
     no_browser = true
@@ -96,7 +98,7 @@ stringData:
     resource_database_url = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/resources" # awaken-allow: secret
     sessions_db = "postgres://awaken_coordinator:adr71-coordinator-db@postgres:5432/runtime" # awaken-allow: secret
     executable_agent_registration_token_file = "/etc/awaken-auth/registration-token"
-    control_internal_url = "http://control:3000"
+    control_internal_url = "http://control:3001"
     control_service_token_file = "/etc/awaken-auth/control-service-token"
     worker_trust_credentials_file = "/etc/awaken-auth/worker-trust.json"
     sandbox_tier = "namespace"
@@ -169,7 +171,9 @@ kind: Service
 metadata: { name: control, labels: { app: control } }
 spec:
   selector: { app: control }
-  ports: [{ name: http, port: 3000, targetPort: 3000 }]
+  ports:
+    - { name: public, port: 3000, targetPort: 3000 }
+    - { name: internal, port: 3001, targetPort: 3001 }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -197,7 +201,9 @@ spec:
             - { name: AWAKEN_MODEL_MODE, value: distributed-control }
             - { name: AWAKEN_HTTP_ADDR, value: "0.0.0.0:3000" }
             - { name: AWAKEN_SCENARIO_CONFIG, value: /etc/awaken/control.toml }
-          ports: [{ containerPort: 3000 }]
+          ports:
+            - { name: public, containerPort: 3000 }
+            - { name: internal, containerPort: 3001 }
           readinessProbe:
             httpGet: { path: /readyz, port: 3000 }
             initialDelaySeconds: 2
@@ -219,7 +225,9 @@ kind: Service
 metadata: { name: coordinator, labels: { app: coordinator } }
 spec:
   selector: { app: coordinator }
-  ports: [{ name: http, port: 3000, targetPort: 3000 }]
+  ports:
+    - { name: public, port: 3000, targetPort: 3000 }
+    - { name: internal, port: 3001, targetPort: 3001 }
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -240,7 +248,9 @@ spec:
           image: awaken-roles:latest
           imagePullPolicy: Never
           command: ["/usr/local/bin/awaken-coordinator", "--config", "/etc/awaken/coordinator.toml"]
-          ports: [{ containerPort: 3000 }]
+          ports:
+            - { name: public, containerPort: 3000 }
+            - { name: internal, containerPort: 3001 }
           readinessProbe:
             httpGet: { path: /readyz, port: 3000 }
             initialDelaySeconds: 2
@@ -323,8 +333,14 @@ spec:
           args:
             - |
               sed "s/__WORKER_ID__/${HOSTNAME}/g" /etc/awaken-template/worker.toml > /tmp/worker.toml
-              exec /usr/local/bin/awaken-worker --server http://coordinator:3000 --config /tmp/worker.toml
+              exec /usr/local/bin/awaken-worker --server http://coordinator:3001 --config /tmp/worker.toml
           ports: [{ containerPort: 9090 }]
+          lifecycle:
+            # Normal scale-in closes local claim admission before SIGTERM and
+            # leaves the existing 15s Worker drain inside the 20s Pod grace.
+            # This HTTP hook needs no shell/client in a distroless image.
+            preStop:
+              httpGet: { path: /admin/drain, port: 9090, scheme: HTTP }
           readinessProbe:
             httpGet: { path: /readyz, port: 9090 }
             initialDelaySeconds: 2

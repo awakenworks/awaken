@@ -93,3 +93,14 @@ produce a state that disagrees with the presence of a ticket.
   role catalog (`RunState` authority, derived projections).
 - [INVARIANTS.md](../INVARIANTS.md) — the enforceable guardrail and its tests.
 - ADR-0001 D3 (one internally consistent vocabulary).
+
+## Amendment: committed errors are their own step explanation (2026-08-12)
+
+The Runtime Host's committed-step proof requires a natural terminal to include
+committed assistant output. It does not require an `EndCause::Error(Failure)` to
+also fabricate or persist an assistant message: the typed failure code and
+message inside the committed `RunState` are already the sole durable
+explanation. Protocols project their error event from that state. Treating an
+otherwise valid error terminal as a proof failure would hide the authoritative
+failure behind a second, less useful internal error and would reintroduce a
+parallel transcript requirement for error truth.

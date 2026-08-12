@@ -240,3 +240,20 @@ The application never materializes a bearer, constructs a relay/connection, or
 owns MCP desired state. Re-delivery of the complete application plan remains
 fingerprint-idempotent. Later add/replace/remove operations are independent
 Session commands and never mutate or resubmit `ApplicationSessionPlan`.
+
+## Amendment: Kubernetes drain and hard-crash evidence are distinct (2026-08-12)
+
+Normal Kubernetes scale-in invokes the Worker's existing `/admin/drain` before
+SIGTERM. The hook closes process-local claim admission, and the Pod termination
+grace exceeds the Worker's bounded in-flight drain. The hook is an HTTP lifecycle
+action rather than an in-image shell command, so a distroless production image
+does not need curl, wget, or a shell.
+
+A hard-crash conformance test must instead stop the exact CRI container process.
+Deleting the Pod object first can withdraw networking while userspace briefly
+retains its current claim, producing a real provider transport failure rather
+than the intended crash-before-commit condition. The test observes an increased
+container restart count, then requires lease expiry, a newly registered Worker
+incarnation, recovery from committed truth, and one terminal response. This is a
+test-injection distinction only; durable claim, commit, and settlement authority
+remain unchanged.

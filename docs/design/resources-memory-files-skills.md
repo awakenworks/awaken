@@ -697,7 +697,7 @@ Static dependency direction:
 
 ```text
 awaken-cli composition root
-  +-- local/cloud Resource PEP ---> awaken-iam PDP/PIP/PAP
+  +-- local/cloud front-door PEP -> route policy -> awaken-iam PDP/PIP/PAP
   +-- resource routers ----------> ResourceCatalog / FileStore / MemoryRepository / SkillStore
 
 ResourceCatalog / stores -X-> IAM, principal, API key, role, policy
@@ -713,7 +713,8 @@ Dynamic request flow:
 
 ```text
 request + credential/path selection
-  -> Resource PEP authenticates and asks PDP
+  -> canonical front-door PEP authenticates once
+  -> route policy selects the resource action namespace and asks PDP once
   -> deny/approval: stop at edge
   -> allow: stamp trusted WorkspaceScope
   -> ownership/lifecycle lookup
@@ -726,9 +727,11 @@ stamped by the composition edge and returns not found for a missing or empty
 value. File, MemoryStore, Skill, and ownership handlers therefore have no local
 Workspace fallback and no dependency on authentication or authorization values.
 
-The route-to-action map is PEP configuration: File uses `file.read/write`, Skill
-uses `skill.read/write`, and awaken's deliberately coarse MemoryStore governance
-uses `workspace.read/write`. Replacing that map or policy does not change a
+The route-to-action map is front-door PEP configuration: File uses
+`file.read/write`, Skill uses `skill.read/write`, and awaken's deliberately
+coarse MemoryStore governance uses `workspace.read/write`. Management and
+resource profiles are distinct policy namespaces selected by this one edge;
+they are not stacked middleware. Replacing that map or policy does not change a
 resource port or storage schema.
 
 ## Recovery and Reclamation

@@ -224,6 +224,13 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
         _workspace_id: &str,
         agent_id: &str,
     ) -> Option<ExecutableAgentSessionProfile> {
+        if agent_id == "researcher" {
+            // The published roster is closed over executable Agent profiles. This
+            // fixture's leaf is intentionally ordinary and integration-free; an
+            // absent leaf would test the multiagent_unavailable rejection rather
+            // than the inheritance rule below.
+            return Some(empty_agent_view("genai"));
+        }
         (agent_id == "integrated").then(|| ExecutableAgentSessionProfile {
             mcp_servers: vec![
                 awaken_executable_agent_contract::ExecutableAgentMcpServer {
@@ -811,7 +818,7 @@ async fn session_projects_exact_published_client_tool_contract() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{session}");
     let lookup = session["agent"]["tools"]
         .as_array()
         .and_then(|tools| tools.iter().find(|tool| tool["name"] == "lookup"))
@@ -856,7 +863,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{session}");
     assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs");
     assert_eq!(
         session["agent"]["mcp_servers"][1],

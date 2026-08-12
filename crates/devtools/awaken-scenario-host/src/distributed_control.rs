@@ -16,7 +16,7 @@ use axum::routing::post;
 
 use crate::model_publication::{DistributedProviderPublicationResolver, scenario_model_catalog};
 
-pub async fn build_distributed_control_router() -> Router {
+pub async fn serve_distributed_control() -> Result<(), String> {
     // The scenario process is a thin model adapter, not a second config
     // owner. Its deployment fixture supplies the same explicit file used by the
     // production Control migration command; omission retains the normal default
@@ -27,22 +27,22 @@ pub async fn build_distributed_control_router() -> Router {
             config_path,
             ..Default::default()
         })
-        .unwrap_or_else(|error| panic!("distributed Control deployment configuration: {error}"));
-    assert_eq!(
-        deployment.role,
-        awaken_cli::config::Role::Control,
-        "distributed Control scenario requires role = \"control\""
-    );
+        .map_err(|error| format!("distributed Control deployment configuration: {error}"))?;
+    if deployment.role != awaken_cli::config::Role::Control {
+        return Err("distributed Control scenario requires role = \"control\"".into());
+    }
     let key = deployment
         .seal_key
         .load_or_create()
-        .unwrap_or_else(|error| panic!("distributed Control seal key: {error}"));
+        .map_err(|error| format!("distributed Control seal key: {error}"))?;
     let resolver = Arc::new(DistributedProviderPublicationResolver::new(
         scenario_model_catalog("adr71-echo").await,
     ));
-    awaken_cli::build_control_router_with_publication_resolver(&deployment, &key, resolver)
-        .await
-        .unwrap_or_else(|error| panic!("assemble distributed Control scenario: {error}"))
+    let process =
+        awaken_cli::prepare_control_process_with_publication_resolver(&deployment, &key, resolver)
+            .await
+            .map_err(|error| format!("assemble distributed Control scenario: {error}"))?;
+    awaken_cli::serve_prepared_control(deployment, process).await
 }
 
 /// Hermetic Anthropic Messages edge used by the distributed-role cluster proof.

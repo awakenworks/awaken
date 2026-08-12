@@ -103,6 +103,20 @@ pub async fn restore_deployment_application(
         .map_err(|error| CoordinatorBuildError::DeploymentRestore(error.to_string()))
 }
 
+/// Register the Coordinator's one Session lifecycle supervisor.
+///
+/// Production and deterministic Scenario compositions share this exact
+/// registration point so restart recovery never depends on a protocol query
+/// accidentally materializing Runtime state.
+pub(crate) fn register_session_lifecycle(
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    session_application: Arc<SessionApplication>,
+) {
+    service_lifecycle.spawn("coordinator-session-lifecycle", move |cancel| async move {
+        session_application.run_lifecycle_supervisor(cancel).await
+    });
+}
+
 /// Build the one authoritative Coordinator component.
 pub async fn build_coordinator_component(
     dependencies: CoordinatorDependencies,
@@ -137,10 +151,7 @@ pub async fn build_coordinator_component(
     // The canonical supervisor owns durable resource, MCP, and WorkQueue
     // recovery as background work. Component construction must expose readiness
     // without awaiting an external sandbox timeout for every persisted Session.
-    let supervised_sessions = session_application.clone();
-    service_lifecycle.spawn("coordinator-session-lifecycle", move |cancel| async move {
-        supervised_sessions.run_lifecycle_supervisor(cancel).await
-    });
+    register_session_lifecycle(&service_lifecycle, session_application.clone());
     deployment_application.bind_launcher(deployment_session_launcher);
 
     let environment_warmups = awaken_run_ingress_http::worker_environment_warmup_router(

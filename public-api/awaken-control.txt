@@ -52,9 +52,9 @@ pub fn awaken_control::authz::ManagementAuthz::mint_service_token(&self, awaken_
 pub fn awaken_control::authz::ManagementAuthz::register_workspace(&self, &str)
 pub struct awaken_control::authz::RemoteManagementAuthz
 impl awaken_control::RemoteManagementAuthz
-pub fn awaken_control::RemoteManagementAuthz::cloud_user_token(&self) -> core::option::Option<awaken_agent_contract::secret::RedactedString>
-pub fn awaken_control::RemoteManagementAuthz::connect(alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>) -> core::result::Result<alloc::sync::Arc<Self>, alloc::string::String>
+pub fn awaken_control::RemoteManagementAuthz::cloud_user_token(&self) -> core::result::Result<core::option::Option<awaken_agent_contract::secret::RedactedString>, alloc::string::String>
 pub fn awaken_control::RemoteManagementAuthz::connect_with_projected_service_token(alloc::string::String, alloc::string::String, alloc::string::String, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<Self>, alloc::string::String>
+pub fn awaken_control::RemoteManagementAuthz::connect_with_user_token_source(alloc::string::String, alloc::string::String, alloc::string::String, alloc::sync::Arc<awaken_agent_contract::secret::RedactedStringSource>, core::option::Option<alloc::string::String>) -> core::result::Result<alloc::sync::Arc<Self>, alloc::string::String>
 pub struct awaken_control::authz::TokenSpec
 pub awaken_control::authz::TokenSpec::created_at: core::option::Option<alloc::string::String>
 pub awaken_control::authz::TokenSpec::expires_at: core::option::Option<alloc::string::String>
@@ -73,7 +73,6 @@ pub const awaken_control::authz::MANAGEMENT_AGENT_PUBLISHER_ROLE: &str
 pub const awaken_control::authz::MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE: &str
 pub const awaken_control::authz::MANAGEMENT_POLICY_NAMESPACE: &str
 pub async fn awaken_control::authz::cloud_management_guard(axum::extract::state::State<alloc::sync::Arc<awaken_control::RemoteManagementAuthz>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
-pub async fn awaken_control::authz::cloud_resource_guard(axum::extract::state::State<alloc::sync::Arc<awaken_control::RemoteManagementAuthz>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub fn awaken_control::authz::embedded_iam(&std::path::Path) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::embedded_iam_for_workspace(&std::path::Path, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
@@ -81,7 +80,6 @@ pub fn awaken_control::authz::hosted_runtime_authorization_profile() -> awaken_i
 pub fn awaken_control::authz::management_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub async fn awaken_control::authz::management_guard(axum::extract::state::State<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub fn awaken_control::authz::management_resource_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
-pub async fn awaken_control::authz::resource_guard(axum::extract::state::State<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub mod awaken_control::control_stores
 pub enum awaken_control::control_stores::StoreBackend
 pub awaken_control::control_stores::StoreBackend::Postgres(alloc::string::String)
@@ -199,7 +197,9 @@ pub awaken_control::ControlDependencies::execution_workspace: alloc::string::Str
 pub awaken_control::ControlDependencies::global_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_control::ControlDependencies::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
 pub awaken_control::ControlDependencies::local_browser_auth: core::option::Option<awaken_iam_host::local_browser::LocalBrowserAuth>
+pub awaken_control::ControlDependencies::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_control::ControlDependencies::managed_runtime: bool
+pub awaken_control::ControlDependencies::managed_tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
 pub awaken_control::ControlDependencies::mcp_probe: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>>
 pub awaken_control::ControlDependencies::model_discovery: alloc::sync::Arc<dyn awaken_admin_config_api::provider_connection::ModelCatalogDiscovery>
 pub awaken_control::ControlDependencies::model_publication_resolver: alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>
@@ -228,7 +228,9 @@ pub awaken_control::ControlRouterInput::environment_router: axum::routing::Route
 pub awaken_control::ControlRouterInput::global_tools: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_control::ControlRouterInput::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
 pub awaken_control::ControlRouterInput::local_browser_auth: core::option::Option<awaken_iam_host::local_browser::LocalBrowserAuth>
+pub awaken_control::ControlRouterInput::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_control::ControlRouterInput::managed_runtime: bool
+pub awaken_control::ControlRouterInput::managed_tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
 pub awaken_control::ControlRouterInput::model_discovery: alloc::sync::Arc<dyn awaken_admin_config_api::provider_connection::ModelCatalogDiscovery>
 pub awaken_control::ControlRouterInput::model_supply: awaken_admin_config_api::router::ModelSupplyCapabilityView
 pub awaken_control::ControlRouterInput::plane: awaken_config_service::config_plane::ConfigPlane
@@ -290,9 +292,9 @@ impl core::default::Default for awaken_control::RegistrationSupervisorConfig
 pub fn awaken_control::RegistrationSupervisorConfig::default() -> Self
 pub struct awaken_control::RemoteManagementAuthz
 impl awaken_control::RemoteManagementAuthz
-pub fn awaken_control::RemoteManagementAuthz::cloud_user_token(&self) -> core::option::Option<awaken_agent_contract::secret::RedactedString>
-pub fn awaken_control::RemoteManagementAuthz::connect(alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>) -> core::result::Result<alloc::sync::Arc<Self>, alloc::string::String>
+pub fn awaken_control::RemoteManagementAuthz::cloud_user_token(&self) -> core::result::Result<core::option::Option<awaken_agent_contract::secret::RedactedString>, alloc::string::String>
 pub fn awaken_control::RemoteManagementAuthz::connect_with_projected_service_token(alloc::string::String, alloc::string::String, alloc::string::String, std::path::PathBuf) -> core::result::Result<alloc::sync::Arc<Self>, alloc::string::String>
+pub fn awaken_control::RemoteManagementAuthz::connect_with_user_token_source(alloc::string::String, alloc::string::String, alloc::string::String, alloc::sync::Arc<awaken_agent_contract::secret::RedactedStringSource>, core::option::Option<alloc::string::String>) -> core::result::Result<alloc::sync::Arc<Self>, alloc::string::String>
 pub struct awaken_control::StaticRegistrationSupervisor
 impl awaken_control::StaticRegistrationSupervisor
 pub fn awaken_control::StaticRegistrationSupervisor::health(&self) -> alloc::sync::Arc<awaken_control::RegistrationHealth>
@@ -328,5 +330,6 @@ pub fn awaken_control::hosted_runtime_authorization_profile() -> awaken_iam_cont
 pub fn awaken_control::management_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub fn awaken_control::management_resource_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub async fn awaken_control::open_inference_materialization_stores(&awaken_control::control_stores::ControlStoreConfig, &[u8; 32]) -> awaken_control::worker_stores::InferenceMaterializationStores
-pub fn awaken_control::protect_management_router(axum::routing::Router, awaken_config_service::management_audit::ManagementAuditPlane, core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>, core::option::Option<alloc::sync::Arc<awaken_control::RemoteManagementAuthz>>) -> axum::routing::Router
+pub fn awaken_control::protect_authorized_router(axum::routing::Router, core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>, core::option::Option<alloc::sync::Arc<awaken_control::RemoteManagementAuthz>>) -> axum::routing::Router
+pub fn awaken_control::protect_management_router(axum::routing::Router, awaken_config_service::management_audit::ManagementAuditPlane, core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>, core::option::Option<alloc::sync::Arc<awaken_control::RemoteManagementAuthz>>, core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>) -> axum::routing::Router
 pub async fn awaken_control::seed_admin_assistant(&awaken_config_service::config_plane::ConfigPlane, &str, awaken_agent_config::config::ModelSelection) -> core::result::Result<(), alloc::string::String>

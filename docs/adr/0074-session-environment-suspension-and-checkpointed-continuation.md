@@ -470,3 +470,20 @@ checkpoint metadata database is introduced.
    one idempotent suspend and joining one restore is simpler and closes the
    ambiguous-upload race. Cancellation may be introduced later only if it
    preserves the same aggregate and effect identities.
+
+## Amendment: realization completion does not settle activity (2026-08-12)
+
+Worker realization and the activity fence may overlap after Coordinator or
+Worker replacement. They remain separate phases of the same Session aggregate:
+realization activation/publication proves that the exact physical projection is
+ready, while the driving activity owns `Running` and its open runtime interval.
+Consequently, activation and acknowledgement preserve `Running`; only the
+matching activity settlement transitions it to `Idle` and closes the interval.
+
+A retryable realization failure below its durable retry budget also preserves
+`Running` and the interval while the exact generation is reclaimed. A permanent
+failure, or retry exhaustion, atomically transitions to `ActivationFailed`,
+closes the interval, accumulates its duration, and emits the existing
+`session.runtime_interval_closed` fact in the same root CAS. This reuses
+`PersistedSession::close_runtime_interval` and the one lifecycle outbox; no
+realization-specific usage event or billing state is introduced.

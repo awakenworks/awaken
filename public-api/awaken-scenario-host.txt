@@ -91,7 +91,6 @@ pub fn awaken_scenario_host::build_compaction_router() -> axum::routing::Router
 pub async fn awaken_scenario_host::build_config_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_custom_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_delegation_router() -> axum::routing::Router
-pub async fn awaken_scenario_host::build_distributed_control_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_distributed_provider_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_dream_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_dream_router_and_host() -> (axum::routing::Router, alloc::sync::Arc<awaken_runtime_host::host::SharedHost>)
@@ -127,3 +126,4 @@ pub fn awaken_scenario_host::install_scenario_runtime_authority(alloc::sync::Arc
 pub async fn awaken_scenario_host::run_echo_worker(&str, &str, core::option::Option<&str>, core::option::Option<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthorizer>>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn awaken_scenario_host::scenario_deployment() -> awaken_runtime_host::deployment_config::DeploymentConfig
 pub fn awaken_scenario_host::scenario_model(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, &str) -> (alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, alloc::string::String)
+pub async fn awaken_scenario_host::serve_distributed_control() -> core::result::Result<(), alloc::string::String>

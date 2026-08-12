@@ -177,11 +177,6 @@ pub(super) async fn prepare_runtime_routers(
                 ),
             )
         });
-    // Keep the IAM handles for the sibling resource PEP. The authoring router owns
-    // its PEP; File/Memory/Skill routes are wrapped independently after the data
-    // router is prepared, so neither plane depends on the other's services.
-    let resource_iam = iam.clone();
-    let resource_remote_iam = remote_iam.clone();
     let deployment_iam = iam.clone();
     let deployment_remote_iam = remote_iam.clone();
     let live_runtime_capabilities = stores.control.as_ref().map(|control| {
@@ -424,6 +419,7 @@ pub(super) async fn prepare_runtime_routers(
         Some(deployment) => SharedHost::new_with_runtime_resources_and_deployment(
             model_wiring.executor,
             model_wiring.model_ref,
+            resource_application.file_content_source(),
             resource_authorities.memory_repository(),
             memory_extractions,
             deployment,
@@ -456,7 +452,6 @@ pub(super) async fn prepare_runtime_routers(
             as Arc<dyn awaken_resource_contract::ArtifactPublisher<awaken_run_ingress::RunClaim>>
     });
     host_builder = host_builder
-        .with_file_content_source(resource_application.file_content_source())
         .with_artifact_publisher(artifact_publisher)
         .with_skill_bundle_source(resource_application.skill_bundle_source())
         .with_skill_catalog_application(resource_application.skill_catalog_application())
@@ -646,6 +641,11 @@ pub(super) async fn prepare_runtime_routers(
     )
     .await
     .map_err(|error| format!("build Coordinator component: {error}"))?;
+    let coordinator_data = awaken_control::protect_authorized_router(
+        coordinator.router,
+        deployment_iam.clone(),
+        deployment_remote_iam.clone(),
+    );
     let coordinator_management = awaken_control::protect_management_router(
         coordinator.management_router,
         deployment_audit_plane.clone(),
@@ -660,25 +660,13 @@ pub(super) async fn prepare_runtime_routers(
         deployment_remote_iam,
         Some(managed_rate_limiter.clone()),
     );
-    let mut data = executable_projection_refresh::layer(
-        coordinator
-            .router
+    let data = executable_projection_refresh::layer(
+        coordinator_data
             .merge(coordinator_managed)
             .merge(coordinator_management),
         executable_agent_projection_refresher,
         executable_environment_projection_refresher,
     );
-    if let Some(iam) = resource_iam {
-        data = data.layer(axum::middleware::from_fn_with_state(
-            iam,
-            awaken_control::authz::resource_guard,
-        ));
-    } else if let Some(remote_iam) = resource_remote_iam {
-        data = data.layer(axum::middleware::from_fn_with_state(
-            remote_iam,
-            awaken_control::authz::cloud_resource_guard,
-        ));
-    }
     let (flat, mcp_export) = match role {
         config::Role::AllInOne => (data.merge(control), mcp_export),
         config::Role::Coordinator => (data, Router::new()),

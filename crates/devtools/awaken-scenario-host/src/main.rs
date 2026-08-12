@@ -10,16 +10,13 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Scenario environment is test-harness input, translated here into the same
-    // typed policy production receives from config.toml. The observability adapter
-    // itself has no ambient compatibility path.
-    let observability = scenario_observability();
-    awaken_observability::init(&observability);
+    let model_mode = std::env::var("AWAKEN_MODEL_MODE");
     // The scenario-only role axis (`AWAKEN_SCENARIO_ROLE`). Worker is an execution
     // endpoint that never starts the HTTP surface; Serve is the default —
     // single-machine all-in-one, or a coordinator when the local pool is disabled.
     // The hand is the separate `awaken-sandbox hand` execution-plane binary.
     if std::env::var("AWAKEN_SCENARIO_ROLE").as_deref() == Ok("worker") {
+        awaken_observability::init(&scenario_observability());
         let upstream = std::env::var("AWAKEN_UPSTREAM_URL").unwrap_or_default();
         let worker_id = std::env::var("AWAKEN_WORKER_ID")
             .unwrap_or_else(|_| "awaken-scenario-worker".to_string());
@@ -45,8 +42,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .await;
     }
+    if model_mode.as_deref() == Ok("distributed-control") {
+        return awaken_scenario_host::serve_distributed_control()
+            .await
+            .map_err(std::io::Error::other)
+            .map_err(Into::into);
+    }
+    // Scenario environment is test-harness input, translated here into the same
+    // typed policy production receives from config.toml. The observability adapter
+    // itself has no ambient compatibility path. Split Control owns this lifecycle
+    // inside `serve_prepared_control` and returned above before a second init.
+    let observability = scenario_observability();
+    awaken_observability::init(&observability);
     let addr = std::env::var("AWAKEN_HTTP_ADDR").unwrap_or_else(|_| "127.0.0.1:38080".to_string());
-    let model_mode = std::env::var("AWAKEN_MODEL_MODE");
     if mode_uses_shared_scenario_runtime(model_mode.as_deref().ok()) {
         // Durability guard: refuse to boot a `typed durable ingress` ingress that would
         // resolve to a volatile in-memory queue (durable + default sqlite backend + no
@@ -97,9 +105,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // deterministic Host executor is installed, so publications resolve from
         // the authored catalog and execute through the real materializer.
         Ok("management-providers") => awaken_cli::build_all_in_one_router().await,
-        // Real split-Control deployment with only its model-publication contract
-        // supplied by the deterministic scenario adapter.
-        Ok("distributed-control") => awaken_scenario_host::build_distributed_control_router().await,
         Ok("distributed-provider") => awaken_scenario_host::build_distributed_provider_router(),
         // The production management deployment (durable stores + config plane +
         // resource PEP) with only its deterministic fallback model replaced. Used
