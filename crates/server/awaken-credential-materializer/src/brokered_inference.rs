@@ -158,7 +158,7 @@ async fn fetch_brokered_catalog(
 pub struct HttpBrokeredInferenceClient {
     http: reqwest::Client,
     base_url: String,
-    access_token: RedactedString,
+    access_token_source: Arc<awaken_agent_contract::RedactedStringSource>,
     client_instance_id: String,
 }
 
@@ -175,7 +175,7 @@ impl std::fmt::Debug for HttpBrokeredInferenceClient {
 impl HttpBrokeredInferenceClient {
     pub fn new(
         base_url: impl Into<String>,
-        access_token: RedactedString,
+        access_token_source: Arc<awaken_agent_contract::RedactedStringSource>,
         client_instance_id: impl Into<String>,
     ) -> Result<Self, String> {
         let base_url = base_url.into().trim_end_matches('/').to_owned();
@@ -196,18 +196,55 @@ impl HttpBrokeredInferenceClient {
         if client_instance_id.trim().is_empty() {
             return Err("Cloud client instance id must not be empty".into());
         }
+        resolve_access_token(access_token_source.as_ref())?;
         Ok(Self {
             http: reqwest::Client::new(),
             base_url,
-            access_token,
+            access_token_source,
             client_instance_id,
         })
     }
 
-    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+    fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        access_token: &RedactedString,
+    ) -> reqwest::RequestBuilder {
         self.http
             .request(method, format!("{}{}", self.base_url, path))
-            .bearer_auth(self.access_token.expose_secret())
+            .bearer_auth(access_token.expose_secret())
+    }
+
+    /// Send with the current interactive credential. One authentication
+    /// rejection may be retried only when the identity source reports a
+    /// different successor; an unchanged rejected credential is terminal.
+    async fn send_with_access_token<F>(
+        &self,
+        build: F,
+    ) -> Result<reqwest::Response, BrokeredInferenceError>
+    where
+        F: Fn(&RedactedString) -> reqwest::RequestBuilder,
+    {
+        let attempted = resolve_access_token(self.access_token_source.as_ref())
+            .map_err(|_| BrokeredInferenceError::AuthenticationRequired)?;
+        let response = build(&attempted)
+            .send()
+            .await
+            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(response);
+        }
+
+        let successor = resolve_access_token(self.access_token_source.as_ref())
+            .map_err(|_| BrokeredInferenceError::AuthenticationRequired)?;
+        if successor.expose_secret() == attempted.expose_secret() {
+            return Ok(response);
+        }
+        build(&successor)
+            .send()
+            .await
+            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)
     }
 
     async fn classify(response: reqwest::Response) -> BrokeredInferenceError {
@@ -253,6 +290,16 @@ impl HttpBrokeredInferenceClient {
     }
 }
 
+fn resolve_access_token(
+    source: &awaken_agent_contract::RedactedStringSource,
+) -> Result<RedactedString, String> {
+    let token = source()?;
+    if token.is_empty() {
+        return Err("Cloud access token source returned an empty credential".into());
+    }
+    Ok(token)
+}
+
 #[derive(serde::Serialize)]
 struct CreateGrantBody<'a> {
     client_instance_id: &'a str,
@@ -277,18 +324,18 @@ impl BrokeredInferenceClient for HttpBrokeredInferenceClient {
         request: BrokeredInferenceRequest,
     ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
         let response = self
-            .request(reqwest::Method::POST, "/v1/inference/grants")
-            .header("Idempotency-Key", &request.idempotency_key)
-            .json(&CreateGrantBody {
-                client_instance_id: &self.client_instance_id,
-                local_run_correlation: request.local_run_correlation.as_deref(),
-                provider: &request.provider,
-                original_model_id: &request.original_model_id,
-                native_protocol: &request.native_protocol,
+            .send_with_access_token(|token| {
+                self.request(reqwest::Method::POST, "/v1/inference/grants", token)
+                    .header("Idempotency-Key", &request.idempotency_key)
+                    .json(&CreateGrantBody {
+                        client_instance_id: &self.client_instance_id,
+                        local_run_correlation: request.local_run_correlation.as_deref(),
+                        provider: &request.provider,
+                        original_model_id: &request.original_model_id,
+                        native_protocol: &request.native_protocol,
+                    })
             })
-            .send()
-            .await
-            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)?;
+            .await?;
         if !response.status().is_success() {
             return Err(Self::classify(response).await);
         }
@@ -311,14 +358,10 @@ impl BrokeredInferenceClient for HttpBrokeredInferenceClient {
     }
 
     async fn close_grant(&self, grant_id: &str) -> Result<(), BrokeredInferenceError> {
+        let path = format!("/v1/inference/grants/{grant_id}/close");
         let response = self
-            .request(
-                reqwest::Method::POST,
-                &format!("/v1/inference/grants/{grant_id}/close"),
-            )
-            .send()
-            .await
-            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)?;
+            .send_with_access_token(|token| self.request(reqwest::Method::POST, &path, token))
+            .await?;
         if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
             Ok(())
         } else {
@@ -330,14 +373,10 @@ impl BrokeredInferenceClient for HttpBrokeredInferenceClient {
         &self,
         grant_id: &str,
     ) -> Result<BrokeredInferenceLease, BrokeredInferenceError> {
+        let path = format!("/v1/inference/grants/{grant_id}/renew");
         let response = self
-            .request(
-                reqwest::Method::POST,
-                &format!("/v1/inference/grants/{grant_id}/renew"),
-            )
-            .send()
-            .await
-            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)?;
+            .send_with_access_token(|token| self.request(reqwest::Method::POST, &path, token))
+            .await?;
         if !response.status().is_success() {
             return Err(Self::classify(response).await);
         }
@@ -364,10 +403,10 @@ impl BrokeredInferenceClient for HttpBrokeredInferenceClient {
 impl BrokeredModelCatalogClient for HttpBrokeredInferenceClient {
     async fn readiness(&self) -> Result<(), BrokeredInferenceError> {
         let response = self
-            .request(reqwest::Method::GET, "/v1/inference/readiness")
-            .send()
-            .await
-            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)?;
+            .send_with_access_token(|token| {
+                self.request(reqwest::Method::GET, "/v1/inference/readiness", token)
+            })
+            .await?;
         if response.status().is_success() {
             Ok(())
         } else {
@@ -381,10 +420,10 @@ impl BrokeredModelCatalogClient for HttpBrokeredInferenceClient {
             data: Vec<BrokeredModel>,
         }
         let response = self
-            .request(reqwest::Method::GET, "/v1/inference/models")
-            .send()
-            .await
-            .map_err(|_| BrokeredInferenceError::TemporarilyUnavailable)?;
+            .send_with_access_token(|token| {
+                self.request(reqwest::Method::GET, "/v1/inference/models", token)
+            })
+            .await?;
         if !response.status().is_success() {
             return Err(Self::classify(response).await);
         }
@@ -580,6 +619,80 @@ mod tests {
 
     use super::*;
 
+    fn static_access_token(value: &str) -> Arc<awaken_agent_contract::RedactedStringSource> {
+        let value = value.to_owned();
+        Arc::new(move || Ok(RedactedString::new(value.clone())))
+    }
+
+    fn scripted_access_tokens(
+        values: impl IntoIterator<Item = Result<&'static str, &'static str>>,
+    ) -> Arc<awaken_agent_contract::RedactedStringSource> {
+        let values = Arc::new(Mutex::new(
+            values
+                .into_iter()
+                .map(|value| value.map(str::to_owned).map_err(str::to_owned))
+                .collect::<VecDeque<_>>(),
+        ));
+        Arc::new(move || {
+            values
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err("token script exhausted".into()))
+                .map(RedactedString::new)
+        })
+    }
+
+    fn bearer_test_server(statuses: Vec<u16>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let mut bearers = Vec::new();
+            for status in statuses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).unwrap();
+                let bearer = request
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("authorization: Bearer ")
+                            .or_else(|| line.strip_prefix("Authorization: Bearer "))
+                    })
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned();
+                bearers.push(bearer);
+
+                let (reason, body) = if status == 401 {
+                    ("Unauthorized", r#"{"error":"authentication_required"}"#)
+                } else {
+                    ("OK", "{}")
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+            bearers
+        });
+        (format!("http://{address}"), handle)
+    }
+
     #[derive(Default)]
     struct RecordingClient {
         requests: Mutex<Vec<BrokeredInferenceRequest>>,
@@ -739,14 +852,14 @@ mod tests {
         assert!(
             HttpBrokeredInferenceClient::new(
                 "http://api.awakenworks.com",
-                RedactedString::new("secret-token"),
+                static_access_token("secret-token"),
                 "client-1",
             )
             .is_err()
         );
         let client = HttpBrokeredInferenceClient::new(
             "https://api.awakenworks.com/",
-            RedactedString::new("secret-token"),
+            static_access_token("secret-token"),
             "client-1",
         )
         .unwrap();
@@ -756,10 +869,83 @@ mod tests {
         assert!(
             HttpBrokeredInferenceClient::new(
                 "http://127.0.0.1:8080",
-                RedactedString::new("local-emulator-token"),
+                static_access_token("local-emulator-token"),
                 "client-1",
             )
             .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn cloud_access_token_rotation_decision_table() {
+        // Cause graph: C1=source resolves before I/O, C2=response is 401,
+        // C3=successor differs. Effects: E1=send once, E2=retry once with the
+        // successor, E3=return authentication failure without network fallback.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | A1   | Y  | N  | -  | E1     |
+        // | A2   | Y  | Y  | Y  | E2     |
+        // | A3   | Y  | Y  | N  | E1, terminal 401 |
+        // | A4   | N  | -  | -  | E3, zero requests |
+        let (current_url, current_server) = bearer_test_server(vec![200]);
+        let current = HttpBrokeredInferenceClient::new(
+            current_url,
+            static_access_token("current"),
+            "client-1",
+        )
+        .unwrap();
+        let response = current
+            .send_with_access_token(|token| current.request(reqwest::Method::GET, "/probe", token))
+            .await
+            .expect("A1");
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "A1");
+        assert_eq!(current_server.join().unwrap(), ["current"], "A1");
+
+        let (rotating_url, rotating_server) = bearer_test_server(vec![401, 200]);
+        let rotating = HttpBrokeredInferenceClient::new(
+            rotating_url,
+            scripted_access_tokens([Ok("old"), Ok("old"), Ok("new")]),
+            "client-1",
+        )
+        .unwrap();
+        let response = rotating
+            .send_with_access_token(|token| rotating.request(reqwest::Method::GET, "/probe", token))
+            .await
+            .expect("A2");
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "A2");
+        assert_eq!(rotating_server.join().unwrap(), ["old", "new"], "A2");
+
+        let (unchanged_url, unchanged_server) = bearer_test_server(vec![401]);
+        let unchanged = HttpBrokeredInferenceClient::new(
+            unchanged_url,
+            static_access_token("same"),
+            "client-1",
+        )
+        .unwrap();
+        let response = unchanged
+            .send_with_access_token(|token| {
+                unchanged.request(reqwest::Method::GET, "/probe", token)
+            })
+            .await
+            .expect("A3 returns the terminal HTTP response");
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "A3");
+        assert_eq!(unchanged_server.join().unwrap(), ["same"], "A3");
+
+        let unavailable = HttpBrokeredInferenceClient::new(
+            "http://127.0.0.1:9",
+            scripted_access_tokens([Ok("initial"), Err("expired")]),
+            "client-1",
+        )
+        .unwrap();
+        assert_eq!(
+            unavailable
+                .send_with_access_token(|token| {
+                    unavailable.request(reqwest::Method::GET, "/must-not-send", token)
+                })
+                .await
+                .unwrap_err(),
+            BrokeredInferenceError::AuthenticationRequired,
+            "A4"
         );
     }
 

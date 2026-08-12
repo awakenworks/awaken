@@ -97,27 +97,17 @@ pub(crate) fn content_blocks(content: &[ToolContent]) -> Vec<ContentBlock> {
 }
 
 /// Build the model-visible descriptor for an MCP tool: namespaced id, the
-/// server-supplied description, and its input schema (normalized to an object
-/// schema, since a server may omit it). The descriptor's content hash is pinned
-/// over that surface (G3/G8).
+/// server-supplied description, and its input schema. The canonical descriptor
+/// authority normalizes compatible omissions and rejects contradictory shapes
+/// before its content hash is pinned (G3/G8).
 pub fn mcp_tool_descriptor(
     server_name: &str,
     def: &McpToolDefinition,
 ) -> Result<ToolDescriptor, McpError> {
     let id = to_tool_id(server_name, &def.name)?;
     let description = def.description.clone().unwrap_or_default();
-    let parameters = normalize_schema(def.input_schema.clone());
-    Ok(ToolDescriptor::pinned("mcp", id, description, parameters))
-}
-
-/// Ensure the schema the model sees is an object schema. MCP servers may send a
-/// non-object or omit the schema entirely; the runtime descriptor expects an
-/// object shape.
-fn normalize_schema(schema: Value) -> Value {
-    match schema {
-        Value::Object(_) => schema,
-        _ => serde_json::json!({ "type": "object" }),
-    }
+    ToolDescriptor::try_pinned("mcp", id, description, def.input_schema.clone())
+        .map_err(|error| McpError::InvalidToolSchema(error.to_string()))
 }
 
 #[cfg(test)]
@@ -275,12 +265,27 @@ mod tests {
 
     #[test]
     fn descriptor_normalizes_a_missing_schema_to_an_object() {
+        // Rule M1: omitted MCP inputSchema -> wire default -> the canonical
+        // descriptor adds explicit empty properties for provider compatibility.
         let def: McpToolDefinition = serde_json::from_value(serde_json::json!({
             "name": "bare",
         }))
         .expect("valid tool definition");
         let descriptor = mcp_tool_descriptor("srv", &def).expect("builds");
         assert_eq!(descriptor.parameters["type"], "object");
+        assert_eq!(descriptor.parameters["properties"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn descriptor_rejects_a_non_object_argument_schema() {
+        // Rule M2: an MCP server declaring scalar tool arguments contradicts
+        // the runtime invocation contract and fails before registration.
+        let def =
+            McpToolDefinition::new("broken").with_schema(serde_json::json!({"type":"string"}));
+        assert!(matches!(
+            mcp_tool_descriptor("srv", &def),
+            Err(McpError::InvalidToolSchema(_))
+        ));
     }
 
     #[test]

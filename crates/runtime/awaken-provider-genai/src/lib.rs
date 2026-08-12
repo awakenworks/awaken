@@ -393,7 +393,7 @@ impl GenaiExecutor {
 impl LlmExecutor for GenaiExecutor {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse> {
         let model = request.model_binding.model_ref.clone();
-        let genai_request = to_genai_request(&request);
+        let genai_request = to_genai_request(&request)?;
         let options = to_genai_options(&request, false)?;
 
         let response = tokio::time::timeout(
@@ -417,7 +417,7 @@ impl LlmExecutor for GenaiExecutor {
         use genai::chat::ChatStreamEvent;
 
         let model = request.model_binding.model_ref.clone();
-        let genai_request = to_genai_request(&request);
+        let genai_request = to_genai_request(&request)?;
 
         // Have genai assemble the committed turn for us. It concatenates the text
         // chunks and parses the accumulated tool-argument fragments into a JSON
@@ -772,7 +772,7 @@ pub async fn probe_credential(
 }
 
 /// Map the neutral request onto a `genai::ChatRequest`.
-pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
+pub fn to_genai_request(request: &ChatRequest) -> Result<GenaiChatRequest> {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
     for message in &request.messages {
         // Reasoning is output-only: a folded `Thinking` block is never replayed to
@@ -819,17 +819,20 @@ pub fn to_genai_request(request: &ChatRequest) -> GenaiChatRequest {
         .tools
         .iter()
         .map(|tool| {
-            GenaiTool::new(tool.id.clone())
+            Ok(GenaiTool::new(tool.id.clone())
                 .with_description(tool.description.clone())
-                .with_schema(tool.parameters.clone())
+                .with_schema(
+                    tool.model_parameters()
+                        .map_err(|error| Error::InvalidRequest(error.to_string()))?,
+                ))
         })
-        .collect();
+        .collect::<Result<_>>()?;
 
     let mut genai_request = GenaiChatRequest::new(messages);
     if !tools.is_empty() {
         genai_request = genai_request.with_tools(tools);
     }
-    genai_request
+    Ok(genai_request)
 }
 
 /// Map one neutral content block onto a `genai` content part. Text maps to text;

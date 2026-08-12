@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use awaken_agent_contract::{RedactedString, RedactedStringSource};
 use awaken_control::{
     AccountId, LocalBrowserAuth, LocalSetupHandoff, ManagementAuthz, ManagementIdentityMode,
     RemoteManagementAuthz,
@@ -69,20 +70,25 @@ fn awaken_cloud_authz(
             path.clone(),
         );
     }
-    let user_token = config
-        .access_token
-        .clone()
-        .or_else(|| {
-            awaken_iam_client::CredentialCache::open()
-                .load(&config.base_url)
-                .map(|entry| entry.token.expose().to_owned())
-        })
-        .ok_or_else(|| "Awaken Cloud login credential is missing or expired".to_string())?;
-    RemoteManagementAuthz::connect(
+    let user_token_source: Arc<RedactedStringSource> = match config.access_token.clone() {
+        Some(token) => Arc::new(move || Ok(RedactedString::new(token.clone()))),
+        None => {
+            let base_url = config.base_url.clone();
+            Arc::new(move || {
+                awaken_iam_client::CredentialCache::open()
+                    .load(&base_url)
+                    .map(|entry| RedactedString::new(entry.token.expose().to_owned()))
+                    .ok_or_else(|| {
+                        "Awaken Cloud login credential is missing or expired".to_string()
+                    })
+            })
+        }
+    };
+    RemoteManagementAuthz::connect_with_user_token_source(
         config.base_url.clone(),
         config.audience.clone(),
         config.issuer.clone(),
-        user_token,
+        user_token_source,
         config.service_token.clone(),
     )
 }

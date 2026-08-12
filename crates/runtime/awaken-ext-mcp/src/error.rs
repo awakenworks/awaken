@@ -34,6 +34,9 @@ pub enum McpError {
     #[error("tool id already registered: {0}")]
     ToolIdConflict(String),
 
+    #[error("invalid MCP tool parameter schema: {0}")]
+    InvalidToolSchema(String),
+
     #[error("mcp transport error: {0}")]
     Transport(String),
 

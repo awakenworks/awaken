@@ -58,6 +58,11 @@ impl RedactedString {
     }
 }
 
+/// Request-time resolver for one already-resolved secret value. This neutral
+/// function port owns no refresh or credential policy; the bounded context
+/// behind the closure remains the authoritative source.
+pub type RedactedStringSource = dyn Fn() -> Result<RedactedString, String> + Send + Sync;
+
 impl Drop for RedactedString {
     fn drop(&mut self) {
         self.0.zeroize();

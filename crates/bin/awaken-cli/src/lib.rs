@@ -921,21 +921,25 @@ fn brokered_inference_client(
     cloud_api_base_url: Option<&str>,
     execution_workspace: &str,
 ) -> Option<Arc<awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient>> {
-    cloud_models_enabled
-        .then(|| remote_iam.and_then(|authz| authz.cloud_user_token()))
-        .flatten()
-        .map(|token| {
-            let base_url = cloud_api_base_url
-                .expect("Awaken Cloud identity requires a Cloud inference API URL");
-            Arc::new(
-                awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient::new(
-                    base_url,
-                    token,
-                    execution_workspace,
-                )
-                .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
-            )
-        })
+    if !cloud_models_enabled {
+        return None;
+    }
+    let authz = Arc::clone(remote_iam?);
+    let token_source: Arc<awaken_agent_contract::RedactedStringSource> = Arc::new(move || {
+        authz
+            .cloud_user_token()?
+            .ok_or_else(|| "Cloud login credential is unavailable".to_string())
+    });
+    let base_url =
+        cloud_api_base_url.expect("Awaken Cloud identity requires a Cloud inference API URL");
+    Some(Arc::new(
+        awaken_credential_materializer::brokered_inference::HttpBrokeredInferenceClient::new(
+            base_url,
+            token_source,
+            execution_workspace,
+        )
+        .unwrap_or_else(|error| panic!("Cloud inference configuration: {error}")),
+    ))
 }
 
 fn resolve_model_services(

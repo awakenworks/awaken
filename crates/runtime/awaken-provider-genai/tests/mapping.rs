@@ -26,6 +26,9 @@ fn binding(model: &str) -> ModelBinding {
 
 #[test]
 fn maps_roles_and_tools_onto_genai_request() {
+    // Cause/effect rule P1: a legacy zero-argument object schema reaches the
+    // provider adapter -> the one ToolDescriptor projection adds explicit empty
+    // properties before any provider request is built.
     let request = ChatRequest {
         model_binding: binding("gpt-4o-mini"),
         inference: Default::default(),
@@ -51,12 +54,41 @@ fn maps_roles_and_tools_onto_genai_request() {
         )],
     };
 
-    let genai = to_genai_request(&request);
+    let genai = to_genai_request(&request).unwrap();
     assert_eq!(genai.messages.len(), 3);
     assert!(matches!(genai.messages[0].role, GenaiRole::System));
     assert!(matches!(genai.messages[1].role, GenaiRole::User));
     assert!(matches!(genai.messages[2].role, GenaiRole::Assistant));
     assert_eq!(genai.tools.as_ref().map(|t| t.len()), Some(1));
+    assert_eq!(
+        genai.tools.as_ref().unwrap()[0].schema.as_ref().unwrap()["properties"],
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn invalid_tool_schema_fails_before_provider_projection() {
+    // Cause/effect rule P2: contradictory root argument type -> fail closed at
+    // the neutral descriptor boundary; no provider-specific sanitizer may turn
+    // it into a different callable contract.
+    let request = ChatRequest {
+        model_binding: binding("gpt-4o-mini"),
+        inference: Default::default(),
+        messages: vec![ChatMessage {
+            role: Role::User,
+            content: vec![ContentBlock::text("hi")],
+        }],
+        tools: vec![ToolDescriptor {
+            id: "broken".into(),
+            description: "broken".into(),
+            parameters: serde_json::json!({"type":"string"}),
+            content_hash: "legacy".into(),
+            kind: Default::default(),
+            recovery_policy: Default::default(),
+        }],
+    };
+
+    assert!(to_genai_request(&request).is_err());
 }
 
 #[test]
@@ -77,7 +109,7 @@ fn tool_result_maps_to_a_genai_tool_message() {
         tools: Vec::new(),
     };
 
-    let genai = to_genai_request(&request);
+    let genai = to_genai_request(&request).unwrap();
     assert_eq!(genai.messages.len(), 1);
     assert!(matches!(genai.messages[0].role, GenaiRole::Tool));
 }
@@ -113,7 +145,7 @@ fn adjacent_tool_results_coalesce_for_anthropic_turn_ordering() {
         tools: Vec::new(),
     };
 
-    let genai = to_genai_request(&request);
+    let genai = to_genai_request(&request).unwrap();
     assert_eq!(genai.messages.len(), 2);
     assert!(matches!(genai.messages[0].role, GenaiRole::Assistant));
     assert!(matches!(genai.messages[1].role, GenaiRole::Tool));
@@ -149,7 +181,7 @@ fn reasoning_only_history_rows_are_not_replayed_as_empty_provider_messages() {
         tools: Vec::new(),
     };
 
-    let genai = to_genai_request(&request);
+    let genai = to_genai_request(&request).unwrap();
     assert_eq!(genai.messages.len(), 2);
     assert!(
         genai
@@ -174,7 +206,7 @@ fn image_block_maps_to_a_binary_part() {
         tools: Vec::new(),
     };
 
-    let genai = to_genai_request(&request);
+    let genai = to_genai_request(&request).unwrap();
     let content = &genai.messages[0].content;
     assert!(content.contains_text(), "the text block survives");
     assert!(content.contains_binary(), "the image maps to a binary part");
@@ -194,7 +226,7 @@ fn omits_tools_when_none_are_visible() {
         }],
         tools: Vec::new(),
     };
-    assert!(to_genai_request(&request).tools.is_none());
+    assert!(to_genai_request(&request).unwrap().tools.is_none());
 }
 
 #[test]
@@ -321,7 +353,7 @@ fn assistant_tool_use_block_maps_to_a_genai_tool_call() {
         }],
         tools: Vec::new(),
     };
-    let genai = to_genai_request(&request);
+    let genai = to_genai_request(&request).unwrap();
     let content = &genai.messages[0].content;
     assert!(
         content.contains_tool_call(),
@@ -358,7 +390,7 @@ fn image_url_infers_content_type_from_extension() {
             }],
             tools: Vec::new(),
         };
-        let genai = to_genai_request(&request);
+        let genai = to_genai_request(&request).unwrap();
         let binaries = genai.messages[0].content.binaries();
         assert_eq!(binaries.len(), 1, "{url}");
         assert_eq!(binaries[0].content_type, expected, "{url}");

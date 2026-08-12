@@ -120,12 +120,15 @@ fn request_body(request: &ChatRequest) -> Result<Value, Error> {
         .tools
         .iter()
         .map(|tool| {
-            json!({
+            let parameters = tool
+                .model_parameters()
+                .map_err(|error| Error::InvalidRequest(error.to_string()))?;
+            Ok(json!({
                 "type":"function", "name":tool.id, "description":tool.description,
-                "parameters":tool.parameters, "strict":false
-            })
+                "parameters":parameters, "strict":false
+            }))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, Error>>()?;
     let mut body = json!({
         "model":request.model_binding.model_ref,
         "input":items,
@@ -282,6 +285,9 @@ mod tests {
         assert_eq!(body["input"][1]["type"], "function_call");
         assert_eq!(body["input"][2]["type"], "function_call_output");
         assert_eq!(body["tools"][0]["name"], "weather");
+        // Cause/effect rule O1: a legacy zero-argument object descriptor is
+        // projected through the same canonical ToolDescriptor schema owner.
+        assert_eq!(body["tools"][0]["parameters"]["properties"], json!({}));
     }
 
     #[test]
