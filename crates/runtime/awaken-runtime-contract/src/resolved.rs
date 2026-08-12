@@ -142,6 +142,26 @@ pub struct InferenceEndpoint {
     pub api_dialect: String,
     pub base_url: String,
     pub upstream_model: String,
+    /// Immutable provider realization of a processing-geography requirement.
+    /// Absence means this route makes no additional processing guarantee.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_placement: Option<InferencePlacement>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferencePlacement {
+    pub geography: crate::agent_bindings::InferenceGeography,
+    pub mechanism: InferencePlacementMechanism,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferencePlacementMechanism {
+    /// The provider-native request body must carry the trusted geography.
+    AnthropicRequestBody,
+    /// The exact frozen endpoint, deployment, or inference-profile model id
+    /// already enforces the geography, so the provider body stays unchanged.
+    FrozenRegionalRoute,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

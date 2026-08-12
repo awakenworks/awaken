@@ -292,6 +292,7 @@ mod tests {
                 api_dialect: "anthropic_messages".into(),
                 base_url: "https://provider.invalid/v1".into(),
                 upstream_model: "claude-x".into(),
+                processing_placement: None,
             },
         );
         (

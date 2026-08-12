@@ -150,6 +150,7 @@ fn provider_model_candidate_provisioning_is_pinned() {
             api_dialect: "open_ai_chat".into(),
             base_url: "https://provider.example/v1".into(),
             upstream_model: "upstream-a".into(),
+            processing_placement: None,
         },
     );
 
@@ -232,6 +233,7 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
         api_dialect: "open_ai_chat".into(),
         base_url: "https://provider.example/v1".into(),
         upstream_model: "gpt-5".into(),
+        processing_placement: None,
     };
     let native = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
         ModelBinding::new("openai", "gpt-5", "genai"),

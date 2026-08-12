@@ -531,6 +531,7 @@ pub(crate) mod resource_prompt_tests {
                         api_dialect: "open_ai_chat".into(),
                         base_url: "https://example.invalid/v1".into(),
                         upstream_model: binding.model_ref,
+                        processing_placement: None,
                     },
                 )
             };

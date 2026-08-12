@@ -20,10 +20,8 @@ use awaken_protocol_managed::types::agent::{
     AgentUpdateParams, AwakenAgentExtensions, MultiagentConfig as WireMultiagent,
     MultiagentRosterEntry,
 };
-use awaken_protocol_managed::types::{AwakenModelExtensions, ModelConfig, ModelEffort, ModelSpeed};
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
-use awaken_runtime_contract::agent_bindings::{InferenceOptions, InferenceSpeed, ReasoningEffort};
 use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_session_contract::{
@@ -32,6 +30,9 @@ use awaken_session_contract::{
 };
 use awaken_tenancy::ScopeId;
 use sha2::{Digest, Sha256};
+
+mod model_controls;
+use model_controls::{apply_model_extensions, inference_from_wire, model_config};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 const STATE_MACHINE_PLUGIN_ID: &str = "state_machine";
@@ -376,14 +377,14 @@ fn config_from_create(
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
-    let inference = inference_from_wire(
+    let mut inference = inference_from_wire(
         model.speed,
         model.effort.map(|value| value.resolved()),
         model.inference_geo,
-    );
+    )?;
     let mut model_binding = parse_managed_model_id(&model.id)
         .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
-    apply_model_extensions(&mut model_binding, model.x_awaken)?;
+    apply_model_extensions(&mut model_binding, &mut inference, model.x_awaken)?;
     let multiagent = params.multiagent.map(typed_multiagent);
     let extensions = params.x_awaken.unwrap_or(AwakenAgentExtensions {
         max_steps: None,
@@ -433,16 +434,6 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
     if config.max_steps == 0 {
         return Err(ManagedAgentError::Invalid(
             "x_awaken.max_steps must be greater than or equal to 1".into(),
-        ));
-    }
-    if config
-        .inference
-        .inference_geo
-        .as_deref()
-        .is_some_and(|geo| geo.trim().is_empty())
-    {
-        return Err(ManagedAgentError::Invalid(
-            "model.inference_geo must not be empty".into(),
         ));
     }
     if config.mcp_servers.len() > 20 {
@@ -547,42 +538,6 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
     Ok(())
 }
 
-fn inference_from_wire(
-    speed: Option<ModelSpeed>,
-    effort: Option<ModelEffort>,
-    inference_geo: Option<String>,
-) -> InferenceOptions {
-    InferenceOptions {
-        speed: speed.map(|value| match value {
-            ModelSpeed::Standard => InferenceSpeed::Standard,
-            ModelSpeed::Fast => InferenceSpeed::Fast,
-        }),
-        effort: effort.map(|value| match value {
-            ModelEffort::Low => ReasoningEffort::Low,
-            ModelEffort::Medium => ReasoningEffort::Medium,
-            ModelEffort::High => ReasoningEffort::High,
-            ModelEffort::Xhigh => ReasoningEffort::Xhigh,
-            ModelEffort::Max => ReasoningEffort::Max,
-        }),
-        inference_geo,
-    }
-}
-
-fn apply_model_extensions(
-    selection: &mut ModelSelection,
-    extensions: Option<AwakenModelExtensions>,
-) -> Result<(), ManagedAgentError> {
-    let Some(AwakenModelExtensions { acp }) = extensions else {
-        return Ok(());
-    };
-    let Some(configuration) = acp else {
-        return Ok(());
-    };
-    selection
-        .set_acp_configuration(configuration)
-        .map_err(|error| ManagedAgentError::Invalid(error.into()))
-}
-
 fn acp_configuration_to_preserve(
     config: &AgentConfig,
     incoming_model_id: &str,
@@ -595,20 +550,6 @@ fn acp_configuration_to_preserve(
         && matches!(config.kind(), AgentKind::Acp { ref cli } if !cli.is_empty()))
     .then(|| config.model_binding.acp_configuration().cloned())
     .flatten()
-}
-
-fn model_config(
-    model: String,
-    inference: InferenceOptions,
-    acp: Option<&awaken_runtime_contract::resolved::AcpSessionConfiguration>,
-) -> ModelConfig {
-    let mut projected = ModelConfig::from_inference(model, inference);
-    projected.x_awaken =
-        acp.filter(|configuration| !configuration.is_empty())
-            .map(|configuration| AwakenModelExtensions {
-                acp: Some(configuration.clone()),
-            });
-    projected
 }
 
 fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
@@ -910,7 +851,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                 model.speed,
                 model.effort.map(|value| value.resolved()),
                 model.inference_geo,
-            );
+            )?;
             if preserve_effort {
                 config.inference.effort = prior_effort;
             }
@@ -922,7 +863,11 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                     .set_acp_configuration(configuration)
                     .map_err(|error| ManagedAgentError::Invalid(error.into()))?;
             } else {
-                apply_model_extensions(&mut config.model_binding, model.x_awaken)?;
+                apply_model_extensions(
+                    &mut config.model_binding,
+                    &mut config.inference,
+                    model.x_awaken,
+                )?;
             }
         }
         if let Some(description) = params.description {
@@ -1130,7 +1075,14 @@ mod tests {
     use awaken_config_store::SqliteConfigStore;
     use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
-    use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor, ToolKind};
+    use awaken_protocol_managed::types::{ModelEffort, ModelSpeed};
+    use awaken_runtime_contract::agent_bindings::{
+        InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
+    };
+    use awaken_runtime_contract::resolved::{
+        InferenceEndpoint, InferencePlacement, InferencePlacementMechanism, ModelBinding,
+        ResolvedModelCandidate, ToolDescriptor, ToolKind,
+    };
     use serde_json::json;
 
     use super::*;
@@ -1143,7 +1095,7 @@ mod tests {
     impl ModelPublicationResolver for TestModelResolver {
         async fn resolve_models(
             &self,
-            _workspace: &awaken_tenancy::ScopeId,
+            workspace: &awaken_tenancy::ScopeId,
             selection: &ModelSelection,
             candidates: &[ModelBinding],
         ) -> Result<ResolvedPublicationModels, awaken_config_service::PublicationResolutionError>
@@ -1161,12 +1113,32 @@ mod tests {
                     })
                 })
                 .ok_or_else(|| "test requires a pinned model".to_string())?;
-            Ok(ResolvedPublicationModels::host(
-                primary,
-                candidates.to_vec(),
-                None,
-                None,
-            ))
+            let resolved = |binding: ModelBinding| {
+                let model = binding.model_ref.clone();
+                ResolvedModelCandidate::provider(
+                    binding,
+                    "test-provider",
+                    format!("test-route:{model}"),
+                    workspace.clone(),
+                    None,
+                    InferenceEndpoint {
+                        adapter_kind: "anthropic_messages".into(),
+                        api_dialect: "anthropic_messages".into(),
+                        base_url: "https://provider.example.test".into(),
+                        upstream_model: model,
+                        processing_placement: Some(InferencePlacement {
+                            geography: InferenceGeography::Us,
+                            mechanism: InferencePlacementMechanism::AnthropicRequestBody,
+                        }),
+                    },
+                )
+            };
+            Ok(ResolvedPublicationModels {
+                primary: resolved(primary),
+                candidates: candidates.iter().cloned().map(resolved).collect(),
+                context_window: None,
+                max_output_tokens: None,
+            })
         }
     }
 
@@ -1609,7 +1581,7 @@ mod tests {
                 InferenceOptions {
                     speed: Some(InferenceSpeed::Fast),
                     effort: Some(ReasoningEffort::Xhigh),
-                    inference_geo: Some("us".into()),
+                    inference_geo: Some(InferenceGeography::Us),
                 }
             );
             created.id
@@ -1633,7 +1605,7 @@ mod tests {
             InferenceOptions {
                 speed: Some(InferenceSpeed::Fast),
                 effort: Some(ReasoningEffort::Xhigh),
-                inference_geo: Some("us".into()),
+                inference_geo: Some(InferenceGeography::Us),
             }
         );
     }

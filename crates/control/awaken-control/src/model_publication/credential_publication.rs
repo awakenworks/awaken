@@ -241,6 +241,7 @@ impl CatalogModelPublicationResolver {
                 .upstream_model
                 .clone()
                 .unwrap_or_else(|| offering.model_id.clone()),
+            processing_placement: None,
         };
         let provider_ref = format!("{}@{}", offering.provider_id.0, provider.version);
         Ok(match acp {

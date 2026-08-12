@@ -166,6 +166,7 @@ impl awaken_config_service::ModelPublicationResolver for DistributedProviderPubl
                     api_dialect: "anthropic_messages".into(),
                     base_url: DISTRIBUTED_PROVIDER_BASE_URL.into(),
                     upstream_model,
+                    processing_placement: None,
                 },
             )
         };

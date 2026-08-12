@@ -559,6 +559,7 @@ mod tests {
                 api_dialect: "open_ai_responses".into(),
                 base_url: "https://api.awakenworks.com".into(),
                 upstream_model: model.into(),
+                processing_placement: None,
             },
         )
     }

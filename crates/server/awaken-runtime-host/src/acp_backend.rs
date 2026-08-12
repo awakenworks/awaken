@@ -534,6 +534,7 @@ mod tests {
                 api_dialect: "responses".into(),
                 base_url: "https://example.invalid".into(),
                 upstream_model: "model".into(),
+                processing_placement: None,
             }),
             acp: None,
         };
