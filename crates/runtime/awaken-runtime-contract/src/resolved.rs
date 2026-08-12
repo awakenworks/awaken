@@ -220,6 +220,12 @@ impl ResolvedSpec {
         model_ref_override: Option<&str>,
     ) -> Vec<&ResolvedModelCandidate> {
         let mut candidates = self.execution_candidates(model_ref_override);
+        // An Advisor cannot make an otherwise invalid explicit model selector
+        // executable. Primary admission remains the prerequisite for every
+        // auxiliary candidate in the attempt.
+        if candidates.is_empty() {
+            return candidates;
+        }
         if let Some(advisor) = self
             .plugin_config
             .agent
@@ -1204,6 +1210,7 @@ mod tests {
         // | C1   | primary+fb | absent   | 2           | 2            |
         // | C2   | primary+fb | distinct | 3           | 2            |
         // | C3   | primary+fb | primary  | 2           | 2            |
+        // | C4   | no match   | distinct | 0           | 0            |
         let mut spec = crate::snapshot::ExecutableAgentSnapshot::builder("agent")
             .model(ModelBinding::new("primary-id", "primary", "native"))
             .model_candidates([ModelBinding::new("fallback-id", "fallback", "native")])
@@ -1227,6 +1234,10 @@ mod tests {
         });
         assert_eq!(spec.attempt_candidates(None).len(), 2, "C3");
         assert_eq!(spec.candidate_bindings().len(), 2, "C3");
+        assert!(
+            spec.attempt_candidates(Some("not-published")).is_empty(),
+            "C4"
+        );
     }
 
     #[test]
