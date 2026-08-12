@@ -118,7 +118,7 @@ pub(super) async fn prepare_runtime_routers(
         SharedHost::provision_local_workspace_at,
     );
     let brokered_client = brokered_inference_client(
-        cloud_models_enabled,
+        cloud_models_enabled && role == config::Role::AllInOne,
         remote_iam.as_ref(),
         cloud_api_base_url.as_deref(),
         &platform_workspace,
