@@ -432,6 +432,7 @@ mod tests {
                     api_dialect: "open_ai_responses".into(),
                     base_url: "https://gateway.internal/v1".into(),
                     upstream_model: "provider-model".into(),
+                    processing_placement: None,
                 },
             )
         };

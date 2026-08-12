@@ -1653,6 +1653,7 @@ fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHold
                 api_dialect: "open_ai_chat".into(),
                 base_url: "https://provider.invalid/v1".into(),
                 upstream_model: "model".into(),
+                processing_placement: None,
             },
         );
     request.inference_plaintext_holder = Some(holder.clone());

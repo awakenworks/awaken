@@ -1183,7 +1183,7 @@ mod hermetic_tests {
         let geo = controlled_request(InferenceOptions {
             effort: None,
             speed: None,
-            inference_geo: Some("us".into()),
+            inference_geo: Some(awaken_runtime_contract::agent_bindings::InferenceGeography::Us),
         });
         let error = to_genai_options(&geo, false).unwrap_err();
         assert_eq!(error.code(), "invalid_request");

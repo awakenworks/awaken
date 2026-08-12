@@ -1550,6 +1550,7 @@ mod tests {
             api_dialect: "anthropic_messages".into(),
             base_url: "https://provider.example".into(),
             upstream_model: "model".into(),
+            processing_placement: None,
         };
         let provider_ref = "anthropic@1";
         let provider_binding = CredentialMaterialBinding::for_target(
@@ -1623,6 +1624,7 @@ mod tests {
                     api_dialect: "anthropic_messages".into(),
                     base_url: "https://example.invalid".into(),
                     upstream_model: "model".into(),
+                    processing_placement: None,
                 },
             );
             let materializer = PinnedCredentialMaterializer::new(

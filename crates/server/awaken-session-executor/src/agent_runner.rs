@@ -940,6 +940,7 @@ mod tests {
                 api_dialect: String::new(),
                 base_url: "https://example.invalid".into(),
                 upstream_model: model.into(),
+                processing_placement: None,
             },
         )
     }

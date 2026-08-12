@@ -366,6 +366,7 @@ mod tests {
                 api_dialect: "anthropic_messages".into(),
                 base_url: "https://api.anthropic.com/v1".into(),
                 upstream_model: "claude-test".into(),
+                processing_placement: None,
             },
         );
         let capabilities = CredentialRealizationCapabilities {
@@ -454,6 +455,7 @@ mod tests {
                     api_dialect: "generic".into(),
                     base_url: "https://provider.invalid".into(),
                     upstream_model: "model".into(),
+                    processing_placement: None,
                 },
             )
         };
