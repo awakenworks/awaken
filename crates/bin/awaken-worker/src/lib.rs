@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 mod acp_capability;
 mod admin;
-mod application;
+mod attempt_decorator;
 mod bootstrap;
 mod credential_files;
 mod credential_liveness;
@@ -38,9 +38,7 @@ use manifest::{
     StandardManifestInputs, derive_standard_manifest,
 };
 
-pub use application::{
-    RegisteredApplicationFactory, RegisteredWorkerApplication, RegisteredWorkerContext,
-};
+pub use attempt_decorator::{RegisteredAttemptDecoratorFactory, RegisteredWorkerContext};
 pub use bootstrap::{WorkerBootstrap, WorkerBootstrapInput, WorkerDaemonConfig};
 pub use credential_files::WorkerCredentialFileResolver;
 pub use lifecycle::WorkerShutdown;
@@ -108,8 +106,8 @@ pub struct WorkerNodeBuilder {
     manifest: ManifestSelection,
     deployment: awaken_runtime_host::DeploymentConfig,
     standard_manifest_config: StandardManifestConfig,
-    application_factory: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
+    attempt_decorator_factory: Option<RegisteredAttemptDecoratorFactory>,
+    tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
@@ -139,8 +137,8 @@ impl WorkerNodeBuilder {
             manifest: ManifestSelection::Unset,
             deployment: awaken_runtime_host::DeploymentConfig::ephemeral(),
             standard_manifest_config: StandardManifestConfig::default(),
-            application_factory: None,
-            application_gate: None,
+            attempt_decorator_factory: None,
+            tool_gate: None,
             materializer: None,
             credential_materializer: None,
             remote_attempt: None,
@@ -213,19 +211,22 @@ impl WorkerNodeBuilder {
     /// Install the only application extension factory, evaluated after Worker
     /// registration so both provisioning and execution use its assigned identity.
     #[must_use]
-    pub fn with_application_factory(mut self, factory: RegisteredApplicationFactory) -> Self {
-        self.application_factory = Some(factory);
+    pub fn with_attempt_decorator_factory(
+        mut self,
+        factory: RegisteredAttemptDecoratorFactory,
+    ) -> Self {
+        self.attempt_decorator_factory = Some(factory);
         self
     }
 
     /// Install the sole application-owned permission gate around the canonical
     /// Session route.
     #[must_use]
-    pub fn with_application_gate(
+    pub fn with_tool_gate(
         mut self,
         gate: Arc<dyn awaken_runtime_contract::permission::ToolGateHook>,
     ) -> Self {
-        self.application_gate = Some(gate);
+        self.tool_gate = Some(gate);
         self
     }
 
@@ -583,8 +584,8 @@ impl WorkerNodeBuilder {
             upstream: self.upstream,
             manifest,
             deployment: self.deployment,
-            application_factory: self.application_factory,
-            application_gate: self.application_gate,
+            attempt_decorator_factory: self.attempt_decorator_factory,
+            tool_gate: self.tool_gate,
             materializer: self.materializer,
             credential_materializer: self.credential_materializer,
             remote_attempt: self.remote_attempt,
@@ -631,8 +632,8 @@ pub struct WorkerNode {
     upstream: WorkerUpstream,
     manifest: WorkerManifest,
     deployment: awaken_runtime_host::DeploymentConfig,
-    application_factory: Option<RegisteredApplicationFactory>,
-    application_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
+    attempt_decorator_factory: Option<RegisteredAttemptDecoratorFactory>,
+    tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
     remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
@@ -914,13 +915,13 @@ impl WorkerNode {
         let control = WorkerControlClient::new(upstream.clone());
         let registered_context =
             RegisteredWorkerContext::new(registration.clone(), upstream.clone());
-        let application = match self.application_factory {
+        let attempt_decorator = match self.attempt_decorator_factory {
             Some(factory) => match factory(&registered_context) {
                 Ok(application) => Some(application),
                 Err(error) => {
                     let _ = control.deregister(&registration.snapshot.identity).await;
                     return Err(std::io::Error::other(format!(
-                        "registered application factory failed: {error}"
+                        "registered attempt decorator factory failed: {error}"
                     ))
                     .into());
                 }
@@ -940,7 +941,6 @@ impl WorkerNode {
             },
             None => None,
         };
-        let application_decorator = application.map(RegisteredWorkerApplication::into_parts);
         // Route the dispatch pool's claim/settle over HTTP to the cell server.
         let (dispatch, stream_publisher) = awaken_worker_runtime::worker_transports_with_upstream(
             &upstream,
@@ -988,8 +988,8 @@ impl WorkerNode {
         if let Some(resolver) = &self.credential_observation_resolver {
             host = host.with_worker_credential_resolver(resolver.clone());
         }
-        if let Some(decorator) = application_decorator {
-            host = host.with_application_attempt_decorator(decorator);
+        if let Some(decorator) = attempt_decorator {
+            host = host.with_attempt_decorator(decorator);
         }
         // Every registered Worker realizes the already-frozen Session projection
         // through Control; WorkQueue remains the sole Session ownership path.
@@ -999,7 +999,7 @@ impl WorkerNode {
                 registration.snapshot.identity.clone(),
             ),
         ));
-        if let Some(gate) = self.application_gate {
+        if let Some(gate) = self.tool_gate {
             host = host.with_gate_override(gate);
         }
         if let Some(memory_mounter) = memory_mounter {

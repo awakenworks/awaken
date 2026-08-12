@@ -123,6 +123,7 @@ pub struct WorkerDispatchService {
     completion: Option<Arc<dyn CompletionSink>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
     session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
+    session_work: Option<Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     max_attempts: u64,
 }
@@ -148,6 +149,7 @@ impl WorkerDispatchService {
             completion: None,
             stream_sink: None,
             session_control: None,
+            session_work: None,
             local_credential_capabilities: Default::default(),
             max_attempts: 5,
         }
@@ -189,6 +191,15 @@ impl WorkerDispatchService {
         control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
     ) -> Self {
         self.session_control = Some(control);
+        self
+    }
+
+    #[must_use]
+    pub fn with_session_work_authority(
+        mut self,
+        authority: Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>,
+    ) -> Self {
+        self.session_work = Some(authority);
         self
     }
 
@@ -287,6 +298,7 @@ pub struct RegisteredDispatchDependencies {
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
     pub sessions: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+    pub session_work: Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>,
     pub authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub recovery: Arc<dyn RunRecoverySource>,
     pub completion: Arc<dyn CompletionSink>,
@@ -300,6 +312,7 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         directory,
         policy,
         sessions,
+        session_work,
         authenticator,
         recovery,
         completion,
@@ -318,7 +331,8 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         .with_recovery_source(recovery)
         .with_completion_sink(completion)
         .with_stream_sink(stream_sink)
-        .with_session_control(sessions),
+        .with_session_control(sessions)
+        .with_session_work_authority(session_work),
     ))
 }
 
@@ -502,6 +516,13 @@ async fn session_resume(
                 "Session resume target does not match the claimed Run",
             ));
         }
+        acquire_session_work_owner(
+            &service,
+            &request.session_id,
+            &request.identity.lease_owner(),
+            authority.now_ms,
+        )
+        .await?;
         let control = service
             .session_control
             .as_ref()
@@ -558,6 +579,7 @@ async fn verify_session_realization_authority(
     service: &WorkerDispatchService,
     worker: &VerifiedWorkerContext,
     identity: &WorkerIdentity,
+    session_id: &str,
     lease: &awaken_session_contract::SessionRealizationLease,
 ) -> Result<(), HostError> {
     verify_worker_identity(worker, identity).map_err(HostError::bad_request)?;
@@ -573,7 +595,39 @@ async fn verify_session_realization_authority(
             "Session realization lease is not owned by the authenticated Worker incarnation",
         ));
     }
+    acquire_session_work_owner(
+        service,
+        session_id,
+        &identity.lease_owner(),
+        authority.now_ms,
+    )
+    .await?;
     Ok(())
+}
+
+async fn acquire_session_work_owner(
+    service: &WorkerDispatchService,
+    session_id: &str,
+    worker_owner: &str,
+    now_ms: u64,
+) -> Result<(), HostError> {
+    use awaken_session_contract::work_queue::SessionWorkOwnership;
+
+    let authority = service
+        .session_work
+        .as_ref()
+        .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
+    match authority
+        .acquire_session_work(session_id, worker_owner, now_ms)
+        .await
+        .map_err(|error| HostError::internal(error.to_string()))?
+    {
+        SessionWorkOwnership::NotRequired => Ok(()),
+        SessionWorkOwnership::Leased(lease) if lease.owner == worker_owner => Ok(()),
+        SessionWorkOwnership::Unowned | SessionWorkOwnership::Leased(_) => Err(
+            HostError::bad_request("Session Work is currently owned by another Worker"),
+        ),
+    }
 }
 
 fn session_control(
@@ -617,6 +671,14 @@ async fn begin_session_realization(
                 "Session realization renewal exceeds authenticated Worker authority",
             )));
         }
+        acquire_session_work_owner(
+            &service,
+            &request.command.session_id,
+            &request.identity.lease_owner(),
+            authority.now_ms,
+        )
+        .await
+        .map_err(RealizationHttpError::from)?;
         let realization = session_control(&service)
             .map_err(RealizationHttpError::from)?
             .begin_session_realization(request.command)
@@ -638,6 +700,7 @@ async fn activate_session_realization(
             &service,
             &worker,
             &request.identity,
+            &request.command.session_id,
             &request.command.lease,
         )
         .await
@@ -665,6 +728,7 @@ async fn acknowledge_session_realization(
             &service,
             &worker,
             &request.identity,
+            &request.command.session_id,
             &request.command.lease,
         )
         .await
@@ -690,6 +754,7 @@ async fn fail_session_realization(
             &service,
             &worker,
             &request.identity,
+            &request.command.session_id,
             &request.command.lease,
         )
         .await
@@ -718,12 +783,31 @@ async fn claim_is_current(
                 "authenticated worker does not own the claim",
             ));
         }
-        let current = service
+        let guard = service
             .dispatch
-            .claim_is_current(&request.claim, authority.now_ms)
+            .lock_commit_epoch(&request.claim)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        Ok(json!({ "current": current }))
+        let Some(guard) = guard else {
+            return Ok(json!({ "current": false }));
+        };
+        if !guard.is_live_at(authority.now_ms) {
+            return Ok(json!({ "current": false }));
+        }
+        let dispatch = guard.request();
+        if dispatch.run_id() != &request.claim.run_id {
+            return Err(HostError::bad_request(
+                "guarded dispatch does not match the claim",
+            ));
+        }
+        acquire_session_work_owner(
+            &service,
+            &dispatch.thread_id().0,
+            &request.claim.owner,
+            authority.now_ms,
+        )
+        .await?;
+        Ok(json!({ "current": true }))
     }
     .await;
     respond(result)

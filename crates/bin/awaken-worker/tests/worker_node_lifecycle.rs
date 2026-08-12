@@ -302,10 +302,10 @@ async fn node_runs_register_ready_drain_quiesce_and_deregister() {
     )
     .with_deployment_config(coordinator_defaults)
     .with_manifest(manifest())
-    .with_application_factory(Arc::new(move |context| {
+    .with_attempt_decorator_factory(Arc::new(move |context| {
         *observed.lock().expect("identity observation mutex") = Some(context.identity().clone());
         let decorator: awaken_runtime_host::AttemptExecutorDecorator = Arc::new(|inner| inner);
-        Ok(awaken_worker::RegisteredWorkerApplication::new(decorator))
+        Ok(decorator)
     }))
     .without_admin_surface()
     .build()

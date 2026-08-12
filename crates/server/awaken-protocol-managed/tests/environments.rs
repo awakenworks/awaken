@@ -16,7 +16,13 @@ fn app() -> Router {
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let mut b = Request::builder().method(method).uri(uri);
+    // The official SDK attaches this identity to every Work lease operation;
+    // carrying it on all test requests keeps the generic helper wire-faithful
+    // without giving each CRUD call a second implementation.
+    let mut b = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("anthropic-worker-id", "sdk-test-worker");
     let body = match body {
         Some(v) => {
             b = b.header("content-type", "application/json");
@@ -337,8 +343,32 @@ async fn environment_update_preserves_omitted_and_resets_null_fields() {
 
 #[tokio::test]
 async fn official_worker_header_and_heartbeat_cas_are_wired() {
+    // Worker-mutation cause/effect graph: C1 caller owns the live lease; C2
+    // heartbeat compare token matches; C3 caller is another Worker. Effects:
+    // E1 apply ack/heartbeat/stop, E2 reject atomically with HTTP 412. The
+    // owner condition dominates the heartbeat token, so a shared first-token
+    // value cannot transfer authority.
+    //
+    // | Rule | Owner | Token | Mutation | Effect |
+    // |---|---|---|---|---|
+    // | O0 | absent | n/a | poll | 400 before claim |
+    // | O1 | exact | first/current | heartbeat | E1 |
+    // | O2 | other | any | heartbeat | E2 |
+    // | O3 | other | n/a | ack/stop | E2 |
+    // | O4 | exact | n/a | ack/stop | E1 |
     let app = app();
     let id = make_env(&app).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/environments/{id}/work/poll?block_ms="))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "O0");
     let (status, work) = call_with_worker(
         &app,
         "GET",
@@ -413,6 +443,35 @@ async fn official_worker_header_and_heartbeat_cas_are_wired() {
     )
     .await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+    for operation in ["ack", "stop"] {
+        let (status, _) = call_with_worker(
+            &app,
+            "POST",
+            &format!("/v1/environments/{id}/work/{wid}/{operation}"),
+            "worker-other",
+        )
+        .await;
+        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "O3 {operation}");
+    }
+    let (status, acknowledged) = call_with_worker(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/ack"),
+        "worker-cas",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "O4 ack");
+    assert!(acknowledged["acknowledged_at"].is_string(), "O4 ack");
+    let (status, stopped) = call_with_worker(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/stop"),
+        "worker-cas",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "O4 stop");
+    assert_eq!(stopped["state"], "stopped", "O4 stop");
 }
 
 #[tokio::test]

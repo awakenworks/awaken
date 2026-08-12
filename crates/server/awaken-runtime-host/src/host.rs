@@ -158,7 +158,7 @@ pub struct SharedHost {
         awaken_runtime_contract::CredentialRealizationCapabilities,
     /// Optional application wrapper around the complete per-Session attempt
     /// router. It cannot replace or bypass the built-in backend registry.
-    pub(crate) application_attempt_decorator: Option<AttemptExecutorDecorator>,
+    pub(crate) attempt_decorator: Option<AttemptExecutorDecorator>,
     /// Outbound claim-fenced Control client used to realize an already-frozen
     /// Session projection on this Worker.
     pub(crate) session_control: Option<Arc<dyn awaken_run_ingress_contract::ClaimedSessionControl>>,

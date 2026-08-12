@@ -1,6 +1,7 @@
 //! The production request identity is wired through lifecycle and dispatch
 //! clients over a real socket, including the post-registration incarnation bind.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
@@ -35,6 +36,49 @@ struct RecordingSessionControl {
     failures: Mutex<usize>,
     begins: Mutex<Vec<awaken_session_contract::BeginSessionRealization>>,
     begin_failure: Mutex<Option<awaken_session_contract::SessionRealizationControlFailure>>,
+}
+
+#[derive(Default)]
+struct RecordingSessionWorkAuthority {
+    owner: Mutex<Option<String>>,
+    acquisitions: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
+    for RecordingSessionWorkAuthority
+{
+    async fn acquire_session_work(
+        &self,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<
+        awaken_session_contract::work_queue::SessionWorkOwnership,
+        awaken_session_contract::work_queue::WorkQueueError,
+    > {
+        self.acquisitions.fetch_add(1, Ordering::SeqCst);
+        let mut owner = self.owner.lock().unwrap();
+        if owner
+            .as_deref()
+            .is_some_and(|current| current != worker_owner)
+        {
+            return Ok(awaken_session_contract::work_queue::SessionWorkOwnership::Unowned);
+        }
+        *owner = Some(worker_owner.to_string());
+        Ok(
+            awaken_session_contract::work_queue::SessionWorkOwnership::Leased(
+                awaken_session_contract::work_queue::SessionWorkLease {
+                    work_id: "work-session".into(),
+                    environment_id: "env".into(),
+                    session_id: session_id.into(),
+                    owner: worker_owner.into(),
+                    epoch: 1,
+                    expires_at_unix_ms: now_ms + 60_000,
+                },
+            ),
+        )
+    }
 }
 
 fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
@@ -349,6 +393,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let dispatch = Arc::new(MemoryDispatchStore::new());
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
+    let session_work = Arc::new(RecordingSessionWorkAuthority::default());
     let service = WorkerDispatchService::new(
         dispatch.clone(),
         authenticator.clone(),
@@ -356,7 +401,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         Arc::new(FixedWorkerLeasePolicy::new(30_000)),
     )
     .with_worker_directory(directory.clone(), 30_000)
-    .with_session_control(session_control.clone());
+    .with_session_control(session_control.clone())
+    .with_session_work_authority(session_work.clone());
     let warmup = awaken_session_contract::EnvironmentSnapshot {
         environment_id: "signed-env".into(),
         revision: awaken_session_contract::EnvironmentRevision(3),
@@ -488,6 +534,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .await
             .expect("signed exact-claim verification")
     );
+    assert_eq!(session_work.acquisitions.load(Ordering::SeqCst), 1);
 
     // Cause graph: signed exact incarnation -> live registry lease -> identity
     // owns the exact Run claim -> guarded Run thread equals Session -> resume the
@@ -512,7 +559,20 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T14 | exact/live | exact/live | frozen Session | mark claim-authorized reassignment |
     // | T15 | exact/live | renew+reassign | - | reject contradictory authority |
     // | T16 | exact/live | explicit renewal | Control NotReady | preserve typed reply |
+    // | T17 | exact/live | Work owned by other Worker | yes | reject resume before Control |
+    // | T18 | exact/live | Work owner changes before phase | - | reject phase before Control |
+    // | T19 | exact/live | exact Work owner | claim check | atomically renew Work |
     let client = WorkerControlClient::new(upstream.clone());
+    *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
+    assert!(
+        client
+            .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
+            .await
+            .is_err(),
+        "T17"
+    );
+    assert!(session_control.begins.lock().unwrap().is_empty(), "T17");
+    *session_work.owner.lock().unwrap() = None;
     let resumed = client
         .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
         .await
@@ -604,6 +664,24 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T15"
     );
     assert_eq!(session_control.begins.lock().unwrap().len(), 3, "T15/T16");
+    *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
+    assert!(
+        client
+            .activate_session_realization(
+                &registered.snapshot.identity,
+                awaken_session_contract::ActivateSessionRealization {
+                    session_id: "signed-thread".into(),
+                    lease: realization_lease.clone(),
+                    prepared_resource_revision: None,
+                    mcp_receipts: Vec::new(),
+                },
+            )
+            .await
+            .is_err(),
+        "T18"
+    );
+    assert_eq!(*session_control.activations.lock().unwrap(), 0, "T18");
+    *session_work.owner.lock().unwrap() = Some(registered.snapshot.identity.lease_owner());
     client
         .activate_session_realization(
             &registered.snapshot.identity,

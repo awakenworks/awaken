@@ -88,4 +88,30 @@ pub trait SessionEnvironmentSource: Send + Sync {
         environment_id: &str,
         session_id: &str,
     ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError>;
+
+    async fn wake_session_work(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+    ) -> Result<String, awaken_session_contract::work_queue::WorkQueueError>;
+
+    async fn retire_session_work(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+    ) -> Result<
+        Option<awaken_session_contract::work_queue::WorkItem>,
+        awaken_session_contract::work_queue::WorkQueueError,
+    >;
+
+    async fn acquire_session_work(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<
+        Option<awaken_session_contract::work_queue::SessionWorkLease>,
+        awaken_session_contract::work_queue::WorkQueueError,
+    >;
 }

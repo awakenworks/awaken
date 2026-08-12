@@ -189,14 +189,6 @@ impl EnvironmentExecutionApplication {
             })
     }
 
-    pub async fn enqueue_session_work(
-        &self,
-        environment_id: &str,
-        session_id: &str,
-    ) -> Result<String, WorkQueueError> {
-        self.work.enqueue_session(environment_id, session_id).await
-    }
-
     async fn require_environment(
         &self,
         environment_id: &str,
@@ -270,9 +262,11 @@ impl EnvironmentExecutionApplication {
         &self,
         environment_id: &str,
         work_id: &str,
-    ) -> Result<Option<WorkItem>, EnvironmentExecutionError> {
+        worker_id: &str,
+    ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, EnvironmentExecutionError>
+    {
         self.require_environment(environment_id).await?;
-        Ok(self.work.ack(environment_id, work_id).await?)
+        Ok(self.work.ack(environment_id, work_id, worker_id).await?)
     }
 
     pub async fn heartbeat_work(
@@ -294,9 +288,11 @@ impl EnvironmentExecutionApplication {
         &self,
         environment_id: &str,
         work_id: &str,
-    ) -> Result<Option<WorkItem>, EnvironmentExecutionError> {
+        worker_id: &str,
+    ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, EnvironmentExecutionError>
+    {
         self.require_environment(environment_id).await?;
-        Ok(self.work.stop(environment_id, work_id).await?)
+        Ok(self.work.stop(environment_id, work_id, worker_id).await?)
     }
 }
 
@@ -351,7 +347,35 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         environment_id: &str,
         session_id: &str,
     ) -> Result<String, WorkQueueError> {
-        Self::enqueue_session_work(self, environment_id, session_id).await
+        self.work.enqueue_session(environment_id, session_id).await
+    }
+
+    async fn wake_session_work(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+    ) -> Result<String, WorkQueueError> {
+        self.work.wake_session(environment_id, session_id).await
+    }
+
+    async fn retire_session_work(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        self.work.retire_session(environment_id, session_id).await
+    }
+
+    async fn acquire_session_work(
+        &self,
+        environment_id: &str,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<Option<awaken_session_contract::work_queue::SessionWorkLease>, WorkQueueError> {
+        self.work
+            .acquire_session(environment_id, session_id, worker_owner, now_ms)
+            .await
     }
 }
 
@@ -1171,6 +1195,9 @@ mod tests {
         ) -> Result<String, WorkQueueError> {
             self.inner.enqueue_session(env, session).await
         }
+        async fn wake_session(&self, env: &str, session: &str) -> Result<String, WorkQueueError> {
+            self.inner.wake_session(env, session).await
+        }
         async fn enqueue_healthcheck(&self, env: &str) -> Result<String, WorkQueueError> {
             self.inner.enqueue_healthcheck(env).await
         }
@@ -1199,8 +1226,14 @@ mod tests {
         ) -> Result<Option<WorkItem>, WorkQueueError> {
             self.inner.claim(env, worker, now).await
         }
-        async fn ack(&self, env: &str, work: &str) -> Result<Option<WorkItem>, WorkQueueError> {
-            self.inner.ack(env, work).await
+        async fn ack(
+            &self,
+            env: &str,
+            work: &str,
+            worker: &str,
+        ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, WorkQueueError>
+        {
+            self.inner.ack(env, work, worker).await
         }
         async fn heartbeat(
             &self,
@@ -1214,8 +1247,31 @@ mod tests {
                 .heartbeat(env, work, worker, now, heartbeat)
                 .await
         }
-        async fn stop(&self, env: &str, work: &str) -> Result<Option<WorkItem>, WorkQueueError> {
-            self.inner.stop(env, work).await
+        async fn stop(
+            &self,
+            env: &str,
+            work: &str,
+            worker: &str,
+        ) -> Result<awaken_session_contract::work_queue::WorkMutationResult, WorkQueueError>
+        {
+            self.inner.stop(env, work, worker).await
+        }
+        async fn retire_session(
+            &self,
+            env: &str,
+            session: &str,
+        ) -> Result<Option<WorkItem>, WorkQueueError> {
+            self.inner.retire_session(env, session).await
+        }
+        async fn acquire_session(
+            &self,
+            env: &str,
+            session: &str,
+            worker: &str,
+            now: u64,
+        ) -> Result<Option<awaken_session_contract::work_queue::SessionWorkLease>, WorkQueueError>
+        {
+            self.inner.acquire_session(env, session, worker, now).await
         }
         async fn update_metadata(
             &self,

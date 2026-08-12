@@ -178,16 +178,14 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
             .expect("session repository"),
     );
     create(repo.as_ref(), persisted("archive-race", false, "idle")).await;
-    create(repo.as_ref(), persisted("delete-live", false, "idle")).await;
+    create(repo.as_ref(), persisted("delete-live", true, "idle")).await;
     create(
         repo.as_ref(),
         persisted("delete-failed", false, "activation_failed"),
     )
     .await;
-    let app = application(
-        repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    );
+    let environments = Arc::new(RecordingEnvironmentSource::default());
+    let app = application(repo.clone(), environments.clone());
     let fact = |id: &str, event_type: &str| awaken_session_contract::ManagedLifecycleFact {
         id: format!("{id}:{event_type}"),
         object_id: id.into(),
@@ -227,6 +225,10 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
     assert_eq!(deleted.session.execution.as_str(), "terminated", "L3");
     assert!(deleted.session.is_hidden(), "L3");
     assert!(deleted.session.needs_resource_reconciliation(), "L3");
+    assert!(
+        environments.retired.lock().unwrap().contains("delete-live"),
+        "L3 terminal truth retires its one Work projection"
+    );
     let archived_delete = app
         .begin_delete("archive-race", fact("archive-race", "session.deleted"))
         .await
@@ -242,6 +244,53 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         failed_delete.session.execution,
         SessionExecutionState::ActivationFailed,
         "L5 execution failure remains audit truth"
+    );
+}
+
+#[tokio::test]
+async fn session_work_authority_classifies_scope_before_queue_access() {
+    // Cause/effect graph: C1 no Session root; C2 a Cloud Session; C3 a
+    // self-hosted Session without a claimable Work item. Effects: E1/C1 and
+    // E1/C2 are outside the Work ownership boundary; E2/C3 is inside the
+    // boundary but currently unowned. This prevents ordinary non-Session Runs
+    // from failing merely because the registered dispatch verifier shares the
+    // same authority adapter.
+    //
+    // | Rule | Session | Environment | Queue result | Effect |
+    // |---|---|---|---|---|
+    // | W1 | absent | n/a | not called | NotRequired |
+    // | W2 | present | Cloud | not called | NotRequired |
+    // | W3 | present | self-hosted | no lease | Unowned |
+    use awaken_session_contract::work_queue::{SessionWorkLeaseAuthority, SessionWorkOwnership};
+
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(repo.as_ref(), persisted("cloud-work", false, "idle")).await;
+    create(repo.as_ref(), persisted("self-work", true, "idle")).await;
+    let app = application(repo, Arc::new(RecordingEnvironmentSource::default()));
+
+    assert_eq!(
+        app.acquire_session_work("missing", "owner", 1)
+            .await
+            .expect("W1"),
+        SessionWorkOwnership::NotRequired,
+        "W1"
+    );
+    assert_eq!(
+        app.acquire_session_work("cloud-work", "owner", 1)
+            .await
+            .expect("W2"),
+        SessionWorkOwnership::NotRequired,
+        "W2"
+    );
+    assert_eq!(
+        app.acquire_session_work("self-work", "owner", 1)
+            .await
+            .expect("W3"),
+        SessionWorkOwnership::Unowned,
+        "W3"
     );
 }
 
@@ -392,7 +441,7 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
     assert_eq!(still_preparing.activity_epoch, 0, "A8/E4");
     assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E4");
 
-    let mut worker_preparing = persisted("activity-worker-preparing", false, false, "preparing");
+    let mut worker_preparing = persisted("activity-worker-preparing", false, "preparing");
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
         &mut worker_preparing.baseline
     else {

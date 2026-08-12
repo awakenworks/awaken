@@ -478,12 +478,18 @@ async fn dispatch_session_work(
     environments: &dyn SessionEnvironmentSource,
     session: &PersistedSession,
 ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
-    if !session.needs_work_dispatch() {
+    let Some(baseline) = session.frozen_baseline() else {
+        return Ok(false);
+    };
+    if !baseline.environment.self_hosted {
         return Ok(false);
     }
-    let baseline = session
-        .frozen_baseline()
-        .expect("needs_work_dispatch requires a frozen baseline");
+    if session.is_terminal() {
+        environments
+            .retire_session_work(&baseline.environment.environment_id, &session.session_id)
+            .await?;
+        return Ok(true);
+    }
     environments
         .enqueue_session_work(&baseline.environment.environment_id, &session.session_id)
         .await?;
@@ -525,6 +531,50 @@ async fn reconcile_work_dispatches(
 
 fn claim_once(fence: &AtomicBool) -> bool {
     !fence.swap(true, Ordering::AcqRel)
+}
+
+async fn self_hosted_work_environment(
+    application: &SessionApplication,
+    session_id: &str,
+) -> Result<Option<String>, awaken_session_contract::work_queue::WorkQueueError> {
+    let session = match application.session_repository().get(session_id).await {
+        Ok(session) => session,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
+        Err(error) => {
+            return Err(
+                awaken_session_contract::work_queue::WorkQueueError::Storage(error.to_string()),
+            );
+        }
+    };
+    Ok(session
+        .frozen_baseline()
+        .filter(|baseline| baseline.environment.self_hosted)
+        .map(|baseline| baseline.environment.environment_id.clone()))
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionApplication {
+    async fn acquire_session_work(
+        &self,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<
+        awaken_session_contract::work_queue::SessionWorkOwnership,
+        awaken_session_contract::work_queue::WorkQueueError,
+    > {
+        use awaken_session_contract::work_queue::SessionWorkOwnership;
+
+        let Some(environment_id) = self_hosted_work_environment(self, session_id).await? else {
+            return Ok(SessionWorkOwnership::NotRequired);
+        };
+        Ok(self
+            .environments
+            .acquire_session_work(&environment_id, session_id, worker_owner, now_ms)
+            .await?
+            .map(SessionWorkOwnership::Leased)
+            .unwrap_or(SessionWorkOwnership::Unowned))
+    }
 }
 
 /// Repository-backed implementation installed at the runtime materialization boundary.

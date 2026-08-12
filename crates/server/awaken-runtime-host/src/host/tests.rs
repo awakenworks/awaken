@@ -810,13 +810,14 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
 
     let calls = Arc::new(AtomicUsize::new(0));
     let decorator_calls = calls.clone();
-    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub")
-        .with_application_attempt_decorator(Arc::new(move |inner| {
+    let host = SharedHost::new(Arc::new(MemoryHostModel), "stub").with_attempt_decorator(Arc::new(
+        move |inner| {
             Arc::new(ObservingAttemptExecutor {
                 calls: decorator_calls.clone(),
                 inner,
             })
-        }));
+        },
+    ));
     let ctx = host.ctx_for("injected-attempt", None).await.unwrap();
     let activation = RunActivation::new(
         RunId("injected-attempt-run".into()),

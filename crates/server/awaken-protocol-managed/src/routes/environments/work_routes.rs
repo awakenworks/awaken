@@ -58,7 +58,7 @@ pub(super) async fn poll_work(
     // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
     // the query string. Long polling repeatedly drives the same authoritative
     // atomic claim; it does not introduce a second queue or lease registry.
-    let worker_id = worker_id(&headers);
+    let worker_id = worker_id(&headers)?;
     let started = tokio::time::Instant::now();
     loop {
         let claimed = state
@@ -175,12 +175,13 @@ pub(super) async fn update_work(
 pub(super) async fn ack_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Json<Work>, WireError> {
-    let work = state
-        .acknowledge_work(&id, &wid)
+    let result = state
+        .acknowledge_work(&id, &wid, worker_id(&headers)?)
         .await
-        .map_err(map_execution_error)?
-        .ok_or_else(|| not_found("work"))?;
+        .map_err(map_execution_error)?;
+    let work = worker_mutation(result)?;
     Ok(Json(crate::work_queue::project_work(&work)))
 }
 
@@ -198,7 +199,7 @@ pub(super) async fn heartbeat_work(
         desired_ttl_seconds: params.desired_ttl_seconds,
     };
     let hb = match state
-        .heartbeat_work(&id, &wid, worker_id(&headers), now_ms(), command)
+        .heartbeat_work(&id, &wid, worker_id(&headers)?, now_ms(), command)
         .await
         .map_err(map_execution_error)?
     {
@@ -225,11 +226,14 @@ pub(super) async fn heartbeat_work(
 
 /// The Managed worker identity carried consistently on poll and worker-owned
 /// lease mutations. It is compared atomically with the claim owner by WorkQueue.
-fn worker_id(headers: &HeaderMap) -> &str {
-    headers
+fn worker_id(headers: &HeaderMap) -> Result<&str, WireError> {
+    let worker_id = headers
         .get("anthropic-worker-id")
         .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| bad_request("Anthropic-Worker-ID is required for Work lease operations"))?;
+    Ok(worker_id)
 }
 
 /// Wall-clock now in epoch ms — read only at this HTTP edge and passed into the
@@ -246,13 +250,30 @@ fn now_ms() -> u64 {
 pub(super) async fn stop_work(
     State(state): State<Arc<EnvironmentExecutionApplication>>,
     Path((id, wid)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Json<Work>, WireError> {
-    let work = state
-        .stop_work(&id, &wid)
+    let result = state
+        .stop_work(&id, &wid, worker_id(&headers)?)
         .await
-        .map_err(map_execution_error)?
-        .ok_or_else(|| not_found("work"))?;
+        .map_err(map_execution_error)?;
+    let work = worker_mutation(result)?;
     Ok(Json(crate::work_queue::project_work(&work)))
+}
+
+fn worker_mutation(
+    result: awaken_session_contract::work_queue::WorkMutationResult,
+) -> Result<awaken_session_contract::work_queue::WorkItem, WireError> {
+    match result {
+        awaken_session_contract::work_queue::WorkMutationResult::Accepted(work) => Ok(*work),
+        awaken_session_contract::work_queue::WorkMutationResult::PreconditionFailed => Err((
+            StatusCode::PRECONDITION_FAILED,
+            Json(ErrorResponse::new(
+                "precondition_error",
+                "Worker does not own the current Work lease",
+            )),
+        )),
+        awaken_session_contract::work_queue::WorkMutationResult::NotFound => Err(not_found("work")),
+    }
 }
 
 #[cfg(test)]

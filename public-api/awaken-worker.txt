@@ -2,9 +2,6 @@ pub mod awaken_worker
 pub enum awaken_worker::WorkerShutdown
 pub awaken_worker::WorkerShutdown::Graceful
 pub awaken_worker::WorkerShutdown::Prompt
-pub struct awaken_worker::RegisteredWorkerApplication
-impl awaken_worker::RegisteredWorkerApplication
-pub fn awaken_worker::RegisteredWorkerApplication::new(awaken_runtime_host::host::AttemptExecutorDecorator) -> Self
 pub struct awaken_worker::RegisteredWorkerContext
 impl awaken_worker::RegisteredWorkerContext
 pub fn awaken_worker::RegisteredWorkerContext::identity(&self) -> &awaken_worker_contract::WorkerIdentity
@@ -76,8 +73,7 @@ pub fn awaken_worker::WorkerNodeBuilder::build(self) -> core::result::Result<awa
 pub fn awaken_worker::WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_acp_capability_observation_source(self, alloc::sync::Arc<dyn awaken_acp_contract::AcpCapabilityObservationSource>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_admin_listen(self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn awaken_worker::WorkerNodeBuilder::with_application_factory(self, awaken_worker::RegisteredApplicationFactory) -> Self
-pub fn awaken_worker::WorkerNodeBuilder::with_application_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_attempt_decorator_factory(self, awaken_worker::RegisteredAttemptDecoratorFactory) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_credential_materializer(self, awaken_credential_materializer::PinnedCredentialMaterializer) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_credential_observation_window(self, core::time::Duration, core::time::Duration) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_deployment_config(self, awaken_runtime_host::deployment_config::DeploymentConfig) -> Self
@@ -95,6 +91,7 @@ pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider(self, i
 pub fn awaken_worker::WorkerNodeBuilder::with_session_container_provider_and_capacity(self, impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>, core::option::Option<alloc::sync::Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_standard_manifest(self, alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_standard_manifest_config(self, awaken_worker::StandardManifestConfig) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_tool_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_web_search_provider_registry(self, awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_worker_local_credential_resolver(self, alloc::sync::Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::without_admin_surface(self) -> Self
@@ -102,5 +99,5 @@ pub fn awaken_worker::relay_hand_executor_factory() -> alloc::sync::Arc<dyn awak
 pub async fn awaken_worker::run_with_inference_and_credential_resolver<R>(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>, alloc::sync::Arc<R>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>> where R: awaken_credential_contract::CredentialMaterialResolver + awaken_credential_contract::WorkerLocalCredentialResolver + 'static
 pub async fn awaken_worker::run_with_inference_materializer(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub async fn awaken_worker::run_with_inference_materializer_until<F>(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>, F) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>> where F: core::future::future::Future<Output = core::result::Result<awaken_worker::WorkerShutdown, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>>
-pub type awaken_worker::RegisteredApplicationFactory = alloc::sync::Arc<(dyn core::ops::function::Fn(&awaken_worker::RegisteredWorkerContext) -> core::result::Result<awaken_worker::RegisteredWorkerApplication, alloc::string::String> + core::marker::Send + core::marker::Sync)>
+pub type awaken_worker::RegisteredAttemptDecoratorFactory = alloc::sync::Arc<(dyn core::ops::function::Fn(&awaken_worker::RegisteredWorkerContext) -> core::result::Result<awaken_runtime_host::host::AttemptExecutorDecorator, alloc::string::String> + core::marker::Send + core::marker::Sync)>
 pub type awaken_worker::RegisteredMemoryMounterFactory = alloc::sync::Arc<(dyn core::ops::function::Fn(&awaken_worker::RegisteredWorkerContext) -> core::result::Result<alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::MemoryMounter>, alloc::string::String> + core::marker::Send + core::marker::Sync)>

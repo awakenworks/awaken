@@ -18,6 +18,7 @@ pub const POLLER_WINDOW_MS: u64 = 30_000;
 pub struct LeaseBook {
     leases: Mutex<BTreeMap<String, LeaseWindow>>,
     owners: Mutex<BTreeMap<String, String>>,
+    epochs: Mutex<BTreeMap<String, u64>>,
     polls: Mutex<BTreeMap<String, BTreeMap<String, u64>>>,
 }
 
@@ -57,11 +58,17 @@ impl LeaseBook {
         self.lease_for(work_id, now_ms, LEASE_TTL_MS);
     }
 
-    pub fn own(&self, work_id: &str, worker_id: &str) {
+    pub fn own(&self, work_id: &str, worker_id: &str) -> Result<u64, &'static str> {
+        let mut epochs = self.epochs.lock().unwrap();
+        let epoch = epochs.entry(work_id.to_string()).or_default();
+        *epoch = epoch.checked_add(1).ok_or("work lease epoch exhausted")?;
+        let epoch = *epoch;
+        drop(epochs);
         self.owners
             .lock()
             .unwrap()
             .insert(work_id.to_string(), worker_id.to_string());
+        Ok(epoch)
     }
 
     pub fn is_owned_by(&self, work_id: &str, worker_id: &str) -> bool {
@@ -70,6 +77,16 @@ impl LeaseBook {
             .unwrap()
             .get(work_id)
             .is_some_and(|owner| owner == worker_id)
+    }
+
+    pub fn authority(&self, work_id: &str, now_ms: u64) -> Option<(String, u64, u64)> {
+        let lease = self.leases.lock().unwrap().get(work_id).copied()?;
+        if lease.expires_at_ms <= now_ms {
+            return None;
+        }
+        let owner = self.owners.lock().unwrap().get(work_id).cloned()?;
+        let epoch = self.epochs.lock().unwrap().get(work_id).copied()?;
+        Some((owner, epoch, lease.expires_at_ms))
     }
 
     pub fn lease_for(&self, work_id: &str, now_ms: u64, ttl_ms: u64) {
@@ -112,6 +129,26 @@ impl LeaseBook {
         for work_id in work_ids {
             owners.remove(work_id);
         }
+        let mut epochs = self.epochs.lock().unwrap();
+        for work_id in work_ids {
+            epochs.remove(work_id);
+        }
         self.polls.lock().unwrap().remove(env_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_epoch_cannot_install_an_owner() {
+        // Cause C1: the canonical epoch reached u64::MAX; effect E1: a new
+        // claim fails and no owner is installed. This is the in-memory half of
+        // SQL rule X2 and prevents saturating reuse of a fencing token.
+        let book = LeaseBook::default();
+        book.epochs.lock().unwrap().insert("work".into(), u64::MAX);
+        assert_eq!(book.own("work", "owner"), Err("work lease epoch exhausted"));
+        assert!(!book.is_owned_by("work", "owner"), "C1/E1");
     }
 }

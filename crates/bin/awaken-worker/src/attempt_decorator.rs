@@ -1,4 +1,4 @@
-//! Registration-bound application extension assembly.
+//! Registration-bound attempt decoration assembly.
 
 use std::sync::Arc;
 
@@ -38,33 +38,14 @@ impl RegisteredWorkerContext {
     }
 
     /// The identity-bound transport shared by dispatch, claimed commit, and
-    /// application-owned control requests.
+    /// optional attempt-decoration control requests.
     #[must_use]
     pub fn upstream(&self) -> &WorkerUpstream {
         &self.upstream
     }
 }
 
-/// The complete application assembly created from one registered Worker identity.
-///
-/// The decorator wraps the authoritative Native/ACP/A2A router. Session setup
-/// and ownership stay on the standard Environment Work path.
-pub struct RegisteredWorkerApplication {
-    decorator: AttemptExecutorDecorator,
-}
-
-impl RegisteredWorkerApplication {
-    #[must_use]
-    pub fn new(decorator: AttemptExecutorDecorator) -> Self {
-        Self { decorator }
-    }
-
-    pub(crate) fn into_parts(self) -> AttemptExecutorDecorator {
-        self.decorator
-    }
-}
-
-/// Registration-time application factory.
-pub type RegisteredApplicationFactory = Arc<
-    dyn Fn(&RegisteredWorkerContext) -> Result<RegisteredWorkerApplication, String> + Send + Sync,
->;
+/// Registration-time factory for the one neutral attempt decorator. It cannot
+/// author Session state, place Work, or replace the backend executor registry.
+pub type RegisteredAttemptDecoratorFactory =
+    Arc<dyn Fn(&RegisteredWorkerContext) -> Result<AttemptExecutorDecorator, String> + Send + Sync>;

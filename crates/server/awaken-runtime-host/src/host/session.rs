@@ -1318,7 +1318,7 @@ impl SharedHost {
                 thread,
             ));
         let attempt_executor = self
-            .application_attempt_decorator
+            .attempt_decorator
             .as_ref()
             .map_or(attempt_executor.clone(), |decorate| {
                 decorate(attempt_executor)

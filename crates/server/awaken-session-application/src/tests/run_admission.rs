@@ -139,14 +139,26 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
         ["dispatch-admission".to_string()],
         "D2/E3 one stable dispatch identity"
     );
+    application
+        .admit_run_session("workspace", "dispatch-admission", "ignored")
+        .await
+        .expect("D2/E3 a driving event wakes the stable Work item");
+    assert!(
+        environments
+            .awakened
+            .lock()
+            .unwrap()
+            .contains("dispatch-admission"),
+        "D2/E3 the admitted event explicitly wakes completed Work"
+    );
 }
 
 #[tokio::test]
 async fn worker_placed_cloud_session_admits_the_event_that_triggers_realization() {
     // Cause/effect decision table: C1 frozen placement=Worker; C2 Environment
     // is Cloud rather than self-hosted; C3 Session is Preparing; C4 no
-    // application contribution. Effect E1 admission installs the dispatch
-    // projection and succeeds without manufacturing Environment WorkQueue work;
+    // late Session input. Effect E1 admission installs the dispatch projection
+    // and succeeds without manufacturing Environment WorkQueue work;
     // the accepted event is what creates the Runtime Run claimed by a Worker.
     // Local Preparing is independently rejected by activity rule A8.
     let repo = Arc::new(
@@ -154,7 +166,7 @@ async fn worker_placed_cloud_session_admits_the_event_that_triggers_realization(
             .expect("session repository"),
     );
     let environments = Arc::new(RecordingEnvironmentSource::default());
-    let mut session = persisted("cloud-worker-admission", false, false, "preparing");
+    let mut session = persisted("cloud-worker-admission", false, "preparing");
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
     else {
         unreachable!("fixture is frozen")
@@ -182,77 +194,6 @@ async fn worker_placed_cloud_session_admits_the_event_that_triggers_realization(
 }
 
 #[tokio::test]
-async fn application_preparing_session_admits_the_run_that_supplies_its_contribution() {
-    // Cause/effect graph: C1 the durable baseline is Preparing; C2 application
-    // contribution is Required; C3 the authenticated Worker can contribute only
-    // after it claims a Run; C4 admission precedes activity. Effects: E1 the
-    // read projection remains visible without fabricating a frozen baseline; E2
-    // admission succeeds so Runtime can enqueue the claimable Run; E3 the one
-    // billable activity epoch advances while execution remains Preparing for the
-    // Worker's realization acknowledgement.
-    //
-    // | Rule | Preparing | Application | Claim needed | Result |
-    // |---|---|---|---|---|
-    // | A1 | yes | Required | yes | E1 + E2 + E3 |
-    // | A2 | yes | Absent | no | reject NotReady (activity rule A8) |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("session repository"),
-    );
-    let environments = Arc::new(RecordingEnvironmentSource::default());
-    let mut session = persisted("application-preparing-admission", false, false, "preparing");
-    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = session.baseline else {
-        unreachable!("fixture starts frozen")
-    };
-    session.baseline = awaken_session_contract::SessionBaselineState::Preparing(
-        awaken_session_contract::SessionCreationIntent {
-            control: awaken_session_contract::ControlSessionCreationInputs {
-                environment: baseline.environment,
-                runtime_placement: baseline.runtime_placement,
-                agent_id: baseline.agent_id,
-                model: baseline.model,
-                execution_model_ref: baseline.execution_model_ref,
-                runtime: baseline.runtime,
-                mcp_authoring: baseline.mcp_authoring,
-                delegate_ids: baseline.delegate_ids,
-                toolsets: baseline.toolsets,
-                mounts: baseline.mounts,
-                env: baseline.env,
-                prompts: baseline.prompts,
-                resources: Default::default(),
-                initial_mcp: Vec::new(),
-            },
-            application: awaken_session_contract::ApplicationContributionState::Required,
-        },
-    );
-    create(repo.as_ref(), session).await;
-    let application = application(repo.clone(), environments);
-
-    let projection = application
-        .read_session_projection("application-preparing-admission", Some("workspace"))
-        .await
-        .expect("A1/E1 readable preparing truth")
-        .expect("A1/E1 Session exists");
-    assert!(
-        matches!(
-            projection.session.baseline,
-            awaken_session_contract::SessionBaselineState::Preparing(_)
-        ),
-        "A1/E1"
-    );
-    let admitted = application
-        .begin_admitted_activity("agent", "application-preparing-admission")
-        .await
-        .expect("A1/E2 admission creates the claimable Run boundary");
-    assert_eq!(admitted.activity_epoch, 1, "A1/E3");
-    assert_eq!(
-        admitted.execution,
-        SessionExecutionState::Preparing,
-        "A1/E3"
-    );
-}
-
-#[tokio::test]
 async fn managed_event_recovers_a_cold_worker_dispatch_projection_before_runtime() {
     // Cause/effect graph: C1 a Managed `/events` command enters the Session
     // application directly; C2 the Coordinator has restarted and therefore has
@@ -273,7 +214,7 @@ async fn managed_event_recovers_a_cold_worker_dispatch_projection_before_runtime
     );
     let environments = Arc::new(RecordingEnvironmentSource::default());
     let runtime = Arc::new(ColdEventRuntime::default());
-    let mut session = persisted("cold-managed-event", false, false, "preparing");
+    let mut session = persisted("cold-managed-event", false, "preparing");
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
     else {
         unreachable!("fixture is frozen")
