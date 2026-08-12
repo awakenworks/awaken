@@ -886,19 +886,20 @@ async fn draft_environment_assembles_and_persists_the_config() {
         .await
         .unwrap();
     assert!(!out.is_error, "created ok: {out:?}");
-    let commands = author.commands.lock().unwrap();
-    assert_eq!(commands.len(), 1, "R1 authors exactly one Environment");
-    let command = &commands[0];
-    assert_eq!(command.command_id, "control:c1");
-    assert_eq!(command.name, "cloud-box");
-    assert!(command.description.is_empty());
-    assert!(command.metadata.is_empty());
-    assert_eq!(command.scope, None);
-    let config = serde_json::to_value(&command.config).unwrap();
-    assert_eq!(config["type"], "cloud");
-    assert_eq!(config["networking"]["type"], "limited");
-    assert_eq!(config["packages"]["npm"][0], "typescript");
-    drop(commands);
+    {
+        let commands = author.commands.lock().unwrap();
+        assert_eq!(commands.len(), 1, "R1 authors exactly one Environment");
+        let command = &commands[0];
+        assert_eq!(command.command_id, "control:c1");
+        assert_eq!(command.name, "cloud-box");
+        assert!(command.description.is_empty());
+        assert!(command.metadata.is_empty());
+        assert_eq!(command.scope, None);
+        let config = serde_json::to_value(&command.config).unwrap();
+        assert_eq!(config["type"], "cloud");
+        assert_eq!(config["networking"]["type"], "limited");
+        assert_eq!(config["packages"]["npm"][0], "typescript");
+    }
     let out2 = tool
         .invoke(ToolCall {
             call_id: "c2".into(),
@@ -908,14 +909,15 @@ async fn draft_environment_assembles_and_persists_the_config() {
         .await
         .unwrap();
     assert!(!out2.is_error);
-    let commands = author.commands.lock().unwrap();
-    assert_eq!(commands.len(), 2, "R2 adds exactly one command");
-    assert_eq!(
-        commands[1].config,
-        awaken_environment_contract::EnvironmentConfig::SelfHosted
-    );
-    assert_eq!(commands[1].command_id, "control:c2");
-    drop(commands);
+    {
+        let commands = author.commands.lock().unwrap();
+        assert_eq!(commands.len(), 2, "R2 adds exactly one command");
+        assert_eq!(
+            commands[1].config,
+            awaken_environment_contract::EnvironmentConfig::SelfHosted
+        );
+        assert_eq!(commands[1].command_id, "control:c2");
+    }
 
     let accepted_calls = author.commands.lock().unwrap().len();
     let rejected = tool

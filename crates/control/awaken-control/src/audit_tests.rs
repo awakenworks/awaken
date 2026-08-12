@@ -58,7 +58,7 @@ fn mutation(call_id: &str, body: impl Into<Body>) -> Request<Body> {
     Request::builder()
         .method(Method::POST)
         .uri("/v1/mutate")
-        .header("idempotency-key", call_id)
+        .header("x-request-id", call_id)
         .body(body.into())
         .unwrap()
 }
@@ -139,6 +139,12 @@ async fn rejected_outer_authentication_cannot_create_an_audit_intent() {
 
 #[tokio::test]
 async fn replayed_or_conflicting_call_id_fails_closed_without_repeating_business_work() {
+    // Cause/effect decision table: C1 an explicit audit request id is new; C2 it
+    // is replayed with the same method/path/body; C3 it is reused with another
+    // body. Effects: A1 admit and commit business once; A2 reject the ambiguous
+    // audit replay without repeating business; A3 fail closed on conflicting
+    // audit identity. Domain Idempotency-Key ownership is covered separately.
+    // Rules: C1->A1; C1+C2->A2; C1+C3->A3.
     let plane = audit_plane();
     let business_calls = Arc::new(AtomicUsize::new(0));
     let app = Router::new()
@@ -177,6 +183,50 @@ async fn replayed_or_conflicting_call_id_fails_closed_without_repeating_business
     let conflict = app.oneshot(mutation("stable-1", "two")).await.unwrap();
     assert_eq!(conflict.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(business_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn domain_idempotency_key_is_not_reinterpreted_as_an_audit_call_identity() {
+    // Cause/effect decision table: C1 two HTTP attempts carry one domain
+    // Idempotency-Key; C2 neither supplies an audit X-Request-ID. Effects: D1 the
+    // audit edge records distinct generated attempt ids and admits both; D2 the
+    // domain handler remains the sole owner of replay/response semantics. The
+    // Managed MCP E2E supplies D2's real aggregate and proves one domain effect.
+    // Rule D1: C1+C2 -> both attempts reach the handler, never an audit 409.
+    let plane = audit_plane();
+    let business_calls = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route(
+            "/v1/mutate",
+            post({
+                let business_calls = business_calls.clone();
+                move || {
+                    let business_calls = business_calls.clone();
+                    async move {
+                        business_calls.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT
+                    }
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            plane,
+            durable_management_audit,
+        ));
+    let domain_attempt = || {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/v1/mutate")
+            .header("idempotency-key", "domain-command-1")
+            .body(Body::from("one"))
+            .unwrap()
+    };
+
+    let first = app.clone().oneshot(domain_attempt()).await.unwrap();
+    let replay = app.oneshot(domain_attempt()).await.unwrap();
+    assert_eq!(first.status(), StatusCode::NO_CONTENT, "D1");
+    assert_eq!(replay.status(), StatusCode::NO_CONTENT, "D1");
+    assert_eq!(business_calls.load(Ordering::SeqCst), 2, "D2");
 }
 
 #[tokio::test]

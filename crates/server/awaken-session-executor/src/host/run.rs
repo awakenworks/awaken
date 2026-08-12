@@ -281,7 +281,7 @@ impl SharedHost {
                 AwaitReason::UserInput | AwaitReason::ExternalEvent
             )
         {
-            return Ok(pending_from_ticket(&ticket, &HashSet::new()));
+            return Ok(pending_from_ticket(&ticket));
         }
         if ticket.reason == AwaitReason::Delegation {
             let snapshot = match commit
@@ -306,12 +306,10 @@ impl SharedHost {
                 }
             };
             return self
-                .visible_pending_tool(commit.as_ref(), &ticket, registry.as_ref(), &HashSet::new())
+                .visible_pending_tool(commit.as_ref(), &ticket, registry.as_ref())
                 .await;
         }
-        let ctx = self.ctx_for(thread, None).await?;
-        let client_tools = self.client_tools_for(&ctx);
-        self.visible_pending_tool(ctx.commit.as_ref(), &ticket, None, &client_tools)
+        self.visible_pending_tool(commit.as_ref(), &ticket, None)
             .await
     }
 
@@ -829,7 +827,7 @@ impl SharedHost {
                 )
                 .await?;
             let result = if let Some(child_ticket) = child {
-                self.check_pending(&ctx, &child_ticket, tool_use_id, resume.wants_client())?;
+                self.check_pending(&child_ticket, tool_use_id, resume.wants_client())?;
                 match resume {
                     HostResume::ToolPermission { allow, note } => {
                         if allow {
@@ -885,7 +883,7 @@ impl SharedHost {
             return Ok(result);
         }
 
-        self.check_pending(&ctx, &ticket, tool_use_id, resume.wants_client())?;
+        self.check_pending(&ticket, tool_use_id, resume.wants_client())?;
         let result = match resume {
             HostResume::ToolPermission { allow, note } => {
                 if allow {
@@ -1001,7 +999,6 @@ impl SharedHost {
         commit: &HostCommit,
         ticket: &ResumeTicket,
         registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
-        client_tools: &HashSet<String>,
     ) -> Result<Option<PendingTool>, HostError> {
         if ticket.reason != AwaitReason::Delegation {
             if ticket.reason == AwaitReason::ToolPermission && ticket.pending_tool.is_none() {
@@ -1009,14 +1006,14 @@ impl SharedHost {
                     "awaiting tool-permission run has no pending tool",
                 ));
             }
-            return Ok(pending_from_ticket(ticket, client_tools));
+            return Ok(pending_from_ticket(ticket));
         }
         let visible_child = self
             .authoritative_child_ticket(commit, registry, ticket.call_id.as_deref())
             .await?;
         Ok(match visible_child {
-            Some(child) => pending_from_ticket(&child, client_tools),
-            None => pending_from_ticket(ticket, client_tools).map(|mut pending| {
+            Some(child) => pending_from_ticket(&child),
+            None => pending_from_ticket(ticket).map(|mut pending| {
                 pending.client_executed = true;
                 pending
             }),
@@ -1048,7 +1045,6 @@ impl SharedHost {
             expectation.input_ids,
         )?;
         let delegation_registry = delegation_registry_from_snapshot(&committed, &run_id)?;
-        let client_tools = self.client_tools_for(ctx);
         let (pending, awaiting) = match &state {
             RunState::Awaiting => {
                 st.awaiting_run = Some(run_id.clone());
@@ -1061,7 +1057,6 @@ impl SharedHost {
                         ctx.commit.as_ref(),
                         &ticket,
                         delegation_registry.as_ref(),
-                        &client_tools,
                     )
                     .await?
                 } else {
@@ -1116,12 +1111,11 @@ impl SharedHost {
     /// only a built-in one.
     fn check_pending(
         &self,
-        ctx: &SessionCtx,
         ticket: &ResumeTicket,
         tool_use_id: &str,
         want_client: bool,
     ) -> Result<(), HostError> {
-        let pending = pending_from_ticket(ticket, &self.client_tools_for(ctx))
+        let pending = pending_from_ticket(ticket)
             .ok_or_else(|| HostError::internal("awaiting run has no pending tool"))?;
         if pending.tool_use_id != tool_use_id {
             return Err(HostError::bad_request(format!(
@@ -1139,21 +1133,6 @@ impl SharedHost {
             )));
         }
         Ok(())
-    }
-
-    fn client_tools_for(&self, ctx: &SessionCtx) -> HashSet<String> {
-        let mut tools = self.client_tools.clone();
-        tools.extend(
-            ctx.config
-                .resolved_spec
-                .tool_descriptors
-                .iter()
-                .filter(|tool| {
-                    tool.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-                })
-                .map(|tool| tool.id.clone()),
-        );
-        tools
     }
 }
 
@@ -1214,13 +1193,16 @@ fn verify_committed_step(
         }
     }
     let suffix = committed.messages[before..].to_vec();
-    if matches!(
-        returned_state,
-        RunState::Ended(EndCause::NaturalEnd | EndCause::Error(_))
-    ) && !suffix.iter().any(|message| message.role == Role::Assistant)
+    // Natural completion must be evidenced by committed assistant output. An
+    // error completion already carries its typed explanation in the sole
+    // committed RunState and is projected from that authority; requiring a
+    // duplicate assistant transcript entry would hide the real provider/runtime
+    // failure behind a proof error.
+    if matches!(returned_state, RunState::Ended(EndCause::NaturalEnd))
+        && !suffix.iter().any(|message| message.role == Role::Assistant)
     {
         return Err(HostError::internal(
-            "committed terminal step has no assistant output or error explanation",
+            "committed natural terminal step has no assistant output",
         ));
     }
     Ok(suffix)
@@ -1234,12 +1216,12 @@ fn recovery_ticket(committed: &RunRecoverySnapshot, run_id: &RunId) -> Option<Re
         .map(|entry| entry.ticket.clone())
 }
 
-/// Read the pending tool off an awaiting ticket, classifying it client-executed
-/// when its id is in `client_tools`.
-fn pending_from_ticket(
-    ticket: &ResumeTicket,
-    client_tools: &HashSet<String>,
-) -> Option<PendingTool> {
+/// Read the pending tool off the committed awaiting ticket. `AwaitReason` is the
+/// durable execution contract: `ExternalEvent` expects a client result, while
+/// `ToolPermission` expects an allow/deny decision. Reopening a Runtime context
+/// merely to rediscover that distinction would make a read perform Environment
+/// realization before Session admission.
+fn pending_from_ticket(ticket: &ResumeTicket) -> Option<PendingTool> {
     let tool_use_id = ticket.call_id.clone()?;
     let Some(tool) = ticket.pending_tool.clone() else {
         if matches!(
@@ -1255,7 +1237,7 @@ fn pending_from_ticket(
         }
         return None;
     };
-    let client_executed = client_tools.contains(&tool.tool_id);
+    let client_executed = ticket.reason == AwaitReason::ExternalEvent;
     Some(PendingTool {
         tool_use_id,
         name: tool.tool_id,
@@ -1300,7 +1282,8 @@ mod committed_step_proof_tests {
         // C3 committed RunRecord exists; C4 executor/committed state agree;
         // C5 committed message count does not regress; C6 every accepted input
         // MessageId exists; C7 the snapshot carries a nonzero commit identity;
-        // C8 a normal/error terminal step has committed assistant output; C9
+        // C8 a natural terminal step has committed assistant output, while an
+        // error terminal carries its explanation in the committed RunState; C9
         // the state is settled rather than Running. Effects: E1 issue the
         // unforgeable receipt and project only the committed suffix; E2 fail
         // closed before StepOutcome/SSE completion. Severity is critical: any
@@ -1401,6 +1384,21 @@ mod committed_step_proof_tests {
                 "{rule}/E2"
             );
         }
+
+        let mut committed_error = snapshot();
+        committed_error.messages.pop();
+        let error_state = RunState::Ended(EndCause::Error(
+            awaken_agent_contract::agent::run::Failure::Inference {
+                code: "provider_error".into(),
+                message: "provider connection closed".into(),
+            },
+        ));
+        committed_error.runs[0].state = error_state.clone();
+        assert!(
+            verify_committed_step(&committed_error, &thread, &run, &error_state, 0, &expected,)
+                .is_ok(),
+            "P11/E1 committed typed error is its own explanation"
+        );
     }
 }
 
@@ -1428,7 +1426,7 @@ mod ticket_projection_tests {
             deadline_ms: None,
         };
 
-        let pending = pending_from_ticket(&ticket, &HashSet::new()).expect("visible input");
+        let pending = pending_from_ticket(&ticket).expect("visible input");
         assert_eq!(pending.tool_use_id, "remote-7");
         assert_eq!(pending.name, "agent_input");
         assert!(pending.client_executed);
@@ -1443,6 +1441,30 @@ mod ticket_projection_tests {
                 false,
             ),
             ResumeResult::Input("src/lib.rs".into())
+        );
+
+        // Committed-wait classification cause/effect table. The reason is the
+        // authority selected when Runtime committed the ticket; a cold query
+        // must not rebuild an Environment merely to inspect a second tool list.
+        //
+        // | Rule | pending tool | reason          | client executed |
+        // | P1   | absent       | UserInput       | yes (agent_input) |
+        // | P2   | present      | ExternalEvent   | yes              |
+        // | P3   | present      | ToolPermission  | no               |
+        let mut concrete = ticket;
+        concrete.pending_tool = Some(awaken_agent_contract::agent::awaiting::PendingTool {
+            tool_id: "submit_answer".into(),
+            arguments: serde_json::json!({"answer": 42}),
+        });
+        concrete.reason = AwaitReason::ExternalEvent;
+        assert!(
+            pending_from_ticket(&concrete).unwrap().client_executed,
+            "P2"
+        );
+        concrete.reason = AwaitReason::ToolPermission;
+        assert!(
+            !pending_from_ticket(&concrete).unwrap().client_executed,
+            "P3"
         );
     }
 }

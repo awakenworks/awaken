@@ -87,11 +87,14 @@ pub fn awaken_agent_config::ModelSelection::serialize<S: serde_core::ser::Serial
 impl<'de> serde_core::de::Deserialize<'de> for awaken_agent_config::ModelSelection
 pub fn awaken_agent_config::ModelSelection::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum awaken_agent_config::MultiagentTarget
+pub awaken_agent_config::MultiagentTarget::Advisor
+pub awaken_agent_config::MultiagentTarget::Advisor::model: alloc::string::String
 pub awaken_agent_config::MultiagentTarget::Agent
 pub awaken_agent_config::MultiagentTarget::Agent::id: alloc::string::String
 pub awaken_agent_config::MultiagentTarget::Agent::version: core::option::Option<u64>
 pub awaken_agent_config::MultiagentTarget::SelfReference
 impl awaken_agent_config::MultiagentTarget
+pub fn awaken_agent_config::MultiagentTarget::advisor_model(&self) -> core::option::Option<&str>
 pub fn awaken_agent_config::MultiagentTarget::is_self_reference(&self) -> bool
 pub fn awaken_agent_config::MultiagentTarget::resolved_id<'a>(&'a self, &'a str) -> &'a str
 pub fn awaken_agent_config::MultiagentTarget::version(&self) -> core::option::Option<u64>
@@ -232,5 +235,5 @@ pub fn awaken_agent_config::ScopedConfigRegistry::put_config_with_audit_scoped<'
 pub fn awaken_agent_config::ScopedConfigRegistry::put_publication_if_config_revision_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::StoredPublication, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::ConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_agent_config::ScopedConfigRegistry::put_publication_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::StoredPublication) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_agent_config::ScopedConfigRegistry::record_management_audit_scoped<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_agent_config::ManagementAuditRecord) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_config::AuditedConfigWrite, awaken_agent_config::ConfigStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_agent_config::compile_published(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata, awaken_runtime_contract::resolved::ResolvedModelCandidate, alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>
+pub fn awaken_agent_config::compile_published(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata, awaken_runtime_contract::resolved::ResolvedModelCandidate, alloc::vec::Vec<awaken_runtime_contract::resolved::ResolvedModelCandidate>, core::option::Option<awaken_runtime_contract::resolved::ResolvedModelCandidate>) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>
 pub fn awaken_agent_config::compile_resolved(&awaken_agent_config::AgentConfig, &[awaken_runtime_contract::resolved::ToolDescriptor], awaken_runtime_contract::snapshot::AgentSnapshotMetadata) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_agent_config::CompileError>

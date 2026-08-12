@@ -1314,7 +1314,7 @@ async fn completion_failure_replays_the_same_stable_fact_identity() {
     );
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while delivery.0.lock().unwrap().len() < 1 {
+        while delivery.0.lock().unwrap().is_empty() {
             tokio::task::yield_now().await;
         }
     })

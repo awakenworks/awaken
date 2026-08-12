@@ -11,14 +11,10 @@ use awaken_session_contract::{
 };
 
 use super::{SessionApplication, SessionMutationError};
-use crate::projection;
-
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or_default()
-}
+use crate::{
+    activity::{now_unix_ms, runtime_interval_fact},
+    projection,
+};
 
 fn initial_idle_fact(owner_scope: &str, session_id: &str) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
@@ -977,7 +973,10 @@ impl SessionRealizationControl for SessionApplication {
         // A hot mutation belongs to an already-idle Session, so keep that lifecycle
         // status while its new generation is unacknowledged; a failed replacement
         // must not turn the established Session into a failed create.
-        if session.execution != SessionExecutionState::Idle {
+        if !matches!(
+            session.execution,
+            SessionExecutionState::Idle | SessionExecutionState::Running
+        ) {
             session
                 .transition_execution(SessionExecutionState::Activating)
                 .map_err(unavailable)?;
@@ -1102,9 +1101,16 @@ impl SessionRealizationControl for SessionApplication {
         }
         let initial_ready =
             session.activity_epoch == 0 && session.execution != SessionExecutionState::Idle;
-        session
-            .transition_execution(SessionExecutionState::Idle)
-            .map_err(unavailable)?;
+        // Realization publication settles physical readiness, not the activity
+        // fence. A driving event may have opened the authoritative Running
+        // interval while a replacement Worker was rebuilding its projection;
+        // only that activity's settlement may close the interval and return the
+        // Session to Idle.
+        if session.execution != SessionExecutionState::Running {
+            session
+                .transition_execution(SessionExecutionState::Idle)
+                .map_err(unavailable)?;
+        }
         let ready_fact =
             initial_ready.then(|| initial_idle_fact(&owner_scope, &command.session_id));
         let session = self
@@ -1220,22 +1226,38 @@ impl SessionRealizationControl for SessionApplication {
                 )
                 .map_err(unavailable)?;
         }
+        let failed_running_activity = session.execution == SessionExecutionState::Running;
         if session.execution != SessionExecutionState::Idle {
             session
                 .transition_execution(SessionExecutionState::ActivationFailed)
                 .map_err(unavailable)?;
         }
+        // A terminal realization failure ends an admitted driving activity.
+        // Close its aggregate-owned interval in the same root CAS and emit the
+        // same pricing-neutral lifecycle fact as ordinary/terminal settlement.
+        // Retryable failures below budget remain Running and retain the open
+        // interval through the earlier return above.
+        let lifecycle_facts = failed_running_activity
+            .then(now_unix_ms)
+            .and_then(|ended_at_unix_ms| session.close_runtime_interval(ended_at_unix_ms))
+            .map(|interval| runtime_interval_fact(&owner_scope, &command.session_id, interval))
+            .into_iter()
+            .collect::<Vec<_>>();
+        let emitted_runtime_interval = !lifecycle_facts.is_empty();
         self.commit_session_snapshot(
             &owner_scope,
             session,
             "fail-session-realization",
-            Vec::new(),
+            lifecycle_facts,
         )
         .await
         .map_err(|error| match error {
             SessionMutationError::Conflict => SessionRealizationControlFailure::Conflict,
             error => unavailable(error),
         })?;
+        if emitted_runtime_interval {
+            self.notify_lifecycle_fact();
+        }
         Ok(())
     }
 }

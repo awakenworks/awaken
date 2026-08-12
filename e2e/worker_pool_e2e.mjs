@@ -4,13 +4,15 @@
 //   C3 coordinator has no local pool -> E3 only the remote worker can claim
 //   C4 remote worker is connected    -> E4 drive and commit exactly one reply
 //   C5 shutdown is sequential        -> E5 worker/coordinator long-poll deadlock
+//   C6 local pool is disabled         -> E6 expose the canonical private Worker
+//                                          transport on the Scenario's sole listener
 //
 // Decision table:
-//   Rule  C1  C2  C3  C4  C5  Expected
-//   T1    Y   N   -   -   -   E1
-//   T2    -   Y   -   -   -   E2
-//   T3    -   N   Y   Y   -   E3 + E4
-//   T4    -   N   Y   Y   N   stop both concurrently; no E5
+//   Rule  C1  C2  C3  C4  C5  C6  Expected
+//   T1    Y   N   -   -   -   -   E1
+//   T2    -   Y   -   -   -   -   E2
+//   T3    -   N   Y   Y   -   Y   E3 + E4 + E6
+//   T4    -   N   Y   Y   N   -   stop both concurrently; no E5
 //
 // The cross-node db-less worker, POOL-DRIVEN, over two real processes.
 //

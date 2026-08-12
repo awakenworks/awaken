@@ -900,9 +900,9 @@ impl ManagedState {
             let activity_epoch = if drives_turn {
                 let session = self
                     .application
-                    .begin_activity(session_id)
+                    .begin_admitted_activity(&agent_id, session_id)
                     .await
-                    .map_err(Self::map_activity_error)?;
+                    .map_err(StateError::Run)?;
                 let epoch = session.activity_epoch;
                 self.refresh_cached_projection(&session)?;
                 Some(epoch)

@@ -133,11 +133,6 @@ impl SessionApplication {
         if expected_owner.is_some_and(|expected| expected != owner) {
             return Err(SessionProjectionRecoveryError::NotFound);
         }
-        if matches!(session.baseline, SessionBaselineState::Preparing(_)) {
-            return Err(SessionProjectionRecoveryError::Unavailable(
-                "Session is awaiting its application contribution".into(),
-            ));
-        }
         Ok(Some(RecoveredSessionProjection {
             owner_scope: owner,
             session,
@@ -162,12 +157,23 @@ impl SessionApplication {
         if recovered.session.is_terminal() {
             return Ok(Some(recovered));
         }
+        // A claim-owning Worker must observe the accepted Run before it can
+        // provide the contribution that freezes this baseline. Preparing is
+        // therefore durable readable truth, but it has no Runtime projection to
+        // install until that Worker claim crosses the contribution boundary.
+        if matches!(
+            recovered.session.baseline,
+            SessionBaselineState::Preparing(_)
+        ) {
+            return Ok(Some(recovered));
+        }
         let owner = recovered.owner_scope;
         let session = self
             .reconcile_persisted_resources(&owner, recovered.session)
             .await
             .map_err(|error| SessionProjectionRecoveryError::Rejected(preparation_error(error)))?;
-        let session = if self.requires_external_realization(&session) {
+        let requires_external_realization = self.requires_external_realization(&session);
+        let session = if requires_external_realization {
             self.install_dispatch_projection(&owner, &session)
                 .await
                 .map_err(|error| {
@@ -214,7 +220,9 @@ impl SessionApplication {
         if recovered.session.is_terminal() {
             return Err(RunError::bad_request("Session no longer accepts new Runs"));
         }
-        if recovered.session.execution != awaken_session_contract::SessionExecutionState::Idle {
+        if !self.requires_external_realization(&recovered.session)
+            && recovered.session.execution != awaken_session_contract::SessionExecutionState::Idle
+        {
             return Err(RunError::unavailable_classified(
                 "session_not_ready",
                 format!(
@@ -528,6 +536,7 @@ impl RunApplication for AdmittedRunApplication {
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
+        self.admit_run(thread, None).await?;
         self.runtime.resume(thread, tool_use_id, resume).await
     }
 
@@ -609,7 +618,13 @@ mod tests {
             _tool_use_id: &str,
             _resume: RunResume,
         ) -> Result<StepOutcome, RunApplicationError> {
-            unreachable!()
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(StepOutcome::ended(
+                Vec::new(),
+                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+                false,
+                false,
+            ))
         }
 
         async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
@@ -630,7 +645,8 @@ mod tests {
         // Cause/effect decision table: R1 explicit Agent + admission success =>
         // exact Agent admitted then one Run; R2 no Agent + recovered projection =>
         // projected Agent admitted; R3 admission unavailable => zero Runs and the
-        // retryable error preserved; R4 read-only history => no admission. These
+        // retryable error preserved; R4 read-only history => no admission; R5 a
+        // continuation is admitted before Runtime resume. These
         // rules keep application policy out of Runtime Host without introducing a
         // second execution path.
         let admission = Arc::new(Admission {
@@ -649,8 +665,18 @@ mod tests {
             .await
             .expect("R1");
         app.run("thread-b", None, Vec::new()).await.expect("R2");
+        app.resume(
+            "thread-resume",
+            "tool-a",
+            RunResume::Confirm {
+                allow: true,
+                note: None,
+            },
+        )
+        .await
+        .expect("R5");
         app.history("thread-a").await.expect("R4");
-        assert_eq!(runtime.0.load(Ordering::SeqCst), 2, "R1/R2/R4");
+        assert_eq!(runtime.0.load(Ordering::SeqCst), 3, "R1/R2/R4/R5");
         assert_eq!(
             admission.calls.lock().unwrap().as_slice(),
             [
@@ -664,8 +690,13 @@ mod tests {
                     "thread-b".into(),
                     "projected-agent".into()
                 ),
+                (
+                    "workspace-a".into(),
+                    "thread-resume".into(),
+                    "projected-agent".into()
+                ),
             ],
-            "R1/R2/R4"
+            "R1/R2/R4/R5"
         );
 
         let denied_runtime = Arc::new(Runtime(AtomicUsize::new(0)));

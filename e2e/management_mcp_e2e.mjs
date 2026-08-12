@@ -259,12 +259,12 @@ async function main() {
       // Cause-effect graph:
       // C1 target reachable + C2 credential accepted -> E1 activate Session
       // C1 target reachable + !C2 credential rejected -> E2 creation fails closed
-      // !C1 target unreachable                    -> E3 creation fails closed
+      // !C1 target unreachable                    -> E3 retryable 503 before activation
       //
       // | Rule | C1 reachable | C2 accepted | Result                    |
       // | F1   | yes          | yes         | active Session            |
       // | F2   | yes          | no          | reject before activation  |
-      // | F3   | no           | -           | reject before activation  |
+      // | F3   | no           | -           | 503 before activation     |
       const wrong = await req(base, 'POST', '/v1/config/credentials', {
         workspace_id: 'ws', kind: 'vault', secret: 'wrong-mcp-token', // awaken-allow: secret (deliberate auth-failure fixture)
       });
@@ -304,7 +304,7 @@ async function main() {
       assert.equal(r.status, 200, JSON.stringify(r.json));
       await assert.rejects(
         client.beta.sessions.create({ agent: offlineAgent, betas: BETAS }),
-        (error) => error?.status === 500 && error?.message?.includes('offline'),
+        (error) => error?.status === 503 && error?.message?.includes('offline'),
         'F3: an unreachable MCP target must fail creation before activation',
       );
       pass('F3: MCP connection failure rejects the staged generation before activation');

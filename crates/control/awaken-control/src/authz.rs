@@ -688,8 +688,8 @@ enum RouteAuthz {
         action: &'static str,
         scope: ScopeClass,
     },
-    /// Resource-plane route. Keeping this in the same classifier prevents the
-    /// management and resource PEPs from maintaining independent route tables.
+    /// Resource-plane route. The canonical front-door PEP selects this policy
+    /// namespace instead of stacking a second resource middleware.
     Resource {
         action: &'static str,
         scope: ScopeClass,
@@ -1013,10 +1013,9 @@ pub async fn management_guard(
         Err(AuthReject::Invalid) => return unauthorized("invalid API token"),
     };
 
-    let (action, scope_class) = match route {
-        RouteAuthz::Scoped { action, scope } | RouteAuthz::Resource { action, scope } => {
-            (action, scope)
-        }
+    let (action, scope_class, resource_action) = match route {
+        RouteAuthz::Scoped { action, scope } => (action, scope, false),
+        RouteAuthz::Resource { action, scope } => (action, scope, true),
         RouteAuthz::TokenAdmin => {
             // Delegated authorization: no equality fence here — the handler
             // evaluates apikey.* at the TARGET workspace, and the scope graph
@@ -1081,7 +1080,12 @@ pub async fn management_guard(
         return forbidden("the route has no resolvable authorization target");
     };
 
-    match authz.authorize(principal, action, target_scope) {
+    let decision = if resource_action {
+        authz.authorize_resource(principal, action, target_scope)
+    } else {
+        authz.authorize(principal, action, target_scope)
+    };
+    match decision {
         AuthorizationDecision::Allow => next.run(req).await,
         // P1 has no approval flow to discharge the obligation, so an
         // approval-gated action is refused with its own message (documented).
@@ -1106,10 +1110,9 @@ pub async fn cloud_management_guard(
     let Some(route) = action_for(req.method(), req.uri().path()) else {
         return forbidden("no management action is mapped for this route");
     };
-    let (action, scope_class) = match route {
-        RouteAuthz::Scoped { action, scope } | RouteAuthz::Resource { action, scope } => {
-            (action, scope)
-        }
+    let (action, scope_class, resource_action) = match route {
+        RouteAuthz::Scoped { action, scope } => (action, scope, false),
+        RouteAuthz::Resource { action, scope } => (action, scope, true),
         RouteAuthz::TokenAdmin => {
             return forbidden("API-token administration belongs to self-managed IAM");
         }
@@ -1140,7 +1143,11 @@ pub async fn cloud_management_guard(
     let authz_for_pdp = authz.clone();
     let principal_for_pdp = principal.clone();
     let decision = match tokio::task::spawn_blocking(move || {
-        authz_for_pdp.authorize(principal_for_pdp, action, target_scope)
+        if resource_action {
+            authz_for_pdp.authorize_resource(principal_for_pdp, action, target_scope)
+        } else {
+            authz_for_pdp.authorize(principal_for_pdp, action, target_scope)
+        }
     })
     .await
     {
@@ -1158,119 +1165,6 @@ pub async fn cloud_management_guard(
             forbidden("this action requires approval and was not executed")
         }
         AuthorizationDecision::Deny => forbidden("cloud IAM denied this action"),
-    }
-}
-
-/// Resource-plane PEP for embedded IAM. This layer is applied by the outer
-/// composition root, not by File/Memory/Skill services: it authenticates either
-/// an explicit service token or the same HttpOnly local-console session accepted
-/// by the management PEP, asks the shared IAM PDP, and stamps only the trusted
-/// Workspace for inner ownership and data-invariant checks. The browser session
-/// is never converted into, or exposed as, a long-lived API token. Routes outside
-/// the resource families pass through so their protocol-specific PEP remains
-/// independent.
-pub async fn resource_guard(
-    State(authz): State<Arc<ManagementAuthz>>,
-    mut req: Request,
-    next: Next,
-) -> Response {
-    let Some(RouteAuthz::Resource { action, .. }) = action_for(req.method(), req.uri().path())
-    else {
-        return next.run(req).await;
-    };
-    let authenticated = bearer_token(req.headers())
-        .map(|presented| authz.authenticate(&presented))
-        .unwrap_or_else(|| authz.authenticate_browser(req.headers()));
-    let (principal, workspace) = match authenticated {
-        Ok(identity) => identity,
-        Err(AuthReject::Expired) => return unauthorized("API token is expired"),
-        Err(AuthReject::Revoked) => return unauthorized("API token is revoked"),
-        Err(AuthReject::Invalid) => {
-            return unauthorized("invalid API token or local browser session");
-        }
-    };
-    if let Some(tenancy) = req
-        .extensions()
-        .get::<awaken_authz_enforce::RequestTenancy>()
-        && tenancy.workspace_id != workspace.0
-    {
-        return forbidden("workspace path does not match the API token's workspace");
-    }
-    match authz.authorize_resource(
-        principal,
-        action,
-        ScopeRef::Workspace {
-            workspace_id: workspace.clone(),
-        },
-    ) {
-        AuthorizationDecision::Allow => {
-            req.extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope(workspace.0));
-            next.run(req).await
-        }
-        AuthorizationDecision::RequireApproval => {
-            forbidden("this resource action requires approval and was not executed")
-        }
-        AuthorizationDecision::Deny => {
-            forbidden("the API token's role does not authorize this resource action")
-        }
-    }
-}
-
-/// Resource-plane PEP for Awaken Cloud IAM. Identity/token acquisition and PDP
-/// transport stay in awaken-iam; inner resource services receive only the resolved
-/// Workspace scope after an explicit allow.
-pub async fn cloud_resource_guard(
-    State(authz): State<Arc<RemoteManagementAuthz>>,
-    mut req: Request,
-    next: Next,
-) -> Response {
-    let Some(RouteAuthz::Resource { action, .. }) = action_for(req.method(), req.uri().path())
-    else {
-        return next.run(req).await;
-    };
-    let principal = match authz.authenticate(bearer_token(req.headers())) {
-        Ok(principal) => principal,
-        Err(AuthReject::Expired) => return unauthorized("cloud access token is expired"),
-        Err(AuthReject::Revoked) => return unauthorized("cloud access token is revoked"),
-        Err(AuthReject::Invalid) => return unauthorized("invalid cloud access token"),
-    };
-    let workspace = req
-        .extensions()
-        .get::<awaken_authz_enforce::RequestTenancy>()
-        .map(|scope| scope.workspace_id.clone())
-        .or_else(|| {
-            req.extensions()
-                .get::<awaken_tenancy::WorkspaceScope>()
-                .map(|scope| scope.0.clone())
-        });
-    let Some(workspace) = workspace else {
-        return forbidden("no trusted workspace context was resolved");
-    };
-    let target = ScopeRef::Workspace {
-        workspace_id: WorkspaceId(workspace.clone()),
-    };
-    let authz_for_pdp = authz.clone();
-    let principal_for_pdp = principal.clone();
-    let decision = match tokio::task::spawn_blocking(move || {
-        authz_for_pdp.authorize_resource(principal_for_pdp, action, target)
-    })
-    .await
-    {
-        Ok(decision) => decision,
-        Err(_) => return forbidden("cloud IAM authorization transport failed"),
-    };
-    match decision {
-        AuthorizationDecision::Allow => {
-            req.extensions_mut().insert(principal);
-            req.extensions_mut()
-                .insert(awaken_tenancy::WorkspaceScope(workspace));
-            next.run(req).await
-        }
-        AuthorizationDecision::RequireApproval => {
-            forbidden("this resource action requires approval and was not executed")
-        }
-        AuthorizationDecision::Deny => forbidden("cloud IAM denied this resource action"),
     }
 }
 

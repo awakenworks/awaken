@@ -590,6 +590,16 @@ missing route. After process loss, the durable realization recovery protocol
 must replay the same exact stage and publish phases before Runtime construction.
 This prevents runtime reads from becoming a hidden second realization path.
 
+The same rule applies to Run continuation reads. A cold `pending` projection
+opens only committed Run truth; its `AwaitReason` is the authoritative
+classification (`ExternalEvent` expects a client result, `ToolPermission`
+expects an allow/deny decision). It must not rebuild a Runtime context or reopen
+an Environment merely to rediscover that fact from a tool catalog. The first
+post-restart driving event instead enters the canonical Session admission,
+advances the realization lease/incarnation, and only then opens the Session's
+Running interval and resumes the committed Run. Ordinary messages, permission
+confirmations, and client-tool results share that one ordering.
+
 Every relay route, Runtime descriptor, tool call, receipt, and drain request
 carries `(session_id, attachment_id, generation)`. Replacement receives a new
 route identity; an old route never starts using a new generation's credential.
@@ -1010,3 +1020,19 @@ durable MCP registry, credential selector, network-policy authority, public MCP
 mutation surface, or long-lived dual-write path. G42 remains listed as a target
 guardrail until all deployment-specific Native/ACP and ownership-loss evidence
 is continuously enforced, not because feature coding is still blocked.
+
+## Amendment: HTTP audit identity does not own domain replay (2026-08-12)
+
+The Session root aggregate remains the sole owner of `Idempotency-Key` replay,
+payload-conflict, revision, event, and response semantics for the existing Managed
+full-replacement command. The outer durable management-audit edge records the
+HTTP attempt under an explicit `X-Request-ID`, or a generated attempt identity
+when that header is absent. It must not reuse `Idempotency-Key` as its audit-call
+identity: doing so creates a second dedupe authority that can reject an exact
+domain replay before the Session handler returns its committed projection.
+
+An explicit repeated `X-Request-ID` still fails closed at the audit boundary, and
+a conflicting reuse remains storage corruption/identity conflict. A repeated
+domain `Idempotency-Key` with no repeated audit request id reaches the canonical
+Session command, which returns the existing committed revision without another
+generation, Runtime effect, or `session.updated` event.

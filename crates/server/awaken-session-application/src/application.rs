@@ -151,17 +151,23 @@ impl SessionApplication {
     /// process topology; explicit frozen facts remain immutable across restarts.
     #[must_use]
     pub fn requires_external_realization(&self, session: &PersistedSession) -> bool {
-        session.frozen_baseline().is_some_and(|baseline| {
-            baseline.application.is_some()
-                || match baseline.runtime_placement {
-                    SessionRuntimePlacement::LegacyUnspecified => {
-                        self.configuration.execution_placement
-                            == SessionExecutionPlacement::RegisteredWorker
+        match &session.baseline {
+            awaken_session_contract::SessionBaselineState::Preparing(intent) => !matches!(
+                intent.application,
+                awaken_session_contract::ApplicationContributionState::Absent
+            ),
+            awaken_session_contract::SessionBaselineState::Frozen(baseline) => {
+                baseline.application.is_some()
+                    || match baseline.runtime_placement {
+                        SessionRuntimePlacement::LegacyUnspecified => {
+                            self.configuration.execution_placement
+                                == SessionExecutionPlacement::RegisteredWorker
+                        }
+                        SessionRuntimePlacement::Local => false,
+                        SessionRuntimePlacement::Worker => true,
                     }
-                    SessionRuntimePlacement::Local => false,
-                    SessionRuntimePlacement::Worker => true,
-                }
-        })
+            }
+        }
     }
 
     /// Claim the one lifecycle supervisor for this application instance.
@@ -588,6 +594,28 @@ impl SessionEnvironmentBindingSink for RepositoryEnvironmentBindingSink {
                     _ => false,
                 };
             if !realization_is_current {
+                tracing::warn!(
+                    session_id,
+                    current_owner = session
+                        .realization
+                        .as_ref()
+                        .map(|lease| lease.owner.as_str()),
+                    current_incarnation = session
+                        .realization
+                        .as_ref()
+                        .map(|lease| lease.runtime_incarnation.as_str()),
+                    current_epoch = session.realization.as_ref().map(|lease| lease.epoch),
+                    asserted_owner = receipt
+                        .realization
+                        .as_ref()
+                        .map(|lease| lease.owner.as_str()),
+                    asserted_incarnation = receipt
+                        .realization
+                        .as_ref()
+                        .map(|lease| lease.runtime_incarnation.as_str()),
+                    asserted_epoch = receipt.realization.as_ref().map(|lease| lease.epoch),
+                    "rejected stale Session environment receipt"
+                );
                 return Err(RunError::classified(
                     "session_realization_stale",
                     "Session environment binding was fenced by another realization owner",

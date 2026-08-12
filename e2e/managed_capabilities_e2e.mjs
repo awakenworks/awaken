@@ -64,9 +64,20 @@ async function main() {
         enabled: false,
         permission_policy: { type: 'always_allow' },
       });
-      // The closed official toolset has seven members and excludes web_search;
-      // search is exposed only by the separately configured WebSearchPlugin.
-      assert.ok(!('web_search' in cfg));
+      // Cause/effect graph: the official eight-member toolset includes
+      // web_search, while the host has no configured search provider in this
+      // scenario. The one canonical plugin/provider path therefore remains
+      // represented as the same toolset member, but disabled; no parallel
+      // custom search tool is introduced.
+      //
+      // Decision table:
+      // | Rule | official member | provider configured | effect             |
+      // | C1   | web_search      | no                  | disabled override  |
+      assert.deepEqual(cfg.web_search, {
+        name: 'web_search',
+        enabled: false,
+        permission_policy: { type: 'always_allow' },
+      });
       // read/glob/grep are auto-allowed → not present in configs (toolset default).
       assert.ok(!('read' in cfg) && !('glob' in cfg) && !('grep' in cfg));
       assert.deepEqual(s.agent.mcp_servers, []);

@@ -9,7 +9,9 @@ use awaken_session_contract::{
     SessionRuntimeInterval, StepOutcome,
 };
 
-use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
+use super::{
+    SessionApplication, SessionMutationError, SessionRunAdmission, mutation::repository_failure,
+};
 
 pub(crate) fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -103,10 +105,7 @@ impl SessionApplication {
         data_subject_id: Option<String>,
         sink: Arc<dyn Sink>,
     ) -> Result<SessionMessageOutcome, RunError> {
-        let activity = self
-            .begin_activity(session_id)
-            .await
-            .map_err(SessionActivityError::run_error)?;
+        let activity = self.begin_admitted_activity(agent_id, session_id).await?;
         let step = self
             .run_streaming_attributed(agent_id, session_id, content, data_subject_id, sink)
             .await;
@@ -115,6 +114,30 @@ impl SessionApplication {
             .await
             .map_err(SessionActivityError::run_error)?;
         step.map(|step| SessionMessageOutcome { step, session })
+    }
+
+    /// Recover the canonical Session projection, then open its one billable
+    /// activity interval. Every driving event uses this ordering, including a
+    /// tool continuation after process restart; no protocol adapter may open an
+    /// interval or invoke Runtime against a stale realization lease first.
+    pub async fn begin_admitted_activity(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<PersistedSession, RunError> {
+        let owner_scope = self
+            .owner(session_id)
+            .await
+            .map_err(SessionActivityError::mutation)
+            .map_err(SessionActivityError::run_error)?;
+        // Enter through the async-trait port used by the protocol decorator.
+        // Besides preserving one admission owner, its boxed future prevents the
+        // large recovery state machine from being embedded in an already-deep
+        // Managed event future and exhausting a production Tokio worker stack.
+        SessionRunAdmission::admit(self, &owner_scope, session_id, agent_id).await?;
+        self.begin_activity(session_id)
+            .await
+            .map_err(SessionActivityError::run_error)
     }
 
     /// Admit one driving event and return the committed aggregate carrying its
@@ -154,7 +177,8 @@ impl SessionApplication {
             if matches!(
                 session.execution,
                 SessionExecutionState::Preparing | SessionExecutionState::Activating
-            ) {
+            ) && !self.requires_external_realization(&session)
+            {
                 return Err(SessionActivityError::NotReady);
             }
             if !session.budget.can_admit_model_request() {

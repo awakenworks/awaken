@@ -1,5 +1,20 @@
 # Wiki Update Log
 
+## 2026-08-12
+
+- **Update**: Consolidated deterministic Scenario Session recovery onto the
+  production Coordinator lifecycle-supervisor registration. Cold protocol reads
+  remain effect-free; the supervisor rebuilds frozen Runtime projections and
+  resumes durable Memory extraction after process death.
+- **Update**: Restored the coordinator-only Scenario's authenticated remote
+  Worker path by mounting the canonical private Worker transport on its sole
+  listener only when the local pool is disabled; ordinary Scenario surfaces
+  remain isolated and no parallel Worker API was added.
+- **Update**: Corrected Managed deployment tests to preserve the authoritative
+  contracts: unreachable MCP staging is retryable `503`, Host executors cannot
+  attest `inference_geo=us`, and `/v1/models` is populated only after Provider
+  discovery is frozen into an executable Agent publication.
+
 ## 2026-08-10
 
 - **Update**: Amended ADR-0070 so local browser sessions reuse IAM's existing
@@ -115,3 +130,51 @@
   transactional outbox.
 - Every receiver is attempted and any failure keeps the fact retryable; no
   consumer gains a polling loop, Session mutation authority, or parallel ledger.
+
+## 2026-08-12 (One front-door IAM enforcement path)
+
+- Amended ADR-0063 so each public router crosses exactly one canonical IAM edge;
+  its route policy selects the management or resource action namespace.
+- Removed the overlapping resource middleware path while preserving the trusted
+  Workspace-only contract seen by Resource services.
+
+## 2026-08-12 (Realization preserves the activity-owned runtime interval)
+
+- Amended ADR-0074 and invariant G47 so replacement-Worker realization success
+  cannot settle an overlapping Running activity.
+- Terminal realization failure now closes the same aggregate-owned interval and
+  commits the existing lifecycle fact atomically; no second billing event path
+  was added.
+
+## 2026-08-12 (Worker shutdown evidence and terminal error truth)
+
+- Connected Kubernetes normal termination to the existing Worker HTTP drain
+  seam and kept hard-crash validation at the exact CRI process boundary.
+- Kept `EndCause::Error(Failure)` as the committed explanation; the step proof no
+  longer demands a duplicate assistant message that could mask that error.
+
+## 2026-08-12 (Domain idempotency remains aggregate-owned)
+
+- Amended ADR-0066 so Managed Session `Idempotency-Key` replay reaches the one
+  root-aggregate command instead of being intercepted by management audit.
+- Kept durable HTTP-attempt audit identity on `X-Request-ID` (or a generated id),
+  eliminating the overlapping middleware dedupe authority while preserving
+  fail-closed explicit audit-id replay.
+
+## 2026-08-12 — Managed toolset documentation and E2E use the eight-member authority
+
+- Corrected ADR-0037 and the SDK capability E2E to follow the canonical
+  `AGENT_TOOLSET_TOOL_IDS`: `web_search` is the eighth official toolset member.
+- An unconfigured WebSearch provider is projected as one disabled toolset
+  override, preserving the single plugin/provider execution path rather than
+  inventing or implying a second custom-search representation.
+
+## 2026-08-12 — Session continuation admits before Runtime recovery
+
+- Amended ADR-0066 so cold pending reads project directly from the committed
+  `AwaitReason`; they no longer rebuild a Runtime context or Environment to
+  repeat tool classification.
+- Consolidated ordinary messages and tool continuations on one
+  admission-before-activity ordering. A replacement process now advances the
+  realization lease before resuming an awaiting Run and before opening its
+  billable Running interval.

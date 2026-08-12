@@ -46,11 +46,16 @@ impl Transport for RouterTransport {
             .header("content-type", "application/json")
             .body(body.map(Body::from).unwrap_or_else(Body::empty))
             .map_err(|error| error.to_string())?;
-        let response = self
-            .app
-            .clone()
-            .oneshot(request)
+        // Cause/effect rule T1: the production A2A transport crosses a socket and
+        // therefore cannot poll the complete remote Coordinator underneath the
+        // parent's already-deep Runtime future. This in-process transport is the
+        // sole network substitute in this test, so give it the same scheduling
+        // boundary. Without it, C1 nested parent+remote Runtime futures => E1 a
+        // test-thread stack overflow before any protocol result; with it => E2
+        // the ordinary response/error contract is observed on a separate task.
+        let response = tokio::spawn(self.app.clone().oneshot(request))
             .await
+            .map_err(|error| format!("remote A2A task failed: {error}"))?
             .map_err(|error| error.to_string())?;
         let status = response.status().as_u16();
         let body = response

@@ -277,10 +277,12 @@ async function main() {
     pass('all durable Skill aggregate corruption is rejected at the repository boundary');
 
     // A cold process must not trust a stale in-memory catalog. Cause/effect table:
-    // C1 immutable stored bytes are corrupt; C2 request uses a retained exact pin
-    // or performs a fresh resolution. C1+C2 => E1 fail before model execution,
-    // E2 preserve the storage-corruption 500 taxonomy, and E3 never drift to
-    // another version. Invalid client input would be 400; this is durable damage.
+    // C1 immutable stored bytes are corrupt; C2 startup synchronizes the canonical
+    // Skill lifecycle reference index. C1+C2 => E1 reject startup before listening
+    // or model execution, E2 preserve the repository-corruption taxonomy already
+    // proven through the live read boundary above, and E3 make neither retained-pin
+    // nor fresh-resolution traffic reachable. Invalid client input would be 400;
+    // this is durable damage and therefore prevents a partially initialized server.
     await stopServer(second.server);
     server = null;
     const damaged = structuredClone(cleanAggregate);
@@ -289,25 +291,15 @@ async function main() {
     fs.writeFileSync(aggregatePath, JSON.stringify(damaged));
     const third = spawnServer('management-skills', PORT, env);
     server = third.server;
-    await waitForPort(PORT);
-    client = new Anthropic({ apiKey: adminToken, baseURL: third.baseUrl });
     await assert.rejects(
-      runAndReadLastReply(client, pinned.id, 'do not run a corrupted retained Skill'),
-      (error) => {
-        assert.equal(error.status, 500, `retained Session corruption is a client-visible rejection: ${error}`);
-        assert.match(error.message, /invalid persisted Skill aggregate/u);
-        return true;
-      },
+      waitForPort(PORT),
+      /server exited before it listened/u,
+      'cold startup rejects the corrupt retained bundle before serving traffic',
     );
-    await assert.rejects(
-      createSession(client),
-      (error) => {
-        assert.equal(error.status, 500, `fresh resolution corruption is rejected: ${error}`);
-        assert.match(error.message, /invalid persisted Skill aggregate/u);
-        return true;
-      },
-    );
-    pass('restart cannot bypass bundle integrity for retained or newly resolved Sessions');
+    assert.equal(third.server.exitCode, 101, 'corrupt durable Skill state is a terminal startup error');
+    await stopServer(third.server);
+    server = null;
+    pass('restart rejects corrupt Skill state before retained or newly resolved Sessions can run');
 
     console.log('E2E PASS: binary bundle + exact pin + restart and corruption fail-closed.');
   } finally {

@@ -38,7 +38,7 @@ no real producer exists yet.
 ### D1: Built-in tools fold into one `agent_toolset_20260401` reference
 
 awaken's registered built-in (hand) tool ids — `bash/read/write/edit/glob/grep`
-(plus the toolset's `web_fetch`) — are byte-identical to the tools the
+(plus the toolset's `web_fetch` and `web_search`) — are byte-identical to the tools the
 versioned toolset bundles. So the adapter advertises them as a **single**
 `{type:"agent_toolset_20260401"}` entry, never per-tool definitions. Its
 `configs` array encodes the host's real permission reality, not a guess:
@@ -50,9 +50,11 @@ versioned toolset bundles. So the adapter advertises them as a **single**
 - a registered, auto-allowed tool → **omitted** from `configs` (it takes the
   toolset default; `read/glob/grep`).
 
-`web_search` is not a member of the closed `agent_toolset_20260401` vocabulary.
-It is exposed only through the separately configured `WebSearchPlugin`, so the
-runtime never maintains a second unconfigured static search path.
+`web_search` is a member of the closed `agent_toolset_20260401` vocabulary, but
+execution still has exactly one owner: the separately configured
+`WebSearchPlugin` and its provider registry. When no provider is configured the
+adapter advertises that toolset member as disabled; the runtime never maintains
+a second unconfigured static search path.
 
 `configs` is omitted entirely when empty. Wire shaping lives in
 `project::agent_tools`; `state.rs` only supplies neutral `AgentCapabilities` data.

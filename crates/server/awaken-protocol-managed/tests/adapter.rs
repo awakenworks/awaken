@@ -760,7 +760,8 @@ async fn session_capability_objects_match_wire_contract() {
                     { "name": "edit", "enabled": false, "permission_policy": { "type": "always_allow" } },
                     { "name": "glob", "enabled": false, "permission_policy": { "type": "always_allow" } },
                     { "name": "grep", "enabled": false, "permission_policy": { "type": "always_allow" } },
-                    { "name": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } }
+                    { "name": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                    { "name": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
                 ],
                 "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }
             },

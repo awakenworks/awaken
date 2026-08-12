@@ -254,14 +254,16 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
 }
 
 /// Activity-fence FMECA cause/effect graph. Causes: C1 the Session exists;
-/// C2 it is ready (idle/running/rescheduling); C3 the epoch can advance; C4 settlement presents
+/// C2 it is ready (idle/running/rescheduling or Worker-owned preparing); C3 the epoch can advance; C4 settlement presents
 /// the current epoch; C5 a later admission or terminal transition has
 /// fenced that settlement; C6 initial realization is still preparing.
 /// Effects: E1 an idle admission commits `running` with one unique monotonic
 /// epoch and opens one interval; E2 only the current running completion commits
 /// `idle` and the matching interval fact; E3 stale or terminal completions are
 /// no-ops; E4 missing, terminal, not-ready, and exhausted-epoch admissions do
-/// not mutate durable truth; E5 terminal intent closes the same open interval.
+/// not mutate durable truth; E5 terminal intent closes the same open interval;
+/// E6 a Worker-owned initial event advances the epoch but preserves Preparing
+/// until the claimed Worker acknowledges realization.
 ///
 /// | Rule | Exists | Status | Epoch available | Current settle | Fence | Effect |
 /// |---|---|---|---|---|---|---|
@@ -272,8 +274,9 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
 /// | A5 | yes | terminal | any | n/a | n/a | E4, reject admission |
 /// | A6 | yes | idle | no | n/a | n/a | E4, reject exhaustion |
 /// | A7 | no | n/a | n/a | n/a | n/a | E4, not found |
-/// | A8 | yes | preparing | yes | n/a | realization pending | E4, reject admission |
+/// | A8 | yes | local preparing | yes | n/a | realization pending | E4, reject admission |
 /// | A9 | yes | activation_failed | n/a | any | realization failed | E3, preserve failed |
+/// | A10 | yes | Worker preparing | yes | n/a | event triggers claim | E6, admit |
 #[tokio::test]
 async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() {
     let repo = Arc::new(
@@ -396,6 +399,25 @@ async fn activity_fence_decision_table_preserves_monotonic_and_terminal_truth() 
     let still_preparing = repo.get("activity-preparing").await.expect("A8 durable");
     assert_eq!(still_preparing.activity_epoch, 0, "A8/E4");
     assert_eq!(still_preparing.execution.as_str(), "preparing", "A8/E4");
+
+    let mut worker_preparing = persisted("activity-worker-preparing", false, false, "preparing");
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) =
+        &mut worker_preparing.baseline
+    else {
+        unreachable!("fixture is frozen")
+    };
+    baseline.runtime_placement = SessionRuntimePlacement::Worker;
+    create(repo.as_ref(), worker_preparing).await;
+    let admitted = app
+        .begin_activity("activity-worker-preparing")
+        .await
+        .expect("A10 Worker claim must be triggered by the driving event");
+    assert_eq!(admitted.activity_epoch, 1, "A10/E6");
+    assert_eq!(
+        admitted.execution,
+        SessionExecutionState::Preparing,
+        "A10/E6"
+    );
 
     let mut failed = still_preparing;
     failed.execution = SessionExecutionState::ActivationFailed;

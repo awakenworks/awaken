@@ -99,9 +99,14 @@ async function main() {
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
-    // Retrieval rehydrates the exact persisted Session/resource binding. Its
-    // reconciler waits for the dead process lease to expire, then resumes the same
-    // intent with the same MemoryStore/config and extractor snapshot.
+    // Restart recovery cause/effect table:
+    // | durable intent | old extraction lease | Session lifecycle | effect |
+    // | Claimed        | live                 | canonical startup supervisor | wait, reclaim, store exactly once |
+    // | Claimed        | expired              | canonical startup supervisor | reclaim immediately, store exactly once |
+    // | terminal       | any                  | canonical startup supervisor | no duplicate extraction or Memory version |
+    // The empty command below only rehydrates the wire projection. Recovery must
+    // be owned by the same Coordinator lifecycle supervisor as production, never
+    // by pending-tool/history reads or another protocol-specific recovery path.
     await client.beta.sessions.events.send(session.id, { betas: BETAS, events: [] });
     assert.ok((await reply(session.id)).includes(MARKER), 'committed Session rehydrated');
     await waitUntil(async () => {
