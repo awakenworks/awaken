@@ -4,7 +4,9 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
-use super::OperatingMode;
+use awaken_runtime_host::DispatchBackend;
+
+use super::{OperatingMode, Role};
 
 pub(super) fn validate_suite_hub_url(value: &str, mode: OperatingMode) -> Result<String, String> {
     if value.trim() != value || value.is_empty() {
@@ -32,20 +34,64 @@ pub(super) fn validate_suite_hub_url(value: &str, mode: OperatingMode) -> Result
     Ok(value.to_owned())
 }
 
-pub(super) fn read_management_database_url(path: &Path) -> Result<String, String> {
+pub(super) fn read_database_url_file(path: &Path, field: &str) -> Result<String, String> {
     let value = fs::read_to_string(path)
-        .map_err(|error| format!("read management database URL {}: {error}", path.display()))?;
+        .map_err(|error| format!("read {field} {}: {error}", path.display()))?;
     let value = value.trim();
     if value.is_empty() {
-        return Err(format!(
-            "management database URL file {} is empty",
-            path.display()
-        ));
+        return Err(format!("{field} {} is empty", path.display()));
     }
     if !is_postgres_url(value) {
-        return Err("management_database_url_file must contain a postgres:// URL".to_owned());
+        return Err(format!("{field} must contain a postgres:// URL"));
     }
     Ok(value.to_owned())
+}
+
+pub(super) fn resolve_runtime_database_url(
+    inline: Option<&String>,
+    file: Option<&Path>,
+) -> Result<Option<String>, String> {
+    if inline.is_some() && file.is_some() {
+        return Err(
+            "runtime_database_url and runtime_database_url_file are mutually exclusive".into(),
+        );
+    }
+    file.map(|path| read_database_url_file(path, "runtime_database_url_file"))
+        .transpose()
+        .map(|from_file| from_file.or_else(|| inline.cloned()))
+}
+
+pub(super) fn select_store_url(
+    specific: Option<&String>,
+    coordinator_runtime: Option<&String>,
+    shared_management: Option<&String>,
+) -> Option<String> {
+    specific
+        .cloned()
+        .or_else(|| coordinator_runtime.cloned())
+        .or_else(|| shared_management.cloned())
+}
+
+pub(super) fn resolve_dispatch_backend(
+    database_url: Option<&String>,
+    role: Role,
+    run_local_pool: bool,
+) -> Result<DispatchBackend, String> {
+    if database_url.is_some_and(|url| !is_postgres_url(url)) {
+        return Err("runtime_database_url must be postgres://".to_owned());
+    }
+    let backend = if database_url.is_some() {
+        DispatchBackend::Postgres
+    } else {
+        DispatchBackend::Sqlite
+    };
+    if role == Role::Coordinator && backend != DispatchBackend::Postgres {
+        return Err("Coordinator requires runtime_database_url".to_owned());
+    }
+    if role == Role::AllInOne && !run_local_pool && backend != DispatchBackend::Postgres {
+        return Err("run_local_pool=false requires runtime_database_url".to_owned());
+    }
+    Ok(backend)
 }
 
 pub(super) fn override_port(bind: &str, port: u16) -> Result<String, String> {

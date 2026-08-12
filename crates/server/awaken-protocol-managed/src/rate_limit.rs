@@ -1,8 +1,9 @@
 //! Organization-scoped request limiting for the Managed Agents HTTP surface.
 //!
-//! One limiter is constructed per organization-serving process startup. That
-//! keeps the organization coordinate at the edge: Workspace ownership remains a
-//! separate concern and the protocol handlers never acquire tenancy policy.
+//! The edge supplies the authenticated Workspace coordinate. Open/local
+//! deployments may map every Workspace to their one configured organization;
+//! hosted adapters resolve it through their IAM tenant authority before taking
+//! an organization bucket.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -28,6 +29,7 @@ pub enum ManagedRequestSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedRateLimitRequest {
+    pub workspace_id: String,
     pub operation: ManagedOperation,
     pub resource: &'static str,
     pub operation_id: Option<String>,
@@ -51,8 +53,6 @@ pub struct ManagedRateLimitUnavailable {
 
 #[async_trait::async_trait]
 pub trait ManagedRequestLimiter: Send + Sync {
-    fn organization_id(&self) -> &str;
-
     async fn admit(
         &self,
         request: ManagedRateLimitRequest,
@@ -176,10 +176,6 @@ impl ManagedRateLimiter {
 
 #[async_trait::async_trait]
 impl ManagedRequestLimiter for ManagedRateLimiter {
-    fn organization_id(&self) -> &str {
-        &self.organization_id
-    }
-
     async fn admit(
         &self,
         request: ManagedRateLimitRequest,
@@ -198,6 +194,21 @@ pub async fn enforce_managed_rate_limit(
     let Some((operation, resource)) = classify(request.method(), request.uri().path()) else {
         return next.run(request).await;
     };
+    let Some(workspace_id) = request
+        .extensions()
+        .get::<awaken_tenancy::WorkspaceScope>()
+        .and_then(awaken_tenancy::WorkspaceScope::non_empty)
+        .map(str::to_owned)
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse::new(
+                "api_error",
+                "Managed request has no trusted Workspace scope",
+            )),
+        )
+            .into_response();
+    };
     let operation_id = request
         .headers()
         .get("x-request-id")
@@ -206,6 +217,7 @@ pub async fn enforce_managed_rate_limit(
         .map(str::to_owned);
     let decision = match limiter
         .admit(ManagedRateLimitRequest {
+            workspace_id,
             operation,
             resource,
             operation_id,
@@ -447,6 +459,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn classified_request_without_trusted_workspace_fails_before_admission() {
+        // Causes: C1 request classifies as Managed Create; C2 no edge-authored
+        // WorkspaceScope exists. Effects: E1 503; E2 handler does not run; E3
+        // limiter is not given a caller-invented fallback tenant. Decision rule
+        // A1=C1+C2 -> E1+E2+E3. The scoped success and shared-bucket rules are
+        // exercised by the following compatibility test.
+        let limiter: Arc<dyn ManagedRequestLimiter> =
+            Arc::new(ManagedRateLimiter::for_organization("org"));
+        let app = Router::new()
+            .route("/v1/sessions", post(|| async { StatusCode::CREATED }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                enforce_managed_rate_limit,
+            ));
+        let response = app
+            .oneshot(Request::post("/v1/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "A1");
+    }
+
+    #[tokio::test]
     async fn native_and_acp_session_creates_share_the_organization_bucket() {
         // Runtime-axis cause graph: Native and ACP differ only after Session
         // creation. Rate limiting is an organization ingress effect, so N1 Native
@@ -468,7 +502,10 @@ mod tests {
             .layer(axum::middleware::from_fn_with_state(
                 limiter,
                 enforce_managed_rate_limit,
-            ));
+            ))
+            .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+                "workspace_shared".into(),
+            )));
         for (rule, agent) in [("N1", "native:claude"), ("N2", "acp:claude-code")] {
             let response = app
                 .clone()

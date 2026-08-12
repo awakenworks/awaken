@@ -808,17 +808,17 @@ def worker_listener_partition_violations(
     """Keep every Worker-facing route on a process-private listener."""
 
     errors: list[str] = []
-    public_match = re.search(
-        r"let router = managed(.*?)let router = with_local_workspace_scope",
+    managed_match = re.search(
+        r"let managed = managed\.merge\(resource_management_router\)\.merge\(models\);",
         coordinator_source,
-        re.S,
     )
-    if public_match is None:
-        errors.append("Coordinator public routes are missing")
+    public_match = re.search(r"let router = ai_sdk(.*?)Ok\(\(managed, router,", coordinator_source, re.S)
+    if managed_match is None or public_match is None:
+        errors.append("Coordinator Managed/public route partition is missing")
     elif ".merge(worker_transport)" in public_match.group(1):
         errors.append("Coordinator public router merges the Worker transport")
     for required in (
-        "Ok((router, worker_transport, dream_application))",
+        "Ok((managed, router, worker_transport, dream_application))",
         ".merge(worker_transport)",
         ".merge(environment_warmups)",
     ):
@@ -1333,9 +1333,9 @@ def selftest() -> None:
     # loopback private default -> accept. R2 any missing partition fact or a
     # public merge -> reject accidental exposure or an unusable local Worker.
     worker_partition = (
-        "let router = managed.merge(models); "
-        "let router = with_local_workspace_scope(router, local); "
-        "Ok((router, worker_transport, dream_application))"
+        "let managed = managed.merge(resource_management_router).merge(models); "
+        "let router = ai_sdk.merge(ag_ui); "
+        "Ok((managed, router, worker_transport, dream_application))"
     )
     private_partition = ".merge(worker_transport).merge(environment_warmups)"
     assert worker_listener_partition_violations(
@@ -1344,9 +1344,7 @@ def selftest() -> None:
         'Some("127.0.0.1:0".to_owned())',
     ) == []  # O11c R1
     assert worker_listener_partition_violations(
-        worker_partition.replace(
-            ".merge(models)", ".merge(worker_transport).merge(models)"
-        ),
+        worker_partition.replace("ai_sdk.merge(ag_ui)", "ai_sdk.merge(worker_transport)"),
         "",
         "",
     )  # O11d R2

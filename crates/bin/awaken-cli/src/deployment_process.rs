@@ -9,6 +9,25 @@ pub(super) async fn prepare_runtime_process(
     model_supply: PublicationModelSupply,
     managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
+    prepare_runtime_process_with_coordinator_services(
+        deployment,
+        key,
+        role,
+        model_supply,
+        managed_services,
+        CoordinatorServiceAdapters::default(),
+    )
+    .await
+}
+
+pub(super) async fn prepare_runtime_process_with_coordinator_services(
+    deployment: &config::ResolvedDeployment,
+    key: Option<&[u8; 32]>,
+    role: config::Role,
+    model_supply: PublicationModelSupply,
+    managed_services: ManagedServiceAdapters,
+    coordinator_services: CoordinatorServiceAdapters,
+) -> Result<PreparedProcess, String> {
     debug_assert!(matches!(
         role,
         config::Role::AllInOne | config::Role::Coordinator
@@ -76,7 +95,10 @@ pub(super) async fn prepare_runtime_process(
             .clone(),
     )
     .await?;
-    let worker_authenticator = worker_transport_security::authenticator(deployment)?;
+    let worker_authenticator = match coordinator_services.worker_authenticator {
+        Some(authenticator) => authenticator,
+        None => worker_transport_security::authenticator(deployment)?,
+    };
     let control_service = if role == config::Role::Coordinator {
         let (url, token_source) = deployment.control_service.coordinator_credentials()?;
         Some(ControlServices::remote(Arc::new(
@@ -112,6 +134,7 @@ pub(super) async fn prepare_runtime_process(
             executable_agent_wiring: Some(executable_agent_wiring),
             executable_environment_wiring: Some(executable_environment_wiring),
             worker_authenticator: Some(worker_authenticator),
+            worker_placement_policy: coordinator_services.worker_placement_policy,
             worker_directory: Some(worker_directory),
             runtime_authority: Some(persistence.runtime_authority),
             worker_observations: Some(worker_observations),

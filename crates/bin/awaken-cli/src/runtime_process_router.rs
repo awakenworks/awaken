@@ -34,6 +34,7 @@ pub(super) async fn prepare_runtime_routers(
         Arc::new(awaken_worker_transport_security::HeaderWorkerAuthenticator)
             as Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
     });
+    let worker_placement_policy = process.worker_placement_policy;
     let (
         executable_agent_catalog,
         executable_agent_registrar,
@@ -270,6 +271,7 @@ pub(super) async fn prepare_runtime_routers(
                         .sandbox_policy_store(),
                 )),
                 process.managed_services.tunnel_application.clone(),
+                Some(managed_rate_limiter.clone()),
                 coordinator_content_eraser,
                 content_capture_ceiling,
                 iam.clone(),
@@ -608,6 +610,7 @@ pub(super) async fn prepare_runtime_routers(
             model_inventory,
             dream_process_store,
             worker_authenticator,
+            worker_placement_policy,
             worker_directory: worker_directory.clone(),
             deployment_application,
             deployment_session_launcher,
@@ -622,12 +625,23 @@ pub(super) async fn prepare_runtime_routers(
     .map_err(|error| format!("build Coordinator component: {error}"))?;
     let coordinator_management = awaken_control::protect_management_router(
         coordinator.management_router,
+        deployment_audit_plane.clone(),
+        deployment_iam.clone(),
+        deployment_remote_iam.clone(),
+        Some(managed_rate_limiter.clone()),
+    );
+    let coordinator_managed = awaken_control::protect_management_router(
+        coordinator.managed_router,
         deployment_audit_plane,
         deployment_iam,
         deployment_remote_iam,
+        Some(managed_rate_limiter.clone()),
     );
     let mut data = executable_projection_refresh::layer(
-        coordinator.router.merge(coordinator_management),
+        coordinator
+            .router
+            .merge(coordinator_managed)
+            .merge(coordinator_management),
         executable_agent_projection_refresher,
         executable_environment_projection_refresher,
     );
@@ -655,7 +669,6 @@ pub(super) async fn prepare_runtime_routers(
             reconciler,
             worker_observations,
             platform_workspace,
-            managed_rate_limiter,
         ),
         coordinator.private_router,
         registration_supervisor,

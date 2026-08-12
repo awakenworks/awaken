@@ -75,9 +75,11 @@ pub use control::{
 };
 use control_component::{control_component_for_process, prepare_control_routers};
 pub use deployment_process::migrate_deployment_schema;
-use deployment_process::prepare_runtime_process;
+use deployment_process::{
+    prepare_runtime_process, prepare_runtime_process_with_coordinator_services,
+};
 use identity::identity_wiring;
-pub use managed_platform::ManagedServiceAdapters;
+pub use managed_platform::{CoordinatorServiceAdapters, ManagedServiceAdapters};
 use process_startup::{ProcessStartup, local_model_supply};
 #[cfg(test)]
 use process_stores::role_hosts_resources;
@@ -91,6 +93,7 @@ use resources::open_resources_application;
 use runtime_process_router::prepare_runtime_routers;
 pub use service::{
     ServiceRole, migrate_service, run_service, run_service_binary, serve_prepared_control,
+    serve_prepared_coordinator,
 };
 // Embedded management-plane IAM (ADR-0042/0043 P1) + the mint spec and bootstrap
 // constants a test / operator embedding drives — re-exported from the authoring plane.
@@ -703,6 +706,25 @@ pub async fn prepare_coordinator_process_with_managed_services(
         config::Role::Coordinator,
         PublicationModelSupply::PublishedProviders,
         managed_services,
+    )
+    .await
+}
+
+/// Prepare the one canonical Coordinator with hosted infrastructure adapters.
+/// The returned routers are still built exclusively by
+/// `awaken-coordinator`; callers may merge only non-overlapping product routes.
+pub async fn prepare_coordinator_process_with_services(
+    deployment: &config::ResolvedDeployment,
+    managed_services: ManagedServiceAdapters,
+    coordinator_services: CoordinatorServiceAdapters,
+) -> Result<PreparedProcess, String> {
+    prepare_runtime_process_with_coordinator_services(
+        deployment,
+        None,
+        config::Role::Coordinator,
+        PublicationModelSupply::PublishedProviders,
+        managed_services,
+        coordinator_services,
     )
     .await
 }

@@ -505,7 +505,7 @@ pub fn mount_with_managed_and_application_access_and_models(
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_catalog.clone());
     let session_application = managed_state.session_application();
-    mount_with_managed_over_and_models(
+    let (managed, data, _, _) = mount_with_managed_over_and_models(
         host,
         managed_state,
         ManagedApplicationServices {
@@ -521,11 +521,12 @@ pub fn mount_with_managed_and_application_access_and_models(
             worker_authenticator: Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
+            worker_placement_policy: None,
             worker_directory: test_worker_directory(),
         },
     )
-    .expect("test-support Worker transport must assemble")
-    .0
+    .expect("test-support Worker transport must assemble");
+    managed.merge(data)
 }
 
 /// Router-owned services that must move together into the managed data plane.
@@ -533,6 +534,7 @@ pub struct ManagedRoutingExtensions {
     pub resource_management_router: Router,
     pub memory_stores: Arc<dyn awaken_resource_contract::MemoryStoreApplicationService>,
     pub worker_authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+    pub worker_placement_policy: Option<Arc<dyn awaken_worker_contract::PlacementPolicy>>,
     pub worker_directory: Arc<dyn awaken_worker_registry::WorkerDirectory>,
 }
 
@@ -662,6 +664,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     (
         Router,
         Router,
+        Router,
         Arc<awaken_dream_application::DreamApplication>,
     ),
     WorkerTransportBuildError,
@@ -679,7 +682,7 @@ fn mount_with_managed_over(
     let session_application = managed_state.session_application();
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_catalog.clone());
-    let (public, _worker_private, dreams) = mount_with_managed_over_and_models(
+    let (managed, public, _worker_private, dreams) = mount_with_managed_over_and_models(
         host,
         managed_state,
         ManagedApplicationServices {
@@ -695,11 +698,12 @@ fn mount_with_managed_over(
             worker_authenticator: Arc::new(
                 awaken_worker_transport_security::HeaderWorkerAuthenticator,
             ),
+            worker_placement_policy: None,
             worker_directory: test_worker_directory(),
         },
     )
     .expect("test-support Worker transport must assemble");
-    (public, dreams)
+    (managed.merge(public), dreams)
 }
 
 fn mount_with_managed_over_and_models(
@@ -709,6 +713,7 @@ fn mount_with_managed_over_and_models(
     routing: ManagedRoutingExtensions,
 ) -> Result<
     (
+        Router,
         Router,
         Router,
         Arc<awaken_dream_application::DreamApplication>,
@@ -726,6 +731,7 @@ fn mount_with_managed_over_and_models(
         resource_management_router,
         memory_stores,
         worker_authenticator,
+        worker_placement_policy,
         worker_directory,
     } = routing;
     // This is the sole Coordinator-owned installation point. It runs after the
@@ -829,7 +835,8 @@ fn mount_with_managed_over_and_models(
             dispatch: dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
             checkpoint,
             directory: worker_directory.clone(),
-            policy: worker_placement::shared_worker_placement_policy(),
+            policy: worker_placement_policy
+                .unwrap_or_else(|| worker_placement::shared_worker_placement_policy()),
             sessions: session_application.clone(),
             authenticator: worker_authenticator.clone(),
             recovery: host.worker_recovery_source(),
@@ -912,18 +919,13 @@ fn mount_with_managed_over_and_models(
         || models_router(std::sync::Arc::new(default_models())),
         awaken_protocol_managed::models_router_with_inventory,
     );
+    let managed = managed.merge(resource_management_router).merge(models);
     let local_workspace = host.local_workspace().to_string();
-    let router = managed
-        .merge(ai_sdk)
-        .merge(ag_ui)
-        .merge(a2a)
-        .merge(durable_ops)
-        .merge(resource_management_router)
-        .merge(models);
+    let router = ai_sdk.merge(ag_ui).merge(a2a).merge(durable_ops);
     let router = with_local_workspace_scope(router, local_workspace);
     let worker_transport =
         with_local_workspace_scope(worker_transport, host.local_workspace().to_string());
-    Ok((router, worker_transport, dream_application))
+    Ok((managed, router, worker_transport, dream_application))
 }
 
 fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router {

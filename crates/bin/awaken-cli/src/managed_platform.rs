@@ -42,3 +42,33 @@ impl ManagedServiceAdapters {
         self
     }
 }
+
+/// Infrastructure adapters for the one canonical Coordinator composition.
+/// Hosted products may replace transport authentication, but cannot replace or
+/// add a Coordinator router.
+#[derive(Clone, Default)]
+pub struct CoordinatorServiceAdapters {
+    pub worker_authenticator:
+        Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
+    pub worker_placement_policy: Option<Arc<dyn awaken_run_ingress::PlacementPolicy>>,
+}
+
+impl CoordinatorServiceAdapters {
+    #[must_use]
+    pub fn with_worker_authenticator(
+        mut self,
+        authenticator: Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>,
+    ) -> Self {
+        self.worker_authenticator = Some(authenticator);
+        self
+    }
+
+    #[must_use]
+    pub fn with_worker_placement_policy(
+        mut self,
+        policy: Arc<dyn awaken_run_ingress::PlacementPolicy>,
+    ) -> Self {
+        self.worker_placement_policy = Some(policy);
+        self
+    }
+}

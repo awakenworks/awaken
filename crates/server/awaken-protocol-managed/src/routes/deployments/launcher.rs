@@ -63,6 +63,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
         if let Some(limiter) = &self.rate_limiter {
             match limiter
                 .admit(crate::ManagedRateLimitRequest {
+                    workspace_id: request.workspace_id.clone(),
                     operation: crate::ManagedOperation::Create,
                     resource: "sessions",
                     operation_id: Some(request.deployment_run_id.clone()),

@@ -11,16 +11,8 @@ pub(crate) fn finish(
     reconciler: Option<Arc<dyn awaken_config_service::PublicationBindingReconciler>>,
     worker_observations: Arc<dyn awaken_coordinator::WorkerObservationSource>,
     platform_workspace: String,
-    managed_rate_limiter: Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>,
 ) -> Router {
     flat = flat.merge(mcp_export);
-    // One startup serves one resolved Organization. Install one shared
-    // limiter before workspace-path dispatch so flat and rewritten Workspace
-    // routes draw from the same organization buckets.
-    flat = flat.layer(axum::middleware::from_fn_with_state(
-        managed_rate_limiter,
-        awaken_protocol_managed::enforce_managed_rate_limit,
-    ));
     if let Some(reconciler) = reconciler {
         let worker_observation_gate = Arc::new(
             crate::observation_reconcile::WorkerObservationReconcileGate::new(worker_observations),
@@ -110,7 +102,6 @@ mod tests {
             Some(reconciler.clone()),
             worker_observations(),
             "platform".into(),
-            Arc::new(awaken_protocol_managed::ManagedRateLimiter::for_organization("org_test")),
         );
         for (rule, path) in [("H1", "/v1/worker/heartbeat"), ("H2", "/unrelated")] {
             let response = app
@@ -122,54 +113,5 @@ mod tests {
         }
         assert_eq!(reconciler.all.load(Ordering::SeqCst), 1, "H1+H2");
         assert_eq!(reconciler.fixed.load(Ordering::SeqCst), 0, "H2");
-    }
-
-    #[tokio::test]
-    async fn flat_and_workspace_paths_share_one_organization_create_bucket() {
-        // Organization/Workspace cause graph:
-        // O1 flat Managed create and O2 workspace-addressed Managed create both
-        // enter the same post-rewrite flat router; Organization is fixed by the
-        // startup, while Workspace is only a resource scope. Therefore the
-        // first two mixed creates consume an explicit two-token test bucket and
-        // O3 create three is one 429 — no per-Workspace bucket and no double
-        // charge during the rewrite. The deliberately slow refill also makes
-        // this an execution-speed-independent regression test.
-        let app = finish(
-            Router::new().route("/v1/sessions", post(|| async { StatusCode::OK })),
-            Router::new(),
-            Some(Arc::new(RecordingReconciler::default())),
-            worker_observations(),
-            "platform".into(),
-            Arc::new(awaken_protocol_managed::ManagedRateLimiter::with_limits(
-                "org_shared",
-                awaken_protocol_managed::ManagedRateLimits {
-                    create_per_minute: 2,
-                    read_per_minute: 2,
-                },
-            )),
-        );
-        for ordinal in 0..2 {
-            let path = if ordinal % 2 == 0 {
-                "/v1/sessions"
-            } else {
-                "/v1/workspaces/workspace_b/sessions"
-            };
-            let response = app
-                .clone()
-                .oneshot(Request::post(path).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK, "O1/O2 #{ordinal}");
-        }
-        let rejected = app
-            .oneshot(
-                Request::post("/v1/workspaces/workspace_c/sessions")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS, "O3");
-        assert!(rejected.headers().contains_key("retry-after"), "O3");
     }
 }
