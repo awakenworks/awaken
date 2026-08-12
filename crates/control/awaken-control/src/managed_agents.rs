@@ -377,14 +377,14 @@ fn config_from_create(
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
     let model = params.model.into_config();
-    let mut inference = inference_from_wire(
+    let inference = inference_from_wire(
         model.speed,
         model.effort.map(|value| value.resolved()),
         model.inference_geo,
     )?;
     let mut model_binding = parse_managed_model_id(&model.id)
         .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
-    apply_model_extensions(&mut model_binding, &mut inference, model.x_awaken)?;
+    apply_model_extensions(&mut model_binding, model.x_awaken)?;
     let multiagent = params.multiagent.map(typed_multiagent);
     let extensions = params.x_awaken.unwrap_or(AwakenAgentExtensions {
         max_steps: None,
@@ -863,11 +863,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                     .set_acp_configuration(configuration)
                     .map_err(|error| ManagedAgentError::Invalid(error.into()))?;
             } else {
-                apply_model_extensions(
-                    &mut config.model_binding,
-                    &mut config.inference,
-                    model.x_awaken,
-                )?;
+                apply_model_extensions(&mut config.model_binding, model.x_awaken)?;
             }
         }
         if let Some(description) = params.description {
