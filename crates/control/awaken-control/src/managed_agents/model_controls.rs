@@ -40,27 +40,11 @@ pub(super) fn inference_from_wire(
 
 pub(super) fn apply_model_extensions(
     selection: &mut ModelSelection,
-    inference: &mut InferenceOptions,
     extensions: Option<AwakenModelExtensions>,
 ) -> Result<(), ManagedAgentError> {
-    let Some(AwakenModelExtensions {
-        acp,
-        processing_geo,
-    }) = extensions
-    else {
+    let Some(AwakenModelExtensions { acp }) = extensions else {
         return Ok(());
     };
-    if let Some(processing_geo) = processing_geo {
-        if inference
-            .inference_geo
-            .is_some_and(|official| official != processing_geo)
-        {
-            return Err(ManagedAgentError::Invalid(
-                "model.inference_geo conflicts with model.x_awaken.processing_geo".into(),
-            ));
-        }
-        inference.inference_geo = Some(processing_geo);
-    }
     let Some(configuration) = acp else {
         return Ok(());
     };
@@ -78,10 +62,7 @@ pub(super) fn model_config(
     if let Some(configuration) = acp.filter(|configuration| !configuration.is_empty()) {
         projected
             .x_awaken
-            .get_or_insert(AwakenModelExtensions {
-                acp: None,
-                processing_geo: None,
-            })
+            .get_or_insert(AwakenModelExtensions { acp: None })
             .acp = Some(configuration.clone());
     }
     projected
@@ -92,17 +73,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn official_and_extension_geographies_have_one_normalized_snapshot_value() {
+    fn only_official_geography_can_enter_from_the_managed_wire() {
         // Cause/effect graph: C1=official omitted/global, C2=official us,
-        // C3=other official value, C4=Awaken exact extension, C5=conflict.
+        // C3=other official value, C4=old Provider-placement extension.
         // Effects: E1=canonical optional typed value; E2=reject before authoring.
         //
-        // | Rule | official | extension | effect |
-        // | W1   | none/global | none   | E1(None) |
-        // | W2   | us       | none      | E1(Us) |
-        // | W3   | eu       | none      | E2 |
-        // | W4   | none     | eu        | E1(Eu) |
-        // | W5   | us       | eu        | E2 |
+        // | Rule | official | x_awaken payload      | effect   |
+        // | W1   | none/global | absent             | E1(None) |
+        // | W2   | us          | absent             | E1(Us)   |
+        // | W3   | eu          | absent             | E2       |
+        // | W4   | absent      | processing_geo=eu  | E2       |
         for official in [None, Some("global".to_owned())] {
             assert_eq!(
                 inference_from_wire(None, None, official)
@@ -119,31 +99,12 @@ mod tests {
             "W3"
         );
 
-        let mut selection = ModelSelection::pinned("provider", "model", "gateway");
-        let mut extended = inference_from_wire(None, None, None).unwrap();
-        apply_model_extensions(
-            &mut selection,
-            &mut extended,
-            Some(AwakenModelExtensions {
-                acp: None,
-                processing_geo: Some(InferenceGeography::Eu),
-            }),
-        )
-        .expect("W4");
-        assert_eq!(extended.inference_geo, Some(InferenceGeography::Eu), "W4");
-
-        let mut conflict = us;
         assert!(
-            apply_model_extensions(
-                &mut selection,
-                &mut conflict,
-                Some(AwakenModelExtensions {
-                    acp: None,
-                    processing_geo: Some(InferenceGeography::Eu),
-                }),
-            )
+            serde_json::from_value::<AwakenModelExtensions>(serde_json::json!({
+                "processing_geo": "eu"
+            }))
             .is_err(),
-            "W5"
+            "W4"
         );
     }
 }

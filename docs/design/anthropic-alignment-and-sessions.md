@@ -72,6 +72,18 @@ I/O. A coordinator and all ordinary roster agents must have identical explicit
 geo pins, or all omit the pin. This validation belongs to the canonical Agent
 publication path, not to a Cloud-only shadow registry.
 
+The Managed compatibility boundary exposes only Anthropic's official
+`inference_geo` vocabulary, `us | global`; `global` and omission both mean no
+additional caller-selected placement constraint. Provider-specific or
+non-Anthropic boundaries must not be added to `model`, `x_awaken`, Session, or
+Agent response DTOs. A hosting adapter may carry an opaque provider placement
+proof in the existing resolved candidate and exact-target seams, but clients
+cannot select its mechanism or observe Provider routing configuration through
+the Managed wire. An internal non-US placement therefore projects as no public
+`inference_geo`, while `us` remains portable: every Provider candidate must
+prove US processing, and only Anthropic Messages may realize that proof by body
+injection.
+
 The versioned `agent_toolset_20260401` has exactly eight built-in names: `bash`,
 `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, and `web_search`.
 `web_search` reuses the one WebSearch plugin/provider registry and its existing

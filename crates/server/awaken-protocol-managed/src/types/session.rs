@@ -344,8 +344,6 @@ impl ModelConfig {
             InferenceGeography, InferenceSpeed, ReasoningEffort,
         };
 
-        let processing_geo = inference.inference_geo;
-
         Self {
             id: id.into(),
             speed: inference.speed.map(|value| match value {
@@ -359,14 +357,9 @@ impl ModelConfig {
                 ReasoningEffort::Xhigh => ModelEffort::Xhigh,
                 ReasoningEffort::Max => ModelEffort::Max,
             }),
-            inference_geo: (processing_geo == Some(InferenceGeography::Us))
+            inference_geo: (inference.inference_geo == Some(InferenceGeography::Us))
                 .then(|| "us".to_owned()),
-            x_awaken: processing_geo
-                .filter(|geography| *geography != InferenceGeography::Us)
-                .map(|processing_geo| AwakenModelExtensions {
-                    acp: None,
-                    processing_geo: Some(processing_geo),
-                }),
+            x_awaken: None,
         }
     }
 }
@@ -378,10 +371,6 @@ impl ModelConfig {
 pub struct AwakenModelExtensions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp: Option<AcpSessionConfiguration>,
-    /// Awaken-only provider-neutral processing boundary. The official
-    /// `inference_geo` field remains restricted to Anthropic's `us|global`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub processing_geo: Option<awaken_runtime_contract::agent_bindings::InferenceGeography>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1344,11 +1333,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn model_geo_projection_preserves_official_and_extension_namespaces() {
-        // Cause/effect graph: C1=US official boundary, C2=non-Anthropic
-        // boundary. Effects: E1=official inference_geo; E2=x_awaken extension.
-        // R1(C1)->E1 only; R2(C2)->E2 only, preventing an incompatible
-        // Anthropic field value while preserving the provider-neutral demand.
+    fn model_geo_projection_exposes_only_the_official_boundary() {
+        // Cause/effect graph: C1=US official boundary, C2=internal Provider
+        // boundary. Effects: E1=official inference_geo; E2=Provider details stay
+        // absent from the Managed projection. R1(C1)->E1; R2(C2)->E2.
         let us = ModelConfig::from_inference(
             "model",
             InferenceOptions {
@@ -1367,11 +1355,7 @@ mod tests {
             },
         );
         assert!(eu.inference_geo.is_none(), "R2");
-        assert_eq!(
-            eu.x_awaken.and_then(|extension| extension.processing_geo),
-            Some(InferenceGeography::Eu),
-            "R2"
-        );
+        assert!(eu.x_awaken.is_none(), "R2");
     }
 
     /// Causal graph: rubric object tag + variant payload -> one closed domain
