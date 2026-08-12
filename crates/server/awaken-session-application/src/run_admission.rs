@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_contract::{
-    ApplicationContributionState, ControlSessionCreationInputs, McpAttachmentOrigin, Pending,
-    RunApplication, RunApplicationError, RunError, RunResume, SessionBaselineState,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionRepositoryError,
+    ControlSessionCreationInputs, McpAttachmentOrigin, Pending, RunApplication,
+    RunApplicationError, RunError, RunResume, SessionBaselineState, SessionCreationIntent,
+    SessionMcpAuthoringContext, SessionNetworkPolicy, SessionRepositoryError,
     SessionToolConfiguration, StepOutcome,
 };
 
@@ -37,7 +37,10 @@ pub struct CreateProfiledSessionCommand {
     pub session_id: String,
     pub agent_id: String,
     pub model: Option<String>,
-    pub application_contribution_required: bool,
+    pub mounts: Vec<serde_json::Value>,
+    pub env: Vec<serde_json::Value>,
+    pub prompts: Vec<String>,
+    pub network_restriction: Option<SessionNetworkPolicy>,
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub tools: Option<SessionToolConfiguration>,
@@ -133,6 +136,11 @@ impl SessionApplication {
         if expected_owner.is_some_and(|expected| expected != owner) {
             return Err(SessionProjectionRecoveryError::NotFound);
         }
+        if matches!(session.baseline, SessionBaselineState::Preparing(_)) {
+            return Err(SessionProjectionRecoveryError::Unavailable(
+                "Session creation finalization is incomplete".into(),
+            ));
+        }
         Ok(Some(RecoveredSessionProjection {
             owner_scope: owner,
             session,
@@ -155,16 +163,6 @@ impl SessionApplication {
         // Archived Sessions remain readable projections but deny every new
         // effect. Recovery must not reacquire a realization lease for them.
         if recovered.session.is_terminal() {
-            return Ok(Some(recovered));
-        }
-        // A claim-owning Worker must observe the accepted Run before it can
-        // provide the contribution that freezes this baseline. Preparing is
-        // therefore durable readable truth, but it has no Runtime projection to
-        // install until that Worker claim crosses the contribution boundary.
-        if matches!(
-            recovered.session.baseline,
-            SessionBaselineState::Preparing(_)
-        ) {
             return Ok(Some(recovered));
         }
         let owner = recovered.owner_scope;
@@ -243,7 +241,10 @@ impl SessionApplication {
             session_id,
             agent_id,
             model: requested_model,
-            application_contribution_required,
+            mounts,
+            env,
+            prompts,
+            network_restriction,
             title,
             metadata,
             tools: requested_tools,
@@ -308,7 +309,7 @@ impl SessionApplication {
             .as_ref()
             .map(|profile| profile.backend_ref.trim())
             .filter(|backend| !backend.is_empty());
-        let environment = self
+        let mut environment = self
             .resolve_session_environment(
                 None,
                 profile
@@ -319,6 +320,9 @@ impl SessionApplication {
             )
             .await?
             .snapshot;
+        if let Some(restriction) = network_restriction {
+            environment.network = environment.network.safe_intersection(&restriction);
+        }
         let mut resources = self.resolve_session_inputs(
             &owner_scope,
             profile
@@ -369,16 +373,11 @@ impl SessionApplication {
                     .map(|profile| profile.delegate_ids.clone())
                     .unwrap_or_default(),
                 toolsets: tools.toolsets.clone(),
-                mounts: Vec::new(),
-                env: Vec::new(),
-                prompts: Vec::new(),
+                mounts,
+                env,
+                prompts,
                 resources,
                 initial_mcp,
-            },
-            application: if application_contribution_required {
-                ApplicationContributionState::Required
-            } else {
-                ApplicationContributionState::Absent
             },
         };
         self.create_session(CreateSessionCommand {
@@ -405,7 +404,10 @@ impl SessionApplication {
             session_id: thread_id.to_string(),
             agent_id: agent_id.to_string(),
             model: None,
-            application_contribution_required: false,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            network_restriction: None,
             title: None,
             metadata: Default::default(),
             tools: None,

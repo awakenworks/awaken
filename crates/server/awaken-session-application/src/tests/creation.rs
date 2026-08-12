@@ -42,7 +42,7 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
         _mcp_targets: &[awaken_session_contract::McpTarget],
     ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError> {
         Ok(Some(ResolvedSessionEnvironment {
-            snapshot: persisted("environment-template", false, false, "idle")
+            snapshot: persisted("environment-template", false, "idle")
                 .frozen_baseline()
                 .expect("fixture baseline")
                 .environment
@@ -70,11 +70,8 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
     }
 }
 
-fn creation_command(
-    session_id: &str,
-    application: awaken_session_contract::ApplicationContributionState,
-) -> CreateSessionCommand {
-    let environment = persisted("environment-template", true, false, "idle")
+fn creation_command(session_id: &str) -> CreateSessionCommand {
+    let environment = persisted("environment-template", true, "idle")
         .frozen_baseline()
         .expect("fixture baseline")
         .environment
@@ -99,7 +96,6 @@ fn creation_command(
                 resources: Default::default(),
                 initial_mcp: Vec::new(),
             },
-            application,
         },
         title: None,
         metadata: Default::default(),
@@ -110,14 +106,12 @@ fn creation_command(
 
 #[tokio::test]
 async fn creation_driver_owns_finalize_realize_and_activation_order() {
-    // Cause/effect graph: C1 contribution is absent or required; C2 the frozen
+    // Cause/effect graph: C1 complete creation inputs are present; C2 the frozen
     // placement is local; C3 durable insertion succeeds; C4 realization is
-    // acknowledged. Effects: E1 absent is finalized before realization and
-    // becomes Idle; E2 required remains a Preparing intent and performs no
-    // realization; E3 both identities have one owner in the same repository;
-    // E4 only the acknowledged Session owns the durable initial-idle fact.
-    // Decision table: R1 !C1-required+C2+C3+C4 => E1+E3+E4; R2
-    // C1-required+C2+C3 => E2+E3+!E4. FMECA: emitting E4 at intent insertion
+    // acknowledged. Effects: E1 finalization precedes realization, E2 the
+    // Session becomes Idle, E3 one repository owner exists, and E4 one durable
+    // initial-idle fact is emitted. Decision rule R1 C1+C2+C3+C4 => E1-E4.
+    // FMECA: emitting E4 at intent insertion
     // creates a false-ready fact if realization later fails, severity 9,
     // occurrence 4, detection 7; the acknowledgement boundary removes that
     // failure mode. This proves protocols cannot reorder the shared sequence.
@@ -131,10 +125,7 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
     );
 
     let active = app
-        .create_session(creation_command(
-            "active",
-            awaken_session_contract::ApplicationContributionState::Absent,
-        ))
+        .create_session(creation_command("active"))
         .await
         .expect("R1");
     assert!(active.frozen_baseline().is_some(), "R1/E1");
@@ -144,37 +135,13 @@ async fn creation_driver_owns_finalize_realize_and_activation_order() {
         "R1/E1"
     );
 
-    let preparing = app
-        .create_session(creation_command(
-            "preparing",
-            awaken_session_contract::ApplicationContributionState::Required,
-        ))
-        .await
-        .expect("R2");
-    assert!(
-        matches!(
-            preparing.baseline,
-            awaken_session_contract::SessionBaselineState::Preparing(_)
-        ),
-        "R2/E2"
-    );
-    assert_eq!(
-        preparing.execution,
-        awaken_session_contract::SessionExecutionState::Preparing,
-        "R2/E2"
-    );
     assert_eq!(
         repository.owner("active").await.unwrap(),
         "workspace",
         "R1/E3"
     );
-    assert_eq!(
-        repository.owner("preparing").await.unwrap(),
-        "workspace",
-        "R2/E3"
-    );
     let pending = repository.pending_lifecycle().await.unwrap();
-    assert_eq!(pending.len(), 1, "R1/E4 + R2/!E4");
+    assert_eq!(pending.len(), 1, "R1/E4");
     assert_eq!(pending[0].object_id, "active", "R1/E4");
     assert_eq!(pending[0].event_type, "session.status_idled", "R1/E4");
 }
@@ -205,10 +172,7 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
             ..Default::default()
         },
     );
-    let mut command = creation_command(
-        "external-create",
-        awaken_session_contract::ApplicationContributionState::Absent,
-    );
+    let mut command = creation_command("external-create");
     command.intent.control.runtime_placement =
         awaken_session_contract::SessionRuntimePlacement::Worker;
 
@@ -278,40 +242,41 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
 
 /// Profiled-Session FMECA and cause/effect graph. Failure modes are FM1 a
 /// requested model bypasses the published Agent, FM2 an unavailable Agent is
-/// admitted, and FM3 an application-owned Session realizes before its
-/// contribution. Causes: C1 profile exists, C2 Agent available, C3 requested
-/// model absent/equal, C4 requested model differs, C5 application contribution
-/// required. Effects: E1 freeze the published execution identity, E2 reject
-/// without a row, E3 remain Preparing for contribution. Graph:
-/// C1&&C2&&C3&&!C5 -> E1; C1&&C2&&C3&&C5 -> E1+E3; C4||!C2 -> E2.
+/// admitted. Causes: C1 profile exists, C2 Agent available, C3 requested model
+/// absent/equal, C4 requested model differs, and C5 complete local inputs are
+/// supplied up front. Effects: E1 freeze the published execution identity and
+/// local inputs, E2 reject without a row. Graph: C1&&C2&&C3&&C5 -> E1;
+/// C4||!C2 -> E2.
 ///
-/// | Rule | Profile | Available | Requested model | Contribution | Effect |
+/// | Rule | Profile | Available | Requested model | Inputs | Effect |
 /// |---|---|---|---|---|---|
-/// | P1 | yes | yes | absent/equal | absent | E1 realized |
-/// | P2 | yes | yes | equal | required | E1 + E3 |
-/// | P3 | yes | yes | different | any | E2 |
-/// | P4 | yes | no | any | any | E2 |
+/// | P1 | yes | yes | absent/equal | complete | E1 realized |
+/// | P2 | yes | yes | different | any | E2 |
+/// | P3 | yes | no | any | any | E2 |
 #[tokio::test]
-async fn profiled_session_creation_enforces_publication_and_contribution_rules() {
+async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("profiled Session repository"),
     );
     let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
     available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
-    let command = |session_id: &str, model: Option<&str>, required| CreateProfiledSessionCommand {
+    let command = |session_id: &str, model: Option<&str>| CreateProfiledSessionCommand {
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
         agent_id: "profiled".into(),
         model: model.map(str::to_owned),
-        application_contribution_required: required,
+        mounts: vec![serde_json::json!({"mount_id": "workspace"})],
+        env: vec![serde_json::json!({"name": "PROJECT"})],
+        prompts: vec!["project context".into()],
+        network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
         title: None,
         metadata: Default::default(),
         tools: None,
     };
 
     let realized = available
-        .create_profiled_session(command("profiled-realized", None, false))
+        .create_profiled_session(command("profiled-realized", None))
         .await
         .expect("P1");
     assert_eq!(realized.model(), Some("published-model"), "P1/E1");
@@ -320,49 +285,42 @@ async fn profiled_session_creation_enforces_publication_and_contribution_rules()
         awaken_session_contract::SessionExecutionState::Idle,
         "P1/E1"
     );
-
-    let awaiting = available
-        .create_profiled_session(command("profiled-awaiting", Some("published-model"), true))
-        .await
-        .expect("P2");
-    assert!(
-        matches!(
-            awaiting.baseline,
-            awaken_session_contract::SessionBaselineState::Preparing(_)
-        ),
-        "P2/E3"
+    let baseline = realized.frozen_baseline().expect("P1 frozen baseline");
+    assert_eq!(baseline.mounts.len(), 1, "P1/E1");
+    assert_eq!(baseline.env.len(), 1, "P1/E1");
+    assert_eq!(baseline.prompts, ["project context"], "P1/E1");
+    assert_eq!(
+        baseline.environment.network,
+        awaken_session_contract::SessionNetworkPolicy::None,
+        "P1/E1"
     );
 
     let mismatched = available
-        .create_profiled_session(command(
-            "profiled-mismatch",
-            Some("unpublished-model"),
-            false,
-        ))
+        .create_profiled_session(command("profiled-mismatch", Some("unpublished-model")))
         .await;
-    assert!(mismatched.is_err(), "P3/E2");
+    assert!(mismatched.is_err(), "P2/E2");
     assert!(
         matches!(
             repository.get("profiled-mismatch").await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
-        "P3/E2"
+        "P2/E2"
     );
 
     let mut unavailable = application(repository.clone(), Arc::new(AdmissionEnvironment));
     unavailable.set_config_source(Arc::new(ProfiledAgent { unavailable: true }));
     assert!(
         unavailable
-            .create_profiled_session(command("profiled-unavailable", None, false))
+            .create_profiled_session(command("profiled-unavailable", None))
             .await
             .is_err(),
-        "P4/E2"
+        "P3/E2"
     );
     assert!(
         matches!(
             repository.get("profiled-unavailable").await,
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
-        "P4/E2"
+        "P3/E2"
     );
 }

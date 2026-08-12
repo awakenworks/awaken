@@ -98,11 +98,7 @@ async fn admission_surfaces_dispatch_failure_and_preserves_retryable_intent() {
             .expect("session repository"),
     );
     let environments = Arc::new(RecordingEnvironmentSource::default());
-    create(
-        repo.as_ref(),
-        persisted("dispatch-admission", true, false, "idle"),
-    )
-    .await;
+    create(repo.as_ref(), persisted("dispatch-admission", true, "idle")).await;
     environments.fail_for("dispatch-admission");
     let application = application(repo.clone(), environments.clone());
 

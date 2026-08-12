@@ -491,24 +491,14 @@ impl PersistedSession {
             || self.needs_work_dispatch()
     }
 
-    /// Whether the externally executed Session must have a WorkQueue
-    /// projection. Application-owned Sessions cross a distinct claim boundary
-    /// and are intentionally excluded.
+    /// Whether the externally executed Session must have its one authoritative
+    /// Environment WorkQueue projection.
     #[must_use]
     pub fn needs_work_dispatch(&self) -> bool {
         !self.is_terminal()
-            && self.frozen_baseline().is_some_and(|baseline| {
-                baseline.environment.self_hosted && !self.has_application_contribution()
-            })
-    }
-
-    /// Whether the frozen Session consumed an external application contribution.
-    /// This immutable aggregate fact, rather than a transient realization lease,
-    /// distinguishes the claimed-application realization path after restart.
-    #[must_use]
-    pub fn has_application_contribution(&self) -> bool {
-        self.frozen_baseline()
-            .is_some_and(|baseline| baseline.application.is_some())
+            && self
+                .frozen_baseline()
+                .is_some_and(|baseline| baseline.environment.self_hosted)
     }
 
     #[must_use]
@@ -922,7 +912,6 @@ mod mutation_tests {
                     resources: Default::default(),
                     initial_mcp: Vec::new(),
                 },
-                application: crate::ApplicationContributionState::Absent,
             }),
             title: None,
             metadata: Default::default(),

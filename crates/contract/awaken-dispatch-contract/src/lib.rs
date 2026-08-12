@@ -32,9 +32,7 @@ pub use awaken_worker_contract::{
     place_assignment,
 };
 pub use claimed_commit::ClaimedRunCommit;
-pub use claimed_session::{
-    ClaimedSessionContributionReceipt, ClaimedSessionControl, ClaimedSessionControlError,
-};
+pub use claimed_session::{ClaimedSessionControl, ClaimedSessionControlError};
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
     AttemptCredentialBindingError, CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard,

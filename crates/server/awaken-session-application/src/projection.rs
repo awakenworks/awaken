@@ -1,8 +1,8 @@
 //! Neutral frozen Session and MCP realization projections.
 
 use awaken_session_contract::{
-    ApplicationSessionContributionFailure, FrozenSessionProjection, McpGenerationRef,
-    PersistedSession, RunError, SessionMcpAttachment, StageMcpAttachment,
+    FrozenSessionProjection, McpGenerationRef, PersistedSession, RunError, SessionMcpAttachment,
+    StageMcpAttachment,
 };
 
 use super::SessionApplication;
@@ -13,12 +13,11 @@ impl SessionApplication {
         session: &PersistedSession,
         resource_revision: u64,
         resources: awaken_session_contract::ResolvedSessionResources,
-    ) -> Result<FrozenSessionProjection, ApplicationSessionContributionFailure> {
-        let baseline = session.frozen_baseline().cloned().ok_or_else(|| {
-            ApplicationSessionContributionFailure::Unavailable(
-                "Session creation intent was not consumed".into(),
-            )
-        })?;
+    ) -> Result<FrozenSessionProjection, RunError> {
+        let baseline = session
+            .frozen_baseline()
+            .cloned()
+            .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
         Ok(FrozenSessionProjection {
             workspace_id: owner_scope,
             revision: session.revision,
@@ -36,7 +35,7 @@ impl SessionApplication {
     pub fn frozen_session_projection(
         owner_scope: String,
         session: &PersistedSession,
-    ) -> Result<FrozenSessionProjection, ApplicationSessionContributionFailure> {
+    ) -> Result<FrozenSessionProjection, RunError> {
         let resources = session
             .resources
             .pending
@@ -56,7 +55,7 @@ impl SessionApplication {
     pub(crate) fn active_frozen_session_projection(
         owner_scope: String,
         session: &PersistedSession,
-    ) -> Result<FrozenSessionProjection, ApplicationSessionContributionFailure> {
+    ) -> Result<FrozenSessionProjection, RunError> {
         Self::frozen_session_projection_for_resources(
             owner_scope,
             session,

@@ -15,7 +15,6 @@ use awaken_resource_contract::{
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_contract::{
-    ApplicationSessionContribution, ApplicationSessionContributionApi, ApplicationSessionInput,
     ManagedLifecycleFact, SessionExecutionState, SessionToolConfiguration,
 };
 
@@ -167,23 +166,6 @@ impl BuiltInDreamAgent {
             }],
             client_tools: Vec::new(),
         };
-        self.sessions
-            .create_profiled_session(CreateProfiledSessionCommand {
-                owner_scope: request.workspace_id.clone(),
-                session_id: session_id.clone(),
-                agent_id: request.agent_id.clone(),
-                model: Some(request.model.id.clone()),
-                application_contribution_required: true,
-                title: None,
-                metadata: BTreeMap::from([
-                    ("awaken.session.origin".into(), "dream".into()),
-                    ("awaken.dream_job_id".into(), request.job_id.clone()),
-                ]),
-                tools: Some(tools),
-            })
-            .await
-            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-
         let mut mounts = vec![
             MountRequirement {
                 mount_id: format!("{}-input-memory", request.job_id),
@@ -237,22 +219,23 @@ impl BuiltInDreamAgent {
                 "Caller guidance (cannot widen permissions or override platform rules):\n{guidance}"
             ));
         }
-        let input = ApplicationSessionInput {
-            mounts: mount_values,
-            prompts,
-            network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
-            ..Default::default()
-        };
         self.sessions
-            .contribute_application(ApplicationSessionContribution {
+            .create_profiled_session(CreateProfiledSessionCommand {
+                owner_scope: request.workspace_id.clone(),
                 session_id: session_id.clone(),
-                application_fingerprint: input.fingerprint(),
-                input,
+                agent_id: request.agent_id.clone(),
+                model: Some(request.model.id.clone()),
+                mounts: mount_values,
+                env: Vec::new(),
+                prompts,
+                network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
+                title: None,
+                metadata: BTreeMap::from([
+                    ("awaken.session.origin".into(), "dream".into()),
+                    ("awaken.dream_job_id".into(), request.job_id.clone()),
+                ]),
+                tools: Some(tools),
             })
-            .await
-            .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-        self.sessions
-            .realize_session(&session_id)
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
         Ok(session_id)

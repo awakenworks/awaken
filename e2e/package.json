@@ -36,7 +36,7 @@
     "test:resource-scope": "node resource_scope_boundary_e2e.mjs",
     "test:resource-plane-postgres": "tsx resource_plane_postgres_e2e.ts",
     "test:worker-resources": "tsx worker_resource_manifest_e2e.ts",
-    "test:inference-truth": "node management_admin_e2e.mjs && node managed_config_e2e.mjs && node awaken_cli_e2e.mjs && tsx credential_materialization_worker_e2e.ts && tsx credential_reference_worker_e2e.ts && tsx application_session_worker_e2e.ts",
+    "test:inference-truth": "node management_admin_e2e.mjs && node managed_config_e2e.mjs && node awaken_cli_e2e.mjs && tsx credential_materialization_worker_e2e.ts && tsx credential_reference_worker_e2e.ts",
     "test:agent-publication": "tsx agent_publication_truth_e2e.ts",
     "test:runtime-stages": "tsx stage_change_coverage_e2e.ts && tsx hand_brain_lazy_e2e.ts && tsx hand_brain_remote_worker_e2e.ts && SESSION_ENVIRONMENT_TIER=namespace tsx hand_brain_remote_worker_e2e.ts && npm run test:hand-brain-container",
     "test:hand-brain": "tsx hand_brain_lazy_e2e.ts && tsx hand_brain_remote_worker_e2e.ts && SESSION_ENVIRONMENT_TIER=namespace tsx hand_brain_remote_worker_e2e.ts && npm run test:hand-brain-container",
