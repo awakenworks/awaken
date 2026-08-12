@@ -459,15 +459,22 @@ pub(super) async fn prepare_runtime_routers(
     if let Some(materializer) = model_wiring.materializer {
         host_builder = host_builder.with_inference_materializer(materializer);
     }
-    // Production ACP wiring (`acp:*` threads): the environment advertises only the
-    // installed CLI/sandbox capability. Provider coordinates and credentials are
-    // realized from the same publication-pinned DB facts as native inference.
-    let hand_factory = awaken_worker::relay_hand_executor_factory();
-    let host_builder = host_builder
-        .with_session_environment_from_deployment(Some(hand_factory))
-        .await
-        .with_acp_from_deployment(credential_materializer.clone())
-        .await;
+    // Production ACP wiring (`acp:*` threads): only a process that owns the local
+    // claim pool realizes a Session Environment. A split Coordinator admits and
+    // projects Sessions to registered Workers; probing or constructing another
+    // sandbox here would create a second physical-effect owner.
+    let host_builder = if session_execution_placement
+        == awaken_session_application::SessionExecutionPlacement::LocalWorker
+    {
+        let hand_factory = awaken_worker::relay_hand_executor_factory();
+        host_builder
+            .with_session_environment_from_deployment(Some(hand_factory))
+            .await
+            .with_acp_from_deployment(credential_materializer.clone())
+            .await
+    } else {
+        host_builder
+    };
     // Last-mile backend wiring the standard process does not own, supplied
     // by the process startup (a scenario that serves external-CLI sessions).
     let host_builder = match customize_host {
