@@ -250,7 +250,6 @@ pub struct ControlSessionCreationInputs {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionCreationIntent {
     pub control: ControlSessionCreationInputs,
-    pub application: ApplicationContributionState,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -262,171 +261,17 @@ pub struct CompiledSessionCreation {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SessionCreationFinalizeError {
-    #[error("application contribution is still required")]
-    ApplicationRequired,
-    #[error("application MCP drafts were supplied when no application was registered")]
-    UnexpectedApplicationMcp,
-    #[error("application MCP input and normalized draft counts differ")]
-    ApplicationMcpCountMismatch,
-    #[error("normalized application MCP draft has a non-application origin")]
-    InvalidApplicationMcpOrigin,
     #[error("MCP attachment definitions conflict: {0}")]
     McpConflict(String),
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum ApplicationContributionState {
-    Required,
-    Absent,
-    Committed {
-        fingerprint: String,
-        input: ApplicationSessionInput,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ApplicationContributionOutcome {
-    Committed,
-    Replayed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum ApplicationContributionError {
-    #[error("application contribution fingerprint is empty")]
-    EmptyFingerprint,
-    #[error("this Session does not accept an application contribution")]
-    NotRequired,
-    #[error("this Session already accepted a different application contribution")]
-    Conflict,
-}
-
-/// Minimal durable evidence retained after the temporary contribution input is
-/// consumed. It proves replay identity without retaining a second desired-state
-/// copy beside the frozen baseline.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ApplicationContributionReceipt {
-    pub plan_fingerprint: String,
-    pub input_fingerprint: String,
-}
-
-impl ApplicationContributionReceipt {
-    #[must_use]
-    pub fn from_input(plan_fingerprint: String, input: &ApplicationSessionInput) -> Self {
-        Self {
-            plan_fingerprint,
-            input_fingerprint: input.fingerprint(),
-        }
-    }
-
-    pub fn verify_replay(
-        &self,
-        plan_fingerprint: &str,
-        input: &ApplicationSessionInput,
-    ) -> Result<ApplicationContributionOutcome, ApplicationContributionError> {
-        if plan_fingerprint.trim().is_empty() {
-            return Err(ApplicationContributionError::EmptyFingerprint);
-        }
-        if self.plan_fingerprint == plan_fingerprint
-            && self.input_fingerprint == input.fingerprint()
-        {
-            Ok(ApplicationContributionOutcome::Replayed)
-        } else {
-            Err(ApplicationContributionError::Conflict)
-        }
-    }
-}
-
-/// Boundary command input. Resource attachments are typed at this boundary;
-/// provisioning and MCP extension values remain opaque until the Session
-/// application compiler maps them to their owning contracts.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ApplicationSessionInput {
-    #[serde(default)]
-    pub session_inputs: Vec<crate::SessionInputAttachment>,
-    #[serde(default)]
-    pub mounts: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub env: Vec<serde_json::Value>,
-    #[serde(default)]
-    pub prompts: Vec<String>,
-    #[serde(default)]
-    pub mcp_inputs: Vec<serde_json::Value>,
-    pub network_restriction: Option<SessionNetworkPolicy>,
-}
-
-impl ApplicationSessionInput {
-    #[must_use]
-    pub fn fingerprint(&self) -> String {
-        crate::stable_fingerprint(self)
-    }
-}
-
-impl ApplicationContributionState {
-    /// Accept one complete claim-fenced application input before baseline
-    /// finalization. The repository root CAS supplies concurrency; this kernel
-    /// supplies deterministic apply/replay/conflict semantics.
-    pub fn accept(
-        &mut self,
-        fingerprint: String,
-        input: ApplicationSessionInput,
-    ) -> Result<ApplicationContributionOutcome, ApplicationContributionError> {
-        if fingerprint.trim().is_empty() {
-            return Err(ApplicationContributionError::EmptyFingerprint);
-        }
-        match self {
-            Self::Required => {
-                *self = Self::Committed { fingerprint, input };
-                Ok(ApplicationContributionOutcome::Committed)
-            }
-            Self::Absent => Err(ApplicationContributionError::NotRequired),
-            Self::Committed {
-                fingerprint: current_fingerprint,
-                input: current_input,
-            } if current_fingerprint == &fingerprint && current_input == &input => {
-                Ok(ApplicationContributionOutcome::Replayed)
-            }
-            Self::Committed { .. } => Err(ApplicationContributionError::Conflict),
-        }
-    }
-}
-
 impl SessionCreationIntent {
-    /// Consume the temporary preparation intent into the one immutable baseline
-    /// and generation-1 inputs. `application_mcp` must be the exact normalized
-    /// projection of `ApplicationSessionInput::mcp_inputs` produced by the sole
-    /// Managed anti-corruption compiler.
-    pub fn finalize(
-        self,
-        application_mcp: Vec<crate::McpAttachmentDraft>,
-    ) -> Result<CompiledSessionCreation, SessionCreationFinalizeError> {
-        let (application, receipt) = match self.application {
-            ApplicationContributionState::Required => {
-                return Err(SessionCreationFinalizeError::ApplicationRequired);
-            }
-            ApplicationContributionState::Absent => {
-                if !application_mcp.is_empty() {
-                    return Err(SessionCreationFinalizeError::UnexpectedApplicationMcp);
-                }
-                (ApplicationSessionInput::default(), None)
-            }
-            ApplicationContributionState::Committed { fingerprint, input } => {
-                if input.mcp_inputs.len() != application_mcp.len() {
-                    return Err(SessionCreationFinalizeError::ApplicationMcpCountMismatch);
-                }
-                if application_mcp
-                    .iter()
-                    .any(|draft| draft.origin != crate::McpAttachmentOrigin::Application)
-                {
-                    return Err(SessionCreationFinalizeError::InvalidApplicationMcpOrigin);
-                }
-                let receipt = ApplicationContributionReceipt::from_input(fingerprint, &input);
-                (input, Some(receipt))
-            }
-        };
-
+    /// Compile the complete creation intent before any external realization.
+    /// Every caller supplies its immutable inputs up front; Worker-local setup
+    /// remains an execution concern and cannot mutate the Session baseline.
+    pub fn finalize(self) -> Result<CompiledSessionCreation, SessionCreationFinalizeError> {
         let ControlSessionCreationInputs {
-            mut environment,
+            environment,
             runtime_placement,
             agent_id,
             model,
@@ -435,19 +280,12 @@ impl SessionCreationIntent {
             mcp_authoring,
             delegate_ids,
             toolsets,
-            mut mounts,
-            mut env,
-            mut prompts,
+            mounts,
+            env,
+            prompts,
             resources,
-            mut initial_mcp,
+            initial_mcp,
         } = self.control;
-        if let Some(restriction) = application.network_restriction {
-            environment.network = environment.network.safe_intersection(&restriction);
-        }
-        mounts.extend(application.mounts);
-        env.extend(application.env);
-        prompts.extend(application.prompts);
-        initial_mcp.extend(application_mcp);
         let initial_mcp = crate::mcp_attachment::resolve_mcp_draft_precedence(initial_mcp)
             .map_err(|error| SessionCreationFinalizeError::McpConflict(error.to_string()))?;
         let baseline = SessionBaseline::compile_with_execution_model_ref(
@@ -458,7 +296,6 @@ impl SessionCreationIntent {
                 agent_id,
                 model,
                 runtime,
-                application: receipt,
                 delegate_ids,
                 toolsets,
                 mounts,
@@ -491,8 +328,6 @@ pub struct SessionBaseline {
     pub execution_model_ref: String,
     pub runtime: Option<String>,
     #[serde(default)]
-    pub application: Option<ApplicationContributionReceipt>,
-    #[serde(default)]
     pub delegate_ids: Vec<String>,
     #[serde(default)]
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
@@ -511,7 +346,6 @@ pub struct SessionBaselineInputs {
     pub agent_id: String,
     pub model: String,
     pub runtime: Option<String>,
-    pub application: Option<ApplicationContributionReceipt>,
     pub delegate_ids: Vec<String>,
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
     pub mounts: Vec<serde_json::Value>,
@@ -549,7 +383,6 @@ impl SessionBaseline {
             model: &'a str,
             execution_model_ref: &'a str,
             runtime: &'a Option<String>,
-            application: &'a Option<ApplicationContributionReceipt>,
             delegate_ids: &'a [String],
             toolsets: &'a [awaken_agent_contract::ToolsetPolicy],
             mounts: &'a [serde_json::Value],
@@ -563,7 +396,6 @@ impl SessionBaseline {
             agent_id,
             model,
             runtime,
-            application,
             delegate_ids,
             toolsets,
             mounts,
@@ -578,7 +410,6 @@ impl SessionBaseline {
             model: &model,
             execution_model_ref: &execution_model_ref,
             runtime: &runtime,
-            application: &application,
             delegate_ids: &delegate_ids,
             toolsets: &toolsets,
             mounts: &mounts,
@@ -594,7 +425,6 @@ impl SessionBaseline {
             model,
             execution_model_ref,
             runtime,
-            application,
             delegate_ids,
             toolsets,
             mounts,
@@ -727,7 +557,6 @@ mod tests {
             agent_id: "agent".into(),
             model: "model".into(),
             runtime: None,
-            application: None,
             delegate_ids: Vec::new(),
             toolsets: Vec::new(),
             mounts: Vec::new(),
@@ -857,154 +686,97 @@ mod tests {
 
     #[test]
     fn creation_finalization_cases_follow_the_decision_table() {
-        // Cause graph:
-        // contribution state must be consumable -> application raw MCP count
-        // must equal its normalized projection -> every projected draft must
-        // have Application origin -> all sources resolve by precedence with
-        // unique selected targets -> baseline and generation-1 inputs freeze.
+        // Cause/effect graph: complete immutable creation inputs are supplied by
+        // Control -> MCP drafts resolve through the one Session-over-Agent
+        // precedence rule -> baseline, resources, and generation-1 MCP freeze
+        // together. Duplicate selected targets fail before persistence.
         //
-        // | Rule | App state | App drafts | Origin | Merge | Effect |
-        // |---|---|---|---|---|---|
-        // | Z1 | Required | none | - | - | ApplicationRequired |
-        // | Z2 | Absent | none | - | valid | freeze without receipt |
-        // | Z3 | Absent | one | Application | - | UnexpectedApplicationMcp |
-        // | Z4 | Committed(1 raw) | none | - | - | count mismatch |
-        // | Z5 | Committed(1 raw) | one | Agent | - | invalid origin |
-        // | Z6 | Committed(1 raw) | one | Application | app beats Agent | freeze merged facts |
-        // | Z7 | Committed(1 raw) | one | Application | target collision | MCP conflict |
-        let required = SessionCreationIntent {
-            control: control_inputs(SessionNetworkPolicy::Unrestricted),
-            application: ApplicationContributionState::Required,
-        };
-        assert_eq!(
-            required.finalize(Vec::new()),
-            Err(SessionCreationFinalizeError::ApplicationRequired),
-            "Z1"
-        );
-
-        let absent = SessionCreationIntent {
-            control: control_inputs(SessionNetworkPolicy::Unrestricted),
-            application: ApplicationContributionState::Absent,
-        };
-        let z2 = absent.clone().finalize(Vec::new()).expect("Z2");
-        assert!(z2.baseline.application.is_none(), "Z2");
-        assert!(z2.initial_mcp.is_empty(), "Z2");
-        assert_eq!(
-            absent.finalize(vec![mcp_draft(
-                "app",
-                "https://app.example",
-                crate::McpAttachmentOrigin::Application,
-            )]),
-            Err(SessionCreationFinalizeError::UnexpectedApplicationMcp),
-            "Z3"
-        );
-
-        let application_input = ApplicationSessionInput {
-            session_inputs: Vec::new(),
-            mounts: vec![serde_json::json!({"source": "application"})],
-            env: vec![serde_json::json!({"name": "APPLICATION"})],
-            prompts: vec!["application".into()],
-            mcp_inputs: vec![serde_json::json!({"name": "calc"})],
-            network_restriction: Some(SessionNetworkPolicy::Allowlist {
-                hosts: vec!["API.EXAMPLE".into(), "other.example".into()],
-            }),
-        };
-        let committed = |control: ControlSessionCreationInputs| SessionCreationIntent {
-            control,
-            application: ApplicationContributionState::Committed {
-                fingerprint: "plan-a".into(),
-                input: application_input.clone(),
+        // | Rule | Up-front input | Same MCP name | Selected targets | Effect |
+        // |---|---|---|---|---|
+        // | Z1 | complete | none | unique | freeze every supplied fact |
+        // | Z2 | complete | Session + Agent | unique | Session draft wins |
+        // | Z3 | complete | none | duplicate | MCP conflict |
+        let mut z1_control = control_inputs(SessionNetworkPolicy::Unrestricted);
+        z1_control.resources.inputs.push(crate::ResolvedInput {
+            binding_id: awaken_resource_contract::BindingId::new("input"),
+            source: crate::ResolvedInputSource::File {
+                file_id: awaken_resource_contract::FileId::from("file"),
             },
-        };
-        assert_eq!(
-            committed(control_inputs(SessionNetworkPolicy::Unrestricted)).finalize(Vec::new()),
-            Err(SessionCreationFinalizeError::ApplicationMcpCountMismatch),
-            "Z4"
-        );
-        assert_eq!(
-            committed(control_inputs(SessionNetworkPolicy::Unrestricted)).finalize(vec![
-                mcp_draft(
-                    "calc",
-                    "https://app.example",
-                    crate::McpAttachmentOrigin::Agent
-                ),
-            ]),
-            Err(SessionCreationFinalizeError::InvalidApplicationMcpOrigin),
-            "Z5"
-        );
-
-        let mut z6_control = control_inputs(SessionNetworkPolicy::Allowlist {
-            hosts: vec!["api.example".into(), "control.example".into()],
+            mount_path: "/inputs/file".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: None,
         });
-        z6_control.initial_mcp.push(mcp_draft(
-            "calc",
-            "https://agent.example",
-            crate::McpAttachmentOrigin::Agent,
-        ));
-        let z6 = committed(z6_control)
-            .finalize(vec![mcp_draft(
+        let z1 = SessionCreationIntent {
+            control: z1_control,
+        }
+        .finalize()
+        .expect("Z1");
+        assert_eq!(z1.baseline.mounts.len(), 1, "Z1");
+        assert_eq!(z1.baseline.env.len(), 1, "Z1");
+        assert_eq!(z1.baseline.prompts, vec!["control"], "Z1");
+        assert_eq!(z1.initial_resources.inputs.len(), 1, "Z1");
+
+        let mut z2_control = control_inputs(SessionNetworkPolicy::Unrestricted);
+        z2_control.initial_mcp.extend([
+            mcp_draft(
                 "calc",
-                "https://app.example",
-                crate::McpAttachmentOrigin::Application,
-            )])
-            .expect("Z6");
-        assert_eq!(z6.initial_mcp.len(), 1, "Z6");
+                "https://agent.example",
+                crate::McpAttachmentOrigin::Agent,
+            ),
+            mcp_draft(
+                "calc",
+                "https://session.example",
+                crate::McpAttachmentOrigin::Session,
+            ),
+        ]);
+        let z2 = SessionCreationIntent {
+            control: z2_control,
+        }
+        .finalize()
+        .expect("Z2");
+        assert_eq!(z2.initial_mcp.len(), 1, "Z2");
         assert_eq!(
-            z6.initial_mcp[0].target.http_url(),
-            Some("https://app.example"),
-            "Z6"
-        );
-        assert_eq!(z6.baseline.mounts.len(), 2, "Z6");
-        assert_eq!(z6.baseline.env.len(), 2, "Z6");
-        assert_eq!(z6.baseline.prompts, vec!["control", "application"], "Z6");
-        assert_eq!(
-            z6.baseline.environment.network,
-            SessionNetworkPolicy::Allowlist {
-                hosts: vec!["api.example".into()],
-            },
-            "Z6"
-        );
-        assert_eq!(
-            z6.baseline
-                .application
-                .as_ref()
-                .map(|receipt| receipt.plan_fingerprint.as_str()),
-            Some("plan-a"),
-            "Z6"
+            z2.initial_mcp[0].target.http_url(),
+            Some("https://session.example"),
+            "Z2"
         );
 
-        let mut z7_control = control_inputs(SessionNetworkPolicy::Unrestricted);
-        z7_control.initial_mcp.push(mcp_draft(
-            "control",
-            "https://same.example",
-            crate::McpAttachmentOrigin::Session,
-        ));
+        let mut z3_control = control_inputs(SessionNetworkPolicy::Unrestricted);
+        z3_control.initial_mcp.extend([
+            mcp_draft(
+                "first",
+                "https://same.example",
+                crate::McpAttachmentOrigin::Agent,
+            ),
+            mcp_draft(
+                "second",
+                "https://same.example",
+                crate::McpAttachmentOrigin::Session,
+            ),
+        ]);
         assert!(
             matches!(
-                committed(z7_control).finalize(vec![mcp_draft(
-                    "application",
-                    "https://same.example",
-                    crate::McpAttachmentOrigin::Application,
-                )]),
+                (SessionCreationIntent {
+                    control: z3_control
+                })
+                .finalize(),
                 Err(SessionCreationFinalizeError::McpConflict(_))
             ),
-            "Z7"
+            "Z3"
         );
     }
-
     #[test]
     fn baseline_fingerprint_decision_table() {
         // Cause graph: equal normalized facts -> equal fingerprint; changing the
-        // Environment revision, normalized network fact, application receipt, or
-        // mount projection -> different fingerprint.
+        // Environment revision, normalized network fact, or mount projection ->
+        // different fingerprint.
         //
         // | Rule | Same revision | Same network | Effect |
         // |------|---------------|--------------|--------|
         // | B1   | T             | T            | equal  |
         // | B2   | F             | T            | differ |
         // | B3   | T             | F            | differ |
-        // | B4   | T             | T + application | differ |
-        // | B5   | T             | T + mount | differ |
+        // | B4   | T             | T + mount | differ |
         let original = baseline(environment(1, SessionNetworkPolicy::Unrestricted));
         assert_eq!(
             original.fingerprint,
@@ -1021,33 +793,21 @@ mod tests {
             baseline(environment(1, SessionNetworkPolicy::None)).fingerprint,
             "B3"
         );
-        let mut with_application =
-            baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted));
-        with_application.application = Some(ApplicationContributionReceipt {
-            plan_fingerprint: "plan".into(),
-            input_fingerprint: "input".into(),
-        });
-        assert_ne!(
-            original.fingerprint,
-            SessionBaseline::compile(with_application).fingerprint,
-            "B4"
-        );
         let mut with_mount = baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted));
-        with_mount.mounts = vec![serde_json::json!({"mount_id": "application"})];
+        with_mount.mounts = vec![serde_json::json!({"mount_id": "workspace"})];
         assert_ne!(
             original.fingerprint,
             SessionBaseline::compile(with_mount).fingerprint,
-            "B5"
+            "B4"
         );
     }
 
     #[test]
-    fn legacy_baseline_defaults_new_application_fields() {
+    fn legacy_baseline_defaults_runtime_placement_and_mounts() {
         // Cause/effect graph: C1 a retained baseline omits fields introduced
-        // after its fingerprint was written; E1 neutral application collections
-        // remain empty and E2 Runtime placement stays explicitly unresolved.
-        // An application policy decision, never serde or the protocol,
-        // resolves E2. An explicit value must round-trip unchanged.
+        // after its fingerprint was written; E1 mounts remain empty and E2
+        // Runtime placement stays explicitly unresolved. An explicit value must
+        // round-trip unchanged.
         //
         // | Rule | placement field | Effect |
         // |---|---|---|
@@ -1067,7 +827,6 @@ mod tests {
             "prompts": []
         });
         let decoded: SessionBaseline = serde_json::from_value(legacy).unwrap();
-        assert!(decoded.application.is_none());
         assert!(decoded.mounts.is_empty());
         assert_eq!(
             decoded.runtime_placement,
@@ -1088,140 +847,5 @@ mod tests {
             .expect("decode explicit placement");
             assert_eq!(decoded.runtime_placement, placement, "{rule}");
         }
-    }
-
-    #[derive(Clone, Copy)]
-    enum ContributionRule {
-        Commit,
-        Replay,
-        SameFingerprintDifferentInput,
-        DifferentFingerprint,
-        NotRequired,
-        EmptyFingerprint,
-    }
-
-    #[test]
-    fn application_contribution_cases_follow_the_decision_table() {
-        // Cause graph:
-        // Required + non-empty fingerprint -> commit complete input;
-        // exact committed fingerprint + exact payload -> replay;
-        // either committed identity or payload differs -> conflict;
-        // Absent -> not required; empty identity -> invalid before state checks.
-        //
-        // | Rule | State | Fingerprint | Payload | Effect |
-        // |---|---|---|---|---|
-        // | A1 | Required | non-empty | new | Committed |
-        // | A2 | Committed | same | same | Replayed |
-        // | A3 | Committed | same | different | Conflict |
-        // | A4 | Committed | different | any | Conflict |
-        // | A5 | Absent | non-empty | any | NotRequired |
-        // | A6 | any | empty | any | EmptyFingerprint |
-        let original = ApplicationSessionInput {
-            prompts: vec!["application prompt".into()],
-            ..Default::default()
-        };
-        for rule in [
-            ContributionRule::Commit,
-            ContributionRule::Replay,
-            ContributionRule::SameFingerprintDifferentInput,
-            ContributionRule::DifferentFingerprint,
-            ContributionRule::NotRequired,
-            ContributionRule::EmptyFingerprint,
-        ] {
-            let mut state = match rule {
-                ContributionRule::Commit | ContributionRule::EmptyFingerprint => {
-                    ApplicationContributionState::Required
-                }
-                ContributionRule::NotRequired => ApplicationContributionState::Absent,
-                ContributionRule::Replay
-                | ContributionRule::SameFingerprintDifferentInput
-                | ContributionRule::DifferentFingerprint => {
-                    ApplicationContributionState::Committed {
-                        fingerprint: "plan-a".into(),
-                        input: original.clone(),
-                    }
-                }
-            };
-            let fingerprint = match rule {
-                ContributionRule::DifferentFingerprint => "plan-b",
-                ContributionRule::EmptyFingerprint => " ",
-                _ => "plan-a",
-            };
-            let input = if matches!(rule, ContributionRule::SameFingerprintDifferentInput) {
-                ApplicationSessionInput {
-                    prompts: vec!["different".into()],
-                    ..Default::default()
-                }
-            } else {
-                original.clone()
-            };
-            let result = state.accept(fingerprint.into(), input);
-            match rule {
-                ContributionRule::Commit => {
-                    assert_eq!(result, Ok(ApplicationContributionOutcome::Committed), "A1");
-                    assert!(matches!(
-                        state,
-                        ApplicationContributionState::Committed { .. }
-                    ));
-                }
-                ContributionRule::Replay => {
-                    assert_eq!(result, Ok(ApplicationContributionOutcome::Replayed), "A2");
-                }
-                ContributionRule::SameFingerprintDifferentInput => {
-                    assert_eq!(result, Err(ApplicationContributionError::Conflict), "A3");
-                }
-                ContributionRule::DifferentFingerprint => {
-                    assert_eq!(result, Err(ApplicationContributionError::Conflict), "A4");
-                }
-                ContributionRule::NotRequired => {
-                    assert_eq!(result, Err(ApplicationContributionError::NotRequired), "A5");
-                }
-                ContributionRule::EmptyFingerprint => {
-                    assert_eq!(
-                        result,
-                        Err(ApplicationContributionError::EmptyFingerprint),
-                        "A6"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn frozen_application_receipt_cases_follow_the_decision_table() {
-        // Cause graph: after input consumption, exact plan+input fingerprints
-        // replay; changing either cause conflicts; empty identity is invalid.
-        //
-        // | Rule | Plan fingerprint | Input fingerprint | Effect |
-        // |---|---|---|---|
-        // | F1 | same | same | Replayed |
-        // | F2 | same | different | Conflict |
-        // | F3 | different | any | Conflict |
-        // | F4 | empty | any | EmptyFingerprint |
-        let input = ApplicationSessionInput {
-            prompts: vec!["frozen".into()],
-            ..Default::default()
-        };
-        let receipt = ApplicationContributionReceipt::from_input("plan-a".into(), &input);
-        assert_eq!(
-            receipt.verify_replay("plan-a", &input),
-            Ok(ApplicationContributionOutcome::Replayed),
-            "F1"
-        );
-        assert_eq!(
-            receipt.verify_replay("plan-a", &ApplicationSessionInput::default()),
-            Err(ApplicationContributionError::Conflict),
-            "F2"
-        );
-        assert_eq!(
-            receipt.verify_replay("plan-b", &input),
-            Err(ApplicationContributionError::Conflict),
-            "F3"
-        );
-        assert_eq!(
-            receipt.verify_replay(" ", &input),
-            Err(ApplicationContributionError::EmptyFingerprint),
-            "F4"
-        );
     }
 }

@@ -741,7 +741,6 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
                     agent_id: "coder".into(),
                     model: "kimi-k2".into(),
                     runtime: Some("acp:custom".into()),
-                    application: None,
                     delegate_ids: Vec::new(),
                     toolsets: Vec::new(),
                     mounts: Vec::new(),

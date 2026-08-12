@@ -14,7 +14,7 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
         Arc::new(awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap());
     create(
         repo.as_ref(),
-        persisted("running-manifest", false, false, "running"),
+        persisted("running-manifest", false, "running"),
     )
     .await;
     let app = application(
@@ -78,11 +78,7 @@ async fn retryable_initial_realization_is_fenced_and_budgeted_durably() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
-    create(
-        repo.as_ref(),
-        persisted("retry-budget", false, false, "preparing"),
-    )
-    .await;
+    create(repo.as_ref(), persisted("retry-budget", false, "preparing")).await;
     let app = application_with_configuration(
         repo.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
@@ -167,11 +163,7 @@ async fn local_realization_uses_stable_owner_and_process_incarnation() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
-    create(
-        repo.as_ref(),
-        persisted("local-restart", false, false, "idle"),
-    )
-    .await;
+    create(repo.as_ref(), persisted("local-restart", false, "idle")).await;
     let configured = |owner: &str| SessionApplicationConfiguration {
         execution_placement: SessionExecutionPlacement::LocalWorker,
         local_realization_owner: owner.into(),
@@ -292,7 +284,7 @@ async fn resource_reference_projection_fails_closed_and_repairs_cas_losers() {
     let references = Arc::new(RecordingReferenceIndex::default());
     application.set_resource_reference_authority(references.clone(), Arc::new(UnusedFileCatalog));
 
-    let mut original = persisted("reference-fence", false, false, "idle");
+    let mut original = persisted("reference-fence", false, "idle");
     original.resources =
         awaken_session_contract::SessionResourceState::from_legacy(skill_resources("old"));
     create(repo.as_ref(), original).await;
@@ -391,7 +383,7 @@ async fn remote_realization_adopts_only_the_exact_legacy_resource_generation() {
         expires_at_unix_ms: u64::MAX,
     };
     for id in ["legacy-exact", "legacy-stale"] {
-        let mut session = persisted(id, false, false, "preparing");
+        let mut session = persisted(id, false, "preparing");
         session.resources =
             awaken_session_contract::SessionResourceState::from_legacy(file_resources(id));
         session.realization = Some(lease.clone());
@@ -471,7 +463,7 @@ async fn worker_placement_defers_live_effects_but_not_terminal_cleanup() {
             .expect("session repository"),
     );
     let worker_baseline = |id: &str, status: &str| {
-        let mut session = persisted(id, false, false, status);
+        let mut session = persisted(id, false, status);
         let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
         else {
             unreachable!("fixture is frozen")
@@ -532,7 +524,7 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
     );
-    let mut session = persisted("cleanup-recovery", false, false, "terminated");
+    let mut session = persisted("cleanup-recovery", false, "terminated");
     session.environment.set_resident("opaque-environment");
     create(repo.as_ref(), session).await;
 
@@ -611,7 +603,7 @@ async fn terminal_cleanup_f0_through_f6_recover_from_durable_phase() {
             .expect("session repository"),
     );
     let repo = Arc::new(FaultingSessionRepository::new(durable));
-    let mut session = persisted("cleanup-f0-f6", false, false, "terminated");
+    let mut session = persisted("cleanup-f0-f6", false, "terminated");
     session.environment.set_resident("opaque-environment");
     create(repo.as_ref(), session).await;
 
@@ -717,7 +709,7 @@ async fn terminal_fence_quiesces_before_freezing_concurrent_child() {
     );
     create(
         repo.as_ref(),
-        persisted("cleanup-concurrent-child", false, false, "terminated"),
+        persisted("cleanup-concurrent-child", false, "terminated"),
     )
     .await;
     let runtime = Arc::new(RecordingCleanupRuntime::default());
@@ -807,11 +799,7 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
             awaken_session_store::SqliteManagedSessionRepository::open(&path)
                 .expect("open Session authority"),
         );
-        create(
-            repo.as_ref(),
-            persisted(&session_id, false, false, "terminated"),
-        )
-        .await;
+        create(repo.as_ref(), persisted(&session_id, false, "terminated")).await;
         let runtime = Arc::new(RecordingCleanupRuntime::default());
         *runtime.delegated_snapshot.lock().unwrap() =
             awaken_session_contract::DelegatedRunSnapshot {
@@ -873,26 +861,24 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
 
 /// Cause/effect graph: C1 a baseline is frozen; C2 its explicit Runtime
 /// placement is Local or Worker; C3 a retained pre-placement row is marked
-/// LegacyUnspecified; C4 the process startup is local or registered;
-/// C5 an application contribution independently requires Worker custody.
+/// LegacyUnspecified; C4 the process startup is local or registered.
 /// The realization lease is intentionally absent from the causes: it is an
 /// assignment fence, never placement policy. Effects are E1 local physical
 /// realization or E2 dispatch-only Coordinator projection.
 ///
-/// | Rule | Frozen placement | Process placement | Application | Effect |
-/// |---|---|---|---|---|
-/// | P1 | preparing | any | n/a | E1 (not yet realizable) |
-/// | P2 | local | local/registered | absent | E1 |
-/// | P3 | worker | local/registered | absent | E2 |
-/// | P4 | local/worker | any | present | E2 |
-/// | P5 | legacy | local | absent | E1 |
-/// | P6 | legacy | registered | absent | E2 |
+/// | Rule | Frozen placement | Process placement | Effect |
+/// |---|---|---|---|
+/// | P1 | preparing | any | E1 (not yet realizable) |
+/// | P2 | local | local/registered | E1 |
+/// | P3 | worker | local/registered | E2 |
+/// | P4 | legacy | local | E1 |
+/// | P5 | legacy | registered | E2 |
 ///
-/// P5/P6 are the one-way upgrade interpretation for rows serialized before
+/// P4/P5 are the one-way upgrade interpretation for rows serialized before
 /// placement existed. New creation is separately asserted never to emit the
 /// legacy value.
 #[test]
-fn realization_owner_follows_the_application_placement_decision_table() {
+fn realization_owner_follows_the_frozen_placement_decision_table() {
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("session repository"),
@@ -915,22 +901,17 @@ fn realization_owner_follows_the_application_placement_decision_table() {
         },
     );
 
-    let frozen = |placement: SessionRuntimePlacement, application: bool| {
-        let mut value = persisted("placement", false, false, "idle");
+    let frozen = |placement: SessionRuntimePlacement| {
+        let mut value = persisted("placement", false, "idle");
         let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut value.baseline
         else {
             unreachable!("fixture is frozen")
         };
         baseline.runtime_placement = placement;
-        baseline.application =
-            application.then(|| awaken_session_contract::ApplicationContributionReceipt {
-                plan_fingerprint: "plan".into(),
-                input_fingerprint: "input".into(),
-            });
         value
     };
     let preparing = {
-        let mut value = frozen(SessionRuntimePlacement::Local, false);
+        let mut value = frozen(SessionRuntimePlacement::Local);
         let baseline = value.frozen_baseline().expect("frozen").clone();
         value.baseline = awaken_session_contract::SessionBaselineState::Preparing(
             awaken_session_contract::SessionCreationIntent {
@@ -950,7 +931,6 @@ fn realization_owner_follows_the_application_placement_decision_table() {
                     resources: Default::default(),
                     initial_mcp: Vec::new(),
                 },
-                application: awaken_session_contract::ApplicationContributionState::Absent,
             },
         );
         value
@@ -967,34 +947,11 @@ fn realization_owner_follows_the_application_placement_decision_table() {
 
     for (rule, value, local_expected, registered_expected) in [
         ("P1", preparing, false, false),
-        ("P1b", preparing_application, true, true),
+        ("P2", frozen(SessionRuntimePlacement::Local), false, false),
+        ("P3", frozen(SessionRuntimePlacement::Worker), true, true),
         (
-            "P2",
-            frozen(SessionRuntimePlacement::Local, false),
-            false,
-            false,
-        ),
-        (
-            "P3",
-            frozen(SessionRuntimePlacement::Worker, false),
-            true,
-            true,
-        ),
-        (
-            "P4a",
-            frozen(SessionRuntimePlacement::Local, true),
-            true,
-            true,
-        ),
-        (
-            "P4b",
-            frozen(SessionRuntimePlacement::Worker, true),
-            true,
-            true,
-        ),
-        (
-            "P5/P6",
-            frozen(SessionRuntimePlacement::LegacyUnspecified, false),
+            "P4/P5",
+            frozen(SessionRuntimePlacement::LegacyUnspecified),
             false,
             true,
         ),
@@ -1040,7 +997,7 @@ async fn publication_acknowledgement_follows_the_renewal_decision_table() {
     let current_expiry = u64::MAX - 1;
 
     let fixture = |id: &str| {
-        let mut session = persisted(id, false, false, "activating");
+        let mut session = persisted(id, false, "activating");
         let lease = awaken_session_contract::SessionRealizationLease {
             owner: "worker-a".into(),
             runtime_incarnation: "worker-a/boot-1".into(),
@@ -1220,7 +1177,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         started_at_unix_ms: 1,
     };
 
-    let mut recovering = persisted("running-realization", false, false, "running");
+    let mut recovering = persisted("running-realization", false, "running");
     recovering.activity_epoch = 1;
     recovering.running_interval = Some(interval("running-realization"));
     recovering.realization = Some(lease.clone());
@@ -1292,7 +1249,7 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
     assert_eq!(settled.execution, SessionExecutionState::Idle, "R2/E2");
     assert!(settled.running_interval.is_none(), "R2/E2");
 
-    let mut failed = persisted("running-realization-failed", false, false, "running");
+    let mut failed = persisted("running-realization-failed", false, "running");
     failed.activity_epoch = 1;
     failed.running_interval = Some(interval("running-realization-failed"));
     failed.realization = Some(lease.clone());

@@ -396,23 +396,18 @@ The first coherent slice is:
 6. route all Memory use through `MemoryRepository`, then remove blob/harvest;
 7. add activation reconciliation and resource-specific reclamation tests.
 
-### 2026-08-10 amendment: application contributors use typed Session inputs
+### 2026-08-12 amendment: all typed Session inputs are supplied before creation
 
-A claim-fenced `ApplicationSessionContribution` may contribute
-`SessionInputAttachment` values in addition to the inputs compiled from Agent
-defaults. The Session application resolves those attachments through the same
-`SessionInputResolver`, merges them into `ResolvedSessionResources` before the
-root compare-and-swap, and persists the resulting manifest with the frozen
-baseline.
+ADR-0075 removes the late Worker-authored input path. Agent defaults and direct
+Session attachments are resolved through the same `SessionInputResolver`
+before the Session root is inserted. The resulting
+`ResolvedSessionResources` is committed with the frozen baseline.
 
-The contributor carries logical resource identities only. A File contribution
-therefore contains a logical `FileId`; it never contains a Resources blob id, a
-storage URL, or a provider-specific `MountSource::File` key. Required
-replacements are explicit through `SessionInputAttachment::replaces`. An exact
-claim replay returns the frozen projection; a changed attachment under the same
-claim conflicts. Invalid identity, replacement, collision, or ownership is
-rejected before sandbox realization.
-
+Callers carry logical Resource identities only. A File input therefore contains
+a logical `FileId`; it never contains a Resources blob id, storage URL, or
+provider-specific mount key. Required replacements remain explicit through
+`SessionInputAttachment::replaces`. Invalid identity, replacement, collision,
+or ownership is rejected before physical realization.
 ## Consequences
 
 ### Positive

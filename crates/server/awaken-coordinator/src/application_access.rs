@@ -455,7 +455,6 @@ mod tests {
                     resources: Default::default(),
                     initial_mcp: Vec::new(),
                 },
-                application: awaken_session_contract::ApplicationContributionState::Absent,
             });
         session
     }

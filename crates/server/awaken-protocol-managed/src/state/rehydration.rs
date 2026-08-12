@@ -108,8 +108,8 @@ mod tests {
     #[tokio::test]
     async fn coordinator_rehydrate_does_not_adopt_a_worker_owned_environment() {
         // Cause/effect graph: C1 durable Session cache is cold; C2 an opaque
-        // Environment binding exists; C3 an immutable Runtime/application fact
-        // may require a Worker; C4 a legacy row may omit that fact and is resolved
+        // Environment binding exists; C3 an immutable Runtime placement may
+        // require a Worker; C4 a legacy row may omit that fact and is resolved
         // by the Session application's registered-Worker configuration; C5,
         // independently, the durable lease owner is absent, local, Worker-live,
         // or Worker-expired and cannot change placement; C6 MCP projection is
@@ -122,35 +122,27 @@ mod tests {
         //
         // | Rule | ownership | lease | MCP | Resource | local effects | read |
         // | R1 | local | absent/local | settled/required | stable/pending | none on read | yes |
-        // | R2 | application | any | settled/required | stable/pending | none | yes |
-        // | R3 | Environment WorkQueue only | any | settled/required | stable/pending | none on read | yes |
-        // | R4 | deployment-frozen Worker Runtime | any | settled/required | stable/pending | none | yes |
-        // | R5 | any | any | any | any | no adopt if no binding | yes |
-        // | R6 | legacy + registered process | any | settled/required | stable/pending | none | yes |
+        // | R2 | Environment WorkQueue | any | settled/required | stable/pending | none on read | yes |
+        // | R3 | deployment-frozen Worker Runtime | any | settled/required | stable/pending | none | yes |
+        // | R4 | any | any | any | any | no adopt if no binding | yes |
+        // | R5 | legacy + registered process | any | settled/required | stable/pending | none | yes |
         //
         // R1 is covered by `ensure_session_rehydrates_from_repo_after_cache_loss`;
         // R5 follows the same guarded branch and existing binding-absent cases.
-        // This test generates the complete external R2/R4/R6 cross-product with an adapter
+        // This test generates the complete external R3/R5 cross-product with an adapter
         // that fails if any Coordinator-local physical effect is attempted. An
         // Lease owner/liveness never overrides the frozen custody fact. R3 is
         // covered by local Session creation and Resource activation tests.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut cases = Vec::new();
-        for (owner_name, placement, application_contributed) in [
-            (
-                "application",
-                awaken_session_contract::SessionRuntimePlacement::Local,
-                true,
-            ),
+        for (owner_name, placement) in [
             (
                 "topology",
                 awaken_session_contract::SessionRuntimePlacement::Worker,
-                false,
             ),
             (
                 "legacy",
                 awaken_session_contract::SessionRuntimePlacement::LegacyUnspecified,
-                false,
             ),
         ] {
             for (lease_name, realization) in [
@@ -207,12 +199,6 @@ mod tests {
                         };
                         baseline.environment.self_hosted = false;
                         baseline.runtime_placement = placement;
-                        baseline.application = application_contributed.then(|| {
-                            awaken_session_contract::ApplicationContributionReceipt::from_input(
-                                "worker-plan".into(),
-                                &Default::default(),
-                            )
-                        });
                         persisted.realization = realization.clone();
                         create_session_fixture(repo.as_ref(), DEFAULT_SCOPE, persisted).await;
                         cases.push((id, mcp_recovery, resource_recovery));

@@ -834,7 +834,7 @@ async fn host_application_decorator_wraps_the_complete_session_boundary() {
 }
 
 #[tokio::test]
-async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
+async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     use awaken_provisioning_contract::{
         EnvValue, EnvVar, EnvVisibility, MountAccess, MountLifetime, MountRequirement, MountSource,
     };
@@ -864,21 +864,14 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
             awaken_runtime_contract::PlaintextBoundary::Worker,
             "test.worker",
         );
-        let input = awaken_session_contract::ApplicationSessionInput {
-            session_inputs: Vec::new(),
-            mounts: with_environment_inputs
-                .then(|| serde_json::to_value(&mount).unwrap())
-                .into_iter()
-                .collect(),
-            env: with_environment_inputs
-                .then(|| serde_json::to_value(&env).unwrap())
-                .into_iter()
-                .collect(),
-            prompts: vec![prompt.into()],
-            mcp_inputs: Vec::new(),
-            network_restriction: with_environment_inputs
-                .then_some(awaken_session_contract::SessionNetworkPolicy::None),
-        };
+        let mounts = with_environment_inputs
+            .then(|| serde_json::to_value(&mount).unwrap())
+            .into_iter()
+            .collect();
+        let env = with_environment_inputs
+            .then(|| serde_json::to_value(&env).unwrap())
+            .into_iter()
+            .collect();
         let baseline = awaken_session_contract::SessionBaseline::compile(
             awaken_session_contract::SessionBaselineInputs {
                 environment: awaken_session_contract::EnvironmentSnapshot {
@@ -909,17 +902,11 @@ async fn control_frozen_baseline_is_the_only_application_runtime_projection() {
                 agent_id: "agent".into(),
                 model: "model".into(),
                 runtime: None,
-                application: Some(
-                    awaken_session_contract::ApplicationContributionReceipt::from_input(
-                        "plan".into(),
-                        &input,
-                    ),
-                ),
                 delegate_ids: Vec::new(),
                 toolsets: Vec::new(),
-                mounts: input.mounts,
-                env: input.env,
-                prompts: input.prompts,
+                mounts,
+                env,
+                prompts: vec![prompt.into()],
             },
         );
         awaken_session_contract::FrozenSessionProjection {
@@ -3240,7 +3227,6 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             agent_id: "assistant".into(),
             model: "stub".into(),
             runtime: None,
-            application: None,
             delegate_ids: Vec::new(),
             toolsets: Vec::new(),
             mounts: Vec::new(),
@@ -6628,8 +6614,7 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
 fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() {
     // Cause/effect graph: C1 the request entered the Session application port;
     // C2 only a Resource manifest exists; C3 a child Run is parent-mediated.
-    // Effects: E1 the root dispatch names its own Session even before an
-    // Application contribution can freeze its Environment; E2 an ordinary
+    // Effects: E1 the root dispatch names its already-frozen Session; E2 an ordinary
     // resource-bearing Run remains ordinary; E3 a child retains the parent
     // Session pointer. C1 and C2 are mutually exclusive test fixtures here; C3 is owned by
     // `child_dispatch_reuses_publication_pinned_model_candidates`.

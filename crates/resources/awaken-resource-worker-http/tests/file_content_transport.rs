@@ -94,7 +94,7 @@ fn frozen_application_session(
     let mut resource_state = awaken_session_contract::SessionResourceState::default();
     resource_state
         .prepare(session_id, resources(file_id))
-        .expect("prepare application Session resources");
+        .expect("prepare Worker Session resources");
     awaken_session_contract::PersistedSession {
         session_id: session_id.into(),
         revision: Default::default(),
@@ -107,10 +107,6 @@ fn frozen_application_session(
                     agent_id: "agent".into(),
                     model: "model".into(),
                     runtime: None,
-                    application: Some(awaken_session_contract::ApplicationContributionReceipt {
-                        plan_fingerprint: "plan".into(),
-                        input_fingerprint: "input".into(),
-                    }),
                     delegate_ids: Vec::new(),
                     toolsets: Vec::new(),
                     mounts: Vec::new(),
@@ -341,13 +337,12 @@ async fn exact_file_content_is_scope_and_claim_fenced_and_digest_verified() {
     assert!(broken.to_string().contains("503"), "F9: {broken}");
 }
 
-/// An application contribution can freeze its Session Resource generation only
-/// after the durable Run was enqueued. The Coordinator must therefore authorize
-/// that exact generation from the durable Session aggregate, while preserving
+/// A Worker Session authorizes its exact frozen Resource generation from the
+/// durable Session aggregate, while preserving
 /// the same claim, Workspace, Worker-incarnation, realization-lease, and File
 /// fences used by an inline dispatch envelope.
 #[tokio::test]
-async fn application_session_file_content_uses_its_claimed_frozen_generation() {
+async fn worker_session_file_content_uses_its_claimed_frozen_generation() {
     let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
     let digest = store.put(b"application-file").await.unwrap();
     store
@@ -404,7 +399,7 @@ async fn application_session_file_content_uses_its_claimed_frozen_generation() {
             Arc::new(HeaderWorkerAuthenticator),
         )
         .with_worker_directory(directory)
-        .with_application_sessions(sessions),
+        .with_session_repository(sessions),
     );
     let address = support::serve(worker_file_content_router(service)).await;
     let source = HttpFileContentSource::new(

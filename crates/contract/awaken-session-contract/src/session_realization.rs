@@ -8,9 +8,44 @@
 use async_trait::async_trait;
 
 use crate::{
-    FrozenSessionProjection, McpAttachmentRealizer, McpGenerationRef, McpRealizationReceipt,
-    RunError, SessionRealizationLease, StageMcpAttachment,
+    McpAttachmentRealizer, McpGenerationRef, McpRealizationReceipt, RunError,
+    SessionRealizationLease, StageMcpAttachment,
 };
+
+/// Exact durable Session projection consumed by local and remote realization.
+/// A Worker may cache it only as rebuildable execution input; the Session
+/// aggregate remains the sole authority.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FrozenSessionProjection {
+    pub workspace_id: String,
+    pub revision: crate::SessionRevision,
+    pub baseline: crate::SessionBaseline,
+    #[serde(default)]
+    pub environment: crate::SessionEnvironmentState,
+    #[serde(default)]
+    pub resource_revision: u64,
+    pub resources: crate::ResolvedSessionResources,
+    #[serde(default)]
+    pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+    pub mcp: Vec<crate::SessionMcpAttachment>,
+}
+
+impl FrozenSessionProjection {
+    #[must_use]
+    pub fn session_init(&self) -> crate::SessionInit {
+        crate::SessionInit {
+            workspace_id: self.workspace_id.clone(),
+            agent_id: self.baseline.agent_id.clone(),
+            delegate_ids: self.baseline.delegate_ids.clone(),
+            toolsets: Some(self.toolsets.clone()),
+            resource_revision: self.resource_revision,
+            resources: self.resources.clone(),
+            model: Some(self.baseline.execution_model_ref.clone()),
+            runtime: self.baseline.runtime.clone(),
+            environment: self.baseline.environment.clone(),
+        }
+    }
+}
 
 /// Canonical Session-realization lease boundary. A lease is half-open: it is
 /// live strictly before its expiry and stale at the exact expiry millisecond.
@@ -402,19 +437,6 @@ pub async fn drive_session_realization(
         }
     }
     Err(SessionRealizationDriveError::DidNotConverge)
-}
-
-/// One application service is installed behind Worker transport. This
-/// supertrait prevents contribution and realization from being accidentally
-/// wired to different Session authorities.
-pub trait ApplicationSessionControl:
-    crate::ApplicationSessionContributionApi + SessionRealizationControl
-{
-}
-
-impl<T> ApplicationSessionControl for T where
-    T: crate::ApplicationSessionContributionApi + SessionRealizationControl
-{
 }
 
 #[cfg(test)]

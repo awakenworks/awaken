@@ -167,7 +167,7 @@ impl SessionRuntime for ContinuationRuntime {
 }
 
 fn generated_session(id: &str) -> PersistedSession {
-    let mut session = persisted(id, false, false, "idle");
+    let mut session = persisted(id, false, "idle");
     let baseline = match &mut session.baseline {
         awaken_session_contract::SessionBaselineState::Frozen(baseline) => baseline,
         _ => unreachable!(),

@@ -14,6 +14,10 @@
   contracts: unreachable MCP staging is retryable `503`, Host executors cannot
   attest `inference_geo=us`, and `/v1/models` is populated only after Provider
   discovery is frozen into an executable Agent publication.
+- **Consolidation**: Accepted ADR-0075 and removed the late Worker-authored
+  Session-input path. Complete inputs now freeze before insertion, self-hosted
+  Sessions always use the Environment WorkQueue, and Workers realize only
+  committed Session truth.
 
 ## 2026-08-10
 
@@ -43,7 +47,7 @@
 - **Correction**: ADR-0066/0067 remain accepted target directions, but their
   feature slices are now gated by a contract-closure Slice 0. The correction
   freezes the ADR-0051 scope envelope, consumed preparation intent,
-  claim-fenced Worker-to-Control application contribution, canonical Managed
+  the now-superseded late Worker-to-Control Session-input design, canonical Managed
   MCP full replacement, Session realization lease, replace/tombstone root CAS,
   sealed payload resolver, dispatch claim-epoch credential binding, exact OAuth
   refresh/reseal access, and planned-versus-actual realization split. Previous
@@ -54,7 +58,7 @@
 
 - **Update**: Accepted ADR-0067 as development-ready for Workload/Worker realization: CredentialAccess separates material source from recipient-bound envelope, Environment/attempt profile requests one exact allowed holder, MCP generation or RunAttempt pins it, and failure never changes holders. Automatic LLM Vault and Platform realization remain separately gated.
 
-- **Update**: Accepted ADR-0066 as development-ready: one root mutation atomically owns immutable baseline, existing Resource state, MCP-only generations, idempotency, and outbox; Agent/Session/application MCP share one normalizer; exact generations stage invisibly, CAS Active, publish, drain, and recover. Generic Service/public realizer work remains deferred until old MCP authorities are deleted.
+- **Update**: Accepted ADR-0066 as development-ready: one root mutation atomically owns immutable baseline, existing Resource state, MCP-only generations, idempotency, and outbox. ADR-0075 later removed its late Worker-input portion; exact generations still stage invisibly, CAS Active, publish, drain, and recover.
 
 - **Update**: Amended ADR-0062 with the hosted configured-upstream composition,
   same-model complete-binding fallback semantics, and canonical Worker realization

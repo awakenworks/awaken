@@ -46,7 +46,6 @@ fn session() -> PersistedSession {
                     agent_id: "assistant".into(),
                     model: "model".into(),
                     runtime: None,
-                    application: None,
                     delegate_ids: Vec::new(),
                     toolsets: Vec::new(),
                     mounts: Vec::new(),

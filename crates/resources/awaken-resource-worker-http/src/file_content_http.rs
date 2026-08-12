@@ -35,7 +35,7 @@ pub struct WorkerFileContentService {
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
-    application_sessions: Option<Arc<dyn awaken_session_contract::ManagedSessionRepository>>,
+    session_repository: Option<Arc<dyn awaken_session_contract::ManagedSessionRepository>>,
 }
 
 impl WorkerFileContentService {
@@ -50,7 +50,7 @@ impl WorkerFileContentService {
             dispatch,
             authenticator,
             directory: None,
-            application_sessions: None,
+            session_repository: None,
         }
     }
 
@@ -60,15 +60,15 @@ impl WorkerFileContentService {
         self
     }
 
-    /// Install the durable Session authority used when an application
-    /// contribution freezes resources after the Run was enqueued. The live
-    /// claim and exact realization lease still fence every read.
+    /// Install the durable Session authority used to validate a claimed frozen
+    /// Resource generation. The live claim and exact realization lease still
+    /// fence every read.
     #[must_use]
-    pub fn with_application_sessions(
+    pub fn with_session_repository(
         mut self,
         sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
     ) -> Self {
-        self.application_sessions = Some(sessions);
+        self.session_repository = Some(sessions);
         self
     }
 }
@@ -235,7 +235,7 @@ async fn application_session_file_is_frozen(
     now_ms: u64,
 ) -> bool {
     let (Some(sessions), Some(session_id), Some(identity)) = (
-        service.application_sessions.as_ref(),
+        service.session_repository.as_ref(),
         dispatch.session_thread_id.as_ref(),
         request.identity.as_ref(),
     ) else {
