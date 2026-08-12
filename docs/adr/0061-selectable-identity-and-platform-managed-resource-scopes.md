@@ -403,3 +403,21 @@ construct an OAuth route. Cloud accepts it only when the origin and leading
 Workspace path equal the authenticated tenant's current Awaken coordinates,
 then returns through IAM's existing browser PKCE adapter. Invalid or foreign
 continuations stop at Products.
+
+### Amendment (2026-08-12): hosted publication does not impersonate a user
+
+A hosted Control process authenticates PDP calls with its projected workload
+credential and authenticates browser requests with each request bearer. It has
+no cached interactive Cloud credential and therefore must not construct the
+local brokered-inference fallback client merely because Cloud models are
+published. A hosting composition that injects the authoritative model resolver
+and catalog discovery uses those ports directly; the interactive broker client
+remains confined to the local published-provider composition that materializes
+models on behalf of its signed-in user.
+
+Likewise, a split Coordinator never constructs that interactive client: it owns
+Session and Run orchestration while the hosted Worker/Gateway boundary owns
+model realization. AllInOne retains the existing brokered client because it
+co-locates Control and runtime materialization. Missing hosted catalog input is
+represented as unavailable discovery, never repaired with a workload token
+masquerading as a user token.

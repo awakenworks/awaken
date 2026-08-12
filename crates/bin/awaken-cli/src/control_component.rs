@@ -144,7 +144,7 @@ pub(super) async fn prepare_control_routers(
         .expect("Control process requires explicit Worker observation wiring")
         .source;
     let brokered_client = brokered_inference_client(
-        cloud_models_enabled,
+        cloud_models_enabled && model_supply.needs_interactive_brokered_client(),
         remote_iam.as_ref(),
         process.cloud_api_base_url.as_deref(),
         &execution_workspace,

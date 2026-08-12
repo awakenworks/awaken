@@ -125,6 +125,12 @@ enum PublicationModelSupply {
     },
 }
 
+impl PublicationModelSupply {
+    fn needs_interactive_brokered_client(&self) -> bool {
+        matches!(self, Self::PublishedProviders)
+    }
+}
+
 /// Concrete wiring produced by one legal startup mode. Keeping these four
 /// values together prevents a provider resolver from being paired with a host
 /// executor or a Host publication from receiving a credential materializer.
@@ -1698,6 +1704,27 @@ mod process_role_surface_tests {
             self.called.store(true, Ordering::SeqCst);
             Err(awaken_config_service::PublicationResolutionError::MissingPrimary)
         }
+    }
+
+    #[test]
+    fn hosted_publication_does_not_require_an_interactive_broker_client() {
+        // Cause/effect decision table: C1=published-provider composition,
+        // C2=hosted resolver composition. R1(C1)->interactive broker fallback;
+        // R2(C2)->no fallback because the host-supplied resolver/catalog are
+        // authoritative and a projected workload token is not a user token.
+        assert!(
+            PublicationModelSupply::PublishedProviders.needs_interactive_brokered_client(),
+            "R1"
+        );
+        assert!(
+            !PublicationModelSupply::HostedPublication {
+                resolver: Arc::new(RecordingHostedResolver {
+                    called: Arc::new(AtomicBool::new(false)),
+                }),
+            }
+            .needs_interactive_brokered_client(),
+            "R2"
+        );
     }
 
     /// Causal graph:
