@@ -46,9 +46,11 @@ restriction, Resources, and initial MCP candidates before invoking
 `SessionApplication::create_session`. `SessionCreationIntent::finalize`
 normalizes MCP precedence and compiles the baseline before the root is inserted.
 
-`Preparing` remains a short-lived durable recovery state inside the one create
-transaction sequence. It is not an invitation for another actor to author
-desired state. A Worker cannot add or replace Session inputs.
+The first durable insert already contains the consumed complete intent, frozen
+baseline, initial Resource/MCP state, and budget policy. `Preparing` is only the
+execution state awaiting physical realization; there is no partially-authored
+creation row and no post-insert finalization CAS. A Worker cannot add or replace
+Session inputs.
 
 ### D2: Environment WorkQueue is the sole Session Worker placement path
 
@@ -58,7 +60,9 @@ application registration, or the presence of a local Worker decorator.
 
 The stable Work id is the long-lived Session execution ownership coordinate.
 Enqueue replay is idempotent and reconciliation reconstructs a missing
-projection from the durable Session.
+projection from the durable Session. Reconciliation never resurrects a stopped
+item: only a newly admitted Session event may explicitly wake it. A terminal
+Session retires the item and clears its lease.
 
 ### D3: a Run claim is an attempt fence, not another placement decision
 
@@ -66,7 +70,10 @@ When Awaken's registered Worker transport executes a Run for that Session, the
 Run claim scopes one attempt under the already-selected Session Work. It proves
 the exact Worker incarnation and epoch allowed to mutate physical realization.
 It does not create Session desired state and does not compete with WorkQueue
-placement.
+placement. Registered dispatch atomically acquires that exact Session item from
+the same `WorkQueue`; an official/custom Worker holding it wins, and the
+registered attempt is rejected. Run claim checks and realization renewal renew
+the same Work lease, while every realization phase verifies the exact owner.
 
 ### D4: Worker Control realizes only committed truth
 
@@ -94,7 +101,7 @@ Client / product adapter
         | complete create command
         v
 SessionApplication -------------------- ManagedSessionRepository
-        | finalize + root CAS                  one Session truth
+        | compile, then one insert              one Session truth
         |
         +-- local Environment ----------> local realization
         |
@@ -102,10 +109,12 @@ SessionApplication -------------------- ManagedSessionRepository
                                               |
                                               | Work lease
                                               v
-                                      custom / local Worker
-                                              |
-                                              | optional Run claim
-                                              v
+                                      custom Worker or registered Worker
+                                              |             |
+                                standard Work API       exact Work acquire
+                                                            + Run claim
+                                              \             /
+                                               v           v
 SessionRealizationControl <----------- Worker Runtime Host
         | frozen projection                   |
         `------------------------------> drive_session_realization
@@ -124,20 +133,22 @@ create trigger
   -> resolve Agent + exact Environment revision
   -> normalize all initial MCP candidates
   -> compile immutable baseline
-  -> insert Session root in Preparing
-  -> finalize Resources/MCP and freeze root by CAS
+  -> insert one complete frozen Session root (execution=Preparing)
   -> local: realize and acknowledge -> Idle
      self-hosted: enqueue stable Work item -> Preparing until Worker realization
 
 Worker trigger
   -> claim Work
-  -> optionally claim a Run attempt
-  -> authenticate Worker incarnation and verify live epoch
+  -> registered adapter only: atomically acquire the exact same Work item
+  -> optionally claim a subordinate Run attempt
+  -> authenticate Worker incarnation and verify live Work + Run epochs
   -> resume frozen Session projection
   -> acquire per-Session realization admission
   -> stage physical effects
   -> activate/publish
   -> acknowledge exact receipts -> Idle/Running
+  -> later admitted event: explicitly wake stopped Work
+  -> terminal Session: retire Work and clear its lease
 ```
 
 Failure and retry rules:
@@ -150,8 +161,49 @@ Failure and retry rules:
   generation receipts;
 - a physical effect failure records the existing realization failure state and
   is retried only through the same phase driver;
-- archive/delete/termination remains the sole terminal Session path and stops
-  further Work projection.
+- archive/delete/termination remains the sole terminal Session path, retires
+  Work, and is retried by the same reconciliation scan after response loss.
+
+## FMECA and cause-effect analysis
+
+The cause graph has four serial authority gates: complete durable Session truth
+(`S`), one Environment Work lease (`W`), an optional subordinate Run claim
+(`R`), and one realization lease/generation (`P`). A physical effect is legal
+only when `S ∧ W ∧ R ∧ P` is true; Cloud/non-Session execution removes `W`
+from the conjunction rather than manufacturing an empty Work lease. Terminal
+truth makes every execution gate false and drives Work retirement.
+
+Severity (S), occurrence (O), and detection difficulty (D) use 1–10 scales;
+RPN is the pre-mitigation product. The listed mitigation is part of the
+authoritative path, not a compensating parallel mechanism.
+
+| Failure mode | Local effect / end effect | S/O/D · RPN | Detection | Authoritative mitigation and terminal outcome |
+|---|---|---:|---|---|
+| Incomplete or conflicting create input | orphaned or ambiguous desired state | 9/3/6 · 162 | complete-create decision tests | normalize/compile before persistence; first insert is already frozen; invalid input leaves no row |
+| Crash or lost response after Session insert | caller retries while realization is absent | 8/4/4 · 128 | repository idempotency and injected later-CAS failure | replay the same root/key; reconciler projects the frozen truth; no partial creation state exists |
+| Work enqueue outage or lost response | self-hosted Session remains Preparing | 8/4/3 · 96 | dispatch failure classification and reconciliation report | return `session_work_dispatch_failed`; stable idempotent Work id is retried; never report false readiness |
+| Reconciler revives completed Work | idle Worker loops forever | 7/4/5 · 140 | stopped/enqueue/wake conformance rule | idempotent enqueue preserves `Stopped`; only a driving event calls explicit wake |
+| Missing identity or wrong Worker polls/acknowledges/stops/heartbeats Work | anonymous owners collide or current owner is disrupted | 10/3/5 · 150 | missing-header HTTP 400, cross-backend owner-fence tests, and HTTP 412 | require the standard Worker id before claim; atomically compare lease owner on every mutation; reject without state change |
+| Worker crashes or a response is replayed after reclaim | two Workers execute one Session | 10/4/5 · 200 | expiry/epoch conformance | expiry returns item to queued; next claim increments monotonic epoch; stale owner/epoch cannot mutate |
+| Official/custom and registered Workers race | parallel execution paths | 10/3/6 · 180 | exact acquire contention test | both contend in the same WorkQueue transaction; exactly one lease wins; loser fails before Session Control |
+| Run is claimed without its Session Work, or Work owner changes | subordinate attempt escapes placement authority | 10/3/6 · 180 | signed Worker rules T17–T19 | resume atomically acquires exact Work; claim checks/renewal extend it; every phase verifies exact incarnation owner |
+| Run claim expires or is replaced mid-operation | stale attempt commits effects | 10/4/4 · 160 | stale/expired signed claim tests | exact owner+epoch guard is held across admission/commit; check before and after realization assignment; reject stale attempt |
+| Realization lease/generation is stale | stale physical Resource/MCP publication | 10/3/4 · 120 | realization generation and receipt tests | phase commands require live exact realization lease and generation receipts; stale writes are no-ops/rejected |
+| Physical effect succeeds but acknowledgement is lost | duplicate provisioning/publication | 8/4/4 · 128 | phase replay tests | replay the same phase/generation and compare exact receipts; publish only post-CAS Active truth |
+| Session becomes terminal while Work is active | leaked Work or post-terminal execution | 10/3/5 · 150 | terminal retirement and stale settlement tests | terminal root CAS fences activity; coordinator retires Work and clears lease; reconciler retries cleanup |
+| Work/repository storage is unavailable, corrupt, or its epoch is exhausted | authority cannot be proven or a fence could repeat | 9/3/3 · 81 | typed storage-failure and epoch-boundary tests | fail closed with service/storage error; never substitute empty ownership, zero, or a saturated epoch; retry outages, quarantine corrupt Session truth |
+| Ordinary Cloud or non-Session Run reaches shared verifier | false rejection from an unrelated Work boundary | 6/4/5 · 120 | authority scope rules W1–W3 | missing/Cloud Session returns `NotRequired`; only frozen self-hosted Session requires Work ownership |
+
+The reduced decision table for the interacting ownership causes is:
+
+| Rule | Frozen self-hosted Session | Work owner exact/live | Run exact/live | Realization exact/live | Effect |
+|---|---|---|---|---|---|
+| F1 | no | n/a | exact | exact | execute without Work adapter (Cloud/non-Session) |
+| F2 | yes | no | any | any | reject before physical effects |
+| F3 | yes | yes | no | any | reject before physical effects |
+| F4 | yes | yes | yes | no | reject phase before physical effects |
+| F5 | yes | yes | yes | yes | execute one phase and persist exact receipt |
+| F6 | terminal | any | any | any | reject execution; retire Work |
 
 ## Implementation classification
 
@@ -160,8 +212,8 @@ Failure and retry rules:
 - `ManagedSessionRepository`, root revision CAS, lifecycle outbox, Resource
   state, MCP generation state, and `SessionRealizationLease` remain the durable
   authorities.
-- Environment `WorkQueue`, its HTTP API, stores, lease rules, and reconciliation
-  remain the placement mechanism.
+- Environment `WorkQueue`, its HTTP API, stores, and one-active-item rule remain
+  the placement mechanism.
 - `DispatchQueue`, Worker authentication, recovery, and the backend executor
   registry remain the attempt mechanisms.
 - `drive_session_realization` remains the sole physical phase driver.
@@ -171,14 +223,21 @@ Failure and retry rules:
 - `SessionCreationIntent` contains only complete Control inputs and finalizes in
   one step.
 - profiled/Dream creation supplies local inputs up front.
-- every eligible self-hosted Session now uses `needs_work_dispatch` without a
-  caller-specific exclusion.
+- Session creation inserts complete frozen truth once; every eligible
+  self-hosted Session uses `needs_work_dispatch` without a caller-specific
+  exclusion.
+- Work mutations are owner-fenced; stopped Work has explicit wake semantics and
+  terminal Work has coordinator-owned retirement.
+- registered dispatch acquires/renews/verifies the exact Session Work owner
+  before using its existing Run and realization fences.
 - Worker Control naming and transport express frozen Session realization.
 
 ### Added
 
-No new runtime mechanism was added. Only decision-table coverage and this
-canonical decision record are new.
+`SessionWorkLeaseAuthority` is a narrow internal adapter over the existing
+`WorkQueue`; `WorkMutationResult` exposes its existing atomic mutation outcome.
+Neither adds storage, a registry, a poller, or another source of truth. New
+decision-table coverage and this canonical decision record verify the adapter.
 
 ### Removed
 

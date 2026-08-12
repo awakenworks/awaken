@@ -218,6 +218,24 @@ impl SessionApplication {
         if recovered.session.is_terminal() {
             return Err(RunError::bad_request("Session no longer accepts new Runs"));
         }
+        if let Some(baseline) = recovered
+            .session
+            .frozen_baseline()
+            .filter(|baseline| baseline.environment.self_hosted)
+        {
+            self.environments
+                .wake_session_work(
+                    &baseline.environment.environment_id,
+                    &recovered.session.session_id,
+                )
+                .await
+                .map_err(|error| {
+                    RunError::unavailable_classified(
+                        "session_work_wake_failed",
+                        format!("Session Work could not be awakened: {error}"),
+                    )
+                })?;
+        }
         if !self.requires_external_realization(&recovered.session)
             && recovered.session.execution != awaken_session_contract::SessionExecutionState::Idle
         {

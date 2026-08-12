@@ -69,7 +69,7 @@ proptest! {
         for i in 0..n { block(q.enqueue_session("env", &format!("s{i}"))).expect("enqueue"); }
         let first = block(q.claim("env", "w", 0)).expect("claim query").expect("first");
         prop_assert!(block(q.claim("env", "w", 0)).expect("claim").is_none(), "capped while active");
-        block(q.stop("env", &first.id)).expect("stop");
+        block(q.stop("env", &first.id, "w")).expect("stop");
         prop_assert!(block(q.claim("env", "w", 0)).expect("claim").is_some(), "next claimable after stop");
         // No item was lost or duplicated.
         prop_assert_eq!(block(q.list("env")).expect("list").len(), n);

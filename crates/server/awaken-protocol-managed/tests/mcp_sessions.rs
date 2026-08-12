@@ -589,8 +589,8 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
         assert_eq!(observed.len(), 1, "A1");
         assert_eq!(
             observed[0].revision,
-            awaken_session_contract::SessionRevision(3),
-            "A1 insert(Preparing) -> finalize generation 1 -> claim all commit before Runtime I/O"
+            awaken_session_contract::SessionRevision(2),
+            "A1 one complete frozen insert -> claim generation 1, all before Runtime I/O"
         );
         assert!(matches!(
             observed[0].baseline,

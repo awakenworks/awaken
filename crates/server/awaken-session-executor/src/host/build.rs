@@ -405,7 +405,7 @@ impl SharedHost {
             acp_tool_exporter: None,
             remote_attempt_executor: None,
             remote_credential_realization: Default::default(),
-            application_attempt_decorator: None,
+            attempt_decorator: None,
             session_control: None,
             provider: LocalProvider::new(sandbox_root.clone()),
             session_provider: crate::session_environment::SessionEnvironmentProvider::workdir(
@@ -570,11 +570,8 @@ impl SharedHost {
     /// application can adapt envelopes, capabilities, and business results
     /// around it, but cannot replace backend selection.
     #[must_use]
-    pub fn with_application_attempt_decorator(
-        mut self,
-        decorator: super::AttemptExecutorDecorator,
-    ) -> Self {
-        self.application_attempt_decorator = Some(decorator);
+    pub fn with_attempt_decorator(mut self, decorator: super::AttemptExecutorDecorator) -> Self {
+        self.attempt_decorator = Some(decorator);
         self
     }
 

@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_session_contract::work_queue::{
-    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats, WorkItem, WorkPayload,
-    WorkQueue, WorkQueueError, WorkState,
+    HeartbeatResult, LeaseHeartbeat, LeaseReceipt, OBJECT_AT, QueueStats, SessionWorkLease,
+    WorkItem, WorkMutationResult, WorkPayload, WorkQueue, WorkQueueError, WorkState,
 };
 
 use super::{LeaseBook, heartbeat_at};
@@ -78,6 +78,35 @@ impl InMemoryWorkQueue {
             _ => None,
         }
     }
+
+    fn current_session_lease(
+        &self,
+        env_id: &str,
+        session_id: &str,
+        now_ms: u64,
+    ) -> Option<SessionWorkLease> {
+        let work = self
+            .works
+            .lock()
+            .unwrap()
+            .values()
+            .find(|work| {
+                work.environment_id == env_id
+                    && work.state == WorkState::Active
+                    && matches!(&work.data, WorkPayload::Session { id } if id == session_id)
+            })
+            .cloned()?;
+        self.book
+            .authority(&work.id, now_ms)
+            .map(|(owner, epoch, expires_at_unix_ms)| SessionWorkLease {
+                work_id: work.id,
+                environment_id: env_id.to_string(),
+                session_id: session_id.to_string(),
+                owner,
+                epoch,
+                expires_at_unix_ms,
+            })
+    }
 }
 
 #[async_trait]
@@ -97,6 +126,44 @@ impl WorkQueue for InMemoryWorkQueue {
             .map(|work| work.id.clone())
         {
             return Ok(existing);
+        }
+        let id = self.next_id();
+        works.insert(
+            id.clone(),
+            WorkItem {
+                id: id.clone(),
+                environment_id: env_id.to_string(),
+                data: WorkPayload::Session {
+                    id: session_id.to_string(),
+                },
+                metadata: BTreeMap::new(),
+                state: WorkState::Queued,
+                acknowledged_at: None,
+                latest_heartbeat_at: None,
+                started_at: None,
+                stop_requested_at: None,
+                stopped_at: None,
+            },
+        );
+        Ok(id)
+    }
+
+    async fn wake_session(&self, env_id: &str, session_id: &str) -> Result<String, WorkQueueError> {
+        let mut works = self.works.lock().unwrap();
+        if let Some(existing) = works.values_mut().find(|work| {
+            work.environment_id == env_id
+                && matches!(&work.data, WorkPayload::Session { id } if id == session_id)
+        }) {
+            if existing.state == WorkState::Stopped {
+                existing.state = WorkState::Queued;
+                existing.acknowledged_at = None;
+                existing.latest_heartbeat_at = None;
+                existing.started_at = None;
+                existing.stop_requested_at = None;
+                existing.stopped_at = None;
+                self.book.release(&existing.id);
+            }
+            return Ok(existing.id.clone());
         }
         let id = self.next_id();
         works.insert(
@@ -208,12 +275,14 @@ impl WorkQueue for InMemoryWorkQueue {
         else {
             return Ok(None);
         };
+        self.book
+            .own(&wid, worker_id)
+            .map_err(|error| WorkQueueError::Storage(error.into()))?;
         let w = works.get_mut(&wid).expect("just found");
         w.state = WorkState::Active;
         w.started_at = Some(OBJECT_AT.to_string());
         w.latest_heartbeat_at = None;
         self.book.lease(&wid, now_ms);
-        self.book.own(&wid, worker_id);
         Ok(Some(w.clone()))
     }
 
@@ -239,12 +308,26 @@ impl WorkQueue for InMemoryWorkQueue {
         }
         self.claim(env_id, worker_id, now_ms).await
     }
-    async fn ack(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError> {
-        Ok(self.with_owned(env_id, wid, |w| {
-            w.acknowledged_at = Some(OBJECT_AT.to_string());
-            w.state = w.state.after_ack();
-            w.clone()
-        }))
+    async fn ack(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        if !self.book.is_owned_by(wid, worker_id) {
+            return Ok(if self.with_owned(env_id, wid, |_| ()).is_some() {
+                WorkMutationResult::PreconditionFailed
+            } else {
+                WorkMutationResult::NotFound
+            });
+        }
+        Ok(self
+            .with_owned(env_id, wid, |w| {
+                w.acknowledged_at = Some(OBJECT_AT.to_string());
+                w.state = w.state.after_ack();
+                WorkMutationResult::accepted(w.clone())
+            })
+            .unwrap_or(WorkMutationResult::NotFound))
     }
 
     async fn heartbeat(
@@ -289,17 +372,107 @@ impl WorkQueue for InMemoryWorkQueue {
             .unwrap_or(HeartbeatResult::NotFound))
     }
 
-    async fn stop(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError> {
+    async fn stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError> {
+        if !self.book.is_owned_by(wid, worker_id) {
+            return Ok(if self.with_owned(env_id, wid, |_| ()).is_some() {
+                WorkMutationResult::PreconditionFailed
+            } else {
+                WorkMutationResult::NotFound
+            });
+        }
         let Some(out) = self.with_owned(env_id, wid, |w| {
             w.stop_requested_at = Some(OBJECT_AT.to_string());
             w.stopped_at = Some(OBJECT_AT.to_string());
             w.state = w.state.after_stop();
             w.clone()
         }) else {
-            return Ok(None);
+            return Ok(WorkMutationResult::NotFound);
         };
         self.book.release(wid);
-        Ok(Some(out))
+        Ok(WorkMutationResult::accepted(out))
+    }
+
+    async fn retire_session(
+        &self,
+        env_id: &str,
+        session_id: &str,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        let wid = self
+            .works
+            .lock()
+            .unwrap()
+            .values()
+            .find(|work| {
+                work.environment_id == env_id
+                    && matches!(&work.data, WorkPayload::Session { id } if id == session_id)
+            })
+            .map(|work| work.id.clone());
+        let Some(wid) = wid else {
+            return Ok(None);
+        };
+        let item = self.with_owned(env_id, &wid, |work| {
+            work.stop_requested_at = Some(OBJECT_AT.to_string());
+            work.stopped_at = Some(OBJECT_AT.to_string());
+            work.state = WorkState::Stopped;
+            work.clone()
+        });
+        self.book.release(&wid);
+        Ok(item)
+    }
+
+    async fn acquire_session(
+        &self,
+        env_id: &str,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError> {
+        if let Some(lease) = self.current_session_lease(env_id, session_id, now_ms) {
+            if lease.owner != worker_owner {
+                return Ok(None);
+            }
+            self.book.lease(&lease.work_id, now_ms);
+            return Ok(self.current_session_lease(env_id, session_id, now_ms));
+        }
+        let work_id = self.enqueue_session(env_id, session_id).await?;
+        {
+            let mut works = self.works.lock().unwrap();
+            for (id, work) in works.iter_mut() {
+                if work.environment_id == env_id
+                    && work.state == WorkState::Active
+                    && !self.book.is_leased(id, now_ms)
+                {
+                    work.state = WorkState::Queued;
+                    work.latest_heartbeat_at = None;
+                    self.book.release(id);
+                }
+            }
+            if works
+                .values()
+                .any(|work| work.environment_id == env_id && work.state == WorkState::Active)
+            {
+                return Ok(None);
+            }
+            let Some(work) = works.get_mut(&work_id) else {
+                return Ok(None);
+            };
+            if !work.state.is_claimable() {
+                return Ok(None);
+            }
+            self.book
+                .own(&work_id, worker_owner)
+                .map_err(|error| WorkQueueError::Storage(error.into()))?;
+            work.state = WorkState::Active;
+            work.started_at = Some(OBJECT_AT.to_string());
+            work.latest_heartbeat_at = None;
+        }
+        self.book.lease(&work_id, now_ms);
+        Ok(self.current_session_lease(env_id, session_id, now_ms))
     }
 
     async fn update_metadata(
@@ -493,9 +666,10 @@ mod tests {
             "single active lease"
         );
         // Stopping the active one frees the lease for the next.
-        q.stop("env_a", &w1)
+        q.stop("env_a", &w1, "w")
             .await
             .expect("stop query")
+            .into_item()
             .expect("stop");
         assert!(
             q.claim("env_a", "w", 0).await.expect("claim").is_some(),
@@ -590,15 +764,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ack_transitions_queued_to_starting_and_stamps() {
+    async fn ack_is_fenced_to_the_worker_that_claimed_the_item() {
+        /* Cause/effect graph: C1 item is actively leased; C2 caller identity
+         * equals the lease owner. Effects: E1 exact owner acknowledgement is
+         * accepted and stamped; E2 a different owner is rejected without a
+         * state mutation. Rules A1=C1+C2->E1, A2=C1+!C2->E2. */
         let q = q();
         let id = q.enqueue_session("env_a", "s1").await.expect("enqueue");
+        q.claim("env_a", "worker-a", 0)
+            .await
+            .expect("claim query")
+            .expect("claim");
+        assert!(matches!(
+            q.ack("env_a", &id, "worker-b").await.expect("A2"),
+            WorkMutationResult::PreconditionFailed
+        ));
         let acked = q
-            .ack("env_a", &id)
+            .ack("env_a", &id, "worker-a")
             .await
             .expect("ack query")
+            .into_item()
             .expect("acked");
-        assert_eq!(acked.state, WorkState::Starting);
+        assert_eq!(acked.state, WorkState::Active);
         assert!(acked.acknowledged_at.is_some());
     }
 
@@ -628,14 +815,24 @@ mod tests {
             q.get("env_b", &id).await.expect("get").is_none(),
             "wrong env → none"
         );
-        assert!(q.ack("env_b", &id).await.expect("ack").is_none());
+        assert!(
+            q.ack("env_b", &id, "worker")
+                .await
+                .expect("ack")
+                .is_not_found()
+        );
         assert!(
             q.heartbeat("env_b", &id, "worker", 0, LeaseHeartbeat::unconditional())
                 .await
                 .expect("heartbeat")
                 .is_not_found()
         );
-        assert!(q.stop("env_b", &id).await.expect("stop").is_none());
+        assert!(
+            q.stop("env_b", &id, "worker")
+                .await
+                .expect("stop")
+                .is_not_found()
+        );
     }
 
     #[tokio::test]
@@ -708,9 +905,10 @@ mod tests {
             "oldest_queued_at persists while an item is still processing"
         );
         // Stop it → the queue is fully drained → null.
-        q.stop("env_a", &id)
+        q.stop("env_a", &id, "w")
             .await
             .expect("stop query")
+            .into_item()
             .expect("stop");
         assert!(
             q.stats("env_a", 0)

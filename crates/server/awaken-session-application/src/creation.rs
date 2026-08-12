@@ -5,8 +5,8 @@
 //! activation, lifecycle-fact commit, and WorkQueue projection ordering.
 
 use awaken_session_contract::{
-    CompiledSessionCreation, IdempotencyRecord, PersistedSession, RunError, SessionBaselineState,
-    SessionBudgetState, SessionCreationIntent, SessionMcpAttachmentSet, SessionMutationPayload,
+    CompiledSessionCreation, IdempotencyRecord, PersistedSession, RunError, SessionBudgetState,
+    SessionCreationIntent, SessionMcpAttachmentSet, SessionMutationPayload,
     SessionToolConfiguration,
 };
 
@@ -59,49 +59,36 @@ impl SessionCreationError {
 }
 
 impl SessionApplication {
-    async fn finalize_session_creation(
-        &self,
-        owner_scope: &str,
-        mut session: PersistedSession,
-        mut compiled: CompiledSessionCreation,
+    fn compile_session_root(
+        session_id: String,
+        title: Option<String>,
+        metadata: std::collections::BTreeMap<String, String>,
+        tools: SessionToolConfiguration,
+        budget: SessionBudgetState,
+        compiled: CompiledSessionCreation,
     ) -> Result<PersistedSession, SessionCreationError> {
-        if !matches!(session.baseline, SessionBaselineState::Preparing(_)) {
-            return Err(SessionCreationError::Unavailable(
-                "Session creation intent was already consumed".into(),
-            ));
-        }
         let holder = compiled
             .baseline
             .environment
             .credential_realization
             .mcp_holder
             .clone();
-        for input in session.resources.desired().inputs.iter().cloned() {
-            if !compiled.initial_resources.inputs.contains(&input) {
-                compiled.initial_resources = compiled
-                    .initial_resources
-                    .attach(input)
-                    .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
-            }
-        }
-        if compiled.initial_resources.skills.is_none() {
-            compiled.initial_resources.skills = session.resources.desired().skills.clone();
-        }
-        let mut resources = session.resources.clone();
-        if resources.pending.is_some() {
-            resources.revise_unattempted_pending(&session.session_id, compiled.initial_resources)
-        } else {
-            resources.prepare(&session.session_id, compiled.initial_resources)
-        }
-        .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
+        let mut resources = awaken_session_contract::SessionResourceState::default();
+        resources
+            .prepare(&session_id, compiled.initial_resources)
+            .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
         let mcp = SessionMcpAttachmentSet::from_initial(compiled.initial_mcp, Some(holder))
             .map_err(|error| SessionCreationError::Unavailable(error.to_string()))?;
-        session.baseline = SessionBaselineState::Frozen(compiled.baseline);
-        session.resources = resources;
-        session.mcp = mcp;
-        self.commit_resource_snapshot(owner_scope, session, "finalize-creation", Vec::new())
-            .await
-            .map_err(SessionCreationError::mutation)
+        Ok(PersistedSession::frozen_with_budget(
+            session_id,
+            compiled.baseline,
+            resources,
+            mcp,
+            title,
+            metadata,
+            tools,
+            budget,
+        ))
     }
 
     /// Create one Session through the only durable creation protocol.
@@ -121,17 +108,16 @@ impl SessionApplication {
         // Compile the complete intent before insert so invalid input can never
         // strand a durable Session waiting for a second authoring path.
         let compiled = intent
-            .clone()
             .finalize()
             .map_err(|error| RunError::bad_request(error.to_string()))?;
-        let mut persisted = PersistedSession::preparing_with_budget(
+        let mut persisted = Self::compile_session_root(
             session_id.clone(),
-            intent,
             title,
             metadata,
             tools,
             budget,
-        );
+            compiled,
+        )?;
         let payload = SessionMutationPayload::Replace(persisted.clone());
         let payload_hash = payload.stable_hash();
         persisted = self
@@ -147,9 +133,6 @@ impl SessionApplication {
             .await
             .map_err(SessionCreationError::mutation)?;
 
-        persisted = self
-            .finalize_session_creation(&owner_scope, persisted, compiled)
-            .await?;
         let realized = if self.requires_external_realization(&persisted) {
             self.install_dispatch_projection(&owner_scope, &persisted)
                 .await

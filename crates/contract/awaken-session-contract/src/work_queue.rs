@@ -244,6 +244,74 @@ pub struct WorkItem {
     pub stopped_at: Option<String>,
 }
 
+/// Durable authority currently binding one Session work item to one Worker.
+/// This value is intentionally not part of the Managed wire object: public
+/// workers use the standard header/heartbeat protocol, while Awaken's private
+/// Run ingress consumes it only as a subordinate ownership fence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionWorkLease {
+    pub work_id: String,
+    pub environment_id: String,
+    pub session_id: String,
+    /// Exact authenticated execution owner. For a registered Worker this is
+    /// its incarnation-qualified lease owner, not the reusable display id.
+    pub owner: String,
+    pub epoch: u64,
+    pub expires_at_unix_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionWorkOwnership {
+    NotRequired,
+    Unowned,
+    Leased(SessionWorkLease),
+}
+
+/// Coordinator-side view that subordinates private Run execution to the one
+/// public Environment Work ownership decision without exposing the Work store.
+#[async_trait]
+pub trait SessionWorkLeaseAuthority: Send + Sync {
+    async fn acquire_session_work(
+        &self,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<SessionWorkOwnership, WorkQueueError>;
+}
+
+/// Result of a mutation that only the current work owner may perform.
+#[derive(Clone, Debug)]
+pub enum WorkMutationResult {
+    Accepted(Box<WorkItem>),
+    PreconditionFailed,
+    NotFound,
+}
+
+impl WorkMutationResult {
+    #[must_use]
+    pub fn accepted(work: WorkItem) -> Self {
+        Self::Accepted(Box::new(work))
+    }
+
+    #[must_use]
+    pub fn into_item(self) -> Option<WorkItem> {
+        match self {
+            Self::Accepted(item) => Some(*item),
+            Self::PreconditionFailed | Self::NotFound => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound)
+    }
+
+    #[must_use]
+    pub const fn is_accepted(&self) -> bool {
+        matches!(self, Self::Accepted(_))
+    }
+}
+
 /// Optimistic concurrency condition supplied by a worker heartbeat.
 ///
 /// The Managed wire uses `NO_HEARTBEAT` for the first heartbeat and then asks
@@ -366,6 +434,11 @@ pub trait WorkQueue: Send + Sync {
         env_id: &str,
         session_id: &str,
     ) -> Result<String, WorkQueueError>;
+    /// Explicitly wake an existing stopped Session work item, or create it when
+    /// absent. Unlike reconciliation's [`Self::enqueue_session`], this command
+    /// is driven only by a new admitted Session event, so a completed idle item
+    /// cannot be continuously resurrected by the background supervisor.
+    async fn wake_session(&self, env_id: &str, session_id: &str) -> Result<String, WorkQueueError>;
     /// Seed a `healthcheck` work item (its inner id is the work id); returns it.
     async fn enqueue_healthcheck(&self, env_id: &str) -> Result<String, WorkQueueError>;
     /// Return the one healthcheck for an Environment, creating it when absent.
@@ -399,7 +472,12 @@ pub trait WorkQueue: Send + Sync {
         self.claim(env_id, worker_id, now_ms).await
     }
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
-    async fn ack(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError>;
+    async fn ack(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError>;
     /// Atomically compare the preceding heartbeat and, when it matches, record a
     /// new heartbeat at `now_ms` and extend the lease.
     async fn heartbeat(
@@ -411,7 +489,30 @@ pub trait WorkQueue: Send + Sync {
         heartbeat: LeaseHeartbeat,
     ) -> Result<HeartbeatResult, WorkQueueError>;
     /// Request a stop (→stopped).
-    async fn stop(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError>;
+    async fn stop(
+        &self,
+        env_id: &str,
+        wid: &str,
+        worker_id: &str,
+    ) -> Result<WorkMutationResult, WorkQueueError>;
+    /// Coordinator-owned terminal projection. This is not a Worker mutation:
+    /// it retires the canonical item after the Session terminal fence and
+    /// therefore intentionally does not require the former lease owner.
+    async fn retire_session(
+        &self,
+        env_id: &str,
+        session_id: &str,
+    ) -> Result<Option<WorkItem>, WorkQueueError>;
+    /// Private registered-Worker adapter over the same WorkQueue authority.
+    /// It claims the exact queued Session or renews that exact current owner;
+    /// another owner and the Environment single-active cap fail closed.
+    async fn acquire_session(
+        &self,
+        env_id: &str,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<Option<SessionWorkLease>, WorkQueueError>;
     /// Merge a metadata patch (each present key upserts).
     async fn update_metadata(
         &self,
