@@ -41,10 +41,12 @@ impl InferenceOptions {
 
 /// Provider-neutral processing geography required for every model attempt.
 ///
-/// The public compatibility wire uses one closed, provider-neutral vocabulary. Candidates
-/// realize an exact boundary through a provider request field, frozen regional
-/// endpoint, deployment, or inference profile. Macro and country boundaries
-/// are deliberately not treated as interchangeable.
+/// The resolved runtime uses one closed, provider-neutral vocabulary. Anthropic's
+/// official `inference_geo` remains `us | global`; other exact boundaries enter
+/// through the Awaken extension before resolution. Candidates realize the
+/// boundary through a provider request field, frozen regional endpoint,
+/// deployment, or inference profile. Macro and country boundaries are
+/// deliberately not treated as interchangeable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InferenceGeography {

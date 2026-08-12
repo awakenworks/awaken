@@ -164,6 +164,30 @@ pub enum InferencePlacementMechanism {
     FrozenRegionalRoute,
 }
 
+impl InferencePlacementMechanism {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AnthropicRequestBody => "anthropic_request_body",
+            Self::FrozenRegionalRoute => "frozen_regional_route",
+        }
+    }
+}
+
+impl std::str::FromStr for InferencePlacementMechanism {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "anthropic_request_body" => Ok(Self::AnthropicRequestBody),
+            "frozen_regional_route" => Ok(Self::FrozenRegionalRoute),
+            other => Err(format!(
+                "unsupported inference placement mechanism `{other}`"
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedSpec {
     pub catalog_fingerprint: CatalogFingerprint,
@@ -952,9 +976,38 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        AcpSpec, Backend, BackendModelSelection, ContextPolicy, ModelBinding,
-        ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolFacet, ToolPresentation,
+        AcpSpec, Backend, BackendModelSelection, ContextPolicy, InferencePlacementMechanism,
+        ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolFacet,
+        ToolPresentation,
     };
+
+    #[test]
+    fn placement_mechanism_has_one_stable_boundary_vocabulary() {
+        // Cause/effect decision table: each supported mechanism must round-trip
+        // through its stable cross-context string (R1/R2); an unknown value must
+        // fail instead of selecting a default mechanism (R3).
+        for (rule, mechanism, wire) in [
+            (
+                "R1",
+                InferencePlacementMechanism::AnthropicRequestBody,
+                "anthropic_request_body",
+            ),
+            (
+                "R2",
+                InferencePlacementMechanism::FrozenRegionalRoute,
+                "frozen_regional_route",
+            ),
+        ] {
+            assert_eq!(mechanism.as_str(), wire, "{rule}");
+            assert_eq!(wire.parse(), Ok(mechanism), "{rule}");
+        }
+        assert!(
+            "caller_selected"
+                .parse::<InferencePlacementMechanism>()
+                .is_err(),
+            "R3"
+        );
+    }
 
     fn td(id: &str) -> ToolDescriptor {
         ToolDescriptor::pinned("t", id, format!("desc of {id}"), serde_json::json!({}))
