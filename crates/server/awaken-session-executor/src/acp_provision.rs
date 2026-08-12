@@ -522,6 +522,7 @@ mod tests {
                 api_dialect: "anthropic_messages".into(),
                 base_url: "https://db.example/v1".into(),
                 upstream_model: "upstream-model".into(),
+                processing_placement: None,
             },
         );
         let resolver = PublishedAcpLaunchResolver::new(
@@ -704,6 +705,7 @@ mod tests {
                     api_dialect: "anthropic_messages".into(),
                     base_url: "https://db.example/v1".into(),
                     upstream_model: "upstream-model".into(),
+                    processing_placement: None,
                 },
             );
             let record_calls = Arc::new(AtomicUsize::new(0));

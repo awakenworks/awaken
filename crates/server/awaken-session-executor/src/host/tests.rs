@@ -6651,6 +6651,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
                 api_dialect: String::new(),
                 base_url: "https://example.invalid".into(),
                 upstream_model: model.into(),
+                processing_placement: None,
             },
         )
     };

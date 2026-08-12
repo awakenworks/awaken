@@ -29,13 +29,75 @@ pub struct InferenceOptions {
     /// Exact geographic placement constraint for provider inference. The
     /// adapter must honor or reject it before provider network I/O.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inference_geo: Option<String>,
+    pub inference_geo: Option<InferenceGeography>,
 }
 
 impl InferenceOptions {
     #[must_use]
     pub fn is_default(&self) -> bool {
         self == &Self::default()
+    }
+}
+
+/// Provider-neutral processing geography required for every model attempt.
+///
+/// The public compatibility wire uses one closed, provider-neutral vocabulary. Candidates
+/// realize an exact boundary through a provider request field, frozen regional
+/// endpoint, deployment, or inference profile. Macro and country boundaries
+/// are deliberately not treated as interchangeable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceGeography {
+    Us,
+    Eu,
+    Apac,
+    Cn,
+    Jp,
+    Au,
+    Ca,
+    Uk,
+    Hk,
+}
+
+impl InferenceGeography {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Us => "us",
+            Self::Eu => "eu",
+            Self::Apac => "apac",
+            Self::Cn => "cn",
+            Self::Jp => "jp",
+            Self::Au => "au",
+            Self::Ca => "ca",
+            Self::Uk => "uk",
+            Self::Hk => "hk",
+        }
+    }
+}
+
+impl std::fmt::Display for InferenceGeography {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for InferenceGeography {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "us" => Ok(Self::Us),
+            "eu" => Ok(Self::Eu),
+            "apac" => Ok(Self::Apac),
+            "cn" => Ok(Self::Cn),
+            "jp" => Ok(Self::Jp),
+            "au" => Ok(Self::Au),
+            "ca" => Ok(Self::Ca),
+            "uk" => Ok(Self::Uk),
+            "hk" => Ok(Self::Hk),
+            other => Err(format!("unsupported inference_geo `{other}`")),
+        }
     }
 }
 

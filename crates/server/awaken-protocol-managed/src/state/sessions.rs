@@ -312,7 +312,12 @@ impl ManagedState {
                         "multiagent_unavailable: Agent `{delegate_id}` has no executable profile"
                     )))
                 })?;
-            if delegate.inference.inference_geo.as_deref() != selected_geo {
+            if delegate
+                .inference
+                .inference_geo
+                .map(|geography| geography.as_str())
+                != selected_geo
+            {
                 return Err(StateError::Run(RunError::bad_request(format!(
                     "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
                     selected_geo, delegate.inference.inference_geo

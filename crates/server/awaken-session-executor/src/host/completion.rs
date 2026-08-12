@@ -910,6 +910,7 @@ mod completion_tests {
                 api_dialect: "anthropic_messages".into(),
                 base_url: "https://example.test".into(),
                 upstream_model: "model".into(),
+                processing_placement: None,
             },
         );
         let acp = remote_worker_placement(&projected_acp, Some(&frozen), None, true);
@@ -1134,6 +1135,7 @@ mod completion_tests {
                     api_dialect: "open_ai_chat".into(),
                     base_url: "https://example.invalid".into(),
                     upstream_model: "fallback".into(),
+                    processing_placement: None,
                 },
             ));
         let placement = remote_worker_placement(&models, None, None, true);
@@ -1205,6 +1207,7 @@ mod completion_tests {
                     api_dialect: "open_ai_chat".into(),
                     base_url: "https://example.invalid".into(),
                     upstream_model: model.into(),
+                    processing_placement: None,
                 },
             )
         };

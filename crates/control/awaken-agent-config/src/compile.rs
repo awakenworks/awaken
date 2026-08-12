@@ -9,6 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::config::{AgentConfig, AgentKind, MultiagentTarget};
 
+mod processing_geography;
+
 /// A compilation failure, before anything is published (the design's Failure
 /// Rules: reject, never partially publish).
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -366,6 +368,14 @@ fn compile_with_models(
                 .into(),
         });
     }
+
+    processing_geography::validate_candidate_pool(
+        config.inference.inference_geo,
+        &config.id,
+        &model,
+        &candidates,
+        advisor.as_ref(),
+    )?;
 
     // Capability gate (ADR-0057 D2): the execution kind — derived from the now-concrete
     // `backend_ref` — must be able to honor the declared capabilities. A remote (a2a)
@@ -1367,6 +1377,7 @@ mod tests {
                     api_dialect: "anthropic_messages".into(),
                     base_url: "https://api.example/v1".into(),
                     upstream_model: "model-a".into(),
+                    processing_placement: None,
                 },
             )
         };
