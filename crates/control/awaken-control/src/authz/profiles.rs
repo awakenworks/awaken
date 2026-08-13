@@ -9,8 +9,9 @@ use awaken_iam_core::RoleId;
 use awaken_iam_preset::named_role_catalog;
 
 pub const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
-/// Qualified role intended for an external product that publishes Agent
-/// configuration but must never administer API credentials.
+/// Qualified role intended for an external product that discovers executable
+/// model supply and publishes Agent configuration, but must never administer
+/// API credentials or mutate model supply.
 pub const MANAGEMENT_AGENT_PUBLISHER_ROLE: &str = "awaken.runtime.management:agent_publisher";
 /// Hosted tenant administrator: ordinary Workspace/API-key administration and
 /// read-only platform model supply. Cloud binds this role instead of the local
@@ -116,15 +117,17 @@ pub fn management_authorization_profile() -> CreateAuthorizationProfile {
             });
         }
     }
-    grants.push(GrantSnapshot {
-        id: format!("{MANAGEMENT_POLICY_NAMESPACE}:grant:role:agent_publisher"),
-        subject: GrantSubjectRef::Role {
-            role_id: MANAGEMENT_AGENT_PUBLISHER_ROLE.to_owned(),
-        },
-        action_pattern: qualify_action("workspace.*").0,
-        scope: ScopeRef::Global,
-        effect: GrantEffect::Allow,
-    });
+    for (id_suffix, pattern) in [("", "workspace.*"), (":model-read", "model_supply.read")] {
+        grants.push(GrantSnapshot {
+            id: format!("{MANAGEMENT_POLICY_NAMESPACE}:grant:role:agent_publisher{id_suffix}"),
+            subject: GrantSubjectRef::Role {
+                role_id: MANAGEMENT_AGENT_PUBLISHER_ROLE.to_owned(),
+            },
+            action_pattern: qualify_action(pattern).0,
+            scope: ScopeRef::Global,
+            effect: GrantEffect::Allow,
+        });
+    }
     for (index, pattern) in ["workspace.*", "apikey.*", "model_supply.read"]
         .into_iter()
         .enumerate()

@@ -421,3 +421,33 @@ model realization. AllInOne retains the existing brokered client because it
 co-locates Control and runtime materialization. Missing hosted catalog input is
 represented as unavailable discovery, never repaired with a workload token
 masquerading as a user token.
+
+### Amendment (2026-08-13): automation may discover executable model supply
+
+The product-owned `awaken.runtime.management:agent_publisher` role is the
+least-privilege cross-product automation contract. Flow needs to read the
+executable model and Provider descriptor projections before it can author an
+Agent that Management can publish. Those reads are already classified by the
+one Management route policy as
+`awaken.runtime.management::model_supply.read`; they are not Workspace reads.
+
+The authoritative `management_authorization_profile()` therefore grants the
+publisher exactly `workspace.*` and `model_supply.read` at Workspace scope. It
+still excludes `apikey.*`, `model_supply.connect`, `model_supply.write`, and
+`model_supply.*`. A hosting platform binds this exact role; it must not repair a
+missing discovery permission by binding the broader
+`hosted_workspace_admin` role or by defining a parallel policy.
+
+```text
+Flow workload -> executable-models / provider-descriptors GET
+              -> Management route policy: model_supply.read
+              -> active Awaken release profile + exact Workspace binding
+              -> allow read-only discovery / deny supply mutation and credentials
+```
+
+The profile document remains the single static policy owner. At runtime the
+PEP supplies the authenticated Flow principal and exact Workspace, the remote
+PDP evaluates the active revision, and denial remains terminal unless the
+deployment reconciles that same release profile and binding. Profile
+reconciliation appends and activates a new immutable revision; it does not
+edit an active revision in place.

@@ -46,11 +46,28 @@ fn control_profile_is_a_side_effect_free_release_projection() {
                 == serde_json::json!("awaken.runtime.management:agent_publisher")
         })
         .collect::<Vec<_>>();
-    assert_eq!(publisher.len(), 1);
+    // Release-projection decision table: the Flow publisher needs Workspace
+    // authoring and read-only executable-model discovery; credential access,
+    // model-supply mutation, and a broad model wildcard remain absent. This
+    // separately verifies that CLI serialization does not lose either grant
+    // from the authoritative in-process profile test.
+    let publisher_actions = publisher
+        .iter()
+        .map(|grant| grant["action_pattern"].as_str().expect("action pattern"))
+        .collect::<Vec<_>>();
     assert_eq!(
-        publisher[0]["action_pattern"],
-        serde_json::json!("awaken.runtime.management::workspace.*")
+        publisher_actions,
+        [
+            "awaken.runtime.management::workspace.*",
+            "awaken.runtime.management::model_supply.read",
+        ]
     );
+    assert!(publisher_actions.iter().all(|action| {
+        !action.contains("apikey")
+            && !action.ends_with("model_supply.*")
+            && !action.ends_with("model_supply.connect")
+            && !action.ends_with("model_supply.write")
+    }));
 }
 
 #[test]
