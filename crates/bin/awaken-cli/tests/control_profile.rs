@@ -68,6 +68,15 @@ fn control_profile_is_a_side_effect_free_release_projection() {
             && !action.ends_with("model_supply.connect")
             && !action.ends_with("model_supply.write")
     }));
+    let credential_ingress = grants
+        .iter()
+        .filter(|grant| {
+            grant["subject"]["role_id"]
+                == serde_json::json!("awaken.runtime.management:credential_ingress")
+        })
+        .map(|grant| grant["action_pattern"].as_str().expect("action pattern"))
+        .collect::<Vec<_>>();
+    assert_eq!(credential_ingress, ["awaken.runtime.management::apikey.*"]);
 }
 
 #[test]

@@ -149,3 +149,109 @@ fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
             .all(|grant| !grant.ends_with("model_supply.*"))
     );
 }
+
+#[test]
+fn credential_ingress_is_exact_workspace_and_apikey_only() {
+    // Cause/effect graph: canonical Management profile (C1) + independent
+    // credential-ingress binding (C2) + action and target Workspace (C3)
+    // -> credential reads/writes at the bound Workspace (E1), while foreign
+    // Workspace access and every non-credential family remain denied (E2).
+    //
+    // Decision table:
+    // | Action | Bound Workspace | Result |
+    // | apikey.read/write | yes | allow |
+    // | apikey.read/write | no | deny |
+    // | workspace/model_supply action | yes | deny |
+    let profiles =
+        AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
+    let mut engine = AuthzApi::new();
+    reconcile_builtin_profile(&profiles, &mut engine, management_authorization_profile());
+    reconcile_builtin_profile(
+        &profiles,
+        &mut engine,
+        management_resource_authorization_profile(),
+    );
+    reconcile_builtin_profile(
+        &profiles,
+        &mut engine,
+        hosted_runtime_authorization_profile(),
+    );
+
+    let principal = PrincipalRef::Service {
+        service_id: "flow-credential-ingress".to_owned(),
+    };
+    let workspace = WorkspaceId("workspace-flow".to_owned());
+    engine.policy_mut().bind_role(RoleBinding {
+        principal: principal.clone(),
+        role: RoleId(MANAGEMENT_CREDENTIAL_INGRESS_ROLE.to_owned()),
+        scope: ScopeRef::Workspace {
+            workspace_id: workspace.clone(),
+        },
+    });
+
+    let decide = |action: &str, workspace_id: WorkspaceId| {
+        engine
+            .authorize(&AuthorizationRequest::direct(
+                principal.clone(),
+                qualify_action(action),
+                ScopeRef::Workspace { workspace_id },
+            ))
+            .decision
+    };
+    for action in ["apikey.read", "apikey.write"] {
+        assert_eq!(
+            decide(action, workspace.clone()),
+            AuthorizationDecision::Allow,
+            "{action}"
+        );
+        assert_eq!(
+            decide(action, WorkspaceId("workspace-other".to_owned())),
+            AuthorizationDecision::Deny,
+            "{action} foreign Workspace"
+        );
+    }
+    for action in [
+        "workspace.read",
+        "workspace.write",
+        "model_supply.read",
+        "model_supply.connect",
+        "model_supply.write",
+    ] {
+        assert_eq!(
+            decide(action, workspace.clone()),
+            AuthorizationDecision::Deny,
+            "{action}"
+        );
+    }
+    for action in ["file.read", "skill.write"] {
+        assert_eq!(
+            engine
+                .authorize(&AuthorizationRequest::direct(
+                    principal.clone(),
+                    qualify_resource_action(action),
+                    ScopeRef::Workspace {
+                        workspace_id: workspace.clone(),
+                    },
+                ))
+                .decision,
+            AuthorizationDecision::Deny,
+            "{action}"
+        );
+    }
+    assert_eq!(
+        engine
+            .authorize(&AuthorizationRequest::direct(
+                principal,
+                awaken_iam_contract::ActionKey::in_namespace(
+                    &awaken_iam_contract::NamespaceId(HOSTED_RUNTIME_POLICY_NAMESPACE.to_owned(),),
+                    "run.create",
+                ),
+                ScopeRef::Workspace {
+                    workspace_id: workspace,
+                },
+            ))
+            .decision,
+        AuthorizationDecision::Deny,
+        "run.create"
+    );
+}

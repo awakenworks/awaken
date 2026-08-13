@@ -461,3 +461,40 @@ PDP evaluates the active revision, and denial remains terminal unless the
 deployment reconciles that same release profile and binding. Profile
 reconciliation appends and activates a new immutable revision; it does not
 edit an active revision in place.
+
+### Amendment (2026-08-14): hosted credential ingress is a separate authority
+
+Flow owns tenant-authored business-resource configuration, but the canonical
+secret material for those resources lives in Awaken's existing
+Workspace-scoped Credential Vault. The Flow workload must therefore be able to
+create, reread, rotate and archive generic business credentials through the
+Management credential routes without inheriting Agent publication, model
+supply, File, Skill or Run authority.
+
+The authoritative `management_authorization_profile()` defines the independent
+`awaken.runtime.management:credential_ingress` role. Its sole grant is
+`awaken.runtime.management::apikey.*` at Workspace scope. The existing
+`agent_publisher` remains credential-free, and a hosting platform binds both
+roles only when the same product workload owns both Agent publication and
+credential ingress at one exact execution Workspace. The broader human
+`hosted_workspace_admin` role is not an automation substitute.
+
+```text
+Flow business credential command
+  -> existing Management credential route and Credential Vault
+  -> apikey.read / apikey.write at the request Workspace
+  -> active Awaken release profile + exact credential_ingress binding
+  -> secret-free response / durable Vault mutation
+```
+
+| Binding and target | Action | Result |
+|---|---|---|
+| credential ingress at exact Workspace | `apikey.read` / `apikey.write` | allow |
+| credential ingress at another Workspace | any | deny |
+| credential ingress at exact Workspace | Workspace, model, File, Skill or Run action | deny |
+| agent publisher without credential ingress | `apikey.*` | deny |
+
+This is a new role in the existing Management profile, not a second credential
+API, Vault, policy namespace or hosting-owned action matrix. Profile
+reconciliation and the existing credential PEP remain the only policy and
+enforcement paths.

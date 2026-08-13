@@ -13,6 +13,11 @@ pub const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
 /// model supply and publishes Agent configuration, but must never administer
 /// API credentials or mutate model supply.
 pub const MANAGEMENT_AGENT_PUBLISHER_ROLE: &str = "awaken.runtime.management:agent_publisher";
+/// Qualified role intended for an external product that ingresses generic
+/// business credentials through the canonical Management Credential Vault.
+/// It grants no configuration, model-supply, resource, or Run authority.
+pub(super) const MANAGEMENT_CREDENTIAL_INGRESS_ROLE: &str =
+    "awaken.runtime.management:credential_ingress";
 /// Resource-side companion for the same external product publisher identity.
 /// It may materialize exact Skill versions, but cannot read or write Files.
 pub(super) const RESOURCE_AGENT_PUBLISHER_ROLE: &str = "awaken.runtime.resources:agent_publisher";
@@ -131,6 +136,15 @@ pub fn management_authorization_profile() -> CreateAuthorizationProfile {
             effect: GrantEffect::Allow,
         });
     }
+    grants.push(GrantSnapshot {
+        id: format!("{MANAGEMENT_POLICY_NAMESPACE}:grant:role:credential_ingress"),
+        subject: GrantSubjectRef::Role {
+            role_id: MANAGEMENT_CREDENTIAL_INGRESS_ROLE.to_owned(),
+        },
+        action_pattern: qualify_action("apikey.*").0,
+        scope: ScopeRef::Global,
+        effect: GrantEffect::Allow,
+    });
     for (index, pattern) in ["workspace.*", "apikey.*", "model_supply.read"]
         .into_iter()
         .enumerate()
