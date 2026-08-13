@@ -15,7 +15,8 @@ use axum::extract::{Extension, Query, State};
 use axum::http::HeaderMap;
 
 use super::{
-    AdminState, CredentialSourceView, Problem, cred_problem, repo_problem, req_id, unix_time_ms,
+    AdminState, ConfigCapabilitiesView, CredentialSourceView, Problem, cred_problem, repo_problem,
+    req_id, unix_time_ms,
 };
 
 #[derive(serde::Serialize)]
@@ -175,6 +176,7 @@ pub(super) async fn list_provider_connections(
 
 pub(super) async fn list_executable_models(
     State(state): State<AdminState>,
+    State(capabilities): State<ConfigCapabilitiesView>,
     scope: Option<Extension<ResourceWorkspace>>,
     Query(query): Query<ListProviderConnectionsQuery>,
     headers: HeaderMap,
@@ -195,6 +197,7 @@ pub(super) async fn list_executable_models(
         &catalog,
         &credentials,
         &[awaken_config_resolver::ExecutorModelCapability::native()],
+        capabilities.models.cloud_models_enabled,
     )))
 }
 
@@ -246,8 +249,9 @@ mod tests {
         // R1 active BYOK + compatible active credential -> ready;
         // R2 active BYOK + only another provider's credential -> credential_unavailable;
         // R3 inactive offering -> offering_unavailable regardless of credential;
-        // R4 active brokered offering without an explicit brokered Profile ->
-        // credential_unavailable on this ordinary Managed-model path.
+        // R4 active brokered offering + brokered deployment capability -> ready
+        // without a local Credential; R5 the same Offering + capability absent
+        // -> runtime_unavailable even if a local Credential happens to match.
         let mut unavailable = offering("anthropic", "retired", OfferingSource::Manual);
         unavailable.status = OfferingStatus::Unavailable;
         let catalog = ProviderCatalog {
@@ -263,6 +267,7 @@ mod tests {
             &catalog,
             &[credential("anthropic")],
             &[awaken_config_resolver::ExecutorModelCapability::native()],
+            true,
         );
         let readiness = options
             .into_iter()
@@ -277,9 +282,20 @@ mod tests {
             readiness["retired"],
             ExecutableModelReadiness::OfferingUnavailable
         );
+        assert_eq!(readiness["managed"], ExecutableModelReadiness::Ready);
+        let disabled = project_executable_models(
+            &catalog,
+            &[credential("cloud")],
+            &[awaken_config_resolver::ExecutorModelCapability::native()],
+            false,
+        );
         assert_eq!(
-            readiness["managed"],
-            ExecutableModelReadiness::CredentialUnavailable
+            disabled
+                .into_iter()
+                .find(|option| option.model_id == "managed")
+                .unwrap()
+                .readiness,
+            ExecutableModelReadiness::RuntimeUnavailable,
         );
     }
 }

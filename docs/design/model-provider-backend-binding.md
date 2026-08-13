@@ -417,11 +417,15 @@ candidate and never renegotiates Provider, credential, dialect, or executor.
    GET /v1/models
    ```
 
-   The response is derived from Catalog × Credential × the installed executor
-   capability matrix; it is not a static vendor list. Bare ids are returned only
-   when unique; provider and endpoint qualifiers are added only when required.
-   Agent publication revalidates the same matrix and, for ACP, requires fresh
-   negotiated Worker evidence before visibility.
+   The response is derived from Catalog × access posture × the installed
+   executor capability matrix; it is not a static vendor list. Direct/BYOK
+   access requires a compatible active Workspace Credential. Brokered access
+   requires the composition's existing `cloud_models_enabled` path and never a
+   copied local provider key. Bare ids are returned only when unique; provider
+   and endpoint qualifiers are added only when required. Agent publication
+   revalidates the same route through the authoritative local or injected
+   resolver and, for ACP, requires fresh negotiated Worker evidence before
+   visibility.
 
 3. Create and publish an Agent using the ordinary Managed Agents field:
 

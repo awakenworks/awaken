@@ -12,6 +12,9 @@
 - **Consolidation**: Extended the existing profiled Session command so product
   MCP candidates and published Agent candidates enter the same normalization,
   precedence, finalization, and root-insert path.
+- **Correction**: Executable-model readiness now joins Brokered Offerings with
+  the existing Cloud model-supply capability instead of demanding a copied
+  local provider credential; direct/BYOK readiness remains credential-backed.
 
 ## 2026-08-12
 
