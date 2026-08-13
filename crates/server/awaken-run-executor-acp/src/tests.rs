@@ -26,6 +26,52 @@ use super::*;
 
 struct FakeProcess;
 
+#[tokio::test]
+async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
+    // Cause/effect graph: C1 Codex reports an MCP permission title in dotted
+    // ACP form; C2 a native/unknown title has no MCP prefix. Effects: E1 C1 is
+    // evaluated against the one canonical mcp__server__tool policy identity;
+    // E2 C2 remains byte-for-byte unchanged. This adapter normalization does
+    // not add a second policy or authorization path.
+    //
+    // | Rule | ACP title | Policy tool id | Verdict |
+    // |---|---|---|---|
+    // | M1 | mcp.pilot.set_plan | mcp__pilot__set_plan | allow |
+    // | M2 | bash | bash | allow |
+    struct ExactPolicy {
+        expected: String,
+    }
+    #[async_trait]
+    impl ToolPermissionPolicy for ExactPolicy {
+        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+            assert_eq!(call.tool_id, self.expected);
+            ToolPermissionVerdict::Allow
+        }
+    }
+
+    for (rule, title, expected) in [
+        ("M1", "mcp.pilot.set_plan", "mcp__pilot__set_plan"),
+        ("M2", "bash", "bash"),
+    ] {
+        let resolver = NeutralPermissionResolver {
+            policy: Arc::new(ExactPolicy {
+                expected: expected.into(),
+            }),
+        };
+        assert_eq!(
+            resolver
+                .resolve(&PermissionAsk {
+                    tool: title.into(),
+                    call_id: format!("{rule}-call"),
+                    arguments: serde_json::json!({}),
+                })
+                .await,
+            PermissionVerdict::Allow,
+            "{rule}"
+        );
+    }
+}
+
 #[test]
 fn terminal_business_outcome_is_not_rewritten_by_cleanup_failure() {
     let outcome = preserve_terminal_outcome(
