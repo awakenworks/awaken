@@ -79,6 +79,25 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
             && !grant.ends_with("model_supply.connect")
             && !grant.ends_with("model_supply.write")
     }));
+
+    let credential_ingress_grants = first
+        .document
+        .grants
+        .iter()
+        .filter(|grant| {
+            matches!(
+                &grant.subject,
+                GrantSubjectRef::Role { role_id }
+                    if role_id == MANAGEMENT_CREDENTIAL_INGRESS_ROLE
+            )
+        })
+        .map(|grant| grant.action_pattern.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        credential_ingress_grants,
+        ["awaken.runtime.management::apikey.*"],
+        "credential ingress must not inherit any non-credential authority"
+    );
 }
 
 #[test]
