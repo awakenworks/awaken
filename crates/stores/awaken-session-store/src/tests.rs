@@ -239,6 +239,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
+                transcript_prefix: None,
             },
         )),
         title: Some("My session".to_string()),

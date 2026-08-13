@@ -452,6 +452,7 @@ mod tests {
                     mounts: baseline.mounts,
                     env: baseline.env,
                     prompts: baseline.prompts,
+                    transcript_prefix: baseline.transcript_prefix,
                     resources: Default::default(),
                     initial_mcp: Vec::new(),
                 },

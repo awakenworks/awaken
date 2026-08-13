@@ -8,16 +8,59 @@ use awaken_session_contract::{
 use super::SessionApplication;
 
 impl SessionApplication {
-    fn frozen_session_projection_for_resources(
+    async fn request_context(
+        &self,
+        _owner_scope: &str,
+        session: &PersistedSession,
+    ) -> Result<Vec<awaken_agent_contract::agent::message::Message>, RunError> {
+        let Some(spec) = session
+            .frozen_baseline()
+            .and_then(|baseline| baseline.transcript_prefix.as_ref())
+        else {
+            return Ok(Vec::new());
+        };
+        // Creation already admitted the source through the owning Workspace.
+        // Recovery follows the persisted immutable reference directly to
+        // committed Thread truth, so deleting/archiving the source Session
+        // projection cannot orphan a branch or introduce a second owner lookup.
+        let committed = self.committed_messages(&spec.snapshot.thread_id.0).await?;
+        let end = usize::try_from(spec.snapshot.end_seq)
+            .map_err(|_| RunError::unavailable("transcript prefix sequence overflow"))?;
+        if committed.len() < end {
+            return Err(RunError::unavailable(format!(
+                "transcript prefix ending at {} is unavailable; committed end is {}",
+                spec.snapshot.end_seq,
+                committed.len()
+            )));
+        }
+        let snapshot = awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::new(
+            spec.snapshot.thread_id.clone(),
+            spec.snapshot.view,
+            committed[..end].to_vec(),
+        );
+        snapshot
+            .slice(spec)
+            .map(|slice| slice.messages.to_vec())
+            .map_err(|error| RunError::unavailable(error.to_string()))
+    }
+
+    async fn frozen_session_projection_for_resources(
+        &self,
         owner_scope: String,
         session: &PersistedSession,
         resource_revision: u64,
         resources: awaken_session_contract::ResolvedSessionResources,
+        materialize_request_context: bool,
     ) -> Result<FrozenSessionProjection, RunError> {
         let baseline = session
             .frozen_baseline()
             .cloned()
             .ok_or_else(|| RunError::unavailable("Session creation intent was not consumed"))?;
+        let request_context = if materialize_request_context {
+            self.request_context(&owner_scope, session).await?
+        } else {
+            Vec::new()
+        };
         Ok(FrozenSessionProjection {
             workspace_id: owner_scope,
             revision: session.revision,
@@ -27,41 +70,50 @@ impl SessionApplication {
             resources,
             toolsets: session.tools.toolsets.clone(),
             mcp: session.mcp.attachments.clone(),
+            request_context,
         })
     }
 
     /// Project durable Session truth into the exact immutable input installed by
     /// a local or remote Worker. Protocol adapters never rebuild this shape.
-    pub fn frozen_session_projection(
+    pub async fn frozen_session_projection(
+        &self,
         owner_scope: String,
         session: &PersistedSession,
+        materialize_request_context: bool,
     ) -> Result<FrozenSessionProjection, RunError> {
         let resources = session
             .resources
             .pending
             .clone()
             .unwrap_or_else(|| session.resources.active.clone());
-        Self::frozen_session_projection_for_resources(
+        self.frozen_session_projection_for_resources(
             owner_scope,
             session,
             session.resources.revision,
             resources,
+            materialize_request_context,
         )
+        .await
     }
 
     /// Project only the Resource generation currently installed in a live
     /// Runtime. Lease renewal is MCP-only and must not consume a pending input
     /// mutation that still requires a dispatch claim.
-    pub(crate) fn active_frozen_session_projection(
+    pub(crate) async fn active_frozen_session_projection(
+        &self,
         owner_scope: String,
         session: &PersistedSession,
+        materialize_request_context: bool,
     ) -> Result<FrozenSessionProjection, RunError> {
-        Self::frozen_session_projection_for_resources(
+        self.frozen_session_projection_for_resources(
             owner_scope,
             session,
             session.resources.active_revision(),
             session.resources.active.clone(),
+            materialize_request_context,
         )
+        .await
     }
 }
 

@@ -928,6 +928,7 @@ fn realization_owner_follows_the_frozen_placement_decision_table() {
                     mounts: baseline.mounts,
                     env: baseline.env,
                     prompts: baseline.prompts,
+                    transcript_prefix: baseline.transcript_prefix,
                     resources: Default::default(),
                     initial_mcp: Vec::new(),
                 },

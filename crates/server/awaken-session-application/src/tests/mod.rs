@@ -481,7 +481,38 @@ impl ManagedSessionRepository for FaultingSessionRepository {
 struct NoopMcpRealizer;
 
 #[async_trait::async_trait]
-impl McpAttachmentRealizer for NoopMcpRealizer {}
+impl McpAttachmentRealizer for NoopMcpRealizer {
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        // Test-realizer rule: admitted exact generation -> matching idempotent
+        // receipt. Production's unsupported default remains fail-closed and is
+        // covered in the contract suite; application happy-path fixtures must
+        // model the successful dependency effect they assert.
+        Ok(awaken_session_contract::McpRealizationReceipt {
+            receipt_fingerprint: request.fingerprint(),
+            generation: request.generation,
+            realization_id: request.realization_id,
+            selected_plaintext_holder: request.selected_plaintext_holder,
+            actual_realization_kind: None,
+        })
+    }
+
+    async fn publish_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
+    async fn drain_mcp_generation(
+        &self,
+        _generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 struct RecordingEnvironmentSource {
@@ -619,6 +650,7 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
                     mounts: Vec::new(),
                     env: Vec::new(),
                     prompts: Vec::new(),
+                    transcript_prefix: None,
                 },
             ),
         ),
