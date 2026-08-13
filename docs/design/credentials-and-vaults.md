@@ -223,12 +223,15 @@ the existing Credential repository and SecretStore, exact replay returns the
 same secret-free source, and reuse with different material fails closed.
 
 The same collection performs operation lookup and idempotent-source listing;
-the reference-validation subresource verifies the exact Workspace, provider,
-operation identity, active state, Vault kind, and material presence without
-opening or returning the secret. This extends the ordinary Credential CRUD; it
-does not create a Flow-local Vault, a second catalog, or provider-specific
-credential types. Flow stores only the returned source id/revision as its
-Credential Resource `backing_ref`.
+the reference-validation subresource consumes the durable source id plus its
+exact Workspace/provider and verifies hosted-source identity, active state,
+current revision, Vault kind, and material presence without opening or returning
+the secret. The create operation key is intentionally unnecessary after the
+source id has been persisted; requiring it would force Flow to retain a parallel
+identity map. This extends the ordinary Credential CRUD; it does not create a
+Flow-local Vault, a second catalog, or provider-specific credential types. Flow
+stores only the returned source id/revision as its Credential Resource
+`backing_ref`.
 
 This management seam intentionally does not expose a plaintext-material HTTP
 operation. Execution must consume the existing exact `CredentialAccess` →

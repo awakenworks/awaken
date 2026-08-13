@@ -216,3 +216,10 @@
 - Kept generic business credential material exclusively in Awaken's existing
   Credential repository and SecretStore; no Flow-local Vault or provider type
   was added.
+
+## 2026-08-13 (Hosted credential references revalidate from durable identity)
+
+- Corrected generic hosted reference validation to consume only the durable
+  source id and exact Workspace/provider retained by the Resource.
+- Kept the operation key on create replay/lookup only, avoiding a second
+  product-owned identity mapping after restart.

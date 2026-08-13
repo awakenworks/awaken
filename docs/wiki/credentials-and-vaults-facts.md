@@ -70,6 +70,6 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 
 - Status: active
 - Owner: [Hosted governance Credential Resources](../design/credentials-and-vaults.md#hosted-governance-credential-resources)
-- Fact: hosted governance products create, recover, list, and validate generic business Credential Resource backing references through Awaken's existing `/v1/config/credentials` owner and Credential repository; they persist no local Vault or provider-specific secret type.
+- Fact: hosted governance products create, recover, list, and validate generic business Credential Resource backing references through Awaken's existing `/v1/config/credentials` owner and Credential repository; reference validation uses the durable source id plus Workspace/provider and never requires a parallel operation-key map, local Vault, or provider-specific secret type.
 - Links: Flow ADR-0041 (resource credential mechanism delegates to the execution secret-by-reference seam).
 - Verification: operation-identity create/replay/conflict, scoped lookup/list, reference-validation, and secret-free response tests.

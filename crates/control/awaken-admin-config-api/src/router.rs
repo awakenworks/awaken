@@ -1271,12 +1271,10 @@ pub struct ValidateCredentialRequest {
     workspace_id: String,
     #[serde(default)]
     model_id: Option<String>,
-    /// Generic hosted-governance validation mode. Both fields are required
-    /// together and are mutually exclusive with `model_id`.
+    /// Generic hosted-governance validation mode. The durable source id is the
+    /// path identity, so this field is mutually exclusive with `model_id`.
     #[serde(default)]
     provider_ref: Option<String>,
-    #[serde(default)]
-    idempotency_key: Option<String>,
 }
 
 /// The secret-free result of a live credential probe.
@@ -1285,6 +1283,10 @@ pub struct ValidateCredentialRequest {
 pub struct CredentialValidation {
     pub status: ProbeStatus,
     pub adapter_kind: String,
+    /// Current durable revision for an exact hosted reference validation.
+    /// Model live-probe responses omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_version: Option<i64>,
 }
 
 /// Live-validate a credential: resolve it (Exact binding) to get the endpoint +
@@ -1302,42 +1304,36 @@ async fn validate_credential(
         || request.workspace_id.clone(),
         |Extension(scope)| scope.0.clone(),
     );
-    if let (None, Some(provider_ref), Some(idempotency_key)) = (
-        request.model_id.as_ref(),
-        request.provider_ref.as_deref(),
-        request.idempotency_key.as_deref(),
-    ) {
-        validate_hosted_credential_identity(&workspace, provider_ref, idempotency_key)
-            .map_err(|error| cred_problem(&error, &rid))?;
-        let expected_id = hosted_credential_source_id(&workspace, provider_ref, idempotency_key);
-        if expected_id.0 != id {
-            return Err(cred_problem(&CredentialError::SourceNotFound(id), &rid));
-        }
-        let source = credential_in_scope(&state, &expected_id, scope.as_ref(), &rid).await?;
-        if !hosted_credential_matches(&source, &workspace, provider_ref) {
+    if let (None, Some(provider_ref)) = (request.model_id.as_ref(), request.provider_ref.as_deref())
+    {
+        if workspace.trim().is_empty() || provider_ref.trim().is_empty() {
             return Err(cred_problem(
-                &CredentialError::MutationConflict(
-                    "credential source does not match the exact hosted operation identity".into(),
+                &CredentialError::InvalidSource(
+                    "hosted credential validation requires a Workspace and provider_ref".into(),
                 ),
                 &rid,
             ));
         }
+        let source_id = CredentialSourceId(id.clone());
+        let source = credential_in_scope(&state, &source_id, scope.as_ref(), &rid).await?;
+        if !is_hosted_credential(&source)
+            || !hosted_credential_matches(&source, &workspace, provider_ref)
+            || source.version < 1
+        {
+            return Err(cred_problem(&CredentialError::SourceNotFound(id), &rid));
+        }
         return Ok(Json(CredentialValidation {
             status: ProbeStatus::Valid,
             adapter_kind: "credential_reference".into(),
+            credential_version: Some(source.version),
         }));
     }
-    let model_id = match (
-        request.model_id,
-        request.provider_ref,
-        request.idempotency_key,
-    ) {
-        (Some(model_id), None, None) if !model_id.trim().is_empty() => model_id,
+    let model_id = match (request.model_id, request.provider_ref) {
+        (Some(model_id), None) if !model_id.trim().is_empty() => model_id,
         _ => {
             return Err(cred_problem(
                 &CredentialError::InvalidSource(
-                    "choose either model_id or the provider_ref + idempotency_key validation mode"
-                        .into(),
+                    "choose either model_id or the provider_ref validation mode".into(),
                 ),
                 &rid,
             ));
@@ -1376,6 +1372,7 @@ async fn validate_credential(
     Ok(Json(CredentialValidation {
         status,
         adapter_kind: resolved.adapter_kind.to_string(),
+        credential_version: None,
     }))
 }
 

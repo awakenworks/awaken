@@ -568,17 +568,20 @@ async fn post_credential_is_201_and_never_echoes_the_secret() {
 
 /// Hosted Credential Resource cause/effect graph:
 /// C1 exact Workspace/provider/operation tuple is valid; C2 a source exists;
-/// C3 submitted material equals the sealed material; C4 lookup or validation
-/// repeats the exact tuple. Effects are E1 one stable secret-free receipt,
+/// C3 submitted material equals the sealed material; C4 operation lookup repeats
+/// the exact tuple; C5 validation supplies the durable source id plus its exact
+/// Workspace/provider. Effects are E1 one stable secret-free receipt,
 /// E2 exact replay is the same receipt without desired-state drift, E3 different
-/// material conflicts, and E4 a mismatched tuple is undiscoverable/fails closed.
+/// material conflicts, E4 a mismatched operation tuple is undiscoverable, and E5
+/// the durable reference validates without retaining a second operation mapping.
 ///
-/// | Rule | C1 | C2 | C3 | C4 | Effect |
-/// |---|---|---|---|---|---|
-/// | H1 | T | F | - | T | E1 |
-/// | H2 | T | T | T | T | E2 |
-/// | H3 | T | T | F | T | E3 |
-/// | H4 | T | T | - | F | E4 |
+/// | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+/// |---|---|---|---|---|---|---|
+/// | H1 | T | F | - | T | - | E1 |
+/// | H2 | T | T | T | T | - | E2 |
+/// | H3 | T | T | F | T | - | E3 |
+/// | H4 | T | T | - | F | - | E4 |
+/// | H5 | - | T | - | - | T | E5 |
 #[tokio::test]
 async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
     let h = harness();
@@ -646,14 +649,14 @@ async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
         &format!("/v1/config/credentials/{source_id}/validate"),
         Some(json!({
             "workspace_id": "workspace-a",
-            "provider_ref": "domain-pack/provider",
-            "idempotency_key": "credential-resource:create:42"
+            "provider_ref": "domain-pack/provider"
         })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "H2: {validated}");
     assert_eq!(validated["status"], "valid", "H2");
     assert_eq!(validated["adapter_kind"], "credential_reference", "H2");
+    assert_eq!(validated["credential_version"], first["version"], "H5");
 
     let (status, missing) = call(
         &h.app,
@@ -664,6 +667,18 @@ async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
     .await;
     assert_eq!(status, StatusCode::OK, "H4: {missing}");
     assert_eq!(missing, json!([]), "H4");
+
+    let (status, problem) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{source_id}/validate"),
+        Some(json!({
+            "workspace_id": "workspace-a",
+            "provider_ref": "another-provider"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "H4: {problem}");
 }
 
 /// Hosted-list cause/effect graph: C1 the Workspace contains ordinary and hosted

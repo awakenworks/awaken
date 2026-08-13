@@ -75,6 +75,7 @@ impl core::convert::From<awaken_credential_vault::CredentialSource> for awaken_a
 pub fn awaken_admin_config_api::CredentialSourceView::from(awaken_credential_vault::CredentialSource) -> Self
 pub struct awaken_admin_config_api::CredentialValidation
 pub awaken_admin_config_api::CredentialValidation::adapter_kind: alloc::string::String
+pub awaken_admin_config_api::CredentialValidation::credential_version: core::option::Option<i64>
 pub awaken_admin_config_api::CredentialValidation::status: awaken_admin_config_api::ProbeStatus
 pub struct awaken_admin_config_api::EnterCredentialRequest
 pub struct awaken_admin_config_api::IdentityCapabilityView
