@@ -210,12 +210,17 @@ Environment transitions are:
 Environment-to-image realization is conditional, not a universal conversion:
 
 ```text
-Cloud Environment with non-empty packages
+Cloud Environment with non-empty packages AND configured package image builder/registry
   -> registration creates one content-addressed build demand
   -> build worker resolves the base-image identity, builds, pushes, and verifies availability
   -> Session admission waits for the exact ready digest
   -> EnvironmentSnapshot.prepared_image freezes that digest
   -> Worker projects it as SandboxSpec image rootfs and clears runtime packages
+
+Cloud Environment with non-empty packages but no configured image builder
+  -> no prepared-image demand
+  -> packages remain in the frozen snapshot
+  -> Worker requires package-provisioning capability and installs them at sandbox creation
 
 SelfHosted OR package-free Cloud
   -> no image-build demand
