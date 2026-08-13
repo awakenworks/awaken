@@ -6,6 +6,9 @@
   can read executable model supply while remaining unable to administer API
   keys or mutate Provider/model supply; hosted deployments consume the same
   deterministic release profile instead of binding a broader role.
+- **Consolidation**: Exposed the Coordinator's narrow PostgreSQL LocalCommit
+  factory so product compositions reuse its private authoritative-query policy
+  instead of treating a process-local projection as HA truth or copying SQL.
 
 ## 2026-08-12
 
