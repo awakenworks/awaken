@@ -14,14 +14,24 @@ struct Contract {
     scope_ref: String,
     cell_id: String,
     requested_generation: u64,
+    databases: Vec<DatabaseAllocation>,
     objects: Vec<ObjectAllocation>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DatabaseAllocation {
+    role: String,
+    database_ref: String,
+    schema_ref: String,
+    principal_ref: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ObjectAllocation {
     role: String,
-    provider: Provider,
+    protocol: Protocol,
     bucket_ref: String,
     prefix_ref: String,
     identity_ref: String,
@@ -32,7 +42,7 @@ struct ObjectAllocation {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Provider {
+enum Protocol {
     S3,
     Gcs,
 }
@@ -58,6 +68,24 @@ pub(super) fn load(path: &Path) -> Result<ObjectBackingConfig, String> {
     if contract.requested_generation == 0 {
         return Err("deployment_backing_file requested_generation must be positive".into());
     }
+    let mut database_roles = std::collections::BTreeSet::new();
+    for database in &contract.databases {
+        if !database_roles.insert(database.role.as_str()) {
+            return Err("deployment_backing_file contains duplicate database roles".into());
+        }
+        for (name, value) in [
+            ("role", database.role.as_str()),
+            ("database_ref", database.database_ref.as_str()),
+            ("schema_ref", database.schema_ref.as_str()),
+            ("principal_ref", database.principal_ref.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!(
+                    "deployment_backing_file database.{name} must be non-empty"
+                ));
+            }
+        }
+    }
     let mut files = contract
         .objects
         .into_iter()
@@ -81,9 +109,9 @@ pub(super) fn load(path: &Path) -> Result<ObjectBackingConfig, String> {
         }
     }
     let config = ObjectBackingConfig {
-        provider: match allocation.provider {
-            Provider::S3 => ObjectBackingProvider::S3,
-            Provider::Gcs => ObjectBackingProvider::Gcs,
+        provider: match allocation.protocol {
+            Protocol::S3 => ObjectBackingProvider::S3,
+            Protocol::Gcs => ObjectBackingProvider::Gcs,
         },
         bucket: allocation.bucket_ref,
         prefix: allocation.prefix_ref,
@@ -133,8 +161,12 @@ mod tests {
             "scope_ref": "workspace/a",
             "cell_id": "cell-a",
             "requested_generation": 3,
+            "databases": [{
+                "role": "resources", "database_ref": "databases/awaken-a",
+                "schema_ref": "schemas/resources", "principal_ref": "identities/resources"
+            }],
             "objects": [{
-                "role": "files", "provider": "gcs", "bucket_ref": "awaken-a",
+                "role": "files", "protocol": "gcs", "bucket_ref": "awaken-a",
                 "prefix_ref": "deployments/a/files", "identity_ref": "identities/files",
                 "encryption_key_ref": "keys/a", "region": null, "endpoint": null
             }]
@@ -143,9 +175,10 @@ mod tests {
 
     #[test]
     fn contract_requires_one_exact_secret_free_files_allocation() {
-        // Cause/effect graph: C1=schema/identity/generation valid, C2=exactly
-        // one files role, C3=all custody refs non-empty, C4=provider coordinates
-        // compatible. R1(C1..C4)->one ObjectFileStore config; R2(any false)->
+        // Cause/effect graph: C1=schema/identity/generation valid, C2=unique
+        // complete database evidence, C3=exactly one files role, C4=all
+        // custody refs non-empty, C5=protocol coordinates compatible.
+        // R1(C1..C5)->one ObjectFileStore config; R2(any false)->
         // fail before database, credentials, or object network are opened.
         let file = write(valid());
         let config = load(file.path()).unwrap();
@@ -162,6 +195,9 @@ mod tests {
         let mut empty_identity = valid();
         empty_identity["objects"][0]["identity_ref"] = serde_json::json!("");
         assert!(load(write(empty_identity).path()).is_err());
+        let mut empty_database = valid();
+        empty_database["databases"][0]["principal_ref"] = serde_json::json!("");
+        assert!(load(write(empty_database).path()).is_err());
         let mut provider_conflict = valid();
         provider_conflict["objects"][0]["region"] = serde_json::json!("us-central1");
         assert!(load(write(provider_conflict).path()).is_err());
