@@ -152,6 +152,8 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
             projection.environment.binding().map(str::to_owned),
         )?;
         self.runtime
+            .install_session_request_context(session_id, projection.request_context.clone())?;
+        self.runtime
             .prepare_session(session_id, projection.session_init())
             .await?;
         if let Some(binding) = projection.environment.binding() {
@@ -291,10 +293,18 @@ impl SessionApplication {
         owner_scope: &str,
         session: &PersistedSession,
     ) -> Result<(), SessionRealizationError> {
-        let projection = Self::frozen_session_projection(owner_scope.to_string(), session)
+        let projection = self
+            .frozen_session_projection(owner_scope.to_string(), session, true)
+            .await
             .map_err(|error| {
                 SessionRealizationError::Effect(RunError::internal(error.to_string()))
             })?;
+        self.runtime()
+            .install_session_request_context(
+                &session.session_id,
+                projection.request_context.clone(),
+            )
+            .map_err(SessionRealizationError::Effect)?;
         self.runtime()
             .prepare_session(&session.session_id, projection.session_init())
             .await
@@ -530,16 +540,26 @@ impl SessionApplication {
             .collect()
     }
 
-    fn realization_directive(
+    async fn realization_directive(
+        &self,
         owner_scope: String,
         session: &PersistedSession,
         action: SessionRealizationAction,
         activate_pending_resources: bool,
     ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+        let materialize_request_context = matches!(
+            &action,
+            SessionRealizationAction::Stage {
+                prepare_session: true,
+                ..
+            }
+        );
         let projection = if activate_pending_resources {
-            SessionApplication::frozen_session_projection(owner_scope, session)
+            self.frozen_session_projection(owner_scope, session, materialize_request_context)
+                .await
         } else {
-            SessionApplication::active_frozen_session_projection(owner_scope, session)
+            self.active_frozen_session_projection(owner_scope, session, materialize_request_context)
+                .await
         }
         .map_err(|error| unavailable(error.to_string()))?;
         Ok(SessionRealizationDirective {
@@ -552,7 +572,8 @@ impl SessionApplication {
         })
     }
 
-    fn next_action(
+    async fn next_action(
+        &self,
         owner_scope: String,
         session: &PersistedSession,
         prepare_projection: bool,
@@ -566,15 +587,17 @@ impl SessionApplication {
         let prepare_session = prepare_projection
             || (activate_pending_resources && session.resources.pending.is_some());
         if prepare_session || !stages.is_empty() {
-            return Self::realization_directive(
-                owner_scope,
-                session,
-                SessionRealizationAction::Stage {
-                    prepare_session,
-                    mcp_stages: stages,
-                },
-                activate_pending_resources,
-            );
+            return self
+                .realization_directive(
+                    owner_scope,
+                    session,
+                    SessionRealizationAction::Stage {
+                        prepare_session,
+                        mcp_stages: stages,
+                    },
+                    activate_pending_resources,
+                )
+                .await;
         }
         let publish = Self::publication_generations(session)?;
         let drain = Self::draining_generations(session)?;
@@ -583,7 +606,8 @@ impl SessionApplication {
         } else {
             SessionRealizationAction::Publish { publish, drain }
         };
-        Self::realization_directive(owner_scope, session, action, activate_pending_resources)
+        self.realization_directive(owner_scope, session, action, activate_pending_resources)
+            .await
     }
 
     async fn session_for_realization(
@@ -675,12 +699,14 @@ impl SessionRealizationControl for SessionApplication {
                     command.target.lease_expires_at_unix_ms > lease.expires_at_unix_ms
                 });
             if !needs_assignment && !renews_assignment && requested.is_empty() {
-                return Self::next_action(
-                    owner_scope,
-                    &session,
-                    false,
-                    !command.target.renew_existing_lease,
-                );
+                return self
+                    .next_action(
+                        owner_scope,
+                        &session,
+                        false,
+                        !command.target.renew_existing_lease,
+                    )
+                    .await;
             }
 
             let lease = if needs_assignment {
@@ -796,12 +822,14 @@ impl SessionRealizationControl for SessionApplication {
                 .await
             {
                 Ok(session) => {
-                    return Self::next_action(
-                        owner_scope,
-                        &session,
-                        needs_assignment,
-                        !command.target.renew_existing_lease,
-                    );
+                    return self
+                        .next_action(
+                            owner_scope,
+                            &session,
+                            needs_assignment,
+                            !command.target.renew_existing_lease,
+                        )
+                        .await;
                 }
                 Err(SessionMutationError::Conflict)
                     if attempt + 1 < SessionApplication::ROOT_CAS_ATTEMPTS =>
@@ -860,7 +888,7 @@ impl SessionRealizationControl for SessionApplication {
             // A heartbeat advanced only the exact lease expiry while this Stage
             // was in flight. The predecessor receipt commits nothing; return the
             // latest Stage so the one driver catches up under current authority.
-            return Self::next_action(owner_scope, &session, false, false);
+            return self.next_action(owner_scope, &session, false, false).await;
         }
         for receipt in &command.mcp_receipts {
             let request = expected
@@ -917,12 +945,14 @@ impl SessionRealizationControl for SessionApplication {
         if !needs_activation_commit {
             let publish = Self::publication_generations(&session)?;
             let drain = Self::draining_generations(&session)?;
-            return Self::realization_directive(
-                owner_scope,
-                &session,
-                SessionRealizationAction::Publish { publish, drain },
-                false,
-            );
+            return self
+                .realization_directive(
+                    owner_scope,
+                    &session,
+                    SessionRealizationAction::Publish { publish, drain },
+                    false,
+                )
+                .await;
         }
         if prepared_pending_resources {
             session.resources.commit().map_err(unavailable)?;
@@ -994,16 +1024,17 @@ impl SessionRealizationControl for SessionApplication {
                 error => unavailable(error),
             })?;
         if renewed_after_activation > 0 {
-            return Self::next_action(owner_scope, &session, false, false);
+            return self.next_action(owner_scope, &session, false, false).await;
         }
         let publish = Self::publication_generations(&session)?;
         let drain = Self::draining_generations(&session)?;
-        Self::realization_directive(
+        self.realization_directive(
             owner_scope,
             &session,
             SessionRealizationAction::Publish { publish, drain },
             false,
         )
+        .await
     }
 
     async fn acknowledge_session_realization(
@@ -1048,12 +1079,14 @@ impl SessionRealizationControl for SessionApplication {
             && replayed_drain
             && session.execution == SessionExecutionState::Idle
         {
-            return Self::realization_directive(
-                owner_scope,
-                &session,
-                SessionRealizationAction::Complete,
-                false,
-            );
+            return self
+                .realization_directive(
+                    owner_scope,
+                    &session,
+                    SessionRealizationAction::Complete,
+                    false,
+                )
+                .await;
         }
         let publish_mismatch = keys(&expected_publish) != keys(&command.published);
         let drain_mismatch = keys(&expected_drain) != keys(&command.drained);
@@ -1065,7 +1098,7 @@ impl SessionRealizationControl for SessionApplication {
             // heartbeat advanced durable authority. Do not acknowledge the old
             // fence and do not fail the Session: return the latest Stage/Publish
             // work to the same canonical driver.
-            return Self::next_action(owner_scope, &session, false, false);
+            return self.next_action(owner_scope, &session, false, false).await;
         }
         if publish_mismatch || drain_mismatch {
             return Err(SessionRealizationControlFailure::Invalid(
@@ -1128,12 +1161,13 @@ impl SessionRealizationControl for SessionApplication {
         if ready_fact.is_some() {
             self.notify_lifecycle_fact();
         }
-        Self::realization_directive(
+        self.realization_directive(
             owner_scope,
             &session,
             SessionRealizationAction::Complete,
             false,
         )
+        .await
     }
 
     async fn fail_session_realization(

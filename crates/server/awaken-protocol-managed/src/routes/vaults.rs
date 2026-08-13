@@ -474,6 +474,20 @@ impl VaultState {
         awaken_credential_contract::CredentialAccess,
         awaken_credential_vault::CredentialError,
     > {
+        self.compile_mcp_access_for_source(source_id, None).await
+    }
+
+    /// The single MCP execution-pin compiler. `workspace_id` narrows admission
+    /// at the existing exact row read; refresh projection is identical for
+    /// scoped and unscoped trusted callers.
+    async fn compile_mcp_access_for_source(
+        &self,
+        source_id: &CredentialSourceId,
+        workspace_id: Option<&str>,
+    ) -> Result<
+        awaken_credential_contract::CredentialAccess,
+        awaken_credential_vault::CredentialError,
+    > {
         use awaken_credential_contract::{
             CredentialExecutionPolicy, CredentialRefreshAccess, CredentialUsage,
         };
@@ -481,7 +495,7 @@ impl VaultState {
         let (source, mut access) = self
             .exact_access_for_source(
                 source_id,
-                None,
+                workspace_id,
                 CredentialUsage::HttpHeader {
                     name: "authorization".into(),
                     scheme: Some("Bearer".into()),
@@ -554,29 +568,6 @@ impl VaultState {
             ));
         }
         Ok(access)
-    }
-
-    async fn mcp_access_for_source_in_workspace(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-    ) -> Result<
-        awaken_credential_contract::CredentialAccess,
-        awaken_credential_vault::CredentialError,
-    > {
-        use awaken_credential_contract::{CredentialExecutionPolicy, CredentialUsage};
-
-        self.exact_access_for_source(
-            source_id,
-            Some(workspace_id),
-            CredentialUsage::HttpHeader {
-                name: "authorization".into(),
-                scheme: Some("Bearer".into()),
-            },
-            CredentialExecutionPolicy::self_hosted_mcp(),
-        )
-        .await
-        .map(|(_, access)| access)
     }
 
     fn project_vault(id: &str, record: &VaultRecord) -> Vault {
@@ -688,7 +679,7 @@ impl SessionCredentialSource for VaultState {
         source_id: &CredentialSourceId,
         workspace_id: &str,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
-        self.mcp_access_for_source_in_workspace(source_id, workspace_id)
+        self.compile_mcp_access_for_source(source_id, Some(workspace_id))
             .await
             .map_err(|error| error.to_string())
     }

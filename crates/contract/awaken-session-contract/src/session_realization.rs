@@ -28,6 +28,11 @@ pub struct FrozenSessionProjection {
     #[serde(default)]
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
     pub mcp: Vec<crate::SessionMcpAttachment>,
+    /// Materialized, rebuildable view of `baseline.transcript_prefix`. It is
+    /// populated only on a projection-preparation Stage, crosses the Worker
+    /// boundary, and is never persisted as Session or Thread truth.
+    #[serde(default)]
+    pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
 }
 
 impl FrozenSessionProjection {

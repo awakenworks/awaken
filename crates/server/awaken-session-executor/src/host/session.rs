@@ -1381,6 +1381,11 @@ impl SharedHost {
             awaken_runtime_contract::RuntimeRunContext::new(),
             awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
         );
+        let mut run_context = run_context;
+        run_context.request_context = self
+            .session_slots
+            .read(thread, |slot| slot.request_context.clone())
+            .unwrap_or_default();
         let run_context = mcp.plugins.iter().cloned().fold(
             run_context,
             awaken_runtime_contract::RuntimeRunContext::with_session_plugin,

@@ -58,6 +58,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/key-design-decisions.md` | Decision record | Not required | n/a |
 | `design/runtime-behavior.md` | Role owner | Required | self |
 | `design/auxiliary-context-windows.md` | Design narrative | Not required | n/a |
+| `design/session-branch-prefixes.md` | Product/downstream mapping | Not required | n/a |
 | `design/runtime-scenario-validation.md` | Coverage map | Not required | n/a |
 | `design/runtime-interface-boundaries.md` | Role owner | Required | self |
 | `design/neutral-waist.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |

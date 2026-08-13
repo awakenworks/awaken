@@ -746,6 +746,7 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
                     mounts: Vec::new(),
                     env: Vec::new(),
                     prompts: Vec::new(),
+                    transcript_prefix: None,
                 },
             ),
         ),

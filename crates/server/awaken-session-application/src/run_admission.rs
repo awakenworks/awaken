@@ -402,6 +402,7 @@ impl SessionApplication {
                 mounts,
                 env,
                 prompts,
+                transcript_prefix: None,
                 resources,
                 initial_mcp,
             },

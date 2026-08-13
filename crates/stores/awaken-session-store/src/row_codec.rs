@@ -296,6 +296,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         mounts: Vec::new(),
         env: Vec::new(),
         prompts: Vec::new(),
+        transcript_prefix: None,
     });
     let mut drafts = Vec::with_capacity(runtime.mcp_servers.len());
     for server in runtime.mcp_servers {
