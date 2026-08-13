@@ -40,9 +40,9 @@ pub async fn awaken_control::admin_assistant::seed_admin_assistant(&awaken_confi
 pub mod awaken_control::authz
 pub enum awaken_control::authz::HostedRuntimePathMatch
 pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix
-pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix::path: &'static str
+pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix::path: alloc::string::String
 pub awaken_control::authz::HostedRuntimePathMatch::PathTemplate
-pub awaken_control::authz::HostedRuntimePathMatch::PathTemplate::path_template: &'static str
+pub awaken_control::authz::HostedRuntimePathMatch::PathTemplate::path_template: alloc::string::String
 pub enum awaken_control::authz::ManagementIdentityMode
 pub awaken_control::authz::ManagementIdentityMode::AwakenCloud
 pub awaken_control::authz::ManagementIdentityMode::NoLogin
@@ -133,9 +133,9 @@ pub awaken_control::worker_stores::InferenceMaterializationStores::secrets: allo
 pub async fn awaken_control::worker_stores::open_inference_materialization_stores(&awaken_control::control_stores::ControlStoreConfig, &[u8; 32]) -> awaken_control::worker_stores::InferenceMaterializationStores
 pub enum awaken_control::HostedRuntimePathMatch
 pub awaken_control::HostedRuntimePathMatch::PathPrefix
-pub awaken_control::HostedRuntimePathMatch::PathPrefix::path: &'static str
+pub awaken_control::HostedRuntimePathMatch::PathPrefix::path: alloc::string::String
 pub awaken_control::HostedRuntimePathMatch::PathTemplate
-pub awaken_control::HostedRuntimePathMatch::PathTemplate::path_template: &'static str
+pub awaken_control::HostedRuntimePathMatch::PathTemplate::path_template: alloc::string::String
 pub enum awaken_control::ManagementIdentityMode
 pub awaken_control::ManagementIdentityMode::AwakenCloud
 pub awaken_control::ManagementIdentityMode::NoLogin

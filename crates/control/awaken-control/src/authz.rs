@@ -713,7 +713,17 @@ enum RouteAuthz {
 struct RoutePolicyDescriptor {
     prefix: &'static str,
     policy: RouteFamilyPolicy,
-    hosted_runtime_route: Option<HostedRuntimePathMatch>,
+    hosted_runtime_route: Option<HostedRuntimeRouteDescriptor>,
+}
+
+/// Canonical flat route classification retained beside its IAM policy.
+///
+/// The public hosted profile derives both ingress spellings from this one
+/// value. It deliberately does not store a second workspace-prefixed path.
+#[derive(Debug, Clone, Copy)]
+enum HostedRuntimeRouteDescriptor {
+    PathPrefix(&'static str),
+    PathTemplate(&'static str),
 }
 
 impl RoutePolicyDescriptor {
@@ -729,7 +739,7 @@ impl RoutePolicyDescriptor {
         Self {
             prefix,
             policy,
-            hosted_runtime_route: Some(HostedRuntimePathMatch::PathPrefix { path: prefix }),
+            hosted_runtime_route: Some(HostedRuntimeRouteDescriptor::PathPrefix(prefix)),
         }
     }
 
@@ -741,8 +751,31 @@ impl RoutePolicyDescriptor {
         Self {
             prefix,
             policy,
-            hosted_runtime_route: Some(HostedRuntimePathMatch::PathTemplate { path_template }),
+            hosted_runtime_route: Some(HostedRuntimeRouteDescriptor::PathTemplate(path_template)),
         }
+    }
+}
+
+impl HostedRuntimeRouteDescriptor {
+    fn export(self) -> [HostedRuntimePathMatch; 2] {
+        let flat = match self {
+            Self::PathPrefix(path) => HostedRuntimePathMatch::PathPrefix {
+                path: path.to_owned(),
+            },
+            Self::PathTemplate(path_template) => HostedRuntimePathMatch::PathTemplate {
+                path_template: path_template.to_owned(),
+            },
+        };
+        let canonical = match self {
+            Self::PathPrefix(path) | Self::PathTemplate(path) => path,
+        };
+        let suffix = canonical
+            .strip_prefix("/v1")
+            .expect("hosted runtime route descriptors are canonical /v1 paths");
+        let workspace = HostedRuntimePathMatch::PathTemplate {
+            path_template: format!("/v1/workspaces/{{workspace_id}}{suffix}"),
+        };
+        [flat, workspace]
     }
 }
 
@@ -752,11 +785,11 @@ impl RoutePolicyDescriptor {
 /// a shared family exact: `{name}` denotes one non-empty path segment, so a
 /// deployment can compile it to its gateway's native matcher without routing
 /// the Control-owned siblings beside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "match", rename_all = "snake_case")]
 pub enum HostedRuntimePathMatch {
-    PathPrefix { path: &'static str },
-    PathTemplate { path_template: &'static str },
+    PathPrefix { path: String },
+    PathTemplate { path_template: String },
 }
 
 /// Deterministic release contract consumed by hosted deployment routing.
@@ -775,6 +808,7 @@ pub fn hosted_runtime_route_profile() -> HostedRuntimeRouteProfile {
         routes: ROUTE_POLICIES
             .iter()
             .filter_map(|descriptor| descriptor.hosted_runtime_route)
+            .flat_map(HostedRuntimeRouteDescriptor::export)
             .collect(),
     }
 }
