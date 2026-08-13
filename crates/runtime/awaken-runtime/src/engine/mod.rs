@@ -103,5 +103,16 @@ fn map_resolver_error(err: resolver::Error) -> Error {
     Error::Resolution(err.to_string())
 }
 
+/// Build the model-visible transcript from request-only context followed by
+/// committed Thread truth. The prefix is deliberately cloned into the attempt
+/// view and never returned as `new_messages`, so every execution path gets the
+/// same context semantics without creating another durable transcript.
+fn model_transcript(context: &RuntimeRunContext, committed: Vec<Message>) -> Vec<Message> {
+    let mut transcript = Vec::with_capacity(context.request_context.len() + committed.len());
+    transcript.extend(context.request_context.iter().cloned());
+    transcript.extend(committed);
+    transcript
+}
+
 #[cfg(test)]
 mod tests;

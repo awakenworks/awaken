@@ -53,15 +53,14 @@ pub(crate) async fn run_agent_loop(
     // watermark resets per attempt, so it cannot tell). Keyed on the stable
     // message id, a fresh run's uncommitted input passes through unchanged while a
     // reclaimed or redelivered input is dropped — input delivery is idempotent.
-    let mut transcript = context
+    let committed = context
         .reader
         .as_ref()
         .map(|reader| reader.committed_messages(&thread_id))
         .unwrap_or_default();
-    let committed_ids: std::collections::HashSet<_> = transcript
-        .iter()
-        .map(|message| message.id.clone())
-        .collect();
+    let committed_ids: std::collections::HashSet<_> =
+        committed.iter().map(|message| message.id.clone()).collect();
+    let mut transcript = model_transcript(&context, committed);
     let run_input: std::sync::Arc<[Message]> = activation.input.clone().into();
     let fresh_input: Vec<Message> = activation
         .input
