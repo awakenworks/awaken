@@ -1,4 +1,4 @@
-//! Object-store backend (`s3` feature): S3 / MinIO / GCS / Azure via `object_store`.
+//! Object-store backend (`object-store` feature) via the `object_store` crate.
 //! The object **key is the content id**, so writes are naturally immutable and
 //! idempotent. Unit-tested against the in-memory object store; real S3 needs creds.
 
@@ -8,25 +8,95 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use object_store::{ObjectStore, PutPayload, path::Path as ObjPath};
 
-use crate::{FileStore, FileStoreError, content_id};
+use crate::{FileStore, FileStoreError, content_id, safe_id};
+
+/// Provider selected by a secret-free deployment backing contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObjectStoreProvider {
+    S3,
+    Gcs,
+}
+
+/// Secret-free object allocation. Credentials come only from the provider
+/// workload-identity chain; this value never accepts static keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectFileStoreConfig {
+    pub provider: ObjectStoreProvider,
+    pub bucket: String,
+    pub prefix: String,
+    pub region: Option<String>,
+    pub endpoint: Option<String>,
+}
+
+impl ObjectFileStoreConfig {
+    pub fn validate(&self) -> Result<(), FileStoreError> {
+        if self.bucket.trim().is_empty() || self.prefix.trim_matches('/').is_empty() {
+            return Err(e("object bucket and prefix must be non-empty"));
+        }
+        if self
+            .prefix
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(e("object prefix must be a normalized relative path"));
+        }
+        match self.provider {
+            ObjectStoreProvider::S3 if self.region.as_deref().is_none_or(str::is_empty) => {
+                Err(e("S3 object backing requires a region"))
+            }
+            ObjectStoreProvider::Gcs if self.endpoint.is_some() || self.region.is_some() => Err(e(
+                "GCS object backing does not accept S3 region or endpoint fields",
+            )),
+            _ => Ok(()),
+        }
+    }
+}
 
 fn e(x: impl ToString) -> FileStoreError {
     FileStoreError(x.to_string())
 }
 
 /// An object-store-backed [`FileStore`]. `prefix` namespaces the keys (e.g. `blobs`).
-pub struct S3FileStore {
+pub struct ObjectFileStore {
     store: Arc<dyn ObjectStore>,
     prefix: String,
 }
 
-impl S3FileStore {
-    /// Wrap any `object_store` implementation (real S3, MinIO, or the in-memory one).
+impl ObjectFileStore {
+    /// Wrap any supported `object_store` implementation.
     pub fn new(store: Arc<dyn ObjectStore>, prefix: impl Into<String>) -> Self {
         Self {
             store,
             prefix: prefix.into(),
         }
+    }
+
+    /// Build the one network adapter from a secret-free allocation. Provider
+    /// SDK environment/metadata discovery supplies short-lived credentials.
+    pub fn from_config(config: ObjectFileStoreConfig) -> Result<Self, FileStoreError> {
+        config.validate()?;
+        let store: Arc<dyn ObjectStore> = match config.provider {
+            ObjectStoreProvider::S3 => {
+                let region = config
+                    .region
+                    .as_deref()
+                    .ok_or_else(|| e("S3 object backing requires a region"))?;
+                let mut builder = object_store::aws::AmazonS3Builder::from_env()
+                    .with_bucket_name(&config.bucket)
+                    .with_region(region);
+                if let Some(endpoint) = &config.endpoint {
+                    builder = builder.with_endpoint(endpoint);
+                }
+                Arc::new(builder.build().map_err(e)?)
+            }
+            ObjectStoreProvider::Gcs => Arc::new(
+                object_store::gcp::GoogleCloudStorageBuilder::from_env()
+                    .with_bucket_name(&config.bucket)
+                    .build()
+                    .map_err(e)?,
+            ),
+        };
+        Ok(Self::new(store, config.prefix))
     }
 
     fn key(&self, id: &str) -> ObjPath {
@@ -35,7 +105,7 @@ impl S3FileStore {
 }
 
 #[async_trait]
-impl FileStore for S3FileStore {
+impl FileStore for ObjectFileStore {
     async fn put(&self, bytes: &[u8]) -> Result<String, FileStoreError> {
         let id = content_id(bytes);
         // Content-addressed key ⇒ an identical overwrite is a harmless no-op.
@@ -47,6 +117,9 @@ impl FileStore for S3FileStore {
     }
 
     async fn get(&self, id: &str) -> Result<Option<Vec<u8>>, FileStoreError> {
+        if !safe_id(id) {
+            return Ok(None);
+        }
         match self.store.get(&self.key(id)).await {
             Ok(result) => Ok(Some(result.bytes().await.map_err(e)?.to_vec())),
             Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -69,6 +142,9 @@ impl FileStore for S3FileStore {
     }
 
     async fn delete(&self, id: &str) -> Result<bool, FileStoreError> {
+        if !safe_id(id) {
+            return Ok(false);
+        }
         // object-store `delete` is idempotent (won't report prior existence), so
         // probe with `head` first to honor the "did it exist?" contract.
         let key = self.key(id);
@@ -90,7 +166,7 @@ mod tests {
 
     #[tokio::test]
     async fn round_trips_over_the_in_memory_object_store() {
-        let store = S3FileStore::new(Arc::new(InMemory::new()), "blobs");
+        let store = ObjectFileStore::new(Arc::new(InMemory::new()), "blobs");
         let id = store.put(b"hello object store").await.unwrap();
         assert_eq!(
             id,
@@ -105,6 +181,49 @@ mod tests {
         assert!(store.list().await.unwrap().contains(&id));
         assert!(store.delete(&id).await.unwrap());
         assert!(!store.delete(&id).await.unwrap());
+        assert!(store.get("../outside").await.unwrap().is_none());
+        assert!(!store.delete("../outside").await.unwrap());
+    }
+
+    #[test]
+    fn allocation_config_is_secret_free_and_provider_exact() {
+        // Cause/effect graph: C1=bucket non-empty, C2=normalized non-empty
+        // prefix, C3=S3 has region, C4=GCS has no S3-only coordinates.
+        // Decision table: S3(C1+C2+C3)->accept; GCS(C1+C2+C4)->accept;
+        // any missing/provider-conflicting cause -> reject before credentials
+        // or network are opened. Static key fields do not exist in the type.
+        let s3 = ObjectFileStoreConfig {
+            provider: ObjectStoreProvider::S3,
+            bucket: "awaken-a".into(),
+            prefix: "deployments/a/files".into(),
+            region: Some("us-east-1".into()),
+            endpoint: None,
+        };
+        assert!(s3.validate().is_ok());
+        let gcs = ObjectFileStoreConfig {
+            provider: ObjectStoreProvider::Gcs,
+            bucket: "awaken-a".into(),
+            prefix: "deployments/a/files".into(),
+            region: None,
+            endpoint: None,
+        };
+        assert!(gcs.validate().is_ok());
+        assert!(
+            ObjectFileStoreConfig {
+                region: Some("us-central1".into()),
+                ..gcs
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ObjectFileStoreConfig {
+                prefix: "../shared".into(),
+                ..s3
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     /// Live round-trip against a real object store (MinIO/S3). Skips unless
@@ -127,7 +246,7 @@ mod tests {
             .with_allow_http(true) // path-style plain-HTTP MinIO
             .build()
             .expect("build MinIO client");
-        let store = S3FileStore::new(Arc::new(s3), "blobs");
+        let store = ObjectFileStore::new(Arc::new(s3), "blobs");
 
         let id = store.put(b"hello minio").await.unwrap();
         assert_eq!(id, store.put(b"hello minio").await.unwrap(), "idempotent");

@@ -15,6 +15,7 @@ use awaken_runtime_host::{AcpWorkerProfile, DeploymentConfig, DispatchBackend, S
 #[cfg(test)]
 use awaken_runtime_host::{ContentRedaction, PackageImageBuilder};
 mod deployment;
+mod deployment_backing;
 mod file_schema;
 mod file_support;
 mod report;
@@ -28,7 +29,7 @@ pub use awaken_worker::WorkerBootstrap;
 pub use deployment::{CloudModelMode, ConfigOverrides, OperatingMode, ResourceStoreBackend};
 use file_schema::FileConfig;
 use file_support::{
-    home_dir, is_postgres_url, override_port, read_database_url_file, resolve_dispatch_backend,
+    home_dir, override_port, read_database_url_file, resolve_dispatch_backend,
     resolve_runtime_database_url, select_store_url, validate_suite_hub_url,
 };
 pub use role::Role;
@@ -515,11 +516,11 @@ impl ResolvedDeployment {
                 data_dir.join("captured_content.db"),
             ),
         };
-        let resources = match execution_store_url(&file.resource_database_url) {
-            Some(url) if is_postgres_url(&url) => ResourceStoreBackend::Postgres(url),
-            Some(_) => return Err("resource_database_url must be postgres://".to_owned()),
-            None => ResourceStoreBackend::Embedded(data_dir.clone()),
-        };
+        let resources = deployment_backing::resolve(
+            execution_store_url(&file.resource_database_url),
+            file.deployment_backing_file.as_deref(),
+            data_dir.clone(),
+        )?;
         resources
             .validate_dispatch_compatibility(dispatch_backend == DispatchBackend::Postgres)
             .map_err(str::to_owned)?;

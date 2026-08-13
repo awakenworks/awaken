@@ -25,6 +25,18 @@ pub(super) async fn open_resources_application(
         )
         .await
         .map_err(|error| error.to_string()),
+        config::ResourceStoreBackend::PostgresObject { url, object } => {
+            awaken_resource_persistence::open_postgres_with_object_store(
+                &url,
+                match postgres_schema {
+                    PostgresSchemaMode::Migrate => awaken_resource_persistence::SchemaMode::Migrate,
+                    PostgresSchemaMode::Verify => awaken_resource_persistence::SchemaMode::Verify,
+                },
+                object,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        }
     }?;
     application
         .synchronize_skill_references()
