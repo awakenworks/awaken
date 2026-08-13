@@ -339,6 +339,7 @@ enum CredentialRealizationKind {
     WorkerProviderAdapter,
     WorkerRelay,
     PlatformProviderAdapter,
+    PlatformRelay,
 }
 
 struct CredentialRealizationReceipt {
@@ -474,6 +475,33 @@ realization receipt. Awaken defines only this neutral execution fact: it does no
 define a cloud gateway, lease protocol, IAM policy, provider route, or secret
 store. Absence of the exact holder, capability evidence, ownership fence, or
 receipt fails closed and never falls back to Worker or workload plaintext.
+
+### Amendment: platform-held Connector effects (2026-08-13)
+
+A hosted Connector uses `PlatformRelay` as the neutral realization fact for one
+trusted platform egress process. That process composes the existing
+`PinnedCredentialMaterializer` over the canonical `CredentialRepo` and
+`SecretStore`, selects an exact opaque Platform trust-domain holder, and
+resolves an immutable `CredentialAccess` only with the exact Workspace and
+target/use fingerprint. It substitutes the material and performs the bounded
+effect in the same process. The secret-free caller receives only the bounded
+upstream result and an ordinary realization receipt; credential material never
+crosses that process boundary.
+
+This amendment adds neither a Connector request DTO nor a material-transport
+protocol. The product owns its effect DTO. Its downstream Gateway owns route,
+lease, request-bound, forwarding, and response behavior. Awaken owns exact
+credential admission and materialization. The Gateway opens the same canonical
+store adapters; a copied Vault, local fallback, or raw-secret RPC is not an
+equivalent realization.
+
+`CredentialEnvelope` currently records recipient, expiry, and payload
+fingerprint constraints for an installed resolver such as CSI. Awaken does not
+currently implement a cryptographic envelope issuer, recipient public-key
+registry, ciphertext store, replay nonce, or KMS unwrap contract. A deployment
+that cannot install the canonical materializer in the Gateway therefore fails
+closed; it must not claim recipient-bound network delivery from envelope
+metadata alone.
 
 An unsupported matrix cell fails admission with a stable error. It never falls
 through to another row.

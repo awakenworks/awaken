@@ -73,3 +73,11 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Fact: hosted governance products create, recover, list, and validate generic business Credential Resource backing references through Awaken's existing `/v1/config/credentials` owner and Credential repository; reference validation uses the durable source id plus Workspace/provider and never requires a parallel operation-key map, local Vault, or provider-specific secret type.
 - Links: Flow ADR-0041 (resource credential mechanism delegates to the execution secret-by-reference seam).
 - Verification: operation-identity create/replay/conflict, scoped lookup/list, reference-validation, and secret-free response tests.
+
+## FACT-CRED-009: Hosted Connector effects use one platform-held materializer
+
+- Status: active
+- Owner: [ADR-0067 platform-held Connector effects](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md#amendment-platform-held-connector-effects-2026-08-13)
+- Fact: the trusted Gateway process composes Awaken's canonical Credential repository, SecretStore, and pinned materializer under one exact `PlatformRelay` holder; Flow receives no material and owns neither a raw-secret endpoint nor a duplicate Vault.
+- Links: [credentials and vaults](../design/credentials-and-vaults.md#hosted-governance-credential-resources)
+- Verification: exact holder, Workspace, source revision, usage, and effect-target binding tests plus the hosted Gateway effect E2E; deployments without the canonical in-process adapter fail closed because envelope metadata is not a cryptographic transport.

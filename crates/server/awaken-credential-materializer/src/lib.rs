@@ -12,6 +12,7 @@ mod credential_artifact;
 mod inference;
 #[cfg(feature = "authority")]
 mod oauth_refresh;
+mod platform_relay;
 mod secret_broker;
 
 pub use inference::{
@@ -227,7 +228,10 @@ impl PinnedCredentialMaterializer {
             material_sources,
             realization_kinds: [realization].into_iter().collect(),
             recipient_bound_envelopes,
-            extension_consumers: if realization == CredentialRealizationKind::WorkerRelay {
+            extension_consumers: if matches!(
+                realization,
+                CredentialRealizationKind::WorkerRelay | CredentialRealizationKind::PlatformRelay
+            ) {
                 self.extension_capabilities()
             } else {
                 Default::default()

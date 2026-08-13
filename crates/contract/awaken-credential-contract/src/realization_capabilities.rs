@@ -17,6 +17,10 @@ pub enum CredentialRealizationKind {
     /// credential reference without exposing provider plaintext to the Worker
     /// or workload.
     PlatformProviderAdapter,
+    /// A trusted platform egress adapter consumes exact material only while
+    /// executing a target-bound effect. The caller receives the upstream result
+    /// and secret-free receipt, never the credential material.
+    PlatformRelay,
 }
 
 /// Installed last-mile capabilities.  This is evidence, not preference policy.

@@ -2,6 +2,11 @@
 
 ## 2026-08-13
 
+- **Consolidation**: Hosted Connector effects now select the neutral
+  `PlatformRelay` realization in a trusted Gateway process that composes the
+  canonical Credential repository, SecretStore, and pinned materializer. No
+  plaintext credential RPC, copied Vault, or false cryptographic-envelope
+  claim was introduced.
 - **Consolidation**: The hosted runtime route exporter now derives canonical
   flat and explicit Workspace-prefixed matchers from the same IAM route-policy
   descriptor; Cloud remains a generic matcher compiler with no route list.

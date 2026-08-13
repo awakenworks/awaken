@@ -241,6 +241,22 @@ workspace) -> secret` call would bypass those authorities and is not a supported
 hosted contract; remote products must use an Awaken-mediated effect or a
 recipient-bound envelope instead of retaining plaintext in their server.
 
+The accepted hosted Connector path installs `PinnedCredentialMaterializer` in
+the trusted Gateway process over Awaken's canonical `CredentialRepo` and
+`SecretStore` adapters. The Gateway selects its exact opaque Platform holder
+and `PlatformRelay`, resolves the pinned source only against the route-owned
+Workspace and effect-target fingerprint, substitutes material, and performs the
+effect in that process. Flow sends a capability-scoped, secret-free effect and
+receives a bounded upstream result plus a secret-free receipt. Process
+separation therefore requires neither a plaintext material RPC nor a copied
+Vault.
+
+The current `CredentialEnvelope` values are validation metadata for installed
+resolvers, not a cryptographic network-delivery implementation: there is no
+issuer, recipient-key registry, ciphertext transport, replay ledger, or KMS
+unwrap protocol. A Gateway that cannot compose the canonical materializer and
+stores must fail closed until such an independently reviewed transport exists.
+
 The vault ACL inside `awaken-protocol-managed` maps this wire ⇄ the neutral domain below; the
 domain's `CredentialAuth` variants stay neutral (`Bearer`/`OAuth`/`EnvVar`/`ApiKey`),
 the wire keeps the Managed tags.
