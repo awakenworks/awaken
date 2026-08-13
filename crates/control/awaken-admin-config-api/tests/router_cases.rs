@@ -566,6 +566,149 @@ async fn post_credential_is_201_and_never_echoes_the_secret() {
     assert!(!serde_json::to_string(&listed).unwrap().contains(secret));
 }
 
+/// Hosted Credential Resource cause/effect graph:
+/// C1 exact Workspace/provider/operation tuple is valid; C2 a source exists;
+/// C3 submitted material equals the sealed material; C4 lookup or validation
+/// repeats the exact tuple. Effects are E1 one stable secret-free receipt,
+/// E2 exact replay is the same receipt without desired-state drift, E3 different
+/// material conflicts, and E4 a mismatched tuple is undiscoverable/fails closed.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | H1 | T | F | - | T | E1 |
+/// | H2 | T | T | T | T | E2 |
+/// | H3 | T | T | F | T | E3 |
+/// | H4 | T | T | - | F | E4 |
+#[tokio::test]
+async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
+    let h = harness();
+    let request = json!({
+        "workspace_id": "workspace-a",
+        "kind": "vault",
+        "provider_id": "domain-pack/provider",
+        "idempotency_key": "credential-resource:create:42",
+        "secret": "hosted-business-secret" // awaken-allow: secret
+    });
+    let (status, first) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "H1: {first}");
+    assert!(
+        first["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("cred:hosted-business:")
+    );
+    assert!(
+        !serde_json::to_string(&first)
+            .unwrap()
+            .contains("hosted-business-secret")
+    );
+
+    let (status, replay) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "H2: {replay}");
+    assert_eq!(replay, first, "H2");
+
+    let mut conflicting = request;
+    conflicting["secret"] = json!("different-hosted-business-secret"); // awaken-allow: secret
+    let (status, problem) = call(&h.app, "POST", "/v1/config/credentials", Some(conflicting)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "H3: {problem}");
+    assert_eq!(problem["code"], "credential_version_conflict", "H3");
+
+    let (status, found) = call(
+        &h.app,
+        "GET",
+        "/v1/config/credentials?workspace_id=workspace-a&provider_ref=domain-pack%2Fprovider&idempotency_key=credential-resource%3Acreate%3A42",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H2: {found}");
+    assert_eq!(
+        found.as_array().unwrap(),
+        std::slice::from_ref(&first),
+        "H2"
+    );
+
+    let source_id = first["id"].as_str().unwrap();
+    let (status, validated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{source_id}/validate"),
+        Some(json!({
+            "workspace_id": "workspace-a",
+            "provider_ref": "domain-pack/provider",
+            "idempotency_key": "credential-resource:create:42"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H2: {validated}");
+    assert_eq!(validated["status"], "valid", "H2");
+    assert_eq!(validated["adapter_kind"], "credential_reference", "H2");
+
+    let (status, missing) = call(
+        &h.app,
+        "GET",
+        "/v1/config/credentials?workspace_id=workspace-b&provider_ref=domain-pack%2Fprovider&idempotency_key=credential-resource%3Acreate%3A42",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "H4: {missing}");
+    assert_eq!(missing, json!([]), "H4");
+}
+
+/// Hosted-list cause/effect graph: C1 the Workspace contains ordinary and hosted
+/// sources; C2 `hosted_only=true`. C1+C2 yields only operation-owned receipts;
+/// C1+!C2 preserves the existing complete management inventory.
+#[tokio::test]
+async fn hosted_credential_list_does_not_mix_model_credentials() {
+    let h = harness();
+    enter_vault_cred(&h.app, Some("model-provider"), "model-secret").await;
+    let (status, hosted) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "vault",
+            "provider_id": "domain-pack/provider",
+            "idempotency_key": "resource-create-1",
+            "secret": "business-secret" // awaken-allow: secret
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{hosted}");
+
+    let (status, hosted_only) = call(
+        &h.app,
+        "GET",
+        "/v1/config/credentials?workspace_id=ws&hosted_only=true",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{hosted_only}");
+    assert_eq!(hosted_only.as_array().unwrap(), &[hosted]);
+
+    let (status, all) = call(
+        &h.app,
+        "GET",
+        "/v1/config/credentials?workspace_id=ws",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{all}");
+    assert_eq!(all.as_array().unwrap().len(), 2);
+}
+
 /// Cause-effect graph: the generic API accepts a namespaced material type and
 /// opaque fields without knowing an SSH/database/vendor schema; exactly one of
 /// legacy scalar or structured material may cross the write-only seam.

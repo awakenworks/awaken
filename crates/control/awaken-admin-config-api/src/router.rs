@@ -21,7 +21,8 @@ use awaken_config_resolver::{
 };
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
-    CredentialMaterialPatch, CredentialRepo, enter_credential, rotate_credential_materials_exact,
+    CredentialMaterialPatch, CredentialRepo, enter_credential,
+    enter_credential_idempotent_verified, rotate_credential_materials_exact,
 };
 use awaken_credential_vault::{
     AvailabilityLedger, AvailabilityState, CredentialBinding, CredentialCreateParams,
@@ -39,6 +40,7 @@ use axum::http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use sha2::{Digest, Sha256};
 
 use crate::provider_connection::{
     ConnectProviderCommand, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
@@ -1267,7 +1269,14 @@ async fn archive_credential(
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ValidateCredentialRequest {
     workspace_id: String,
-    model_id: String,
+    #[serde(default)]
+    model_id: Option<String>,
+    /// Generic hosted-governance validation mode. Both fields are required
+    /// together and are mutually exclusive with `model_id`.
+    #[serde(default)]
+    provider_ref: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 /// The secret-free result of a live credential probe.
@@ -1289,16 +1298,60 @@ async fn validate_credential(
     Json(request): Json<ValidateCredentialRequest>,
 ) -> Result<Json<CredentialValidation>, Problem> {
     let rid = req_id(&headers);
+    let workspace = scope.as_ref().map_or_else(
+        || request.workspace_id.clone(),
+        |Extension(scope)| scope.0.clone(),
+    );
+    if let (None, Some(provider_ref), Some(idempotency_key)) = (
+        request.model_id.as_ref(),
+        request.provider_ref.as_deref(),
+        request.idempotency_key.as_deref(),
+    ) {
+        validate_hosted_credential_identity(&workspace, provider_ref, idempotency_key)
+            .map_err(|error| cred_problem(&error, &rid))?;
+        let expected_id = hosted_credential_source_id(&workspace, provider_ref, idempotency_key);
+        if expected_id.0 != id {
+            return Err(cred_problem(&CredentialError::SourceNotFound(id), &rid));
+        }
+        let source = credential_in_scope(&state, &expected_id, scope.as_ref(), &rid).await?;
+        if !hosted_credential_matches(&source, &workspace, provider_ref) {
+            return Err(cred_problem(
+                &CredentialError::MutationConflict(
+                    "credential source does not match the exact hosted operation identity".into(),
+                ),
+                &rid,
+            ));
+        }
+        return Ok(Json(CredentialValidation {
+            status: ProbeStatus::Valid,
+            adapter_kind: "credential_reference".into(),
+        }));
+    }
+    let model_id = match (
+        request.model_id,
+        request.provider_ref,
+        request.idempotency_key,
+    ) {
+        (Some(model_id), None, None) if !model_id.trim().is_empty() => model_id,
+        _ => {
+            return Err(cred_problem(
+                &CredentialError::InvalidSource(
+                    "choose either model_id or the provider_ref + idempotency_key validation mode"
+                        .into(),
+                ),
+                &rid,
+            ));
+        }
+    };
     let catalog = state
         .catalog
         .snapshot()
         .await
         .map_err(|e| repo_problem(&e, &rid))?;
-    let workspace = scope.map_or(request.workspace_id, |Extension(scope)| scope.0);
     let lookup = workspace_lookup(&state, &workspace, &rid).await?;
     let resolved = resolve_inference(
         &catalog,
-        &request.model_id,
+        &model_id,
         &CredentialBinding::Exact {
             credential_source_id: CredentialSourceId(id),
         },
@@ -1314,7 +1367,7 @@ async fn validate_credential(
                 .probe(
                     resolved.base_url.as_deref().unwrap_or_default(),
                     secret,
-                    &request.model_id,
+                    &model_id,
                 )
                 .await
         }
@@ -1334,6 +1387,10 @@ async fn validate_credential(
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EnterCredentialRequest {
     workspace_id: String,
+    /// Stable hosted-governance operation identity. When present, `provider_id`
+    /// is required and the exact tuple is the idempotent credential identity.
+    #[serde(default)]
+    idempotency_key: Option<String>,
     kind: CredentialKind,
     #[serde(default)]
     provider_id: Option<String>,
@@ -1407,6 +1464,59 @@ pub struct CredentialSourceView {
     pub version: i64,
 }
 
+fn hosted_credential_source_id(
+    workspace_id: &str,
+    provider_ref: &str,
+    idempotency_key: &str,
+) -> CredentialSourceId {
+    let mut digest = Sha256::new();
+    for part in [
+        "hosted-governance-credential-v1",
+        workspace_id,
+        provider_ref,
+        idempotency_key,
+    ] {
+        digest.update(part.len().to_be_bytes());
+        digest.update(part.as_bytes());
+    }
+    CredentialSourceId(format!("cred:hosted-business:{:x}", digest.finalize()))
+}
+
+fn validate_hosted_credential_identity(
+    workspace_id: &str,
+    provider_ref: &str,
+    idempotency_key: &str,
+) -> Result<(), CredentialError> {
+    if workspace_id.trim().is_empty()
+        || provider_ref.trim().is_empty()
+        || idempotency_key.trim().is_empty()
+        || idempotency_key.len() > 200
+    {
+        return Err(CredentialError::InvalidSource(
+            "hosted credential identity requires a Workspace, provider_ref, and 1..200 character idempotency_key"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_hosted_credential(source: &CredentialSource) -> bool {
+    source.id.0.starts_with("cred:hosted-business:")
+}
+
+fn hosted_credential_matches(
+    source: &CredentialSource,
+    workspace_id: &str,
+    provider_ref: &str,
+) -> bool {
+    source.workspace_id == workspace_id
+        && source.provider_id.as_deref() == Some(provider_ref)
+        && source.kind == CredentialKind::Vault
+        && source.status == CredentialStatus::Active
+        && source.material_ref.is_some()
+        && source.worker_local_binding.is_none()
+}
+
 impl From<CredentialSource> for CredentialSourceView {
     fn from(source: CredentialSource) -> Self {
         let oauth_helper = source
@@ -1435,7 +1545,10 @@ async fn post_credential(
     Json(body): Json<EnterCredentialRequest>,
 ) -> Result<(StatusCode, Json<CredentialSourceView>), Problem> {
     let rid = req_id(&headers);
-    if !capabilities.models.byok_enabled && body.provider_id.is_some() {
+    if body.idempotency_key.is_none()
+        && !capabilities.models.byok_enabled
+        && body.provider_id.is_some()
+    {
         return Err(model_supply_managed(&rid));
     }
     let legacy_secret = body.secret.filter(|secret| !secret.is_empty());
@@ -1472,17 +1585,53 @@ async fn post_credential(
         }
         (_, None) => None,
     };
+    let workspace_id = scope.map_or(body.workspace_id, |Extension(scope)| scope.0);
+    let idempotent_id = match (body.idempotency_key.as_deref(), body.provider_id.as_deref()) {
+        (Some(key), Some(provider_ref))
+            if body.kind == CredentialKind::Vault
+                && secret.is_some()
+                && oauth_command.is_none() =>
+        {
+            validate_hosted_credential_identity(&workspace_id, provider_ref, key)
+                .map_err(|error| cred_problem(&error, &rid))?;
+            Some(hosted_credential_source_id(
+                &workspace_id,
+                provider_ref,
+                key,
+            ))
+        }
+        (Some(_), _) => {
+            return Err(cred_problem(
+                &CredentialError::InvalidSource(
+                    "idempotent hosted credentials require a provider_id, Vault kind, and material"
+                        .into(),
+                ),
+                &rid,
+            ));
+        }
+        (None, _) => None,
+    };
     let params = CredentialCreateParams {
-        workspace_id: scope.map_or(body.workspace_id, |Extension(scope)| scope.0),
+        workspace_id,
         kind: body.kind,
         provider_id: body.provider_id,
         env_key: body.env_key,
         secret,
         oauth_command,
     };
-    let source = enter_credential(params, &*state.secrets, &*state.credentials)
+    let source = match idempotent_id {
+        Some(id) => enter_credential_idempotent_verified(
+            id,
+            params,
+            None,
+            state.secrets.as_ref(),
+            state.credentials.as_ref(),
+        )
         .await
-        .map_err(|e| cred_problem(&e, &rid))?;
+        .map(|entry| entry.source),
+        None => enter_credential(params, &*state.secrets, &*state.credentials).await,
+    }
+    .map_err(|e| cred_problem(&e, &rid))?;
     Ok((StatusCode::CREATED, Json(source.into())))
 }
 
@@ -1542,6 +1691,12 @@ async fn get_credential(
 #[derive(serde::Deserialize)]
 struct ListCredentialsQuery {
     workspace_id: String,
+    #[serde(default)]
+    provider_ref: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    #[serde(default)]
+    hosted_only: bool,
 }
 
 async fn list_credentials(
@@ -1551,12 +1706,48 @@ async fn list_credentials(
     headers: HeaderMap,
 ) -> Result<Json<Vec<CredentialSourceView>>, Problem> {
     let workspace = scope.map_or(query.workspace_id, |Extension(scope)| scope.0);
+    if query.provider_ref.is_some() != query.idempotency_key.is_some() {
+        return Err(cred_problem(
+            &CredentialError::InvalidSource(
+                "provider_ref and idempotency_key must be supplied together for operation lookup"
+                    .into(),
+            ),
+            &req_id(&headers),
+        ));
+    }
+    if let (Some(provider_ref), Some(idempotency_key)) = (
+        query.provider_ref.as_deref(),
+        query.idempotency_key.as_deref(),
+    ) {
+        validate_hosted_credential_identity(&workspace, provider_ref, idempotency_key)
+            .map_err(|error| cred_problem(&error, &req_id(&headers)))?;
+        let id = hosted_credential_source_id(&workspace, provider_ref, idempotency_key);
+        return match state.credentials.get(&id).await {
+            Ok(source) if hosted_credential_matches(&source, &workspace, provider_ref) => {
+                Ok(Json(vec![source.into()]))
+            }
+            Ok(_) => Err(cred_problem(
+                &CredentialError::MutationConflict(
+                    "hosted credential operation identity conflicts with durable metadata".into(),
+                ),
+                &req_id(&headers),
+            )),
+            Err(CredentialError::SourceNotFound(_)) => Ok(Json(Vec::new())),
+            Err(error) => Err(cred_problem(&error, &req_id(&headers))),
+        };
+    }
     let sources = state
         .credentials
         .list(&workspace)
         .await
         .map_err(|e| cred_problem(&e, &req_id(&headers)))?;
-    Ok(Json(sources.into_iter().map(Into::into).collect()))
+    Ok(Json(
+        sources
+            .into_iter()
+            .filter(|source| !query.hosted_only || is_hosted_credential(source))
+            .map(Into::into)
+            .collect(),
+    ))
 }
 
 #[cfg(test)]

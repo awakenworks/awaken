@@ -208,3 +208,11 @@
   WAL and CAS for trusted hosted application MCP bearers.
 - Kept Managed Session creation and MCP normalization authoritative; hosted
   applications retain no local credential or Session fallback.
+
+## 2026-08-13 (Hosted governance credentials reuse canonical CRUD)
+
+- Extended the existing Credential CRUD with stable operation identity lookup
+  and exact reference validation for hosted governance products.
+- Kept generic business credential material exclusively in Awaken's existing
+  Credential repository and SecretStore; no Flow-local Vault or provider type
+  was added.

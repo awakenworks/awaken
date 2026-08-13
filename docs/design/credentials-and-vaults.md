@@ -212,6 +212,32 @@ uses the returned Vault id and the existing MCP normalizer pins that source's
 exact revision. Hosted clients never persist a local Vault/source mirror and
 never fall back to an embedded credential when this command fails.
 
+### Hosted governance Credential Resources
+
+Flow Domain Packs describe Credential Resources and their provider-specific
+presentation, but Awaken remains the only material authority. The existing
+`/v1/config/credentials` collection therefore accepts an optional stable
+`idempotency_key` for hosted governance callers. Its identity is the exact
+`(Workspace, provider_id, idempotency_key)` tuple: create seals material through
+the existing Credential repository and SecretStore, exact replay returns the
+same secret-free source, and reuse with different material fails closed.
+
+The same collection performs operation lookup and idempotent-source listing;
+the reference-validation subresource verifies the exact Workspace, provider,
+operation identity, active state, Vault kind, and material presence without
+opening or returning the secret. This extends the ordinary Credential CRUD; it
+does not create a Flow-local Vault, a second catalog, or provider-specific
+credential types. Flow stores only the returned source id/revision as its
+Credential Resource `backing_ref`.
+
+This management seam intentionally does not expose a plaintext-material HTTP
+operation. Execution must consume the existing exact `CredentialAccess` →
+`CredentialMaterialResolver` path, including Workspace, revision, selected
+holder, usage, and target-binding validation. A product-side `materialize(id,
+workspace) -> secret` call would bypass those authorities and is not a supported
+hosted contract; remote products must use an Awaken-mediated effect or a
+recipient-bound envelope instead of retaining plaintext in their server.
+
 The vault ACL inside `awaken-protocol-managed` maps this wire ⇄ the neutral domain below; the
 domain's `CredentialAuth` variants stay neutral (`Bearer`/`OAuth`/`EnvVar`/`ApiKey`),
 the wire keeps the Managed tags.

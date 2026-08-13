@@ -65,3 +65,11 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Fact: a trusted hosted application creates or rotates its stable MCP bearer through the existing Credential/Vault WAL and CAS, then gives the returned Vault id to ordinary Managed Session creation; it owns no local credential mirror or fallback.
 - Links: [ADR-0066](../adr/0066-session-service-binding-and-realization.md#2026-08-13-amendment-hosted-application-mcp-credential-admission)
 - Verification: idempotent replay, rotation, conflicting replay, concurrent-winner, normalized-target, and secret-free response tests.
+
+## FACT-CRED-008: Hosted governance credentials extend the canonical CRUD
+
+- Status: active
+- Owner: [Hosted governance Credential Resources](../design/credentials-and-vaults.md#hosted-governance-credential-resources)
+- Fact: hosted governance products create, recover, list, and validate generic business Credential Resource backing references through Awaken's existing `/v1/config/credentials` owner and Credential repository; they persist no local Vault or provider-specific secret type.
+- Links: Flow ADR-0041 (resource credential mechanism delegates to the execution secret-by-reference seam).
+- Verification: operation-identity create/replay/conflict, scoped lookup/list, reference-validation, and secret-free response tests.
