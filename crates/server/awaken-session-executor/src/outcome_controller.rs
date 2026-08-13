@@ -5,7 +5,9 @@ use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
 use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
 
-use crate::host::{HostError, HostOutcomeIteration, HostOutcomeReport, SharedHost};
+use crate::host::{
+    HostError, HostOutcomeDrive, HostOutcomeIteration, HostOutcomeReport, SharedHost,
+};
 use crate::judge::HostAgentGrader;
 use crate::run_exec::BoundRunExecutor;
 
@@ -19,9 +21,31 @@ impl SharedHost {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<HostOutcomeReport, HostError> {
-        let definition = Definition::new(description, rubric, max_iterations)
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+    ) -> Result<HostOutcomeDrive, HostError> {
+        self.drive_outcome_command(thread, Some((description, rubric, max_iterations)))
+            .await?
+            .ok_or_else(|| HostError::internal("defined Outcome aggregate was not persisted"))
+    }
+
+    /// Continue only the sole durable active Outcome aggregate.
+    pub async fn continue_outcome(
+        &self,
+        thread: &str,
+    ) -> Result<Option<HostOutcomeDrive>, HostError> {
+        self.drive_outcome_command(thread, None).await
+    }
+
+    async fn drive_outcome_command(
+        &self,
+        thread: &str,
+        definition: Option<(&str, &str, u32)>,
+    ) -> Result<Option<HostOutcomeDrive>, HostError> {
+        let definition = definition
+            .map(|(description, rubric, max_iterations)| {
+                Definition::new(description, rubric, max_iterations)
+                    .map_err(|error| HostError::bad_request(error.to_string()))
+            })
+            .transpose()?;
         let ctx = self.ctx_for(thread, None).await?;
         let _outcome = ctx.outcome.lock().await;
         let _execution = ctx.execution.lock().await;
@@ -49,28 +73,44 @@ impl SharedHost {
             awaken_runtime_contract::RuntimeRunContext::new(),
             &host_grader,
         );
-        let report = controller
-            .define_or_resume(
-                Id(awaken_runtime::fresh_process_id("outc")),
-                definition,
-                binding.clone(),
-            )
-            .await
-            .map_err(controller_error)?;
+        let report = match definition {
+            Some(definition) => {
+                controller
+                    .define_or_resume(
+                        Id(awaken_runtime::fresh_process_id("outc")),
+                        definition,
+                        binding,
+                    )
+                    .await
+            }
+            None => match controller.resume_active().await {
+                Ok(Some(report)) => Ok(report),
+                Ok(None) => return Ok(None),
+                Err(error) => Err(error),
+            },
+        };
+        match report {
+            Ok(report) => Ok(Some(HostOutcomeDrive::Completed(project_report(report)))),
+            Err(ControllerError::WorkerAwaiting { .. }) => Ok(Some(HostOutcomeDrive::Awaiting)),
+            Err(error) => Err(controller_error(error)),
+        }
+    }
+}
 
-        Ok(HostOutcomeReport {
-            iterations: report
-                .iterations
-                .into_iter()
-                .map(|iteration| HostOutcomeIteration {
-                    messages: iteration.messages,
-                    outcome_id: iteration.outcome_id.0,
-                    iteration: iteration.iteration,
-                    result: iteration.result.token().into(),
-                    explanation: iteration.explanation,
-                })
-                .collect(),
-        })
+fn project_report(report: awaken_ext_goal::controller::Report) -> HostOutcomeReport {
+    HostOutcomeReport {
+        iterations: report
+            .iterations
+            .into_iter()
+            .map(|iteration| HostOutcomeIteration {
+                messages: iteration.messages,
+                outcome_id: iteration.outcome_id.0,
+                description: iteration.description,
+                iteration: iteration.iteration,
+                result: iteration.result.token().into(),
+                explanation: iteration.explanation,
+            })
+            .collect(),
     }
 }
 
@@ -92,6 +132,13 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
+
+    fn completed(progress: HostOutcomeDrive) -> HostOutcomeReport {
+        match progress {
+            HostOutcomeDrive::Completed(report) => report,
+            HostOutcomeDrive::Awaiting => panic!("test Outcome unexpectedly awaited input"),
+        }
+    }
 
     struct SequenceModel {
         replies: Mutex<VecDeque<String>>,
@@ -135,10 +182,11 @@ mod tests {
             r#"{"result":"satisfied","explanation":"rubric met"}"#,
         ]));
         let host = SharedHost::new(model.clone(), "stub");
-        let report = host
-            .define_outcome("satisfied", "finish", "FINAL", 3)
-            .await
-            .unwrap();
+        let report = completed(
+            host.define_outcome("satisfied", "finish", "FINAL", 3)
+                .await
+                .unwrap(),
+        );
         assert_eq!(report.iterations.len(), 1);
         assert_eq!(report.iterations[0].iteration, 0);
         assert_eq!(report.iterations[0].result, "satisfied");
@@ -154,10 +202,11 @@ mod tests {
             r#"{"result":"satisfied","explanation":"rubric met"}"#,
         ]));
         let host = SharedHost::new(model.clone(), "stub");
-        let report = host
-            .define_outcome("revision", "finish", "FINAL", 3)
-            .await
-            .unwrap();
+        let report = completed(
+            host.define_outcome("revision", "finish", "FINAL", 3)
+                .await
+                .unwrap(),
+        );
         assert_eq!(
             report
                 .iterations
@@ -177,10 +226,11 @@ mod tests {
             "acknowledged",
         ]));
         let host = SharedHost::new(model.clone(), "stub");
-        let report = host
-            .define_outcome("max", "finish", "FINAL", 1)
-            .await
-            .unwrap();
+        let report = completed(
+            host.define_outcome("max", "finish", "FINAL", 1)
+                .await
+                .unwrap(),
+        );
         assert_eq!(report.iterations.len(), 1);
         assert_eq!(report.iterations[0].iteration, 0);
         assert_eq!(report.iterations[0].result, "max_iterations_reached");

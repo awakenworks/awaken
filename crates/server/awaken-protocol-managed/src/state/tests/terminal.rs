@@ -603,7 +603,7 @@ impl SessionRuntime for EndSessionFailer {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         unreachable!()
     }
     async fn end_session(&self, _thread: &str) -> Result<(), RunError> {

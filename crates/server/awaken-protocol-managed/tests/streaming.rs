@@ -35,7 +35,7 @@ use awaken_protocol_managed::types::{
 };
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_contract::{
-    DelegatedRun, OutcomeReport, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
+    DelegatedRun, OutcomeDrive, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;
@@ -97,7 +97,7 @@ impl SessionRuntime for EchoFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
     fn model(&self) -> String {
@@ -198,7 +198,7 @@ impl SessionRuntime for StreamingFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
     fn model(&self) -> String {
@@ -274,7 +274,7 @@ impl SessionRuntime for DelegateFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
     fn model(&self) -> String {

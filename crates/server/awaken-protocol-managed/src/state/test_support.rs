@@ -13,7 +13,7 @@ use awaken_session_contract::{ManagedSessionRepository, PersistedSession, Sessio
 use awaken_session_store::SqliteManagedSessionRepository;
 
 use super::{
-    DelegatedRun, OutcomeReport, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
+    DelegatedRun, OutcomeDrive, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 
 pub(super) fn ephemeral_session_repo() -> SqliteManagedSessionRepository {
@@ -125,7 +125,7 @@ impl SessionRuntime for RehydrateFake {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         unreachable!()
     }
 

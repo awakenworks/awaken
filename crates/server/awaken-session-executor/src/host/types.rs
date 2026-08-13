@@ -224,6 +224,7 @@ impl From<crate::RuntimeAuthorityError> for HostError {
 pub struct HostOutcomeIteration {
     pub messages: Vec<Message>,
     pub outcome_id: String,
+    pub description: String,
     pub iteration: u32,
     pub result: String,
     pub explanation: String,
@@ -232,4 +233,11 @@ pub struct HostOutcomeIteration {
 /// The neutral outcome report: the ordered evaluation rounds.
 pub struct HostOutcomeReport {
     pub iterations: Vec<HostOutcomeIteration>,
+}
+
+/// Result of driving the durable Outcome aggregate to its next external
+/// boundary. Awaiting is a successful boundary, not a second failure state.
+pub enum HostOutcomeDrive {
+    Awaiting,
+    Completed(HostOutcomeReport),
 }
