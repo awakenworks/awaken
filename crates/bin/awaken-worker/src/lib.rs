@@ -110,6 +110,8 @@ pub struct WorkerNodeBuilder {
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    brokered_acp_model_access:
+        Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
     hand_executor_factory: Option<Arc<dyn awaken_runtime_host::HandExecutorFactory>>,
     worker_local_credential_resolver:
@@ -141,6 +143,7 @@ impl WorkerNodeBuilder {
             tool_gate: None,
             materializer: None,
             credential_materializer: None,
+            brokered_acp_model_access: None,
             remote_attempt: None,
             hand_executor_factory: None,
             worker_local_credential_resolver: None,
@@ -327,6 +330,18 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Install the hosted attempt-time model-access exchanger. It produces
+    /// Gateway lease references only and is mutually exclusive with local Vault
+    /// materialization.
+    #[must_use]
+    pub fn with_brokered_acp_model_access(
+        mut self,
+        materializer: Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>,
+    ) -> Self {
+        self.brokered_acp_model_access = Some(materializer);
+        self
+    }
+
     /// Install the liveness-only adapter for host-owned credential identities.
     /// This port cannot materialize Provider secrets.
     #[must_use]
@@ -447,6 +462,12 @@ impl WorkerNodeBuilder {
 
     /// Validate the immutable topology without registering or starting work.
     pub fn build(mut self) -> Result<WorkerNode, WorkerNodeBuildError> {
+        if self.credential_materializer.is_some() && self.brokered_acp_model_access.is_some() {
+            return Err(WorkerNodeBuildError(
+                "local and brokered ACP credential materializers are mutually exclusive"
+                    .to_string(),
+            ));
+        }
         if self.credential_probe_interval.is_zero()
             || self.credential_observation_ttl <= self.credential_probe_interval
         {
@@ -550,6 +571,7 @@ impl WorkerNodeBuilder {
                         .credential_materializer
                         .as_ref()
                         .map(CredentialMaterializerSupport::from),
+                    brokered_acp_model_access: self.brokered_acp_model_access.as_deref(),
                     worker_local_credential_resolver_installed: credential_observation_resolver
                         .is_some(),
                     remote_credential_realization: self
@@ -588,6 +610,7 @@ impl WorkerNodeBuilder {
             tool_gate: self.tool_gate,
             materializer: self.materializer,
             credential_materializer: self.credential_materializer,
+            brokered_acp_model_access: self.brokered_acp_model_access,
             remote_attempt: self.remote_attempt,
             hand_executor_factory: self.hand_executor_factory,
             credential_observation_resolver,
@@ -636,6 +659,8 @@ pub struct WorkerNode {
     tool_gate: Option<Arc<dyn awaken_runtime_contract::permission::ToolGateHook>>,
     materializer: Option<Arc<dyn InferenceExecutorMaterializer>>,
     credential_materializer: Option<awaken_credential_materializer::PinnedCredentialMaterializer>,
+    brokered_acp_model_access:
+        Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     remote_attempt: Option<awaken_runtime_host::RemoteAttemptInstallation>,
     hand_executor_factory: Option<Arc<dyn awaken_runtime_host::HandExecutorFactory>>,
     credential_observation_resolver:
@@ -1029,7 +1054,7 @@ impl WorkerNode {
         host = host
             .with_session_environment_from_deployment(self.hand_executor_factory)
             .await
-            .with_acp_from_deployment(self.credential_materializer)
+            .with_acp_from_deployment(self.credential_materializer, self.brokered_acp_model_access)
             .await;
 
         let host = Arc::new(host);

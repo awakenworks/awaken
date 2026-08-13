@@ -279,8 +279,9 @@ impl AgentChannelSource for SubprocessChannelSource {
 /// executor must not do itself) and any per-run non-secret env (e.g. the thread's config-home
 /// path, which depends on `activation.thread_id` and so cannot be fixed up front).
 /// The one seam between the neutral projection and the host's config/secret world.
+#[async_trait]
 pub trait LaunchResolver: Send + Sync {
-    fn model(
+    async fn model(
         &self,
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
@@ -312,6 +313,29 @@ pub trait LaunchResolver: Send + Sync {
     }
 }
 
+/// Attempt-time materializer for an externally brokered ACP model route.
+///
+/// The immutable candidate remains secret-free. Implementations exchange its
+/// exact run/binding authority for a short-lived model-access grant and return
+/// only the launch projection plus an opaque last-mile reference. Provider
+/// credentials are never materialized through this port.
+#[async_trait]
+pub trait BrokeredAcpModelAccessMaterializer: Send + Sync {
+    async fn materialize(
+        &self,
+        cli: AcpCli,
+        activation: &RunActivation,
+        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> std::result::Result<ResolvedModel, OpenError>;
+
+    fn secret_broker(&self) -> Arc<dyn pc::SecretBroker>;
+
+    fn credential_realization_capabilities(
+        &self,
+        cli: AcpCli,
+    ) -> awaken_runtime_contract::CredentialRealizationCapabilities;
+}
+
 /// An [`AgentChannelSource`] that projects a run onto a launch via its [`AcpCli`]
 /// row (R4): it reads the run's inputs through a host [`LaunchResolver`] and hands
 /// the data to [`AcpCli::try_project`], so *which* CLI and *how* the model is delivered
@@ -328,12 +352,12 @@ impl ProjectingChannelSource {
     }
 
     /// Project this run onto a concrete [`AcpLaunch`] (no spawn).
-    pub(crate) fn plan(
+    pub(crate) async fn plan(
         &self,
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> std::result::Result<AcpLaunch, OpenError> {
-        project_launch(&self.cli, self.resolver.as_ref(), activation, context)
+        project_launch(&self.cli, self.resolver.as_ref(), activation, context).await
     }
 }
 
@@ -342,13 +366,13 @@ impl ProjectingChannelSource {
 /// all of it to the CLI's [`AcpCli::try_project`] row. The reusable projection core — a
 /// sandboxed / containerized ACP source uses it to launch the **per-agent** CLI (the
 /// run's `acp:<cli>` backend_ref) inside its isolation, not a fixed argv.
-pub fn project_launch(
+pub async fn project_launch(
     cli: &AcpCli,
     resolver: &dyn LaunchResolver,
     activation: &RunActivation,
     context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
 ) -> std::result::Result<AcpLaunch, OpenError> {
-    let model = resolver.model(activation, context)?;
+    let model = resolver.model(activation, context).await?;
     let extra_env = resolver.extra_env(activation)?;
     let window = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
         &activation.snapshot.resolved_spec.plugin_config,
@@ -659,7 +683,7 @@ impl AgentChannelSource for ProjectingChannelSource {
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> std::result::Result<AgentSession, OpenError> {
         // A real CLI speaks official ACP JSON-RPC.
-        let launch = self.plan(activation, context)?;
+        let launch = self.plan(activation, context).await?;
         // A legacy `ConfigFileToml` CLI gets its MCP servers written into the config
         // home before launch; an `AcpSession` CLI carries them at `session/new` instead.
         let plugin_config = &activation.snapshot.resolved_spec.plugin_config;

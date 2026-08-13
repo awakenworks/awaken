@@ -174,6 +174,7 @@ impl crate::host::SharedHost {
     pub async fn with_acp_from_deployment(
         self,
         credentials: Option<crate::PinnedCredentialMaterializer>,
+        brokered: Option<Arc<dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>>,
     ) -> Self {
         let deployment = self.deployment.clone();
         let Some(profile) = deployment.acp.as_ref() else {
@@ -188,13 +189,21 @@ impl crate::host::SharedHost {
             .map(|id| {
                 let cli = *awaken_run_executor_acp::acp_cli(id)
                     .expect("AcpWorkerProfile validates every CLI");
-                let resolver = Arc::new(match &credentials {
-                    Some(credentials) => crate::PublishedAcpLaunchResolver::new(
+                let resolver = Arc::new(match (&credentials, &brokered) {
+                    (Some(_), Some(_)) => {
+                        panic!("ACP credential materializers are mutually exclusive")
+                    }
+                    (Some(credentials), None) => crate::PublishedAcpLaunchResolver::new(
                         cli,
                         Some(base.clone()),
                         credentials.clone(),
                     ),
-                    None => {
+                    (None, Some(materializer)) => crate::PublishedAcpLaunchResolver::brokered(
+                        cli,
+                        Some(base.clone()),
+                        materializer.clone(),
+                    ),
+                    (None, None) => {
                         crate::PublishedAcpLaunchResolver::backend_owned(cli, Some(base.clone()))
                     }
                 });
@@ -414,8 +423,9 @@ mod tests {
     }
 
     struct FixedModel;
+    #[async_trait::async_trait]
     impl awaken_run_executor_acp::LaunchResolver for FixedModel {
-        fn model(
+        async fn model(
             &self,
             _activation: &awaken_runtime_contract::RunActivation,
             _context: &awaken_runtime_contract::RuntimeRunContext,
@@ -455,7 +465,7 @@ mod tests {
         let host = SharedHost::new_with_deployment(Arc::new(NoLlm), "test", deployment)
             .with_session_environment_from_deployment(Some(Arc::new(NoHandFactory)))
             .await
-            .with_acp_from_deployment(None)
+            .with_acp_from_deployment(None, None)
             .await;
 
         assert!(host.session_provider_explicit);

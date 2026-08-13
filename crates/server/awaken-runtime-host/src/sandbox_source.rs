@@ -57,7 +57,10 @@ impl AgentChannelSource for BoundLocalChannelSource {
         activation: &RunActivation,
         context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
     ) -> Result<AgentSession, OpenError> {
-        let resolved = self.launch.resolve(activation, &self.backend, context)?;
+        let resolved = self
+            .launch
+            .resolve(activation, &self.backend, context)
+            .await?;
         let mut launch = resolved.launch;
         let cli = self.launch.cli(&self.backend)?;
         let backend_owned =
@@ -364,8 +367,9 @@ mod tests {
 
     struct FakeResolver;
 
+    #[async_trait]
     impl LaunchResolver for FakeResolver {
-        fn model(
+        async fn model(
             &self,
             _activation: &RunActivation,
             _context: &awaken_runtime_contract::RuntimeRunContext,
@@ -385,8 +389,9 @@ mod tests {
         model: &'static str,
     }
 
+    #[async_trait]
     impl LaunchResolver for BackendOwnedResolver {
-        fn model(
+        async fn model(
             &self,
             _activation: &RunActivation,
             _context: &awaken_runtime_contract::RuntimeRunContext,
@@ -406,8 +411,9 @@ mod tests {
         broker: Arc<dyn pc::SecretBroker>,
     }
 
+    #[async_trait]
     impl LaunchResolver for ArtifactResolver {
-        fn model(
+        async fn model(
             &self,
             _activation: &RunActivation,
             _context: &awaken_runtime_contract::RuntimeRunContext,

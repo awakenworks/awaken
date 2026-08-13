@@ -152,6 +152,8 @@ pub(crate) struct StandardManifestInputs<'a> {
     pub(crate) deployment: &'a awaken_runtime_host::DeploymentConfig,
     pub(crate) materializer: Option<&'a dyn InferenceExecutorMaterializer>,
     pub(crate) credential_materializer: Option<CredentialMaterializerSupport>,
+    pub(crate) brokered_acp_model_access:
+        Option<&'a dyn awaken_run_executor_acp::BrokeredAcpModelAccessMaterializer>,
     /// An exact Worker-local observation/revalidation resolver is installed.
     /// This is independent of whether that resolver returns secret material.
     pub(crate) worker_local_credential_resolver_installed: bool,
@@ -260,6 +262,14 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
             );
             credential_profiles.push(backend_profile);
         }
+    }
+    if let (Some(materializer), Some(acp)) =
+        (inputs.brokered_acp_model_access, &inputs.deployment.acp)
+    {
+        credential_profiles.extend(acp.cli_ids().filter_map(|cli_id| {
+            awaken_run_executor_acp::acp_cli(cli_id)
+                .map(|cli| materializer.credential_realization_capabilities(*cli))
+        }));
     }
     if let Some(materializer) = inputs
         .credential_materializer

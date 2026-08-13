@@ -1462,9 +1462,10 @@ pub use discovery_spec::{
 };
 pub use session_home::{DirSessionHome, FsSessionBlobStore, SessionBlobStore};
 pub use subprocess::{
-    AcpLaunch, AcpLaunchIdentity, LaunchResolver, McpInjection, ProjectingChannelSource,
-    SubprocessChannelSource, admit_mcp_injection, mcp_injection, mcp_injection_from_servers,
-    project_launch, with_backend_owned_host_environment, with_local_host_launch_environment,
+    AcpLaunch, AcpLaunchIdentity, BrokeredAcpModelAccessMaterializer, LaunchResolver, McpInjection,
+    ProjectingChannelSource, SubprocessChannelSource, admit_mcp_injection, mcp_injection,
+    mcp_injection_from_servers, project_launch, with_backend_owned_host_environment,
+    with_local_host_launch_environment,
 };
 
 #[cfg(test)]
