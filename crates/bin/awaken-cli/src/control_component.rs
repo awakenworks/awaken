@@ -5,6 +5,13 @@
 
 use super::*;
 
+fn managed_runtime_available_at_control_origin(
+    role: config::Role,
+    managed_services: &ManagedServiceAdapters,
+) -> bool {
+    role.mounts_managed_runtime() || managed_services.same_origin_managed_runtime
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn control_component_for_process(
     stores: &ProcessStores,
@@ -22,7 +29,7 @@ pub(super) async fn control_component_for_process(
     >,
     injected_brokered_catalog: Option<Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>>,
     model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
-    managed_runtime: bool,
+    managed_runtime_available: bool,
     local_acp_observations: &[awaken_acp_application::AcpHostObservation],
     runtimes: Arc<dyn awaken_config_service::RuntimeCapabilitySource>,
     resource_inventory: Option<Arc<dyn awaken_admin_assistant::ResourceInventory>>,
@@ -77,7 +84,7 @@ pub(super) async fn control_component_for_process(
                 .map(|client| client as Arc<dyn awaken_admin_config_api::BrokeredCatalogDiscovery>)
         }),
         model_supply,
-        managed_runtime,
+        managed_runtime_available,
         mcp_probe: Some(Arc::new(ExtMcpProbe)),
         assistant_model_selection,
         global_tools: awaken_runtime_host::authorable_tools(),
@@ -218,7 +225,7 @@ pub(super) async fn prepare_control_routers(
         brokered_client,
         process.brokered_catalog,
         model_capabilities,
-        process.role.exposes_managed_runtime(),
+        managed_runtime_available_at_control_origin(process.role, &process.managed_services),
         &process.local_acp_observations,
         runtimes,
         None,
@@ -297,6 +304,34 @@ pub(super) async fn prepare_control_routers(
         Some(component.registration_supervisor),
         process.service_lifecycle,
     )
+}
+
+#[cfg(test)]
+#[test]
+fn managed_runtime_capability_distinguishes_mount_from_hosted_reachability() {
+    // Cause/effect graph: C1 local runtime mount and C2 an explicit hosted
+    // same-origin facade independently make the canonical Coordinator surface
+    // browser-reachable. Neither fact changes which Router the process mounts.
+    //
+    // Decision table:
+    // | rule | role       | hosted facade | capability |
+    // | R1   | AllInOne   | no            | true       |
+    // | R2   | Control    | no            | false      |
+    // | R3   | Control    | yes           | true       |
+    let local = ManagedServiceAdapters::default();
+    let hosted = ManagedServiceAdapters::default().with_same_origin_managed_runtime();
+    assert!(managed_runtime_available_at_control_origin(
+        config::Role::AllInOne,
+        &local
+    ));
+    assert!(!managed_runtime_available_at_control_origin(
+        config::Role::Control,
+        &local
+    ));
+    assert!(managed_runtime_available_at_control_origin(
+        config::Role::Control,
+        &hosted
+    ));
 }
 
 #[cfg(test)]

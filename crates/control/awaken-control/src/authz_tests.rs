@@ -86,6 +86,93 @@ fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
 }
 
 #[test]
+fn hosted_runtime_routes_are_projected_from_the_authorization_table() {
+    // Cause/effect graph: C1 an IAM route family is Coordinator-exclusive ->
+    // E1 export its exact prefix; C2 a family is Control-exclusive -> E2 omit
+    // it; C3 Environment is shared -> E3 export only its `/work` template.
+    // The export is derived from ROUTE_POLICIES, so adding an authenticated
+    // Coordinator family without classifying its hosted owner fails this exact
+    // decision table instead of silently creating a Cloud-owned second list.
+    //
+    // Decision table:
+    // | rule | family owner | overlap | exported matcher |
+    // | R1 | Coordinator | no  | path_prefix |
+    // | R2 | Control     | no  | absent |
+    // | R3 | split       | yes | path_template for Environment work |
+    let expected = vec![
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/sessions",
+        },
+        HostedRuntimePathMatch::PathPrefix { path: "/v1/dreams" },
+        HostedRuntimePathMatch::PathPrefix { path: "/v1/a2a" },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/message:send",
+        },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/message:stream",
+        },
+        HostedRuntimePathMatch::PathPrefix { path: "/v1/ai-sdk" },
+        HostedRuntimePathMatch::PathPrefix { path: "/v1/ag-ui" },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/durable",
+        },
+        HostedRuntimePathMatch::PathPrefix { path: "/v1/files" },
+        HostedRuntimePathMatch::PathPrefix { path: "/v1/skills" },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/memory_stores",
+        },
+        HostedRuntimePathMatch::PathPrefix { path: "/v1/models" },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/awaken/sessions",
+        },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/application-access-tokens",
+        },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/deployments",
+        },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/deployment_runs",
+        },
+        HostedRuntimePathMatch::PathTemplate {
+            path_template: "/v1/environments/{environment_id}/work",
+        },
+        HostedRuntimePathMatch::PathPrefix {
+            path: "/v1/awaken/memory-stores",
+        },
+    ];
+    let first = hosted_runtime_route_profile();
+    let second = hosted_runtime_route_profile();
+    assert_eq!(first.schema_version, 1);
+    assert_eq!(first.routes, expected);
+    assert_eq!(
+        serde_json::to_value(first).unwrap(),
+        serde_json::to_value(second).unwrap()
+    );
+    for control_path in [
+        "/v1/config",
+        "/v1/vaults",
+        "/v1/agents",
+        "/v1/user_profiles",
+        "/v1/awaken/environments",
+    ] {
+        assert!(!expected.iter().any(|route| {
+            matches!(route, HostedRuntimePathMatch::PathPrefix { path } if *path == control_path)
+        }));
+    }
+    for runtime_path in [
+        "/v1/dreams",
+        "/v1/ai-sdk/threads/thread_1/runs",
+        "/v1/ag-ui",
+        "/v1/durable/threads/thread_1/dispatches",
+        "/v1/models",
+        "/v1/awaken/sessions/session_1/live-inbox",
+    ] {
+        assert!(super::action_for(&Method::GET, runtime_path).is_some());
+    }
+}
+
+#[test]
 fn identity_modes_accept_product_names_and_legacy_aliases() {
     assert_eq!(
         ManagementIdentityMode::parse("no-login"),

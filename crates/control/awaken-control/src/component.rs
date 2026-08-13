@@ -69,8 +69,9 @@ pub struct ControlDependencies {
     pub model_discovery: Arc<dyn ModelCatalogDiscovery>,
     pub brokered_catalog: Option<Arc<dyn BrokeredCatalogDiscovery>>,
     pub model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
-    /// Whether the same-origin process also mounts Managed runtime/resources.
-    pub managed_runtime: bool,
+    /// Whether the browser-serving origin can reach the canonical Managed
+    /// runtime/resources, either through a local mount or hosted routing.
+    pub managed_runtime_available: bool,
     pub mcp_probe: Option<Arc<dyn McpProbe>>,
     pub assistant_model_selection: Option<ModelSelection>,
     pub global_tools: Vec<ToolDescriptor>,
@@ -139,7 +140,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         model_discovery,
         brokered_catalog,
         model_supply,
-        managed_runtime,
+        managed_runtime_available,
         mcp_probe,
         assistant_model_selection,
         global_tools,
@@ -268,7 +269,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         model_discovery,
         brokered_catalog,
         model_supply,
-        managed_runtime,
+        managed_runtime_available,
         vault_state: vault_state.clone(),
         agent_repository: agent_repository.clone(),
         agent_archive_cascade,

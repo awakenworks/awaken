@@ -454,6 +454,25 @@ must not require or synthesize a local Credential because the injected
 `ModelPublicationResolver` freezes the exact managed route and its existing
 egress-gateway credential reference.
 
+### 2026-08-13 amendment — a composed origin may expose the canonical runtime
+
+The product-surface projection describes what the browser can reach at its
+current origin, not which Rust process owns each mounted Router. `AllInOne`
+therefore derives Managed-runtime reachability from its local mount, while a
+split hosted `Control` may advertise the same surface only when its composition
+explicitly supplies a same-origin route to the canonical `Coordinator` APIs.
+Process roles continue to own exactly the Routers described above: advertising
+the composed surface does not mount a Session or Resource implementation in
+`Control` and does not give `Control` execution stores.
+
+Awaken's route-policy table is the single release contract for that hosted
+route. Deployment tooling consumes the deterministic runtime-surface profile
+exported by the Awaken executable; it must not copy a list of Session, File,
+Memory, Deployment, or protocol prefixes. This composition is transport routing
+to the existing Coordinator Router, not a Cloud translation or a second Managed
+API implementation. A split Control without that explicit composition fact
+continues to advertise `managed_runtime=false` and fail closed.
+
 ```text
 Catalog Offering + executor capability
   -> direct/BYOK  -> compatible local Credential -> ready

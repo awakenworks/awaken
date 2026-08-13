@@ -31,9 +31,10 @@ impl Role {
         }
     }
 
-    /// The browser surface is served by Control/AllInOne. Only AllInOne also
-    /// owns the same-origin Managed runtime and resource routers.
-    pub fn exposes_managed_runtime(self) -> bool {
+    /// Whether this process mounts the Managed runtime/resource Routers.
+    /// Browser reachability is a separate composition fact: hosted Control may
+    /// share an origin with the canonical Coordinator without mounting it.
+    pub fn mounts_managed_runtime(self) -> bool {
         self == Self::AllInOne
     }
 }
@@ -66,22 +67,22 @@ mod tests {
     }
 
     #[test]
-    fn only_all_in_one_advertises_the_managed_runtime_surface() {
+    fn only_all_in_one_locally_mounts_the_managed_runtime_surface() {
         // Cause/effect decision table:
-        // | role        | serves browser | owns Managed runtime | projection |
+        // | role        | serves browser | owns Managed runtime | local mount |
         // | all-in-one  | yes            | yes                  | true       |
         // | control     | yes            | no                   | false      |
         // | coordinator | no             | yes                  | false      |
         // | worker      | no             | no                   | false      |
-        // Coordinator's private ownership cannot be advertised by a separate
-        // Control origin, and Worker never owns a browser surface.
+        // This table deliberately excludes origin reachability: a hosted
+        // facade is supplied by composition and cannot change process ownership.
         for (role, expected) in [
             (Role::AllInOne, true),
             (Role::Control, false),
             (Role::Coordinator, false),
             (Role::Worker, false),
         ] {
-            assert_eq!(role.exposes_managed_runtime(), expected, "{role:?}");
+            assert_eq!(role.mounts_managed_runtime(), expected, "{role:?}");
         }
     }
 }
