@@ -272,6 +272,160 @@ async fn outcome_iterates_until_satisfied() {
     );
 }
 
+/// Deterministic Outcome Worker/Judge pair: the Worker first crosses the
+/// protected `write` boundary and, after the ordinary Run resume commits the
+/// permission result, produces the rubric marker. The Judge then accepts it.
+struct OutcomeHitlModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for OutcomeHitlModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+            .map(|message| {
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let tool_results = request
+            .messages
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .count();
+        let output = if last_user.contains("Evaluate this Outcome input") {
+            AssistantOutput::text(
+                r#"{"result":"satisfied","explanation":"the resumed Worker produced FINAL"}"#,
+            )
+        } else if tool_results >= 2 {
+            AssistantOutput::text("FINAL after permission")
+        } else {
+            AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: format!("outcome-write-{}", tool_results + 1),
+                tool_id: "write".into(),
+                arguments: serde_json::json!({
+                    "path": format!("outcome-{tool_results}.txt"),
+                    "content": "permission crossed"
+                }),
+            }])
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate() {
+    let app = build_router(Arc::new(OutcomeHitlModel), "outcome-hitl");
+    let id = create_session(&app).await;
+
+    // Cause/effect decision table for the changed Outcome/HITL boundary:
+    // R1 C={active Outcome, protected Worker tool, no result} -> E={successful
+    // receipt, requires_action, no evaluation/error}; R2 C={same aggregate,
+    // matching allow, another protected call} -> E={ordinary Run commit, same
+    // aggregate awaits again}; R3 C={same aggregate, matching deny, Worker
+    // reaches natural end} -> E={denial committed, aggregate continuation,
+    // satisfied evaluation}; R4 C={no active Outcome} -> E={ordinary resume
+    // only}, covered by `hitl_write_awaits_then_confirms_and_reads_rooted`;
+    // mismatched result rejection remains covered by Managed admission tests.
+    let awaiting = define_outcome(&app, &id, "FINAL").await;
+    let awaiting_events = awaiting["data"].as_array().unwrap();
+    assert!(
+        awaiting_events
+            .iter()
+            .any(|event| { event["type"] == "agent.tool_use" && event["id"] == "outcome-write-1" })
+    );
+    assert!(
+        !awaiting_events
+            .iter()
+            .any(|event| event["type"] == "session.error")
+    );
+    assert!(
+        !awaiting_events
+            .iter()
+            .any(|event| event["type"] == "span.outcome_evaluation_end")
+    );
+    let idle = awaiting_events.last().unwrap();
+    assert_eq!(idle["stop_reason"]["type"], "requires_action");
+    assert_eq!(idle["stop_reason"]["event_ids"][0], "outcome-write-1");
+
+    let awaiting_again = confirm(&app, &id, "outcome-write-1").await;
+    let awaiting_again_events = awaiting_again["data"].as_array().unwrap();
+    assert!(
+        awaiting_again_events
+            .iter()
+            .any(|event| { event["type"] == "agent.tool_use" && event["id"] == "outcome-write-2" })
+    );
+    assert!(
+        !awaiting_again_events
+            .iter()
+            .any(|event| event["type"] == "span.outcome_evaluation_end")
+    );
+    assert_eq!(
+        awaiting_again_events.last().unwrap()["stop_reason"]["type"],
+        "requires_action"
+    );
+
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({
+            "events": [{
+                "type": "user.tool_confirmation",
+                "tool_use_id": "outcome-write-2",
+                "result": "deny",
+                "deny_message": "continue without the second write"
+            }]
+        }),
+    )
+    .await;
+    let completed = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let completed_events = completed["data"].as_array().unwrap();
+    assert!(
+        !completed_events
+            .iter()
+            .any(|event| event["type"] == "session.error")
+    );
+    let evaluations = completed_events
+        .iter()
+        .filter(|event| event["type"] == "span.outcome_evaluation_end")
+        .collect::<Vec<_>>();
+    assert_eq!(evaluations.len(), 1);
+    assert_eq!(evaluations[0]["result"], "satisfied");
+    assert_eq!(
+        completed_events
+            .iter()
+            .filter(|event| event["type"] == "agent.tool_use")
+            .count(),
+        2,
+        "each committed tool call must be projected exactly once"
+    );
+    assert!(completed_events.iter().any(|event| {
+        event["type"] == "agent.message" && event["content"][0]["text"] == "FINAL after permission"
+    }));
+}
+
 /// A model serving both roles for the judge-graded outcome test: as a judge (it
 /// sees the grading prompt) it returns a JSON verdict — met iff the deliverable
 /// carries the `FINAL` marker; as the doer it drafts, then revises to `FINAL`

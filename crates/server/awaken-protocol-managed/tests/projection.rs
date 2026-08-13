@@ -15,7 +15,7 @@ use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId};
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_contract::{
-    DelegatedRun, OutcomeReport, RunError, SessionRuntime, SessionUsage, StepOutcome,
+    DelegatedRun, OutcomeDrive, RunError, SessionRuntime, SessionUsage, StepOutcome,
     ToolPermissionDecision,
 };
 use axum::Router;
@@ -161,7 +161,7 @@ impl SessionRuntime for ScriptFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
     async fn session_usage(&self, _t: &str) -> Result<SessionUsage, RunError> {

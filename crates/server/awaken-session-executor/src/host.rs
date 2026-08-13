@@ -123,8 +123,8 @@ mod worker_resolver;
 pub(crate) use completion::CompletionRegistry;
 pub(crate) use session_ctx::{SessionCtx, SessionState};
 pub use types::{
-    CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeIteration, HostOutcomeReport,
-    HostResume, PendingTool,
+    CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeIteration,
+    HostOutcomeReport, HostResume, PendingTool,
 };
 pub(crate) use worker_resolver::HostWorkerResolver;
 

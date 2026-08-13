@@ -10,7 +10,7 @@
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_contract::{
-    OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
+    OutcomeDrive, RunError, SessionInit, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;
@@ -60,7 +60,7 @@ impl SessionRuntime for AcceptingFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
     fn model(&self) -> String {

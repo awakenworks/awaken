@@ -15,7 +15,7 @@ use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
 use awaken_session_contract::{
-    LifecycleFactNotifier, ManagedSessionRepository, OutcomeReport, PersistedSession, RunError,
+    LifecycleFactNotifier, ManagedSessionRepository, OutcomeDrive, PersistedSession, RunError,
     RunErrorKind, SessionExecutionState, SessionInit, SessionRuntime, StepOutcome,
     ToolPermissionDecision,
 };
@@ -152,7 +152,7 @@ impl SessionRuntime for PreparingFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
     fn model(&self) -> String {
@@ -283,7 +283,7 @@ impl SessionRuntime for HotRuntime {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
     fn model(&self) -> String {
@@ -2143,7 +2143,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             _description: &str,
             _rubric: &str,
             _max_iterations: u32,
-        ) -> Result<OutcomeReport, RunError> {
+        ) -> Result<OutcomeDrive, RunError> {
             unreachable!()
         }
         fn model(&self) -> String {

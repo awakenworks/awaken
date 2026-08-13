@@ -542,10 +542,15 @@ impl ManagedState {
         // Each round's durable evaluation record, collected as we project its events
         // and folded into the session object after the event-pushing borrow releases.
         let mut evaluations = Vec::new();
-        let projected_message_ids = report
+        let rounds = report
             .iterations
-            .iter()
-            .flat_map(|round| round.messages.iter().map(|message| message.id.0.clone()))
+            .into_iter()
+            .map(|mut round| {
+                round
+                    .messages
+                    .retain(|message| record.projected_message_ids.insert(message.id.0.clone()));
+                round
+            })
             .collect::<Vec<_>>();
         let start = record.events.len();
         {
@@ -559,7 +564,7 @@ impl ManagedState {
                 });
             };
             push(None, OutboundKind::SessionStatusRunning {});
-            for round in report.iterations {
+            for round in rounds {
                 for event in project_messages(&round.messages, None) {
                     push(event.id, event.kind);
                 }
@@ -595,7 +600,6 @@ impl ManagedState {
                 },
             );
         }
-        record.projected_message_ids.extend(projected_message_ids);
         // The session object carries the running list of evaluations that have graded
         // it, so a `GET /v1/sessions/{id}` reflects the outcomes that ran, not [].
         for evaluation in evaluations {
@@ -612,6 +616,28 @@ impl ManagedState {
         }
         record.project_runtime_status(SessionStatus::Idle);
         self.broadcast_committed_from(session_id, record, start);
+        Ok(())
+    }
+
+    /// Consume committed Run truth before projecting the Outcome boundary. This
+    /// keeps tool calls and terminal lifecycle on the existing projection path;
+    /// the Outcome report adds only evaluation facts and any still-unseen text.
+    async fn project_outcome_drive(
+        &self,
+        session_id: &str,
+        progress: OutcomeDrive,
+    ) -> Result<(), StateError> {
+        self.refresh_committed_events(session_id).await?;
+        if let OutcomeDrive::Completed(report) = progress {
+            self.append_outcome(session_id, report)?;
+        }
+        Ok(())
+    }
+
+    async fn continue_outcome_after_resume(&self, session_id: &str) -> Result<(), StateError> {
+        if let Some(progress) = self.application.continue_outcome(session_id).await? {
+            self.project_outcome_drive(session_id, progress).await?;
+        }
         Ok(())
     }
 
@@ -679,6 +705,7 @@ impl ManagedState {
                     lifecycle_start,
                 )
                 .await?;
+                self.continue_outcome_after_resume(session_id).await?;
             }
             InboundEvent::UserCustomToolResult {
                 custom_tool_use_id,
@@ -702,6 +729,7 @@ impl ManagedState {
                     lifecycle_start,
                 )
                 .await?;
+                self.continue_outcome_after_resume(session_id).await?;
             }
             InboundEvent::UserToolResult {
                 tool_use_id,
@@ -725,6 +753,7 @@ impl ManagedState {
                     lifecycle_start,
                 )
                 .await?;
+                self.continue_outcome_after_resume(session_id).await?;
             }
             InboundEvent::UserDefineOutcome {
                 description,
@@ -732,7 +761,7 @@ impl ManagedState {
                 max_iterations,
             } => {
                 let rubric = rubric_text(rubric);
-                let report = self
+                let progress = self
                     .application
                     .define_outcome(
                         session_id,
@@ -741,7 +770,7 @@ impl ManagedState {
                         max_iterations.unwrap_or(3),
                     )
                     .await?;
-                self.append_outcome(session_id, report)?;
+                self.project_outcome_drive(session_id, progress).await?;
             }
             InboundEvent::SystemMessage { content } => {
                 let text = content_text(content);
@@ -1206,9 +1235,7 @@ mod tests {
     use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecyclePage};
-    use awaken_session_contract::{
-        OutcomeReport, Pending, RunError, SessionRuntime, ToolPermissionDecision,
-    };
+    use awaken_session_contract::{Pending, RunError, SessionRuntime, ToolPermissionDecision};
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone, Default)]
@@ -1287,7 +1314,7 @@ mod tests {
             _description: &str,
             _rubric: &str,
             _max_iterations: u32,
-        ) -> Result<OutcomeReport, RunError> {
+        ) -> Result<OutcomeDrive, RunError> {
             unreachable!()
         }
 

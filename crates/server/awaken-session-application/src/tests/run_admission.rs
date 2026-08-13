@@ -69,7 +69,7 @@ impl awaken_session_contract::SessionRuntime for ColdEventRuntime {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeReport, awaken_session_contract::RunError> {
+    ) -> Result<awaken_session_contract::OutcomeDrive, awaken_session_contract::RunError> {
         unreachable!("cold event test never defines an outcome")
     }
 
