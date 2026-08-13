@@ -168,8 +168,9 @@ impl crate::host::SharedHost {
     /// The typed deployment profile advertises every CLI installed on this worker;
     /// the run's published `acp:<cli>` binding remains authoritative and must match. Provider
     /// endpoint/model/credential data come only from `credentials` and the snapshot.
-    /// Neither capability set → no ACP backend served. Panics on an advertised ACP
-    /// capability without a credential materializer or on a misconfigured tier.
+    /// Neither capability set → no ACP backend served. A Worker without a
+    /// credential materializer serves only backend-owned candidates; provider
+    /// candidates fail before launch instead of inventing a credential source.
     pub async fn with_acp_from_deployment(
         self,
         credentials: Option<crate::PinnedCredentialMaterializer>,
@@ -182,19 +183,21 @@ impl crate::host::SharedHost {
             };
         };
         let base = session_sandbox_base(&deployment);
-        let credentials = credentials.unwrap_or_else(|| {
-            panic!("configured ACP CLIs require persisted credential materialization stores")
-        });
         let routes = profile
             .cli_ids()
             .map(|id| {
                 let cli = *awaken_run_executor_acp::acp_cli(id)
                     .expect("AcpWorkerProfile validates every CLI");
-                let resolver = Arc::new(crate::PublishedAcpLaunchResolver::new(
-                    cli,
-                    Some(base.clone()),
-                    credentials.clone(),
-                ));
+                let resolver = Arc::new(match &credentials {
+                    Some(credentials) => crate::PublishedAcpLaunchResolver::new(
+                        cli,
+                        Some(base.clone()),
+                        credentials.clone(),
+                    ),
+                    None => {
+                        crate::PublishedAcpLaunchResolver::backend_owned(cli, Some(base.clone()))
+                    }
+                });
                 (
                     cli,
                     resolver as Arc<dyn awaken_run_executor_acp::LaunchResolver>,
@@ -210,8 +213,11 @@ impl crate::host::SharedHost {
         // The same exact, claim-fenced materializer owns both sides of the
         // last-mile seam: the resolver issues an opaque one-shot reference and
         // the selected sandbox asks it for bytes immediately before spawn.
-        self.with_bound_acp(source, None)
-            .with_session_secret_broker(Arc::new(credentials))
+        let host = self.with_bound_acp(source, None);
+        match credentials {
+            Some(credentials) => host.with_session_secret_broker(Arc::new(credentials)),
+            None => host,
+        }
     }
 
     /// Select the Session environment once from the typed Deployment, regardless

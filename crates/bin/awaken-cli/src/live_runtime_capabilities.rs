@@ -35,6 +35,12 @@ fn credential_state_name(state: awaken_runtime_contract::CredentialObservationSt
         .to_string()
 }
 
+fn has_verified_capability_observation(
+    state: Option<awaken_acp_contract::AcpCapabilityObservationState>,
+) -> bool {
+    state == Some(awaken_acp_contract::AcpCapabilityObservationState::Verified)
+}
+
 pub(crate) struct LiveRuntimeCapabilities {
     pub(crate) initial: Vec<awaken_acp_application::AcpHostObservation>,
     pub(crate) workers: Arc<dyn awaken_coordinator::WorkerObservationSource>,
@@ -102,7 +108,9 @@ impl awaken_control::RuntimeCapabilitySource for LiveRuntimeCapabilities {
                         .as_ref()
                         .and_then(|local| local.version.clone());
                     capability = capability.with_local(awaken_control::LocalRuntimeCapability {
-                        detected: true,
+                        detected: has_verified_capability_observation(
+                            live_capability.map(|row| row.observation.state),
+                        ),
                         version: live_capability
                             .map(|row| row.observation.adapter_version.clone())
                             .or(initial_version),
@@ -207,6 +215,30 @@ mod tests {
                 .local
                 .is_none(),
             "L2"
+        );
+    }
+
+    #[test]
+    fn worker_manifest_never_substitutes_for_a_verified_acp_handshake() {
+        use awaken_acp_contract::AcpCapabilityObservationState;
+
+        // Cause/effect graph: a manifest only declares an intended route. A
+        // fresh coherent handshake is the sole cause of `detected`; absence or
+        // probe failure must remain unavailable and retain its diagnostic.
+        //
+        // Decision table:
+        // | Rule | live manifest | observation | detected |
+        // | V1 | yes | missing | false |
+        // | V2 | yes | probe_failed | false |
+        // | V3 | yes | verified | true |
+        assert!(!has_verified_capability_observation(None), "V1");
+        assert!(
+            !has_verified_capability_observation(Some(AcpCapabilityObservationState::ProbeFailed)),
+            "V2"
+        );
+        assert!(
+            has_verified_capability_observation(Some(AcpCapabilityObservationState::Verified)),
+            "V3"
         );
     }
 }
