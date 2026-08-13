@@ -2012,8 +2012,9 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
 /// A host model resolver that returns fixed coordinates (stands in for the
 /// config-plane + vault lookup).
 struct FixedModel(ResolvedModel);
+#[async_trait]
 impl LaunchResolver for FixedModel {
-    fn model(
+    async fn model(
         &self,
         _a: &RunActivation,
         _context: &RuntimeRunContext,
@@ -2042,8 +2043,8 @@ fn projected_env<'a>(launch: &'a AcpLaunch, key: &str) -> Option<&'a str> {
         })
 }
 
-#[test]
-fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
+#[tokio::test]
+async fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
     let cli = *acp_cli("claude").expect("claude in the catalog");
     let resolver = Arc::new(FixedModel(ResolvedModel::Managed {
         base_url: "https://api.kimi.com/coding/".to_string(),
@@ -2056,6 +2057,7 @@ fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
     let source = ProjectingChannelSource::new(cli, resolver);
     let launch = source
         .plan(&activation(), &RuntimeRunContext::new())
+        .await
         .expect("plan");
     let env = |k: &str| projected_env(&launch, k);
     assert_eq!(launch.argv, vec!["claude-agent-acp"]);
@@ -2076,8 +2078,9 @@ struct ConfigHomeAt {
     dir: String,
 }
 #[cfg(unix)]
+#[async_trait]
 impl LaunchResolver for ConfigHomeAt {
-    fn model(
+    async fn model(
         &self,
         _a: &RunActivation,
         _context: &RuntimeRunContext,
@@ -2445,8 +2448,8 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
     );
 }
 
-#[test]
-fn projecting_source_reads_the_cli_compact_window_from_config() {
+#[tokio::test]
+async fn projecting_source_reads_the_cli_compact_window_from_config() {
     let cli = *acp_cli("claude").expect("claude in the catalog");
     let resolver = Arc::new(FixedModel(ResolvedModel::Managed {
         base_url: "u".to_string(),
@@ -2463,7 +2466,10 @@ fn projecting_source_reads_the_cli_compact_window_from_config() {
         "acp".to_string(),
         serde_json::json!({ "compact_window": 262144 }),
     );
-    let launch = source.plan(&act, &RuntimeRunContext::new()).expect("plan");
+    let launch = source
+        .plan(&act, &RuntimeRunContext::new())
+        .await
+        .expect("plan");
     let window = launch
         .env
         .iter()
@@ -2732,8 +2738,9 @@ impl awaken_provisioning_contract::SecretBroker for MatrixSecretBroker {
     }
 }
 
+#[async_trait]
 impl LaunchResolver for MatrixModel {
-    fn model(
+    async fn model(
         &self,
         _a: &RunActivation,
         _context: &RuntimeRunContext,
@@ -2757,14 +2764,15 @@ impl LaunchResolver for MatrixModel {
     }
 }
 
-#[test]
-fn every_backend_row_projects_a_launchable_process_through_the_source() {
+#[tokio::test]
+async fn every_backend_row_projects_a_launchable_process_through_the_source() {
     // The source seam (not just `AcpCli::project`) must be row-agnostic: for each
     // catalog CLI, `ProjectingChannelSource::plan` yields the row's own command as
     // argv[0] and delivers the resolved model under that row's env keys.
     let reference_cli = &known_acp_clis()[0];
     let model = MatrixModel::for_cli(reference_cli)
         .model(&activation(), &RuntimeRunContext::new())
+        .await
         .unwrap();
     let ResolvedModel::Managed {
         base_url,
@@ -2776,7 +2784,7 @@ fn every_backend_row_projects_a_launchable_process_through_the_source() {
     };
     for cli in known_acp_clis() {
         let source = ProjectingChannelSource::new(*cli, Arc::new(MatrixModel::for_cli(cli)));
-        let planned = source.plan(&activation(), &RuntimeRunContext::new());
+        let planned = source.plan(&activation(), &RuntimeRunContext::new()).await;
         let Some(d) = cli.model_delivery.as_ref() else {
             let error = planned.unwrap_err();
             assert!(error.0.contains("credential_driver_required"), "{}", cli.id);
@@ -2854,6 +2862,7 @@ async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
         if row.model_delivery.is_none() {
             let error = ProjectingChannelSource::new(*row, Arc::new(MatrixModel::for_cli(row)))
                 .plan(&activation(), &RuntimeRunContext::new())
+                .await
                 .expect_err("driver-managed row must fail before spawn");
             assert_eq!(error.0, format!("credential_driver_required: {}", row.id));
             continue;

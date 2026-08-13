@@ -333,8 +333,9 @@ const PLAYWRIGHT_MCP_FIXTURE_CLI: awaken_run_executor_acp::AcpCli =
 /// this keeps the scenario off the "model config via env" path — no ANTHROPIC_* need be
 /// exported for the resolver to succeed. Only the MCP/`session/new` wire is under test.
 struct FixedAcpModel;
+#[async_trait::async_trait]
 impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
-    fn model(
+    async fn model(
         &self,
         _activation: &awaken_runtime_contract::activation::RunActivation,
         _context: &awaken_runtime_contract::RuntimeRunContext,

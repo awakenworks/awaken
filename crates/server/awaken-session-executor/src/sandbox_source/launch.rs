@@ -162,7 +162,7 @@ impl LaunchSource {
     }
 
     /// Projects the run's exact selected route into one concrete launch.
-    pub(super) fn resolve(
+    pub(super) async fn resolve(
         &self,
         activation: &RunActivation,
         backend: &awaken_runtime_contract::resolved::Backend,
@@ -181,7 +181,7 @@ impl LaunchSource {
             }),
             LaunchSource::Projected(registry) => {
                 let selected = registry.selected(backend)?;
-                let model = selected.resolver.model(activation, context)?;
+                let model = selected.resolver.model(activation, context).await?;
                 let credential_artifact = model.credential_artifact().cloned();
                 let extra_env = selected.resolver.extra_env(activation)?;
                 let window = awaken_runtime_contract::resolved::AcpSpec::from_plugin_config(
@@ -222,8 +222,9 @@ mod tests {
 
     struct FakeResolver;
 
+    #[async_trait::async_trait]
     impl LaunchResolver for FakeResolver {
-        fn model(
+        async fn model(
             &self,
             _activation: &RunActivation,
             _context: &awaken_runtime_contract::RuntimeRunContext,
