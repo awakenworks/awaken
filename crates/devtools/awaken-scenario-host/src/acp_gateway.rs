@@ -73,8 +73,9 @@ impl awaken_run_executor_acp::SecretBroker for ScenarioEnvSecretBroker {
     }
 }
 
+#[async_trait::async_trait]
 impl awaken_run_executor_acp::LaunchResolver for ScenarioEnvAcpModel {
-    fn model(
+    async fn model(
         &self,
         activation: &awaken_runtime_contract::activation::RunActivation,
         _context: &awaken_runtime_contract::RuntimeRunContext,

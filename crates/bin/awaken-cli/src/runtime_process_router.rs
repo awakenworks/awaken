@@ -484,7 +484,7 @@ pub(super) async fn prepare_runtime_routers(
         host_builder
             .with_session_environment_from_deployment(Some(hand_factory))
             .await
-            .with_acp_from_deployment(credential_materializer.clone())
+            .with_acp_from_deployment(credential_materializer.clone(), None)
             .await
     } else {
         host_builder
