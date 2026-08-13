@@ -173,3 +173,80 @@ async fn without_a_reader_a_fresh_run_starts_clean() {
         "no history without a reader"
     );
 }
+
+#[tokio::test]
+async fn request_context_is_model_visible_but_never_committed() {
+    /*
+     * Request-context cause/effect decision table. Causes: C1 a request-only
+     * message is present; C2 committed Thread history is present; C3 a fresh
+     * Run input is present; C4 a later attempt omits request context. Effects:
+     * E1 the current model request sees C1 before C2 and C3; E2 only C2/C3 and
+     * generated output become durable; E3 the later attempt cannot observe C1.
+     * Constraints: request context may coexist with or without a reader; this
+     * rule exercises the maximal interaction. Rule R1 C1+C2+C3 => E1+E2;
+     * R2 C2+C3+C4 => E3. Resume uses the same `model_transcript` owner, so a
+     * second resume-only assembly test would duplicate this ordering contract.
+     */
+    let runtime = runtime();
+    let commit: Arc<MemoryCommitCoordinator> = Arc::new(MemoryCommitCoordinator::new());
+    let reader: Arc<dyn CommittedThreadView> = commit.clone();
+
+    runtime
+        .execute(
+            activation("t1", "Committed."),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(reader.clone()),
+        )
+        .await
+        .unwrap();
+
+    let mut contextual = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_reader(reader.clone());
+    contextual.request_context.push(Message::text(
+        MessageId("request-only".to_string()),
+        Role::User,
+        "Transient.",
+    ));
+    runtime
+        .execute(activation("t2", "Current."), contextual)
+        .await
+        .unwrap();
+
+    let committed = commit.committed_messages(&ThreadId("thread-1".to_string()));
+    let reply = committed
+        .iter()
+        .rfind(|message| message.role == Role::Assistant)
+        .expect("assistant reply");
+    assert_eq!(
+        reply.text_content(),
+        "Transient.|Committed.|Current.",
+        "request-only context leads committed history and current input"
+    );
+    assert!(
+        committed
+            .iter()
+            .all(|message| message.id.0 != "request-only"),
+        "request-only context never becomes durable Thread truth"
+    );
+
+    runtime
+        .execute(
+            activation("t3", "Later."),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(reader),
+        )
+        .await
+        .unwrap();
+    let later = commit
+        .committed_messages(&ThreadId("thread-1".to_string()))
+        .into_iter()
+        .rfind(|message| message.role == Role::Assistant)
+        .expect("later assistant reply");
+    assert!(
+        !later.text_content().contains("Transient."),
+        "a later attempt cannot observe omitted request-only context"
+    );
+}
