@@ -2790,6 +2790,19 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
         Some("ws"),
         "W2"
     );
+    let context = host
+        .ctx_for("t-bare", None)
+        .await
+        .expect("W2 runtime context")
+        .context();
+    assert_eq!(
+        context
+            .execution_scope
+            .as_ref()
+            .map(|scope| scope.0.as_str()),
+        Some("ws"),
+        "W2 Session ownership enters the one attempt context"
+    );
     assert_eq!(
         host.sandbox_spec("t-bare").isolation,
         IsolationClass::Workdir

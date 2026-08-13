@@ -1377,7 +1377,11 @@ impl SharedHost {
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
         let run_context = terminal_observers.iter().cloned().fold(
-            awaken_runtime_contract::RuntimeRunContext::new(),
+            awaken_runtime_contract::RuntimeRunContext::new().with_execution_scope(
+                awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from(
+                    self.thread_workspace(thread),
+                )),
+            ),
             awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
         );
         let mut run_context = run_context;

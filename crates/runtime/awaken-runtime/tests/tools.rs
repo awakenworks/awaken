@@ -375,6 +375,47 @@ async fn executor_receives_run_and_step_scoped_operation_identity() {
 }
 
 #[tokio::test]
+async fn executor_receives_the_attempt_execution_workspace() {
+    struct ScopeProbe(Arc<Mutex<Option<String>>>);
+
+    #[async_trait::async_trait]
+    impl RawTool for ScopeProbe {
+        fn id(&self) -> &str {
+            "echo"
+        }
+
+        async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+            *self.0.lock().unwrap() =
+                awaken_runtime_contract::tool::current_tool_operation_context()
+                    .and_then(|context| context.execution_scope)
+                    .map(|scope| scope.0.0);
+            Ok(ToolOutput::ok(call.call_id, "ok"))
+        }
+    }
+
+    // Cause/effect rule: a trusted execution scope on the attempt (C1) reaches
+    // an invoked tool as runtime-owned context (E1). The model-authored ToolCall
+    // contains no scope field, so it cannot replace this value.
+    let seen = Arc::new(Mutex::new(None));
+    Runtime::new()
+        .with_llm(Arc::new(ToolThenText::new()))
+        .with_tool(Arc::new(ScopeProbe(seen.clone())))
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_execution_scope(
+                awaken_runtime_contract::ExecutionScopeRef("workspace-tenant".into()),
+            ),
+        )
+        .await
+        .expect("C1 run");
+    assert_eq!(
+        seen.lock().unwrap().as_deref(),
+        Some("workspace-tenant"),
+        "E1"
+    );
+}
+
+#[tokio::test]
 async fn denied_tool_call_never_executes_even_though_visible() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new()

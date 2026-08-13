@@ -50,6 +50,36 @@ fn valid_preview_id(id: &str) -> bool {
     })
 }
 
+fn preview_problem(code: &str, title: &str, detail: impl Into<String>) -> Json<Value> {
+    let detail = detail.into();
+    Json(json!({
+        "type": format!("https://awaken.dev/problems/{code}"),
+        "code": code,
+        "title": title,
+        "detail": detail,
+    }))
+}
+
+#[cfg(test)]
+#[test]
+fn preview_conflict_preserves_the_structured_root_cause() {
+    // Cause/effect rule: an unresolvable preview (model, plugin, credential, or
+    // resource cause) returns one RFC-9457-shaped problem whose stable code and
+    // exact detail let the Console explain the 409 instead of collapsing it to
+    // the HTTP reason phrase. Field-level cause classification stays with the
+    // publication resolver that authored the detail.
+    let Json(problem) = preview_problem(
+        "agent_preview_unresolvable",
+        "Agent preview cannot be resolved",
+        "plugin_config.web_search: config is required",
+    );
+    assert_eq!(problem["code"], "agent_preview_unresolvable");
+    assert_eq!(
+        problem["detail"],
+        "plugin_config.web_search: config is required"
+    );
+}
+
 async fn create_preview(
     State(plane): State<ConfigPlane>,
     scope: Option<Extension<awaken_tenancy::WorkspaceScope>>,
@@ -116,7 +146,11 @@ async fn create_preview(
         ),
         Err(error @ PublishError::Unresolvable(_)) => (
             StatusCode::CONFLICT,
-            Json(json!({ "error": error.to_string() })),
+            preview_problem(
+                "agent_preview_unresolvable",
+                "Agent preview cannot be resolved",
+                error.to_string(),
+            ),
         ),
         Err(error) => (
             StatusCode::BAD_REQUEST,

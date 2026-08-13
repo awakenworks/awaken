@@ -232,19 +232,33 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         environment_application,
         &service_lifecycle,
     );
-    let capability_reader = Arc::new(CatalogCapabilityReader::new(
-        catalog.clone(),
-        &global_tools,
-        &assistant_plugins,
-        config_plane.clone(),
-        execution_workspace.clone(),
-        resource_inventory,
-    ));
-    let draft_store = Arc::new(ConfigServiceDraftStore::new(
-        config_plane.clone(),
-        execution_workspace.clone(),
-        resource_store.clone(),
-    ));
+    let capability_reader = Arc::new(if request_scoped_execution_workspace {
+        CatalogCapabilityReader::request_scoped(
+            catalog.clone(),
+            &global_tools,
+            &assistant_plugins,
+            config_plane.clone(),
+            resource_inventory,
+        )
+    } else {
+        CatalogCapabilityReader::new(
+            catalog.clone(),
+            &global_tools,
+            &assistant_plugins,
+            config_plane.clone(),
+            execution_workspace.clone(),
+            resource_inventory,
+        )
+    });
+    let draft_store = Arc::new(if request_scoped_execution_workspace {
+        ConfigServiceDraftStore::request_scoped(config_plane.clone(), resource_store.clone())
+    } else {
+        ConfigServiceDraftStore::new(
+            config_plane.clone(),
+            execution_workspace.clone(),
+            resource_store.clone(),
+        )
+    });
     let draft_reconciler = draft_store.clone();
     service_lifecycle.spawn(
         "control-agent-resource-binding-reconciliation",
@@ -256,10 +270,11 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     );
     let admin_tools = awaken_admin_assistant::admin_tools(
         capability_reader,
-        Arc::new(ConfigServiceDraftValidator::new(
-            config_plane.clone(),
-            execution_workspace.clone(),
-        )),
+        Arc::new(if request_scoped_execution_workspace {
+            ConfigServiceDraftValidator::request_scoped(config_plane.clone())
+        } else {
+            ConfigServiceDraftValidator::new(config_plane.clone(), execution_workspace.clone())
+        }),
         draft_store,
         environment_author,
         Arc::new(awaken_admin_assistant::TracingAuditSink),
@@ -435,5 +450,28 @@ async fn report_webhook_inventory(webhooks: &dyn WebhookStore, secrets: &dyn Sec
         ),
         Err(error) => eprintln!("webhook inventory reconciliation failed: {error}"),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn hosted_registration_recovery_never_replays_a_process_local_assistant() {
+        // Cause/effect decision rule: hosted IAM selects Workspace per request,
+        // so there is no fixed execution Workspace (C1). Every startup,
+        // freshness, and recovery operation on the hosted reconciler is an
+        // intentional no-op (E1); an old local __admin_assistant publication
+        // therefore cannot poison hosted readiness by being replayed. The local
+        // fixed-workspace branch remains owned by ConfigServiceReconciler.
+        let reconciler = RequestScopedPublicationReconciler;
+        assert_eq!(reconciler.reconcile().await.unwrap(), 0, "C1 -> E1");
+        assert_eq!(reconciler.reconcile_all().await.unwrap(), 0, "C1 -> E1");
+        assert_eq!(
+            reconciler.recover_registrations().await.unwrap(),
+            0,
+            "C1 -> E1"
+        );
     }
 }
