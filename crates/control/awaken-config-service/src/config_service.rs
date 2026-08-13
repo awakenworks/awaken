@@ -12,7 +12,9 @@ use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, ConfigRegistry, ConfigWrite, StoredPublication,
 };
 use awaken_config_resolver::AgentInputBindingRepository;
-use awaken_executable_agent_contract::{ExecutableAgentRegistrar, ExecutableAgentRegistration};
+use awaken_executable_agent_contract::{
+    ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentRegistrationError,
+};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 

@@ -144,6 +144,9 @@ describe("structured API failure evidence", () => {
 
     const error = await api.get("/v1/config/agents/a").catch((cause) => cause);
     expect(error).toBeInstanceOf(ApiClientError);
+    if (!(error instanceof ApiClientError)) {
+      throw new Error("expected structured API client failure");
+    }
     expect(error).toMatchObject({
       status: 409,
       code: "publication_conflict",

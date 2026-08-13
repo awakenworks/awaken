@@ -291,7 +291,8 @@ mod tests {
 
         supervisor.wake();
         for _ in 0..100 {
-            if supervisor.health().snapshot().ready {
+            let snapshot = supervisor.health().snapshot();
+            if snapshot.pending_domains == 0 && snapshot.consecutive_failures == 0 {
                 break;
             }
             tokio::task::yield_now().await;
