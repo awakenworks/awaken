@@ -73,6 +73,7 @@ chrono = { version = "0.4", default-features = false, features = ["serde"] }
 chrono-tz = "0.10"
 async-trait.workspace = true
 thiserror.workspace = true
+sha2 = "0.10"
 # `sync` for the per-session live-SSE broadcast the preview sink and committed
 # events publish to; `rt`/`macros` come from the workspace default.
 tokio = { workspace = true, features = ["sync"] }

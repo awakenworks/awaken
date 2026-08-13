@@ -921,6 +921,13 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
         },
     ),
     RoutePolicyDescriptor::control(
+        "/v1/config/application-mcp-credentials",
+        RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
         "/v1/config/provider-connections",
         RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,

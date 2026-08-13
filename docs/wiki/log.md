@@ -198,3 +198,10 @@
   admission-before-activity ordering. A replacement process now advances the
   realization lease before resuming an awaiting Run and before opening its
   billable Running interval.
+
+## 2026-08-13 (Hosted application MCP credentials remain Vault-owned)
+
+- Added one idempotent create-or-rotate command over the existing Credential/Vault
+  WAL and CAS for trusted hosted application MCP bearers.
+- Kept Managed Session creation and MCP normalization authoritative; hosted
+  applications retain no local credential or Session fallback.

@@ -15,6 +15,12 @@ use crate::{
     prepare_source, prepare_source_with_id, validate_create_params,
 };
 
+mod application_mcp;
+pub use application_mcp::{
+    APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand,
+    enter_or_rotate_application_mcp_bearer,
+};
+
 /// Secret-free write-ahead intent for create, rotate, disable, archive, or
 /// revoke. `before = None` is creation; every other change compares the exact
 /// previous revision before atomically publishing `after`.
@@ -353,22 +359,18 @@ pub async fn enter_credential_idempotent(
             "an endpoint-scoped credential requires a provider".into(),
         ));
     }
-    let expected = CredentialSource {
-        id: id.clone(),
-        workspace_id: params.workspace_id.clone(),
-        kind: params.kind,
-        provider_id: params.provider_id.clone(),
-        protocol_endpoint_id: protocol_endpoint_id.clone(),
-        env_key: params.env_key.clone(),
-        material_ref: (params.kind == CredentialKind::Vault && params.secret.is_some())
-            .then(|| crate::SecretRef(format!("sec:{}", id.0))),
-        auxiliary_material_refs: BTreeMap::new(),
-        oauth_command: params.oauth_command.clone(),
-        worker_local_binding: None,
-        status: CredentialStatus::Active,
-        version: 1,
-    };
-    match repo.get(&id).await {
+    let (mut expected, secret) = prepare_source_with_id(id, params);
+    expected.protocol_endpoint_id = protocol_endpoint_id;
+    enter_prepared_credential_idempotent(expected, secret, store, repo).await
+}
+
+pub(super) async fn enter_prepared_credential_idempotent(
+    expected: CredentialSource,
+    secret: Option<awaken_agent_contract::RedactedString>,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialEntry, CredentialError> {
+    match repo.get(&expected.id).await {
         Ok(source) => {
             validate_idempotent_source(&source, &expected)?;
             return Ok(CredentialEntry {
@@ -380,18 +382,23 @@ pub async fn enter_credential_idempotent(
         Err(error) => return Err(error),
     }
 
-    match enter_credential_with_id(id.clone(), params, protocol_endpoint_id, store, repo).await {
+    match enter_prepared_credential(expected.clone(), secret, BTreeMap::new(), store, repo).await {
         Ok(source) => Ok(CredentialEntry {
             source,
             created: true,
         }),
-        Err(CredentialError::MutationConflict(_)) => {
-            let source = repo.get(&id).await?;
-            validate_idempotent_source(&source, &expected)?;
-            Ok(CredentialEntry {
-                source,
-                created: false,
-            })
+        Err(conflict @ CredentialError::MutationConflict(_)) => {
+            match repo.get(&expected.id).await {
+                Ok(source) => {
+                    validate_idempotent_source(&source, &expected)?;
+                    Ok(CredentialEntry {
+                        source,
+                        created: false,
+                    })
+                }
+                Err(CredentialError::SourceNotFound(_)) => Err(conflict),
+                Err(error) => Err(error),
+            }
         }
         Err(error) => Err(error),
     }
@@ -432,19 +439,6 @@ pub async fn enter_credential_with_materials(
     validate_material_slots(auxiliary.keys().map(String::as_str))?;
     let (source, secret) = prepare_source(params);
     enter_prepared_credential(source, secret, auxiliary, store, repo).await
-}
-
-async fn enter_credential_with_id(
-    id: CredentialSourceId,
-    params: CredentialCreateParams,
-    protocol_endpoint_id: Option<String>,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    validate_create_params(&params)?;
-    let (mut source, secret) = prepare_source_with_id(id, params);
-    source.protocol_endpoint_id = protocol_endpoint_id;
-    enter_prepared_credential(source, secret, BTreeMap::new(), store, repo).await
 }
 
 async fn enter_prepared_credential(
@@ -520,6 +514,25 @@ pub async fn rotate_credential_materials_exact(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
+    rotate_credential_materials_exact_with_primary_ref(
+        id,
+        expected_version,
+        patch,
+        None,
+        store,
+        repo,
+    )
+    .await
+}
+
+pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
+    id: &CredentialSourceId,
+    expected_version: i64,
+    patch: CredentialMaterialPatch,
+    primary_ref: Option<crate::SecretRef>,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
     validate_material_slots(patch.auxiliary.keys().map(String::as_str))?;
     let before = repo.get(id).await?;
     if before.version != expected_version {
@@ -541,7 +554,7 @@ pub async fn rotate_credential_materials_exact(
     after.version = version;
     let mut materials = Vec::new();
     if let Some(material) = patch.primary {
-        let reference = material_ref_for(id, version, "primary");
+        let reference = primary_ref.unwrap_or_else(|| material_ref_for(id, version, "primary"));
         after.material_ref = Some(reference.clone());
         materials.push((reference, material));
     }
@@ -572,7 +585,17 @@ pub async fn rotate_credential_materials_exact(
             return Err(error);
         }
     }
-    repo.apply_mutation(&intent).await?;
+    if let Err(error) = repo.apply_mutation(&intent).await {
+        // A CAS conflict proves this intent was not published, so its newly
+        // sealed refs can be reclaimed immediately. Storage errors remain
+        // ambiguous and deliberately retain the WAL for recovery.
+        if matches!(error, CredentialError::MutationConflict(_))
+            && cleanup_unpublished_material(&intent, store).await.is_ok()
+        {
+            repo.complete_mutation(id).await?;
+        }
+        return Err(error);
+    }
     cleanup_retired_material(&intent, store).await?;
     repo.complete_mutation(id).await?;
     Ok(after)
@@ -851,6 +874,7 @@ pub async fn reconcile_credential_inventory(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
@@ -861,6 +885,91 @@ mod tests {
         inner: InMemorySecretStore,
         fail_before_delete: AtomicBool,
         lose_first_response: AtomicBool,
+    }
+
+    struct GatedCredentialRepo {
+        inner: InMemoryCredentialRepo,
+        gate_reads: AtomicBool,
+        gate: Arc<tokio::sync::Barrier>,
+    }
+
+    impl GatedCredentialRepo {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryCredentialRepo::new(),
+                gate_reads: AtomicBool::new(false),
+                gate: Arc::new(tokio::sync::Barrier::new(2)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl CredentialRepo for GatedCredentialRepo {
+        async fn put(&self, source: CredentialSource) -> Result<(), CredentialError> {
+            self.inner.put(source).await
+        }
+
+        async fn put_if_absent(
+            &self,
+            source: CredentialSource,
+        ) -> Result<CredentialSource, CredentialError> {
+            self.inner.put_if_absent(source).await
+        }
+
+        async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError> {
+            let result = self.inner.get(id).await;
+            if self.gate_reads.load(Ordering::SeqCst) {
+                self.gate.wait().await;
+            }
+            result
+        }
+
+        async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError> {
+            self.inner.list(workspace_id).await
+        }
+
+        async fn begin_mutation(
+            &self,
+            intent: CredentialMutationIntent,
+        ) -> Result<(), CredentialError> {
+            self.inner.begin_mutation(intent).await
+        }
+
+        async fn apply_mutation(
+            &self,
+            intent: &CredentialMutationIntent,
+        ) -> Result<(), CredentialError> {
+            self.inner.apply_mutation(intent).await
+        }
+
+        async fn pending_mutations(
+            &self,
+        ) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
+            self.inner.pending_mutations().await
+        }
+
+        async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
+            self.inner.complete_mutation(id).await
+        }
+
+        async fn material_refs(&self) -> Result<Vec<crate::SecretRef>, CredentialError> {
+            self.inner.material_refs().await
+        }
+
+        async fn put_pool(&self, pool: CredentialPool) -> Result<(), CredentialError> {
+            self.inner.put_pool(pool).await
+        }
+
+        async fn get_pool(&self, id: &CredentialPoolId) -> Result<CredentialPool, CredentialError> {
+            self.inner.get_pool(id).await
+        }
+
+        async fn list_pools(
+            &self,
+            workspace_id: &str,
+        ) -> Result<Vec<CredentialPool>, CredentialError> {
+            self.inner.list_pools(workspace_id).await
+        }
     }
 
     #[async_trait::async_trait]
@@ -1596,6 +1705,142 @@ mod tests {
             endpoint_conflict,
             Err(CredentialError::InvalidSource(_))
         ));
+    }
+
+    /// Cause/effect graph for the hosted application bearer aggregate:
+    /// C1 source absent; C2 tuple matches the durable source; C3 command key
+    /// matches; C4 payload/material matches; C5 a new command key is supplied.
+    /// Effects are E1 create one source/revision, E2 exact replay/no write, E3
+    /// reject an idempotency or tuple conflict, and E4 rotate only material while
+    /// retaining source identity. Constraints: C3 excludes C5; C4 is relevant
+    /// only with C3.
+    ///
+    /// | rule | C1 | C2 | C3 | C4 | C5 | effect |
+    /// |---|---|---|---|---|---|---|
+    /// | A1 | yes | - | - | - | - | E1/revision 1 |
+    /// | A2 | no | yes | yes | yes | no | E2/same ids and revision |
+    /// | A3 | no | yes | yes | no | no | E3/conflict |
+    /// | A4 | no | yes | no | - | yes | E4/same id, revision + 1 |
+    /// | A5 | no | no | - | - | - | E3/conflict |
+    #[tokio::test]
+    async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggregate() {
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let source_id = CredentialSourceId("cred:app-mcp:test".into());
+        macro_rules! command {
+            ($workspace:expr, $target:expr, $key:expr, $token:expr) => {
+                enter_or_rotate_application_mcp_bearer(
+                    ApplicationMcpBearerCommand {
+                        source_id: source_id.clone(),
+                        workspace_id: $workspace.into(),
+                        target_fingerprint: $target.into(),
+                        command_key_fingerprint: $key.into(),
+                        bearer: RedactedString::new($token),
+                    },
+                    &store,
+                    &repo,
+                )
+            };
+        }
+
+        let first = command!("ws", "target-a", "key-1", "token-1")
+            .await
+            .unwrap();
+        let replay = command!("ws", "target-a", "key-1", "token-1")
+            .await
+            .unwrap();
+        let mismatched_replay = command!("ws", "target-a", "key-1", "token-other").await;
+        let rotated = command!("ws", "target-a", "key-2", "token-2")
+            .await
+            .unwrap();
+        let workspace_conflict = command!("other", "target-a", "key-3", "token-3").await;
+        let target_conflict = command!("ws", "target-b", "key-3", "token-3").await;
+
+        assert_eq!(first.version, 1);
+        assert_eq!(first.id, replay.id);
+        assert_eq!(first.version, replay.version);
+        assert!(matches!(
+            mismatched_replay,
+            Err(CredentialError::MutationConflict(_))
+        ));
+        assert_eq!(rotated.id, first.id);
+        assert_eq!(rotated.version, first.version + 1);
+        assert_eq!(
+            store
+                .get(rotated.material_ref.as_ref().unwrap())
+                .await
+                .unwrap()
+                .expose_secret(),
+            "token-2"
+        );
+        assert!(matches!(
+            workspace_conflict,
+            Err(CredentialError::MutationConflict(_))
+        ));
+        assert!(matches!(
+            target_conflict,
+            Err(CredentialError::MutationConflict(_))
+        ));
+    }
+
+    /// Concurrent-rotation decision rule: C1 two valid commands read the same
+    /// revision and C2 their command identities differ. The one source-keyed WAL
+    /// accepts exactly one intent (E1), the other returns MutationConflict (E2),
+    /// and the durable source advances exactly once (E3). Equal command+payload
+    /// is constrained to the replay rule above and may safely share one intent.
+    #[tokio::test]
+    async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
+        let store = InMemorySecretStore::new();
+        let repo = GatedCredentialRepo::new();
+        let source_id = CredentialSourceId("cred:app-mcp:race".into());
+        enter_or_rotate_application_mcp_bearer(
+            ApplicationMcpBearerCommand {
+                source_id: source_id.clone(),
+                workspace_id: "ws".into(),
+                target_fingerprint: "target".into(),
+                command_key_fingerprint: "initial-key".into(),
+                bearer: RedactedString::new("initial-token"),
+            },
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap();
+        repo.gate_reads.store(true, Ordering::SeqCst);
+
+        let left = enter_or_rotate_application_mcp_bearer(
+            ApplicationMcpBearerCommand {
+                source_id: source_id.clone(),
+                workspace_id: "ws".into(),
+                target_fingerprint: "target".into(),
+                command_key_fingerprint: "left-key".into(),
+                bearer: RedactedString::new("left-token"),
+            },
+            &store,
+            &repo,
+        );
+        let right = enter_or_rotate_application_mcp_bearer(
+            ApplicationMcpBearerCommand {
+                source_id: source_id.clone(),
+                workspace_id: "ws".into(),
+                target_fingerprint: "target".into(),
+                command_key_fingerprint: "right-key".into(),
+                bearer: RedactedString::new("right-token"),
+            },
+            &store,
+            &repo,
+        );
+        let (left, right) = tokio::join!(left, right);
+        repo.gate_reads.store(false, Ordering::SeqCst);
+
+        assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
+        assert_eq!(
+            usize::from(matches!(left, Err(CredentialError::MutationConflict(_))))
+                + usize::from(matches!(right, Err(CredentialError::MutationConflict(_)))),
+            1
+        );
+        assert_eq!(repo.get(&source_id).await.unwrap().version, 2);
+        assert!(repo.pending_mutations().await.unwrap().is_empty());
     }
 
     #[tokio::test]

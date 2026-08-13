@@ -17,6 +17,7 @@
 //! guard exactly where it applied before.
 
 pub mod admin_assistant;
+mod application_mcp_credentials;
 pub mod authz;
 mod component;
 pub mod control_stores;
@@ -29,6 +30,8 @@ mod registration_supervisor;
 pub mod worker_stores;
 
 #[cfg(test)]
+mod application_mcp_credentials_tests;
+#[cfg(test)]
 mod audit_tests;
 
 use std::sync::Arc;
@@ -38,6 +41,7 @@ pub use crate::admin_assistant::{
     CatalogCapabilityReader, ConfigServiceDraftStore, ConfigServiceDraftValidator,
     HostResourceInventory, admin_assistant_lifecycle_router, seed_admin_assistant,
 };
+pub use crate::application_mcp_credentials::application_mcp_credentials_router;
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
 pub use crate::authz::{
@@ -342,6 +346,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let webhook_crud =
         awaken_webhook_managed::webhook_config_router(webhook_store, secrets.clone());
     let admin = admin.merge(webhook_crud);
+    let application_mcp_credentials = application_mcp_credentials_router(vault_state.clone());
     let vaults = vault_router(vault_state);
     let user_profiles = user_profiles_router(data_subject_application, data_subject_org);
     // The config authoring plane (`/v1/config/agents/*`): the console authors the
@@ -396,6 +401,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     // against the same embedded IAM the guard authenticates with), and they
     // are merged before the layer so the guard authenticates them first.
     let mut mgmt = admin
+        .merge(application_mcp_credentials)
         .merge(vaults)
         .merge(user_profiles)
         .merge(agents)

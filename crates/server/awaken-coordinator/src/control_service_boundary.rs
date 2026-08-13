@@ -58,11 +58,13 @@ struct AuditLookupCommand {
 
 #[derive(Serialize, Deserialize)]
 struct VaultExistsCommand {
+    workspace_id: String,
     vault_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
 struct McpSourceCommand {
+    workspace_id: String,
     vault_ids: Vec<String>,
     url: String,
 }
@@ -70,6 +72,7 @@ struct McpSourceCommand {
 #[derive(Serialize, Deserialize)]
 struct SourceCommand {
     source_id: CredentialSourceId,
+    workspace_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -207,7 +210,10 @@ async fn vault_exists(
     State(state): State<ControlServiceState>,
     Json(command): Json<VaultExistsCommand>,
 ) -> axum::response::Response {
-    let result = state.credentials.has_vault(&command.vault_id).await;
+    let result = state
+        .credentials
+        .has_vault(&command.workspace_id, &command.vault_id)
+        .await;
     response(result)
 }
 
@@ -217,7 +223,7 @@ async fn mcp_source(
 ) -> axum::response::Response {
     let result = state
         .credentials
-        .mcp_credential_source_for_url(&command.vault_ids, &command.url)
+        .mcp_credential_source_for_url(&command.workspace_id, &command.vault_ids, &command.url)
         .await;
     response(result)
 }
@@ -228,7 +234,7 @@ async fn mcp_access(
 ) -> axum::response::Response {
     let result = state
         .credentials
-        .mcp_access_for_source(&command.source_id)
+        .mcp_access_for_source(&command.source_id, &command.workspace_id)
         .await;
     response(result)
 }
@@ -422,10 +428,11 @@ impl ManagementAuditRepository for HttpControlServiceClient {
 
 #[async_trait::async_trait]
 impl SessionCredentialSource for HttpControlServiceClient {
-    async fn has_vault(&self, id: &str) -> Result<bool, String> {
+    async fn has_vault(&self, workspace_id: &str, id: &str) -> Result<bool, String> {
         self.post(
             VAULT_EXISTS_PATH,
             &VaultExistsCommand {
+                workspace_id: workspace_id.to_owned(),
                 vault_id: id.to_owned(),
             },
         )
@@ -434,12 +441,14 @@ impl SessionCredentialSource for HttpControlServiceClient {
 
     async fn mcp_credential_source_for_url(
         &self,
+        workspace_id: &str,
         vault_ids: &[String],
         url: &str,
     ) -> Result<Option<CredentialSourceId>, String> {
         self.post(
             MCP_SOURCE_PATH,
             &McpSourceCommand {
+                workspace_id: workspace_id.to_owned(),
                 vault_ids: vault_ids.to_vec(),
                 url: url.to_owned(),
             },
@@ -450,11 +459,13 @@ impl SessionCredentialSource for HttpControlServiceClient {
     async fn mcp_access_for_source(
         &self,
         source_id: &CredentialSourceId,
+        workspace_id: &str,
     ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
         self.post(
             MCP_ACCESS_PATH,
             &SourceCommand {
                 source_id: source_id.clone(),
+                workspace_id: workspace_id.to_owned(),
             },
         )
         .await
@@ -646,7 +657,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*delivery.0.lock().unwrap(), vec![fact], "R2");
-        assert!(!client.has_vault("missing").await.unwrap(), "R3");
+        assert!(
+            !client.has_vault("workspace-a", "missing").await.unwrap(),
+            "R3"
+        );
         assert_eq!(
             awaken_runtime_contract::DataSubjectConsentSource::consent_ceiling(
                 &client,
@@ -659,7 +673,13 @@ mod tests {
         );
 
         *token_source.0.write().expect("token source write") = Arc::from("next-token");
-        assert!(!client.has_vault("still-missing").await.unwrap(), "R7");
+        assert!(
+            !client
+                .has_vault("workspace-a", "still-missing")
+                .await
+                .unwrap(),
+            "R7"
+        );
 
         let rejected =
             HttpControlServiceClient::new(format!("http://{address}"), "correct-token").unwrap();

@@ -35,7 +35,9 @@ pub mod types;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
-pub use common::headers::{MANAGED_BETA, TUNNELS_BETA, USER_PROFILES_BETA};
+pub use common::headers::{
+    MANAGED_BETA, TUNNELS_BETA, USER_PROFILES_BETA, parse_idempotency_key_header,
+};
 pub use control::{ModelEntry, default_models, models_router, models_router_with_inventory};
 mod resources;
 pub use resources::{

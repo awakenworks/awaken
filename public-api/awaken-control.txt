@@ -38,12 +38,20 @@ pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'a
 pub fn awaken_control::admin_assistant::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
 pub async fn awaken_control::admin_assistant::seed_admin_assistant(&awaken_config_service::config_plane::ConfigPlane, &str, awaken_agent_config::config::ModelSelection) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_control::authz
+pub enum awaken_control::authz::HostedRuntimePathMatch
+pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix
+pub awaken_control::authz::HostedRuntimePathMatch::PathPrefix::path: &'static str
+pub awaken_control::authz::HostedRuntimePathMatch::PathTemplate
+pub awaken_control::authz::HostedRuntimePathMatch::PathTemplate::path_template: &'static str
 pub enum awaken_control::authz::ManagementIdentityMode
 pub awaken_control::authz::ManagementIdentityMode::AwakenCloud
 pub awaken_control::authz::ManagementIdentityMode::NoLogin
 pub awaken_control::authz::ManagementIdentityMode::SelfManaged
 impl awaken_control::authz::ManagementIdentityMode
 pub fn awaken_control::authz::ManagementIdentityMode::parse(&str) -> core::option::Option<Self>
+pub struct awaken_control::authz::HostedRuntimeRouteProfile
+pub awaken_control::authz::HostedRuntimeRouteProfile::routes: alloc::vec::Vec<awaken_control::authz::HostedRuntimePathMatch>
+pub awaken_control::authz::HostedRuntimeRouteProfile::schema_version: u32
 pub struct awaken_control::authz::ManagementAuthz
 impl awaken_control::authz::ManagementAuthz
 pub fn awaken_control::authz::ManagementAuthz::begin_local_browser(&self, awaken_iam_contract::AccountId) -> core::result::Result<(awaken_iam_host::local_browser::LocalBrowserAuth, awaken_iam_host::local_browser::LocalSetupHandoff), awaken_iam_host::local_browser::LocalBrowserAuthError>
@@ -77,6 +85,7 @@ pub fn awaken_control::authz::embedded_iam(&std::path::Path) -> alloc::sync::Arc
 pub fn awaken_control::authz::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::embedded_iam_for_workspace(&std::path::Path, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::hosted_runtime_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
+pub fn awaken_control::authz::hosted_runtime_route_profile() -> awaken_control::authz::HostedRuntimeRouteProfile
 pub fn awaken_control::authz::management_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub async fn awaken_control::authz::management_guard(axum::extract::state::State<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub fn awaken_control::authz::management_resource_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
@@ -122,6 +131,11 @@ pub struct awaken_control::worker_stores::InferenceMaterializationStores
 pub awaken_control::worker_stores::InferenceMaterializationStores::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>
 pub awaken_control::worker_stores::InferenceMaterializationStores::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
 pub async fn awaken_control::worker_stores::open_inference_materialization_stores(&awaken_control::control_stores::ControlStoreConfig, &[u8; 32]) -> awaken_control::worker_stores::InferenceMaterializationStores
+pub enum awaken_control::HostedRuntimePathMatch
+pub awaken_control::HostedRuntimePathMatch::PathPrefix
+pub awaken_control::HostedRuntimePathMatch::PathPrefix::path: &'static str
+pub awaken_control::HostedRuntimePathMatch::PathTemplate
+pub awaken_control::HostedRuntimePathMatch::PathTemplate::path_template: &'static str
 pub enum awaken_control::ManagementIdentityMode
 pub awaken_control::ManagementIdentityMode::AwakenCloud
 pub awaken_control::ManagementIdentityMode::NoLogin
@@ -198,7 +212,7 @@ pub awaken_control::ControlDependencies::global_tools: alloc::vec::Vec<awaken_ru
 pub awaken_control::ControlDependencies::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
 pub awaken_control::ControlDependencies::local_browser_auth: core::option::Option<awaken_iam_host::local_browser::LocalBrowserAuth>
 pub awaken_control::ControlDependencies::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
-pub awaken_control::ControlDependencies::managed_runtime: bool
+pub awaken_control::ControlDependencies::managed_runtime_available: bool
 pub awaken_control::ControlDependencies::managed_tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
 pub awaken_control::ControlDependencies::mcp_probe: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::mcp_probe::McpProbe>>
 pub awaken_control::ControlDependencies::model_discovery: alloc::sync::Arc<dyn awaken_admin_config_api::provider_connection::ModelCatalogDiscovery>
@@ -229,7 +243,7 @@ pub awaken_control::ControlRouterInput::global_tools: alloc::vec::Vec<awaken_run
 pub awaken_control::ControlRouterInput::iam: core::option::Option<alloc::sync::Arc<awaken_control::authz::ManagementAuthz>>
 pub awaken_control::ControlRouterInput::local_browser_auth: core::option::Option<awaken_iam_host::local_browser::LocalBrowserAuth>
 pub awaken_control::ControlRouterInput::managed_request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
-pub awaken_control::ControlRouterInput::managed_runtime: bool
+pub awaken_control::ControlRouterInput::managed_runtime_available: bool
 pub awaken_control::ControlRouterInput::managed_tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
 pub awaken_control::ControlRouterInput::model_discovery: alloc::sync::Arc<dyn awaken_admin_config_api::provider_connection::ModelCatalogDiscovery>
 pub awaken_control::ControlRouterInput::model_supply: awaken_admin_config_api::router::ModelSupplyCapabilityView
@@ -265,6 +279,9 @@ pub fn awaken_control::admin_assistant::HostResourceInventory::new(alloc::sync::
 impl awaken_admin_assistant::ResourceInventory for awaken_control::admin_assistant::HostResourceInventory
 pub fn awaken_control::admin_assistant::HostResourceInventory::memory_stores<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub struct awaken_control::HostedRuntimeRouteProfile
+pub awaken_control::HostedRuntimeRouteProfile::routes: alloc::vec::Vec<awaken_control::authz::HostedRuntimePathMatch>
+pub awaken_control::HostedRuntimeRouteProfile::schema_version: u32
 pub struct awaken_control::InferenceMaterializationStores
 pub awaken_control::InferenceMaterializationStores::credentials: alloc::sync::Arc<dyn awaken_credential_vault::repo::CredentialRepo>
 pub awaken_control::InferenceMaterializationStores::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
@@ -319,6 +336,7 @@ pub const awaken_control::MANAGEMENT_AGENT_PUBLISHER_ROLE: &str
 pub const awaken_control::MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE: &str
 pub const awaken_control::MANAGEMENT_POLICY_NAMESPACE: &str
 pub fn awaken_control::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
+pub fn awaken_control::application_mcp_credentials_router(alloc::sync::Arc<awaken_protocol_managed::routes::vaults::VaultState>) -> axum::routing::Router
 pub async fn awaken_control::build_control_component(awaken_control::ControlDependencies) -> awaken_control::ControlComponent
 pub fn awaken_control::consent_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::string::String, awaken_runtime_contract::capture::ContentCapture) -> axum::routing::Router
 pub fn awaken_control::control_router(awaken_control::ControlRouterInput) -> axum::routing::Router
@@ -327,6 +345,7 @@ pub fn awaken_control::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> 
 pub fn awaken_control::embedded_iam_for_workspace(&std::path::Path, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::erasure_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::DataSubjectResolver>, alloc::string::String) -> axum::routing::Router
 pub fn awaken_control::hosted_runtime_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
+pub fn awaken_control::hosted_runtime_route_profile() -> awaken_control::authz::HostedRuntimeRouteProfile
 pub fn awaken_control::management_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub fn awaken_control::management_resource_authorization_profile() -> awaken_iam_contract::profile::CreateAuthorizationProfile
 pub async fn awaken_control::open_inference_materialization_stores(&awaken_control::control_stores::ControlStoreConfig, &[u8; 32]) -> awaken_control::worker_stores::InferenceMaterializationStores

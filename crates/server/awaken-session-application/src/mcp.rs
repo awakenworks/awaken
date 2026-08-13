@@ -25,6 +25,7 @@ impl SessionApplication {
     /// credential revision pinning once for every Session authoring path.
     pub async fn normalize_mcp_drafts(
         &self,
+        workspace_id: &str,
         candidates: Vec<McpAttachmentCandidate>,
         ordered_vault_ids: &[String],
     ) -> Result<Vec<McpAttachmentDraft>, RunError> {
@@ -51,7 +52,7 @@ impl SessionApplication {
                     let source_id = awaken_credential_contract::CredentialSourceId(id.clone());
                     let access = if let Some(credentials) = self.credential_source() {
                         let access = credentials
-                            .mcp_access_for_source(&source_id)
+                            .mcp_access_for_source(&source_id, workspace_id)
                             .await
                             .map_err(|error| {
                                 RunError::bad_request(format!(
@@ -81,7 +82,7 @@ impl SessionApplication {
                     Some(credentials) => {
                         let source_id = match target.http_url() {
                             Some(url) => credentials
-                                .mcp_credential_source_for_url(ordered_vault_ids, url)
+                                .mcp_credential_source_for_url(workspace_id, ordered_vault_ids, url)
                                 .await
                                 .map_err(|error| {
                                     RunError::bad_request(format!(
@@ -93,7 +94,7 @@ impl SessionApplication {
                         match source_id {
                             Some(source_id) => Some(
                                 credentials
-                                    .mcp_access_for_source(&source_id)
+                                    .mcp_access_for_source(&source_id, workspace_id)
                                     .await
                                     .map_err(|error| {
                                         RunError::bad_request(format!(

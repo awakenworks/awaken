@@ -61,6 +61,49 @@ leases, MCP generations, root CAS, and recovery remain unchanged. Worker
 placement and the relationship between Work leases and Run claims are now owned
 by ADR-0075.
 
+## 2026-08-13 amendment: hosted application MCP credential admission
+
+A trusted hosted application that contributes an authenticated MCP endpoint
+must author that bearer through the existing Credential/Vault aggregate before
+it creates the Managed Session. The identity is the exact
+`(Workspace, application authority, normalized MCP target)` tuple. Control
+derives stable opaque Vault and credential-source ids; callers cannot supply a
+second identity or persist a Flow-local credential mirror.
+
+The command reuses the Managed `Idempotency-Key` contract. Its payload is
+write-only and the durable credential row remains secret-free. A replay of the
+same key and payload returns the same Vault id, source id, and revision. A new
+key may rotate only the material revision in place; it cannot change the tuple
+or create a parallel desired-state source. The existing credential mutation
+intent and source CAS select one concurrent winner. Conflicting tuple state,
+idempotency-key reuse with another payload, and stale concurrent rotation fail
+with `409`.
+
+Static ownership remains:
+
+```text
+hosted application -> Managed credential command (wire only)
+                   -> VaultState (normalization/projection)
+                   -> CredentialRepo + SecretStore (identity, CAS, custody)
+                   -> SessionApplication (exact source/revision pin only)
+```
+
+Dynamic order remains one-way:
+
+```text
+POST /v1/config/application-mcp-credentials
+                        -> receive stable vault/source/revision
+                        -> POST /v1/sessions with that vault id
+                        -> normalize MCP target once
+                        -> pin the exact source revision
+                        -> realize the existing MCP generation protocol
+```
+
+Failure before Session creation creates no Session. A lost credential-command
+response replays the same key. A lost Session response replays the Session's own
+independent idempotency key. Neither failure falls back to an embedded/local
+credential or a second Session implementation.
+
 ## Static boundaries
 
 | Boundary | Owns | Rejects |

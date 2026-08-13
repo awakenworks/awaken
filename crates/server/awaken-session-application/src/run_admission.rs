@@ -324,7 +324,9 @@ impl SessionApplication {
                 })
                 .collect::<Result<Vec<_>, RunError>>()?,
         );
-        let initial_mcp = self.normalize_mcp_drafts(mcp_candidates, &[]).await?;
+        let initial_mcp = self
+            .normalize_mcp_drafts(&owner_scope, mcp_candidates, &[])
+            .await?;
         let mcp_targets = initial_mcp
             .iter()
             .map(|attachment| attachment.target.clone())

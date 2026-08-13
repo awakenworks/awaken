@@ -118,10 +118,14 @@ impl ManagedState {
     /// the one validation that must hold *before* an id is minted or a thread is
     /// prepared, so it lives in a single method rather than inline — a dry-run
     /// bind check calls exactly this, and gets exactly the error create would.
-    pub async fn check_bind(&self, req: &SessionCreateParams) -> Result<(), StateError> {
+    pub async fn check_bind(
+        &self,
+        workspace_id: &str,
+        req: &SessionCreateParams,
+    ) -> Result<(), StateError> {
         if let Some(vault_id) = self
             .application
-            .missing_vault(&req.vault_ids)
+            .missing_vault(workspace_id, &req.vault_ids)
             .await
             .map_err(StateError::Run)?
         {
@@ -182,7 +186,10 @@ impl ManagedState {
         // Runtime preparation. The shared validator is also used by Deployments.
         req.validate_initial_events()
             .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
-        self.check_bind(&req).await?;
+        let owner_scope = workspace_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
+        self.check_bind(&owner_scope, &req).await?;
         // Mint from the process-incarnation namespace so active-active peers and
         // restarted processes cannot choose the same Session id. The repository
         // check remains the final collision fence; `ensure_session` is still the
@@ -216,9 +223,6 @@ impl ManagedState {
             },
         };
         let agent_id = req.agent.id().to_string();
-        let owner_scope = workspace_id
-            .clone()
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         let config_view = self.application.session_profile(&owner_scope, &agent_id);
         let is_built_in_dream_agent = agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
             && req
@@ -331,6 +335,7 @@ impl ManagedState {
         let mcp_drafts = self
             .application
             .normalize_mcp_drafts(
+                &owner_scope,
                 initial_mcp_candidates(
                     &req.mcp_servers,
                     config_view.as_ref(),

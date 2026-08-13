@@ -12,10 +12,11 @@ use awaken_session_contract::McpTarget;
 /// Secret-free credential selection used while compiling a Session.
 #[async_trait::async_trait]
 pub trait SessionCredentialSource: Send + Sync {
-    async fn has_vault(&self, id: &str) -> Result<bool, String>;
+    async fn has_vault(&self, workspace_id: &str, id: &str) -> Result<bool, String>;
 
     async fn mcp_credential_source_for_url(
         &self,
+        workspace_id: &str,
         vault_ids: &[String],
         url: &str,
     ) -> Result<Option<CredentialSourceId>, String>;
@@ -23,6 +24,7 @@ pub trait SessionCredentialSource: Send + Sync {
     async fn mcp_access_for_source(
         &self,
         source_id: &CredentialSourceId,
+        workspace_id: &str,
     ) -> Result<CredentialAccess, String>;
 
     async fn credential_access_for_source(

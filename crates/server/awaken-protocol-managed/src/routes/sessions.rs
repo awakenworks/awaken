@@ -759,26 +759,9 @@ async fn create_session(
     versioned_session_response(&state, session, operation_id).await
 }
 
-fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, WireErr> {
-    let key = headers
-        .get("idempotency-key")
-        .map(|value| {
-            value.to_str().map(str::to_string).map_err(|_| {
-                error_response(StateError::Run(RunError::bad_request(
-                    "Idempotency-Key must be visible ASCII",
-                )))
-            })
-        })
-        .transpose()?;
-    if key
-        .as_ref()
-        .is_some_and(|key| key.trim().is_empty() || key.len() > 255)
-    {
-        return Err(error_response(StateError::Run(RunError::bad_request(
-            "Idempotency-Key must contain 1 to 255 characters",
-        ))));
-    }
-    Ok(key)
+pub(crate) fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, WireErr> {
+    crate::parse_idempotency_key_header(headers)
+        .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))
 }
 
 fn parse_if_match(

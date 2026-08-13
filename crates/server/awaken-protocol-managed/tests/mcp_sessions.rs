@@ -404,14 +404,14 @@ async fn check_bind_is_fail_closed_on_unknown_vault() {
     let bad: awaken_protocol_managed::types::SessionCreateParams =
         serde_json::from_value(json!({ "agent": "a", "vault_ids": ["vlt_missing"] })).unwrap();
     assert!(matches!(
-        state.check_bind(&bad).await,
+        state.check_bind("default", &bad).await,
         Err(awaken_protocol_managed::StateError::VaultNotFound(_))
     ));
 
     // No referenced vault → the bind is legal.
     let ok: awaken_protocol_managed::types::SessionCreateParams =
         serde_json::from_value(json!({ "agent": "a" })).unwrap();
-    assert!(state.check_bind(&ok).await.is_ok());
+    assert!(state.check_bind("default", &ok).await.is_ok());
 }
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {

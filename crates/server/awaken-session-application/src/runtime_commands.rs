@@ -135,14 +135,21 @@ impl SessionApplication {
         Ok(())
     }
 
-    pub async fn missing_vault(&self, vault_ids: &[String]) -> Result<Option<String>, RunError> {
+    pub async fn missing_vault(
+        &self,
+        workspace_id: &str,
+        vault_ids: &[String],
+    ) -> Result<Option<String>, RunError> {
         let Some(source) = &self.credential_source else {
             return Ok(None);
         };
         for vault_id in vault_ids {
-            let exists = source.has_vault(vault_id).await.map_err(|error| {
-                RunError::unavailable(format!("credential authority unavailable: {error}"))
-            })?;
+            let exists = source
+                .has_vault(workspace_id, vault_id)
+                .await
+                .map_err(|error| {
+                    RunError::unavailable(format!("credential authority unavailable: {error}"))
+                })?;
             if !exists {
                 return Ok(Some(vault_id.clone()));
             }

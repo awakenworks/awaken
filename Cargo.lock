@@ -1542,6 +1542,7 @@ dependencies = [
  "http-body-util",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
  "tokio",
  "tokio-stream",
