@@ -22,6 +22,7 @@ use awaken_model_catalog::{
     ApiDialect, Offering, ProtocolEndpoint, ProtocolEndpointId, Provider, ProviderId,
 };
 use awaken_protocol_managed::{VaultState, vault_router};
+use awaken_session_application::SessionCredentialSource;
 use awaken_session_contract::{McpProbe, McpProbeStatus};
 use axum::Router;
 use axum::body::Body;
@@ -110,6 +111,98 @@ async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (St
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, value)
+}
+
+/// Session-selection decision rules after Control admission: C1 the requested
+/// Workspace owns the stable Vault and normalized target; C2 another Workspace
+/// presents those opaque ids. Effects: E1 the owner selects and pins the exact
+/// revision, E2 the other Workspace observes neither Vault nor source.
+#[tokio::test]
+async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() {
+    let h = harness();
+    let (vault_id, source_id, revision) = h
+        .state
+        .enter_application_mcp_bearer(
+            "workspace-a",
+            "awaken-flow",
+            "HTTPS://FLOW.EXAMPLE.TEST:443/mcp/",
+            "flow-bearer-1",
+            RedactedString::new("token-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(revision, 1);
+    let (replayed_vault, replayed_source, replayed_revision) = h
+        .state
+        .enter_application_mcp_bearer(
+            "workspace-a",
+            "awaken-flow",
+            "https://flow.example.test/mcp",
+            "flow-bearer-1",
+            RedactedString::new("token-1"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (replayed_vault, replayed_source, replayed_revision),
+        (vault_id.clone(), source_id.clone(), 1)
+    );
+    let (_, rotated_source, rotated_revision) = h
+        .state
+        .enter_application_mcp_bearer(
+            "workspace-a",
+            "awaken-flow",
+            "https://flow.example.test/mcp",
+            "flow-bearer-2",
+            RedactedString::new("token-2"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(rotated_source, source_id);
+    assert_eq!(rotated_revision, 2);
+
+    assert!(
+        SessionCredentialSource::has_vault(h.state.as_ref(), "workspace-a", &vault_id)
+            .await
+            .unwrap(),
+        "H5 hosted Vault is visible from its credential aggregate"
+    );
+    assert!(
+        !SessionCredentialSource::has_vault(h.state.as_ref(), "workspace-b", &vault_id)
+            .await
+            .unwrap(),
+        "H5 hosted Vault is tenant scoped"
+    );
+    let source = SessionCredentialSource::mcp_credential_source_for_url(
+        h.state.as_ref(),
+        "workspace-a",
+        std::slice::from_ref(&vault_id),
+        "https://FLOW.example.test:443/mcp/",
+    )
+    .await
+    .unwrap()
+    .expect("H5 exact hosted source");
+    assert_eq!(source, source_id);
+    assert!(
+        SessionCredentialSource::mcp_credential_source_for_url(
+            h.state.as_ref(),
+            "workspace-b",
+            &[vault_id],
+            "https://flow.example.test/mcp",
+        )
+        .await
+        .unwrap()
+        .is_none(),
+        "H5 source selection is tenant scoped"
+    );
+    assert_eq!(
+        SessionCredentialSource::mcp_access_for_source(h.state.as_ref(), &source, "workspace-a",)
+            .await
+            .unwrap()
+            .credential
+            .revision,
+        2
+    );
 }
 
 #[tokio::test]

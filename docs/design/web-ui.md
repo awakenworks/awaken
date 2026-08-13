@@ -117,6 +117,12 @@ origin 无法到达的页面显示成可用后再以 `404 Not Found` 失败。�
 翻译代理或第二套资源 API。进程本地 mount 与 origin 可达性是两个事实，前者不能
 再被用作后者的替代判定。
 
+运行时 route profile 只从 `ROUTE_POLICIES` 中保存的 canonical flat matcher 导出。
+每个 matcher 同时生成 flat 路径和
+`/v1/workspaces/{workspace_id}/...` 显式 Workspace wrapper；已有参数必须保留，
+例如 Environment work 导出包含 `workspace_id` 与 `environment_id` 的双参数模板。
+Cloud 只编译这些 matcher，不维护 Workspace 路径清单。
+
 ## 4. 路由和寻址
 
 | 用途 | 路径 | Workspace 来源 |

@@ -245,7 +245,11 @@ impl SessionApplication {
                 .ok_or(SessionUpdateError::NotFrozen)?
                 .clone();
             let drafts = self
-                .normalize_mcp_drafts(candidates, &baseline.mcp_authoring.ordered_vault_ids)
+                .normalize_mcp_drafts(
+                    &owner_scope,
+                    candidates,
+                    &baseline.mcp_authoring.ordered_vault_ids,
+                )
                 .await
                 .map_err(SessionUpdateError::Rejected)?;
             let now_unix_ms = std::time::SystemTime::now()

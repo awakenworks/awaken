@@ -57,3 +57,11 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Fact: Vault is storage at rest. Published access separates material source from a recipient-bound sealed payload reference, exact resolver and optional OAuth refresh/reseal access, and lists allowed plaintext-holder trust domains independently from `Forbidden`/`VirtualOnly` model exposure. MCP and Repository Resource generations or the atomic dispatch claim epoch pin purpose-specific exact Environment-requested holders before materialization; actual mechanism appears only in a secret-free receipt. Model, MCP, and Repository share one exact material resolver without sharing an aggregate, and Runtime has no bare Repository source-materialization path. There is no custody order, inference Service attachment, runtime holder fallback, or URL/current-Vault refresh rediscovery. Automatic LLM Vault authoring is a separate, not-yet-designed application workflow.
 - Links: [credentials and vaults](../design/credentials-and-vaults.md); [ADR-0066](../adr/0066-session-service-binding-and-realization.md)
 - Verification: access source/envelope migration, explicit trust-domain selection and attempt/MCP/Repository generation pinning, Repository admission decision table, workload/Worker network conformance, model-exposure, Native/ACP parity, secret-leak, and no-downgrade tests.
+
+## FACT-CRED-007: Hosted application MCP bearers reuse the Vault aggregate
+
+- Status: active
+- Owner: [Hosted application static-bearer admission](../design/credentials-and-vaults.md#hosted-application-static-bearer-admission)
+- Fact: a trusted hosted application creates or rotates its stable MCP bearer through the existing Credential/Vault WAL and CAS, then gives the returned Vault id to ordinary Managed Session creation; it owns no local credential mirror or fallback.
+- Links: [ADR-0066](../adr/0066-session-service-binding-and-realization.md#2026-08-13-amendment-hosted-application-mcp-credential-admission)
+- Verification: idempotent replay, rotation, conflicting replay, concurrent-winner, normalized-target, and secret-free response tests.

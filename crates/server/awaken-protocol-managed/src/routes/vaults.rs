@@ -40,8 +40,9 @@ use crate::control::vault_acl::{
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
-    CredentialMaterialPatch, CredentialRepo, CredentialRetirement, advance_credential_revision,
-    enter_credential, enter_credential_with_materials, revoke_credential,
+    APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, CredentialMaterialPatch,
+    CredentialRepo, CredentialRetirement, advance_credential_revision, enter_credential,
+    enter_credential_with_materials, enter_or_rotate_application_mcp_bearer, revoke_credential,
     rotate_credential_materials,
 };
 use awaken_credential_vault::{
@@ -53,6 +54,7 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use sha2::{Digest, Sha256};
 
 use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::vault::{
@@ -70,6 +72,57 @@ use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 /// Anthropic's per-vault credential cap.
 const MAX_CREDENTIALS_PER_VAULT: usize = 20;
+
+fn sha256_identity(domain: &str, parts: &[&str]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain.len().to_be_bytes());
+    digest.update(domain.as_bytes());
+    for part in parts {
+        digest.update(part.len().to_be_bytes());
+        digest.update(part.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn application_mcp_target_fingerprint(
+    url: &str,
+) -> Result<String, awaken_session_contract::McpTargetError> {
+    let identity = awaken_session_contract::McpTarget::identity(url)?;
+    let port = identity.port.map(|port| port.to_string());
+    Ok(sha256_identity(
+        "application-mcp-normalized-target-v1",
+        &[
+            &identity.scheme,
+            &identity.host,
+            port.as_deref().unwrap_or(""),
+            &identity.path,
+            if identity.query.is_some() {
+                "query"
+            } else {
+                ""
+            },
+            identity.query.as_deref().unwrap_or(""),
+        ],
+    ))
+}
+
+fn application_mcp_vault_id(workspace_id: &str, authority_id: &str) -> String {
+    format!(
+        "vlt_app_{}",
+        sha256_identity("application-mcp-vault-v1", &[workspace_id, authority_id])
+    )
+}
+
+fn application_mcp_source_id(vault_id: &str, target_fingerprint: &str) -> CredentialSourceId {
+    CredentialSourceId(format!(
+        "cred:app-mcp:{vault_id}:{}",
+        sha256_identity("application-mcp-target-v1", &[target_fingerprint])
+    ))
+}
+
+fn application_mcp_source_prefix(vault_id: &str) -> String {
+    format!("cred:app-mcp:{vault_id}:")
+}
 
 // Wire DTOs live in `crate::types::vault` (1:1 with @anthropic-ai/sdk
 // beta.vaults.*). This module owns the store, the secret sealing, the record→wire
@@ -189,6 +242,54 @@ impl VaultState {
             vault_seq: AtomicU64::new(0),
             cred_seq: AtomicU64::new(0),
         }
+    }
+
+    /// Create or rotate one hosted application's stable MCP bearer in the
+    /// authoritative credential aggregate. HTTP ownership stays with Awaken
+    /// Control; this method returns only secret-free receipt facts.
+    pub async fn enter_application_mcp_bearer(
+        &self,
+        workspace_id: &str,
+        application_authority_id: &str,
+        mcp_server_url: &str,
+        idempotency_key: &str,
+        bearer: RedactedString,
+    ) -> Result<(String, CredentialSourceId, u64), awaken_credential_vault::CredentialError> {
+        let target_fingerprint =
+            application_mcp_target_fingerprint(mcp_server_url).map_err(|_| {
+                awaken_credential_vault::CredentialError::InvalidSource(
+                    "MCP server URL must be an absolute HTTP(S) URL".into(),
+                )
+            })?;
+        let vault_id = application_mcp_vault_id(workspace_id, application_authority_id);
+        let source_id = application_mcp_source_id(&vault_id, &target_fingerprint);
+        let command_key_fingerprint = sha256_identity(
+            "application-mcp-command-key-v1",
+            &[
+                workspace_id,
+                application_authority_id,
+                &target_fingerprint,
+                idempotency_key,
+            ],
+        );
+        let source = enter_or_rotate_application_mcp_bearer(
+            ApplicationMcpBearerCommand {
+                source_id,
+                workspace_id: workspace_id.to_owned(),
+                target_fingerprint,
+                command_key_fingerprint,
+                bearer,
+            },
+            self.secrets.as_ref(),
+            self.credentials.as_ref(),
+        )
+        .await?;
+        let revision = u64::try_from(source.version).map_err(|_| {
+            awaken_credential_vault::CredentialError::InvalidSource(
+                "application MCP credential revision is invalid".into(),
+            )
+        })?;
+        Ok((vault_id, source.id, revision))
     }
 
     /// Wire the live MCP probe, so `POST .../mcp_oauth_validate` reports a real
@@ -455,6 +556,29 @@ impl VaultState {
         Ok(access)
     }
 
+    async fn mcp_access_for_source_in_workspace(
+        &self,
+        source_id: &CredentialSourceId,
+        workspace_id: &str,
+    ) -> Result<
+        awaken_credential_contract::CredentialAccess,
+        awaken_credential_vault::CredentialError,
+    > {
+        use awaken_credential_contract::{CredentialExecutionPolicy, CredentialUsage};
+
+        self.exact_access_for_source(
+            source_id,
+            Some(workspace_id),
+            CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            CredentialExecutionPolicy::self_hosted_mcp(),
+        )
+        .await
+        .map(|(_, access)| access)
+    }
+
     fn project_vault(id: &str, record: &VaultRecord) -> Vault {
         Vault {
             id: id.to_string(),
@@ -505,25 +629,66 @@ impl VaultState {
 
 #[async_trait::async_trait]
 impl SessionCredentialSource for VaultState {
-    async fn has_vault(&self, id: &str) -> Result<bool, String> {
-        Ok(VaultState::has_vault(self, id))
+    async fn has_vault(&self, workspace_id: &str, id: &str) -> Result<bool, String> {
+        if VaultState::has_vault(self, id) {
+            return Ok(true);
+        }
+        let source_prefix = application_mcp_source_prefix(id);
+        self.credentials
+            .list(workspace_id)
+            .await
+            .map(|sources| {
+                sources.iter().any(|source| {
+                    source.id.0.starts_with(&source_prefix)
+                        && source.provider_id.as_deref() == Some(APPLICATION_MCP_PROVIDER_ID)
+                        && source.status == awaken_credential_vault::CredentialStatus::Active
+                })
+            })
+            .map_err(|error| error.to_string())
     }
 
     async fn mcp_credential_source_for_url(
         &self,
+        workspace_id: &str,
         vault_ids: &[String],
         url: &str,
     ) -> Result<Option<CredentialSourceId>, String> {
-        Ok(VaultState::mcp_credential_source_for_url(
-            self, vault_ids, url,
-        ))
+        let target_fingerprint =
+            application_mcp_target_fingerprint(url).map_err(|error| error.to_string())?;
+        for vault_id in vault_ids {
+            if let Some(source) =
+                VaultState::mcp_credential_source_for_url(self, std::slice::from_ref(vault_id), url)
+            {
+                match self.credentials.get(&source).await {
+                    Ok(row) if row.workspace_id == workspace_id => return Ok(Some(source)),
+                    Ok(_) => continue,
+                    Err(error) => return Err(error.to_string()),
+                }
+            }
+            let source_id = application_mcp_source_id(vault_id, &target_fingerprint);
+            match self.credentials.get(&source_id).await {
+                Ok(source)
+                    if source.workspace_id == workspace_id
+                        && source.status == awaken_credential_vault::CredentialStatus::Active
+                        && source.provider_id.as_deref() == Some(APPLICATION_MCP_PROVIDER_ID)
+                        && source.protocol_endpoint_id.as_deref()
+                            == Some(target_fingerprint.as_str()) =>
+                {
+                    return Ok(Some(source_id));
+                }
+                Ok(_) | Err(awaken_credential_vault::CredentialError::SourceNotFound(_)) => {}
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        Ok(None)
     }
 
     async fn mcp_access_for_source(
         &self,
         source_id: &CredentialSourceId,
+        workspace_id: &str,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
-        VaultState::mcp_access_for_source(self, source_id)
+        self.mcp_access_for_source_in_workspace(source_id, workspace_id)
             .await
             .map_err(|error| error.to_string())
     }

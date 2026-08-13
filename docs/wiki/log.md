@@ -2,6 +2,9 @@
 
 ## 2026-08-13
 
+- **Consolidation**: The hosted runtime route exporter now derives canonical
+  flat and explicit Workspace-prefixed matchers from the same IAM route-policy
+  descriptor; Cloud remains a generic matcher compiler with no route list.
 - **Update**: Amended ADR-0061 so the existing Management-owned publisher role
   can read executable model supply while remaining unable to administer API
   keys or mutate Provider/model supply; hosted deployments consume the same
@@ -198,3 +201,10 @@
   admission-before-activity ordering. A replacement process now advances the
   realization lease before resuming an awaiting Run and before opening its
   billable Running interval.
+
+## 2026-08-13 (Hosted application MCP credentials remain Vault-owned)
+
+- Added one idempotent create-or-rotate command over the existing Credential/Vault
+  WAL and CAS for trusted hosted application MCP bearers.
+- Kept Managed Session creation and MCP normalization authoritative; hosted
+  applications retain no local credential or Session fallback.
