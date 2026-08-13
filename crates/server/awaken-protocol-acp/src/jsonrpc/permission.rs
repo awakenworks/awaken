@@ -2,6 +2,36 @@
 
 use super::*;
 
+#[derive(Clone)]
+struct ObservedToolCall {
+    name: String,
+    input: serde_json::Value,
+}
+
+/// Attempt-local permission facts already projected from ACP `session/update`.
+/// The map is keyed only by ACP's exact `toolCallId`, so a generic permission
+/// title can recover its real identity without widening authority to another call.
+#[derive(Default)]
+pub(super) struct PermissionContext {
+    observed_tools: std::collections::BTreeMap<String, ObservedToolCall>,
+}
+
+impl PermissionContext {
+    pub(super) fn observe(&mut self, event: &AcpProjectedEvent) {
+        if let AcpProjectedEvent::ToolCall { id, name, input } = event
+            && !id.is_empty()
+        {
+            self.observed_tools.insert(
+                id.clone(),
+                ObservedToolCall {
+                    name: name.clone(),
+                    input: input.clone(),
+                },
+            );
+        }
+    }
+}
+
 /// Answer an agent→client request: a permission request is decided by `resolver`
 /// (the neutral `ToolPermissionPolicy`) and projected back onto the agent's own
 /// offered option — allow or reject, once-preferred over always; `cancelled` when
@@ -14,6 +44,7 @@ pub(super) async fn answer_request(
     method: &str,
     params: Option<serde_json::Value>,
     resolver: &dyn PermissionResolver,
+    context: &PermissionContext,
 ) -> Result<(), AcpError> {
     if method == CLIENT_METHOD_NAMES.session_request_permission {
         let outcome = match params.and_then(|p| {
@@ -22,7 +53,7 @@ pub(super) async fn answer_request(
                 .map(|r| (p, r))
         }) {
             Some((raw, req)) => {
-                let ask = permission_ask(&raw);
+                let ask = permission_ask(&raw, context);
                 match resolver.resolve(&ask).await {
                     PermissionVerdict::Await { correlation_id } => {
                         wire.send(&OutResult {
@@ -65,7 +96,7 @@ pub(super) async fn answer_request(
 /// Project a raw `session/request_permission` params object into a neutral
 /// [`PermissionAsk`] — the tool's title/kind, its `toolCallId`, and its `rawInput`
 /// — read loosely so the ask survives adapter-to-adapter shape differences.
-fn permission_ask(raw: &serde_json::Value) -> PermissionAsk {
+fn permission_ask(raw: &serde_json::Value, context: &PermissionContext) -> PermissionAsk {
     let tool_call = raw.get("toolCall");
     let tool = tool_call
         .and_then(|tc| tc.get("title").or_else(|| tc.get("kind")))
@@ -81,11 +112,16 @@ fn permission_ask(raw: &serde_json::Value) -> PermissionAsk {
         .and_then(|tc| tc.get("rawInput"))
         .cloned()
         .unwrap_or(serde_json::Value::Null);
-    PermissionAsk {
+    let mut ask = PermissionAsk {
         tool,
         call_id,
         arguments,
+    };
+    if let Some(observed) = context.observed_tools.get(&ask.call_id) {
+        ask.tool.clone_from(&observed.name);
+        ask.arguments.clone_from(&observed.input);
     }
+    ask
 }
 
 /// Project a [`PermissionVerdict`] onto the agent's own offered option: an
@@ -125,6 +161,37 @@ fn select_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_ask_uses_only_the_matching_observed_tool() {
+        // Cause/effect graph: C1 a tool_call carries precise MCP facts; C2 the
+        // permission request carries a generic title; C3 ids match. E1 is the
+        // precise observed identity/input. Without C3, E2 is the raw request,
+        // preventing one call from lending authority to another.
+        //
+        // | Rule | Observed call | Same id | Effect |
+        // | R1 | yes | yes | observed identity/input |
+        // | R2 | yes | no | raw permission facts |
+        let mut context = PermissionContext::default();
+        context.observe(&AcpProjectedEvent::ToolCall {
+            id: "mcp-1".into(),
+            name: "mcp.pilot.set_plan".into(),
+            input: serde_json::json!({"arguments": {"summary": "ship"}}),
+        });
+        let raw = |id: &str| {
+            serde_json::json!({
+                "toolCall": {"toolCallId": id, "title": "execute", "rawInput": null}
+            })
+        };
+
+        let matched = permission_ask(&raw("mcp-1"), &context);
+        assert_eq!(matched.tool, "mcp.pilot.set_plan", "R1");
+        assert_eq!(matched.arguments["arguments"]["summary"], "ship", "R1");
+
+        let unrelated = permission_ask(&raw("other"), &context);
+        assert_eq!(unrelated.tool, "execute", "R2");
+        assert!(unrelated.arguments.is_null(), "R2");
+    }
 
     fn perm_req(options: serde_json::Value) -> RequestPermissionRequest {
         serde_json::from_value(serde_json::json!({

@@ -1199,11 +1199,24 @@ struct NarrowedPermissionResolver<'a> {
     narrowing: &'a dyn ToolPermissionPolicy,
 }
 
+fn canonical_permission_tool_id(tool: &str) -> String {
+    let Some(mcp) = tool.strip_prefix("mcp.") else {
+        return tool.to_string();
+    };
+    let Some((server, name)) = mcp.split_once('.') else {
+        return tool.to_string();
+    };
+    if server.is_empty() || name.is_empty() {
+        return tool.to_string();
+    }
+    format!("mcp__{server}__{name}")
+}
+
 #[async_trait]
 impl PermissionResolver for NarrowedPermissionResolver<'_> {
     async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
         let call = ToolCall {
-            tool_id: ask.tool.clone(),
+            tool_id: canonical_permission_tool_id(&ask.tool),
             call_id: ask.call_id.clone(),
             arguments: ask.arguments.clone(),
         };
@@ -1221,7 +1234,7 @@ impl PermissionResolver for NarrowedPermissionResolver<'_> {
 impl PermissionResolver for NeutralPermissionResolver {
     async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
         let ctx = ToolCall {
-            tool_id: ask.tool.clone(),
+            tool_id: canonical_permission_tool_id(&ask.tool),
             call_id: ask.call_id.clone(),
             arguments: ask.arguments.clone(),
         };
