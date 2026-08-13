@@ -54,9 +54,8 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use sha2::{Digest, Sha256};
 
-use crate::routes::{ManagedJson, WorkspaceScope};
+use crate::routes::{ManagedJson, WorkspaceScope, sha256_identity};
 use crate::types::vault::{
     Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire, CredentialNetworking,
     CredentialUpdateAuth, CredentialUpdateParams, CredentialValidation, CredentialValidationStatus,
@@ -72,17 +71,6 @@ use crate::types::{ErrorResponse, Page, PageQuery, paginate};
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 /// Anthropic's per-vault credential cap.
 const MAX_CREDENTIALS_PER_VAULT: usize = 20;
-
-fn sha256_identity(domain: &str, parts: &[&str]) -> String {
-    let mut digest = Sha256::new();
-    digest.update(domain.len().to_be_bytes());
-    digest.update(domain.as_bytes());
-    for part in parts {
-        digest.update(part.len().to_be_bytes());
-        digest.update(part.as_bytes());
-    }
-    format!("{:x}", digest.finalize())
-}
 
 fn application_mcp_target_fingerprint(
     url: &str,

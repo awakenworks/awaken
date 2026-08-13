@@ -240,7 +240,6 @@ pub(super) async fn prepare_runtime_routers(
                 Some(Arc::new(awaken_control::HostResourceInventory::new(
                     resource_authorities.resource_catalog(),
                     resource_authorities.skill_store(),
-                    &platform_workspace,
                 ))),
                 environment_authoring
                     .as_ref()

@@ -16,7 +16,13 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import {
+  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
+  pass,
+  spawnServer,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38812);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -150,7 +156,7 @@ async function registerReadyWorker() {
           'credential-source/v1',
           'host-executor/v1',
           'native-runtime',
-          'credential-realization.awaken.dev/v1:{"holders":[{"boundary":"worker","trust_domain":"awaken.worker"}],"material_sources":["control_plane_reference"],"realization_kinds":["worker_provider_adapter"],"recipient_bound_envelopes":false}',
+          WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
         ],
         zone: null,
         architecture: process.arch,

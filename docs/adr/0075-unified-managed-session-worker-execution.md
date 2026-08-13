@@ -64,6 +64,18 @@ projection from the durable Session. Reconciliation never resurrects a stopped
 item: only a newly admitted Session event may explicitly wake it. A terminal
 Session retires the item and clears its lease.
 
+At the Managed HTTP edge, the authenticated Environment credential is the
+stable lease authority. The official `WorkPoller` sends
+`Anthropic-Worker-ID` on `poll` for poller identity and metrics, while its
+`ack`, `heartbeat`, and `stop` calls retain the Environment bearer but omit that
+header. The generated raw `work.poll()` method also makes Worker ID optional
+and may carry the same credential as `X-Api-Key`. The adapter stores only a
+domain-separated credential fingerprint as owner. When present, Worker ID is a
+separate ephemeral poller observation; when omitted, the opaque owner is the
+fallback observation coordinate. Header-only callers use Worker ID for both
+roles. All forms enter the same atomic `WorkQueue` claim and mutation fence; no
+credential map or second lease registry exists.
+
 ### D3: a Run claim is an attempt fence, not another placement decision
 
 When Awaken's registered Worker transport executes a Run for that Session, the
@@ -74,6 +86,12 @@ placement. Registered dispatch atomically acquires that exact Session item from
 the same `WorkQueue`; an official/custom Worker holding it wins, and the
 registered attempt is rejected. Run claim checks and realization renewal renew
 the same Work lease, while every realization phase verifies the exact owner.
+After claim-fenced effects commit, private registered dispatch releases that
+Session Work immediately before settling the subordinate Run. Public custom
+Workers retain the official explicit `stop` operation. Graceful registered
+Worker deregistration releases any residual active Session Work for that exact
+incarnation; crash recovery remains lease-expiry based. A later admitted event
+wakes the same stable Work item.
 
 ### D4: Worker Control realizes only committed truth
 
@@ -138,7 +156,8 @@ create trigger
      self-hosted: enqueue stable Work item -> Preparing until Worker realization
 
 Worker trigger
-  -> claim Work
+  -> Managed edge separates poller observation from credential-derived owner
+  -> claim Work under that one owner
   -> registered adapter only: atomically acquire the exact same Work item
   -> optionally claim a subordinate Run attempt
   -> authenticate Worker incarnation and verify live Work + Run epochs
@@ -156,7 +175,8 @@ Failure and retry rules:
 - create-time normalization conflicts fail before any Session row is inserted;
 - a WorkQueue write failure leaves durable Session truth reconcilable and does
   not manufacture readiness;
-- stale Work/Run ownership fails before Worker effects;
+- stale Work/Run ownership or a mismatched Environment bearer fails before
+  Worker effects;
 - response loss replays the same Work id, root revision, realization lease, and
   generation receipts;
 - a physical effect failure records the existing realization failure state and
@@ -183,7 +203,7 @@ authoritative path, not a compensating parallel mechanism.
 | Crash or lost response after Session insert | caller retries while realization is absent | 8/4/4 · 128 | repository idempotency and injected later-CAS failure | replay the same root/key; reconciler projects the frozen truth; no partial creation state exists |
 | Work enqueue outage or lost response | self-hosted Session remains Preparing | 8/4/3 · 96 | dispatch failure classification and reconciliation report | return `session_work_dispatch_failed`; stable idempotent Work id is retried; never report false readiness |
 | Reconciler revives completed Work | idle Worker loops forever | 7/4/5 · 140 | stopped/enqueue/wake conformance rule | idempotent enqueue preserves `Stopped`; only a driving event calls explicit wake |
-| Missing identity or wrong Worker polls/acknowledges/stops/heartbeats Work | anonymous owners collide or current owner is disrupted | 10/3/5 · 150 | missing-header HTTP 400, cross-backend owner-fence tests, and HTTP 412 | require the standard Worker id before claim; atomically compare lease owner on every mutation; reject without state change |
+| Missing identity, mismatched Environment credential, or Worker ID incorrectly required by the raw/helper SDK lifecycle | official clients cannot claim/finish Work, anonymous owners collide, or the current owner is disrupted | 10/3/4 · 120 | credential/Worker cause-effect table, raw client and WorkPoller E2E, cross-backend owner-fence tests, HTTP 400/412 | derive the lease owner from the authenticated credential fingerprint; treat Worker ID as an optional observation label; allow unlabeled SDK operations only under that same credential; atomically reject mismatched/missing authority without state change |
 | Worker crashes or a response is replayed after reclaim | two Workers execute one Session | 10/4/5 · 200 | expiry/epoch conformance | expiry returns item to queued; next claim increments monotonic epoch; stale owner/epoch cannot mutate |
 | Official/custom and registered Workers race | parallel execution paths | 10/3/6 · 180 | exact acquire contention test | both contend in the same WorkQueue transaction; exactly one lease wins; loser fails before Session Control |
 | Run is claimed without its Session Work, or Work owner changes | subordinate attempt escapes placement authority | 10/3/6 · 180 | signed Worker rules T17–T19 | resume atomically acquires exact Work; claim checks/renewal extend it; every phase verifies exact incarnation owner |
@@ -193,6 +213,7 @@ authoritative path, not a compensating parallel mechanism.
 | Session becomes terminal while Work is active | leaked Work or post-terminal execution | 10/3/5 · 150 | terminal retirement and stale settlement tests | terminal root CAS fences activity; coordinator retires Work and clears lease; reconciler retries cleanup |
 | Work/repository storage is unavailable, corrupt, or its epoch is exhausted | authority cannot be proven or a fence could repeat | 9/3/3 · 81 | typed storage-failure and epoch-boundary tests | fail closed with service/storage error; never substitute empty ownership, zero, or a saturated epoch; retry outages, quarantine corrupt Session truth |
 | Ordinary Cloud or non-Session Run reaches shared verifier | false rejection from an unrelated Work boundary | 6/4/5 · 120 | authority scope rules W1–W3 | missing/Cloud Session returns `NotRequired`; only frozen self-hosted Session requires Work ownership |
+| Registered Worker answer commits immediately before process restart | predecessor Work remains active and blocks every queued Session for one TTL | 8/4/4 · 128 | signed transport T20/T21, WorkQueue G1/G2, multi-restart CLI E2E | exact Run settlement releases its Session; exact graceful deregistration stops any residual owner rows; crash path retains TTL fencing |
 
 The reduced decision table for the interacting ownership causes is:
 
@@ -204,6 +225,8 @@ The reduced decision table for the interacting ownership causes is:
 | F4 | yes | yes | yes | no | reject phase before physical effects |
 | F5 | yes | yes | yes | yes | execute one phase and persist exact receipt |
 | F6 | terminal | any | any | any | reject execution; retire Work |
+| F7 | yes | exact predecessor | committed/settling | exact | release Work, then settle Run |
+| F8 | yes | exact graceful incarnation | any residual | any | deregistration releases only that incarnation |
 
 ## Implementation classification
 
@@ -226,18 +249,23 @@ The reduced decision table for the interacting ownership causes is:
 - Session creation inserts complete frozen truth once; every eligible
   self-hosted Session uses `needs_work_dispatch` without a caller-specific
   exclusion.
-- Work mutations are owner-fenced; stopped Work has explicit wake semantics and
+- Managed poll separates the optional SDK Worker ID observation from the
+  authenticated Environment credential fingerprint used by the same
+  owner-fenced Work mutations; stopped Work has explicit wake semantics and
   terminal Work has coordinator-owned retirement.
 - registered dispatch acquires/renews/verifies the exact Session Work owner
-  before using its existing Run and realization fences.
+  before using its existing Run and realization fences, then releases it on
+  exact settlement or graceful incarnation deregistration.
 - Worker Control naming and transport express frozen Session realization.
 
 ### Added
 
 `SessionWorkLeaseAuthority` is a narrow internal adapter over the existing
 `WorkQueue`; `WorkMutationResult` exposes its existing atomic mutation outcome.
-Neither adds storage, a registry, a poller, or another source of truth. New
-decision-table coverage and this canonical decision record verify the adapter.
+The existing claim input now carries the lease owner and poller observation
+separately. None adds storage, a registry, a poller, or another source of truth.
+New decision-table coverage and this canonical decision record verify the
+adapter.
 
 ### Removed
 
@@ -258,6 +286,8 @@ Tests attach their cause/effect tables to the owning cases. Required rules are:
 | U4 | yes | yes | no | yes | reject before physical effects |
 | U5 | yes | yes | yes | no | fail closed as not ready |
 | U6 | conflicting MCP | any | n/a | no | reject before insertion |
+| U7 | yes | yes | settled | yes | release exact Work; next queued Session runs |
+| U8 | yes | yes | restart before settle | yes | deregistration releases predecessor immediately |
 
 ## Consequences
 

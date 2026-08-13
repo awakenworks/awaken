@@ -36,6 +36,11 @@ pub struct DurableRuntimeAuthority {
     dispatch: Arc<AnyDispatchStore>,
     wake: Option<Arc<dyn WakeSignal>>,
     postgres_commit: Option<Arc<PostgresCommitCoordinator>>,
+    postgres_local_commit: Option<Arc<dyn LocalCommit>>,
+    /// One live projection per local Thread. Reopening the same SQLite/FS
+    /// authority would create competing in-memory projections over one durable
+    /// log, so the Coordinator owns and reuses the handle here.
+    local_commits: tokio::sync::Mutex<std::collections::HashMap<String, Arc<dyn LocalCommit>>>,
 }
 
 /// The minimal immutable configuration retained by the durable commit owner.
@@ -102,11 +107,14 @@ impl DurableRuntimeAuthority {
         } else {
             None
         };
+        let postgres_local_commit = postgres_commit.clone().map(postgres_local_commit);
         Ok(Arc::new(Self {
             commit: CommitAuthorityConfig::from(deployment),
             dispatch,
             wake,
             postgres_commit,
+            postgres_local_commit,
+            local_commits: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         }))
     }
 }
@@ -245,16 +253,16 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
         thread: &str,
     ) -> Result<Arc<dyn LocalCommit>, RuntimeAuthorityError> {
         match self.commit.store {
-            StoreKind::Postgres => self
-                .postgres_commit
-                .clone()
-                .map(postgres_local_commit)
-                .ok_or_else(|| {
-                    RuntimeAuthorityError::misconfigured(
-                        "Postgres commit authority was not opened at startup",
-                    )
-                }),
-            StoreKind::Fs => {
+            StoreKind::Postgres => self.postgres_local_commit.clone().ok_or_else(|| {
+                RuntimeAuthorityError::misconfigured(
+                    "Postgres commit authority was not opened at startup",
+                )
+            }),
+            StoreKind::Fs | StoreKind::Sqlite => {
+                let mut commits = self.local_commits.lock().await;
+                if let Some(commit) = commits.get(thread) {
+                    return Ok(commit.clone());
+                }
                 let path = self
                     .commit_path(thread)
                     .map_err(RuntimeAuthorityError::misconfigured)?;
@@ -262,22 +270,21 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
                     std::fs::create_dir_all(parent)
                         .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
                 }
-                let store = FsCommitCoordinator::open(&path)
-                    .await
-                    .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
-                Ok(Arc::new(LocalCommitAdapter::projected(store)))
-            }
-            StoreKind::Sqlite => {
-                let path = self
-                    .commit_path(thread)
-                    .map_err(RuntimeAuthorityError::misconfigured)?;
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
-                }
-                let store = SqliteCommitCoordinator::open(&path.to_string_lossy())
-                    .map_err(|error| RuntimeAuthorityError::unavailable(error.to_string()))?;
-                Ok(Arc::new(LocalCommitAdapter::projected(store)))
+                let commit: Arc<dyn LocalCommit> = match self.commit.store {
+                    StoreKind::Fs => Arc::new(LocalCommitAdapter::projected(
+                        FsCommitCoordinator::open(&path).await.map_err(|error| {
+                            RuntimeAuthorityError::unavailable(error.to_string())
+                        })?,
+                    )),
+                    StoreKind::Sqlite => Arc::new(LocalCommitAdapter::projected(
+                        SqliteCommitCoordinator::open(&path.to_string_lossy()).map_err(
+                            |error| RuntimeAuthorityError::unavailable(error.to_string()),
+                        )?,
+                    )),
+                    StoreKind::Postgres => unreachable!("handled above"),
+                };
+                commits.insert(thread.to_owned(), commit.clone());
+                Ok(commit)
             }
         }
     }
@@ -527,6 +534,47 @@ mod tests {
                 Err(error) => error,
             };
             assert!(error.contains("without `nats`"), "A3/E3: {error}");
+        }
+    }
+
+    /// Local commit-handle cause/effect graph: C1 two callers open the same
+    /// Thread concurrently; C2 callers open distinct Threads; C3 the selected
+    /// local backend is SQLite or FS. Effects: E1 C1 receives one pointer-identical
+    /// projection; E2 C2 receives independent authorities; E3 both backends obey
+    /// the same ownership rule.
+    ///
+    /// | Rule | same Thread | concurrent | backend | Effect |
+    /// |---|---|---|---|---|
+    /// | H1 | yes | yes | SQLite | E1,E3 |
+    /// | H2 | yes | yes | FS | E1,E3 |
+    /// | H3 | no | any | SQLite/FS | E2,E3 |
+    ///
+    /// FMECA: reopening one durable log as two projected coordinators lets a
+    /// recovered child commit through projection B while its waiting parent
+    /// polls stale projection A (severity critical, occurrence occasional,
+    /// detection poor). Caching at the sole Coordinator authority removes the
+    /// second projection instead of trying to synchronize it.
+    #[tokio::test]
+    async fn local_commit_authority_reuses_one_projection_per_thread() {
+        for (backend, rule) in [(StoreKind::Sqlite, "H1"), (StoreKind::Fs, "H2")] {
+            let root = tempfile::tempdir().expect("local authority root");
+            let mut deployment = DeploymentConfig::ephemeral();
+            deployment.storage_dir = Some(root.path().to_path_buf());
+            deployment.store = backend;
+            let authority = DurableRuntimeAuthority::open(&deployment, SchemaAccess::Migrate)
+                .await
+                .expect(rule);
+
+            let (left, right) = tokio::join!(
+                authority.open_commit("parent"),
+                authority.open_commit("parent")
+            );
+            let left = left.expect(rule);
+            let right = right.expect(rule);
+            assert!(Arc::ptr_eq(&left, &right), "{rule}/E1");
+
+            let child = authority.open_commit("child").await.expect("H3");
+            assert!(!Arc::ptr_eq(&left, &child), "H3/E2: {backend:?}");
         }
     }
 }

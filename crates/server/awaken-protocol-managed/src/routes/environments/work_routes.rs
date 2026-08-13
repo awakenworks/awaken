@@ -58,11 +58,22 @@ pub(super) async fn poll_work(
     // The official SDK sends worker identity in `Anthropic-Worker-ID`, not in
     // the query string. Long polling repeatedly drives the same authoritative
     // atomic claim; it does not introduce a second queue or lease registry.
-    let worker_id = worker_id(&headers)?;
+    let lease_owner = work_lease_owner(&headers)?;
+    // Worker ID is an optional observation label in the raw Work API. The
+    // higher-level WorkPoller supplies it; the generated `work.poll()` method
+    // does not require it. When omitted, the opaque credential owner is also the
+    // least-privilege liveness coordinate rather than a fabricated public ID.
+    let poller_id = worker_id(&headers).unwrap_or(&lease_owner);
     let started = tokio::time::Instant::now();
     loop {
         let claimed = state
-            .claim_work(&id, worker_id, now_ms(), poll.reclaim_older_than_ms)
+            .claim_work(
+                &id,
+                &lease_owner,
+                poller_id,
+                now_ms(),
+                poll.reclaim_older_than_ms,
+            )
             .await
             .map_err(map_execution_error)?;
         if let Some(work) = claimed {
@@ -177,8 +188,9 @@ pub(super) async fn ack_work(
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Work>, WireError> {
+    let owner = work_lease_owner(&headers)?;
     let result = state
-        .acknowledge_work(&id, &wid, worker_id(&headers)?)
+        .acknowledge_work(&id, &wid, &owner)
         .await
         .map_err(map_execution_error)?;
     let work = worker_mutation(result)?;
@@ -198,8 +210,9 @@ pub(super) async fn heartbeat_work(
         ),
         desired_ttl_seconds: params.desired_ttl_seconds,
     };
+    let owner = work_lease_owner(&headers)?;
     let hb = match state
-        .heartbeat_work(&id, &wid, worker_id(&headers)?, now_ms(), command)
+        .heartbeat_work(&id, &wid, &owner, now_ms(), command)
         .await
         .map_err(map_execution_error)?
     {
@@ -224,16 +237,54 @@ pub(super) async fn heartbeat_work(
     }))
 }
 
-/// The Managed worker identity carried consistently on poll and worker-owned
-/// lease mutations. It is compared atomically with the claim owner by WorkQueue.
-fn worker_id(headers: &HeaderMap) -> Result<&str, WireError> {
-    let worker_id = headers
+/// Resolve the one WorkQueue lease owner from the official Managed wire.
+///
+/// The SDK's WorkPoller sends `Anthropic-Worker-ID` only on `poll`; its
+/// `ack`/`stop` calls carry the same Environment Key as a bearer instead. The
+/// generated raw Work client also permits no Worker ID and uses its API-key
+/// credential throughout. The credential is therefore the stable authority.
+/// Hashing keeps the secret out of durable queue rows. Raw/manual callers without
+/// a bearer retain the documented Worker header path, and both paths still enter
+/// the same atomic WorkQueue owner comparison.
+fn work_lease_owner(headers: &HeaderMap) -> Result<String, WireError> {
+    if let Some(credential) = environment_credential(headers) {
+        return Ok(format!(
+            "managed-environment:{}",
+            super::super::sha256_identity("managed-work-environment-key-v1", &[credential])
+        ));
+    }
+    worker_id(headers).map(str::to_owned).ok_or_else(|| {
+        bad_request(
+            "Environment bearer or Anthropic-Worker-ID is required for Work lease operations",
+        )
+    })
+}
+
+fn worker_id(headers: &HeaderMap) -> Option<&str> {
+    headers
         .get("anthropic-worker-id")
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| bad_request("Anthropic-Worker-ID is required for Work lease operations"))?;
-    Ok(worker_id)
+}
+
+fn environment_credential(headers: &HeaderMap) -> Option<&str> {
+    let bearer = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .and_then(|authorization| authorization.split_once(' '))
+        .filter(|(scheme, credential)| {
+            scheme.eq_ignore_ascii_case("bearer") && !credential.trim().is_empty()
+        })
+        .map(|(_, credential)| credential.trim());
+    bearer.or_else(|| {
+        headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    })
 }
 
 /// Wall-clock now in epoch ms — read only at this HTTP edge and passed into the
@@ -252,8 +303,9 @@ pub(super) async fn stop_work(
     Path((id, wid)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<Work>, WireError> {
+    let owner = work_lease_owner(&headers)?;
     let result = state
-        .stop_work(&id, &wid, worker_id(&headers)?)
+        .stop_work(&id, &wid, &owner)
         .await
         .map_err(map_execution_error)?;
     let work = worker_mutation(result)?;

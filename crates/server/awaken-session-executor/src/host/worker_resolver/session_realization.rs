@@ -11,6 +11,24 @@ struct WorkerProjectionSynchronizer<'a> {
     requires_runtime_before_effects: bool,
 }
 
+fn complete_worker_projection(
+    host: &SharedHost,
+    session_id: &str,
+    mut projection: awaken_session_contract::FrozenSessionProjection,
+    prepare_session: bool,
+) -> awaken_session_contract::FrozenSessionProjection {
+    if !prepare_session {
+        // Control intentionally omits the rebuildable transcript materialization
+        // from lease-only directives. Absence there is not an authoritative
+        // empty prefix: retain the value installed by the preparation Stage.
+        projection.request_context = host
+            .session_slots
+            .read(session_id, |slot| slot.request_context.clone())
+            .unwrap_or_default();
+    }
+    projection
+}
+
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjectionSynchronizer<'_> {
     async fn synchronize_session_projection(
@@ -69,6 +87,8 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         // must reuse the already-resident Resource/Skill projection instead of
         // opening an unclaimed remote materialization path.
         let synchronize_resources = self.claim.is_some() || prepare_session;
+        let projection =
+            complete_worker_projection(self.host, session_id, projection.clone(), prepare_session);
         self.host
             .install_frozen_session_projection(
                 session_id,
@@ -248,6 +268,45 @@ mod tests {
     use super::*;
     use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn worker_projection_distinguishes_preparation_from_lease_only_context_omission() {
+        // Cause/effect graph: C1 Control preparation materializes a transcript
+        // prefix; C2 a later lease-only directive omits that rebuildable payload;
+        // C3 the resident Worker has C1 installed. Effects: E1 preparation uses
+        // the supplied prefix; E2 C2+C3 preserves C1 instead of clearing it.
+        // FMECA: treating omission as an empty prefix makes branch Workers infer
+        // values from unrelated resource names. The one projection completer
+        // resolves this before the canonical installer runs.
+        //
+        // | Rule | prepare | incoming | resident | effect |
+        // | P1   | T       | prefix A | any      | E1=A   |
+        // | P2   | F       | omitted  | prefix A | E2=A   |
+        let host = SharedHost::new(Arc::new(AdoptionModel), "stub");
+        let session_id = "branch-context-replay";
+        let prefix = vec![Message::text(
+            MessageId("source-prefix".into()),
+            Role::Assistant,
+            "E2E_SOURCE_ONLY_exact",
+        )];
+        host.session_slots.update(session_id, |slot| {
+            slot.request_context = prefix.clone();
+        });
+
+        let mut preparation = frozen_projection();
+        preparation.request_context = prefix.clone();
+        assert_eq!(
+            complete_worker_projection(&host, session_id, preparation, true).request_context,
+            prefix,
+            "P1/E1"
+        );
+        assert_eq!(
+            complete_worker_projection(&host, session_id, frozen_projection(), false)
+                .request_context,
+            prefix,
+            "P2/E2"
+        );
+    }
 
     #[derive(Default)]
     struct RecordingMcpRealizer {

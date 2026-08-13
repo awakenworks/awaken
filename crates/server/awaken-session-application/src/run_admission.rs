@@ -240,7 +240,7 @@ impl SessionApplication {
                 })?;
         }
         if !self.requires_external_realization(&recovered.session)
-            && recovered.session.execution != awaken_session_contract::SessionExecutionState::Idle
+            && !recovered.session.execution.admits_activity()
         {
             return Err(RunError::unavailable_classified(
                 "session_not_ready",

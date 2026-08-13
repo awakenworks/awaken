@@ -1003,10 +1003,7 @@ impl SessionRealizationControl for SessionApplication {
         // A hot mutation belongs to an already-idle Session, so keep that lifecycle
         // status while its new generation is unacknowledged; a failed replacement
         // must not turn the established Session into a failed create.
-        if !matches!(
-            session.execution,
-            SessionExecutionState::Idle | SessionExecutionState::Running
-        ) {
+        if !session.execution.admits_activity() {
             session
                 .transition_execution(SessionExecutionState::Activating)
                 .map_err(unavailable)?;

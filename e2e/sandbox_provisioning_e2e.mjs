@@ -24,7 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import { cleanupFixtureTree, pass, withRealServer } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
@@ -145,7 +145,10 @@ async function main() {
     pass('an unresolvable repo fails closed at sandbox realization (no clean turn)');
   });
 
-  fs.rmSync(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  // The successful arm owns a writable Memory projection, while the failure
+  // arms may stop during realization. One mount-aware cleanup path handles both
+  // terminal effects and surfaces detach failure instead of retrying raw rmSync.
+  cleanupFixtureTree(TMP);
   console.log('E2E PASS: Workdir writable resources co-provision + artifact projection + fail-closed arms.');
   process.exitCode = 0;
 }

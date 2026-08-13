@@ -152,7 +152,7 @@ async function main() {
     // Scenario-only fixed-launch composition still consumes these explicit test
     // knobs; the production CLI independently resolves the same values from TOML.
     SESSION_ENVIRONMENT_TIER: TIER,
-    AWAKEN_SANDBOX_DIR: `${TMP}/sandboxes`,
+    SESSION_DEPLOYMENT_SANDBOX_DIR: `${TMP}/sandboxes`,
     SESSION_DEPLOYMENT_STORAGE_DIR: `${TMP}/storage`,
     AWAKEN_SCENARIO_SKILL_ID: 'delivered-namespace',
     // JSON preserves Windows executable and fixture paths containing spaces;

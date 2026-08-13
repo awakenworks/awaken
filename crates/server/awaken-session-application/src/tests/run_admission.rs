@@ -194,6 +194,40 @@ async fn worker_placed_cloud_session_admits_the_event_that_triggers_realization(
 }
 
 #[tokio::test]
+async fn recovered_running_activity_admits_a_fenced_successor() {
+    // Crash-recovery cause/effect graph: C1 a prior process committed Running
+    // plus activity epoch 1; C2 no external Worker realization is required; C3
+    // a successor driving event enters after restart. C1+C2+C3 => admission
+    // succeeds and begin_activity can advance the epoch; Preparing/Activating/
+    // Rescheduling and terminal partitions remain rejected by the shared
+    // `admits_activity` table. FMECA: rejecting Running permanently strands the
+    // Outcome/continuation; treating every nonterminal state as ready bypasses
+    // realization convergence.
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    let mut running = persisted("crash-orphaned-activity", false, "running");
+    running.activity_epoch = 1;
+    create(repo.as_ref(), running).await;
+    let application = application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    application
+        .admit_run_session("workspace", "crash-orphaned-activity", "agent")
+        .await
+        .expect("Running is an execution-ready, epoch-fenced state");
+    let successor = application
+        .begin_activity("crash-orphaned-activity")
+        .await
+        .expect("successor activity advances the durable fence");
+    assert_eq!(successor.execution, SessionExecutionState::Running);
+    assert_eq!(successor.activity_epoch, 2);
+}
+
+#[tokio::test]
 async fn managed_event_recovers_a_cold_worker_dispatch_projection_before_runtime() {
     // Cause/effect graph: C1 a Managed `/events` command enters the Session
     // application directly; C2 the Coordinator has restarted and therefore has

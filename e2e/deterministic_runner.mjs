@@ -47,6 +47,15 @@ export function expandSuites(scripts, suiteNames) {
   return expanded;
 }
 
+export function assertCanonicalPortOwnership(commands) {
+  const override = commands.find(({ command }) => /(?:^|\s)E2E_(?:WORKER_)?PORT=/u.test(command));
+  if (override) {
+    throw new Error(
+      `deterministic command overrides harness-owned port allocation: ${override.command}`,
+    );
+  }
+}
+
 export function parseShard(value) {
   if (!value) return { index: 0, total: 1 };
   const match = value.match(/^(\d+)\/(\d+)$/);
@@ -357,6 +366,7 @@ export function runMain() {
     throw new Error('package.json awakenTest.deterministicSuites must be a non-empty array');
   }
   const commands = expandSuites(packageDocument.scripts, suiteNames);
+  assertCanonicalPortOwnership(commands);
   const duplicate = commands.find((entry, index) => (
     commands.findIndex((candidate) => candidate.command === entry.command) !== index
   ));

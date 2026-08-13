@@ -34,7 +34,7 @@ pub awaken_cli::config::Role::Coordinator
 pub awaken_cli::config::Role::Worker
 impl awaken_cli::config::Role
 pub fn awaken_cli::config::Role::as_str(self) -> &'static str
-pub fn awaken_cli::config::Role::exposes_managed_runtime(self) -> bool
+pub fn awaken_cli::config::Role::mounts_managed_runtime(self) -> bool
 pub enum awaken_cli::config::SealKeySource
 pub awaken_cli::config::SealKeySource::File(std::path::PathBuf)
 pub awaken_cli::config::SealKeySource::Inline(alloc::string::String)
@@ -122,6 +122,7 @@ pub awaken_cli::console::Command::Config
 pub awaken_cli::console::Command::Config::config_path: core::option::Option<std::path::PathBuf>
 pub awaken_cli::console::Command::Config::json: bool
 pub awaken_cli::console::Command::Control(awaken_cli::console::ServiceArgs)
+pub awaken_cli::console::Command::ControlHostedRuntimeRouteProfile
 pub awaken_cli::console::Command::ControlIamProfile
 pub awaken_cli::console::Command::ControlIamResourceProfile
 pub awaken_cli::console::Command::ControlIamRuntimeProfile
@@ -169,10 +170,12 @@ pub fn awaken_cli::DrainController::set_service_lifecycle(&self, awaken_service_
 pub struct awaken_cli::ManagedServiceAdapters
 pub awaken_cli::ManagedServiceAdapters::list_price_provider: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>>
 pub awaken_cli::ManagedServiceAdapters::request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
+pub awaken_cli::ManagedServiceAdapters::same_origin_managed_runtime: bool
 pub awaken_cli::ManagedServiceAdapters::tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
 impl awaken_cli::ManagedServiceAdapters
 pub fn awaken_cli::ManagedServiceAdapters::with_list_price_provider(self, alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_request_limiter(self, alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>) -> Self
+pub fn awaken_cli::ManagedServiceAdapters::with_same_origin_managed_runtime(self) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_tunnel_application(self, alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>) -> Self
 pub struct awaken_cli::PreparedLocalAcp
 impl awaken_cli::PreparedLocalAcp
