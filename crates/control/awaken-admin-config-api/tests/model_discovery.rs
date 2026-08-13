@@ -33,9 +33,11 @@
 //! `needs_attention`; active credential + only unavailable offerings ->
 //! `unavailable`. Tests below exercise every leaf from composed stores.
 //!
-//! Brokered refresh decision table: B1 feature+adapter+valid projection ->
-//! atomically expose only `brokered` offerings; B2 feature disabled -> typed 409;
-//! B3 enabled without login adapter -> typed 401; adapter failure -> typed 503.
+//! Brokered refresh/readiness decision table: B1 feature+adapter+valid
+//! projection -> atomically expose only `brokered` offerings and report them
+//! executable without creating a local Credential; B2 feature disabled ->
+//! typed 409 and retained brokered history is runtime-unavailable; B3 enabled
+//! without login adapter -> typed 401; adapter failure -> typed 503.
 
 use std::sync::{Arc, Mutex};
 
@@ -332,6 +334,13 @@ fn connection_request(workspace_id: &str, credential_source_id: &str) -> Value {
 
 #[tokio::test]
 async fn b1_brokered_refresh_exposes_only_explicit_managed_offerings() {
+    // Causes: C1 one active brokered projection; C2 brokered runtime capability
+    // enabled/disabled; C3 no Workspace Credential. Effects: E1 the durable
+    // Catalog retains exactly the brokered Offering; E2 enabled discovery is
+    // ready/selectable; E3 disabled discovery is runtime_unavailable; E4 no
+    // credential is synthesized. Decision rules: C1+C2+C3 -> E1+E2+E4;
+    // C1+!C2+C3 -> E1+E3+E4. Publication and execution still revalidate the
+    // Cloud route; this read projection never receives provider key material.
     let catalog = Arc::new(InMemoryCatalogRepo::new());
     let app = admin_router_with_capabilities(
         AdminState {
@@ -388,6 +397,16 @@ async fn b1_brokered_refresh_exposes_only_explicit_managed_offerings() {
             .as_deref(),
         Some("https://api.awakenworks.com")
     );
+    let (status, executable) = call(
+        &app,
+        "GET",
+        "/v1/config/executable-models?workspace_id=workspace-a",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(executable.as_array().unwrap().len(), 1);
+    assert_eq!(executable[0]["readiness"], "ready");
 
     // Turning the feature off preserves the durable projection for audit but
     // makes its API view unavailable, so UI/Profile clients cannot select it.
@@ -405,6 +424,15 @@ async fn b1_brokered_refresh_exposes_only_explicit_managed_offerings() {
     let (status, local_catalog) = call(&local, "GET", "/v1/config/catalog", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(local_catalog["offerings"][0]["status"], "unavailable");
+    let (status, local_executable) = call(
+        &local,
+        "GET",
+        "/v1/config/executable-models?workspace_id=workspace-a",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(local_executable[0]["readiness"], "runtime_unavailable");
     assert_eq!(
         catalog.snapshot().await.unwrap().offerings[0].status,
         OfferingStatus::Active,

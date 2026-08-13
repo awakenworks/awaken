@@ -58,15 +58,18 @@ pub struct ExecutableModelOption {
     pub readiness: ExecutableModelReadiness,
 }
 
-/// Pure Catalog × Credential × Executor evaluator shared by config reads,
-/// model-directory projection, and publication admission. Publication performs
-/// only the stateful credential choice and revision fence after this
+/// Pure Catalog × access posture × Executor evaluator shared by config reads,
+/// model-directory projection, and publication admission. Direct/BYOK access
+/// is proven by Workspace Credentials; Brokered access is proven only by the
+/// composition's existing brokered runtime capability. Publication performs
+/// the stateful credential/route choice and revision fence after this
 /// side-effect-free planner has accepted the same route.
 #[must_use]
 pub fn project_executable_models(
     catalog: &ProviderCatalog,
     credentials: &[CredentialSource],
     executors: &[ExecutorModelCapability],
+    brokered_access_enabled: bool,
 ) -> Vec<ExecutableModelOption> {
     let mut options = catalog
         .offerings
@@ -79,6 +82,12 @@ pub fn project_executable_models(
                     ExecutableModelReadiness::RuntimeUnavailable
                 } else if !executor.supports(offering.dialect.as_str()) {
                     ExecutableModelReadiness::DialectUnavailable
+                } else if offering.source == awaken_model_catalog::OfferingSource::Brokered {
+                    if brokered_access_enabled {
+                        ExecutableModelReadiness::Ready
+                    } else {
+                        ExecutableModelReadiness::RuntimeUnavailable
+                    }
                 } else if credentials.iter().any(|credential| {
                     credential.status == awaken_credential_vault::CredentialStatus::Active
                         && credential.is_executable_origin()
@@ -165,13 +174,16 @@ mod tests {
 
     #[test]
     fn executable_planner_joins_offering_credential_runtime_and_dialect_once() {
-        // Causes: C1 active/inactive Offering; C2 provider+endpoint compatible
-        // credential; C3 runtime available/unavailable; C4 dialect
-        // supported/unsupported.
+        // Causes: C1 active/inactive Offering; C2 direct/BYOK or Brokered
+        // source; C3 provider+endpoint compatible local credential; C4 runtime
+        // available/unavailable; C5 dialect supported/unsupported; C6 brokered
+        // access capability enabled/disabled.
         // Effects: E1 Ready; E2 OfferingUnavailable; E3
         // CredentialUnavailable; E4 RuntimeUnavailable; E5
-        // DialectUnavailable. Each rule changes one cause while retaining the
-        // same catalog/credential join used by publication admission.
+        // DialectUnavailable. Decision rules: direct/BYOK+C3+C4+C5 -> E1;
+        // direct/BYOK+!C3 -> E3; Brokered+C4+C5+C6 -> E1 without a local
+        // Credential; Brokered+!C6 -> E4; !C1 -> E2. Each rule retains the same
+        // catalog/access join used by publication admission.
         let catalog = ProviderCatalog {
             offerings: vec![offering("provider", "provider.open_ai_chat")],
             ..ProviderCatalog::default()
@@ -196,7 +208,7 @@ mod tests {
             available,
         };
         let readiness = |capability: ExecutorModelCapability, credentials: &[CredentialSource]| {
-            project_executable_models(&catalog, credentials, &[capability])[0].readiness
+            project_executable_models(&catalog, credentials, &[capability], false)[0].readiness
         };
         assert_eq!(
             readiness(
@@ -227,7 +239,10 @@ mod tests {
             "E4"
         );
         assert_eq!(
-            readiness(capability(true, &["anthropic_messages"]), &[credential]),
+            readiness(
+                capability(true, &["anthropic_messages"]),
+                std::slice::from_ref(&credential),
+            ),
             ExecutableModelReadiness::DialectUnavailable,
             "E5"
         );
@@ -235,6 +250,27 @@ mod tests {
             readiness(capability(true, &[]), &[]),
             ExecutableModelReadiness::DialectUnavailable,
             "an external executor with no dialect claims nothing"
+        );
+
+        let mut brokered = catalog.clone();
+        brokered.offerings[0].source = OfferingSource::Brokered;
+        assert_eq!(
+            project_executable_models(&brokered, &[], &[ExecutorModelCapability::native()], true)
+                [0]
+            .readiness,
+            ExecutableModelReadiness::Ready,
+            "E1: brokered access uses the existing runtime capability, not a local key"
+        );
+        assert_eq!(
+            project_executable_models(
+                &brokered,
+                std::slice::from_ref(&credential),
+                &[ExecutorModelCapability::native()],
+                false,
+            )[0]
+            .readiness,
+            ExecutableModelReadiness::RuntimeUnavailable,
+            "E4: a local credential cannot substitute for a disabled brokered path"
         );
     }
 }
