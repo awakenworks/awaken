@@ -11,8 +11,9 @@ authority = "resource"
 
 [dependencies]
 awaken-resource-application.workspace = true
+awaken-resource-contract.workspace = true
 awaken-resource-store = { workspace = true, features = ["sqlite", "postgres"] }
-awaken-file-store = { workspace = true, features = ["sqlite", "postgres"] }
+awaken-file-store = { workspace = true, features = ["sqlite", "postgres", "object-store"] }
 awaken-memory-store = { workspace = true, features = ["sqlite", "postgres"] }
 awaken-skill-store = { workspace = true, features = ["postgres"] }
 thiserror.workspace = true
@@ -20,6 +21,7 @@ thiserror.workspace = true
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt"] }
+object_store = { version = "0.12" }
 
 [features]
 default = []

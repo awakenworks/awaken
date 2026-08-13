@@ -77,11 +77,15 @@ impl CloudModelMode {
 pub enum ResourceStoreBackend {
     Embedded(PathBuf),
     Postgres(String),
+    PostgresObject {
+        url: String,
+        object: awaken_resource_persistence::ObjectBackingConfig,
+    },
 }
 
 impl ResourceStoreBackend {
     pub fn is_shared(&self) -> bool {
-        matches!(self, Self::Postgres(_))
+        matches!(self, Self::Postgres(_) | Self::PostgresObject { .. })
     }
 
     pub(super) fn validate_dispatch_compatibility(
