@@ -264,9 +264,15 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         environment_author,
         Arc::new(awaken_admin_assistant::TracingAuditSink),
     );
-    let agent_repository: Arc<dyn ManagedAgentRepository> = Arc::new(
-        ConfigPlaneManagedAgentRepository::new(config_plane.clone(), execution_workspace.clone()),
-    );
+    let agent_repository: Arc<dyn ManagedAgentRepository> =
+        Arc::new(if request_scoped_execution_workspace {
+            ConfigPlaneManagedAgentRepository::request_scoped(config_plane.clone())
+        } else {
+            ConfigPlaneManagedAgentRepository::new(
+                config_plane.clone(),
+                execution_workspace.clone(),
+            )
+        });
     let data_subject_application = Arc::new(
         DataSubjectApplication::new(data_subjects.clone(), enrollment_signing_key.to_vec())
             .expect("a derived 32-byte enrollment signing key is valid"),
