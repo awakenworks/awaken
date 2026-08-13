@@ -319,5 +319,6 @@ async fn prepare_control_process_with_model_supply(
         local_setup: identity.local_setup,
         registration_supervisor: prepared.registration_supervisor,
         service_lifecycle: prepared.service_lifecycle,
+        coordinator_authorities: None,
     })
 }
