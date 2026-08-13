@@ -2933,6 +2933,84 @@ async fn coordinator_dispatch_context_never_materializes_an_eager_environment() 
     );
 }
 
+/// Cause/effect graph: C1 the Host is Coordinator-only; C2 immutable
+/// provisioning is BackendOwned; C3 no trusted-host provider is installed on
+/// the Coordinator. C1 dominates C2+C3 because only the claimed Worker may
+/// realize host identity. Effects: E1 context construction succeeds, E2 no
+/// physical environment is created, E3 no provider is requested.
+///
+/// | Rule | Coordinator-only | Provisioning | Trusted provider | Context | Environment |
+/// |---|---|---|---|---|---|
+/// | B1 | yes | BackendOwned | absent | built | absent |
+/// | B2 | no | BackendOwned | absent | error | absent |
+///
+/// This regression test owns both rules at the dispatch/context boundary.
+#[tokio::test]
+async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
+    let mut host = SharedHost::new(Arc::new(OkModel), "stub");
+    host.deployment.disable_local_pool = true;
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("local-codex")
+        .resolved_model(
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::backend_owned(
+                awaken_runtime_contract::resolved::ModelBinding::new("local", "", "acp:codex"),
+                awaken_runtime_contract::CredentialRef {
+                    id: "codex-login".into(),
+                    revision: 1,
+                },
+                awaken_runtime_contract::resolved::BackendModelSelection::Default,
+                "codex-test",
+                "sha256:codex-test",
+                Default::default(),
+            ),
+        )
+        .build();
+
+    let context = host
+        .ctx_for_snapshot_with_sandbox(
+            "coordinator-backend-owned",
+            Some("local-codex"),
+            Some(snapshot.clone()),
+            None,
+        )
+        .await
+        .expect("B1 builds the dispatch context without a trusted-host provider");
+
+    assert!(context.env.is_none(), "B1/E2");
+    assert!(
+        host.session_environment("coordinator-backend-owned")
+            .await
+            .is_none(),
+        "B1/E2"
+    );
+
+    let local = SharedHost::new(Arc::new(OkModel), "stub");
+    let error = match local
+        .ctx_for_snapshot_with_sandbox(
+            "local-backend-owned",
+            Some("local-codex"),
+            Some(snapshot),
+            None,
+        )
+        .await
+    {
+        Ok(_) => panic!("B2 rejects execution without a trusted-host provider"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("BackendOwned provisioning requires a trusted-host Session provider"),
+        "B2: {error}"
+    );
+    assert!(
+        local
+            .session_environment("local-backend-owned")
+            .await
+            .is_none(),
+        "B2 environment"
+    );
+}
+
 /// L1: `on_tool_use` means inference alone must not allocate a Sandbox.
 #[tokio::test]
 async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
