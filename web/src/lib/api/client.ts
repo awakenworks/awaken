@@ -123,7 +123,9 @@ export function isAbsent(err: unknown): boolean {
 async function toError(res: Response): Promise<ApiClientError> {
   let code = `http_${res.status}`;
   let message = res.statusText || `HTTP ${res.status}`;
-  let requestId: string | undefined;
+  let requestId = res.headers.get("x-request-id")
+    ?? res.headers.get("x-correlation-id")
+    ?? undefined;
   try {
     const body: unknown = await res.json();
     if (typeof body === "object" && body !== null) {

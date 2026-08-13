@@ -94,6 +94,19 @@ The identity and outcomes are:
 | an older exact revision arrives | retain it as historical; never move current backwards |
 | Coordinator is unreachable | keep `StoredPublication`; return availability failure |
 
+Policy reconciliation performs a write-free preview first. If the fingerprint
+already exists, it replays the exact publication and does not manufacture a
+revision. If a catalog, credential, plugin, or Worker-capability dependency
+changes the fingerprint, Control advances the unchanged authoring intent with
+revision CAS and only then publishes/registers the new source revision. A
+different fingerprint is therefore never persisted at an existing
+`(Workspace, Agent, source_revision)` identity.
+
+For retained data created before that fence, an exact replay first uses the
+ordinary registrar. Only a semantic same-revision/different-fingerprint
+conflict activates the same CAS revision advance; availability and storage
+failures remain retries and never manufacture revisions.
+
 The implemented private HTTP adapter posts the complete command to a fixed
 registration route. Idempotency belongs to the application identity and
 Coordinator state machine, not to an HTTP-method convention. Transport naming
@@ -169,6 +182,13 @@ attempt failed. A retry submits the same immutable identity. Startup or periodic
 reconciliation reads published revisions and calls the same registrar; it does
 not bypass the normal handler or write Coordinator storage directly.
 
+Recovery isolates malformed historical rows per publication. Valid rows still
+reach the registrar; each invalid row remains immutable and contributes to the
+projection-degraded signal and bounded retry. Projection degradation does not
+remove an otherwise healthy HTTP process from Service endpoints. Coordinator's
+existing exact/current projection remains last-known-good until a valid newer
+registration succeeds.
+
 Coordinator must acknowledge persistence before Control reports the publication
 as executable. Existing Sessions keep their frozen snapshot. A newer
 registration affects only future resolution unless an explicit Session command
@@ -186,6 +206,8 @@ The cause/effect design for implementation tests is:
 | R4 | older revision arrives after newer revision | exact revision remains readable; current does not move backwards |
 | R5 | Coordinator unavailable after Control persistence | publication remains durable; API reports retryable unavailability |
 | R6 | reconciliation after R5 | the same registrar is reused, no parallel path is created, and the R1 outcome is reached |
+| R7 | one malformed historical row plus valid rows | valid rows register; invalid history is retained and reported degraded; serving readiness remains true |
+| R8 | policy preview changes fingerprint at revision N | CAS creates revision N+1 before persistence and registration; an exact replay creates no revision |
 
 Test comments must cite the applicable rule and preserve its causes and effects.
 

@@ -47,7 +47,10 @@ pub struct RegistrationHealth {
 impl Default for RegistrationHealth {
     fn default() -> Self {
         Self {
-            ready: AtomicBool::new(false),
+            // Static registrations are rebuildable projections. Their recovery
+            // may degrade individual capabilities, but it must not remove an
+            // otherwise healthy HTTP process from every Service endpoint.
+            ready: AtomicBool::new(true),
             pending_domains: AtomicUsize::new(2),
             consecutive_failures: AtomicU64::new(0),
             last_success_unix_ms: AtomicU64::new(0),
@@ -83,7 +86,10 @@ impl RegistrationHealth {
             self.ready.store(true, Ordering::Release);
         } else {
             self.consecutive_failures.fetch_add(1, Ordering::AcqRel);
-            self.ready.store(false, Ordering::Release);
+            // Keep serving last-known-good/durable Coordinator projections.
+            // pending_domains and consecutive_failures are the degraded signal;
+            // readiness is reserved for process/drain health.
+            self.ready.store(true, Ordering::Release);
         }
     }
 }
@@ -248,12 +254,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readiness_and_backoff_follow_both_authoritative_recovery_results() {
-        // Cause/effect decision table:
-        // R1 Agent fails while Environment succeeds -> not ready, one pending
-        // domain, one failure; R2 wake retries unchanged durable facts and both
-        // succeed -> ready, zero pending/failures; R3 repeated failures use capped
-        // exponential delays without creating another work source.
+    async fn serving_readiness_isolated_from_projection_degradation() {
+        // Cause/effect decision table (FMECA malformed-publication
+        // S8/O7/D5=280): C1 HTTP process is healthy; C2 Agent recovery fails;
+        // C3 Environment recovery succeeds. R1(C1+C2+C3) -> serving remains
+        // ready, one degraded domain and one failure are observable. R2(wake +
+        // both recover) -> ready with zero degraded domains/failures. R3(repeat
+        // failure) -> capped exponential retry without a second work source.
         let agents = Arc::new(AgentRecovery {
             fail: AtomicBool::new(true),
         });
@@ -278,7 +285,7 @@ mod tests {
             tokio::task::yield_now().await;
         }
         let first = supervisor.health().snapshot();
-        assert!(!first.ready, "R1");
+        assert!(first.ready, "R1");
         assert_eq!(first.pending_domains, 1, "R1");
         assert_eq!(first.consecutive_failures, 1, "R1");
 

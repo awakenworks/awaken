@@ -353,14 +353,62 @@ impl ConfigService {
         id: &str,
         catalog: &[ToolDescriptor],
     ) -> Result<bool, String> {
-        let stored = registry.get_config(id).await.map_err(|e| e.to_string())?;
+        let stored = registry
+            .get_config_revision(id)
+            .await
+            .map_err(|e| e.to_string())?;
         match stored {
             // Policy selections refresh their authority-owned pins; an operator's
             // concrete pinned binding remains authoritative.
-            Some(config) if config.model_binding.requires_reconciliation() => {
-                self.publish(workspace, registry, id, catalog)
+            Some(versioned) if versioned.config.model_binding.requires_reconciliation() => {
+                let preview = self
+                    .preview_publication(workspace, registry, id, catalog)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|error| error.to_string())?;
+                if registry
+                    .get_publication(&preview.fingerprint)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .is_some()
+                {
+                    // Exact policy fact replay: preserve the authored revision
+                    // and reuse the ordinary idempotent registration path. A
+                    // legacy store may already contain two fingerprints at this
+                    // revision; only that semantic registrar conflict falls
+                    // through to the CAS migration below.
+                    match self.publish(workspace, registry, id, catalog).await {
+                        Ok(_) => return Ok(true),
+                        Err(PublishError::Registration(
+                            ExecutableAgentRegistrationError::Conflict(_),
+                        )) => {}
+                        Err(error) => return Err(error.to_string()),
+                    }
+                }
+
+                // A changed dependency produces a different executable fact.
+                // `(Workspace, Agent, source_revision)` is immutable, so advance
+                // the same authoring intent with CAS before publication instead
+                // of persisting a conflicting fingerprint at the old revision.
+                let next_revision = match registry
+                    .put_config_if_revision(&versioned.config, versioned.revision)
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    ConfigWrite::Applied { revision } => revision,
+                    ConfigWrite::Conflict { current_revision } => {
+                        return Err(PublishError::StaleRevision(current_revision).to_string());
+                    }
+                };
+                self.publish_at_revisions(
+                    workspace,
+                    registry,
+                    id,
+                    catalog,
+                    Some(next_revision),
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
                 Ok(true)
             }
             _ => Ok(false),
@@ -451,6 +499,25 @@ pub(crate) mod resource_prompt_tests {
             );
             Ok(ResolvedPublicationModels::host(
                 primary, candidates, None, None,
+            ))
+        }
+    }
+
+    struct ChangedPolicyResolver;
+
+    #[async_trait::async_trait]
+    impl ModelPublicationResolver for ChangedPolicyResolver {
+        async fn resolve_models(
+            &self,
+            _workspace: &ScopeId,
+            _selection: &ModelSelection,
+            _candidates: &[ModelBinding],
+        ) -> Result<ResolvedPublicationModels, PublicationResolutionError> {
+            Ok(ResolvedPublicationModels::host(
+                ModelBinding::new("openai", "m-policy-changed", "genai"),
+                Vec::new(),
+                None,
+                None,
             ))
         }
     }
@@ -1290,9 +1357,91 @@ pub(crate) mod resource_prompt_tests {
         plane.put(&scope, &auto_config("auto")).await.unwrap();
         plane.publish(&scope, "auto").await.unwrap();
         assert!(plane.reconcile(&scope, "auto").await.unwrap());
+        assert_eq!(
+            plane
+                .get_versioned(&scope, "auto")
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            1,
+            "an exact policy fact replay must not manufacture a source revision"
+        );
 
         // A missing agent: skipped, not an error.
         assert!(!plane.reconcile(&scope, "ghost").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reconcile_advances_source_revision_before_changed_policy_fingerprint() {
+        // Cause/effect decision table (FMECA registration conflict
+        // S8/O7/D5=280): C1 Auto Agent revision 1 is published; C2 policy
+        // resolution changes the executable fingerprint; C3 authoring intent is
+        // otherwise unchanged; C4 a legacy release already persisted the changed
+        // fingerprint at revision 1 before registration conflicted.
+        // R1(C1+C2+C3+C4) -> ordinary replay confirms the conflict, CAS creates
+        // revision 2, then one revision-2 publication/register succeeds.
+        // R2(exact replay) -> no bump (covered above). R3(CAS conflict) -> stale
+        // error and no registration.
+        let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let registrar = Arc::new(LocalExecutableAgentRegistrar::new(catalog.clone()));
+        let tools = Arc::new(crate::tool_catalog::StaticToolCatalog(vec![]));
+        let initial = ConfigPlane::new(
+            Arc::new(ConfigService::new(
+                Arc::new(FakeResolver),
+                registrar.clone(),
+            )),
+            store.clone(),
+            tools.clone(),
+        );
+        let scope = ScopeId::from("workspace-policy-change");
+        initial
+            .put(&scope, &auto_config("auto-change"))
+            .await
+            .unwrap();
+        let first = initial.publish(&scope, "auto-change").await.unwrap();
+        assert_eq!(first.source_revision, 1, "R1");
+
+        let changed = ConfigPlane::new(
+            Arc::new(ConfigService::new(
+                Arc::new(ChangedPolicyResolver),
+                registrar,
+            )),
+            store.clone(),
+            tools,
+        );
+        let registry = ScopedConfig::new(store.clone(), scope.clone());
+        let legacy_duplicate = changed
+            .service()
+            .preview_publication(&scope, &registry, "auto-change", &[])
+            .await
+            .unwrap();
+        assert_eq!(legacy_duplicate.source_revision, 1, "C4");
+        assert_ne!(legacy_duplicate.fingerprint, first.fingerprint, "C4");
+        store
+            .put_publication_scoped(&scope, &legacy_duplicate)
+            .await
+            .unwrap();
+        assert!(
+            changed.reconcile(&scope, "auto-change").await.unwrap(),
+            "R1"
+        );
+        let second = changed
+            .latest_publication(&scope, "auto-change")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.source_revision, 2, "R1");
+        assert_ne!(first.fingerprint, second.fingerprint, "R1");
+        assert_eq!(
+            catalog
+                .current(scope.as_str(), "auto-change")
+                .expect("R1 current registration")
+                .source_revision,
+            2,
+            "R1"
+        );
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { API_BETAS, api, betaForPath, getToken, workspaceIdForRequest } from "./client";
+import { API_BETAS, ApiClientError, api, betaForPath, getToken, workspaceIdForRequest } from "./client";
 
 describe("cloud product session bearer", () => {
   // Cause/effect decision table:
@@ -123,5 +123,32 @@ describe("workspace identity cause/effect graph", () => {
     expect(workspaceIdForRequest("default", "", "workspace_local_1")).toBe("workspace_local_1");
     expect(workspaceIdForRequest("team-display", "", "")).toBe("team-display");
     expect(workspaceIdForRequest("default", "", "")).toBeUndefined();
+  });
+});
+
+describe("structured API failure evidence", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("preserves RFC problem code, detail and transport correlation", async () => {
+    // Cause/effect rule: C1 non-2xx carries RFC problem fields; C2 ingress adds
+    // x-request-id; E1 ApiClientError keeps status/code/detail/requestId so the
+    // UI decision table can select an action without string parsing.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: "publication_conflict",
+      title: "Publication conflict",
+      detail: "refresh revision 7",
+    }), {
+      status: 409,
+      headers: { "content-type": "application/problem+json", "x-request-id": "req-7" },
+    })));
+
+    const error = await api.get("/v1/config/agents/a").catch((cause) => cause);
+    expect(error).toBeInstanceOf(ApiClientError);
+    expect(error).toMatchObject({
+      status: 409,
+      code: "publication_conflict",
+      requestId: "req-7",
+    });
+    expect(error.message).toContain("refresh revision 7");
   });
 });

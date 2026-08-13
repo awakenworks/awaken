@@ -82,11 +82,14 @@ publication may exist while registration is temporarily unavailable; that call
 returns an availability failure and an idempotent retry registers the same
 publication.
 
-Control startup does not make process liveness depend on Coordinator
-availability. The one `StaticRegistrationSupervisor` concurrently recovers Agent
-and Environment registrations from their durable Control authorities, marks
-readiness only after both succeed, and retries failures with bounded exponential
-backoff. Its wake signal contains no work data and cannot become another outbox.
+Control startup does not make process liveness or serving readiness depend on
+rebuildable projection recovery. The one `StaticRegistrationSupervisor`
+concurrently recovers Agent and Environment registrations from their durable
+Control authorities, exposes pending domains and consecutive failures as the
+projection-degraded signal, and retries with bounded exponential backoff. Valid
+registrations continue past quarantined malformed history; existing Coordinator
+state remains last-known-good. Its wake signal contains no work data and cannot
+become another outbox.
 
 ### D3: Coordinator owns Deployment and reuses the existing Session authority
 
