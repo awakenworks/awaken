@@ -228,10 +228,7 @@ impl PinnedCredentialMaterializer {
             material_sources,
             realization_kinds: [realization].into_iter().collect(),
             recipient_bound_envelopes,
-            extension_consumers: if matches!(
-                realization,
-                CredentialRealizationKind::WorkerRelay | CredentialRealizationKind::PlatformRelay
-            ) {
+            extension_consumers: if realization == CredentialRealizationKind::WorkerRelay {
                 self.extension_capabilities()
             } else {
                 Default::default()

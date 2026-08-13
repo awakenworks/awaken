@@ -233,7 +233,33 @@ cannot be washed into an apparently valid unsealed Control reference before
 admission. Every later claim and execution boundary continues to reject it.
 
 `CredentialUsage` remains authoritative for `ProviderAdapter`, HTTP header/query,
-typed HTTP Basic, client certificate, environment variable, and file semantics.
+typed HTTP Basic, client certificate, environment variable, file semantics, and
+one built-in platform-held HTTP effect. The HTTP-effect usage freezes every
+material field together with every exact destination at which that field may be
+rendered:
+
+```rust
+enum HttpEffectPlacement {
+    Header { name: String },
+    Query { name: String },
+    JsonPointer { pointer: String },
+}
+
+CredentialUsage::HttpEffect {
+    fields: BTreeMap<String, BTreeSet<HttpEffectPlacement>>,
+}
+```
+
+Header and query names are nonempty effect destinations. JSON destinations are
+canonical RFC 6901 pointers rooted at the effect's `json` or `body` value; the
+empty pointer denotes that complete value. A single opaque secret is admissible
+only for exactly one declared field. Structured material is admissible only when
+its complete field set equals the declared field set. OAuth material is never an
+HTTP-effect material. Empty fields/placements, malformed pointers, undeclared
+material fields, and broader or narrower effect-reference sets fail before the
+Gateway performs I/O. This is a built-in `PlatformRelay` usage, not an
+`Extension` consumer or plaintext-returning RPC.
+
 MCP, Model, and Resource adapters must not invent protocol-specific
 credential-usage fields.
 
@@ -483,10 +509,12 @@ trusted platform egress process. That process composes the existing
 `PinnedCredentialMaterializer` over the canonical `CredentialRepo` and
 `SecretStore`, selects an exact opaque Platform trust-domain holder, and
 resolves an immutable `CredentialAccess` only with the exact Workspace and
-target/use fingerprint. It substitutes the material and performs the bounded
-effect in the same process. The secret-free caller receives only the bounded
-upstream result and an ordinary realization receipt; credential material never
-crosses that process boundary.
+target/use fingerprint. `CredentialUsage::HttpEffect` binds each declared field
+to exact header, query, or RFC 6901 JSON-pointer destinations. The Gateway must
+prove that the effect's actual reference set equals this frozen usage before it
+substitutes the material and performs the bounded effect in the same process.
+The secret-free caller receives only the bounded upstream result and an ordinary
+realization receipt; credential material never crosses that process boundary.
 
 This amendment adds neither a Connector request DTO nor a material-transport
 protocol. The product owns its effect DTO. Its downstream Gateway owns route,

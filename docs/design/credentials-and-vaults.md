@@ -245,11 +245,15 @@ The accepted hosted Connector path installs `PinnedCredentialMaterializer` in
 the trusted Gateway process over Awaken's canonical `CredentialRepo` and
 `SecretStore` adapters. The Gateway selects its exact opaque Platform holder
 and `PlatformRelay`, resolves the pinned source only against the route-owned
-Workspace and effect-target fingerprint, substitutes material, and performs the
-effect in that process. Flow sends a capability-scoped, secret-free effect and
-receives a bounded upstream result plus a secret-free receipt. Process
-separation therefore requires neither a plaintext material RPC nor a copied
-Vault.
+Workspace and effect-target fingerprint, and admits the built-in
+`CredentialUsage::HttpEffect`. That usage maps each material field to exact
+header, query, or RFC 6901 JSON-pointer destinations. A single secret requires
+one sole field, structured material requires an exact declared-field match, and
+OAuth fails closed. The Gateway also compares the effect's actual reference set
+with the frozen usage before substitution and performs the effect in that same
+process. Flow receives only a bounded upstream result plus a secret-free
+receipt. Process separation therefore requires neither a plaintext material RPC
+nor a copied Vault.
 
 The current `CredentialEnvelope` values are validation metadata for installed
 resolvers, not a cryptographic network-delivery implementation: there is no

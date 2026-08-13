@@ -35,8 +35,10 @@ pub use awaken_runtime_contract::CredentialRealizationProfile
 pub use awaken_runtime_contract::CredentialRef
 pub use awaken_runtime_contract::CredentialRefreshAccess
 pub use awaken_runtime_contract::CredentialUsage
+pub use awaken_runtime_contract::CredentialUsageError
 pub use awaken_runtime_contract::DelegationLimits
 pub use awaken_runtime_contract::EndCause
+pub use awaken_runtime_contract::HttpEffectPlacement
 pub use awaken_runtime_contract::ImageSource
 pub use awaken_runtime_contract::MergePolicy
 pub use awaken_runtime_contract::Message

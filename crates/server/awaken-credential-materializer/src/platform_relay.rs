@@ -26,6 +26,7 @@ impl PinnedCredentialMaterializer {
 
 #[cfg(all(test, feature = "authority"))]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use awaken_agent_contract::RedactedString;
@@ -33,23 +34,25 @@ mod tests {
     use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
     use awaken_runtime_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
-        CredentialRealizationKind, CredentialRef, CredentialUsage, ModelExposurePolicy,
-        PlaintextBoundary, PlaintextHolder,
+        CredentialRealizationKind, CredentialRef, CredentialUsage, HttpEffectPlacement,
+        ModelExposurePolicy, PlaintextBoundary, PlaintextHolder,
     };
 
     use crate::PinnedCredentialMaterializer;
 
     /// Platform-relay cause/effect graph: C1 canonical local authority stores
     /// are installed; C2 publication allows the exact Platform trust domain;
-    /// C3 source revision and Workspace match; C4 caller selects PlatformRelay.
-    /// C1+C2+C3+C4 resolves material only inside that holder process. A wrong
-    /// Workspace or trust domain fails before the caller may execute an effect.
+    /// C3 source revision and Workspace match; C4 caller selects PlatformRelay;
+    /// C5 usage is the built-in HTTP effect. C1+C2+C3+C4+C5 resolves material
+    /// only inside that holder process and advertises no Extension consumer. A
+    /// wrong Workspace or trust domain fails before the caller may execute an
+    /// effect.
     ///
-    /// | Rule | C1 | C2 | C3 | C4 | Effect |
-    /// |---|---|---|---|---|---|
-    /// | P1 | T | T | T | T | exact material at Platform holder |
-    /// | P2 | T | T | F | T | fail closed |
-    /// | P3 | T | F | T | T | fail closed |
+    /// | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+    /// |---|---|---|---|---|---|---|
+    /// | P1 | T | T | T | T | T | exact material at Platform holder; no Extension |
+    /// | P2 | T | T | F | T | T | fail closed |
+    /// | P3 | T | F | T | T | T | fail closed |
     #[tokio::test]
     async fn platform_relay_resolves_only_an_exact_holder_and_workspace() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
@@ -76,9 +79,13 @@ mod tests {
                 revision: u64::try_from(source.version).unwrap(),
             },
             CredentialMaterialSource::ControlPlaneReference,
-            CredentialUsage::HttpHeader {
-                name: "authorization".into(),
-                scheme: Some("Bearer".into()),
+            CredentialUsage::HttpEffect {
+                fields: BTreeMap::from([(
+                    "token".into(),
+                    BTreeSet::from([HttpEffectPlacement::Header {
+                        name: "authorization".into(),
+                    }]),
+                )]),
             },
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
         );
@@ -89,6 +96,10 @@ mod tests {
             capabilities
                 .realization_kinds
                 .contains(&CredentialRealizationKind::PlatformRelay)
+        );
+        assert!(
+            capabilities.extension_consumers.is_empty(),
+            "built-in platform HTTP effects never enter Extension consumers"
         );
         let resolved = materializer
             .resolve_for_workspace(

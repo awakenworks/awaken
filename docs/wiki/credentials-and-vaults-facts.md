@@ -78,6 +78,6 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 
 - Status: active
 - Owner: [ADR-0067 platform-held Connector effects](../adr/0067-credential-custody-model-exposure-and-secret-delivery.md#amendment-platform-held-connector-effects-2026-08-13)
-- Fact: the trusted Gateway process composes Awaken's canonical Credential repository, SecretStore, and pinned materializer under one exact `PlatformRelay` holder; Flow receives no material and owns neither a raw-secret endpoint nor a duplicate Vault.
+- Fact: the trusted Gateway process composes Awaken's canonical Credential repository, SecretStore, and pinned materializer under one exact `PlatformRelay` holder; built-in `CredentialUsage::HttpEffect` freezes every material field's exact header, query, or RFC 6901 JSON-pointer destinations, and Flow receives no material and owns neither a raw-secret endpoint nor a duplicate Vault.
 - Links: [credentials and vaults](../design/credentials-and-vaults.md#hosted-governance-credential-resources)
-- Verification: exact holder, Workspace, source revision, usage, and effect-target binding tests plus the hosted Gateway effect E2E; deployments without the canonical in-process adapter fail closed because envelope metadata is not a cryptographic transport.
+- Verification: exact holder, Workspace, source revision, field/placement set, material shape, usage, and effect-target binding tests plus the hosted Gateway effect E2E; deployments without the canonical in-process adapter fail closed because envelope metadata is not a cryptographic transport.

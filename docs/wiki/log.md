@@ -2,6 +2,10 @@
 
 ## 2026-08-13
 
+- **Contract**: Built-in platform-held HTTP effects now freeze each credential
+  material field's exact header, query, or RFC 6901 JSON-pointer destinations in
+  `CredentialUsage`; single-secret, structured, OAuth, and malformed-placement
+  shapes fail closed before Gateway I/O.
 - **Consolidation**: Hosted Connector effects now select the neutral
   `PlatformRelay` realization in a trusted Gateway process that composes the
   canonical Credential repository, SecretStore, and pinned materializer. No
