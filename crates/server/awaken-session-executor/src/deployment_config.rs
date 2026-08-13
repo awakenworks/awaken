@@ -27,6 +27,19 @@ pub struct AcpWorkerProfile {
 }
 
 impl AcpWorkerProfile {
+    /// Select every adapter from the canonical executable catalog.
+    ///
+    /// Production images built with the catalog's `all` contract use this
+    /// projection instead of making each embedding maintain a second id list.
+    pub fn all_known() -> Result<Self, String> {
+        Self::new(
+            awaken_run_executor_acp::known_acp_clis()
+                .iter()
+                .map(|cli| cli.id.to_string()),
+            None,
+        )
+    }
+
     pub fn new(
         cli_ids: impl IntoIterator<Item = String>,
         default_cli: Option<String>,
@@ -664,6 +677,19 @@ mod tests {
             )
             .is_err()
         );
+
+        // Catalog-selection cause/effect rule: the production image's `all`
+        // contract selects every and only canonical row; embeddings therefore
+        // cannot drift by copying ids into their own configuration table.
+        let all = AcpWorkerProfile::all_known().unwrap();
+        assert_eq!(
+            all.cli_ids().collect::<std::collections::BTreeSet<_>>(),
+            awaken_run_executor_acp::known_acp_clis()
+                .iter()
+                .map(|cli| cli.id)
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+        assert_eq!(all.default_cli(), None);
     }
 
     #[test]

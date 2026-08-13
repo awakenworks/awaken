@@ -21,7 +21,7 @@ use std::path::PathBuf;
 pub struct PublishedAcpLaunchResolver {
     cli: AcpCli,
     store_dir: Option<PathBuf>,
-    credentials: crate::PinnedCredentialMaterializer,
+    credentials: Option<crate::PinnedCredentialMaterializer>,
 }
 
 impl PublishedAcpLaunchResolver {
@@ -34,7 +34,18 @@ impl PublishedAcpLaunchResolver {
         Self {
             cli,
             store_dir,
-            credentials,
+            credentials: Some(credentials),
+        }
+    }
+
+    /// Install one image-backed backend-owned ACP route without inventing a
+    /// credential source. Provider-backed candidates remain fail-closed.
+    #[must_use]
+    pub fn backend_owned(cli: AcpCli, store_dir: Option<PathBuf>) -> Self {
+        Self {
+            cli,
+            store_dir,
+            credentials: None,
         }
     }
 
@@ -109,8 +120,13 @@ impl PublishedAcpLaunchResolver {
                 "published model {model_ref} has incomplete endpoint coordinates"
             )));
         }
-        let credential_artifact = self
-            .credentials
+        let credentials = self.credentials.as_ref().ok_or_else(|| {
+            OpenError(
+                "credential_realization_unavailable: provider-backed ACP requires an installed exact materializer"
+                    .into(),
+            )
+        })?;
+        let credential_artifact = credentials
             .plan_claimed_credential_artifact(
                 candidate,
                 context,
@@ -122,7 +138,7 @@ impl PublishedAcpLaunchResolver {
         {
             None
         } else {
-            self.credentials
+            credentials
                 .plan_claimed_process_secret(candidate, context)
                 .map_err(OpenError)?
                 .map(
@@ -197,14 +213,20 @@ impl LaunchResolver for PublishedAcpLaunchResolver {
     fn secret_broker(
         &self,
     ) -> Option<std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>> {
-        Some(std::sync::Arc::new(self.credentials.clone()))
+        self.credentials.clone().map(|credentials| {
+            std::sync::Arc::new(credentials)
+                as std::sync::Arc<dyn awaken_provisioning_contract::SecretBroker>
+        })
     }
 
     fn credential_realization_capabilities(
         &self,
     ) -> awaken_runtime_contract::CredentialRealizationCapabilities {
+        let Some(credentials) = &self.credentials else {
+            return Default::default();
+        };
         let (material_sources, recipient_bound_envelopes) =
-            self.credentials.material_source_capabilities();
+            credentials.material_source_capabilities();
         let (realization_kind, material_type) = match self.cli.managed_credential_delivery {
             awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret => (
                 awaken_runtime_contract::CredentialRealizationKind::ProcessSecretEnvironment,
@@ -797,13 +819,9 @@ mod tests {
                     "sha256:test-capability",
                     Default::default(),
                 );
-            let resolver = PublishedAcpLaunchResolver::new(
+            let resolver = PublishedAcpLaunchResolver::backend_owned(
                 *awaken_run_executor_acp::acp_cli("codex").unwrap(),
                 Some(std::path::PathBuf::from("/path/that/must/not/be/opened")),
-                crate::PinnedCredentialMaterializer::new(
-                    Arc::new(InMemoryCredentialRepo::new()),
-                    Arc::new(InMemorySecretStore::new()),
-                ),
             );
             let activation = activation(Some(candidate));
             let resolved = resolver
@@ -848,6 +866,73 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn backend_owned_resolver_rejects_provider_material_without_an_authority() {
+        // Cause/effect graph: an image-backed Worker may execute BackendOwned
+        // ACP without a credential store, but a Provider candidate requires an
+        // exact materialization authority and must fail before launch.
+        //
+        // Decision table:
+        // | Rule | candidate | materializer | outcome |
+        // | B1 | BackendOwned | absent | resolve without secret broker |
+        // | B2 | Provider | absent | credential_realization_unavailable |
+        let resolver = PublishedAcpLaunchResolver::backend_owned(claude(), None);
+        assert!(resolver.secret_broker().is_none(), "B1");
+        assert!(
+            resolver
+                .credential_realization_capabilities()
+                .realization_kinds
+                .is_empty(),
+            "B1"
+        );
+
+        let repo = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("anthropic".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("must-not-open")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            repo.as_ref(),
+        )
+        .await
+        .unwrap();
+        let provider = awaken_runtime_contract::resolved::ResolvedModelCandidate::provider(
+            ModelBinding::new("anthropic", "published-model", "acp:claude"),
+            "anthropic@1",
+            "anthropic-messages@1",
+            "ws",
+            Some(CredentialAccess::new(
+                CredentialRef {
+                    id: source.id.0,
+                    revision: 1,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::ProviderAdapter,
+                CredentialExecutionPolicy::self_hosted_provider(),
+            )),
+            InferenceEndpoint {
+                adapter_kind: "anthropic".into(),
+                api_dialect: "anthropic_messages".into(),
+                base_url: "https://gateway.example/v1".into(),
+                upstream_model: "upstream-model".into(),
+                processing_placement: None,
+            },
+        );
+        let error = resolver
+            .model(
+                &activation(Some(provider)),
+                &awaken_runtime_contract::RuntimeRunContext::new(),
+            )
+            .unwrap_err();
+        assert!(error.0.contains("credential_realization_unavailable"), "B2");
     }
 
     #[test]
