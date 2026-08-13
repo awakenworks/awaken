@@ -5,7 +5,7 @@
 //! mount's declared `content_hash` verifies fail-closed.
 //!
 //! The trait is **async** so network/db backends (`awaken-file-store-postgres`,
-//! `awaken-file-store-s3`) fit the same seam as the local ones here (`FsFileStore`,
+//! object storage) fit the same seam as the local ones here (`FsFileStore`,
 //! `InMemoryFileStore`). The **id is computed in this core**, never in a backend, so
 //! it is identical across every implementation. `InMemoryFileStore` is available
 //! only to tests or the explicit `test-support` feature.
@@ -42,7 +42,7 @@ fn e(x: impl ToString) -> FileStoreError {
 /// pass, but `get`/`delete` take an id off the wire, so a crafted `../` or absolute id
 /// must resolve to *no file* rather than escape the base. (`.` is not alphanumeric, so
 /// `..` and any `/` are rejected here.)
-fn safe_id(id: &str) -> bool {
+pub(crate) fn safe_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .chars()
@@ -317,9 +317,9 @@ pub mod postgres;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
-/// Object-store backend — S3/MinIO/GCS/Azure (`s3` feature).
-#[cfg(feature = "s3")]
-pub mod s3;
+/// Object-store backend — S3-compatible or GCS (`object-store` feature).
+#[cfg(feature = "object-store")]
+pub mod object;
 
 #[cfg(test)]
 mod tests {

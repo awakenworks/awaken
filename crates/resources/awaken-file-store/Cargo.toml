@@ -29,7 +29,7 @@ rusqlite = { workspace = true, optional = true }
 # core migrator (schema) is shared; each backend pulls its own runner.
 awaken-scoped-migration = { workspace = true, features = ["postgres"], optional = true }
 awaken-scoped-migration-sqlite = { workspace = true, optional = true }
-object_store = { version = "0.12", features = ["aws"], optional = true }
+object_store = { version = "0.12", features = ["aws", "gcp"], optional = true }
 futures = { version = "0.3", optional = true }
 
 [features]
@@ -40,9 +40,8 @@ test-support = []
 postgres = ["dep:sqlx", "dep:awaken-scoped-migration"]
 # SQLite BLOB backend (`sqlite::SqliteFileStore`) over the same `file_store` scope.
 sqlite = ["dep:rusqlite", "dep:awaken-scoped-migration", "dep:awaken-scoped-migration-sqlite"]
-# Object-store backend (S3/MinIO/GCS/Azure via `object_store`; key = content id).
-# Unit-tested against the in-memory object store; real S3 needs credentials.
-s3 = ["dep:object_store", "dep:futures"]
+# Object-store backend (S3-compatible/GCS via `object_store`; key = content id).
+object-store = ["dep:object_store", "dep:futures"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs"] }
