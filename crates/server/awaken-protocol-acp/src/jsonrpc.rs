@@ -158,7 +158,8 @@ pub async fn run_turn_with_config(
             wire.send_request(
                 ID_NEW_SESSION,
                 AGENT_METHOD_NAMES.session_load,
-                LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str()),
+                LoadSessionRequest::new(SessionId::new(prior.as_str()), cwd.as_str())
+                    .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
             )
             .await?;
             match handshake_step(
@@ -1047,11 +1048,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_prior_session_is_resumed_via_session_load_when_the_agent_supports_it() {
-        // Holding a session id and facing an agent that advertises loadSession, the
-        // driver resumes via session/load (not new) and reports the same id back.
+        // Cause/effect graph: C1 a prior Session id exists, C2 loadSession is
+        // advertised, and C3 the Host supplies an MCP projection. Together they
+        // must produce E1 session/load (not session/new), E2 the exact MCP routes
+        // on that load request, and E3 the same durable Session id after the turn.
+        // This is the relaunch path used after HITL approval; omitting E2 makes a
+        // loaded Codex Session retain conversation context but lose its tools.
+        //
+        // | Rule | Prior id | Can load | MCP configured | Effect |
+        // | R1 | yes | yes | yes | load + exact MCP set + retain id |
+        // | R2 | yes | no | any | session/new (covered below) |
+        // | R3 | any | any | no | empty MCP set (default-path coverage) |
         let (mut ours, theirs) = channel();
         let saw_load = Arc::new(Mutex::new(false));
+        let loaded_params = Arc::new(Mutex::new(serde_json::Value::Null));
         let saw_load2 = saw_load.clone();
+        let loaded_params2 = loaded_params.clone();
         let agent = tokio::spawn(async move {
             let mut io = AgentIo::new(theirs);
             io.read().await; // initialize
@@ -1062,6 +1074,10 @@ mod tests {
             let req2 = io.read().await.unwrap(); // session/load
             *saw_load2.lock().unwrap() = req2.get("method").and_then(|m| m.as_str())
                 == Some(AGENT_METHOD_NAMES.session_load);
+            *loaded_params2.lock().unwrap() = req2
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#)
                 .await;
             io.read().await; // prompt
@@ -1072,11 +1088,28 @@ mod tests {
         let mut sink = RecordingSink::default();
         let mut config = TurnConfig::new(&AllowAll);
         config.session_id = Some("sess-resume".into());
+        config.mcp_servers = vec![crate::SessionMcpServer {
+            name: "pilot".into(),
+            command: None,
+            args: Vec::new(),
+            url: Some("http://pilot.internal/mcp".into()),
+            auth: None,
+        }];
         let reason = run_turn_with_config(ours.as_mut(), "p", &mut sink, &mut config, None)
             .await
             .unwrap();
         assert_eq!(reason, TerminationReason::NaturalEnd);
         assert!(*saw_load.lock().unwrap(), "the driver sent session/load");
+        assert_eq!(
+            loaded_params.lock().unwrap()["mcpServers"][0]["name"],
+            "pilot",
+            "R1: the exact Host MCP projection reaches session/load"
+        );
+        assert_eq!(
+            loaded_params.lock().unwrap()["mcpServers"][0]["url"],
+            "http://pilot.internal/mcp",
+            "R1"
+        );
         assert_eq!(
             config.session_id.as_deref(),
             Some("sess-resume"),
