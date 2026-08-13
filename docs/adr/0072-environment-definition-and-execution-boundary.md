@@ -34,7 +34,7 @@ registrar framework.
 ### D1: Control owns EnvironmentDefinition
 
 Control owns the mutable `EnvironmentDefinition` aggregate, immutable authored
-revisions, lifecycle, Workspace/scope authorization, audit, idempotency, and the
+revisions, lifecycle, scope authorization, audit, idempotency, and the
 public Managed Environment create/retrieve/list/update/archive/delete routes.
 Every successful mutation produces one immutable revision and one durable
 registration intent. A no-op replay does not mint another revision.
@@ -48,13 +48,15 @@ group and remains the sole mutable definition repository.
 ### D2: Coordinator owns immutable executable Environment projections
 
 Control invokes one typed `ExecutableEnvironmentRegistrar::register` port with
-the exact Workspace, Environment id, authored revision, normalized executable
+the exact Environment id, authored revision, normalized executable
 definition, lifecycle, and fingerprint. AllInOne uses a local adapter and split
 Control uses an authenticated HTTP adapter. Both reach the same Coordinator
 registration application.
 
 Coordinator stores a rebuildable `ExecutableEnvironmentCatalog` projection.
-Registration identity is `(workspace_id, environment_id, revision)`. The same
+Environment ids are installation-global within the Control authority; IAM and
+visibility scope are enforced at ingress rather than copied into the executable
+identity. Registration identity is therefore `(environment_id, revision)`. The same
 fingerprint is an idempotent replay; another fingerprint at the same identity is
 a conflict. Older exact revisions remain addressable and registration can never
 move the current pointer backwards.

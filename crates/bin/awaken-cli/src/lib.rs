@@ -1076,7 +1076,8 @@ mod runtime_session_store_tests {
         SessionCreationIntent {
             control: ControlSessionCreationInputs {
                 environment: EnvironmentSnapshot {
-                    environment_id: "env_local".into(),
+                    environment_id: awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+                        .into(),
                     revision: EnvironmentRevision(1),
                     self_hosted: false,
                     config_fingerprint: EnvironmentFingerprint("env-local".into()),

@@ -23,7 +23,11 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
+awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-environment-application.workspace = true
+awaken-environment-execution-application.workspace = true
 awaken-executable-environment-catalog.workspace = true
+awaken-work-store = { workspace = true, features = ["test-support"] }
 tempfile = "3"
 
 [features]

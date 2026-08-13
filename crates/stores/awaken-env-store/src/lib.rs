@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
-    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRevision, EnvironmentSandboxPolicyRef,
+    EnvRegistry, EnvUpdate, EnvironmentConfig, EnvironmentRegistrationIntent,
+    EnvironmentRegistrationIntentFilter, EnvironmentRegistrationOperation, EnvironmentRevision,
+    EnvironmentSandboxPolicyRef,
 };
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -94,6 +96,25 @@ fn env_bundle() -> Result<MigrationBundle, MigrationError> {
                 "exact sandbox policy binding in immutable Environment history",
                 "ALTER TABLE {prefix}_revision ADD COLUMN sandbox_policy_json TEXT",
             )?,
+            Migration::new(
+                9,
+                "transactional executable Environment registration outbox",
+                "CREATE TABLE {prefix}_registration_intent (\
+                 env_id    TEXT NOT NULL, \
+                 revision  BIGINT NOT NULL, \
+                 operation TEXT NOT NULL, \
+                 delivered BIGINT NOT NULL DEFAULT 0, \
+                 PRIMARY KEY (env_id, revision), \
+                 FOREIGN KEY (env_id, revision) REFERENCES {prefix}_revision(env_id, revision))",
+            )?,
+            Migration::new(
+                10,
+                "seed registration intent log from immutable Environment history",
+                "INSERT INTO {prefix}_registration_intent (env_id, revision, operation, delivered) \
+                 SELECT env_id, revision, \
+                 CASE WHEN archived_at IS NULL THEN 'register' ELSE 'withdraw' END, 0 \
+                 FROM {prefix}_revision",
+            )?,
         ],
     )
 }
@@ -113,6 +134,23 @@ fn sandbox_policy_str(reference: &Option<EnvironmentSandboxPolicyRef>) -> Option
     reference
         .as_ref()
         .map(|reference| serde_json::to_string(reference).expect("sandbox policy ref serializes"))
+}
+
+fn operation_str(operation: EnvironmentRegistrationOperation) -> &'static str {
+    match operation {
+        EnvironmentRegistrationOperation::Register => "register",
+        EnvironmentRegistrationOperation::Withdraw => "withdraw",
+    }
+}
+
+fn parse_operation(value: &str) -> Result<EnvironmentRegistrationOperation, String> {
+    match value {
+        "register" => Ok(EnvironmentRegistrationOperation::Register),
+        "withdraw" => Ok(EnvironmentRegistrationOperation::Withdraw),
+        other => Err(format!(
+            "invalid Environment registration operation: {other}"
+        )),
+    }
 }
 
 /// Storage-shaped row shared by the SQLite and PostgreSQL adapters. Keeping the
@@ -236,6 +274,23 @@ impl SqliteEnvRegistry {
         )?;
         Ok(())
     }
+
+    fn insert_registration_intent(
+        tx: &Transaction<'_>,
+        item: &EnvItem,
+    ) -> Result<(), rusqlite::Error> {
+        let intent = EnvironmentRegistrationIntent::for_item(item);
+        tx.execute(
+            "INSERT INTO env_registry_registration_intent \
+             (env_id, revision, operation, delivered) VALUES (?1, ?2, ?3, 0)",
+            params![
+                intent.environment_id,
+                intent.revision.0,
+                operation_str(intent.operation),
+            ],
+        )?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -306,6 +361,8 @@ impl EnvRegistry for SqliteEnvRegistry {
         };
         Self::insert_revision(&tx, &item)
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        Self::insert_registration_intent(&tx, &item)
+            .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         tx.commit()
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         Ok(CreateEnvironmentOutcome::Created(item))
@@ -367,7 +424,9 @@ impl EnvRegistry for SqliteEnvRegistry {
         if item.archived_at.is_some() {
             return None;
         }
-        item.apply(patch);
+        if !item.apply(patch) {
+            return Some(item);
+        }
         tx.execute(
             "UPDATE env_registry_env SET name = ?1, description = ?2, metadata_json = ?3, \
              config_json = ?4, revision = ?5, scope = ?6, sandbox_policy_json = ?7 WHERE env_id = ?8",
@@ -384,6 +443,8 @@ impl EnvRegistry for SqliteEnvRegistry {
         )
         .expect("update env");
         Self::insert_revision(&tx, &item).expect("insert Environment revision");
+        Self::insert_registration_intent(&tx, &item)
+            .expect("insert Environment registration intent");
         tx.commit().expect("commit update");
         Some(item)
     }
@@ -405,8 +466,95 @@ impl EnvRegistry for SqliteEnvRegistry {
         )
         .expect("archive env");
         Self::insert_revision(&tx, &item).expect("insert archived Environment revision");
+        Self::insert_registration_intent(&tx, &item).expect("insert Environment withdrawal intent");
         tx.commit().expect("commit archive");
         Some(item)
+    }
+
+    async fn registration_intent(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvironmentRegistrationIntent>, String> {
+        let conn = self.conn.lock().expect("env registry mutex poisoned");
+        let row = conn
+            .query_row(
+                "SELECT operation, delivered FROM env_registry_registration_intent \
+                 WHERE env_id = ?1 AND revision = ?2",
+                params![id, revision.0],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        row.map(|(operation, delivered)| {
+            Ok(EnvironmentRegistrationIntent {
+                environment_id: id.to_string(),
+                revision,
+                operation: parse_operation(&operation)?,
+                delivered: delivered != 0,
+            })
+        })
+        .transpose()
+    }
+
+    async fn registration_intents(
+        &self,
+        filter: EnvironmentRegistrationIntentFilter,
+    ) -> Result<Vec<EnvironmentRegistrationIntent>, String> {
+        let conn = self.conn.lock().expect("env registry mutex poisoned");
+        let where_clause = match filter {
+            EnvironmentRegistrationIntentFilter::Pending => " WHERE delivered = 0",
+            EnvironmentRegistrationIntentFilter::All => "",
+        };
+        let mut statement = conn
+            .prepare(&format!(
+                "SELECT env_id, revision, operation, delivered \
+                 FROM env_registry_registration_intent{where_clause} ORDER BY env_id, revision"
+            ))
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        rows.map(|row| {
+            let (environment_id, revision, operation, delivered) =
+                row.map_err(|error| error.to_string())?;
+            Ok(EnvironmentRegistrationIntent {
+                environment_id,
+                revision: EnvironmentRevision(
+                    u64::try_from(revision)
+                        .map_err(|_| "invalid Environment registration revision".to_string())?,
+                ),
+                operation: parse_operation(&operation)?,
+                delivered: delivered != 0,
+            })
+        })
+        .collect()
+    }
+
+    async fn mark_registration_intent_delivered(
+        &self,
+        intent: &EnvironmentRegistrationIntent,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().expect("env registry mutex poisoned");
+        let changed = conn
+            .execute(
+                "UPDATE env_registry_registration_intent SET delivered = 1 \
+                 WHERE env_id = ?1 AND revision = ?2 AND operation = ?3",
+                params![
+                    intent.environment_id,
+                    intent.revision.0,
+                    operation_str(intent.operation),
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(changed == 1)
     }
 }
 
@@ -550,6 +698,18 @@ impl EnvRegistry for PostgresEnvRegistry {
         .execute(&mut *tx)
         .await
         .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
+        sqlx::query(
+            "INSERT INTO env_registry_registration_intent \
+             (env_id, revision, operation, delivered) VALUES ($1, $2, $3, 0)",
+        )
+        .bind(&item.id)
+        .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
+        .bind(operation_str(
+            EnvironmentRegistrationIntent::for_item(&item).operation,
+        ))
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
         tx.commit()
             .await
             .map_err(|error| CreateEnvironmentError::Store(error.to_string()))?;
@@ -613,7 +773,9 @@ impl EnvRegistry for PostgresEnvRegistry {
         if item.archived_at.is_some() {
             return None;
         }
-        item.apply(patch);
+        if !item.apply(patch) {
+            return Some(item);
+        }
         sqlx::query(
             "UPDATE env_registry_env SET name = $1, description = $2, metadata_json = $3, \
              config_json = $4, revision = $5, scope = $6, sandbox_policy_json = $7 WHERE env_id = $8",
@@ -646,6 +808,18 @@ impl EnvRegistry for PostgresEnvRegistry {
         .execute(&mut *tx)
         .await
         .expect("insert Environment revision");
+        sqlx::query(
+            "INSERT INTO env_registry_registration_intent \
+             (env_id, revision, operation, delivered) VALUES ($1, $2, $3, 0)",
+        )
+        .bind(&item.id)
+        .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
+        .bind(operation_str(
+            EnvironmentRegistrationIntent::for_item(&item).operation,
+        ))
+        .execute(&mut *tx)
+        .await
+        .expect("insert Environment registration intent");
         tx.commit().await.expect("commit Environment update");
         Some(item)
     }
@@ -694,8 +868,95 @@ impl EnvRegistry for PostgresEnvRegistry {
         .execute(&mut *tx)
         .await
         .expect("insert archived Environment revision");
+        sqlx::query(
+            "INSERT INTO env_registry_registration_intent \
+             (env_id, revision, operation, delivered) VALUES ($1, $2, $3, 0)",
+        )
+        .bind(&item.id)
+        .bind(i64::try_from(item.revision.0).expect("Environment revision fits i64"))
+        .bind(operation_str(
+            EnvironmentRegistrationIntent::for_item(&item).operation,
+        ))
+        .execute(&mut *tx)
+        .await
+        .expect("insert Environment withdrawal intent");
         tx.commit().await.expect("commit Environment archive");
         Some(item)
+    }
+
+    async fn registration_intent(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvironmentRegistrationIntent>, String> {
+        let row = sqlx::query(
+            "SELECT operation, delivered FROM env_registry_registration_intent \
+             WHERE env_id = $1 AND revision = $2",
+        )
+        .bind(id)
+        .bind(i64::try_from(revision.0).expect("Environment revision fits i64"))
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        row.map(|row| {
+            Ok(EnvironmentRegistrationIntent {
+                environment_id: id.to_string(),
+                revision,
+                operation: parse_operation(row.get::<String, _>("operation").as_str())?,
+                delivered: row.get::<i64, _>("delivered") != 0,
+            })
+        })
+        .transpose()
+    }
+
+    async fn registration_intents(
+        &self,
+        filter: EnvironmentRegistrationIntentFilter,
+    ) -> Result<Vec<EnvironmentRegistrationIntent>, String> {
+        let query = match filter {
+            EnvironmentRegistrationIntentFilter::Pending => {
+                "SELECT env_id, revision, operation, delivered \
+                 FROM env_registry_registration_intent WHERE delivered = 0 ORDER BY env_id, revision"
+            }
+            EnvironmentRegistrationIntentFilter::All => {
+                "SELECT env_id, revision, operation, delivered \
+                 FROM env_registry_registration_intent ORDER BY env_id, revision"
+            }
+        };
+        sqlx::query(query)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|row| {
+                Ok(EnvironmentRegistrationIntent {
+                    environment_id: row.get("env_id"),
+                    revision: EnvironmentRevision(
+                        u64::try_from(row.get::<i64, _>("revision"))
+                            .map_err(|_| "invalid Environment registration revision".to_string())?,
+                    ),
+                    operation: parse_operation(row.get::<String, _>("operation").as_str())?,
+                    delivered: row.get::<i64, _>("delivered") != 0,
+                })
+            })
+            .collect()
+    }
+
+    async fn mark_registration_intent_delivered(
+        &self,
+        intent: &EnvironmentRegistrationIntent,
+    ) -> Result<bool, String> {
+        let result = sqlx::query(
+            "UPDATE env_registry_registration_intent SET delivered = 1 \
+             WHERE env_id = $1 AND revision = $2 AND operation = $3",
+        )
+        .bind(&intent.environment_id)
+        .bind(i64::try_from(intent.revision.0).expect("Environment revision fits i64"))
+        .bind(operation_str(intent.operation))
+        .execute(&self.pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(result.rows_affected() == 1)
     }
 }
 
@@ -766,6 +1027,117 @@ mod tests {
         assert!(!up.metadata.contains_key("drop"), "null deletes");
         // config preserved through the round-trip
         assert_eq!(up.config, config(), "config round-trips");
+    }
+
+    #[tokio::test]
+    async fn revision_and_registration_intent_share_one_transactional_history() {
+        // FMECA and mitigations for the Control authority boundary:
+        // F1 revision commits without delivery intent (S9/O3/D7, RPN189) -> the
+        // same DB transaction inserts both rows and the FK binds the exact pair;
+        // F2 delivery succeeds but acknowledgement is lost (S5/O4/D2, RPN40) ->
+        // the intent remains pending and the idempotent registrar is retried;
+        // F3 archive is reconstructed as registration (S9/O2/D5, RPN90) -> the
+        // immutable operation is stored with the terminal revision, never inferred
+        // from a later current scan; F4 restart loses an in-memory projection
+        // (S7/O3/D2, RPN42) -> `All` replays the same durable intent log; F5 an
+        // identical update retry mints another revision (S6/O4/D3, RPN72) -> the
+        // canonical patch reports no fact change and appends neither row.
+        //
+        // Cause/effect graph: C1=create; C2=update; C3=archive; C4=acknowledged;
+        // C5=Pending filter; C6=All filter. Effects: E1=exact Register intent;
+        // E2=exact Withdraw intent; E3=acknowledged work absent from Pending;
+        // E4=all immutable intents remain recoverable.
+        // | Rule | mutation | ack | filter  | effect |
+        // | O1   | create   | no  | Pending | v1 Register (E1) |
+        // | O2   | update   | yes | Pending | v1 only (E1,E3) |
+        // | O2b  | same update | yes | All | still v1,v2 (no-op replay) |
+        // | O3   | archive  | no  | Pending | v1 + v3 Withdraw (E2,E3) |
+        // | O4   | all      | any | All     | v1,v2,v3 retained (E4) |
+        let registry = r();
+        let created = registry
+            .create("outbox".into(), String::new(), BTreeMap::new(), config())
+            .await;
+        let v1 = registry
+            .registration_intent(&created.id, EnvironmentRevision(1))
+            .await
+            .unwrap()
+            .expect("O1 exact intent");
+        assert_eq!(
+            v1.operation,
+            EnvironmentRegistrationOperation::Register,
+            "O1"
+        );
+        assert!(!v1.delivered, "O1");
+
+        let updated = registry
+            .update(
+                &created.id,
+                EnvUpdate {
+                    name: Some("outbox-v2".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("O2 update");
+        let v2 = registry
+            .registration_intent(&updated.id, updated.revision)
+            .await
+            .unwrap()
+            .expect("O2 exact intent");
+        assert!(
+            registry
+                .mark_registration_intent_delivered(&v2)
+                .await
+                .unwrap(),
+            "O2"
+        );
+        let replayed = registry
+            .update(
+                &created.id,
+                EnvUpdate {
+                    name: Some("outbox-v2".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("O2b no-op update");
+        assert_eq!(replayed.revision, EnvironmentRevision(2), "O2b");
+        assert_eq!(
+            registry
+                .registration_intents(EnvironmentRegistrationIntentFilter::All)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "O2b"
+        );
+
+        let archived = registry.archive(&created.id).await.expect("O3 archive");
+        let pending = registry
+            .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 2, "O3");
+        assert_eq!(pending[0].revision, EnvironmentRevision(1), "O3");
+        assert_eq!(pending[1].revision, archived.revision, "O3");
+        assert_eq!(
+            pending[1].operation,
+            EnvironmentRegistrationOperation::Withdraw,
+            "O3"
+        );
+
+        let all = registry
+            .registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(
+            all.iter()
+                .map(|intent| intent.revision.0)
+                .collect::<Vec<_>>(),
+            [1, 2, 3],
+            "O4"
+        );
+        assert!(all[1].delivered, "O4 acknowledgement is retained");
     }
 
     #[tokio::test]

@@ -84,7 +84,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
                 Ok(_) => {}
             }
         }
-        if request.environment_id != "env_local" {
+        if request.environment_id != awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID {
             match self
                 .state
                 .deployment_environment(&request.environment_id)

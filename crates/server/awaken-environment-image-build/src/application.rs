@@ -267,7 +267,8 @@ mod tests {
     use std::sync::Mutex;
 
     use awaken_environment_contract::{
-        EnvItem, EnvironmentConfig, EnvironmentPackages, EnvironmentRevision,
+        CreateEnvironmentCommand, EnvItem, EnvRegistry, EnvironmentConfig, EnvironmentPackages,
+        EnvironmentRevision,
     };
     use awaken_executable_environment_catalog::{
         ExecutableEnvironmentCatalog, LocalExecutableEnvironmentRegistrar,
@@ -450,6 +451,14 @@ mod tests {
 
     #[tokio::test]
     async fn registration_worker_and_readiness_follow_one_demand_path() {
+        // FMECA: F1 every Environment is treated as an image build (S6/O4/D2,
+        // RPN48) -> SelfHosted and package-free Cloud are excluded by the one
+        // demand function; F2 two recipes alias one mutable tag (S9/O3/D5,
+        // RPN135) -> base identity + exact revision/package facts form the build
+        // key; F3 builder returns a tag that is not pullable (S8/O3/D4, RPN96)
+        // -> availability must pass before Ready; F4 Session installs packages
+        // again after image preparation (S7/O3/D4, RPN84) -> downstream freezes
+        // the digest and clears runtime package requirements.
         // Cause/effect decision table: R0 a mutable operator base is resolved
         // before durable demand identity; R1 SelfHosted registration persists no
         // build demand; R2 package-free Cloud persists no demand; R3 packaged
@@ -561,5 +570,132 @@ mod tests {
             .await
             .expect("R7 cancelled worker exits");
         assert_eq!(*builder.builds.lock().unwrap(), 2, "R7 performs no work");
+    }
+
+    #[tokio::test]
+    async fn authored_packages_become_one_frozen_image_before_session_use() {
+        // End-to-end FMECA for the Environment critical path:
+        // F1 Control mutation is visible without an executable registration
+        // (S9/O3/D5, RPN135) -> transactional intent + acknowledged registrar;
+        // F2 package demand is built from mutable current state (S9/O3/D6,
+        // RPN162) -> demand consumes the exact registered revision; F3 Session
+        // starts before the image is Ready (S8/O4/D2, RPN64) -> snapshot
+        // resolution is the readiness barrier; F4 archive leaves current
+        // admission enabled (S10/O2/D4, RPN80) -> terminal Withdraw removes the
+        // current projection while exact history remains.
+        //
+        // Cause/effect graph: C1=Cloud+packages; C2=registration acknowledged;
+        // C3=build Pending; C4=verified Ready; C5=archive. Effects: E1=one build
+        // demand; E2=no usable snapshot before Ready; E3=frozen digest in exact
+        // snapshot; E4=current admission denied. Constraint: C1 is necessary for
+        // E1 and C4 is necessary for E3.
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | X1   | 1  | 1  | 1  | 0  | 0  | E1,E2 |
+        // | X2   | 1  | 1  | 0  | 1  | 0  | E1,E3 |
+        // | X3   | 1  | 1  | 0  | 1  | 1  | E3,E4 |
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
+        let builder = Arc::new(FakeBuilder {
+            builds: Mutex::new(0),
+        });
+        let builds = Arc::new(
+            EnvironmentImageBuildCoordinator::new(
+                store.clone(),
+                builder,
+                "registry/awaken:base",
+                EnvironmentImageBuildPolicy {
+                    wait_timeout: Duration::ZERO,
+                    poll_interval: Duration::from_millis(1),
+                    ..EnvironmentImageBuildPolicy::default()
+                },
+            )
+            .unwrap(),
+        );
+        let registrar: Arc<dyn ExecutableEnvironmentRegistrar> =
+            Arc::new(BuildAwareExecutableEnvironmentRegistrar::new(
+                Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
+                builds.clone(),
+            ));
+        let definitions: Arc<dyn EnvRegistry> =
+            Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let control = awaken_environment_application::EnvironmentApplication::new(
+            definitions,
+            registrar,
+            None,
+        );
+        let authored = control
+            .create(CreateEnvironmentCommand {
+                command_id: "full-environment-flow".into(),
+                name: "browser".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: EnvironmentConfig::Cloud {
+                    networking: Default::default(),
+                    packages: EnvironmentPackages {
+                        npm: vec!["@playwright/mcp@latest".into()],
+                        ..Default::default()
+                    },
+                },
+            })
+            .await
+            .expect("X1 authority and registration commit");
+        let registered = catalog
+            .current_registration(&authored.id)
+            .await
+            .unwrap()
+            .expect("X1 executable projection");
+        let demand = builds.demand(&registered, None).await.unwrap().unwrap();
+        assert!(
+            matches!(
+                store.get(&demand.build_key).await.unwrap().unwrap().state,
+                EnvironmentImageBuildState::Pending { .. }
+            ),
+            "X1/E1"
+        );
+        let execution =
+            awaken_environment_execution_application::EnvironmentExecutionApplication::new(
+                Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
+                catalog.clone(),
+            )
+            .with_image_readiness(builds.clone());
+        assert!(
+            matches!(
+                execution.snapshot(&authored.id, None).await,
+                Err(EnvironmentImageBuildError::Timeout(_))
+            ),
+            "X1/E2"
+        );
+
+        assert!(builds.run_once("builder-full-flow").await.unwrap(), "X2");
+        let snapshot = execution
+            .snapshot(&authored.id, None)
+            .await
+            .unwrap()
+            .expect("X2 ready snapshot");
+        assert_eq!(snapshot.revision, authored.revision, "X2 exact revision");
+        assert_eq!(
+            snapshot.prepared_image.as_deref(),
+            Some("registry/awaken:base@sha256:resolved@sha256:ready"),
+            "X2/E3"
+        );
+
+        control.archive(&authored.id).await.expect("X3 archive");
+        assert!(
+            execution
+                .snapshot(&authored.id, None)
+                .await
+                .unwrap()
+                .is_none(),
+            "X3/E4"
+        );
+        assert!(
+            catalog
+                .registration_at_revision(&authored.id, authored.revision)
+                .await
+                .unwrap()
+                .is_some(),
+            "X3 exact history retained"
+        );
     }
 }

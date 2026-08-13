@@ -934,13 +934,17 @@ name = "awaken-environment-image-build"
 version = "1.0.0-dev"
 dependencies = [
  "async-trait",
+ "awaken-env-store",
+ "awaken-environment-application",
  "awaken-environment-contract",
+ "awaken-environment-execution-application",
  "awaken-environment-realization-contract",
  "awaken-executable-environment-catalog",
  "awaken-executable-environment-contract",
  "awaken-runtime-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
+ "awaken-work-store",
  "rusqlite",
  "serde_json",
  "sqlx",

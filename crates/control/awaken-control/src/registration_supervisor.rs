@@ -126,11 +126,22 @@ impl StaticRegistrationSupervisor {
         let task_health = health.clone();
         service_lifecycle.spawn("control-static-registration", move |cancel| async move {
             let mut failures = 0_u32;
+            let mut environment_projection_recovered = false;
             loop {
+                let environment_recovery = async {
+                    if environment_projection_recovered {
+                        environments.drain_registration_intents().await
+                    } else {
+                        environments.recover_registration_intents().await
+                    }
+                };
                 let (agent_result, environment_result) = tokio::join!(
                     agents.recover_registrations(),
-                    environments.reconcile_registrations()
+                    environment_recovery
                 );
+                if environment_result.is_ok() {
+                    environment_projection_recovered = true;
+                }
                 let pending =
                     usize::from(agent_result.is_err()) + usize::from(environment_result.is_err());
                 task_health.record(pending);

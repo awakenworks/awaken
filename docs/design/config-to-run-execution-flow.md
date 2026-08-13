@@ -109,17 +109,13 @@ one bundle id per aggregate-safe scope.
 | Control | `awaken.credential` / `credential` | `credential_source`, `credential_secret`, `credential_pool`, `credential_creation_intent` |
 | Control | `awaken.admin` / `admin` | `admin_inference_profile`, `admin_agent_resource`, `admin_webhook` |
 | Control | `awaken.config` / `config` | `config_agent`, `config_publication`, `config_management_audit`, `config_management_effect`, `config_agent_revision` |
-| Control | `awaken.environment_definition` / `environment_definition` | `environment_definition_environment`, `environment_definition_revision`, `environment_definition_command`, `environment_definition_registration_outbox` |
 | Control | `awaken.control_data_subject` / `control_data_subject` | `control_data_subject_subject`, `control_data_subject_erasure_job` |
-| Control | `awaken.env_registry` / `env_registry` | `env_registry_env`, `env_registry_create_command`, `env_registry_revision` |
+| Control | `awaken.env_registry` / `env_registry` | `env_registry_env`, `env_registry_create_command`, `env_registry_revision`, `env_registry_registration_intent` |
 | Control | `awaken.sandbox_execution_policy` / `sandbox_execution_policy` | `sandbox_execution_policy_version`, `sandbox_execution_policy_current` |
 | Coordinator | `awaken.managed_session` / `managed` | `managed_session`, `managed_lifecycle_outbox`, `managed_memory_extraction`, `managed_session_idempotency`, `managed_session_tombstone`, `managed_dream`, `managed_deployment`, `managed_deployment_run`, `managed_deployment_claim`, `managed_dream_policy` |
 | Coordinator | `awaken.environment_image_build` / `environment_image_build` | `environment_image_build_job` |
 | Coordinator | `awaken.work_queue` / `work_queue` | `work_queue_item` |
 | Coordinator | `awaken.worker_registry` / `worker_registry` | `worker_registry_worker` |
-| Coordinator | `awaken.executable_agent_catalog` / `executable_agent` | `executable_agent_command` with monotonic `command_sequence` |
-| Coordinator | `awaken.executable_environment_catalog` / `executable_environment` | `executable_environment_command` with monotonic `command_sequence` |
-| Coordinator | `awaken.run_dispatch` / `runtime` | `runtime_dispatch`, `runtime_pending`, `runtime_outbox`, `runtime_dispatch_completion`, `runtime_stream_checkpoint`, `runtime_dispatch_operation` |
 | Coordinator | `awaken.runtime_commit`, `awaken.runtime_commit_pg` / `runtime` | `runtime_commit`, `runtime_message`, `runtime_state_command`, `runtime_event`, `runtime_run_record`, `runtime_waiting`, `runtime_thread_version`, `runtime_commit_receipt`; PostgreSQL also owns `runtime_commit_seq` |
 | Coordinator | `awaken.coordinator_data_capture` / `coordinator_data_capture` | `coordinator_data_capture_captured`, `coordinator_data_capture_fence` |
 | Resources | `awaken.resource_catalog` / `resource_catalog` | `resource_catalog_entry` |
@@ -195,8 +191,8 @@ aggregate or repository:
 
 ```text
 Control command
-  -> validate and commit an immutable revision/publication
-  -> register the exact executable fact
+  -> validate and atomically commit an immutable revision/publication + delivery intent
+  -> the domain drainer delivers the exact executable fact
   -> Coordinator command log
   -> rebuildable current + exact-revision projection
   -> new Session admission freezes the selected fact
@@ -206,19 +202,47 @@ Environment transitions are:
 
 | Trigger | Control effect | Coordinator effect | Failure/recovery |
 |---|---|---|---|
-| create | idempotent command creates revision 1 | register current; ensure one healthcheck work item | if registration is unavailable, revision 1 remains authoritative and reconciliation retries the same command |
-| update or policy bind | atomically append the next Environment revision; the exact policy reference advances with it | register exact revision and move current monotonically | a same revision with different facts conflicts; older exact revisions remain readable |
-| archive or public delete | append one terminal archived revision; never erase history | withdraw current and remove Environment work | retry is idempotent; new Session admission fails while exact history remains auditable |
-| Control restart | read built-in `env_local` plus every persisted revision | replay registrations and terminal withdrawals | no alternate seed/write path is used in production |
+| create | idempotent command creates revision 1 plus one Register intent | register current; ensure one healthcheck work item | if registration is unavailable, the pending intent remains authoritative and the same drainer retries it |
+| update or policy bind | atomically append the next Environment revision and Register intent; the exact policy reference advances with it | register exact revision and move current monotonically | a same revision with different facts conflicts; older exact revisions remain readable |
+| archive or public delete | append one terminal archived revision and Withdraw intent; never erase history | withdraw current and remove Environment work | retry is idempotent; new Session admission fails while exact history remains auditable |
+| Control restart | register built-in `env_local`; read the durable Environment intent log | replay exact registrations and terminal withdrawals through the same drainer | after the first successful rebuild, normal passes select pending intents only |
+
+Environment-to-image realization is conditional, not a universal conversion:
+
+```text
+Cloud Environment with non-empty packages
+  -> registration creates one content-addressed build demand
+  -> build worker resolves the base-image identity, builds, pushes, and verifies availability
+  -> Session admission waits for the exact ready digest
+  -> EnvironmentSnapshot.prepared_image freezes that digest
+  -> Worker projects it as SandboxSpec image rootfs and clears runtime packages
+
+SelfHosted OR package-free Cloud
+  -> no image-build demand
+  -> Worker uses the configured/default sandbox environment directly
+```
+
+The failure analysis for this path is:
+
+| Failure mode | S/O/D | Effect | Detection | Required elimination/mitigation |
+|---|---:|---|---|---|
+| definition revision commits without registration work | 9/3/7 | Environment exists but can never execute | outbox/revision parity test and FK | append revision and typed intent in one Control-store transaction |
+| registration succeeds but acknowledgement is lost | 5/4/2 | duplicate delivery on retry | pending intent remains observable | Coordinator registration is fingerprint-idempotent; acknowledge only after success |
+| restart rebuilds from mutable current rows | 8/3/5 | exact history or terminal order may be reconstructed incorrectly | startup recovery decision-table test | replay the immutable intent log through the same drainer |
+| archive delivery fails | 9/3/4 | new Session could observe stale current availability | pending Withdraw metric/test | persist terminal Withdraw with the archive revision and retry it fail-closed |
+| distinct package recipes alias a mutable image tag | 9/3/5 | wrong dependency set executes | build-key and digest assertions | key by exact registration facts plus resolved base identity; freeze verified digest |
+| prepared image and packages are both realized | 8/3/4 | slow/non-deterministic double installation | Worker projection test | image rootfs and runtime package installation are mutually exclusive |
+| image build is pending/unavailable | 7/4/2 | Session cannot safely start | durable build state, timeout, retry metrics | Session creation is the readiness barrier; bounded leased retry, no silent fallback |
 
 The Control store commit is the static source of truth. A boundary failure after
 that commit is reported as unavailable, never compensated by deleting or rolling
 back the definition. This is the same recovery rule used by Agent publication.
-One Control-owned supervisor rereads both authorities concurrently after startup
-or a wake signal. A failure preserves process serving readiness and the durable
-last-known-good projections while scheduling bounded exponential retry. Ready,
-pending-domain, consecutive-failure, and lag gauges expose degradation and
-recovery without creating another work repository.
+One Control-owned supervisor recovers both authorities concurrently after startup
+or a wake signal. For Environment it performs one full intent-log replay until
+successful, then drains only pending intents. A failure preserves process serving
+readiness and the durable last-known-good projections while scheduling bounded
+exponential retry. Ready, pending-domain, consecutive-failure, and lag gauges
+expose degradation and recovery without creating another work repository.
 
 In an active-active Coordinator deployment, one request middleware compares both
 durable command-log high-water marks before Session/Deployment writes that may

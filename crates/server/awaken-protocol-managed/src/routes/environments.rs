@@ -151,7 +151,9 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
         EnvironmentApplicationError::Create(
             awaken_environment_contract::CreateEnvironmentError::Store(_),
         )
-        | EnvironmentApplicationError::Registration(_) => (
+        | EnvironmentApplicationError::Registration(_)
+        | EnvironmentApplicationError::RegistrationOutbox(_)
+        | EnvironmentApplicationError::RegistrationInvariant(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new("api_error", message)),
         ),
@@ -428,7 +430,8 @@ mod tests {
     #[test]
     fn sandbox_policy_application_errors_keep_their_wire_taxonomy() {
         // Cause/effect graph: C1 missing exact policy; C2 stale version; C3
-        // disabled/invalid; C4 store failure or absent store. Effects are the
+        // disabled/invalid; C4 store failure or absent store; C5 outbox read or
+        // invariant failure. Effects are the
         // stable Managed statuses 404/409/422/503. Each decision-table row is
         // asserted so typed application failures cannot collapse into one 422.
         use awaken_provisioning_contract::SandboxExecutionPolicyError as PolicyError;
@@ -457,6 +460,16 @@ mod tests {
             (
                 "P4b",
                 EnvironmentApplicationError::PolicyStoreUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "P5a",
+                EnvironmentApplicationError::RegistrationOutbox("x".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "P5b",
+                EnvironmentApplicationError::RegistrationInvariant("x".into()),
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
         ] {
