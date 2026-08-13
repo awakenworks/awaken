@@ -9,6 +9,9 @@
 - **Consolidation**: Exposed the Coordinator's narrow PostgreSQL LocalCommit
   factory so product compositions reuse its private authoritative-query policy
   instead of treating a process-local projection as HA truth or copying SQL.
+- **Consolidation**: Extended the existing profiled Session command so product
+  MCP candidates and published Agent candidates enter the same normalization,
+  precedence, finalization, and root-insert path.
 
 ## 2026-08-12
 
