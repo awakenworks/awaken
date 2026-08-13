@@ -386,13 +386,14 @@ remain Resources-owned.
 
 `ControlComponent` starts one `StaticRegistrationSupervisor` over the existing
 Agent `PublicationBindingReconciler` and Environment `EnvironmentApplication`.
-It carries no registration payload and owns no repository. Each pass rereads the
-two Control authorities and invokes their existing registrars concurrently.
+It carries no registration payload and owns no repository. Environment startup
+replays its durable intent log once; after that, each pass selects pending intents
+only. Both modes invoke the same drainer and registrar.
 
 ```text
 Control component starts or receives a wake signal
   -> recover every durable Agent publication
-  -> reconcile every durable Environment revision/withdrawal
+  -> first Environment success: replay every durable intent; later: drain pending
   -> both succeed: ready, reset failures, record success time
   -> either fails: preserve serving readiness, record degraded pending domains,
      bounded exponential retry

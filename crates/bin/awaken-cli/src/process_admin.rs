@@ -424,12 +424,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readyz_preserves_serving_during_control_registration_recovery() {
+    async fn readyz_isolates_rebuildable_registration_degradation() {
         // Cause/effect decision table: R1 a role without Control registration
         // authority has no health source -> ready; R2 Control attaches its
         // initial degraded health -> still ready while pending/failure gauges
-        // carry the degradation. Supervisor success transitions are tested at
-        // the Control component, so this test owns only probe mapping.
+        // carry the degradation. R3 drain/critical lifecycle failure -> 503 is
+        // covered by adjacent tests; supervisor transitions remain Control-owned.
         // FMECA: making a rebuildable projection a serving-readiness dependency
         // can evict every last-known-good endpoint during a Control outage;
         // separating readiness from degraded registration metrics eliminates

@@ -230,7 +230,7 @@ mod tests {
             deployment_run_id: "deprun_version".into(),
             workspace_id: "workspace_a".into(),
             agent: DeploymentAgent::new("agent_a", u64::from(u32::MAX) + 1),
-            environment_id: "env_local".into(),
+            environment_id: awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.into(),
             metadata: BTreeMap::new(),
             initial_events: Vec::new(),
             resources: Vec::new(),
