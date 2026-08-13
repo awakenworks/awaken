@@ -5,13 +5,15 @@
 //! kernel shared by model, MCP and resource adapters; adapters realize an exact
 //! admitted plan and never choose a different holder after failure.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
 pub use awaken_agent_contract::StructuredCredentialMaterial;
 use serde::{Deserialize, Deserializer, Serialize};
 
+mod http_effect;
+pub use http_effect::{CredentialUsageError, HttpEffectPlacement};
 mod realization_capabilities;
 pub use realization_capabilities::{
     ACP_CREDENTIAL_CONSUMER_PREFIX, CREDENTIAL_REALIZATION_CAPABILITY_PREFIX,
@@ -98,6 +100,12 @@ pub enum CredentialUsage {
     },
     QueryParameter {
         name: String,
+    },
+    /// A platform-held HTTP effect whose complete material-field destinations
+    /// are frozen before materialization. The Gateway must compare the actual
+    /// effect references with this exact field/placement map before I/O.
+    HttpEffect {
+        fields: BTreeMap<String, BTreeSet<HttpEffectPlacement>>,
     },
     ClientCertificate,
     EnvironmentVariable {
@@ -576,6 +584,9 @@ impl CredentialAccess {
         if self.legacy_direct {
             return Err(CredentialAdmissionError::DirectPublicationRejected);
         }
+        self.usage
+            .validate()
+            .map_err(|_| CredentialAdmissionError::InvalidCredentialUsage)?;
         if self.policy.allowed_plaintext_holders.is_empty() {
             return Err(CredentialAdmissionError::EmptyAllowedHolders);
         }
@@ -693,6 +704,8 @@ pub enum CredentialAdmissionError {
     MaterialSourceUnsupported,
     #[error("credential extension consumer or material type is unsupported")]
     ExtensionConsumerUnsupported,
+    #[error("credential usage is invalid")]
+    InvalidCredentialUsage,
     #[error("recipient-bound credential envelopes are unsupported")]
     EnvelopeUnsupported,
     #[error("sealed credential envelope reference is empty")]
@@ -799,6 +812,9 @@ impl CredentialMaterial {
     /// Enforce the one material/application compatibility table before a
     /// last-mile adapter can observe plaintext.
     pub fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialMaterialError> {
+        usage
+            .validate()
+            .map_err(|_| CredentialMaterialError::MaterialKindMismatch)?;
         let valid = match (self, usage) {
             (Self::Structured(material), CredentialUsage::HttpBasicAuth) => {
                 material.type_id == HTTP_BASIC_MATERIAL_TYPE
@@ -826,6 +842,10 @@ impl CredentialMaterial {
                 | CredentialUsage::File { .. },
             )
             | (Self::OAuth(_), CredentialUsage::ProviderAdapter) => true,
+            (Self::Secret(_), CredentialUsage::HttpEffect { fields }) => fields.len() == 1,
+            (Self::Structured(material), CredentialUsage::HttpEffect { fields }) => {
+                material.fields.keys().eq(fields.keys())
+            }
             _ => false,
         };
         valid

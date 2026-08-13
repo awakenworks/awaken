@@ -277,16 +277,39 @@ fn paths() -> Value {
                 &[path_param("model_id", "Model id")], Some(schema_ref("PutModelAttributesRequest")), 200, schema_ref("ModelAttributes"))
         },
         "/v1/config/credentials": {
-            "post": op("post_credential", "credentials", "Enter a credential (secret-in; the secret is sealed and never echoed)",
+            "post": op("post_credential", "credentials", "Enter a credential, optionally under a stable hosted operation identity (secret-in; material is sealed and never echoed)",
                 &[], Some(schema_ref("EnterCredentialRequest")), 201, schema_ref("CredentialSource")),
-            "get": op("list_credentials", "credentials", "List a workspace's credential sources (secret-free)",
-                &[json!({
-                    "name": "workspace_id",
-                    "in": "query",
-                    "required": true,
-                    "schema": { "type": "string" },
-                    "description": "Workspace whose sources to list"
-                })], None, 200, array_of("CredentialSource"))
+            "get": op("list_credentials", "credentials", "List secret-free credential sources or look up one exact hosted operation identity",
+                &[
+                    json!({
+                        "name": "workspace_id",
+                        "in": "query",
+                        "required": true,
+                        "schema": { "type": "string" },
+                        "description": "Workspace whose sources to list"
+                    }),
+                    json!({
+                        "name": "provider_ref",
+                        "in": "query",
+                        "required": false,
+                        "schema": { "type": "string" },
+                        "description": "Opaque hosted provider reference; requires idempotency_key"
+                    }),
+                    json!({
+                        "name": "idempotency_key",
+                        "in": "query",
+                        "required": false,
+                        "schema": { "type": "string", "maxLength": 200 },
+                        "description": "Stable hosted operation identity; requires provider_ref"
+                    }),
+                    json!({
+                        "name": "hosted_only",
+                        "in": "query",
+                        "required": false,
+                        "schema": { "type": "boolean", "default": false },
+                        "description": "Return only hosted governance Credential Resource receipts"
+                    })
+                ], None, 200, array_of("CredentialSource"))
         },
         "/v1/config/credentials/{id}": {
             "get": op("get_credential", "credentials", "Fetch one credential source (secret-free)",
@@ -301,7 +324,7 @@ fn paths() -> Value {
                 &id("Credential source id"), Some(schema_ref("RotateCredentialRequest")), 200, schema_ref("CredentialSource"))
         },
         "/v1/config/credentials/{id}/validate": {
-            "post": op("validate_credential", "credentials", "Live-probe a credential against its provider endpoint (secret-free result)",
+            "post": op("validate_credential", "credentials", "Live-probe a model credential or validate an exact hosted Credential Resource reference (secret-free result)",
                 &id("Credential source id"), Some(schema_ref("ValidateCredentialRequest")), 200, schema_ref("CredentialValidation"))
         },
         "/v1/config/credentials/{id}/cooldown": {

@@ -44,9 +44,9 @@ pub use credential::{
     CredentialRealizationKind, CredentialRealizationPlan, CredentialRealizationProfile,
     CredentialRealizationReceipt, CredentialRealizationRecordError, CredentialRealizationRecorder,
     CredentialReceiptError, CredentialRef, CredentialRefreshAccess, CredentialUsage,
-    ModelExposurePolicy, OAuthCredentialMaterial, PlaintextBoundary, PlaintextHolder,
-    ResolvedCredentialMaterial, SealedCredentialEnvelopeRef, StructuredCredentialMaterial,
-    TokenEndpointAuth, TrustDomainRef, WorkerLocalCredentialResolver,
+    CredentialUsageError, HttpEffectPlacement, ModelExposurePolicy, OAuthCredentialMaterial,
+    PlaintextBoundary, PlaintextHolder, ResolvedCredentialMaterial, SealedCredentialEnvelopeRef,
+    StructuredCredentialMaterial, TokenEndpointAuth, TrustDomainRef, WorkerLocalCredentialResolver,
     WorkerLocalReferenceRevalidator, candidate_fingerprint, compile_candidate_credential_bindings,
     verify_credential_realization_receipt,
 };

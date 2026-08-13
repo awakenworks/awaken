@@ -364,6 +364,34 @@ pub async fn enter_credential_idempotent(
     enter_prepared_credential_idempotent(expected, secret, store, repo).await
 }
 
+/// Enter one stable Vault credential and verify that every replay names the
+/// same sealed material. The operation identity remains caller-owned; the
+/// credential aggregate owns the create WAL, source CAS, and material check.
+pub async fn enter_credential_idempotent_verified(
+    id: CredentialSourceId,
+    params: CredentialCreateParams,
+    protocol_endpoint_id: Option<String>,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialEntry, CredentialError> {
+    let expected_material = params.secret.clone();
+    let entry = enter_credential_idempotent(id, params, protocol_endpoint_id, store, repo).await?;
+    if let Some(expected) = expected_material {
+        let reference = entry
+            .source
+            .material_ref
+            .as_ref()
+            .ok_or_else(|| CredentialError::MissingMaterialRef(entry.source.id.0.clone()))?;
+        let actual = store.get(reference).await?;
+        if actual.expose_secret() != expected.expose_secret() {
+            return Err(CredentialError::MutationConflict(
+                "credential Idempotency-Key was reused with different material".into(),
+            ));
+        }
+    }
+    Ok(entry)
+}
+
 pub(super) async fn enter_prepared_credential_idempotent(
     expected: CredentialSource,
     secret: Option<awaken_agent_contract::RedactedString>,
@@ -1705,6 +1733,46 @@ mod tests {
             endpoint_conflict,
             Err(CredentialError::InvalidSource(_))
         ));
+    }
+
+    /// Verified-idempotency cause/effect graph: C1 stable source identity and
+    /// metadata match; C2 submitted material matches the sealed first write.
+    /// C1+C2 is an exact no-write replay; C1+!C2 fails with a mutation conflict.
+    /// This stricter command is opt-in so ordinary non-secret idempotent callers
+    /// retain their established replay semantics.
+    #[tokio::test]
+    async fn verified_idempotent_entry_rejects_different_material() {
+        let store = InMemorySecretStore::new();
+        let repo = InMemoryCredentialRepo::new();
+        let id = CredentialSourceId("cred:ws:verified-operation".into());
+        let params = |secret: &str| CredentialCreateParams {
+            workspace_id: "ws".into(),
+            kind: CredentialKind::Vault,
+            provider_id: Some("domain-pack/provider".into()),
+            env_key: None,
+            secret: Some(RedactedString::new(secret)),
+            oauth_command: None,
+        };
+
+        let first =
+            enter_credential_idempotent_verified(id.clone(), params("first"), None, &store, &repo)
+                .await
+                .unwrap();
+        let replay =
+            enter_credential_idempotent_verified(id.clone(), params("first"), None, &store, &repo)
+                .await
+                .unwrap();
+        let conflict =
+            enter_credential_idempotent_verified(id, params("second"), None, &store, &repo).await;
+
+        assert!(first.created);
+        assert!(!replay.created);
+        assert_eq!(first.source, replay.source);
+        assert!(matches!(
+            conflict,
+            Err(CredentialError::MutationConflict(_))
+        ));
+        assert_eq!(store.inventory().await.unwrap().len(), 1);
     }
 
     /// Cause/effect graph for the hosted application bearer aggregate:
