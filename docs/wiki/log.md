@@ -1,5 +1,12 @@
 # Wiki Update Log
 
+## 2026-08-13
+
+- **Update**: Amended ADR-0061 so the existing Management-owned publisher role
+  can read executable model supply while remaining unable to administer API
+  keys or mutate Provider/model supply; hosted deployments consume the same
+  deterministic release profile instead of binding a broader role.
+
 ## 2026-08-12
 
 - **Update**: Consolidated deterministic Scenario Session recovery onto the

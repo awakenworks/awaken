@@ -2,10 +2,14 @@ use super::*;
 
 #[test]
 fn management_profile_is_one_deterministic_workspace_scoped_contract() {
-    // Cause/effect decision table: repeated construction -> byte-identical
-    // profile; each product-owned family (workspace, apikey, model_supply) ->
-    // one registered Workspace-scoped action pattern; deployment input cannot
-    // change the namespace, vocabulary, scope, or grants.
+    // Cause/effect decision table:
+    // | Cause | Effect |
+    // | repeated construction | byte-identical profile |
+    // | each product-owned family | one registered Workspace-scoped pattern |
+    // | agent publisher authors configuration | allow workspace.* |
+    // | agent publisher discovers executable model supply | allow exact model_supply.read |
+    // | agent publisher accesses credentials or mutates supply | no matching grant |
+    // Deployment input cannot change the namespace, vocabulary, scope, or grants.
     let first = management_authorization_profile();
     let second = management_authorization_profile();
     assert_eq!(
@@ -63,9 +67,18 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
         .collect::<Vec<_>>();
     assert_eq!(
         publisher_grants,
-        ["awaken.runtime.management::workspace.*"],
-        "the cross-product publisher may author configuration but must not receive apikey.*"
+        [
+            "awaken.runtime.management::workspace.*",
+            "awaken.runtime.management::model_supply.read",
+        ],
+        "the publisher may discover models and author configuration, without credential or model-supply administration"
     );
+    assert!(publisher_grants.iter().all(|grant| {
+        !grant.contains("apikey")
+            && !grant.ends_with("model_supply.*")
+            && !grant.ends_with("model_supply.connect")
+            && !grant.ends_with("model_supply.write")
+    }));
 }
 
 #[test]
