@@ -6,7 +6,7 @@
 //! returns one page (`next_page: null`) exactly as before.
 
 use awaken_agent_contract::page::{paginate_by_id, paginate_by_key};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// One cursor page of `T`.
 #[derive(Debug, Clone, Serialize)]
@@ -33,10 +33,29 @@ impl<T> Page<T> {
 /// cursor a prior `next_page` handed the client; both optional.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 pub struct PageQuery {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_usize")]
     pub limit: Option<usize>,
     #[serde(default)]
     pub page: Option<String>,
+}
+
+fn deserialize_optional_usize<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum WireUsize {
+        Number(usize),
+        String(String),
+    }
+
+    Option::<WireUsize>::deserialize(deserializer)?
+        .map(|value| match value {
+            WireUsize::Number(value) => Ok(value),
+            WireUsize::String(value) => value.parse().map_err(serde::de::Error::custom),
+        })
+        .transpose()
 }
 
 /// Cursor-paginate a list of typed wire rows into a `PageCursor` response, keyed by
