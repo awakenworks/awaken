@@ -9,8 +9,9 @@
   materialization, selection, target usage, and execution policy remain separate
   existing facts.
 - Amended 2026-07-29: provider connection is one reusable application command,
-  and executable model readiness is one server-owned Catalog/Credential
-  projection shared by HTTP and embedded hosts.
+  and executable model readiness is one server-owned
+  Catalog/Credential/Brokered-access projection shared by HTTP and embedded
+  hosts.
 - Amended 2026-07-30: the official Managed `model` string is decoded into
   unresolved selection intent; no metadata key selects execution. One Offering
   selector and the executable model directory project the same catalog facts.
@@ -442,3 +443,29 @@ known-unmounted pages until their requests return `404`, and adding a Cloud
 proxy that imitates the open Managed APIs over HostedRun. Cloud may link to its
 own Hosted execution product, but it does not become a second implementation of
 Awaken Sessions or resources.
+
+### 2026-08-13 amendment — brokered readiness follows the existing access path
+
+`project_executable_models` remains the one selectable-model read model. Direct
+and BYOK Offerings become ready only through a compatible active Workspace
+Credential. A Brokered Offering instead becomes ready only when the same
+composition advertises `ModelSupplyCapabilityView.cloud_models_enabled`; it
+must not require or synthesize a local Credential because the injected
+`ModelPublicationResolver` freezes the exact managed route and its existing
+egress-gateway credential reference.
+
+```text
+Catalog Offering + executor capability
+  -> direct/BYOK  -> compatible local Credential -> ready
+  -> brokered     -> cloud_models_enabled        -> ready
+                    \-> injected publication resolver -> exact managed route
+                                                        -> egress gateway custody
+```
+
+The capability is a deployment fact, not secret material and not an
+authorization grant. If it is false, an otherwise active Brokered Offering is
+runtime-unavailable and cannot enter model pickers. If it is true, absence of a
+local Credential is expected. Publication still revalidates the exact Cloud
+route; an unavailable or unacknowledged route fails there without falling back
+to Catalog endpoint data or BYOK. Cloud provider keys never enter the Awaken
+Credential repository, process configuration, model directory, or response.
