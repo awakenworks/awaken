@@ -64,6 +64,10 @@ async fn run(command: Command) -> Result<(), String> {
             &awaken_control::hosted_runtime_authorization_profile(),
             "Hosted Runtime IAM profile",
         ),
+        Command::ControlHostedRuntimeRouteProfile => print_json(
+            &awaken_control::hosted_runtime_route_profile(),
+            "Hosted Runtime route profile",
+        ),
         Command::AllInOne(args) => awaken_cli::run_service(args, ServiceRole::AllInOne).await,
         Command::Control(args) => awaken_cli::run_service(args, ServiceRole::Control).await,
         Command::Coordinator(args) => awaken_cli::run_service(args, ServiceRole::Coordinator).await,

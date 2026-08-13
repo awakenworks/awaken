@@ -43,10 +43,11 @@ pub use crate::admin_assistant::{
 pub use crate::authz::{
     ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID,
     HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, HOSTED_RUNTIME_POLICY_NAMESPACE,
-    HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, MANAGEMENT_AGENT_PUBLISHER_ROLE,
-    MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE, MANAGEMENT_POLICY_NAMESPACE, ManagementAuthz,
-    ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
-    embedded_iam_for_tenant, embedded_iam_for_workspace, hosted_runtime_authorization_profile,
+    HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, HostedRuntimePathMatch, HostedRuntimeRouteProfile,
+    MANAGEMENT_AGENT_PUBLISHER_ROLE, MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE,
+    MANAGEMENT_POLICY_NAMESPACE, ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz,
+    TokenSpec, embedded_iam, embedded_iam_for_tenant, embedded_iam_for_workspace,
+    hosted_runtime_authorization_profile, hosted_runtime_route_profile,
     management_authorization_profile, management_resource_authorization_profile,
 };
 pub use crate::component::{ControlComponent, ControlDependencies, build_control_component};
@@ -209,9 +210,10 @@ pub struct ControlRouterInput {
     /// The admin router uses the same value for server enforcement and client
     /// capability discovery; composition must not maintain a hidden second mode.
     pub model_supply: awaken_admin_config_api::ModelSupplyCapabilityView,
-    /// Whether this same-origin process also mounts the Managed runtime and
-    /// resource surfaces. This is derived from the typed process role.
-    pub managed_runtime: bool,
+    /// Whether this browser-serving origin reaches the canonical Managed
+    /// runtime/resource surfaces. The composition root derives this from a
+    /// local mount or an explicit hosted same-origin route.
+    pub managed_runtime_available: bool,
     /// The Managed vault state, shared with the data-plane managed state.
     pub vault_state: Arc<VaultState>,
     /// The one authoring projection used by `/v1/agents`. Execution-owned
@@ -272,7 +274,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         model_discovery,
         brokered_catalog,
         model_supply,
-        managed_runtime,
+        managed_runtime_available,
         vault_state,
         agent_repository,
         agent_archive_cascade,
@@ -309,7 +311,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
         },
         models: model_supply,
         surfaces: awaken_admin_config_api::ProductSurfaceCapabilityView {
-            managed_runtime,
+            managed_runtime: managed_runtime_available,
             access_management: iam.is_some(),
         },
     };

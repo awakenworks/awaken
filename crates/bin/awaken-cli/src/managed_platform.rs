@@ -12,6 +12,10 @@ pub struct ManagedServiceAdapters {
     pub request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     pub list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    /// The browser-serving origin routes Awaken's exported Managed-runtime
+    /// families to the canonical Coordinator. This changes presentation only;
+    /// it never mounts runtime state or handlers in Control.
+    pub same_origin_managed_runtime: bool,
 }
 
 impl ManagedServiceAdapters {
@@ -39,6 +43,14 @@ impl ManagedServiceAdapters {
         application: Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>,
     ) -> Self {
         self.tunnel_application = Some(application);
+        self
+    }
+
+    /// Declare that deployment routing makes the canonical Coordinator surface
+    /// reachable at the browser-serving Control origin.
+    #[must_use]
+    pub fn with_same_origin_managed_runtime(mut self) -> Self {
+        self.same_origin_managed_runtime = true;
         self
     }
 }
