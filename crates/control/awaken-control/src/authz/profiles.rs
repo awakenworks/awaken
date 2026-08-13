@@ -13,6 +13,9 @@ pub const MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
 /// model supply and publishes Agent configuration, but must never administer
 /// API credentials or mutate model supply.
 pub const MANAGEMENT_AGENT_PUBLISHER_ROLE: &str = "awaken.runtime.management:agent_publisher";
+/// Resource-side companion for the same external product publisher identity.
+/// It may materialize exact Skill versions, but cannot read or write Files.
+pub(super) const RESOURCE_AGENT_PUBLISHER_ROLE: &str = "awaken.runtime.resources:agent_publisher";
 /// Hosted tenant administrator: ordinary Workspace/API-key administration and
 /// read-only platform model supply. Cloud binds this role instead of the local
 /// `workspace_admin`, whose BYOK authority must remain available self-hosted.
@@ -195,6 +198,20 @@ pub fn management_resource_authorization_profile() -> CreateAuthorizationProfile
             });
         }
     }
+    // Flow materializes an immutable Skill bundle in the exact execution
+    // Workspace before it publishes an Agent that pins that Skill version.
+    // Keep the product publisher identity aligned across the two
+    // Management-owned namespaces without broadening it to Files. IAM requires
+    // each profile to own the role ids referenced by its grants.
+    grants.push(GrantSnapshot {
+        id: format!("{RESOURCE_POLICY_NAMESPACE}:grant:role:agent_publisher:skill"),
+        subject: GrantSubjectRef::Role {
+            role_id: RESOURCE_AGENT_PUBLISHER_ROLE.to_owned(),
+        },
+        action_pattern: qualify_resource_action("skill.*").0,
+        scope: ScopeRef::Global,
+        effect: GrantEffect::Allow,
+    });
     CreateAuthorizationProfile {
         namespace: NamespaceId(RESOURCE_POLICY_NAMESPACE.to_owned()),
         document: AuthorizationProfileDocument {
