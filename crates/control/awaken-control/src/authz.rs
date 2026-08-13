@@ -705,11 +705,78 @@ enum RouteAuthz {
 
 /// One typed policy declaration per bounded HTTP family. Concrete endpoint
 /// membership stays in axum; this descriptor owns only the authorization
-/// namespace and plane, avoiding a shadow copy of every route template.
+/// namespace and plane, avoiding a shadow copy of every route template. The
+/// optional hosted route is also the release-owned distributed routing
+/// contract: deployment tooling exports it instead of maintaining another
+/// Coordinator path list.
 #[derive(Debug, Clone, Copy)]
 struct RoutePolicyDescriptor {
     prefix: &'static str,
     policy: RouteFamilyPolicy,
+    hosted_runtime_route: Option<HostedRuntimePathMatch>,
+}
+
+impl RoutePolicyDescriptor {
+    const fn control(prefix: &'static str, policy: RouteFamilyPolicy) -> Self {
+        Self {
+            prefix,
+            policy,
+            hosted_runtime_route: None,
+        }
+    }
+
+    const fn hosted_runtime(prefix: &'static str, policy: RouteFamilyPolicy) -> Self {
+        Self {
+            prefix,
+            policy,
+            hosted_runtime_route: Some(HostedRuntimePathMatch::PathPrefix { path: prefix }),
+        }
+    }
+
+    const fn control_with_hosted_subtree(
+        prefix: &'static str,
+        policy: RouteFamilyPolicy,
+        path_template: &'static str,
+    ) -> Self {
+        Self {
+            prefix,
+            policy,
+            hosted_runtime_route: Some(HostedRuntimePathMatch::PathTemplate { path_template }),
+        }
+    }
+}
+
+/// One path matcher in the split-hosted Control-to-Coordinator facade.
+///
+/// `PathPrefix` maps directly to prefix-routing gateways. `PathTemplate` keeps
+/// a shared family exact: `{name}` denotes one non-empty path segment, so a
+/// deployment can compile it to its gateway's native matcher without routing
+/// the Control-owned siblings beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "match", rename_all = "snake_case")]
+pub enum HostedRuntimePathMatch {
+    PathPrefix { path: &'static str },
+    PathTemplate { path_template: &'static str },
+}
+
+/// Deterministic release contract consumed by hosted deployment routing.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct HostedRuntimeRouteProfile {
+    pub schema_version: u32,
+    pub routes: Vec<HostedRuntimePathMatch>,
+}
+
+/// Project the Coordinator-owned browser surface from the same descriptors
+/// that authorize it. This is deliberately a function rather than a public
+/// mutable registry so the Awaken release remains the only route authority.
+pub fn hosted_runtime_route_profile() -> HostedRuntimeRouteProfile {
+    HostedRuntimeRouteProfile {
+        schema_version: 1,
+        routes: ROUTE_POLICIES
+            .iter()
+            .filter_map(|descriptor| descriptor.hosted_runtime_route)
+            .collect(),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -726,248 +793,290 @@ enum RouteFamilyPolicy {
 }
 
 const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
-    RoutePolicyDescriptor {
-        prefix: "/v1/sessions",
-        policy: RouteFamilyPolicy::Resource {
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/sessions",
+        RouteFamilyPolicy::Resource {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/a2a",
-        policy: RouteFamilyPolicy::Resource {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/dreams",
+        RouteFamilyPolicy::Resource {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/message:send",
-        policy: RouteFamilyPolicy::Resource {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/a2a",
+        RouteFamilyPolicy::Resource {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/message:stream",
-        policy: RouteFamilyPolicy::Resource {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/message:send",
+        RouteFamilyPolicy::Resource {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/files",
-        policy: RouteFamilyPolicy::Resource {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/message:stream",
+        RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/ai-sdk",
+        RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/ag-ui",
+        RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/durable",
+        RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/files",
+        RouteFamilyPolicy::Resource {
             read: FILE_READ,
             write: FILE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/skills",
-        policy: RouteFamilyPolicy::Resource {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/skills",
+        RouteFamilyPolicy::Resource {
             read: SKILL_READ,
             write: SKILL_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/memory_stores",
-        policy: RouteFamilyPolicy::Resource {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/memory_stores",
+        RouteFamilyPolicy::Resource {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/iam/tokens",
-        policy: RouteFamilyPolicy::TokenAdmin,
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/application-access-tokens",
-        policy: RouteFamilyPolicy::Scoped {
-            read: APIKEY_READ,
-            write: APIKEY_WRITE,
-        },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/credentials",
-        policy: RouteFamilyPolicy::Scoped {
-            read: APIKEY_READ,
-            write: APIKEY_WRITE,
-        },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/workspace-context",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/models",
+        RouteFamilyPolicy::Resource {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/credential-pools",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/awaken/sessions",
+        RouteFamilyPolicy::Resource {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control("/v1/config/iam/tokens", RouteFamilyPolicy::TokenAdmin),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/application-access-tokens",
+        RouteFamilyPolicy::Scoped {
             read: APIKEY_READ,
             write: APIKEY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/vaults",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/credentials",
+        RouteFamilyPolicy::Scoped {
             read: APIKEY_READ,
             write: APIKEY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/provider-connections",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/workspace-context",
+        RouteFamilyPolicy::Scoped {
+            read: WORKSPACE_READ,
+            write: WORKSPACE_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/credential-pools",
+        RouteFamilyPolicy::Scoped {
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/vaults",
+        RouteFamilyPolicy::Scoped {
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
+        },
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/provider-connections",
+        RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
             write: MODEL_SUPPLY_CONNECT,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/provider-descriptors",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/provider-descriptors",
+        RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
             write: MODEL_SUPPLY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/executable-models",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/executable-models",
+        RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
             write: MODEL_SUPPLY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/model-attributes",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/model-attributes",
+        RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
             write: MODEL_SUPPLY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/catalog",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/catalog",
+        RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
             write: MODEL_SUPPLY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/capabilities",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/capabilities",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/brokered-models",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/brokered-models",
+        RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
             write: MODEL_SUPPLY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/inference-profiles",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/inference-profiles",
+        RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
             write: MODEL_SUPPLY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/inference",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/inference",
+        RouteFamilyPolicy::Scoped {
             read: MODEL_SUPPLY_READ,
             write: MODEL_SUPPLY_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/agents",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/agents",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/agent-previews",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/agent-previews",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/publications",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/publications",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/config/webhook-subscriptions",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/config/webhook-subscriptions",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/user_profiles",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/user_profiles",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/agents",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/agents",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/deployments",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/deployments",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/deployment_runs",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/deployment_runs",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/environments",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    // Environment definitions are authored by Control, while only the
+    // per-environment Work subtree is execution-owned by Coordinator.
+    RoutePolicyDescriptor::control_with_hosted_subtree(
+        "/v1/environments",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/awaken/sandbox-execution-policies",
-        policy: RouteFamilyPolicy::Scoped {
+        "/v1/environments/{environment_id}/work",
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/awaken/sandbox-execution-policies",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/awaken/environments",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/awaken/environments",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/awaken/memory-stores",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::hosted_runtime(
+        "/v1/awaken/memory-stores",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
-    RoutePolicyDescriptor {
-        prefix: "/v1/capabilities",
-        policy: RouteFamilyPolicy::Scoped {
+    ),
+    RoutePolicyDescriptor::control(
+        "/v1/capabilities",
+        RouteFamilyPolicy::Scoped {
             read: WORKSPACE_READ,
             write: WORKSPACE_WRITE,
         },
-    },
+    ),
 ];
 
 /// Resource classes whose target scope is centrally defined by the IAM resource

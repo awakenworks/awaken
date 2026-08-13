@@ -232,7 +232,7 @@ pub(super) async fn prepare_runtime_routers(
                 brokered_client.clone(),
                 injected_brokered_catalog,
                 model_capabilities,
-                role.exposes_managed_runtime(),
+                role.mounts_managed_runtime(),
                 &process.local_acp_observations,
                 live_runtime_capabilities
                     .clone()
