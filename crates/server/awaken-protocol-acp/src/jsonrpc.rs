@@ -38,7 +38,7 @@ use handshake::{initialize_agent, open_new_session};
 use wire::{JSONRPC, Wire};
 
 use mcp::to_acp_mcp_servers;
-use permission::answer_request;
+use permission::{PermissionContext, answer_request};
 
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
@@ -423,6 +423,12 @@ async fn pump_response(
     seq: &mut u64,
     resolver: &dyn PermissionResolver,
 ) -> Result<RpcResponse, AcpError> {
+    // Some ACP adapters (notably Codex) report the precise MCP identity only in
+    // the preceding tool_call update, then ask permission for a generic
+    // `execute` operation. The ACP toolCallId is the protocol correlation key;
+    // retain the already-projected identity for the lifetime of this response
+    // pump so the one neutral policy sees the real tool rather than a lossy title.
+    let mut permission_context = PermissionContext::default();
     loop {
         let Some(msg) = wire.read().await? else {
             return Err(AcpError::Truncated);
@@ -442,12 +448,20 @@ async fn pump_response(
             }
             Some(request_id) => {
                 let method = msg.method.as_deref().unwrap_or_default();
-                answer_request(wire, request_id.clone(), method, msg.params, resolver).await?;
+                answer_request(
+                    wire,
+                    request_id.clone(),
+                    method,
+                    msg.params,
+                    resolver,
+                    &permission_context,
+                )
+                .await?;
             }
             // A notification (no id).
             None => {
                 if msg.method.as_deref() == Some(CLIENT_METHOD_NAMES.session_update) {
-                    project_notification(msg.params, sink, seq).await?;
+                    project_notification(msg.params, sink, seq, &mut permission_context).await?;
                 }
             }
         }
@@ -460,6 +474,7 @@ async fn project_notification(
     params: Option<serde_json::Value>,
     sink: &mut dyn RunFactAppender,
     seq: &mut u64,
+    permission_context: &mut PermissionContext,
 ) -> Result<(), AcpError> {
     let Some(params) = params else {
         return Ok(());
@@ -479,6 +494,7 @@ async fn project_notification(
         }
         *seq += 1;
         sink.append(*seq, &event).await?;
+        permission_context.observe(&event);
     }
     Ok(())
 }
