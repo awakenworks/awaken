@@ -40,6 +40,9 @@ pub struct CreateProfiledSessionCommand {
     pub mounts: Vec<serde_json::Value>,
     pub env: Vec<serde_json::Value>,
     pub prompts: Vec<String>,
+    /// Explicit Session candidates supplied by the product adapter. Published
+    /// Agent candidates are joined and normalized inside the sole composer.
+    pub mcp_candidates: Vec<McpAttachmentCandidate>,
     pub network_restriction: Option<SessionNetworkPolicy>,
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
@@ -262,6 +265,7 @@ impl SessionApplication {
             mounts,
             env,
             prompts,
+            mut mcp_candidates,
             network_restriction,
             title,
             metadata,
@@ -292,32 +296,34 @@ impl SessionApplication {
             .map(|profile| profile.skills.clone())
             .unwrap_or_default();
         self.validate_session_skill_total(&owner_scope, &agent_id, profile.as_ref(), &skills)?;
-        let mcp_candidates = profile
-            .as_ref()
-            .into_iter()
-            .flat_map(|profile| &profile.mcp_servers)
-            .map(|server| {
-                let published_credential = match (
-                    server.credential_source_id.as_ref(),
-                    server.credential_revision,
-                ) {
-                    (None, None) => Ok(None),
-                    (Some(id), Some(revision)) if !id.trim().is_empty() && revision > 0 => {
-                        Ok(Some((id.clone(), revision)))
-                    }
-                    _ => Err(RunError::bad_request(
-                        "published MCP credential pin is incomplete",
-                    )),
-                }?;
-                Ok(McpAttachmentCandidate {
-                    name: server.name.clone(),
-                    target: McpAttachmentCandidateTarget::Normalized(server.target.clone()),
-                    prompts_as_skills: server.prompts_as_skills,
-                    published_credential,
-                    origin: McpAttachmentOrigin::Agent,
+        mcp_candidates.extend(
+            profile
+                .as_ref()
+                .into_iter()
+                .flat_map(|profile| &profile.mcp_servers)
+                .map(|server| {
+                    let published_credential = match (
+                        server.credential_source_id.as_ref(),
+                        server.credential_revision,
+                    ) {
+                        (None, None) => Ok(None),
+                        (Some(id), Some(revision)) if !id.trim().is_empty() && revision > 0 => {
+                            Ok(Some((id.clone(), revision)))
+                        }
+                        _ => Err(RunError::bad_request(
+                            "published MCP credential pin is incomplete",
+                        )),
+                    }?;
+                    Ok(McpAttachmentCandidate {
+                        name: server.name.clone(),
+                        target: McpAttachmentCandidateTarget::Normalized(server.target.clone()),
+                        prompts_as_skills: server.prompts_as_skills,
+                        published_credential,
+                        origin: McpAttachmentOrigin::Agent,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, RunError>>()?;
+                .collect::<Result<Vec<_>, RunError>>()?,
+        );
         let initial_mcp = self.normalize_mcp_drafts(mcp_candidates, &[]).await?;
         let mcp_targets = initial_mcp
             .iter()
@@ -425,6 +431,7 @@ impl SessionApplication {
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),
+            mcp_candidates: Vec::new(),
             network_restriction: None,
             title: None,
             metadata: Default::default(),

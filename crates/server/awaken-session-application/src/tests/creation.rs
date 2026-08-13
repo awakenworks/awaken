@@ -16,6 +16,28 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Profiled
             awaken_executable_agent_contract::ExecutableAgentSessionProfile {
                 model: Some("published-model".into()),
                 execution_model_ref: Some("execution-model".into()),
+                mcp_servers: vec![
+                    awaken_executable_agent_contract::ExecutableAgentMcpServer {
+                        name: "agent-only".into(),
+                        target: awaken_session_contract::McpTarget::parse_http(
+                            "https://agent-only.example.test/mcp",
+                        )
+                        .unwrap(),
+                        prompts_as_skills: false,
+                        credential_source_id: None,
+                        credential_revision: None,
+                    },
+                    awaken_executable_agent_contract::ExecutableAgentMcpServer {
+                        name: "shared".into(),
+                        target: awaken_session_contract::McpTarget::parse_http(
+                            "https://agent-shared.example.test/mcp",
+                        )
+                        .unwrap(),
+                        prompts_as_skills: false,
+                        credential_source_id: None,
+                        credential_revision: None,
+                    },
+                ],
                 ..Default::default()
             }
         })
@@ -312,16 +334,19 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
 /// Profiled-Session FMECA and cause/effect graph. Failure modes are FM1 a
 /// requested model bypasses the published Agent, FM2 an unavailable Agent is
 /// admitted. Causes: C1 profile exists, C2 Agent available, C3 requested model
-/// absent/equal, C4 requested model differs, and C5 complete local inputs are
-/// supplied up front. Effects: E1 freeze the published execution identity and
-/// local inputs, E2 reject without a row. Graph: C1&&C2&&C3&&C5 -> E1;
-/// C4||!C2 -> E2.
+/// absent/equal, C4 requested model differs, C5 complete local inputs are
+/// supplied up front, C6 Agent and Session MCP candidates are distinct or
+/// overlap by name, and C7 equal-origin names conflict. Effects: E1 freeze the
+/// published execution identity and local inputs, E2 reject without a row, E3
+/// retain Agent-only and Session-only MCP while Session overrides Agent by
+/// logical name. Graph: C1&&C2&&C3&&C5&&C6 -> E1+E3; C4||!C2||C7 -> E2.
 ///
-/// | Rule | Profile | Available | Requested model | Inputs | Effect |
+/// | Rule | Profile | Available | Requested model | Product MCP | Effect |
 /// |---|---|---|---|---|---|
-/// | P1 | yes | yes | absent/equal | complete | E1 realized |
+/// | P1 | yes | yes | absent/equal | distinct + Agent overlap | E1 + E3 |
 /// | P2 | yes | yes | different | any | E2 |
 /// | P3 | yes | no | any | any | E2 |
+/// | P4 | yes | yes | absent/equal | duplicate Session name | E2 |
 #[tokio::test]
 async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
@@ -338,6 +363,26 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         mounts: vec![serde_json::json!({"mount_id": "workspace"})],
         env: vec![serde_json::json!({"name": "PROJECT"})],
         prompts: vec!["project context".into()],
+        mcp_candidates: vec![
+            McpAttachmentCandidate {
+                name: "session-only".into(),
+                target: McpAttachmentCandidateTarget::HttpUrl(
+                    "https://session-only.example.test/mcp".into(),
+                ),
+                prompts_as_skills: false,
+                published_credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            },
+            McpAttachmentCandidate {
+                name: "shared".into(),
+                target: McpAttachmentCandidateTarget::HttpUrl(
+                    "https://session-shared.example.test/mcp".into(),
+                ),
+                prompts_as_skills: false,
+                published_credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            },
+        ],
         network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
         title: None,
         metadata: Default::default(),
@@ -362,6 +407,39 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         baseline.environment.network,
         awaken_session_contract::SessionNetworkPolicy::None,
         "P1/E1"
+    );
+    let mcp = realized
+        .mcp
+        .attachments
+        .iter()
+        .map(|attachment| {
+            (
+                attachment.name.as_str(),
+                attachment.target.http_url().expect("HTTP MCP target"),
+                attachment.origin,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        mcp,
+        [
+            (
+                "agent-only",
+                "https://agent-only.example.test/mcp",
+                awaken_session_contract::McpAttachmentOrigin::Agent,
+            ),
+            (
+                "session-only",
+                "https://session-only.example.test/mcp",
+                awaken_session_contract::McpAttachmentOrigin::Session,
+            ),
+            (
+                "shared",
+                "https://session-shared.example.test/mcp",
+                awaken_session_contract::McpAttachmentOrigin::Session,
+            ),
+        ],
+        "P1/E3"
     );
 
     let mismatched = available
@@ -391,5 +469,30 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "P3/E2"
+    );
+
+    let mut conflicting = command("profiled-mcp-conflict", None);
+    conflicting.mcp_candidates.push(McpAttachmentCandidate {
+        name: "session-only".into(),
+        target: McpAttachmentCandidateTarget::HttpUrl(
+            "https://duplicate-session.example.test/mcp".into(),
+        ),
+        prompts_as_skills: false,
+        published_credential: None,
+        origin: awaken_session_contract::McpAttachmentOrigin::Session,
+    });
+    assert!(
+        available
+            .create_profiled_session(conflicting)
+            .await
+            .is_err(),
+        "P4/E2"
+    );
+    assert!(
+        matches!(
+            repository.get("profiled-mcp-conflict").await,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        ),
+        "P4/E2"
     );
 }
