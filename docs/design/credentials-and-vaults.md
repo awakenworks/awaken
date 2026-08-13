@@ -194,6 +194,24 @@ Wire facts to match exactly:
   immutable, secret fields write-only, max 20 credentials per vault.
 - Beta header `managed-agents-2026-04-01`; sessions attach vaults via `vault_ids`.
 
+### Hosted application static-bearer admission
+
+The official Vault CRUD remains the human/operator resource surface. Hosted
+applications additionally need one narrow write-only command because its
+random wire Vault ids cannot provide HA-safe create-or-find semantics. That
+Awaken Control owns the `/v1/config/application-mcp-credentials` command, which
+extends the same `VaultState`, `CredentialRepo`, `SecretStore`, and
+credential mutation intent; it is not another Vault implementation.
+
+Control derives a stable Vault id and credential-source id from the trusted
+Workspace, opaque application authority id, and canonical `McpTarget` identity.
+`Idempotency-Key` identifies one material command. Exact replay returns the
+same ids and revision, while a new key rotates the existing source through the
+ordinary credential WAL/CAS. The response is secret-free. Session creation then
+uses the returned Vault id and the existing MCP normalizer pins that source's
+exact revision. Hosted clients never persist a local Vault/source mirror and
+never fall back to an embedded credential when this command fails.
+
 The vault ACL inside `awaken-protocol-managed` maps this wire ⇄ the neutral domain below; the
 domain's `CredentialAuth` variants stay neutral (`Bearer`/`OAuth`/`EnvVar`/`ApiKey`),
 the wire keeps the Managed tags.
