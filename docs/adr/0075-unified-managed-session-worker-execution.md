@@ -265,3 +265,25 @@ There is one source of Session desired state and one Session Worker placement
 path. Local and custom Workers differ only in adapters and physical effects.
 Applications remain free to build complete Session commands and to decorate the
 neutral attempt executor, but they cannot mutate Session truth from a Worker.
+
+## Amendment (2026-08-13): profiled creation accepts product MCP candidates
+
+A product adapter that creates a Session from an immutable Agent publication
+supplies its explicit Session MCP inputs on the existing
+`CreateProfiledSessionCommand`. The sole `create_profiled_session` composer
+joins those candidates with the publication's Agent candidates, invokes the one
+`normalize_mcp_drafts` path once, and leaves Session-over-Agent precedence and
+target uniqueness to `SessionCreationIntent::finalize`.
+
+```text
+published Agent MCP --\
+                       +-> create_profiled_session -> normalize once -> finalize once -> root insert
+product Session MCP --/
+```
+
+The command carries raw protocol-neutral candidates, not normalized drafts.
+Products must not pre-read the Agent profile, pre-merge candidates, or reproduce
+URL/stdio/credential normalization. An invalid candidate or equal-origin name
+conflict fails before insertion; a Session candidate with the same logical name
+as an Agent candidate replaces it independent of input order. The persisted
+frozen MCP set remains the only desired-state authority.

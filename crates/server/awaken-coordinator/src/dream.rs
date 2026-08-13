@@ -228,6 +228,7 @@ impl BuiltInDreamAgent {
                 mounts: mount_values,
                 env: Vec::new(),
                 prompts,
+                mcp_candidates: Vec::new(),
                 network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
                 title: None,
                 metadata: BTreeMap::from([

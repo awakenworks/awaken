@@ -85,6 +85,7 @@ pub awaken_session_application::BudgetSettlementOutcome::session: awaken_session
 pub struct awaken_session_application::CreateProfiledSessionCommand
 pub awaken_session_application::CreateProfiledSessionCommand::agent_id: alloc::string::String
 pub awaken_session_application::CreateProfiledSessionCommand::env: alloc::vec::Vec<serde_json::value::Value>
+pub awaken_session_application::CreateProfiledSessionCommand::mcp_candidates: alloc::vec::Vec<awaken_session_application::McpAttachmentCandidate>
 pub awaken_session_application::CreateProfiledSessionCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub awaken_session_application::CreateProfiledSessionCommand::model: core::option::Option<alloc::string::String>
 pub awaken_session_application::CreateProfiledSessionCommand::mounts: alloc::vec::Vec<serde_json::value::Value>
