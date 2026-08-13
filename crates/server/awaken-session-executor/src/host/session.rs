@@ -696,7 +696,6 @@ impl SharedHost {
                 "remote A2A execution cannot consume local Session Environment inputs",
             ));
         }
-        let environment_provider = self.session_environment_provider(provisioning)?;
         let retained = self
             .session_slots
             .read(thread, |slot| slot.environment.clone())
@@ -753,7 +752,7 @@ impl SharedHost {
             (None, None) => (
                 Some(Arc::new(
                     self.create_session_environment(
-                        environment_provider,
+                        self.session_environment_provider(provisioning)?,
                         &self.sandbox_spec(thread),
                     )
                     .await?,
