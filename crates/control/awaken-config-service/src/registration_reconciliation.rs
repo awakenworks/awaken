@@ -84,6 +84,7 @@ impl ConfigService {
 
         let mut registered = 0;
         let mut first_for_agent = BTreeSet::new();
+        let mut degraded = Vec::new();
         for publication in publications {
             if !executable_agents.contains(&publication.agent_id) {
                 continue;
@@ -93,25 +94,30 @@ impl ConfigService {
                 .await
                 .map_err(|error| error.to_string())?
                 .into_iter()
-                .find(|revision| revision.revision == publication.source_revision)
-                .ok_or_else(|| {
-                    format!(
-                        "publication `{}` has no source Agent revision {}",
-                        publication.fingerprint, publication.source_revision
-                    )
-                })?;
-            let is_current = first_for_agent.insert(publication.agent_id.clone());
-            let frozen_defaults = publication
+                .find(|revision| revision.revision == publication.source_revision);
+            let Some(source) = source else {
+                degraded.push(format!(
+                    "publication `{}` has no source Agent revision {}",
+                    publication.fingerprint, publication.source_revision
+                ));
+                continue;
+            };
+            let is_current = !first_for_agent.contains(&publication.agent_id);
+            let frozen_defaults = match publication
                 .agent_inputs
                 .clone()
                 .map(serde_json::from_value)
                 .transpose()
-                .map_err(|error| {
-                    format!(
+            {
+                Ok(defaults) => defaults,
+                Err(error) => {
+                    degraded.push(format!(
                         "publication `{}` has invalid frozen Agent inputs: {error}",
                         publication.fingerprint
-                    )
-                })?;
+                    ));
+                    continue;
+                }
+            };
             let session_profile = if let Some(defaults) = frozen_defaults {
                 registered_session_profile(
                     &publication.snapshot,
@@ -123,7 +129,7 @@ impl ConfigService {
                         "publication `{}` frozen Agent inputs do not match its snapshot",
                         publication.fingerprint
                     )
-                })?
+                })
             } else if is_current {
                 let defaults = self.resources.as_ref().and_then(|store| {
                     store
@@ -141,21 +147,44 @@ impl ConfigService {
                         "current publication `{}` no longer matches Agent Session defaults",
                         publication.fingerprint
                     )
-                })?
+                })
             } else {
-                historical_session_profile(&publication.snapshot, &source.config.model_binding)
+                Ok(historical_session_profile(
+                    &publication.snapshot,
+                    &source.config.model_binding,
+                ))
             };
-            self.registrar
+            let session_profile = match session_profile {
+                Ok(profile) => profile,
+                Err(error) => {
+                    degraded.push(error);
+                    continue;
+                }
+            };
+            match self
+                .registrar
                 .register(ExecutableAgentRegistration {
                     workspace_id: execution_workspace.to_owned(),
-                    agent_id: publication.agent_id,
+                    agent_id: publication.agent_id.clone(),
                     source_revision: publication.source_revision,
                     snapshot: publication.snapshot,
                     session_profile,
                 })
                 .await
-                .map_err(|error| error.to_string())?;
-            registered += 1;
+            {
+                Ok(_) => {
+                    first_for_agent.insert(publication.agent_id);
+                    registered += 1;
+                }
+                Err(error) => degraded.push(error.to_string()),
+            }
+        }
+        if !degraded.is_empty() {
+            return Err(format!(
+                "{registered} executable Agent registrations recovered; {} quarantined: {}",
+                degraded.len(),
+                degraded.join("; ")
+            ));
         }
         Ok(registered)
     }

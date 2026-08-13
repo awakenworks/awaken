@@ -4,6 +4,8 @@
 - Date: 2026-07-30
 - Amended: 2026-08-01 — static Environment ownership, Resources application
   composition, registration supervision, and durable projection high-water marks
+- Amended: 2026-08-13 — projection degradation no longer removes a healthy
+  serving process from Service endpoints; see Amendment A2
 - Depends on: ADR-0031, ADR-0032, ADR-0038, ADR-0062, ADR-0063,
   ADR-0065, ADR-0066, ADR-0067
 - Supersedes: ADR-0031 D1/D4 and ADR-0032 D1/D4 only where they require a
@@ -247,6 +249,22 @@ that loses ownership of `ResourceCatalog`.
   Coordinator outbox/audit identities remain retryable.
 - The service split requires boundary adapters, handlers, configuration checks,
   and tests, but no new domain model or general-purpose framework.
+
+## Amendment A2 (2026-08-13): projection degradation preserves serving readiness
+
+The original D2 readiness rule coupled the serving Endpoint set to recovery of
+rebuildable Agent and Environment projections. That coupling is superseded.
+`StaticRegistrationSupervisor` now keeps an otherwise healthy Control process
+ready while it retries projection recovery with bounded exponential backoff.
+Pending domains and consecutive failures are the authoritative degraded signal.
+
+Recovery quarantines malformed historical publications individually, preserves
+their immutable history for diagnosis, and continues registering valid rows.
+Coordinator's existing projection remains last-known-good until an exact valid
+registration succeeds. This does not add another recovery path or authority:
+startup and retry still invoke the same registrar from the same durable Control
+facts. The earlier Consequences statement that Control remains unready while a
+static registration domain is pending is superseded by this amendment.
 
 ## References
 

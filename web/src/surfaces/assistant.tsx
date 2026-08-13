@@ -12,6 +12,7 @@ import Transcript from "../components/session/Transcript";
 import { Button, Card, Pill, Skeleton } from "../components/ui";
 import { assistantContextForLocation, type AssistantSurfaceContext } from "../lib/assistant-guidance";
 import { api, ws } from "../lib/api/client";
+import { presentApiProblem } from "../lib/api-problem";
 import type { AgentConfig, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useGate } from "../lib/useGate";
@@ -215,6 +216,25 @@ export function AssistantPanel({
     ? app.t(`Ask about or change ${targetAgentId}…`, `询问或修改 ${targetAgentId}…`)
     : app.t("Ask a question or describe what you want to accomplish…", "提问，或描述你想完成的事情…");
   const assistantReady = !models.loading && models.ready.length > 0 && gate.status === "live";
+  const ensureProblem = ensureAssistant.error
+    ? presentApiProblem(ensureAssistant.error)
+    : undefined;
+  const ensureProblemCopy = ensureProblem && (() => {
+    switch (ensureProblem.action) {
+      case "authenticate":
+        return app.t("Your session expired. Sign in again, then retry.", "登录状态已过期。请重新登录后重试。");
+      case "authorize":
+        return app.t("This Workspace does not authorize the requested Assistant action.", "当前工作区未授权所需的助手操作。");
+      case "refresh_conflict":
+        return ensureProblem.code === "assistant_model_unavailable"
+          ? app.t("No usable model is published in this Workspace.", "当前工作区没有可用的已发布模型。")
+          : app.t("Assistant publication conflicts with the current Workspace state. Refresh before retrying.", "助手发布与当前工作区状态冲突。请刷新后再重试。");
+      case "retry_dependency":
+        return app.t("An Assistant dependency is temporarily unavailable. Retry is safe.", "助手依赖暂时不可用，可以安全重试。");
+      default:
+        return app.t("The Assistant could not be prepared. Inspect the error details.", "助手准备失败，请检查错误详情。");
+    }
+  })();
   const guide = (
     <AssistantGuide
       context={surfaceContext}
@@ -235,12 +255,13 @@ export function AssistantPanel({
           {app.t(
             ensureAssistant.isPending
               ? "Preparing the Assistant with the verified Workspace model…"
-              : "The Assistant could not be prepared. Verify a model connection and retry.",
+              : ensureProblemCopy ?? "The Assistant could not be prepared.",
             ensureAssistant.isPending
               ? "正在使用工作区已验证模型准备助手…"
-              : "助手准备失败。请验证模型连接后重试。",
+              : ensureProblemCopy ?? "助手准备失败。",
           )}
           {ensureAssistant.error instanceof Error && <small className="err">{ensureAssistant.error.message}</small>}
+          {ensureProblem?.requestId && <small className="mut">Correlation ID: {ensureProblem.requestId}</small>}
         </span>
         <div className="assistant-prerequisite-actions">
           <Button

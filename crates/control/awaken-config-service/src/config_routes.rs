@@ -50,7 +50,7 @@ fn valid_preview_id(id: &str) -> bool {
     })
 }
 
-fn preview_problem(code: &str, title: &str, detail: impl Into<String>) -> Json<Value> {
+fn problem_details(code: &str, title: &str, detail: impl Into<String>) -> Json<Value> {
     let detail = detail.into();
     Json(json!({
         "type": format!("https://awaken.dev/problems/{code}"),
@@ -68,7 +68,7 @@ fn preview_conflict_preserves_the_structured_root_cause() {
     // exact detail let the Console explain the 409 instead of collapsing it to
     // the HTTP reason phrase. Field-level cause classification stays with the
     // publication resolver that authored the detail.
-    let Json(problem) = preview_problem(
+    let Json(problem) = problem_details(
         "agent_preview_unresolvable",
         "Agent preview cannot be resolved",
         "plugin_config.web_search: config is required",
@@ -146,7 +146,7 @@ async fn create_preview(
         ),
         Err(error @ PublishError::Unresolvable(_)) => (
             StatusCode::CONFLICT,
-            preview_problem(
+            problem_details(
                 "agent_preview_unresolvable",
                 "Agent preview cannot be resolved",
                 error.to_string(),
@@ -463,36 +463,101 @@ pub(crate) async fn publish(
                 "installed": true,
             })),
         ),
-        Err(
-            error @ (PublishError::Unresolvable(_)
-            | PublishError::StaleRevision(_)
-            | PublishError::StaleResourceRevision(_)),
-        ) => (
+        Err(error) => publish_error_response(error),
+    }
+}
+
+fn publish_error_response(error: PublishError) -> (StatusCode, Json<Value>) {
+    let (status, code, title) = match &error {
+        PublishError::Unresolvable(_) => (
             StatusCode::CONFLICT,
-            Json(json!({ "error": error.to_string() })),
+            "agent_publication_unresolvable",
+            "Agent publication cannot be resolved",
         ),
-        Err(
-            error @ PublishError::Registration(
-                ExecutableAgentRegistrationError::Unavailable(_)
-                | ExecutableAgentRegistrationError::Storage(_),
-            ),
+        PublishError::StaleRevision(_) => (
+            StatusCode::CONFLICT,
+            "agent_source_revision_conflict",
+            "Agent source revision changed",
+        ),
+        PublishError::StaleResourceRevision(_) => (
+            StatusCode::CONFLICT,
+            "agent_resource_revision_conflict",
+            "Agent resource revision changed",
+        ),
+        PublishError::Registration(
+            ExecutableAgentRegistrationError::Unavailable(_)
+            | ExecutableAgentRegistrationError::Storage(_),
         ) => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": error.to_string() })),
+            "agent_registration_unavailable",
+            "Executable Agent registration is unavailable",
         ),
-        Err(
-            error @ PublishError::Registration(
-                ExecutableAgentRegistrationError::Invalid(_)
-                | ExecutableAgentRegistrationError::Conflict(_),
-            ),
+        PublishError::Registration(
+            ExecutableAgentRegistrationError::Invalid(_)
+            | ExecutableAgentRegistrationError::Conflict(_),
         ) => (
             StatusCode::CONFLICT,
-            Json(json!({ "error": error.to_string() })),
+            "agent_registration_conflict",
+            "Executable Agent registration conflicts with durable state",
         ),
-        Err(error) => (
+        _ => (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": error.to_string() })),
+            "agent_publication_invalid",
+            "Agent publication request is invalid",
         ),
+    };
+    (status, problem_details(code, title, error.to_string()))
+}
+
+#[cfg(test)]
+#[test]
+fn publication_failures_keep_distinct_operator_actions() {
+    // Cause/effect decision table (FMECA generic 409 S7/O8/D8=448):
+    // R1 stale author source -> refresh source; R2 stale Resource -> refresh
+    // bindings; R3 unresolvable dependency -> repair the named dependency;
+    // R4 registration storage unavailable -> 503 retry; R5 identity conflict ->
+    // 409 inspect/quarantine. Every effect is RFC-9457-shaped and retains the
+    // exact resolver/registrar detail for correlation with server logs.
+    let cases = [
+        (
+            PublishError::StaleRevision(Some(7)),
+            StatusCode::CONFLICT,
+            "agent_source_revision_conflict",
+        ),
+        (
+            PublishError::StaleResourceRevision(4),
+            StatusCode::CONFLICT,
+            "agent_resource_revision_conflict",
+        ),
+        (
+            PublishError::Unresolvable("plugin config missing".into()),
+            StatusCode::CONFLICT,
+            "agent_publication_unresolvable",
+        ),
+        (
+            PublishError::Registration(ExecutableAgentRegistrationError::Storage(
+                "database timeout".into(),
+            )),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "agent_registration_unavailable",
+        ),
+        (
+            PublishError::Registration(ExecutableAgentRegistrationError::Conflict(
+                "fingerprint mismatch".into(),
+            )),
+            StatusCode::CONFLICT,
+            "agent_registration_conflict",
+        ),
+    ];
+    for (error, expected_status, expected_code) in cases {
+        let (status, Json(problem)) = publish_error_response(error);
+        assert_eq!(status, expected_status, "{expected_code}");
+        assert_eq!(problem["code"], expected_code, "{expected_code}");
+        assert!(
+            problem["detail"]
+                .as_str()
+                .is_some_and(|detail| !detail.is_empty())
+        );
     }
 }
 

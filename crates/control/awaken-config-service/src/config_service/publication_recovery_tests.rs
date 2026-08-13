@@ -169,6 +169,50 @@ async fn startup_reconciliation_converges_legacy_duplicate_source_revisions() {
 }
 
 #[tokio::test]
+async fn startup_reconciliation_quarantines_one_bad_history_without_blocking_good_agents() {
+    // Cause/effect graph (FMECA malformed publication S8/O7/D5=280):
+    // C1 one durable row references a missing author revision; C2 other rows are
+    // valid; C3 Coordinator projection starts empty. R1(C1+C2+C3) -> valid rows
+    // are registered, the bad row remains immutable, and recovery returns one
+    // degraded aggregate for retry/alerting. It must neither delete history nor
+    // fail before later Agents receive their last-known-good projection.
+    let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+    let scope = ScopeId::from("wrkspc_quarantine");
+    let author = plane_over(store.clone());
+    for id in ["damaged-agent", "healthy-agent"] {
+        author.put(&scope, &agent_config(id)).await.unwrap();
+        author.publish(&scope, id).await.unwrap();
+    }
+
+    let mut orphan = author
+        .latest_publication(&scope, "damaged-agent")
+        .await
+        .unwrap()
+        .unwrap();
+    orphan.source_revision = 99;
+    orphan.publication_id = "orphan-publication".into();
+    orphan.fingerprint = "orphan-publication".into();
+    store.put_publication_scoped(&scope, &orphan).await.unwrap();
+
+    let (cold, catalog) = test_service_and_catalog();
+    let error = cold
+        .reconcile_registrations(store.as_ref(), &scope)
+        .await
+        .expect_err("R1 reports degraded history");
+    assert!(error.contains("1 quarantined"), "R1: {error}");
+    assert!(catalog.current(scope.as_str(), "healthy-agent").is_some(), "R1");
+    assert!(catalog.current(scope.as_str(), "damaged-agent").is_some(), "R1");
+    assert!(
+        store
+            .get_publication_scoped(&scope, "orphan-publication")
+            .await
+            .unwrap()
+            .is_some(),
+        "R1"
+    );
+}
+
+#[tokio::test]
 async fn registration_reconciliation_keeps_archived_publications_unavailable() {
     // Lifecycle decision table: R1 current Published + durable publication ->
     // register; R2 current Disabled/Archived + old publication -> withdraw and
