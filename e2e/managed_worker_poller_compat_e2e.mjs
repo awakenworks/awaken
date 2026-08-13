@@ -39,16 +39,21 @@ async function main() {
       betas: BETAS,
     });
 
-    // The official pre-built poller (the loop EnvironmentWorker.run uses): a single
-    // non-blocking drain pass. `autoStop: false` — we free each lease ourselves so
-    // the single-active-lease cap lets the next poll reach the session work.
+    // Cause/effect/FMECA: C1 the official helper polls with Environment Key K
+    // plus Worker ID W; C2 its ack/stop retain K but omit W; C3 autoStop owns the
+    // post-yield stop. Effects: E1 healthcheck and Session leases are claimed,
+    // acknowledged, yielded, and stopped exactly once; E2 the queue drains. A
+    // server that incorrectly makes W the cross-request authority strands every
+    // item at ack. The protocol decision-table test proves mismatched/missing
+    // credentials fail closed; this case owns real helper rule C1+C2+C3=>E1+E2.
+    // Use a single non-blocking drain pass and keep the helper's canonical
+    // `autoStop: true`, so no test-side lease mutation masks its wire behavior.
     const poller = new WorkPoller({
       client,
       environmentId: env.id,
       environmentKey: 'e2e-dummy',
       blockMs: null,
       drain: true,
-      autoStop: false,
       requestOptions: { betas: BETAS },
     });
 
@@ -59,11 +64,10 @@ async function main() {
       assert.equal(work.state, 'active', 'the official poller leased an active item');
       if (work.data.type === 'session') {
         sessionWork = work;
-        await client.beta.environments.work.stop(work.id, { environment_id: env.id, betas: BETAS });
         break;
       }
-      // Free the healthcheck lease so the next poll reaches the session work.
-      await client.beta.environments.work.stop(work.id, { environment_id: env.id, betas: BETAS });
+      // Returning to the iterator lets WorkPoller's canonical finally block
+      // stop the healthcheck before the next poll.
     }
 
     assert.ok(sessionWork, `the official poller claimed the session work, saw: ${claimed}`);

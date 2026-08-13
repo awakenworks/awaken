@@ -10,25 +10,31 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
   childDirectories,
-  deploymentEnv,
   onlyChildDirectory,
-  spawnServer,
+  spawnProduction,
   stopServer,
   waitForPort,
   waitForValue,
 } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
+import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38817);
 const WORKER_ADMIN_PORT = Number(process.env.E2E_WORKER_PORT ?? 39817);
+const INTERNAL_PORT = Number(process.env.E2E_CONFIG_PORT ?? 40817);
 const BASE = `http://127.0.0.1:${PORT}`;
+const INTERNAL_BASE = `http://127.0.0.1:${INTERNAL_PORT}`;
 const CONFIG_BASE = BASE;
-const WORKSPACE = `worker-resource-${process.pid}`;
+let WORKSPACE = `worker-resource-${process.pid}`;
 const THREAD = `resource-session-${process.pid}`;
 const GRANT = 'resource-manifest-e2e';
 const GRANT_REVISION = 1;
+const SEED_MODEL = `resource-seed-model-${process.pid}`;
+const SEED_AGENT = `resource-seed-agent-${process.pid}`;
+const SEED_KEY = 'sk-resource-seed';
 const FILE_BYTES = Buffer.from('immutable input selected by the frozen Session manifest\n');
 const MOUNT_PATH = 'uploads/input.txt';
 const SKILL_NAME = `remote-worker-skill-${process.pid}`;
@@ -85,7 +91,8 @@ function buildWorker(): string {
 async function post(pathname: string, body: unknown, worker?: string): Promise<any> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (worker) headers['x-awaken-worker-id'] = worker;
-  const response = await fetch(`${BASE}${pathname}`, {
+  const authority = pathname.startsWith('/v1/worker/') ? INTERNAL_BASE : BASE;
+  const response = await fetch(`${authority}${pathname}`, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
@@ -117,6 +124,41 @@ async function uploadFile(): Promise<string> {
   const text = await response.text();
   assert.equal(response.status, 200, `file upload accepted: ${text}`);
   return JSON.parse(text).id;
+}
+
+async function configureSeedModel(upstream: string): Promise<void> {
+  // The production binary has no test-only echo fallback. One canonical provider
+  // connection supplies the seed activation whose immutable request is then
+  // specialized for the resource Worker. FMECA: restoring a scenario-only model
+  // would bypass production publication; absence must fail before queue mutation.
+  const response = await fetch(
+    `${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/config/provider-connections`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        idempotency_key: `resource-worker-seed-${process.pid}`,
+        workspace_id: WORKSPACE,
+        provider_id: 'anthropic',
+        display_name: 'Resource Worker Seed',
+        dialect: 'anthropic_messages',
+        base_url: `${upstream}/v1/`,
+        timeout_secs: 30,
+        secret: SEED_KEY,
+      }),
+    },
+  );
+  const text = await response.text();
+  assert.equal(response.status, 201, `seed provider connection: ${text}`);
+  const authored = await resourceRequest('PUT', `config/agents/${SEED_AGENT}`, {
+    name: SEED_AGENT,
+    model: { id: SEED_MODEL },
+    system: 'Produce a seed activation only.',
+    max_steps: 1,
+  });
+  assert.equal(authored.id, SEED_AGENT);
+  const published = await resourceRequest('POST', `config/agents/${SEED_AGENT}/publish`);
+  assert.equal(published.installed, true);
 }
 
 async function uploadSkill(): Promise<{ skill_id: string; version: number; bundle_sha256: string }> {
@@ -183,7 +225,18 @@ async function registerSeedWorker(): Promise<{ id: string; identity: any }> {
         manifest: {
           manifest_version: 1,
           build_digest: 'resource-manifest-seed',
-          capabilities: ['host-executor/v1', 'native-runtime'],
+          // Seed claim decision table: C1 the published candidate requires a
+          // shared credential source; C2 the claiming driver reports the exact
+          // installed Native realization profile. C1+C2 => claim; C1+!C2 =>
+          // ineligible before lease mutation. FMECA: a high-level source flag
+          // alone could falsely imply a last-mile adapter, so claim admission
+          // also consumes the canonical structured evidence.
+          capabilities: [
+            'credential-source/v1',
+            'host-executor/v1',
+            'native-runtime',
+            WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
+          ],
           zone: null,
           architecture: process.arch,
           sandbox: {
@@ -378,6 +431,7 @@ async function enqueueAndAwait(request: any, seedWorkerId: string): Promise<void
 
 async function main(): Promise<void> {
   const database = await postgres();
+  const upstream = await startFakeAnthropic(SEED_KEY, { models: [SEED_MODEL] });
   const configStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-config-'));
   const workerStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-worker-'));
   // Seed-model decision table: R1 explicit scenario model -> the production
@@ -386,57 +440,73 @@ async function main(): Promise<void> {
   // submission fails closed (covered by the no-model Host tests), never an
   // implicit echo fallback. Resource/Postgres/dispatch/Worker adapters remain
   // the production implementations in both rules.
-  const management = spawnServer(
-    'management',
+  const management = spawnProduction(
+    configStorage,
     PORT,
     {
-      ...deploymentEnv(configStorage, {
-        // Management-plane identity decision table for this resource-boundary
-        // scenario: no-login + no Authorization => exercise the resource
-        // contract; embedded/cloud IAM + no Authorization => reject before
-        // multipart ingestion. Authentication behavior has its own E2Es, so
-        // this test selects no-login explicitly instead of weakening the
-        // production-ready Embedded IAM default or retrying an authorization
-        // failure as a transport error.
-        identityMode: 'no-login',
-        controlSealKey:
-          '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
-        databases: {
-          resource_database_url: database.url,
-          admin_db: database.url,
-          sessions_db: database.url,
-          runtime_database_url: database.url,
-        },
-        // Coordinator/Resources authority decision table: shared runtime plus
-        // `run_local_pool=false` => this production process owns dispatch and
-        // exact Resource reads while only the registered remote Worker may
-        // execute; a separate scenario cell would own a second Resource store
-        // and could not prove the cross-process projection contract.
-        fields: { run_local_pool: false, acp_clis: [] },
-      }),
-      // The scenario host owns its execution topology through the typed
-      // SESSION_DEPLOYMENT_* fixture boundary, while deploymentEnv above owns
-      // the product resource/control configuration. Both must name the same
-      // Postgres cell; otherwise the Coordinator correctly refuses an
-      // unrooted volatile SQLite dispatch authority before listening.
-      SESSION_DEPLOYMENT_INGRESS: 'durable',
-      SESSION_DEPLOYMENT_STORAGE_DIR: configStorage,
-      SESSION_DEPLOYMENT_DATABASE_URL: database.url,
-      SESSION_DEPLOYMENT_DISPATCH_BACKEND: 'postgres',
-      SESSION_DEPLOYMENT_STORE: 'postgres',
-      AWAKEN_SCENARIO_WORKSPACE: WORKSPACE,
+      // Management-plane identity decision table for this resource-boundary
+      // scenario: no-login + no Authorization => exercise the resource
+      // contract; embedded/cloud IAM + no Authorization => reject before
+      // multipart ingestion. Authentication behavior has its own E2Es.
+      identityMode: 'no-login',
+      controlSealKey:
+        '00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff',
+      databases: {
+        resource_database_url: database.url,
+        admin_db: database.url,
+        sessions_db: database.url,
+        runtime_database_url: database.url,
+      },
+      // Cause/effect decision table for the split transport boundary:
+      // C1 run_local_pool=false + C2 internal_bind present -> the public API
+      // owns resource authoring while authenticated Worker/dispatch traffic uses
+      // the private listener. C1 + !C2 -> startup fails closed. FMECA: merging
+      // listeners exposes internal mutation routes; omitting C2 strands remote
+      // work. Separate bases plus real Worker completion detect both failures.
+      fields: {
+        run_local_pool: false,
+        internal_bind: `127.0.0.1:${INTERNAL_PORT}`,
+        // Seed-selection decision table: both registered Workers satisfy the
+        // production-authored seed and have zero in-flight work; the canonical
+        // least-loaded policy then orders exact WorkerIdentity values. A remote
+        // `resource-seed-*` identity sorts before this explicit `zz-*` embedded
+        // identity and therefore captures the wire deterministically. FMECA:
+        // leaving the product-default `awaken-worker` id would win the tie and
+        // settle the seed before the remote fixture can inspect it.
+        worker_id: `zz-resource-embedded-${process.pid}`,
+      },
+      // The production process owns execution topology through the typed
+      // SESSION_DEPLOYMENT_* fixture boundary, while spawnProduction owns the
+      // one config.toml source. Both name the same Postgres cell; otherwise the
+      // Coordinator rejects an unrooted volatile SQLite dispatch authority.
+      extraEnv: {
+        SESSION_DEPLOYMENT_INGRESS: 'durable',
+        SESSION_DEPLOYMENT_STORAGE_DIR: configStorage,
+        SESSION_DEPLOYMENT_DATABASE_URL: database.url,
+        SESSION_DEPLOYMENT_DISPATCH_BACKEND: 'postgres',
+        SESSION_DEPLOYMENT_STORE: 'postgres',
+      },
     },
-  ).server;
+  );
   let worker: ChildProcessWithoutNullStreams | undefined;
   let workerOutput = '';
   try {
     await waitForPort(PORT, 180_000, management);
+    await waitForPort(INTERNAL_PORT, 180_000, management);
+    WORKSPACE = fs.readFileSync(
+      path.join(configStorage, 'platform-workspace-id'),
+      'utf8',
+    ).trim();
+    await configureSeedModel(upstream.url);
     const fileId = await uploadFile();
     const skill = await uploadSkill();
     const memory = await createMemory();
     const seedWorker = await registerSeedWorker();
 
-    await post(`/v1/durable/threads/${THREAD}-seed/submit_background`, { text: 'seed activation' });
+    await post(`/v1/durable/threads/${THREAD}-seed/submit_background`, {
+      agent: SEED_AGENT,
+      text: 'seed activation',
+    });
     const seedClaim = (
       await post('/v1/worker/dispatch/claim', { identity: seedWorker.identity }, seedWorker.id)
     ).claimed;
@@ -475,7 +545,7 @@ async function main(): Promise<void> {
     delete env.ANTHROPIC_API_KEY;
     delete env.OPENAI_API_KEY;
     Object.assign(env, {
-      AWAKEN_UPSTREAM_URL: BASE,
+      AWAKEN_UPSTREAM_URL: INTERNAL_BASE,
       SESSION_DEPLOYMENT_INGRESS: 'durable',
       SESSION_DEPLOYMENT_STORAGE_DIR: workerStorage,
       AWAKEN_WORKER_GATEWAY_ONLY: '1',
@@ -637,6 +707,7 @@ async function main(): Promise<void> {
   } finally {
     if (worker) await stopServer(worker).catch(() => {});
     await stopServer(management).catch(() => {});
+    upstream.close();
     fs.rmSync(configStorage, { recursive: true, force: true });
     fs.rmSync(workerStorage, { recursive: true, force: true });
     if (database.container && !process.env.AWAKEN_E2E_POSTGRES_CONTAINER) {

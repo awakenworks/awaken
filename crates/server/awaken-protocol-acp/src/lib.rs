@@ -204,6 +204,20 @@ pub trait RunFactAppender: Send {
     async fn append(&mut self, seq: u64, event: &AcpProjectedEvent) -> Result<(), AppendError>;
 }
 
+/// Canonical no-op appender for protocol phases whose projected frames are not
+/// new Run facts (capability probes and `session/load` history replay).
+#[cfg(feature = "real-acp")]
+#[derive(Default)]
+pub(crate) struct DiscardRunFacts;
+
+#[cfg(feature = "real-acp")]
+#[async_trait]
+impl RunFactAppender for DiscardRunFacts {
+    async fn append(&mut self, _seq: u64, _event: &AcpProjectedEvent) -> Result<(), AppendError> {
+        Ok(())
+    }
+}
+
 /// A neutral projection of one agent→client permission request: the tool the
 /// external CLI (its own brain) wants to run, surfaced when the agent asks the
 /// client to authorize it mid-turn (`session/request_permission`).

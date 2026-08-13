@@ -216,14 +216,21 @@ impl EnvironmentExecutionApplication {
     pub async fn claim_work(
         &self,
         environment_id: &str,
-        worker_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, EnvironmentExecutionError> {
         self.require_environment(environment_id).await?;
         Ok(self
             .work
-            .claim_with_reclaim(environment_id, worker_id, now_ms, reclaim_older_than_ms)
+            .claim_with_reclaim(
+                environment_id,
+                lease_owner,
+                poller_id,
+                now_ms,
+                reclaim_older_than_ms,
+            )
             .await?)
     }
 
@@ -376,6 +383,13 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         self.work
             .acquire_session(environment_id, session_id, worker_owner, now_ms)
             .await
+    }
+
+    async fn release_worker_session_work(
+        &self,
+        worker_owner: &str,
+    ) -> Result<usize, WorkQueueError> {
+        self.work.release_owner(worker_owner).await
     }
 }
 
@@ -1145,7 +1159,7 @@ mod tests {
             "W2"
         );
         let claimed = application
-            .claim_work("worker", "worker-a", 10, None)
+            .claim_work("worker", "worker-a", "worker-a", 10, None)
             .await
             .unwrap()
             .expect("healthcheck is claimable");
@@ -1272,6 +1286,9 @@ mod tests {
         ) -> Result<Option<awaken_session_contract::work_queue::SessionWorkLease>, WorkQueueError>
         {
             self.inner.acquire_session(env, session, worker, now).await
+        }
+        async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+            self.inner.release_owner(worker_owner).await
         }
         async fn update_metadata(
             &self,

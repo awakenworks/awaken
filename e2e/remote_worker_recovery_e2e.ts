@@ -21,6 +21,7 @@ const CONTROL = `http://127.0.0.1:${CONTROL_PORT}`;
 const AGENT = 'recoverable-remote-worker';
 const THREAD_TEXT = 'recoverable remote worker input';
 const TERMINAL_MARKER = 'REMOTE-WORKER-RECOVERED';
+const CRASH_RECOVERY_TIMEOUT_MS = 120_000;
 const sleep = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -408,7 +409,7 @@ async function waitForReplacementClaim(
   },
   workerId: string,
   runId: string,
-  timeoutMs = 120_000,
+  timeoutMs = CRASH_RECOVERY_TIMEOUT_MS,
 ): Promise<void> {
   // Recovery readiness cause/effect graph: C1 the replacement Worker is
   // registered; C2 it claims the exact expired Run at a higher epoch; C3 the
@@ -435,7 +436,10 @@ async function waitForReplacementClaim(
   );
 }
 
-async function waitForTerminalMessage(thread: string, timeoutMs = 30_000): Promise<any[]> {
+async function waitForTerminalMessage(
+  thread: string,
+  timeoutMs = CRASH_RECOVERY_TIMEOUT_MS,
+): Promise<any[]> {
   const deadline = Date.now() + timeoutMs;
   let messages: any[] = [];
   while (Date.now() <= deadline) {
@@ -454,13 +458,23 @@ async function main(): Promise<void> {
   // C6 Worker B reclaims at a higher epoch. C1 must freeze Worker placement in
   // the Session application (not merely suppress the Host pool), so C2 creates
   // no competing local realization lease. C3+C4 retries one operation id;
-  // C5+C6 resumes the committed snapshot, fences A, and emits one terminal fact.
+  // C5+C6 first reclaims the subordinate Run epoch; C7 then waits for the
+  // independently durable Session Work lease to expire before realization can
+  // transfer. C5+C6+C7 resumes the committed snapshot, fences A, and emits one
+  // terminal fact. The scenario WorkQueue is intentionally in-memory, so time
+  // is the production crash-recovery authority; directly mutating a second
+  // store would create a false parallel ownership path.
   //
-  // | Rule | C1 remote topology | C3 current | C4 lost receipt | C5 crash/C6 reclaim | Effect |
-  // | T1   | yes                | yes        | yes             | yes                 | remote-only lease; idempotent retry; fenced recovery |
-  // | T2   | no                 | n/a        | n/a             | n/a                 | local phase driver owns realization (Rust placement tests) |
-  // | T3   | yes                | stale      | any             | after reclaim       | old commit rejected |
-  // | T4   | yes                | yes        | no              | no                  | ordinary single-worker completion (worker transport E2E) |
+  // | Rule | remote | current | lost receipt | crash/reclaim | Work TTL | Effect |
+  // | T1   | yes    | yes     | yes          | yes           | elapsed  | idempotent retry; both fences transfer; one terminal fact |
+  // | T2   | no     | n/a     | n/a          | n/a           | n/a      | local phase driver owns realization (Rust placement tests) |
+  // | T3   | yes    | stale   | any          | reclaimed     | any      | old commit rejected |
+  // | T4   | yes    | yes     | no           | no            | live     | ordinary single-worker completion (worker transport E2E) |
+  // | T5   | yes    | yes     | yes          | reclaimed     | live     | replacement realization remains fenced until expiry |
+  // FMECA: bounding terminal recovery below the 60-second Work TTL makes T5 a
+  // false failure and masks T1. The shared 120-second budget covers one exact
+  // expiry plus the 30-second durable-pool retry cadence without weakening the
+  // stale-owner or exactly-once assertions.
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-remote-worker-recovery-'));
   const peer = await startA2aPeer();
   const proxy = await startFaultProxy();

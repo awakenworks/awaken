@@ -516,10 +516,18 @@ async function main() {
       cachedToken,
     );
     const rejectedPublication = async (target, binding, message) => {
+      // Error-envelope cause/effect/FMECA: every matrix-invalid binding (C1)
+      // reaches the canonical publication resolver and produces HTTP 409 (E1),
+      // stable RFC-9457 code (E2), and exact resolver detail (E3). Reading the
+      // retired `{error: string}` shape makes a correctly rejected publication
+      // look unclassified. Rule C1=>E1+E2+E3 owns this seam; the Rust table owns
+      // the distinct stale/unavailable/registration error partitions.
       await putDefaultProfile(target, binding);
       const rejected = await publishMatrixAgent();
       assert.equal(rejected.status, 409, JSON.stringify(rejected.body));
-      assert.match(rejected.body.error, message);
+      assert.equal(rejected.body.code, 'agent_publication_unresolvable');
+      assert.equal(rejected.body.type, 'https://awaken.dev/problems/agent_publication_unresolvable');
+      assert.match(rejected.body.detail, message);
     };
 
     await rejectedPublication(

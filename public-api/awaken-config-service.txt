@@ -28,6 +28,7 @@ pub awaken_config_service::PublishError::Unavailable(alloc::string::String)
 pub awaken_config_service::PublishError::Unresolvable(alloc::string::String)
 pub struct awaken_config_service::ConfigPlane
 impl awaken_config_service::ConfigPlane
+pub async fn awaken_config_service::ConfigPlane::authoring_scopes(&self) -> core::result::Result<alloc::vec::Vec<awaken_tenancy::ScopeId>, alloc::string::String>
 pub fn awaken_config_service::ConfigPlane::catalog_for(&self, &awaken_tenancy::ScopeId) -> alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub async fn awaken_config_service::ConfigPlane::complete_management_effect(&self, &awaken_tenancy::ScopeId, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_config_service::ConfigPlane::get(&self, &awaken_tenancy::ScopeId, &str) -> core::result::Result<core::option::Option<awaken_agent_config::config::AgentConfig>, alloc::string::String>

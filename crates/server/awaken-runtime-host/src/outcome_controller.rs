@@ -1,7 +1,7 @@
 //! Managed Host adapter for the extension-owned Outcome controller.
 
 use awaken_ext_goal::controller::{Controller, Error as ControllerError};
-use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent};
+use awaken_ext_goal::grader::{DEFAULT_JUDGE_INSTRUCTIONS, default_judge_agent_from_worker};
 use awaken_ext_goal::outcome::{Definition, Id};
 use awaken_ext_goal::state::Binding;
 
@@ -50,16 +50,7 @@ impl SharedHost {
         let _outcome = ctx.outcome.lock().await;
         let _execution = ctx.execution.lock().await;
 
-        let binding = Binding {
-            worker: ctx.config.clone(),
-            grader: self.judge_snapshot.clone().unwrap_or_else(|| {
-                default_judge_agent(
-                    &self.model_ref,
-                    "outcome-grader",
-                    DEFAULT_JUDGE_INSTRUCTIONS,
-                )
-            }),
-        };
+        let binding = outcome_binding(&ctx.config, self.judge_snapshot.as_ref());
         let host_grader = HostAgentGrader {
             host: self,
             worker_cancel: ctx.cancel.clone(),
@@ -94,6 +85,18 @@ impl SharedHost {
             Err(ControllerError::WorkerAwaiting { .. }) => Ok(Some(HostOutcomeDrive::Awaiting)),
             Err(error) => Err(controller_error(error)),
         }
+    }
+}
+
+fn outcome_binding(
+    worker: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    configured_judge: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+) -> Binding {
+    Binding {
+        worker: worker.clone(),
+        grader: configured_judge.cloned().unwrap_or_else(|| {
+            default_judge_agent_from_worker(worker, "outcome-grader", DEFAULT_JUDGE_INSTRUCTIONS)
+        }),
     }
 }
 
@@ -132,6 +135,40 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn outcome_binding_uses_one_explicit_or_worker_derived_judge_authority() {
+        use awaken_runtime_contract::ExecutableAgentSnapshot;
+        use awaken_runtime_contract::resolved::ModelBinding;
+
+        // Cause/effect graph: C1 a composition pins an explicit Judge; C2 the
+        // Worker freezes an exact Managed model route. Effects: E1 C1 wins
+        // byte-for-byte; E2 without C1, one tool-free Judge derives from C2.
+        // Constraint: C1 and E2 are mutually exclusive—there is no fallback or
+        // second mutable Judge lookup after the Outcome binding is committed.
+        //
+        // | Rule | C1 | C2 | Judge authority |
+        // | R1   | T  | T  | explicit C1     |
+        // | R2   | F  | T  | derived C2      |
+        let worker = ExecutableAgentSnapshot::builder("worker")
+            .model(ModelBinding::new("cred:codex", "", "acp:codex"))
+            .build();
+        let explicit = ExecutableAgentSnapshot::builder("explicit-judge")
+            .model(ModelBinding::new("cred:judge", "judge-model", "awaken"))
+            .build();
+
+        let pinned = outcome_binding(&worker, Some(&explicit));
+        assert_eq!(pinned.grader, explicit, "R1/E1");
+        let derived = outcome_binding(&worker, None);
+        assert_eq!(
+            derived.grader.resolved_spec.model_binding, worker.resolved_spec.model_binding,
+            "R2/E2"
+        );
+        assert!(
+            derived.grader.resolved_spec.tool_descriptors.is_empty(),
+            "R2/E2"
+        );
+    }
 
     fn completed(progress: HostOutcomeDrive) -> HostOutcomeReport {
         match progress {

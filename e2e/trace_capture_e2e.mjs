@@ -10,7 +10,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  cleanupFixtureTree,
+  pass,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 import {
   readSpans,
   assertValidIds,
@@ -130,7 +138,7 @@ async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0
 // it drain, then return the captured spans.
 async function captureDurable(port, file, storeDir) {
   fs.rmSync(file, { force: true });
-  fs.rmSync(storeDir, { recursive: true, force: true });
+  cleanupFixtureTree(storeDir);
   fs.mkdirSync(storeDir, { recursive: true });
   const { server } = spawnServer('real', port, {
     AWAKEN_TRACE_FILE: file,
@@ -160,7 +168,7 @@ async function captureDurable(port, file, storeDir) {
   } finally {
     await stopServer(server).catch(() => {});
     fs.rmSync(file, { force: true });
-    fs.rmSync(storeDir, { recursive: true, force: true });
+    cleanupFixtureTree(storeDir);
   }
 }
 

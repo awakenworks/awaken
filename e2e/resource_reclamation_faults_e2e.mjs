@@ -340,10 +340,14 @@ async function main() {
       `DROP TRIGGER ignore_claim_save; DROP TRIGGER reject_claim_save;`,
     );
 
-    // A reclamation fence is an intrinsic resource consistency boundary, not an
-    // IAM decision. Even after the API edge admitted this same-workspace request,
-    // the durable adapter must reject a new Session reference and activation must
-    // roll back to the prior empty manifest.
+    // Cause/effect graph: C1 same-workspace admission succeeds; C2 the File has
+    // an active physical-reclamation fence; C3 the Session has no prior binding.
+    // C1 && C2 && C3 -> E1 retryable 503/api_error, E2 the active manifest stays
+    // empty, E3 no durable session_binding reference is created. Decision-table
+    // rule R1=[C1=T,C2=T,C3=T]=>[E1,E2,E3]. The fence is an intrinsic resource
+    // consistency boundary, not an IAM decision. FMECA: reporting 500 hides the
+    // retry contract; accepting the binding races reclamation and can expose a
+    // missing blob. The status plus both rollback assertions detect either mode.
     const fencedSession = await json('POST', 'sessions', {
       agent: 'assistant',
       environment_id: 'env_local',
@@ -359,7 +363,7 @@ async function main() {
       `sessions/${fencedSession.body.id}/resources`,
       { type: 'file', file_id: fencedBinding, mount_path: '/workspace/fenced.txt' },
     );
-    assert.equal(fencedActivation.status, 500, JSON.stringify(fencedActivation.body));
+    assert.equal(fencedActivation.status, 503, JSON.stringify(fencedActivation.body));
     assert.match(JSON.stringify(fencedActivation.body), /fenced for physical reclamation/u);
     const projected = await json('GET', `sessions/${fencedSession.body.id}/resources`);
     assert.equal(projected.status, 200, JSON.stringify(projected.body));

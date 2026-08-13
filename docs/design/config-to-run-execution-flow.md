@@ -215,10 +215,10 @@ The Control store commit is the static source of truth. A boundary failure after
 that commit is reported as unavailable, never compensated by deleting or rolling
 back the definition. This is the same recovery rule used by Agent publication.
 One Control-owned supervisor rereads both authorities concurrently after startup
-or a wake signal. It becomes ready only after both registrations succeed; a
-failure leaves the process live but unready and schedules bounded exponential
-retry. Ready, pending-domain, consecutive-failure, and lag gauges expose the
-state without creating another work repository.
+or a wake signal. A failure preserves process serving readiness and the durable
+last-known-good projections while scheduling bounded exponential retry. Ready,
+pending-domain, consecutive-failure, and lag gauges expose degradation and
+recovery without creating another work repository.
 
 In an active-active Coordinator deployment, one request middleware compares both
 durable command-log high-water marks before Session/Deployment writes that may
@@ -591,7 +591,7 @@ cite the rule they cover.
 | E20 | logical Resource deletion or purge scheduling is retried | persist one deterministic purge intent; physical reclaim remains reference-fenced and idempotent |
 | E21 | another Coordinator replica accepted an Agent or Environment registration | compare durable high-water marks and incrementally advance both projections before Session/Deployment admission |
 | E22 | incremental projection tail is missing/out of order, or durable high-water is behind the local cursor | atomically full-replay the owning command log; fail admission closed if replay fails |
-| E23 | Control starts while either registration boundary is unavailable | remain live but unready, report pending/failure/lag metrics, and retry both authoritative recoveries with bounded backoff until ready |
+| E23 | Control starts while either registration boundary is unavailable | remain live and serving from last-known-good durable projections, report pending/failure/lag degradation, and retry both authoritative recoveries with bounded backoff |
 | E24 | configuration requests a standalone Resources role without an independent scaling or credential-isolation topology | reject the role and keep the canonical Resources component co-deployed; create no extra migration or application path |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection

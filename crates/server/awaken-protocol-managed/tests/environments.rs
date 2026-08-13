@@ -72,6 +72,35 @@ async fn call_with_worker(
     (status, value)
 }
 
+async fn call_with_lease_headers(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    worker_id: Option<&str>,
+    bearer: Option<&str>,
+    api_key: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(worker_id) = worker_id {
+        request = request.header("anthropic-worker-id", worker_id);
+    }
+    if let Some(bearer) = bearer {
+        request = request.header("authorization", format!("Bearer {bearer}"));
+    }
+    if let Some(api_key) = api_key {
+        request = request.header("x-api-key", api_key);
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
 /// Scope cause graph: omitted -> absent; organization/account -> exact echo;
 /// update changes scope and revision; invalid enum -> 400 before persistence.
 #[tokio::test]
@@ -472,6 +501,123 @@ async fn official_worker_header_and_heartbeat_cas_are_wired() {
     .await;
     assert_eq!(status, StatusCode::OK, "O4 stop");
     assert_eq!(stopped["state"], "stopped", "O4 stop");
+}
+
+#[tokio::test]
+async fn official_sdk_credential_owns_optional_worker_id_lease_lifecycle() {
+    // Official-helper cause/effect graph: C1 poll carries Environment bearer K
+    // plus observational Worker ID W; C2 ack/heartbeat/stop carry K but omit W,
+    // exactly as @anthropic-ai/sdk WorkPoller does; C3 a mutation carries other
+    // bearer J; C4 neither credential nor W is present; C5 raw SDK calls carry
+    // API key K without W. Effects: E1 the queue records
+    // W as polling but atomically leases to an opaque K fingerprint; E2 C1+C2
+    // continues one lease; E3 C3 is 412; E4 C4 is 400 before mutation.
+    // FMECA: requiring W on every mutation breaks the official helper, while
+    // treating missing W as unowned bypasses fencing. Separating observation
+    // from the credential-derived lease owner preserves both without a second
+    // registry or raw-secret persistence.
+    //
+    // | Rule | poll K+W | mutation bearer | Worker header | Effect |
+    // |---|---|---|---|---|
+    // | P1 | yes | K | omitted | E1+E2 |
+    // | P2 | yes | J | omitted | E3 |
+    // | P3 | yes | omitted | omitted | E4 |
+    // | P4 | API-key K, no W | K | omitted | E1+E2 |
+    let app = app();
+    let id = make_env(&app).await;
+    let (status, work) = call_with_lease_headers(
+        &app,
+        "GET",
+        &format!("/v1/environments/{id}/work/poll?block_ms="),
+        Some("official-poller-7"),
+        Some("environment-key-k"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P1");
+    let wid = work["id"].as_str().unwrap();
+
+    let (_, stats) = call(
+        &app,
+        "GET",
+        &format!("/v1/environments/{id}/work/stats"),
+        None,
+    )
+    .await;
+    assert_eq!(stats["workers_polling"], 1, "P1 observes W, not K and W");
+
+    let (status, acknowledged) = call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/ack"),
+        None,
+        Some("environment-key-k"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P1");
+    assert!(acknowledged["acknowledged_at"].is_string(), "P1");
+
+    let (status, _) = call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/heartbeat"),
+        None,
+        Some("environment-key-j"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "P2");
+
+    let (status, _) = call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/stop"),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "P3");
+
+    let (status, stopped) = call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{id}/work/{wid}/stop"),
+        None,
+        Some("environment-key-k"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P1");
+    assert_eq!(stopped["state"], "stopped", "P1");
+
+    // The generated raw SDK method makes Worker ID optional and authenticates
+    // with X-Api-Key. That credential owns and observes the lease when no label
+    // is present; it is not converted into an anonymous/unfenced mutation.
+    let raw_id = make_env(&app).await;
+    let (status, raw_work) = call_with_lease_headers(
+        &app,
+        "GET",
+        &format!("/v1/environments/{raw_id}/work/poll?block_ms="),
+        None,
+        None,
+        Some("raw-environment-key"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P4");
+    let raw_wid = raw_work["id"].as_str().unwrap();
+    let (status, raw_ack) = call_with_lease_headers(
+        &app,
+        "POST",
+        &format!("/v1/environments/{raw_id}/work/{raw_wid}/ack"),
+        None,
+        None,
+        Some("raw-environment-key"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P4");
+    assert!(raw_ack["acknowledged_at"].is_string(), "P4");
 }
 
 #[tokio::test]

@@ -165,7 +165,7 @@ async function main(): Promise<void> {
         pass('H4/H5 first Hand tool blocks for one Session-owned Sandbox and persists its binding');
       },
       {
-        AWAKEN_SANDBOX_DIR: path.join(root, 'sandboxes'),
+        SESSION_DEPLOYMENT_SANDBOX_DIR: path.join(root, 'sandboxes'),
         SESSION_ENVIRONMENT_TIER: tier,
       },
     );

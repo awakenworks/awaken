@@ -8,9 +8,8 @@ use awaken_acp_contract::{AcpCapabilityProbeConfig, NegotiatedAcpCapabilities};
 use awaken_agent_channel::AgentChannel;
 
 use super::{
-    AcpError, AcpProjectedEvent, AppendError, ID_AUTHENTICATE, ID_INITIALIZE, ID_NEW_SESSION,
-    PermissionAsk, PermissionResolver, PermissionVerdict, RunFactAppender, Wire, parse,
-    pump_to_response, to_acp_mcp_servers,
+    AcpError, ID_AUTHENTICATE, ID_INITIALIZE, ID_NEW_SESSION, PermissionAsk, PermissionResolver,
+    PermissionVerdict, RunFactAppender, Wire, parse, pump_to_response, to_acp_mcp_servers,
 };
 
 pub(super) async fn initialize_agent(
@@ -81,21 +80,9 @@ pub async fn negotiate_capabilities(
             PermissionVerdict::Deny
         }
     }
-    struct DiscardFacts;
-    #[async_trait::async_trait]
-    impl RunFactAppender for DiscardFacts {
-        async fn append(
-            &mut self,
-            _seq: u64,
-            _event: &AcpProjectedEvent,
-        ) -> Result<(), AppendError> {
-            Ok(())
-        }
-    }
-
     let cwd = config.session_cwd.as_deref().unwrap_or("/");
     let resolver = RejectPermission;
-    let mut sink = DiscardFacts;
+    let mut sink = crate::DiscardRunFacts;
     let mut seq = 0;
     let mut wire = Wire::new(channel);
     let init = initialize_agent(

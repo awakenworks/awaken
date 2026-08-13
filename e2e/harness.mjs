@@ -30,6 +30,12 @@ export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url
 // scenarios still own their cause/effect assertions, but must not fork the wire
 // version string from the protocol contract.
 export const USER_PROFILES_BETA = 'user-profiles-2026-03-24';
+// Canonical secret-free evidence for a test driver that stands in for the
+// installed Native provider adapter while it claims (but never executes) a
+// production-authored seed dispatch. Keep the wire encoding here so fixtures do
+// not grow independently ordered copies of the credential capability contract.
+export const WORKER_PROVIDER_CREDENTIAL_CAPABILITY =
+  'credential-realization.awaken.dev/v1:{"holders":[{"boundary":"worker","trust_domain":"awaken.worker"}],"material_sources":["control_plane_reference"],"realization_kinds":["worker_provider_adapter"],"recipient_bound_envelopes":false}';
 // Match scripts/ci/_cargo_target.sh: a caller-owned coverage/isolated target
 // wins; otherwise keep this worktree's Cargo artifacts out of any user-level
 // shared target that can contain same-name packages from another worktree.
@@ -37,13 +43,13 @@ export const USER_PROFILES_BETA = 'user-profiles-2026-03-24';
 process.env.CARGO_TARGET_DIR ??= path.join(REPO_ROOT, 'target');
 export const E2E_HOME_ROOT = `/tmp/awaken-e2e-home-${process.pid}`;
 export const E2E_HOME = `${E2E_HOME_ROOT}/home`;
-fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true });
+cleanupFixtureTree(E2E_HOME_ROOT);
 fs.mkdirSync(`${E2E_HOME}/.awaken`, { recursive: true });
 fs.writeFileSync(
   `${E2E_HOME}/.awaken/config.toml`,
   `data_dir = ${JSON.stringify(`${E2E_HOME_ROOT}/data`)}\nidentity_mode = "no-login"\nsandbox_tier = "local"\n`,
 );
-process.on('exit', () => fs.rmSync(E2E_HOME_ROOT, { recursive: true, force: true }));
+process.on('exit', () => cleanupFixtureTree(E2E_HOME_ROOT));
 
 // A2A publication-pin cause/effect rule: the advertised securitySchemes and
 // ordered security requirements are the complete security surface -> hash their
@@ -125,6 +131,15 @@ function untrackSpawnedServer(server) {
 // Keeping this merge in one place prevents the three spawn entry points from
 // recreating competing precedence rules.
 function serverProcessEnv(addr, configured = {}) {
+  // Ephemeral scenarios previously let every child invent a process-named
+  // /tmp sandbox root that the Node owner could not clean after a hard crash.
+  // A durable storage root remains authoritative; otherwise the harness-owned
+  // tree is the one cleanup boundary for HOME plus sandbox projections.
+  const hasDurableRoot = configured.SESSION_DEPLOYMENT_STORAGE_DIR
+    ?? process.env.SESSION_DEPLOYMENT_STORAGE_DIR;
+  const sandboxDir = configured.SESSION_DEPLOYMENT_SANDBOX_DIR
+    ?? process.env.SESSION_DEPLOYMENT_SANDBOX_DIR
+    ?? (hasDurableRoot ? undefined : `${E2E_HOME_ROOT}/sandboxes`);
   return {
     ...process.env,
     HOME: E2E_HOME,
@@ -135,6 +150,7 @@ function serverProcessEnv(addr, configured = {}) {
     // evidence at all. Trace scenarios own their minimum deterministic filter;
     // an explicit per-scenario RUST_LOG still wins.
     RUST_LOG: configured.RUST_LOG ?? (configured.AWAKEN_TRACE_FILE ? 'info' : process.env.RUST_LOG),
+    ...(sandboxDir ? { SESSION_DEPLOYMENT_SANDBOX_DIR: sandboxDir } : {}),
     AWAKEN_HTTP_ADDR: addr,
     AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
   };

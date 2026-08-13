@@ -236,12 +236,13 @@ impl ManagedState {
         let session_id = session_id.to_string();
         tokio::spawn(async move {
             if let Err(error) = state
-                .send_events(
+                .send_event_batch(
                     &session_id,
                     SendEventsRequest {
                         events,
                         user_profile_id: None,
                     },
+                    true,
                 )
                 .await
             {
@@ -789,6 +790,7 @@ impl ManagedState {
         &self,
         session_id: &str,
         events: &[InboundEvent],
+        deployment_initial: bool,
     ) -> Result<(), StateError> {
         let pending = self
             .application
@@ -839,10 +841,11 @@ impl ManagedState {
                     )));
                 }
                 InboundEvent::SystemMessage { .. }
-                    if !self
-                        .application
-                        .supports_mid_conversation_system(session_id)
-                        .await =>
+                    if !deployment_initial
+                        && !self
+                            .application
+                            .supports_mid_conversation_system(session_id)
+                            .await =>
                 {
                     return Err(StateError::Run(RunError::bad_request(
                         "model_does_not_support_mid_conversation_system",
@@ -882,6 +885,19 @@ impl ManagedState {
         session_id: &str,
         req: SendEventsRequest,
     ) -> Result<SendEventsResponse, StateError> {
+        self.send_event_batch(session_id, req, false).await
+    }
+
+    /// One event command for public writes and Deployment initial batches. The
+    /// source flag changes only admission of the Deployment-only initial
+    /// `system.message`; persistence, processing, projection, and terminal
+    /// behavior remain the same implementation.
+    async fn send_event_batch(
+        &self,
+        session_id: &str,
+        req: SendEventsRequest,
+        deployment_initial: bool,
+    ) -> Result<SendEventsResponse, StateError> {
         // Recover the session from durable truth if its in-memory record was lost
         // (a process restart) before resolving the agent — so a resume continues
         // the awaiting run instead of failing closed (ADR-0039).
@@ -915,7 +931,8 @@ impl ManagedState {
         }
         // Batch admission precedes the first receipt/event append. One invalid
         // member therefore cannot leave a partial public history.
-        self.validate_event_batch(session_id, &req.events).await?;
+        self.validate_event_batch(session_id, &req.events, deployment_initial)
+            .await?;
 
         let mut receipts = Vec::new();
         for inbound in &req.events {

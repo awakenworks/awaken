@@ -143,12 +143,22 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
 
 #[tokio::test]
 async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_events() {
-    // Official-docs cause/effect table:
-    // D1 valid Agent/environment/initial event -> active Deployment;
+    // Official-docs cause/effect graph and FMECA: C1 valid Agent/environment;
+    // C2 Deployment carries its wider official initial-event union, including a
+    // system.message followed by user.message; C3 manual trigger; C4 due cron;
+    // C5 pause. Effects: E1 active Deployment; E2 exactly one ordinary Session;
+    // E3 both Events commit through the canonical Session event command; E4 a
+    // schedule-triggered Session; E5 no launch while paused. If the Deployment
+    // batch is revalidated as public Session-create or mid-conversation input,
+    // system.message is accepted at authoring but rejected at execution
+    // (terminal run, severity high). The mitigation is to admit the empty
+    // Session once and deliver the already Deployment-validated batch through
+    // the sole source-aware event command.
+    // Decision table:
+    // D1 C1+C2 -> E1;
     // D2 manual run -> DeploymentRun XOR terminal branch with a Session id;
-    // D3 initial event -> committed through ordinary Session create (no second send path);
-    // D4 due cron -> schedule trigger with scheduled_at and another ordinary Session;
-    // D5 pause -> no further scheduled launch; unpause -> future-only cursor.
+    // D3 C1+C2+C3 -> E2+E3; D4 C1+C2+C4 -> E4;
+    // D5 C5 -> E5, then unpause advances the future-only cursor.
     let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
     let workspace_id = host.local_workspace().to_string();
     let managed = Arc::new(ManagedState::new(ManagedHost::new(host.clone())));
@@ -170,10 +180,16 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
             "agent":"assistant",
             "environment_id":"env_local",
             "name":"Dream maintenance",
-            "initial_events":[{
-                "type":"user.message",
-                "content":[{"type":"text","text":"deployment seed event"}]
-            }],
+            "initial_events":[
+                {
+                    "type":"system.message",
+                    "content":[{"type":"text","text":"deployment system directive"}]
+                },
+                {
+                    "type":"user.message",
+                    "content":[{"type":"text","text":"deployment seed event"}]
+                }
+            ],
             "schedule":{"type":"cron","expression":"*/15 * * * *","timezone":"UTC"}
         })),
     )
@@ -192,7 +208,9 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     assert!(manual["error"].is_null(), "D2 XOR");
     let session_id = manual["session_id"].as_str().unwrap();
     let observed = wait_for_session_events(&app, session_id, |events| {
-        events.to_string().contains("deployment seed event")
+        let rendered = events.to_string();
+        rendered.contains("deployment system directive")
+            && rendered.contains("deployment seed event")
     })
     .await;
     let (status, events) = match observed {
@@ -204,6 +222,14 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         ),
     };
     assert_eq!(status, StatusCode::OK, "D3: {events}");
+    let initial_types = events["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|event| event["type"].as_str())
+        .filter(|kind| matches!(*kind, "system.message" | "user.message"))
+        .collect::<Vec<_>>();
+    assert_eq!(initial_types, vec!["system.message", "user.message"], "D3");
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

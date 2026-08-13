@@ -424,21 +424,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readyz_waits_for_control_registration_recovery() {
+    async fn readyz_preserves_serving_during_control_registration_recovery() {
         // Cause/effect decision table: R1 a role without Control registration
         // authority has no health source -> ready; R2 Control attaches its
-        // initial pending health -> 503. Supervisor success transitions are
-        // tested at the Control component, so this test owns only probe mapping.
+        // initial degraded health -> still ready while pending/failure gauges
+        // carry the degradation. Supervisor success transitions are tested at
+        // the Control component, so this test owns only probe mapping.
+        // FMECA: making a rebuildable projection a serving-readiness dependency
+        // can evict every last-known-good endpoint during a Control outage;
+        // separating readiness from degraded registration metrics eliminates
+        // that causal edge without adding another recovery path.
         let (app, ctrl) = app();
         assert_eq!(get(&app, "/readyz").await.0, StatusCode::OK, "R1");
         ctrl.set_registration_health_for_test(Arc::new(
             awaken_control::RegistrationHealth::default(),
         ));
-        assert_eq!(
-            get(&app, "/readyz").await.0,
-            StatusCode::SERVICE_UNAVAILABLE,
-            "R2"
-        );
+        assert_eq!(get(&app, "/readyz").await.0, StatusCode::OK, "R2");
     }
 
     #[tokio::test]
@@ -479,8 +480,11 @@ mod tests {
     fn active_streams_gauge_is_registered_on_the_global_meter_and_scrapeable() {
         // Cause/effect decision table: R1 zero active requests/not draining ->
         // both lifecycle gauges are zero; R2 attached initial Control health ->
-        // registration ready=0 and pending_domains=2. The supervisor test owns
+        // registration ready=1 and pending_domains=2. The supervisor test owns
         // later success/failure transitions; this test owns metric projection.
+        // FMECA: if readiness and degradation share one gauge, autoscaling may
+        // remove healthy last-known-good endpoints. The paired gauges preserve
+        // serving readiness while making incomplete recovery detectable.
         awaken_observability::init_meters(&awaken_observability::OtelConfig::default()).ok();
         let ctrl = DrainController::new();
         ctrl.set_registration_health_for_test(Arc::new(
@@ -506,7 +510,7 @@ mod tests {
         assert!(
             scrape.lines().any(|line| {
                 line.starts_with("awaken_control_registration_ready")
-                    && line.trim_end().ends_with(" 0")
+                    && line.trim_end().ends_with(" 1")
             }),
             "R2 registration readiness is exported: {scrape}"
         );

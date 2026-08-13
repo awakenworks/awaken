@@ -812,6 +812,8 @@ pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol
 pub struct awaken_protocol_managed::types::session::SessionAgentUpdate
 pub awaken_protocol_managed::types::session::SessionAgentUpdate::mcp_servers: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>>
 pub awaken_protocol_managed::types::session::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
+pub struct awaken_protocol_managed::types::session::SessionCreateExtensions
+pub awaken_protocol_managed::types::session::SessionCreateExtensions::transcript_prefix: core::option::Option<awaken_protocol_managed::types::TranscriptPrefixInput>
 pub struct awaken_protocol_managed::types::session::SessionCreateParams
 pub awaken_protocol_managed::types::session::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::session::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
@@ -822,6 +824,7 @@ pub awaken_protocol_managed::types::session::SessionCreateParams::metadata: allo
 pub awaken_protocol_managed::types::session::SessionCreateParams::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::ResourceInput>
 pub awaken_protocol_managed::types::session::SessionCreateParams::title: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SessionCreateParams::vault_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_protocol_managed::types::session::SessionCreateParams::x_awaken: core::option::Option<awaken_protocol_managed::types::SessionCreateExtensions>
 pub struct awaken_protocol_managed::types::session::SessionError
 pub awaken_protocol_managed::types::session::SessionError::kind: &'static str
 pub awaken_protocol_managed::types::session::SessionError::mcp_server_name: core::option::Option<alloc::string::String>
@@ -879,6 +882,9 @@ pub awaken_protocol_managed::types::session::SessionUpdateParams::vault_ids: cor
 pub struct awaken_protocol_managed::types::session::SpanModelUsage
 pub awaken_protocol_managed::types::session::SpanModelUsage::speed: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SpanModelUsage::usage: awaken_protocol_managed::types::Usage
+pub struct awaken_protocol_managed::types::session::TranscriptPrefixInput
+pub awaken_protocol_managed::types::session::TranscriptPrefixInput::end_seq: core::option::Option<u64>
+pub awaken_protocol_managed::types::session::TranscriptPrefixInput::session_id: alloc::string::String
 pub struct awaken_protocol_managed::types::session::Usage
 pub awaken_protocol_managed::types::session::Usage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::session::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>
@@ -1445,6 +1451,8 @@ pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol
 pub struct awaken_protocol_managed::types::SessionAgentUpdate
 pub awaken_protocol_managed::types::SessionAgentUpdate::mcp_servers: core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>>
 pub awaken_protocol_managed::types::SessionAgentUpdate::tools: core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>
+pub struct awaken_protocol_managed::types::SessionCreateExtensions
+pub awaken_protocol_managed::types::SessionCreateExtensions::transcript_prefix: core::option::Option<awaken_protocol_managed::types::TranscriptPrefixInput>
 pub struct awaken_protocol_managed::types::SessionCreateParams
 pub awaken_protocol_managed::types::SessionCreateParams::agent: awaken_protocol_managed::types::AgentRef
 pub awaken_protocol_managed::types::SessionCreateParams::budget: core::option::Option<awaken_protocol_managed::types::BudgetLimit>
@@ -1455,6 +1463,7 @@ pub awaken_protocol_managed::types::SessionCreateParams::metadata: alloc::collec
 pub awaken_protocol_managed::types::SessionCreateParams::resources: alloc::vec::Vec<awaken_protocol_managed::types::resource::ResourceInput>
 pub awaken_protocol_managed::types::SessionCreateParams::title: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SessionCreateParams::vault_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_protocol_managed::types::SessionCreateParams::x_awaken: core::option::Option<awaken_protocol_managed::types::SessionCreateExtensions>
 pub struct awaken_protocol_managed::types::SessionError
 pub awaken_protocol_managed::types::SessionError::kind: &'static str
 pub awaken_protocol_managed::types::SessionError::mcp_server_name: core::option::Option<alloc::string::String>
@@ -1512,6 +1521,9 @@ pub awaken_protocol_managed::types::SessionUpdateParams::vault_ids: core::option
 pub struct awaken_protocol_managed::types::SpanModelUsage
 pub awaken_protocol_managed::types::SpanModelUsage::speed: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SpanModelUsage::usage: awaken_protocol_managed::types::Usage
+pub struct awaken_protocol_managed::types::TranscriptPrefixInput
+pub awaken_protocol_managed::types::TranscriptPrefixInput::end_seq: core::option::Option<u64>
+pub awaken_protocol_managed::types::TranscriptPrefixInput::session_id: alloc::string::String
 pub struct awaken_protocol_managed::types::Usage
 pub awaken_protocol_managed::types::Usage::active_seconds: core::option::Option<u64>
 pub awaken_protocol_managed::types::Usage::cache_creation: core::option::Option<awaken_protocol_managed::types::SessionThreadCacheCreationUsage>

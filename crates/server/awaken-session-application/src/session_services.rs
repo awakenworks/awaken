@@ -116,4 +116,11 @@ pub trait SessionEnvironmentSource: Send + Sync {
         Option<awaken_session_contract::work_queue::SessionWorkLease>,
         awaken_session_contract::work_queue::WorkQueueError,
     >;
+
+    async fn release_worker_session_work(
+        &self,
+        _worker_owner: &str,
+    ) -> Result<usize, awaken_session_contract::work_queue::WorkQueueError> {
+        Ok(0)
+    }
 }

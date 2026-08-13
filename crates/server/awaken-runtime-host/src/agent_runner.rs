@@ -44,6 +44,34 @@ use awaken_sandbox_local::LocalSandbox;
 use crate::agent_catalog::AgentCatalog;
 use crate::config::{build_runtime, latest_assistant_text, server_config};
 
+/// A child task must not outlive the parent future that owns its delegation
+/// boundary. Tokio's bare `JoinHandle` detaches on drop; this guard makes parent
+/// cancellation abort the same child execution instead of creating an orphan.
+struct AbortOnDropTask<T> {
+    handle: tokio::task::JoinHandle<T>,
+}
+
+impl<T> AbortOnDropTask<T> {
+    fn spawn(future: impl std::future::Future<Output = T> + Send + 'static) -> Self
+    where
+        T: Send + 'static,
+    {
+        Self {
+            handle: tokio::spawn(future),
+        }
+    }
+
+    async fn join(mut self) -> Result<T, tokio::task::JoinError> {
+        (&mut self.handle).await
+    }
+}
+
+impl<T> Drop for AbortOnDropTask<T> {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 /// Where an Agent Run's tools execute. A delegated Agent shares the initiating
 /// Agent's sandbox by default, or receives a fresh sandbox when placement policy
 /// requests isolation. Sandbox placement does not alter Run semantics.
@@ -581,18 +609,39 @@ pub(crate) async fn run_configured_agent_until_boundary(
     } else {
         let runtime = Arc::new(runtime);
         let attempt_executor = child_attempt_executor(runtime, &config, &adapters)?;
-        match operation {
-            (Some(activation), None) => {
-                let context = bind_direct_child_credentials(&activation, context, &adapters)?;
-                attempt_executor.execute(activation, context).await
+        // A Native child is one ordinary Run, but polling that complete Run
+        // recursively inside its parent's `agent_run` poll stack can overflow a
+        // standard Tokio worker stack in debug and sufficiently deep production
+        // compositions. An owned task is only an execution boundary: the same
+        // activation, context, executor, commit authority, and cancellation token
+        // remain canonical. Abort-on-drop prevents detaching work if the parent
+        // attempt is cancelled while awaiting the child boundary.
+        AbortOnDropTask::spawn(async move {
+            match operation {
+                (Some(activation), None) => {
+                    let context = bind_direct_child_credentials(&activation, context, &adapters)?;
+                    attempt_executor
+                        .execute(activation, context)
+                        .await
+                        .map_err(AgentRunError::Runtime)
+                }
+                (Some(activation), Some(command)) => {
+                    let context = bind_direct_child_credentials(&activation, context, &adapters)?;
+                    attempt_executor
+                        .resume(activation, command, context)
+                        .await
+                        .map_err(AgentRunError::Runtime)
+                }
+                _ => unreachable!("operation construction is exhaustive"),
             }
-            (Some(activation), Some(command)) => {
-                let context = bind_direct_child_credentials(&activation, context, &adapters)?;
-                attempt_executor.resume(activation, command, context).await
-            }
-            _ => unreachable!("operation construction is exhaustive"),
-        }
-        .map_err(AgentRunError::Runtime)?
+        })
+        .join()
+        .await
+        .map_err(|error| {
+            AgentRunError::Runtime(awaken_runtime_contract::execution::Error::Execution(
+                format!("delegated child task failed: {error}"),
+            ))
+        })??
     };
     settled_agent_boundary(reader.as_ref(), &thread_id, state)
 }

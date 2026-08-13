@@ -68,6 +68,9 @@ fn scenario_deployment_from(
     deployment.storage_dir = read("SESSION_DEPLOYMENT_STORAGE_DIR")
         .filter(|value| !value.trim().is_empty())
         .map(std::path::PathBuf::from);
+    deployment.sandbox_dir = read("SESSION_DEPLOYMENT_SANDBOX_DIR")
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from);
     deployment.durable = read("SESSION_DEPLOYMENT_INGRESS").as_deref() == Some("durable");
     deployment.disable_local_pool =
         read("SESSION_DEPLOYMENT_DISABLE_LOCAL_POOL").as_deref() == Some("1");
@@ -207,6 +210,7 @@ mod tests {
         let deployment = from(&[
             ("SESSION_DEPLOYMENT_INGRESS", "durable"),
             ("SESSION_DEPLOYMENT_STORAGE_DIR", "/tmp/runtime"),
+            ("SESSION_DEPLOYMENT_SANDBOX_DIR", "/tmp/sandboxes"),
             ("SESSION_DEPLOYMENT_DISPATCH_BACKEND", "postgres"),
             ("SESSION_DEPLOYMENT_STORE", "postgres"),
             ("SESSION_DEPLOYMENT_DATABASE_URL", "postgres://fixture"),
@@ -223,6 +227,11 @@ mod tests {
         assert_eq!(
             deployment.storage_dir.as_deref(),
             Some(std::path::Path::new("/tmp/runtime"))
+        );
+        assert_eq!(
+            deployment.sandbox_dir.as_deref(),
+            Some(std::path::Path::new("/tmp/sandboxes")),
+            "the typed scenario deployment is the sole Sandbox-root owner"
         );
         assert_eq!(
             deployment.dispatch_backend,

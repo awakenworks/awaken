@@ -663,8 +663,16 @@ async function main() {
       base, 'POST', scoped(WS_B, 'agents/owned-agent/publish'),
     );
     assert.equal(rejectedForeignCredential.status, 409, JSON.stringify(rejectedForeignCredential.json));
+    // Error-projection cause/FMECA rule: foreign credential + B-scoped publish
+    // -> stable RFC9457 code/type/detail. Reading the removed ad-hoc `error`
+    // property turns a correct fail-closed response into a false E2E failure.
+    assert.equal(rejectedForeignCredential.json.code, 'agent_publication_unresolvable');
+    assert.equal(
+      rejectedForeignCredential.json.type,
+      'https://awaken.dev/problems/agent_publication_unresolvable',
+    );
     assert.match(
-      rejectedForeignCredential.json.error,
+      rejectedForeignCredential.json.detail,
       /credential is unavailable in this Workspace/,
       'B cannot publish a draft pinned to A credential',
     );

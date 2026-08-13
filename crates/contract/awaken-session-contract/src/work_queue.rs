@@ -277,6 +277,23 @@ pub trait SessionWorkLeaseAuthority: Send + Sync {
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<SessionWorkOwnership, WorkQueueError>;
+
+    /// Release the exact Session Work lease after the registered Worker's Run
+    /// has committed and is ready to settle. `false` means the caller no longer
+    /// owns that Session and must not settle its Run as current.
+    async fn release_session_work(
+        &self,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<bool, WorkQueueError>;
+
+    /// Release every Session Work lease still owned by one exact registered
+    /// Worker incarnation during graceful deregistration.
+    async fn release_worker_session_work(
+        &self,
+        worker_owner: &str,
+    ) -> Result<usize, WorkQueueError>;
 }
 
 /// Result of a mutation that only the current work owner may perform.
@@ -464,12 +481,14 @@ pub trait WorkQueue: Send + Sync {
     async fn claim_with_reclaim(
         &self,
         env_id: &str,
-        worker_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
         now_ms: u64,
         reclaim_older_than_ms: Option<u64>,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
         let _ = reclaim_older_than_ms;
-        self.claim(env_id, worker_id, now_ms).await
+        let _ = poller_id;
+        self.claim(env_id, lease_owner, now_ms).await
     }
     /// Acknowledge receipt (queued→starting), stamping `acknowledged_at`.
     async fn ack(
@@ -495,6 +514,9 @@ pub trait WorkQueue: Send + Sync {
         wid: &str,
         worker_id: &str,
     ) -> Result<WorkMutationResult, WorkQueueError>;
+    /// Graceful registered-Worker teardown. Only active Session items with the
+    /// exact incarnation-qualified owner are stopped.
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError>;
     /// Coordinator-owned terminal projection. This is not a Worker mutation:
     /// it retires the canonical item after the Session terminal fence and
     /// therefore intentionally does not require the former lease owner.

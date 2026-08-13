@@ -38,6 +38,7 @@ pub use awaken_runtime_contract::CredentialUsage
 pub use awaken_runtime_contract::CredentialUsageError
 pub use awaken_runtime_contract::DelegationLimits
 pub use awaken_runtime_contract::EndCause
+pub use awaken_runtime_contract::ExecutionScopeRef
 pub use awaken_runtime_contract::HttpEffectPlacement
 pub use awaken_runtime_contract::ImageSource
 pub use awaken_runtime_contract::MergePolicy
@@ -1096,6 +1097,7 @@ pub awaken_runtime_contract::runtime_context::RuntimeRunContext::cancellation: c
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::capture: awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::credential::AttemptCredentialRealization>
+pub awaken_runtime_contract::runtime_context::RuntimeRunContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::runtime_context::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
@@ -1122,6 +1124,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_credential_realization(self, awaken_runtime_contract::credential::AttemptCredentialRealization) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_data_subject(self, awaken_runtime_contract::data_subject::DataSubjectId) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownership(self, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> Self
@@ -1223,6 +1226,7 @@ pub awaken_runtime_contract::tool::ToolCall::arguments: serde_json::value::Value
 pub awaken_runtime_contract::tool::ToolCall::call_id: alloc::string::String
 pub awaken_runtime_contract::tool::ToolCall::tool_id: alloc::string::String
 pub struct awaken_runtime_contract::tool::ToolOperationContext
+pub awaken_runtime_contract::tool::ToolOperationContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_runtime_contract::tool::ToolOperationContext::operation_id: alloc::string::String
 pub awaken_runtime_contract::tool::ToolOperationContext::run_id: core::option::Option<awaken_agent_contract::agent::run::Id>
 impl awaken_runtime_contract::tool::ToolOperationContext
@@ -1862,6 +1866,7 @@ pub awaken_runtime_contract::RuntimeRunContext::cancellation: core::option::Opti
 pub awaken_runtime_contract::RuntimeRunContext::capture: awaken_runtime_contract::runtime_context::CaptureContext
 pub awaken_runtime_contract::RuntimeRunContext::commit: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>>
 pub awaken_runtime_contract::RuntimeRunContext::credential_realization: core::option::Option<awaken_runtime_contract::credential::AttemptCredentialRealization>
+pub awaken_runtime_contract::RuntimeRunContext::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_runtime_contract::RuntimeRunContext::live_inbox: core::option::Option<awaken_runtime_contract::live_inbox::LiveInbox>
 pub awaken_runtime_contract::RuntimeRunContext::model_executor: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>
 pub awaken_runtime_contract::RuntimeRunContext::ownership: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>>
@@ -1888,6 +1893,7 @@ pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_capture
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_commit(self, alloc::sync::Arc<dyn awaken_agent_contract::thread::commit::coordinator::Coordinator>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_credential_realization(self, awaken_runtime_contract::credential::AttemptCredentialRealization) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_data_subject(self, awaken_runtime_contract::data_subject::DataSubjectId) -> Self
+pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_live_inbox(self, awaken_runtime_contract::live_inbox::LiveInbox) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_model_executor(self, alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>) -> Self
 pub fn awaken_runtime_contract::runtime_context::RuntimeRunContext::with_ownership(self, alloc::sync::Arc<dyn awaken_runtime_contract::runtime_context::AttemptOwnershipVerifier>) -> Self

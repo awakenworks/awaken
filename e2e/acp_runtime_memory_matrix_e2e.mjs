@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { cleanupFixtureTree, pass, withServer } from './harness.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -167,7 +167,7 @@ async function main() {
     RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(realHome, '.rustup'),
     HOME: sandboxHome,
     SESSION_DEPLOYMENT_STORAGE_DIR: storageDir,
-    AWAKEN_SANDBOX_DIR: sandboxDir,
+    SESSION_DEPLOYMENT_SANDBOX_DIR: sandboxDir,
     AWAKEN_SANDBOX_TIER: 'local',
   });
 
@@ -358,8 +358,11 @@ async function main() {
     );
   } finally {
     fs.rmSync(sandboxHome, { recursive: true, force: true });
-    fs.rmSync(sandboxDir, { recursive: true, force: true });
-    fs.rmSync(storageDir, { recursive: true, force: true });
+    // Every runtime may leave a live or disconnected projection after its
+    // process boundary. The canonical cleanup decision table detaches those
+    // mounts before removing either owner tree and fails closed on detach.
+    cleanupFixtureTree(sandboxDir);
+    cleanupFixtureTree(storageDir);
   }
 }
 

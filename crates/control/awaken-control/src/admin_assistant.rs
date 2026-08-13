@@ -312,12 +312,11 @@ pub struct HostResourceInventory {
 }
 
 impl HostResourceInventory {
-    /// Build the inventory from the two live handles and an edge-provisioned
-    /// workspace coordinate. The adapter never invents a tenant.
+    /// Build the inventory from the two live handles. Each read receives the
+    /// request-resolved Workspace; the adapter stores no parallel tenant default.
     pub fn new(
         memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
         skills: Arc<dyn awaken_resource_contract::SkillStore>,
-        _skill_workspace: impl Into<String>,
     ) -> Self {
         Self { memory, skills }
     }
@@ -1021,7 +1020,7 @@ mod tests {
         };
 
         let (state, executable) = make_state();
-        ensure_admin_assistant(
+        let Json(result) = ensure_admin_assistant(
             State(state),
             Some(Extension(awaken_tenancy::WorkspaceScope(
                 "workspace-tenant".into(),
@@ -1029,6 +1028,7 @@ mod tests {
         )
         .await
         .expect("H1 tenant publication");
+        assert_eq!(result["status"], "ready", "H1");
         assert!(
             executable
                 .current("workspace-tenant", ADMIN_ASSISTANT_AGENT_ID)
@@ -1043,9 +1043,10 @@ mod tests {
         );
 
         let (state, executable) = make_state();
-        ensure_admin_assistant(State(state), None)
+        let Json(result) = ensure_admin_assistant(State(state), None)
             .await
             .expect("H2 local publication");
+        assert_eq!(result["status"], "ready", "H2");
         assert!(
             executable
                 .current("workspace-local", ADMIN_ASSISTANT_AGENT_ID)
@@ -1178,6 +1179,14 @@ mod tests {
     /// two data-plane sources the `CatalogCapabilityReader` folds in when wired.
     #[tokio::test]
     async fn host_inventory_reports_put_memory_stores_and_skills() {
+        // Cause/effect graph: C1 an active Memory Store and Skill belong to the
+        // request Workspace; C2 an archived Memory Store is present; C3 the
+        // caller selects another Workspace. Effects: E1 return the active IDs;
+        // E2 omit archived IDs; E3 return no cross-Workspace IDs. Decision rules:
+        // R1=C1+!C3->E1, R2=C2->E2, R3=C1+C3->E3.
+        // FMECA: retaining a constructor-time Workspace beside the request scope
+        // can either leak inventory across tenants or hide valid capabilities;
+        // removing that redundant coordinate leaves one request-owned boundary.
         use awaken_resource_contract::{
             ConfigVersion, MemoryStoreConfigVersion, MemoryStoreDefinition, ResourceCatalog,
             ResourceState,
@@ -1246,12 +1255,19 @@ mod tests {
             .await
             .unwrap();
 
-        let inv = HostResourceInventory::new(registry, skills, DEFAULT_SCOPE);
+        let inv = HostResourceInventory::new(registry, skills);
         assert_eq!(
-            inv.memory_stores("workspace").await,
-            vec!["mem-1".to_string()]
+            inv.memory_stores(DEFAULT_SCOPE).await,
+            vec!["mem-1".to_string()],
+            "R1/R2"
         );
-        assert_eq!(inv.skills("workspace").await, vec!["greet".to_string()]);
+        assert_eq!(
+            inv.skills(DEFAULT_SCOPE).await,
+            vec!["greet".to_string()],
+            "R1"
+        );
+        assert!(inv.memory_stores("other-workspace").await.is_empty(), "R3");
+        assert!(inv.skills("other-workspace").await.is_empty(), "R3");
     }
 
     /// The reader lists existing agent ids in the scope, excluding the reserved admin

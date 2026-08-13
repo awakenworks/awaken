@@ -7,12 +7,12 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
+import { waitForPort } from './harness.mjs';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 
@@ -29,27 +29,6 @@ function awakenBin() {
   });
 }
 
-function waitForPort(port, server, timeoutMs = 180_000) {
-  const deadline = performance.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const socket = net.createConnection({ port, host: '127.0.0.1' });
-      socket.once('connect', () => {
-        socket.destroy();
-        resolve();
-      });
-      socket.once('error', () => {
-        socket.destroy();
-        if (server.exitCode !== null || server.signalCode !== null) {
-          reject(new Error(`server exited before listening on ${port}`));
-        } else if (performance.now() > deadline) reject(new Error(`server did not listen on ${port}`));
-        else setTimeout(attempt, 100);
-      });
-    };
-    attempt();
-  });
-}
-
 async function main() {
   const bin = awakenBin();
 
@@ -57,7 +36,9 @@ async function main() {
   // C1 command is absent/all-in-one; C2 a retired overlapping name is used;
   // C3 an unknown option is present; C4 Control uses local mode; C5 Control
   // uses server mode; C6 the split Control service token is projected; C7 the
-  // executable-registration Coordinator URL/token pair is projected. E1
+  // executable-registration Coordinator URL/token pair is projected; C8 the
+  // split process has an independent private bind; C9 the harness owns a
+  // process-scoped port and observes the spawned child during readiness. E1
   // selects the one combined process, E2/E3/E4 reject before binding, and E5
   // exposes Control without Coordinator routes. Missing C6 masks the mode gate
   // because an unauthenticated split boundary must fail first.
@@ -67,8 +48,13 @@ async function main() {
   // | K2 | retired | T | F | n/a | E2 |
   // | K3 | all-in-one | F | T | n/a | E3 |
   // | K4a | Control/local | F | F | F | reject missing service token |
-  // | K4b | Control/local | F | F | T; C7 absent | E4 (`mode=server` required) |
-  // | K5 | Control/server | F | F | T; C7 paired | E5 |
+  // | K4b | Control/local | F | F | T; C7 absent; C8 | E4 (`mode=server` required) |
+  // | K5 | Control/server | F | F | T; C7 paired; C8 | E5 |
+  // FMECA: omitting C8 makes the configuration boundary correctly reject the
+  // absent private listener before the service lifecycle can exercise E4.
+  // Omitting C9 can connect to a stale fixed-port listener and report a false
+  // readiness success; the canonical harness allocation plus child observation
+  // makes child exit terminal and isolates this scenario's public listener.
 
   const help = spawnSync(bin, ['--help'], { encoding: 'utf8' });
   assert.equal(help.status, 0, help.stderr);
@@ -98,6 +84,7 @@ async function main() {
   fs.writeFileSync(path.join(configDir, 'config.toml'), [
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+    `internal_bind = ${JSON.stringify(`127.0.0.1:${PORT + 1}`)}`,
     'identity_mode = "no-login"',
     'acp_clis = ["gemini"]',
   ].join('\n'));
@@ -114,6 +101,7 @@ async function main() {
   fs.writeFileSync(localControlConfig, [
     `data_dir = ${JSON.stringify(path.join(temp, 'control-data'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+    `internal_bind = ${JSON.stringify(`127.0.0.1:${PORT + 1}`)}`,
     'identity_mode = "no-login"',
     `control_service_token_file = ${JSON.stringify(serviceToken)}`,
   ].join('\n'));
@@ -155,7 +143,7 @@ async function main() {
   };
 
   try {
-    await waitForPort(PORT, server);
+    await waitForPort(PORT, 180_000, server);
     const base = `http://127.0.0.1:${PORT}`;
 
     let response = await fetch(`${base}/`);
@@ -179,6 +167,7 @@ async function main() {
     fs.writeFileSync(path.join(configDir, 'config.toml'), [
       `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
       `bind = ${JSON.stringify(`127.0.0.1:${PORT}`)}`,
+      `internal_bind = ${JSON.stringify(`127.0.0.1:${PORT + 1}`)}`,
       'mode = "server"',
       'identity_mode = "no-login"',
       'control_seal_key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"',
@@ -191,7 +180,7 @@ async function main() {
       env: { ...process.env, HOME: home },
       stdio: ['ignore', 'inherit', 'inherit'],
     });
-    await waitForPort(PORT, server);
+    await waitForPort(PORT, 180_000, server);
     response = await fetch(`${base}/v1/config/catalog`);
     assert.equal(response.status, 200, await response.text());
     response = await fetch(`${base}/v1/sessions`, {

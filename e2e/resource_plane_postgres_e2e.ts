@@ -10,7 +10,7 @@ import path from 'node:path';
 import { execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import { cleanupFixtureTree, spawnProduction, stopServer, waitForPort } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
@@ -225,36 +225,6 @@ function writeResourceCatalogRecord(
   );
 }
 
-function seedLegacyMemoryIdentities(container: string, canonicalId: string): void {
-  const rows = [
-    {
-      id: `legacy-pg-owned-${process.pid}`,
-      workspace_id: WORKSPACE,
-      name: 'Postgres legacy governed memory',
-      description: 'owned v6 row',
-      metadata: { source: 'admin-v6' },
-      archived: false,
-    },
-    {
-      id: `legacy-pg-unowned-${process.pid}`,
-      name: 'Must remain quarantined',
-      archived: false,
-    },
-    {
-      id: canonicalId,
-      workspace_id: WORKSPACE,
-      name: 'Must not replace canonical Postgres history',
-      archived: false,
-    },
-  ];
-  psql(
-    container,
-    rows.map((row) =>
-      `INSERT INTO admin_memory_store(id, data) VALUES (${sqlLiteral(row.id)}, ${sqlLiteral(JSON.stringify(row))}::jsonb);`,
-    ).join(' '),
-  );
-}
-
 function resourceIntent(container: string, resourceId: string): Record<string, any> | undefined {
   const output = psql(
     container,
@@ -272,31 +242,6 @@ function fileBlobId(container: string, fileId: string): string {
   );
   assert.notEqual(blobId, '', `missing private blob identity for ${fileId}`);
   return blobId;
-}
-
-function managedSessionResources(
-  container: string,
-  sessionId: string,
-): Record<string, any> {
-  const output = psql(
-    container,
-    `SELECT aggregate_json::jsonb->'resources' FROM managed_session WHERE session_id=${sqlLiteral(sessionId)}`,
-  );
-  assert.notEqual(output, '', `missing durable Session ${sessionId}`);
-  return JSON.parse(output);
-}
-
-function writeManagedSessionResources(
-  container: string,
-  sessionId: string,
-  resources: Record<string, any>,
-): void {
-  psql(
-    container,
-    `UPDATE managed_session SET aggregate_json=jsonb_set(aggregate_json::jsonb, '{resources}', ` +
-      `${sqlLiteral(JSON.stringify(resources))}::jsonb)::text ` +
-      `WHERE session_id=${sqlLiteral(sessionId)}`,
-  );
 }
 
 function extractionIntent(
@@ -598,12 +543,19 @@ async function main(): Promise<void> {
     await stop(server);
     assertNoLocalResourceTruth(firstDirectory);
 
-    // Legacy-import decision table (one migration path, never a fallback read):
-    // | legacy owner | canonical id exists | effect |
-    // | non-empty    | false               | import one v1 Catalog aggregate |
-    // | empty        | false               | quarantine; never infer ownership |
-    // | non-empty    | true                | preserve canonical aggregate |
-    seedLegacyMemoryIdentities(pg.container, memoryId);
+    // Cause/effect graph for the single resource authority: C1 the canonical
+    // Resources aggregate exists; C2 the retired Control Memory table is absent;
+    // C3 the process restarts on a different local directory. C1&&C2&&C3 -> E1
+    // canonical history survives unchanged and E2 no legacy/fallback read path
+    // can manufacture another MemoryStore. Decision rule R1=[T,T,T]=>[E1,E2].
+    // FMECA: retaining or recreating admin_memory_store would establish a second
+    // source of truth and could overwrite current history; schema absence plus
+    // the post-restart canonical assertions detect that failure mode.
+    assert.equal(
+      psql(pg.container, "SELECT to_regclass('public.admin_memory_store') IS NULL"),
+      't',
+      'retired Control Memory storage must not coexist with Resources authority',
+    );
 
     server = start(secondDirectory, pg.url);
     await ready();
@@ -688,25 +640,7 @@ async function main(): Promise<void> {
         200,
       );
     }
-    const legacyPgId = `legacy-pg-owned-${process.pid}`;
-    const migratedLegacy = await json('GET', scoped(WORKSPACE, `memory_stores/${legacyPgId}`));
-    assert.equal(migratedLegacy.status, 200);
-    assert.equal(migratedLegacy.body.name, 'Postgres legacy governed memory');
-    assert.equal(
-      (await json('GET', scoped(WORKSPACE, `memory_stores/${legacyPgId}/config`))).status,
-      404,
-    );
-    assert.equal(
-      (await json('GET', scoped(WORKSPACE, `memory_stores/legacy-pg-unowned-${process.pid}`))).status,
-      404,
-    );
-    assert.notEqual(restoredStore.body.name, 'Must not replace canonical Postgres history');
-    const patchedLegacy = await json('POST', scoped(WORKSPACE, `memory_stores/${legacyPgId}`), {
-      description: 'updated after Postgres migration',
-      metadata: { source: 'catalog-v8' },
-    });
-    assert.equal(patchedLegacy.status, 200);
-    assert.equal(patchedLegacy.body.description, 'updated after Postgres migration');
+    assert.equal(restoredStore.body.name, 'shared-memory');
     assert.equal(
       (await json('GET', scoped(WORKSPACE, `memory_stores/${memoryId}/config_versions/1`))).status,
       404,
@@ -779,17 +713,24 @@ async function main(): Promise<void> {
       ],
     });
     assert.equal(session.status, 200, JSON.stringify(session.body));
-    // Registered-Worker activation decision table. The public Resource list is
-    // the installed generation, never a second projection of desired state.
+    // Registered-Worker activation cause/effect table. The public Resource list
+    // is the canonical desired manifest, while status carries realization state;
+    // there is no second installed-resource catalog.
     //
     // | Frozen inputs | Worker acknowledgement | Public resources | Status |
     // |---|---|---|---|
-    // | present | absent | empty | preparing |
+    // | present | absent | both bindings | rescheduling |
     // | present | exact | both bindings | idle/running |
     //
-    // This process topology always uses its authenticated registered Worker, so
-    // create returns the first row and the turn below crosses the second row.
-    assert.deepEqual(session.body.resources, [], 'unacknowledged inputs are not active');
+    // Rule R1 covers create and R2 the turn below. FMECA: hiding desired inputs
+    // breaks official create/read round-trip; calling them installed invents a
+    // parallel projection. Exact resource equality plus the independent status
+    // assertion detects both failures.
+    assert.deepEqual(
+      session.body.resources.map((resource: { type: string }) => resource.type),
+      ['memory_store', 'github_repository'],
+      'the canonical desired manifest is immediately readable',
+    );
     assert.equal(session.body.status, 'rescheduling');
     const turn = await json(
       'POST',
@@ -849,21 +790,14 @@ async function main(): Promise<void> {
       'the completed Postgres receipt corresponds to content in the bound MemoryStore',
     );
 
-    // A live resource attachment creates a new Session activation generation and
-    // therefore revalidates every frozen governed input, including the existing
-    // Repository binding. Corrupt the shared Postgres aggregate between requests:
-    // no node may infer Repository configuration from the mutable remote. This
-    // synchronous command has not changed the live projection when validation
-    // fails, so compensation retains the prior generation and commits a Failed
-    // receipt with no pending work. The cold-start matrix separately injects a
-    // pre-existing Prepared generation and proves durable recovery. Here each
-    // corruption case is isolated by restoring the captured Postgres Session row.
-    //
-    // | Rule | Desired apply | Prior projection | Effect |
-    // |---|---|---|---|
-    // | P1 | catalog valid | retained | activate the new File generation |
-    // | P2 | catalog corrupt before mutation | retained | fail, record Failed, no pending generation |
-    // | P3 | Prepared already durable + catalog corrupt | not applied | retain Prepared for cold-start retry (covered by resource_catalog_corruption) |
+    // Frozen-snapshot cause/effect rule: C1 the Session already contains an exact
+    // resolved Repository generation; C2 its mutable Catalog row is later corrupt;
+    // C3 an unrelated File is attached. C1&&C2&&C3 -> E1 the File generation
+    // activates from Session truth and E2 no mutable Repository re-resolution is
+    // attempted. The dedicated resource_catalog_corruption scenario owns faults
+    // before a generation is frozen. FMECA: re-reading here would make an admitted
+    // Session depend on later Catalog drift and duplicate configuration authority;
+    // successful attach plus exact projection checks detect that regression.
     const createTimeRepositoryIds = psql(
       pg.container,
       `SELECT id FROM resource_catalog_entry WHERE kind='repository' ` +
@@ -880,71 +814,49 @@ async function main(): Promise<void> {
       'repository',
       createTimeRepositoryId,
     );
-    const repositoryConfigVersion = String(
-      canonicalRepositoryRecord.definition.current_config_version,
+    const corruptRepositoryRecord = {
+      ...structuredClone(canonicalRepositoryRecord),
+      definition: { ...canonicalRepositoryRecord.definition, id: 'forged-repository-id' },
+    };
+    writeResourceCatalogRecord(
+      pg.container,
+      'repository',
+      createTimeRepositoryId,
+      corruptRepositoryRecord,
     );
-    const stableSessionResources = managedSessionResources(pg.container, session.body.id);
-    const corruptRepositoryRecords = [
+    const probe = await json(
+      'POST',
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
       {
-        ...structuredClone(canonicalRepositoryRecord),
-        definition: { ...canonicalRepositoryRecord.definition, id: 'forged-repository-id' },
+        type: 'file',
+        file_id: fileId,
+        mount_path: '/workspace/catalog-probe.txt',
       },
-      {
-        ...structuredClone(canonicalRepositoryRecord),
-        definition: { ...canonicalRepositoryRecord.definition, workspace_id: '' },
-      },
-      {
-        ...structuredClone(canonicalRepositoryRecord),
-        definition: { ...canonicalRepositoryRecord.definition, current_config_version: 0 },
-      },
-      (() => {
-        const value = structuredClone(canonicalRepositoryRecord);
-        delete value.configs[repositoryConfigVersion];
-        return value;
-      })(),
-      (() => {
-        const value = structuredClone(canonicalRepositoryRecord);
-        value.configs[repositoryConfigVersion].repository_id = 'forged-repository-id';
-        return value;
-      })(),
-      (() => {
-        const value = structuredClone(canonicalRepositoryRecord);
-        value.configs[repositoryConfigVersion].version = 99;
-        return value;
-      })(),
-    ];
-    for (const [index, corrupt] of corruptRepositoryRecords.entries()) {
-      writeResourceCatalogRecord(
-        pg.container,
-        'repository',
-        createTimeRepositoryId,
-        corrupt,
-      );
-      const denied = await json(
-        'POST',
-        scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
-        {
-          type: 'file',
-          file_id: fileId,
-          mount_path: `/workspace/catalog-probe-${index}.txt`,
-        },
-      );
-      assert.equal(denied.status, 400, `${index}: ${JSON.stringify(denied.body)}`);
-      assert.match(JSON.stringify(denied.body), /resource catalog storage failure/u, `${index}`);
-      assert.equal(server.exitCode, null, `${index}: Repository corruption crashed the process`);
-      const pending = managedSessionResources(pg.container, session.body.id);
-      assert.equal(pending.pending, undefined, `${index}: P2 must not retain retryable work`);
-      assert.equal(pending.activations.at(-1).state, 'failed', `${index}`);
-      assert.equal(pending.activations.at(-1).attempts, 1, `${index}`);
-      assert.match(pending.activations.at(-1).last_error, /resource catalog/u, `${index}`);
-      writeResourceCatalogRecord(
-        pg.container,
-        'repository',
-        createTimeRepositoryId,
-        canonicalRepositoryRecord,
-      );
-      writeManagedSessionResources(pg.container, session.body.id, stableSessionResources);
-    }
+    );
+    assert.equal(probe.status, 200, JSON.stringify(probe.body));
+    assert.equal(server.exitCode, null, 'Catalog drift must not crash the process');
+    const withProbe = await json(
+      'GET',
+      scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
+    );
+    assert.deepEqual(
+      withProbe.body.data.map((resource: { type: string }) => resource.type),
+      ['memory_store', 'github_repository', 'file'],
+      'E1/E2: the frozen Repository plus new File form one desired generation',
+    );
+    writeResourceCatalogRecord(
+      pg.container,
+      'repository',
+      createTimeRepositoryId,
+      canonicalRepositoryRecord,
+    );
+    assert.equal(
+      (await json(
+        'DELETE',
+        scoped(WORKSPACE, `sessions/${session.body.id}/resources/${probe.body.id}`),
+      )).status,
+      200,
+    );
     const unchangedResources = await json(
       'GET',
       scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
@@ -1103,8 +1015,11 @@ async function main(): Promise<void> {
   } finally {
     await stop(server).catch(() => {});
     upstream.close();
-    fs.rmSync(firstDirectory, { recursive: true, force: true });
-    fs.rmSync(secondDirectory, { recursive: true, force: true });
+    // The first process realizes a writable Memory projection. Whether teardown
+    // completed or the process died determines ordinary removal vs deepest-first
+    // detach; both directory owners use the canonical cleanup decision table.
+    cleanupFixtureTree(firstDirectory);
+    cleanupFixtureTree(secondDirectory);
     if (pg.owned) {
       try { docker('rm', '-f', pg.container); } catch { /* best effort */ }
     }

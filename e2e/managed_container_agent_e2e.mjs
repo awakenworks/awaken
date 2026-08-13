@@ -18,13 +18,12 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync as rawExecFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
-import { REPO_ROOT } from './harness.mjs';
+import { REPO_ROOT, waitForPort } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
@@ -451,25 +450,6 @@ function buildBrain() {
   });
 }
 
-function waitForPort(port, timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const s = net.createConnection({ port, host: '127.0.0.1' });
-      s.once('connect', () => {
-        s.destroy();
-        resolve();
-      });
-      s.once('error', () => {
-        s.destroy();
-        if (Date.now() > deadline) reject(new Error(`brain did not listen on ${port}`));
-        else setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
-
 async function main() {
   if (!containerAvailable()) {
     if (process.env.AWAKEN_E2E_REQUIRE_CONTAINER === '1') {
@@ -511,7 +491,11 @@ async function main() {
   let brain = spawnBrain();
 
   try {
-    await waitForPort(PORT);
+    // Readiness cause/effect table: live child + bound process-scoped port =>
+    // proceed; child exits first => fail immediately; neither before 60s =>
+    // timeout. FMECA: a copied wall-clock poll could hide child failure or be
+    // distorted by clock jumps, so every restart uses the canonical harness.
+    await waitForPort(PORT, 60_000, brain);
     let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
     if (process.env.AWAKEN_E2E_PACKAGE_ONLY === '1') {
       await client.post('/v1/skills', {
@@ -528,7 +512,7 @@ async function main() {
         brain.kill('SIGINT');
         await stopped;
         brain = spawnBrain({ AWAKEN_SCENARIO_PLAYWRIGHT_MCP: '1' });
-        await waitForPort(PORT);
+        await waitForPort(PORT, 60_000, brain);
         client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
         await exerciseContainerEnvironment(client, `${ENGINE}-playwright-mcp`, {
           environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
@@ -549,7 +533,7 @@ async function main() {
         brain.kill('SIGINT');
         await nativeStopped;
         brain = spawnBrain({ AWAKEN_SCENARIO_NATIVE_PLAYWRIGHT_MCP: '1' });
-        await waitForPort(PORT);
+        await waitForPort(PORT, 60_000, brain);
         client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
         await exerciseContainerEnvironment(client, `${ENGINE}-native-playwright-mcp`, {
           environment: { kind: 'image', reference: PACKAGE_BASE_IMAGE },
@@ -731,7 +715,7 @@ async function main() {
     await crashed;
     assert.deepEqual(testContainers(), [container], 'a brain crash must not reap the Session container');
     brain = spawnBrain();
-    await waitForPort(PORT);
+    await waitForPort(PORT, 60_000, brain);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://${addr}` });
     await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'resume the adopted container' }] }],

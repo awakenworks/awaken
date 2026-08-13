@@ -102,14 +102,14 @@ async fn requested_reclaim_uses_refresh_clock<Q: WorkQueue>(q: &Q) {
         HeartbeatResult::Accepted(_)
     ));
     assert!(
-        q.claim_with_reclaim("env", "worker-b", 1_001, Some(2))
+        q.claim_with_reclaim("env", "worker-b", "worker-b", 1_001, Some(2))
             .await
             .expect("claim")
             .is_none(),
         "a one-millisecond-old refresh is younger than the requested age"
     );
     assert!(
-        q.claim_with_reclaim("env", "worker-b", 1_002, Some(2))
+        q.claim_with_reclaim("env", "worker-b", "worker-b", 1_002, Some(2))
             .await
             .expect("claim")
             .is_some(),
@@ -414,6 +414,55 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
     );
 }
 
+/// Graceful Worker teardown cause/effect graph: C1 exact incarnation owns active
+/// Session Work in two Environments; C2 another incarnation owns a third; C3 the
+/// exact owner deregisters. Effects: E1 all and only C1 rows stop atomically per
+/// backend; E2 C2 remains active; E3 queued successors become claimable. Decision
+/// rules: G1=C1+C3->E1+E3, G2=C2+C3->E2. FMECA: retaining a graceful predecessor's
+/// 60-second lease stalls every restart; releasing by reusable worker id would
+/// instead revoke a replacement generation. Exact incarnation owner avoids both.
+async fn graceful_owner_release_is_exact<Q: WorkQueue>(q: &Q) {
+    let first = q.enqueue_session("env-a", "first").await.expect("G1");
+    q.enqueue_session("env-a", "next")
+        .await
+        .expect("G1 successor");
+    let second = q.enqueue_session("env-b", "second").await.expect("G1");
+    let unrelated = q.enqueue_session("env-c", "other").await.expect("G2");
+    q.claim("env-a", "worker:1:old", 0).await.unwrap().unwrap();
+    q.claim("env-b", "worker:1:old", 0).await.unwrap().unwrap();
+    q.claim("env-c", "worker:2:new", 0).await.unwrap().unwrap();
+
+    assert_eq!(
+        q.release_owner("worker:1:old").await.expect("G1"),
+        2,
+        "G1/E1"
+    );
+    assert_eq!(
+        q.get("env-a", &first).await.unwrap().unwrap().state,
+        WorkState::Stopped,
+        "G1/E1"
+    );
+    assert_eq!(
+        q.get("env-b", &second).await.unwrap().unwrap().state,
+        WorkState::Stopped,
+        "G1/E1"
+    );
+    assert_eq!(
+        q.get("env-c", &unrelated).await.unwrap().unwrap().state,
+        WorkState::Active,
+        "G2/E2"
+    );
+    assert!(
+        q.claim("env-a", "worker:2:new", 1).await.unwrap().is_some(),
+        "G1/E3"
+    );
+    assert_eq!(
+        q.release_owner("worker:1:old").await.expect("G1 replay"),
+        0,
+        "G1 idempotent"
+    );
+}
+
 /// Run the whole contract against a freshly-built backend `Q`.
 async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     single_active_cap(&fresh()).await;
@@ -425,6 +474,7 @@ async fn run_suite<Q: WorkQueue>(fresh: impl Fn() -> Q) {
     session_enqueue_is_idempotent(&fresh()).await;
     heartbeat_compare_and_extend(&fresh()).await;
     session_ownership_lifecycle_is_single_and_fenced(&fresh()).await;
+    graceful_owner_release_is_exact(&fresh()).await;
 }
 
 // ── Backend rows: each must pass the identical suite ─────────────────────────────

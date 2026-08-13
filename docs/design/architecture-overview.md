@@ -394,14 +394,16 @@ Control component starts or receives a wake signal
   -> recover every durable Agent publication
   -> reconcile every durable Environment revision/withdrawal
   -> both succeed: ready, reset failures, record success time
-  -> either fails: not ready, record pending domains, bounded exponential retry
+  -> either fails: preserve serving readiness, record degraded pending domains,
+     bounded exponential retry
 ```
 
-The business listener remains live during recovery, but `/readyz` returns 503
-until both domains have completed one successful pass. The process exports
-registration ready, pending-domain, consecutive-failure, and lag gauges. Control
-and AllInOne receive the health source from the same component; Coordinator has
-no Control registration source and therefore no such readiness dependency.
+The business listener and `/readyz` remain available during recovery so durable
+last-known-good projections keep serving. The process exports registration
+ready, pending-domain, consecutive-failure, and lag gauges; pending/failure are
+the degraded signal until both domains complete a successful pass. Control and
+AllInOne receive the health source from the same component; Coordinator has no
+Control registration source and therefore no such recovery projection.
 
 ### 7.2 Active-active executable projection refresh
 

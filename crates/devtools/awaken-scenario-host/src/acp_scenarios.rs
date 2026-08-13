@@ -422,8 +422,8 @@ const SANDBOXED_FAKE_ACP_SCRIPT: &str = "read _p; net=''; \
 /// environment lifecycle used by production. There is no second per-attempt sandbox.
 /// Egress follows each Session's frozen Environment projection — a deny-egress
 /// session's CLI runs under `--unshare-net`.
-/// `AWAKEN_MODEL_MODE=acp-sandboxed`; the sandbox roots live under
-/// `AWAKEN_SANDBOX_DIR` (a per-process temp dir when unset).
+/// `AWAKEN_MODEL_MODE=acp-sandboxed`; the sandbox roots come from the same typed
+/// Scenario deployment as every other mode (a process temp root when unset).
 pub async fn build_acp_sandboxed_router() -> Router {
     build_acp_sandboxed_router_with_deployment(scenario_deployment()).await
 }
@@ -448,15 +448,21 @@ pub async fn build_acp_sandboxed_router_with_deployment(
         ],
         env,
     );
-    let base = std::env::var("AWAKEN_SANDBOX_DIR")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()))
-        });
-    deployment.storage_dir = Some(base.clone());
-    deployment.sandbox_dir = Some(base.join("sandboxes"));
+    // One typed owner for both roots. Explicit storage/sandbox coordinates are
+    // preserved independently; the scenario-only fallback colocates them under
+    // one process root without reopening an AWAKEN_* compatibility path.
+    let fallback = std::env::temp_dir().join(format!("awaken-acp-sbx-{}", std::process::id()));
+    let storage_dir = deployment.storage_dir.clone().unwrap_or_else(|| {
+        deployment
+            .sandbox_dir
+            .as_ref()
+            .and_then(|sandbox| sandbox.parent())
+            .map_or_else(|| fallback.clone(), std::path::Path::to_path_buf)
+    });
+    deployment.storage_dir = Some(storage_dir.clone());
+    deployment
+        .sandbox_dir
+        .get_or_insert_with(|| storage_dir.join("sandboxes"));
     let platform = resource_host_with_deployment(Arc::new(EchoModel), "awaken", deployment)
         .map_host_async(|host| async move {
             host.with_acp_launch_source(
@@ -481,16 +487,14 @@ pub async fn build_acp_sandboxed_router_with_deployment(
 /// sandbox image, and a reachable Docker daemon. Misconfiguration fails closed while
 /// building the host rather than falling back to a local process.
 pub async fn build_acp_container_router() -> Router {
-    let storage_dir = scenario_storage_dir().unwrap_or_else(|| {
+    let mut deployment = scenario_deployment();
+    let storage_dir = deployment.storage_dir.clone().unwrap_or_else(|| {
         std::env::temp_dir().join(format!("awaken-acp-container-{}", std::process::id()))
     });
-    let mut deployment = scenario_deployment();
     deployment.storage_dir = Some(storage_dir.clone());
-    deployment.sandbox_dir = Some(
-        std::env::var("AWAKEN_SANDBOX_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| storage_dir.join("sandboxes")),
-    );
+    deployment
+        .sandbox_dir
+        .get_or_insert_with(|| storage_dir.join("sandboxes"));
     deployment.sandbox_tier = match std::env::var("SESSION_ENVIRONMENT_TIER").as_deref() {
         Ok("local") => awaken_runtime_host::SandboxTier::Local,
         Ok("namespace") | Err(_) => awaken_runtime_host::SandboxTier::Namespace,

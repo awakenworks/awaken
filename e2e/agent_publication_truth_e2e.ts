@@ -52,6 +52,23 @@ function definition(delegate: string, server: string, url: string): Record<strin
   };
 }
 
+async function publishDelegate(base: string, delegate: string): Promise<void> {
+  // Roster-closure cause graph: C1 the parent publication names a delegate; C2
+  // that delegate has one installed executable profile. C1+C2 => Session pins
+  // the closed roster; C1+!C2 => fail `multiagent_unavailable` before Session
+  // persistence. FMECA: a name-only compatibility fallback would hide deleted
+  // Agents and create execution behavior outside the publication authority.
+  const authored = await request(base, 'PUT', `/v1/config/agents/${delegate}`, {
+    name: delegate,
+    system: 'Act only as an installed leaf delegate.',
+    model: { id: 'fake-haiku' },
+    tools: [],
+  });
+  assert.equal(authored.status, 200, JSON.stringify(authored.body));
+  const published = await request(base, 'POST', `/v1/config/agents/${delegate}/publish`);
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+}
+
 async function createSession(client: Anthropic): Promise<any> {
   return client.beta.sessions.create({
     agent: PARENT,
@@ -78,6 +95,9 @@ async function main(): Promise<void> {
   try {
   await withScenarioServer('management', 'mcp', PORT, async (base: string) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
+
+    await publishDelegate(base, 'delegate-a');
+    await publishDelegate(base, 'delegate-b');
 
     // Cause C1: canonical tagged roster -> persist the one typed aggregate.
     // Cause C2: removed `{workers}` compatibility shape -> reject at the edge;

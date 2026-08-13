@@ -63,7 +63,7 @@ async function exerciseUnsupportedTier(tier, port) {
     },
     {
       SESSION_ENVIRONMENT_TIER: tier,
-      AWAKEN_SANDBOX_DIR: path.join(tierRoot, 'sandboxes'),
+      SESSION_DEPLOYMENT_SANDBOX_DIR: path.join(tierRoot, 'sandboxes'),
       SESSION_DEPLOYMENT_STORAGE_DIR: path.join(tierRoot, 'storage'),
     },
   );

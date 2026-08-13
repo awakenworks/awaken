@@ -294,7 +294,32 @@ impl WorkQueue for SqliteWorkQueue {
         worker_id: &str,
         now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.book.record_poll(env_id, worker_id, now_ms);
+        self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
+            .await
+    }
+
+    async fn claim_with_reclaim(
+        &self,
+        env_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
+        now_ms: u64,
+        age_ms: Option<u64>,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        self.book.record_poll(env_id, poller_id, now_ms);
+        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
+            let mut guard = self.conn.lock().map_err(storage)?;
+            let tx = guard
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let cutoff = db_millis(now_ms - age);
+            tx.execute(
+                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
+                 WHERE environment_id = ?1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= ?2",
+                params![env_id, cutoff],
+            ).map_err(storage)?;
+            tx.commit().map_err(storage)?;
+        }
         let mut guard = self.conn.lock().map_err(storage)?;
         let tx = guard
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -333,7 +358,7 @@ impl WorkQueue for SqliteWorkQueue {
              WHERE work_id = ?5",
             params![
                 OBJECT_AT,
-                worker_id,
+                lease_owner,
                 lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS),
                 db_millis(now_ms),
                 wid,
@@ -343,29 +368,6 @@ impl WorkQueue for SqliteWorkQueue {
         let item = Self::owned(&tx, env_id, &wid)?;
         tx.commit().map_err(storage)?;
         Ok(item)
-    }
-
-    async fn claim_with_reclaim(
-        &self,
-        env_id: &str,
-        worker_id: &str,
-        now_ms: u64,
-        age_ms: Option<u64>,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
-        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
-            let mut guard = self.conn.lock().map_err(storage)?;
-            let tx = guard
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(storage)?;
-            let cutoff = db_millis(now_ms - age);
-            tx.execute(
-                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
-                 WHERE environment_id = ?1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= ?2",
-                params![env_id, cutoff],
-            ).map_err(storage)?;
-            tx.commit().map_err(storage)?;
-        }
-        self.claim(env_id, worker_id, now_ms).await
     }
 
     async fn ack(
@@ -501,6 +503,19 @@ impl WorkQueue for SqliteWorkQueue {
         Ok(item
             .map(WorkMutationResult::accepted)
             .unwrap_or(WorkMutationResult::NotFound))
+    }
+
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+        let guard = self.conn.lock().map_err(storage)?;
+        guard
+            .execute(
+                "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
+                 state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
+                 lease_refreshed_ms = NULL WHERE data_type = 'session' \
+                 AND state = 'active' AND lease_owner = ?2",
+                params![OBJECT_AT, worker_owner],
+            )
+            .map_err(storage)
     }
 
     async fn retire_session(
@@ -904,7 +919,31 @@ impl WorkQueue for PostgresWorkQueue {
         worker_id: &str,
         now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.book.record_poll(env_id, worker_id, now_ms);
+        self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
+            .await
+    }
+
+    async fn claim_with_reclaim(
+        &self,
+        env_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
+        now_ms: u64,
+        age_ms: Option<u64>,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        self.book.record_poll(env_id, poller_id, now_ms);
+        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
+            let cutoff = db_millis(now_ms - age);
+            sqlx::query(
+                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
+                 WHERE environment_id = $1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= $2",
+            )
+            .bind(env_id)
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await
+            .map_err(storage)?;
+        }
         let mut tx = self.pool.begin().await.map_err(storage)?;
         // Lock the environment's rows before count/select so concurrent pollers
         // cannot both observe zero active work and lease different rows.
@@ -959,7 +998,7 @@ impl WorkQueue for PostgresWorkQueue {
              WHERE work_id = $5",
         )
         .bind(OBJECT_AT)
-        .bind(worker_id)
+        .bind(lease_owner)
         .bind(lease_expiry(now_ms, HEARTBEAT_TTL_SECONDS))
         .bind(db_millis(now_ms))
         .bind(&wid)
@@ -968,28 +1007,6 @@ impl WorkQueue for PostgresWorkQueue {
         .map_err(storage)?;
         tx.commit().await.map_err(storage)?;
         self.fetch_owned(env_id, &wid).await
-    }
-
-    async fn claim_with_reclaim(
-        &self,
-        env_id: &str,
-        worker_id: &str,
-        now_ms: u64,
-        age_ms: Option<u64>,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
-        if let Some(age) = age_ms.filter(|age| *age <= now_ms) {
-            let cutoff = db_millis(now_ms - age);
-            sqlx::query(
-                "UPDATE work_queue_item SET state = 'queued', lease_owner = NULL, lease_expires_ms = NULL, lease_refreshed_ms = NULL, latest_heartbeat_at = NULL \
-                 WHERE environment_id = $1 AND state = 'active' AND lease_refreshed_ms IS NOT NULL AND lease_refreshed_ms <= $2",
-            )
-            .bind(env_id)
-            .bind(cutoff)
-            .execute(&self.pool)
-            .await
-            .map_err(storage)?;
-        }
-        self.claim(env_id, worker_id, now_ms).await
     }
 
     async fn ack(
@@ -1145,6 +1162,23 @@ impl WorkQueue for PostgresWorkQueue {
             .await?
             .map(WorkMutationResult::accepted)
             .unwrap_or(WorkMutationResult::NotFound))
+    }
+
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+        let released = sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
+             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL WHERE data_type = 'session' \
+             AND state = 'active' AND lease_owner = $2",
+        )
+        .bind(OBJECT_AT)
+        .bind(worker_owner)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?
+        .rows_affected();
+        usize::try_from(released)
+            .map_err(|_| WorkQueueError::Storage("released row count overflow".into()))
     }
 
     async fn retire_session(
@@ -1406,7 +1440,7 @@ mod tests {
         is_storage(q.get("env", "work").await.map(|_| ()));
         is_storage(q.claim("env", "worker", 0).await.map(|_| ()));
         is_storage(
-            q.claim_with_reclaim("env", "worker", 1, Some(1))
+            q.claim_with_reclaim("env", "worker", "worker", 1, Some(1))
                 .await
                 .map(|_| ()),
         );
@@ -1529,7 +1563,7 @@ mod tests {
             w1
         );
         let reclaimed = q
-            .claim_with_reclaim("env_a", "b", 1_001, Some(1_000))
+            .claim_with_reclaim("env_a", "b", "b", 1_001, Some(1_000))
             .await
             .expect("claim query")
             .expect("requested reclaim age reclaims the active lease");

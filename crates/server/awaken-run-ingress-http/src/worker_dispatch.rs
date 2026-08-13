@@ -1113,6 +1113,12 @@ async fn deregister_worker(
 ) -> (StatusCode, Json<Value>) {
     let result = async {
         verify_worker_identity(&worker, &request.identity).map_err(HostError::bad_request)?;
+        if let Some(session_work) = service.session_work.as_ref() {
+            session_work
+                .release_worker_session_work(&request.identity.lease_owner())
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        }
         let mutation = directory(&service)?
             .deregister(&request.identity)
             .await
@@ -1368,6 +1374,21 @@ async fn settle(
         };
         let thread_id = guard.request().thread_id().clone();
         drop(guard);
+        // When configured, registered-Worker Session Work is the outer ownership
+        // fence. Release it only after every claim-fenced commit has completed
+        // and immediately before the subordinate Run delivery settles. Generic
+        // Run-only compositions have no synthetic Work item to acquire or clear.
+        if let Some(session_work) = service.session_work.as_ref() {
+            let released = session_work
+                .release_session_work(&thread_id.0, &claim.owner, authority.now_ms)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            if !released {
+                return Err(HostError::bad_request(
+                    "Session Work ownership was lost before Run settlement",
+                ));
+            }
+        }
         let outcome = service
             .dispatch
             .settle(

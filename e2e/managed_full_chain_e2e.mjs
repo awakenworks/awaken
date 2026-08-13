@@ -38,7 +38,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  cleanupFixtureTree,
+  pass,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38221);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -102,7 +110,7 @@ async function listArtifacts(c, sid) {
 }
 
 async function main() {
-  fs.rmSync(TMP, { recursive: true, force: true });
+  cleanupFixtureTree(TMP);
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const bare = seedRemote();
   const upstream = await startUpstream('fullChain');
@@ -325,7 +333,10 @@ async function main() {
   } finally {
     await stopServer(server);
     upstream.close();
-    fs.rmSync(TMP, { recursive: true, force: true });
+    // F5 cleanup uses the same mount-aware owner as every durable Memory
+    // fixture; logical Session deletion and physical teardown are intentionally
+    // separate, so raw recursive deletion is not a valid cleanup oracle.
+    cleanupFixtureTree(TMP);
   }
 }
 

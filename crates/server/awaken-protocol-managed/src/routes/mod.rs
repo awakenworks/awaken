@@ -9,6 +9,8 @@
 //! - [`agents_registry`], [`deployments`], [`environments`], [`user_profiles`],
 //!   [`vaults`] — the management-plane resource CRUD surfaces.
 
+use sha2::{Digest, Sha256};
+
 pub mod agents_registry;
 pub mod deployments;
 pub mod dreams;
@@ -27,3 +29,16 @@ pub use sessions::{
     MEMORY_BETA, SKILLS_BETA, enforce_managed_beta, replace_resource_manifest, router,
 };
 pub use tunnels::tunnels_router;
+
+/// Domain-separated opaque identity used when a wire secret must select a
+/// durable owner without persisting or logging the secret itself.
+fn sha256_identity(domain: &str, parts: &[&str]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain.len().to_be_bytes());
+    digest.update(domain.as_bytes());
+    for part in parts {
+        digest.update(part.len().to_be_bytes());
+        digest.update(part.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
+}

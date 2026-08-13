@@ -46,7 +46,12 @@ impl ManagedState {
             "awaken.deployment_launch_fingerprint".into(),
             launch_fingerprint.to_owned(),
         );
-        let initial_events = req.initial_events.clone();
+        // Deployment initial events have the wider official union (including
+        // `system.message`) while public Session creation intentionally admits
+        // only user messages and Outcomes. Keep one Session creation path, but
+        // validate the stored Deployment batch at its own wire boundary and
+        // deliver it through the canonical event command after admission.
+        let initial_events = std::mem::take(&mut req.initial_events);
         let created = self
             .create_session_with_identity(req, Some(workspace_id.clone()), Some(session_id.clone()))
             .await;

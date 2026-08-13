@@ -271,13 +271,19 @@ async function main() {
       betas: BETAS,
     });
     // Cause/effect graph / decision table for the built-in Docker provider:
-    // C1=credential selected; C2=substitution; C3=no-bypass network enforcement.
-    // C1 + !(C2 && C3) -> D1 reject Worker custody before container launch.
+    // C1=credential selected; C2=substitution; C3=no-bypass network enforcement;
+    // C4=a driving event wakes the registered Worker realization.
+    // C1 + !(C2 && C3) + C4 -> D1 reject the event and Worker custody before
+    //                              container launch.
     // !C1              -> D2 inject the anonymous MCP endpoint normally.
     //
-    // | Rule | credential | substitution + no-bypass | result             |
-    // | D1   | yes        | no                       | fail closed         |
-    // | D2   | no         | n/a                      | launch + MCP config |
+    // | Rule | credential | substitution + no-bypass | driving event | result             |
+    // | D1   | yes        | no                       | yes           | event rejects; Session terminated; no launch |
+    // | D2   | no         | n/a                      | yes           | launch + MCP config |
+    // FMECA: treating D1 as a successful event loses the activation failure
+    // returned by the authoritative Worker. The rejected event plus terminal
+    // projection proves no container was launched without adding another
+    // activation path.
     secureSession = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: environmentResource.id,
@@ -286,13 +292,17 @@ async function main() {
       betas: BETAS,
     });
     const beforeRejectedRealization = fixtureContainerIds();
-    await client.beta.sessions.events.send(secureSession.id, {
-      events: [{
-        type: 'user.message',
-        content: [{ type: 'text', text: 'must fail before container launch' }],
-      }],
-      betas: BETAS,
-    });
+    await assert.rejects(
+      client.beta.sessions.events.send(secureSession.id, {
+        events: [{
+          type: 'user.message',
+          content: [{ type: 'text', text: 'must fail before container launch' }],
+        }],
+        betas: BETAS,
+      }),
+      (error) => error.status === 400 && String(error.message).includes('Session was not found'),
+      'D1: the driving event reports the permanent realization failure',
+    );
     const rejected = await waitForValue(
       () => client.beta.sessions.retrieve(secureSession.id, { betas: BETAS }),
       (observed) => observed.status === 'terminated',

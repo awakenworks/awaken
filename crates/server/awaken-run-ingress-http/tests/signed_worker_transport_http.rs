@@ -42,6 +42,7 @@ struct RecordingSessionControl {
 struct RecordingSessionWorkAuthority {
     owner: Mutex<Option<String>>,
     acquisitions: AtomicUsize,
+    releases: AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -78,6 +79,34 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
                 },
             ),
         )
+    }
+
+    async fn release_session_work(
+        &self,
+        _session_id: &str,
+        worker_owner: &str,
+        _now_ms: u64,
+    ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
+        let mut owner = self.owner.lock().unwrap();
+        if owner.as_deref() != Some(worker_owner) {
+            return Ok(false);
+        }
+        *owner = None;
+        self.releases.fetch_add(1, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    async fn release_worker_session_work(
+        &self,
+        worker_owner: &str,
+    ) -> Result<usize, awaken_session_contract::work_queue::WorkQueueError> {
+        let mut owner = self.owner.lock().unwrap();
+        if owner.as_deref() != Some(worker_owner) {
+            return Ok(0);
+        }
+        *owner = None;
+        self.releases.fetch_add(1, Ordering::SeqCst);
+        Ok(1)
     }
 }
 
@@ -564,6 +593,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T17 | exact/live | Work owned by other Worker | yes | reject resume before Control |
     // | T18 | exact/live | Work owner changes before phase | - | reject phase before Control |
     // | T19 | exact/live | exact Work owner | claim check | atomically renew Work |
+    // | T20 | exact/live | exact Work owner | settle | release Work, then settle Run |
+    // | T21 | exact/live | active Work remains | deregister | release exact incarnation |
     let client = WorkerControlClient::new(upstream.clone());
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
     assert!(
@@ -764,6 +795,51 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("T9");
     assert_eq!(*session_control.failures.lock().unwrap(), 1, "T9");
 
+    // FMECA T20: leaving the outer Session Work active after its subordinate Run
+    // settles blocks every queued Session in the same Environment. The exact
+    // owner release is part of the private registered-Worker settlement chain;
+    // public custom Workers retain their official explicit stop call.
+    assert_eq!(
+        queue
+            .settle(
+                &claim.run_id,
+                claim.epoch,
+                awaken_run_ingress::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("T20 signed settlement"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "T20"
+    );
+    assert_eq!(session_work.releases.load(Ordering::SeqCst), 1, "T20");
+
+    let mut next_activation = activation();
+    next_activation.run_id = RunId("signed-run-next".into());
+    next_activation.thread_id = ThreadId("signed-thread-next".into());
+    queue
+        .enqueue(RunDispatch::new(next_activation))
+        .await
+        .expect("post-settlement claim fixture");
+    let claimed = queue
+        .claim(
+            &registered.snapshot.identity.lease_owner(),
+            30_000,
+            10_001,
+            &Default::default(),
+        )
+        .await
+        .expect("post-settlement claim")
+        .expect("released Session Work permits the next Run");
+    let claim = awaken_run_ingress::RunClaim::from(&claimed.lease);
+    assert!(
+        queue
+            .claim_is_current(&claim, 10_001)
+            .await
+            .expect("T20 next Session acquires released Work"),
+        "T20"
+    );
+
     clock.set(20_000);
     WorkerControlClient::new(upstream.clone())
         .heartbeat(
@@ -787,11 +863,22 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .expect("signed expired-claim verification")
     );
     assert!(
-        WorkerControlClient::new(upstream)
+        WorkerControlClient::new(upstream.clone())
             .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
             .await
             .is_err(),
         "T4"
     );
     assert_eq!(session_control.begins.lock().unwrap().len(), 3, "T4");
+
+    // FMECA T21: graceful restart can begin after the committed answer becomes
+    // visible but before asynchronous Run settlement. Deregistration is the last
+    // exact-incarnation boundary and releases that residual Work immediately;
+    // crash recovery deliberately remains TTL-based.
+    *session_work.owner.lock().unwrap() = Some(registered.snapshot.identity.lease_owner());
+    WorkerControlClient::new(upstream.clone())
+        .deregister(&registered.snapshot.identity)
+        .await
+        .expect("T21 exact deregistration");
+    assert_eq!(session_work.releases.load(Ordering::SeqCst), 2, "T21");
 }
