@@ -959,8 +959,8 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     RoutePolicyDescriptor::control(
         "/v1/config/application-mcp-credentials",
         RouteFamilyPolicy::Scoped {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
+            read: APIKEY_READ,
+            write: APIKEY_WRITE,
         },
     ),
     RoutePolicyDescriptor::control(
