@@ -10,11 +10,13 @@ pub mod awaken_control::admin_assistant
 pub struct awaken_control::admin_assistant::CatalogCapabilityReader
 impl awaken_control::admin_assistant::CatalogCapabilityReader
 pub fn awaken_control::admin_assistant::CatalogCapabilityReader::new(alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>, &[awaken_runtime_contract::resolved::ToolDescriptor], &[awaken_runtime_contract::capability::PluginCapability], awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_assistant::ResourceInventory>>) -> Self
+pub fn awaken_control::admin_assistant::CatalogCapabilityReader::request_scoped(alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>, &[awaken_runtime_contract::resolved::ToolDescriptor], &[awaken_runtime_contract::capability::PluginCapability], awaken_config_service::config_plane::ConfigPlane, core::option::Option<alloc::sync::Arc<dyn awaken_admin_assistant::ResourceInventory>>) -> Self
 impl awaken_admin_assistant::CapabilityReader for awaken_control::admin_assistant::CatalogCapabilityReader
 pub fn awaken_control::admin_assistant::CatalogCapabilityReader::capabilities<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_admin_assistant::PlatformCapabilities> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_control::admin_assistant::ConfigServiceDraftStore
 impl awaken_control::admin_assistant::ConfigServiceDraftStore
 pub fn awaken_control::admin_assistant::ConfigServiceDraftStore::new(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
+pub fn awaken_control::admin_assistant::ConfigServiceDraftStore::request_scoped(awaken_config_service::config_plane::ConfigPlane, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
 pub async fn awaken_control::admin_assistant::ConfigServiceDraftStore::run_resource_effect_reconciliation(alloc::sync::Arc<Self>, tokio_util::sync::cancellation_token::CancellationToken) -> core::result::Result<(), alloc::string::String>
 impl awaken_admin_assistant::DraftStore for awaken_control::admin_assistant::ConfigServiceDraftStore
 pub fn awaken_control::admin_assistant::ConfigServiceDraftStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::config::AgentConfig>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -27,15 +29,16 @@ pub fn awaken_control::admin_assistant::ConfigServiceDraftStore::record_audit<'l
 pub struct awaken_control::admin_assistant::ConfigServiceDraftValidator
 impl awaken_control::admin_assistant::ConfigServiceDraftValidator
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::new(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>) -> Self
+pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::request_scoped(awaken_config_service::config_plane::ConfigPlane) -> Self
 impl awaken_admin_assistant::DraftValidator for awaken_control::admin_assistant::ConfigServiceDraftValidator
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::validate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_control::admin_assistant::HostResourceInventory
 impl awaken_control::admin_assistant::HostResourceInventory
-pub fn awaken_control::admin_assistant::HostResourceInventory::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_control::admin_assistant::HostResourceInventory::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>) -> Self
 impl awaken_admin_assistant::ResourceInventory for awaken_control::admin_assistant::HostResourceInventory
-pub fn awaken_control::admin_assistant::HostResourceInventory::memory_stores<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_control::admin_assistant::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
+pub fn awaken_control::admin_assistant::HostResourceInventory::memory_stores<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_control::admin_assistant::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, core::option::Option<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
 pub async fn awaken_control::admin_assistant::seed_admin_assistant(&awaken_config_service::config_plane::ConfigPlane, &str, awaken_agent_config::config::ModelSelection) -> core::result::Result<(), alloc::string::String>
 pub mod awaken_control::authz
 pub enum awaken_control::authz::HostedRuntimePathMatch
@@ -150,11 +153,13 @@ pub fn awaken_control::control_stores::StoreBackend::resolve(core::option::Optio
 pub struct awaken_control::CatalogCapabilityReader
 impl awaken_control::admin_assistant::CatalogCapabilityReader
 pub fn awaken_control::admin_assistant::CatalogCapabilityReader::new(alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>, &[awaken_runtime_contract::resolved::ToolDescriptor], &[awaken_runtime_contract::capability::PluginCapability], awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_assistant::ResourceInventory>>) -> Self
+pub fn awaken_control::admin_assistant::CatalogCapabilityReader::request_scoped(alloc::sync::Arc<dyn awaken_model_catalog::repo::CatalogRepo>, &[awaken_runtime_contract::resolved::ToolDescriptor], &[awaken_runtime_contract::capability::PluginCapability], awaken_config_service::config_plane::ConfigPlane, core::option::Option<alloc::sync::Arc<dyn awaken_admin_assistant::ResourceInventory>>) -> Self
 impl awaken_admin_assistant::CapabilityReader for awaken_control::admin_assistant::CatalogCapabilityReader
 pub fn awaken_control::admin_assistant::CatalogCapabilityReader::capabilities<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_admin_assistant::PlatformCapabilities> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_control::ConfigPlaneManagedAgentRepository
 impl awaken_control::ConfigPlaneManagedAgentRepository
 pub fn awaken_control::ConfigPlaneManagedAgentRepository::new(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_control::ConfigPlaneManagedAgentRepository::request_scoped(awaken_config_service::config_plane::ConfigPlane) -> Self
 impl awaken_protocol_managed::routes::agents_registry::ManagedAgentRepository for awaken_control::ConfigPlaneManagedAgentRepository
 pub fn awaken_control::ConfigPlaneManagedAgentRepository::archive<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::routes::agents_registry::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_control::ConfigPlaneManagedAgentRepository::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::types::agent::AgentCreateParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::routes::agents_registry::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -166,6 +171,7 @@ pub fn awaken_control::ConfigPlaneManagedAgentRepository::versions<'life0, 'life
 pub struct awaken_control::ConfigServiceDraftStore
 impl awaken_control::admin_assistant::ConfigServiceDraftStore
 pub fn awaken_control::admin_assistant::ConfigServiceDraftStore::new(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
+pub fn awaken_control::admin_assistant::ConfigServiceDraftStore::request_scoped(awaken_config_service::config_plane::ConfigPlane, alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>) -> Self
 pub async fn awaken_control::admin_assistant::ConfigServiceDraftStore::run_resource_effect_reconciliation(alloc::sync::Arc<Self>, tokio_util::sync::cancellation_token::CancellationToken) -> core::result::Result<(), alloc::string::String>
 impl awaken_admin_assistant::DraftStore for awaken_control::admin_assistant::ConfigServiceDraftStore
 pub fn awaken_control::admin_assistant::ConfigServiceDraftStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_config::config::AgentConfig>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -178,6 +184,7 @@ pub fn awaken_control::admin_assistant::ConfigServiceDraftStore::record_audit<'l
 pub struct awaken_control::ConfigServiceDraftValidator
 impl awaken_control::admin_assistant::ConfigServiceDraftValidator
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::new(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<awaken_tenancy::ScopeId>) -> Self
+pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::request_scoped(awaken_config_service::config_plane::ConfigPlane) -> Self
 impl awaken_admin_assistant::DraftValidator for awaken_control::admin_assistant::ConfigServiceDraftValidator
 pub fn awaken_control::admin_assistant::ConfigServiceDraftValidator::validate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_config::config::AgentConfig) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_control::ControlComponent
@@ -275,10 +282,10 @@ impl awaken_config_service::credential_reference::CredentialReferenceValidator f
 pub fn awaken_control::CredentialRevisionValidator::validate<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_tenancy::ScopeId, &'life2 awaken_credential_contract::CredentialRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct awaken_control::HostResourceInventory
 impl awaken_control::admin_assistant::HostResourceInventory
-pub fn awaken_control::admin_assistant::HostResourceInventory::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_control::admin_assistant::HostResourceInventory::new(alloc::sync::Arc<dyn awaken_resource_contract::catalog::ResourceCatalog>, alloc::sync::Arc<dyn awaken_resource_contract::SkillStore>) -> Self
 impl awaken_admin_assistant::ResourceInventory for awaken_control::admin_assistant::HostResourceInventory
-pub fn awaken_control::admin_assistant::HostResourceInventory::memory_stores<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_control::admin_assistant::HostResourceInventory::memory_stores<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_control::admin_assistant::HostResourceInventory::skills<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = alloc::vec::Vec<alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_control::HostedRuntimeRouteProfile
 pub awaken_control::HostedRuntimeRouteProfile::routes: alloc::vec::Vec<awaken_control::authz::HostedRuntimePathMatch>
 pub awaken_control::HostedRuntimeRouteProfile::schema_version: u32
@@ -335,7 +342,7 @@ pub const awaken_control::HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE: &str
 pub const awaken_control::MANAGEMENT_AGENT_PUBLISHER_ROLE: &str
 pub const awaken_control::MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE: &str
 pub const awaken_control::MANAGEMENT_POLICY_NAMESPACE: &str
-pub fn awaken_control::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, impl core::convert::Into<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
+pub fn awaken_control::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, core::option::Option<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
 pub fn awaken_control::application_mcp_credentials_router(alloc::sync::Arc<awaken_protocol_managed::routes::vaults::VaultState>) -> axum::routing::Router
 pub async fn awaken_control::build_control_component(awaken_control::ControlDependencies) -> awaken_control::ControlComponent
 pub fn awaken_control::consent_router(alloc::sync::Arc<awaken_data_subject_application::DataSubjectApplication>, alloc::string::String, awaken_runtime_contract::capture::ContentCapture) -> axum::routing::Router

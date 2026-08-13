@@ -177,7 +177,7 @@ const obligations: Obligation[] = [
   { id: 'D7-12a', stage: '7 resource persistence', behavior: 'a retained Session row is normalized on read and the first root mutation establishes aggregate_json as its sole authority', scenario: 'managed_session_legacy_upgrade' },
   { id: 'D7-12b', stage: '7 resource persistence', behavior: 'a replacement process ignores stale retained Session columns once the canonical aggregate exists', scenario: 'managed_session_legacy_upgrade' },
   { id: 'D7-13', stage: '7 resource persistence', behavior: 'Postgres Memory behavior config publishes with CAS and is shared across nodes', scenario: 'resource_plane_postgres' },
-  { id: 'D7-13a', stage: '7 resource persistence', behavior: 'Postgres legacy Memory identities migrate without inferring ownership or replacing canonical history', scenario: 'resource_plane_postgres' },
+  { id: 'D7-13a', stage: '7 resource persistence', behavior: 'Postgres retains one Resources Memory authority and exposes no retired Control Memory fallback', scenario: 'resource_plane_postgres' },
   { id: 'D7-14', stage: '7 resource persistence', behavior: 'local no-login mode composes isolated embedded File, Memory, Skill, and lifecycle adapters under one explicit Workspace', scenario: 'resource_ephemeral' },
   { id: 'D7-15', stage: '7 resource persistence', behavior: 'one Memory API request atomically applies content plus rename-replace, while invalid paths and stale CAS leave head and history untouched', scenario: 'resource_ephemeral' },
   { id: 'D7-16', stage: '7 resource persistence', behavior: 'File, MemoryStore, and Skill adapters reject a missing trusted Workspace instead of inferring one from the Host', scenario: 'resource_scope_boundary' },

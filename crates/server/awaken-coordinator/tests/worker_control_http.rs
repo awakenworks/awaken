@@ -48,10 +48,16 @@ async fn authenticated_client_drives_the_registry_lifecycle_over_real_http() {
         .register("boot-http", WorkerManifest::default())
         .await
         .unwrap();
-    // Registration cause/effect graph: C1 same Worker id; C2 incarnation differs;
-    // C3 prior lease is live. R1 C1+C2+C3 => HTTP conflict classified as
-    // SlotOccupied, preserving the old authority. Expired replacement and the
-    // resulting generation advance are covered by the crash-recovery E2E.
+    // Registration/lifecycle cause-effect graph: C1 same Worker id; C2
+    // incarnation differs; C3 prior lease is live; C4 this registry-only
+    // composition has no Session Work authority. R1 C1+C2+C3 => HTTP conflict
+    // classified as SlotOccupied, preserving the old authority. R2 C4 + graceful
+    // drain/quiesce/deregister => the original Registry lifecycle completes with
+    // no synthetic Work dependency. A configured Work authority's exact-owner
+    // release is covered by signed_worker_transport_http T21.
+    // FMECA: treating optional C4 as an error makes the reusable registry router
+    // unable to deregister and leaks the Worker slot; conditional cleanup retains
+    // one Registry protocol while production composition still releases Work.
     assert!(matches!(
         client
             .register_classified("boot-http-conflict", WorkerManifest::default())

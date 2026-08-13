@@ -249,12 +249,27 @@ impl WorkQueue for InMemoryWorkQueue {
         worker_id: &str,
         now_ms: u64,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        self.book.record_poll(env_id, worker_id, now_ms);
+        self.claim_with_reclaim(env_id, worker_id, worker_id, now_ms, None)
+            .await
+    }
+
+    async fn claim_with_reclaim(
+        &self,
+        env_id: &str,
+        lease_owner: &str,
+        poller_id: &str,
+        now_ms: u64,
+        reclaim_older_than_ms: Option<u64>,
+    ) -> Result<Option<WorkItem>, WorkQueueError> {
+        self.book.record_poll(env_id, poller_id, now_ms);
         let mut works = self.works.lock().unwrap();
         for (wid, w) in works.iter_mut() {
             if w.environment_id == env_id
                 && w.state == WorkState::Active
-                && !self.book.is_leased(wid, now_ms)
+                && reclaim_older_than_ms.map_or_else(
+                    || !self.book.is_leased(wid, now_ms),
+                    |age| !self.book.is_leased_with_reclaim_age(wid, now_ms, age),
+                )
             {
                 w.state = WorkState::Queued;
                 w.latest_heartbeat_at = None;
@@ -276,7 +291,7 @@ impl WorkQueue for InMemoryWorkQueue {
             return Ok(None);
         };
         self.book
-            .own(&wid, worker_id)
+            .own(&wid, lease_owner)
             .map_err(|error| WorkQueueError::Storage(error.into()))?;
         let w = works.get_mut(&wid).expect("just found");
         w.state = WorkState::Active;
@@ -284,29 +299,6 @@ impl WorkQueue for InMemoryWorkQueue {
         w.latest_heartbeat_at = None;
         self.book.lease(&wid, now_ms);
         Ok(Some(w.clone()))
-    }
-
-    async fn claim_with_reclaim(
-        &self,
-        env_id: &str,
-        worker_id: &str,
-        now_ms: u64,
-        reclaim_older_than_ms: Option<u64>,
-    ) -> Result<Option<WorkItem>, WorkQueueError> {
-        if let Some(age) = reclaim_older_than_ms {
-            let mut works = self.works.lock().unwrap();
-            for (wid, w) in works.iter_mut() {
-                if w.environment_id == env_id
-                    && w.state == WorkState::Active
-                    && !self.book.is_leased_with_reclaim_age(wid, now_ms, age)
-                {
-                    w.state = WorkState::Queued;
-                    w.latest_heartbeat_at = None;
-                    self.book.release(wid);
-                }
-            }
-        }
-        self.claim(env_id, worker_id, now_ms).await
     }
     async fn ack(
         &self,
@@ -395,6 +387,37 @@ impl WorkQueue for InMemoryWorkQueue {
         };
         self.book.release(wid);
         Ok(WorkMutationResult::accepted(out))
+    }
+
+    async fn release_owner(&self, worker_owner: &str) -> Result<usize, WorkQueueError> {
+        let owned = self
+            .works
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(id, work)| {
+                (work.state == WorkState::Active)
+                    .then_some((work.environment_id.clone(), id.clone()))
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter(|(_, id)| self.book.is_owned_by(id, worker_owner))
+            .collect::<Vec<_>>();
+        let mut released = 0;
+        for (environment_id, id) in owned {
+            if self
+                .with_owned(&environment_id, &id, |work| {
+                    work.stop_requested_at = Some(OBJECT_AT.to_string());
+                    work.stopped_at = Some(OBJECT_AT.to_string());
+                    work.state = WorkState::Stopped;
+                })
+                .is_some()
+            {
+                self.book.release(&id);
+                released += 1;
+            }
+        }
+        Ok(released)
     }
 
     async fn retire_session(

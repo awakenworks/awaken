@@ -337,25 +337,34 @@ async function main() {
       betas: BETAS,
     });
     // Cause/effect graph for MCP on the local Namespace provider:
-    // C1=credential is selected; C2=provider proves substitution + no bypass.
-    // C1 + !C2 -> M1 reject Worker custody before launch.
+    // C1=credential is selected; C2=provider proves substitution + no bypass;
+    // C3=a driving event wakes the registered Worker realization.
+    // C1 + !C2 + C3 -> M1 reject the event and Worker custody before launch.
     // !C1       -> M2 isolate MCP custody from the independently unsupported
     //               provider/CLI launch failure; the Run reports that execution
     //               failure while the Session remains reusable.
     //
-    // | Rule | credential | provider proof | result                    |
-    // | M1   | yes        | no             | fail closed               |
-    // | M2   | no         | n/a            | failed Run event; Session idle; no MCP I/O |
+    // | Rule | credential | provider proof | driving event | result                    |
+    // | M1   | yes        | no             | yes           | event rejects; Session terminated; no launch |
+    // | M2   | no         | n/a            | yes           | failed Run event; Session idle; no MCP I/O |
+    // FMECA: treating M1 as a successful event loses the activation failure
+    // returned by the authoritative Worker. A permanent activation failure is
+    // intentionally no longer publicly writable, while its existing wire-cache
+    // projection remains terminal for the creating client to observe.
     const secureSession = await codexClient.beta.sessions.create({
       agent: CODEX_AGENT,
       mcp_servers: [{ name: 'calc-secure', type: 'url', url: fixture.url }],
       vault_ids: [vault.id],
       betas: BETAS,
     });
-    await codexClient.beta.sessions.events.send(secureSession.id, {
-      events: [{ type: 'user.message', content: [{ type: 'text', text: 'must fail before launch' }] }],
-      betas: BETAS,
-    });
+    await assert.rejects(
+      codexClient.beta.sessions.events.send(secureSession.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'must fail before launch' }] }],
+        betas: BETAS,
+      }),
+      (error) => error.status === 400 && String(error.message).includes('Session was not found'),
+      'M1: the driving event reports the permanent realization failure',
+    );
     const secureFailure = await waitForValue(
       () => codexClient.beta.sessions.retrieve(secureSession.id, { betas: BETAS }),
       (observed) => observed.status === 'terminated',

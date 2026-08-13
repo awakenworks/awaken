@@ -188,6 +188,14 @@ async fn remote_claim_reaps_exhausted_dispatch_on_the_control_side() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn db_less_worker_drives_runs_over_real_http() {
+    // Optional outer-fence cause/effect graph: C1 the generic transport has a
+    // current Run claim; C2 no Session Work authority is configured; C3 settle
+    // carries the current epoch. R1 C1+C2+C3 => settle the Run through the one
+    // dispatch authority without inventing Work. The configured case
+    // (C2=false) must release exact Session Work first and is covered by
+    // signed_worker_transport_http T20/T21. FMECA: making Work mandatory here
+    // rejects non-Session transports with 500; skipping configured Work would
+    // allow split ownership, so only the absence case bypasses that outer fence.
     let mem = Arc::new(MemoryDispatchStore::new());
     let recovery = Arc::new(MemoryCommitCoordinator::new());
     recovery

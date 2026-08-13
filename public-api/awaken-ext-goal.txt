@@ -16,7 +16,9 @@ pub struct awaken_ext_goal::controller::Controller<'a>
 impl<'a> awaken_ext_goal::controller::Controller<'a>
 pub async fn awaken_ext_goal::controller::Controller<'a>::define_or_resume(&self, awaken_ext_goal::outcome::Id, awaken_ext_goal::outcome::Definition, awaken_ext_goal::state::Binding) -> core::result::Result<awaken_ext_goal::controller::Report, awaken_ext_goal::controller::Error>
 pub fn awaken_ext_goal::controller::Controller<'a>::new(&'a awaken_agent_contract::agent::thread::Id, &'a dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, &'a dyn awaken_agent_contract::thread::commit::coordinator::Coordinator, &'a dyn awaken_runtime_contract::execution::RunExecutor, awaken_runtime_contract::runtime_context::RuntimeRunContext, &'a dyn awaken_ext_goal::outcome::Grader) -> Self
+pub async fn awaken_ext_goal::controller::Controller<'a>::resume_active(&self) -> core::result::Result<core::option::Option<awaken_ext_goal::controller::Report>, awaken_ext_goal::controller::Error>
 pub struct awaken_ext_goal::controller::IterationReport
+pub awaken_ext_goal::controller::IterationReport::description: alloc::string::String
 pub awaken_ext_goal::controller::IterationReport::explanation: alloc::string::String
 pub awaken_ext_goal::controller::IterationReport::iteration: u32
 pub awaken_ext_goal::controller::IterationReport::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
@@ -32,6 +34,7 @@ impl awaken_ext_goal::outcome::Grader for awaken_ext_goal::grader::AgentGrader<'
 pub fn awaken_ext_goal::grader::AgentGrader<'_>::grade<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &'life2 awaken_ext_goal::outcome::GradingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_goal::outcome::Grade, awaken_ext_goal::outcome::GraderError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub const awaken_ext_goal::grader::DEFAULT_JUDGE_INSTRUCTIONS: &str
 pub fn awaken_ext_goal::grader::default_judge_agent(&str, &str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
+pub fn awaken_ext_goal::grader::default_judge_agent_from_worker(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &str, &str) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshot
 pub fn awaken_ext_goal::grader::grading_prompt(&awaken_ext_goal::outcome::GradingInput) -> core::result::Result<alloc::string::String, awaken_ext_goal::outcome::GraderError>
 pub mod awaken_ext_goal::outcome
 pub enum awaken_ext_goal::outcome::Error

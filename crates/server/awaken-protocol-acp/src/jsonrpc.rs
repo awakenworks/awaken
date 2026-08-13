@@ -32,6 +32,7 @@ use serde::Serialize;
 mod handshake;
 mod mcp;
 mod permission;
+mod response;
 mod wire;
 pub use handshake::negotiate_capabilities;
 use handshake::{initialize_agent, open_new_session};
@@ -39,10 +40,13 @@ use wire::{JSONRPC, Wire};
 
 use mcp::to_acp_mcp_servers;
 use permission::{PermissionContext, answer_request};
+use response::{RpcResponse, is_missing_session_error, pump_response, pump_to_response};
 
+#[cfg(test)]
+use crate::AppendError;
 use crate::real_acp::{project_update, termination_from_stop_reason};
 use crate::{
-    AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent, AllowAll, AppendError, LaunchSink,
+    AcpError, AcpLaunchEvent, AcpLaunchStage, AcpProjectedEvent, AllowAll, LaunchSink,
     PermissionAsk, PermissionResolver, PermissionVerdict, RunFactAppender, TerminationReason,
     TurnConfig, notify_launch,
 };
@@ -162,10 +166,15 @@ pub async fn run_turn_with_config(
                     .mcp_servers(to_acp_mcp_servers(&config.mcp_servers)),
             )
             .await?;
+            // `session/load` may replay the external Agent's entire historical
+            // notification stream. Those facts were committed by earlier Runs;
+            // the neutral Thread log is their sole owner, so recovery must not
+            // append them again under the current Run's ids.
+            let mut replay = crate::DiscardRunFacts;
             match handshake_step(
                 config.handshake_step_deadline,
                 "session/load",
-                pump_response(&mut wire, ID_NEW_SESSION, sink, &mut seq, resolver),
+                pump_response(&mut wire, ID_NEW_SESSION, &mut replay, &mut seq, resolver),
             )
             .await?
             {
@@ -378,125 +387,6 @@ async fn handshake_step<T>(
                 deadline.as_millis()
             ))
         })?
-}
-
-/// Read messages until the response to `target_id` arrives, meanwhile projecting
-/// `session/update` notifications into `sink` and answering agent→client requests
-/// fail-closed. Returns the matching response's `result`, or an error if the
-/// agent answered `target_id` with a JSON-RPC error or the stream ended first.
-async fn pump_to_response(
-    wire: &mut Wire<'_>,
-    target_id: u64,
-    sink: &mut dyn RunFactAppender,
-    seq: &mut u64,
-    resolver: &dyn PermissionResolver,
-) -> Result<serde_json::Value, AcpError> {
-    match pump_response(wire, target_id, sink, seq, resolver).await? {
-        RpcResponse::Result(result) => Ok(result),
-        RpcResponse::Error(error) => Err(AcpError::Frame(error.to_string())),
-    }
-}
-
-enum RpcResponse {
-    Result(serde_json::Value),
-    Error(serde_json::Value),
-}
-
-fn is_missing_session_error(error: &serde_json::Value) -> bool {
-    let message = error
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    message.contains("unknown session")
-        || message.contains("session not found")
-        || message.contains("no such session")
-}
-
-/// The response pump with a typed JSON-RPC error branch. Most call sites retain
-/// fail-closed behavior through [`pump_to_response`]; `session/load` uses the
-/// explicit error branch to fall back before any prompt or side effect occurs.
-async fn pump_response(
-    wire: &mut Wire<'_>,
-    target_id: u64,
-    sink: &mut dyn RunFactAppender,
-    seq: &mut u64,
-    resolver: &dyn PermissionResolver,
-) -> Result<RpcResponse, AcpError> {
-    // Some ACP adapters (notably Codex) report the precise MCP identity only in
-    // the preceding tool_call update, then ask permission for a generic
-    // `execute` operation. The ACP toolCallId is the protocol correlation key;
-    // retain the already-projected identity for the lifetime of this response
-    // pump so the one neutral policy sees the real tool rather than a lossy title.
-    let mut permission_context = PermissionContext::default();
-    loop {
-        let Some(msg) = wire.read().await? else {
-            return Err(AcpError::Truncated);
-        };
-        match &msg.id {
-            // A response or an agent→client request (both carry an id).
-            Some(id) if msg.method.is_none() => {
-                if id.as_u64() != Some(target_id) {
-                    continue; // a stale response to an earlier id
-                }
-                if let Some(error) = msg.error {
-                    return Ok(RpcResponse::Error(error));
-                }
-                return Ok(RpcResponse::Result(
-                    msg.result.unwrap_or(serde_json::Value::Null),
-                ));
-            }
-            Some(request_id) => {
-                let method = msg.method.as_deref().unwrap_or_default();
-                answer_request(
-                    wire,
-                    request_id.clone(),
-                    method,
-                    msg.params,
-                    resolver,
-                    &permission_context,
-                )
-                .await?;
-            }
-            // A notification (no id).
-            None => {
-                if msg.method.as_deref() == Some(CLIENT_METHOD_NAMES.session_update) {
-                    project_notification(msg.params, sink, seq, &mut permission_context).await?;
-                }
-            }
-        }
-    }
-}
-
-/// Project one `session/update` notification into the sink (skips updates with no
-/// runtime projection: user echoes, thoughts, plans, tool-call updates).
-async fn project_notification(
-    params: Option<serde_json::Value>,
-    sink: &mut dyn RunFactAppender,
-    seq: &mut u64,
-    permission_context: &mut PermissionContext,
-) -> Result<(), AcpError> {
-    let Some(params) = params else {
-        return Ok(());
-    };
-    let notification: SessionNotification = parse(params)?;
-    if let Some(event) = project_update(&notification.update) {
-        // A provider HARD-quota banner can arrive as assistant TEXT ("You've hit
-        // your weekly limit · resets …") rather than a structured error — the case
-        // where the CLI then hangs. Consult the detector before committing: a
-        // recognized banner fails the turn closed with the classified failure
-        // (RateLimited → Error) instead of landing as an ordinary assistant
-        // message. Any other text still projects normally below.
-        if let AcpProjectedEvent::Message { text, .. } = &event
-            && let Some(failure) = crate::streamed_hard_limit(text)
-        {
-            return Err(AcpError::HardLimit(failure));
-        }
-        *seq += 1;
-        sink.append(*seq, &event).await?;
-        permission_context.observe(&event);
-    }
-    Ok(())
 }
 
 fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, AcpError> {
@@ -1067,12 +957,16 @@ mod tests {
         // Cause/effect graph: C1 a prior Session id exists, C2 loadSession is
         // advertised, and C3 the Host supplies an MCP projection. Together they
         // must produce E1 session/load (not session/new), E2 the exact MCP routes
-        // on that load request, and E3 the same durable Session id after the turn.
+        // on that load request, E3 the same durable Session id after the turn,
+        // and E4 no replayed historical notification in the current Run facts.
         // This is the relaunch path used after HITL approval; omitting E2 makes a
         // loaded Codex Session retain conversation context but lose its tools.
+        // FMECA FM1: committing load replay duplicates transcript/tool facts and
+        // can make old instructions look current; the load-only discard appender
+        // mitigates it while the external Session retains its own history.
         //
         // | Rule | Prior id | Can load | MCP configured | Effect |
-        // | R1 | yes | yes | yes | load + exact MCP set + retain id |
+        // | R1 | yes | yes | yes | load + exact MCP set + retain id + no replay |
         // | R2 | yes | no | any | session/new (covered below) |
         // | R3 | any | any | no | empty MCP set (default-path coverage) |
         let (mut ours, theirs) = channel();
@@ -1094,9 +988,13 @@ mod tests {
                 .get("params")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            io.write_line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-resume","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"historical replay"}}}}"#)
+                .await;
             io.write_line(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#)
                 .await;
             io.read().await; // prompt
+            io.write_line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-resume","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"current response"}}}}"#)
+                .await;
             io.write_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#)
                 .await;
         });
@@ -1131,6 +1029,15 @@ mod tests {
             Some("sess-resume"),
             "the resumed id is reported back for the next turn"
         );
+        let messages = sink
+            .events
+            .iter()
+            .filter_map(|(_, event)| match event {
+                AcpProjectedEvent::Message { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(messages, ["current response"], "E4");
         agent.await.unwrap();
     }
 

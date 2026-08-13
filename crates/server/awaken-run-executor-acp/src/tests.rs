@@ -389,26 +389,17 @@ pub(crate) fn activation() -> RunActivation {
 }
 
 #[test]
-fn initial_acp_prompt_projects_frozen_agent_instructions_before_untrusted_input() {
-    let activation = activation();
-    let prompt = super::initial_prompt(&activation, &[]);
-    let instructions_at = prompt.find("be helpful").unwrap();
-    let input_at = prompt.find("do it").unwrap();
-    assert!(instructions_at < input_at, "{prompt}");
-    assert!(prompt.contains("untrusted data"), "{prompt}");
-
-    let mut blank = activation;
-    blank.snapshot.resolved_spec.instructions.clear();
-    assert_eq!(super::initial_prompt(&blank, &[]), "do it");
-}
-
-#[test]
-fn acp_prompt_loads_request_context_without_mixing_it_into_run_input() {
+fn acp_prompt_orders_frozen_policy_context_and_authoritative_input() {
     // Cause/effect graph: frozen instructions (C1), transient backend context
-    // (C2), and durable user input (C3) must become three ordered prompt
-    // sections; C2 must not mutate the activation input (E2), which is the list
-    // the executor commits. Decision rule R1: C1+C2+C3 -> ordered projection and
-    // byte-identical durable input.
+    // (C2), and durable current input (C3) produce ordered prompt sections (E1);
+    // C2 does not mutate durable input (E2); without C1/C2, C3 passes through
+    // byte-identically (E3). FMECA FM1: labelling C3 as untrusted made real ACP
+    // agents refuse the current task in favor of quoted Plan context; explicitly
+    // marking C3 authoritative under C1 mitigates that precedence inversion.
+    //
+    // | Rule | C1 | C2 | C3 | Effect |
+    // | PR1  | T  | T  | T  | E1+E2 |
+    // | PR2  | F  | F  | T  | E3    |
     let mut activation = activation();
     activation.snapshot.resolved_spec.instructions = "follow policy".into();
     let original = activation.input.clone();
@@ -424,7 +415,11 @@ fn acp_prompt_loads_request_context_without_mixing_it_into_run_input() {
     let recalled = prompt.find("remember the user's preference").expect("C2");
     let input = prompt.find("do it").expect("C3");
     assert!(instructions < recalled && recalled < input, "R1: {prompt}");
+    assert!(prompt.contains("authoritative task"), "R1: {prompt}");
     assert_eq!(activation.input, original, "E2");
+
+    activation.snapshot.resolved_spec.instructions.clear();
+    assert_eq!(super::initial_prompt(&activation, &[]), "do it", "E3");
 }
 
 fn exec(frames: Vec<String>) -> AcpRunExecutor {
@@ -622,22 +617,106 @@ fn an_existing_pending_tool_use_is_not_duplicated() {
 }
 
 #[test]
-fn acp_message_ids_are_replay_stable_and_cross_run_unique() {
+fn acp_message_ids_are_replay_stable_and_cross_activation_unique() {
     // Cause/effect graph:
-    // C1 same durable Run + same fact suffix -> E1 same id (retry/replay dedupe).
-    // C2 different Run + same suffix -> E2 different id (later turns survive the
-    // Managed projection's message-id dedupe).
-    // C3 same Run + different suffix -> E3 different id (facts within a turn do
-    // not collide).
-    // Decision table: R1=C1 => E1; R2=C2 => E2; R3=C3 => E3. Run identity and
-    // suffix are the complete id inputs; Thread identity is intentionally absent
-    // because Run ids are already the durable execution identity.
+    // C1 same Run + activation namespace + suffix -> E1 same id for replay.
+    // C2 Run differs, C3 activation/turn differs, or C4 suffix differs -> E2
+    // unique id. FMECA FM1: the old Run+wire-sequence key collided when an ACP
+    // permission resume restarted its sequence, causing a real publish_result to
+    // be discarded as a replay; the stable activation+ordinal namespace is the
+    // mitigation.
+    //
+    // | Rule | C2 | C3 | C4 | Effect |
+    // | ID1  | F  | F  | F  | E1     |
+    // | ID2  | T  | *  | *  | E2     |
+    // | ID3  | F  | T  | *  | E2     |
+    // | ID4  | F  | F  | T  | E2     |
     let run_one = RunId("run-1".into());
     let run_two = RunId("run-2".into());
 
-    assert_eq!(acp_message_id(&run_one, 1), acp_message_id(&run_one, 1));
-    assert_ne!(acp_message_id(&run_one, 1), acp_message_id(&run_two, 1));
-    assert_ne!(acp_message_id(&run_one, 1), acp_message_id(&run_one, 2));
+    assert_eq!(
+        acp_message_id(&run_one, "initial:0", 1),
+        acp_message_id(&run_one, "initial:0", 1)
+    );
+    assert_ne!(
+        acp_message_id(&run_one, "initial:0", 1),
+        acp_message_id(&run_two, "initial:0", 1)
+    );
+    assert_ne!(
+        acp_message_id(&run_one, "initial:0", 1),
+        acp_message_id(&run_one, "resume:0", 1)
+    );
+    assert_ne!(
+        acp_message_id(&run_one, "initial:0", 1),
+        acp_message_id(&run_one, "initial:0", 2)
+    );
+}
+
+#[tokio::test]
+async fn regenerated_approved_tool_projects_as_one_logical_call() {
+    // Cause/effect/FMECA: C1=the awaiting transcript already owns original call
+    // O; C2=replacement ACP emits semantically identical call N; C3=N completes;
+    // C4=a later identical call occurs. C1+C2+C3 -> E1 suppress duplicate N use
+    // and correlate its result to O. C4 -> E2 normal new ToolUse after the one-shot
+    // remap is consumed. FM1 was two UI tool rows for one approved side effect;
+    // exact tool/arguments plus one-shot O correlation mitigates duplication
+    // without widening later authority.
+    let run = RunId("run-1".into());
+    let decision = PermissionResume {
+        call_id: "original".into(),
+        tool_id: "bash".into(),
+        arguments: serde_json::json!({"cmd": "echo approved"}),
+        allow: true,
+    };
+    let mut appender =
+        CollectingAppender::new(run, "permission-resume:0".into(), None, Some(&decision));
+    appender
+        .append(
+            1,
+            &AcpProjectedEvent::ToolCall {
+                id: "regenerated".into(),
+                name: "bash".into(),
+                input: decision.arguments.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    appender
+        .append(
+            2,
+            &AcpProjectedEvent::ToolResult {
+                id: "regenerated".into(),
+                content: "ok".into(),
+                is_error: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        appender.messages.len(),
+        1,
+        "E1: regenerated use is not duplicated"
+    );
+    assert!(matches!(
+        &appender.messages[0].content[0],
+        ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "original"
+    ));
+
+    appender
+        .append(
+            3,
+            &AcpProjectedEvent::ToolCall {
+                id: "later".into(),
+                name: "bash".into(),
+                input: decision.arguments,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        &appender.messages[1].content[0],
+        ContentBlock::ToolUse { id, .. } if id == "later"
+    ));
 }
 
 /// Records every lifecycle event the executor emits during bring-up.
@@ -1390,6 +1469,77 @@ async fn per_run_permission_is_an_intersection_with_acp_authority() {
     assert_eq!(cannot_widen.resolve(&ask).await, PermissionVerdict::Deny);
 }
 
+#[tokio::test]
+async fn resumed_permission_is_one_shot_and_semantically_exact_across_new_wire_ids() {
+    // Cause/effect graph and FMECA:
+    // C1=a durable decision freezes tool T and arguments A; C2=replacement ACP
+    // reissues T/A with a new wire id; C3=tool or arguments differ; C4=the exact
+    // request is repeated after consumption. Effects: E1=the frozen decision is
+    // applied once; E2=normal policy remains authoritative. Failure mode FM1 was
+    // matching only the obsolete id, which produced a second approval and could
+    // duplicate the side effect; semantic equality plus one-shot consumption is
+    // the mitigation. FM2 is authority widening; exact T/A equality and fallback
+    // to the base resolver mitigate it.
+    //
+    // | Rule | C2 | C3 | C4 | Effect |
+    // | SR1  | T  | F  | F  | E1     |
+    // | SR2  | *  | T  | *  | E2     |
+    // | SR3  | T  | F  | T  | E2     |
+    use awaken_protocol_acp::{PermissionAsk, PermissionResolver, PermissionVerdict};
+
+    struct AskResolver;
+    #[async_trait]
+    impl PermissionResolver for AskResolver {
+        async fn resolve(&self, _ask: &PermissionAsk) -> PermissionVerdict {
+            PermissionVerdict::Await {
+                correlation_id: "base-policy".into(),
+            }
+        }
+    }
+
+    let decision = PermissionResume {
+        call_id: "old-wire-id".into(),
+        tool_id: "bash".into(),
+        arguments: serde_json::json!({"cmd": "echo approved"}),
+        allow: true,
+    };
+    let resolver = ResumedPermissionResolver::new(&AskResolver, &decision);
+    let altered = PermissionAsk {
+        tool: "bash".into(),
+        call_id: "old-wire-id".into(),
+        arguments: serde_json::json!({"cmd": "echo changed"}),
+    };
+    assert!(matches!(
+        resolver.resolve(&altered).await,
+        PermissionVerdict::Await { .. }
+    ));
+
+    let regenerated = PermissionAsk {
+        tool: "bash".into(),
+        call_id: "new-wire-id".into(),
+        arguments: decision.arguments.clone(),
+    };
+    assert_eq!(
+        resolver.resolve(&regenerated).await,
+        PermissionVerdict::Allow
+    );
+    assert!(matches!(
+        resolver.resolve(&regenerated).await,
+        PermissionVerdict::Await { .. }
+    ));
+
+    let denied = PermissionResume {
+        allow: false,
+        ..decision
+    };
+    assert_eq!(
+        ResumedPermissionResolver::new(&AskResolver, &denied)
+            .resolve(&regenerated)
+            .await,
+        PermissionVerdict::Deny
+    );
+}
+
 #[cfg(feature = "real-acp")]
 #[tokio::test]
 async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_session() {
@@ -1399,8 +1549,9 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
     // C5=operator decision. Effects: E1=one ToolPermission ticket with exact
     // correlation/tool identity; E2=first ACP request receives `cancelled` and
     // cannot keep an in-memory authority alive; E3=replacement uses
-    // `session/load`; E4=exact allow/reject option is returned; E5=one terminal
-    // continuation consumes the ticket.
+    // `session/load` and may regenerate the same request under a new wire id;
+    // E4=the exact semantic request receives the allow/reject option once;
+    // E5=one terminal continuation consumes the ticket.
     //
     // | Rule | C1 | C2 | C3 | C4 | C5    | E1 | E2 | E3 | E4     | E5 |
     // |---|---|---|---|---|---|---|---|---|---|---|
@@ -1416,7 +1567,8 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
     use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
     use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 
-    const PERMISSION: &str = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"permission-session","toolCall":{"toolCallId":"tool-1","title":"bash","rawInput":{"cmd":"echo ok"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
+    const FIRST_PERMISSION: &str = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"permission-session","toolCall":{"toolCallId":"tool-1","title":"bash","rawInput":{"cmd":"echo ok"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
+    const REGENERATED_PERMISSION: &str = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"permission-session","toolCall":{"toolCallId":"tool-2","title":"bash","rawInput":{"cmd":"echo ok"}},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
 
     struct AskPolicy;
     #[async_trait]
@@ -1490,7 +1642,17 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
                                     .to_string();
                                 prompts.lock().unwrap().push(prompt);
                             }
-                            output.write_all(PERMISSION.as_bytes()).await.unwrap();
+                            output
+                                .write_all(
+                                    if attempt == 0 {
+                                        FIRST_PERMISSION
+                                    } else {
+                                        REGENERATED_PERMISSION
+                                    }
+                                    .as_bytes(),
+                                )
+                                .await
+                                .unwrap();
                             output.write_all(b"\n").await.unwrap();
                             output.flush().await.unwrap();
                             line.clear();

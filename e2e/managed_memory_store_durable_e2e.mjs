@@ -19,7 +19,16 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, hasEndTurn } from './harness.mjs';
+import {
+  cleanupFixtureTree,
+  hasEndTurn,
+  pass,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38211);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -66,7 +75,7 @@ async function memContent(id) {
 }
 
 async function main() {
-  fs.rmSync(STORE_DIR, { recursive: true, force: true });
+  cleanupFixtureTree(STORE_DIR);
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const servers = [];
   const upstream = await startUpstream('memoryResource');
@@ -145,7 +154,12 @@ async function main() {
   } finally {
     for (const s of servers) await stopServer(s);
     upstream.close();
-    fs.rmSync(STORE_DIR, { recursive: true, force: true });
+    // Cleanup cause/effect rules: C1 no retained mount -> recursively remove;
+    // C2 live or disconnected FUSE projection -> detach deepest-first, then
+    // remove; C3 detach failure -> fail the test. FMECA: raw rmSync maps C2 to
+    // EISDIR/ENOTCONN and leaks the fixture after the logically asynchronous
+    // Session teardown; the canonical harness is the sole mount-aware owner.
+    cleanupFixtureTree(STORE_DIR);
   }
 }
 

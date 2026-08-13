@@ -984,6 +984,57 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         .await
         .expect("same frozen fingerprint is idempotent");
 
+    // Branch request-context cause/effect graph: C1 the frozen baseline is
+    // already resident; C2 its immutable transcript prefix is materialized only
+    // on the later claim-fenced projection; C3 an identical projection replays.
+    // E1 C1+C2 invalidates only the stale SessionCtx and rebuilds with the exact
+    // request-only messages; E2 C1+C2+C3 retains that rebuilt context. FMECA:
+    // updating the slot directly leaves a resident ACP/Native attempt context
+    // stale, so a branch silently guesses from unrelated resources.
+    //
+    // | Rule | C1 | C2 changed | C3 replay | Effect |
+    // | B1   | T  | T          | F         | E1     |
+    // | B2   | T  | F          | T         | E2     |
+    let mut branch = projection("branch prompt", false);
+    host.install_frozen_session_projection("branch-thread", branch.clone(), None, true)
+        .await
+        .expect("B1 baseline without materialized prefix");
+    let stale = host
+        .ctx_for("branch-thread", None)
+        .await
+        .expect("B1 resident context");
+    branch.request_context = vec![Message::text(
+        MessageId("source-prefix".into()),
+        Role::Assistant,
+        "E2E_SOURCE_ONLY_exact",
+    )];
+    host.install_frozen_session_projection("branch-thread", branch.clone(), None, true)
+        .await
+        .expect("B1 late materialized prefix");
+    let rebuilt = host
+        .ctx_for("branch-thread", None)
+        .await
+        .expect("B1 rebuilt context");
+    assert!(
+        !Arc::ptr_eq(&stale, &rebuilt),
+        "B1/E1 stale context retired"
+    );
+    assert_eq!(
+        rebuilt.attempt_context.request_context, branch.request_context,
+        "B1/E1 exact request-only prefix"
+    );
+    host.install_frozen_session_projection("branch-thread", branch, None, true)
+        .await
+        .expect("B2 identical replay");
+    let replayed = host
+        .ctx_for("branch-thread", None)
+        .await
+        .expect("B2 resident context");
+    assert!(
+        Arc::ptr_eq(&rebuilt, &replayed),
+        "B2/E2 no redundant rebuild"
+    );
+
     // Frozen-projection Resource-generation cause/effect decision table.
     // C1=projection has an explicit non-legacy Resource generation;
     // C2=resources are non-default and must be installed. E1=the Runtime's

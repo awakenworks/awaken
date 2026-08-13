@@ -93,6 +93,15 @@ impl SessionExecutionState {
         matches!(self, Self::ActivationFailed | Self::Terminated)
     }
 
+    /// Whether a driving event may join or open the aggregate-owned activity
+    /// interval. `Running` is ready because `activity_epoch` fences overlapping
+    /// and crash-recovery admissions; realization phases and terminal states are
+    /// not execution-ready.
+    #[must_use]
+    pub const fn admits_activity(self) -> bool {
+        matches!(self, Self::Idle | Self::Running)
+    }
+
     /// Whether the canonical Session state machine admits `next`.
     ///
     /// Replays are deliberately idempotent. Terminal states fail closed, and
@@ -1047,6 +1056,17 @@ mod mutation_tests {
             State::Terminated,
         ];
         for from in states {
+            // Activity-admission decision table: Idle opens the first interval;
+            // Running joins/replaces a live or crash-orphaned epoch; every
+            // realization/reschedule/terminal state rejects before Runtime.
+            // FMECA: classifying only Idle as ready strands a crash-orphaned
+            // Running activity, while admitting any other state bypasses
+            // realization or terminal fencing.
+            assert_eq!(
+                from.admits_activity(),
+                matches!(from, State::Idle | State::Running),
+                "activity admission from {from}"
+            );
             for to in states {
                 let expected = from == to
                     || (!from.is_terminal()

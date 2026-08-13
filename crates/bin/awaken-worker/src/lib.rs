@@ -905,7 +905,7 @@ impl WorkerNode {
                 Output = Result<WorkerShutdown, Box<dyn std::error::Error + Send + Sync>>,
             >,
     {
-        let deployment = self.deployment.clone();
+        let mut deployment = self.deployment.clone();
         let upstream_url = self.upstream.base_url().to_string();
         let upstream = self.upstream;
         let bootstrap_control = WorkerControlClient::new(upstream.clone());
@@ -937,6 +937,11 @@ impl WorkerNode {
             }
         };
         let upstream = upstream.with_worker_identity(registration.snapshot.identity.clone());
+        // The registry-assigned incarnation is the only execution identity. The
+        // pre-registration deployment owner is configuration input, not a second
+        // lease namespace; bind every Host-local scheduler to the exact identity
+        // used by the remote dispatch and Session Work protocols.
+        deployment.dispatch_owner = registration.snapshot.identity.lease_owner();
         let control = WorkerControlClient::new(upstream.clone());
         let registered_context =
             RegisteredWorkerContext::new(registration.clone(), upstream.clone());
@@ -993,7 +998,7 @@ impl WorkerNode {
             "worker",
             remote_files,
             remote_memory,
-            self.deployment,
+            deployment.clone(),
         )
         .with_artifact_publisher(remote_artifacts)
         .with_worker_upstream(upstream)
@@ -1221,7 +1226,9 @@ impl WorkerNode {
         if host.pool_in_flight() == 0 {
             let _ = control.mark_quiesced(&lifecycle.identity).await;
         }
-        let _ = control.deregister(&lifecycle.identity).await;
+        if let Err(error) = control.deregister(&lifecycle.identity).await {
+            eprintln!("awaken-worker deregistration failed: {error}");
+        }
         shutdown?;
         if authority_lost {
             return Err(std::io::Error::other(

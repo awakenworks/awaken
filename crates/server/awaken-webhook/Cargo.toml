@@ -27,6 +27,12 @@ awaken-outbound-http.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 
 [dev-dependencies]
+# Cause/FMECA WT1: unit/integration tests construct the bounded loopback sender;
+# without the dependency feature, the Webhook crate's cfg(test) path references a
+# constructor intentionally absent from production. Feature-unioning the existing
+# transport test-support API makes tests compile while product builds retain only
+# the guarded SSRF-safe constructor.
+awaken-outbound-http = { workspace = true, features = ["test-support"] }
 # e2e: a real axum receiver on an ephemeral port verifies the delivered signature.
 axum = { version = "0.8", features = [] }
 

@@ -575,6 +575,43 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
             .map(SessionWorkOwnership::Leased)
             .unwrap_or(SessionWorkOwnership::Unowned))
     }
+
+    async fn release_session_work(
+        &self,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
+    ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
+        let Some(environment_id) = self_hosted_work_environment(self, session_id).await? else {
+            return Ok(true);
+        };
+        // Renew-and-compare through the one WorkQueue authority before retiring.
+        // The refreshed lease prevents a different Worker from taking ownership
+        // between the comparison and the idempotent Session retirement.
+        let Some(lease) = self
+            .environments
+            .acquire_session_work(&environment_id, session_id, worker_owner, now_ms)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if lease.owner != worker_owner {
+            return Ok(false);
+        }
+        self.environments
+            .retire_session_work(&environment_id, session_id)
+            .await?;
+        Ok(true)
+    }
+
+    async fn release_worker_session_work(
+        &self,
+        worker_owner: &str,
+    ) -> Result<usize, awaken_session_contract::work_queue::WorkQueueError> {
+        self.environments
+            .release_worker_session_work(worker_owner)
+            .await
+    }
 }
 
 /// Repository-backed implementation installed at the runtime materialization boundary.

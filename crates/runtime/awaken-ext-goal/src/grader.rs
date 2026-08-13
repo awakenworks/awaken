@@ -39,6 +39,25 @@ pub fn default_judge_agent(
         .build()
 }
 
+/// Derive the default tool-free Judge from an already-frozen Worker snapshot.
+/// This is the Managed/session composition path: it preserves the exact primary
+/// and fallback routes plus inference controls without consulting mutable Agent
+/// configuration or copying Worker tools, plugins, or delegation bindings.
+#[must_use]
+pub fn default_judge_agent_from_worker(
+    worker: &ExecutableAgentSnapshot,
+    agent_id: &str,
+    instructions: &str,
+) -> ExecutableAgentSnapshot {
+    ExecutableAgentSnapshot::builder(agent_id)
+        .instructions(instructions)
+        .resolved_model(worker.resolved_spec.model_binding.clone())
+        .resolved_model_candidates(worker.resolved_spec.model_candidates.clone())
+        .inference_options(worker.resolved_spec.plugin_config.inference.clone())
+        .max_steps(2)
+        .build()
+}
+
 /// Serialize one complete grading request. The stable instruction/schema prefix
 /// stays in the Judge snapshot while Evaluation-specific data is request-local.
 pub fn grading_prompt(input: &GradingInput) -> Result<String, GraderError> {
@@ -219,6 +238,78 @@ mod tests {
                 "default Judge prompt leaked domain term `{domain_term}`"
             );
         }
+    }
+
+    #[test]
+    fn worker_derived_default_judge_freezes_only_inference_authority() {
+        use awaken_runtime_contract::agent_bindings::{
+            InferenceOptions, InferenceSpeed, ReasoningEffort,
+        };
+        use awaken_runtime_contract::resolved::{
+            ModelBinding, ResolvedModelCandidate, ToolDescriptor,
+        };
+
+        // Cause/effect graph: C1 Worker has an exact non-default backend and
+        // fallback; C2 Worker has inference controls; C3 Worker has executable
+        // tools. E1 Judge preserves C1/C2; E2 Judge exposes no C3 capability.
+        // FMECA: rebuilding from a process-global model string loses provider /
+        // backend identity and makes a durable Managed Outcome fail only after
+        // its Worker completes. Freezing the complete candidates at definition
+        // time removes that late, restart-sensitive failure.
+        //
+        // | Rule | C1 | C2 | C3 | E1 exact inference | E2 tool-free |
+        // | R1   | T  | T  | T  | T                  | T            |
+        let primary = ResolvedModelCandidate::host(ModelBinding::new(
+            "cred:workspace:codex",
+            "gpt-exact",
+            "acp:codex",
+        ));
+        let fallback = ResolvedModelCandidate::host(ModelBinding::new(
+            "cred:workspace:remote",
+            "claude-exact",
+            "a2a:https://agent.example",
+        ));
+        let inference = InferenceOptions {
+            effort: Some(ReasoningEffort::High),
+            speed: Some(InferenceSpeed::Fast),
+            inference_geo: None,
+        };
+        let worker = ExecutableAgentSnapshot::builder("worker")
+            .resolved_model(primary.clone())
+            .resolved_model_candidates([fallback.clone()])
+            .inference_options(inference.clone())
+            .tool(ToolDescriptor::pinned(
+                "test",
+                "bash",
+                "shell",
+                serde_json::json!({"type": "object"}),
+            ))
+            .build();
+
+        let judge =
+            default_judge_agent_from_worker(&worker, "outcome-grader", DEFAULT_JUDGE_INSTRUCTIONS);
+
+        assert_eq!(judge.resolved_spec.model_binding, primary, "R1/E1");
+        assert_eq!(
+            judge.resolved_spec.model_candidates,
+            vec![fallback],
+            "R1/E1"
+        );
+        assert_eq!(
+            judge.resolved_spec.plugin_config.inference, inference,
+            "R1/E1"
+        );
+        assert!(judge.resolved_spec.tool_descriptors.is_empty(), "R1/E2");
+        assert!(judge.resolved_spec.plugin_ids.is_empty(), "R1/E2");
+        assert!(
+            judge
+                .resolved_spec
+                .plugin_config
+                .agent
+                .mcp_servers
+                .is_empty(),
+            "R1/E2"
+        );
     }
 
     #[test]

@@ -23,6 +23,12 @@
 // | ACP roster member | exact ACP snapshot | complete | no | child uses the external ACP executor, not Native inference |
 // | roster member | existing exact Run | complete | yes | same child terminated + terminal event |
 // | absent member | none | none | n/a | no child and no delegate inference usage |
+//
+// FMECA D6: polling a complete Native child inline on the parent's Tokio poll
+// stack can overflow before any durable boundary is observed. The happy-path
+// rule runs with the standard worker stack and therefore proves the canonical
+// child task boundary settles and returns exactly once; the existing targeted
+// interrupt/archive rules prove cancellation and termination do not detach it.
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';

@@ -532,9 +532,10 @@ async fn transcript_prefix_is_frozen_projected_and_never_copied() {
     .await;
     assert_eq!(status, StatusCode::OK, "R1");
     let branch_id = branch["id"].as_str().unwrap();
-    let contexts = h.request_contexts.lock().unwrap();
-    assert_eq!(contexts[branch_id], source_messages[..1], "R1 exact prefix");
-    drop(contexts);
+    {
+        let contexts = h.request_contexts.lock().unwrap();
+        assert_eq!(contexts[branch_id], source_messages[..1], "R1 exact prefix");
+    }
     assert!(
         h.committed
             .lock()

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  assertCanonicalPortOwnership,
   assignShard,
   expandSuites,
   fileDigest,
@@ -37,6 +38,30 @@ test('expands the package-owned suite graph without a second scenario list', () 
   assert.throws(
     () => expandSuites({ first: 'npm run second', second: 'npm run first' }, ['first']),
     /cyclic npm suite/,
+  );
+});
+
+// Port-ownership cause/effect graph: C1 command uses the harness-assigned block;
+// C2 command injects E2E_PORT; C3 command injects E2E_WORKER_PORT. E1 execute
+// with one port owner; E2 fail before prebuild. Decision rules: R1 C1 -> E1;
+// R2 C2|C3 -> E2. FMECA: a fixed 38xxx override can collide with a transient
+// client socket and make a functional scenario nondeterministically fail; early
+// rejection makes the duplicate configuration path detectable and recoverable.
+test('rejects deterministic commands that duplicate harness port ownership', () => {
+  assert.doesNotThrow(() => assertCanonicalPortOwnership([
+    { command: 'node managed_e2e.mjs', owner: 'test' },
+  ]));
+  assert.throws(
+    () => assertCanonicalPortOwnership([
+      { command: 'cross-env E2E_PORT=38424 node managed_e2e.mjs', owner: 'test' },
+    ]),
+    /overrides harness-owned port allocation/u,
+  );
+  assert.throws(
+    () => assertCanonicalPortOwnership([
+      { command: 'E2E_WORKER_PORT=38474 node worker_e2e.mjs', owner: 'test' },
+    ]),
+    /overrides harness-owned port allocation/u,
   );
 });
 
