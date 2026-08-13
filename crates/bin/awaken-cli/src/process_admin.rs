@@ -234,8 +234,8 @@ pub fn register_active_streams_gauge(
     let registration_ready = {
         let ctrl = ctrl.clone();
         meter
-            .u64_observable_gauge("awaken_control_registration_ready")
-            .with_description("1 when Agent and Environment registrations are reconciled.")
+        .u64_observable_gauge("awaken_control_registration_ready")
+        .with_description("1 when registration projection health permits the process to serve; pending domains are reported separately.")
             .with_callback(move |obs| {
                 if let Some(snapshot) = ctrl.registration_snapshot() {
                     obs.observe(u64::from(snapshot.ready), &[]);
