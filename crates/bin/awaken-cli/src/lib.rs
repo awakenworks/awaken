@@ -181,12 +181,27 @@ impl ControlServices {
 }
 /// Role-owned HTTP surfaces plus the cleartext local setup handoff printed by
 /// the CLI once. `private_router` is never merged into `public_router`.
+#[derive(Clone)]
+pub struct CoordinatorAuthorityHandles {
+    pub runtime_authority: Arc<dyn awaken_runtime_host::RuntimeAuthority>,
+    pub worker_directory: Arc<dyn awaken_worker_contract::WorkerDirectory>,
+    pub sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    pub postgres_pool: Option<sqlx::PgPool>,
+    pub run_recovery:
+        Option<Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>>,
+    pub run_lifecycle:
+        Option<Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>>,
+}
+
 pub struct PreparedProcess {
     pub public_router: Router,
     pub private_router: Router,
     pub local_setup: Option<awaken_control::LocalSetupHandoff>,
     pub registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    /// Canonical Coordinator persistence handles for a hosted composition.
+    /// Consumers must reuse these handles and must not reopen the same stores.
+    pub coordinator_authorities: Option<CoordinatorAuthorityHandles>,
 }
 
 struct ProcessRouters {

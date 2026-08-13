@@ -14,6 +14,18 @@ use super::worker_registry::WorkerDirectoryHandle;
 pub struct CoordinatorPersistence {
     pub worker_directory: WorkerDirectoryHandle,
     pub runtime_authority: std::sync::Arc<dyn awaken_runtime_host::RuntimeAuthority>,
+    /// Process-owned PostgreSQL pool shared by every hosted adapter that reads
+    /// the Coordinator database. `None` is the explicit non-PostgreSQL case.
+    pub postgres_pool: Option<sqlx::PgPool>,
+    /// Authoritative committed-run recovery view. Hosted compositions reuse
+    /// this handle instead of opening a second commit projection.
+    pub run_recovery: Option<
+        std::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>,
+    >,
+    /// Authoritative committed-run lifecycle view over the same projection.
+    pub run_lifecycle: Option<
+        std::sync::Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>,
+    >,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +37,10 @@ struct PostgresComponents {
 impl PostgresComponents {
     fn requires_process_pool(self) -> bool {
         self.dispatch || self.commit
+    }
+
+    fn exposes_committed_run_feeds(self) -> bool {
+        self.commit
     }
 }
 
@@ -133,9 +149,23 @@ async fn open_with(
             postgres_pool.clone(),
         )
         .await?;
+    let run_recovery = runtime_authority.postgres_commit().map(|authority| {
+        authority
+            as std::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>
+    });
+    let run_lifecycle = runtime_authority.postgres_commit().map(|authority| {
+        authority
+            as std::sync::Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>
+    });
+    debug_assert_eq!(
+        run_recovery.is_some() && run_lifecycle.is_some(),
+        components.exposes_committed_run_feeds()
+    );
     let worker_directory = if components.dispatch {
         super::worker_registry::open_postgres_pool(
-            postgres_pool.expect("Postgres dispatch opened the process pool"),
+            postgres_pool
+                .clone()
+                .expect("Postgres dispatch opened the process pool"),
             matches!(schema, SchemaAccess::Verify),
         )
         .await?
@@ -149,6 +179,9 @@ async fn open_with(
     Ok(CoordinatorPersistence {
         worker_directory,
         runtime_authority,
+        postgres_pool,
+        run_recovery,
+        run_lifecycle,
     })
 }
 
@@ -166,12 +199,16 @@ mod tests {
         // registry clone that handle, so failover reconnect and backpressure do
         // not multiply by adapter count.
         //
-        // | Rule | C1 dispatch | C2 commit | Pool effect |
-        // |---|---|---|---|
-        // | R1 | no | no | E0 none |
-        // | R2 | yes | no | E1 one |
-        // | R3 | no | yes | E1 one |
-        // | R4 | yes | yes | E1 one |
+        // E2 is the hosted committed-run read pair, which exists exactly when
+        // C2 does; hosted compositions receive E1/E2 from PreparedProcess and
+        // therefore never reopen dispatch, commit, or Worker-directory stores.
+        //
+        // | Rule | C1 dispatch | C2 commit | Pool effect | Feed effect |
+        // |---|---|---|---|---|
+        // | R1 | no | no | E0 none | E0 none |
+        // | R2 | yes | no | E1 one | E0 none |
+        // | R3 | no | yes | E1 one | E2 pair |
+        // | R4 | yes | yes | E1 one | E2 pair |
         let mut deployment = DeploymentConfig::ephemeral();
         assert_eq!(
             postgres_components(&deployment),
@@ -183,6 +220,10 @@ mod tests {
         );
         assert!(
             !postgres_components(&deployment).requires_process_pool(),
+            "R1"
+        );
+        assert!(
+            !postgres_components(&deployment).exposes_committed_run_feeds(),
             "R1"
         );
 
@@ -197,6 +238,10 @@ mod tests {
         );
         assert!(
             postgres_components(&deployment).requires_process_pool(),
+            "R2"
+        );
+        assert!(
+            !postgres_components(&deployment).exposes_committed_run_feeds(),
             "R2"
         );
 
@@ -214,6 +259,10 @@ mod tests {
             postgres_components(&deployment).requires_process_pool(),
             "R3"
         );
+        assert!(
+            postgres_components(&deployment).exposes_committed_run_feeds(),
+            "R3"
+        );
 
         deployment.dispatch_backend = DispatchBackend::Postgres;
         assert_eq!(
@@ -226,6 +275,10 @@ mod tests {
         );
         assert!(
             postgres_components(&deployment).requires_process_pool(),
+            "R4"
+        );
+        assert!(
+            postgres_components(&deployment).exposes_committed_run_feeds(),
             "R4"
         );
     }

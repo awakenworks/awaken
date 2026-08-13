@@ -353,6 +353,10 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
 }
 
 impl DurableRuntimeAuthority {
+    pub(super) fn postgres_commit(&self) -> Option<Arc<PostgresCommitCoordinator>> {
+        self.postgres_commit.clone()
+    }
+
     fn commit_path(&self, thread: &str) -> Result<PathBuf, String> {
         let root = self
             .commit

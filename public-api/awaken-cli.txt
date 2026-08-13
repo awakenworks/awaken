@@ -153,6 +153,13 @@ pub enum awaken_cli::ServiceRole
 pub awaken_cli::ServiceRole::AllInOne
 pub awaken_cli::ServiceRole::Control
 pub awaken_cli::ServiceRole::Coordinator
+pub struct awaken_cli::CoordinatorAuthorityHandles
+pub awaken_cli::CoordinatorAuthorityHandles::postgres_pool: core::option::Option<sqlx_postgres::PgPool>
+pub awaken_cli::CoordinatorAuthorityHandles::run_lifecycle: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>>
+pub awaken_cli::CoordinatorAuthorityHandles::run_recovery: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>>
+pub awaken_cli::CoordinatorAuthorityHandles::runtime_authority: alloc::sync::Arc<dyn awaken_runtime_host::authority::RuntimeAuthority>
+pub awaken_cli::CoordinatorAuthorityHandles::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
+pub awaken_cli::CoordinatorAuthorityHandles::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
 pub struct awaken_cli::CoordinatorServiceAdapters
 pub awaken_cli::CoordinatorServiceAdapters::worker_authenticator: core::option::Option<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>
 pub awaken_cli::CoordinatorServiceAdapters::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
@@ -184,6 +191,7 @@ pub struct awaken_cli::PreparedLocalWorker
 impl awaken_cli::PreparedLocalWorker
 pub fn awaken_cli::PreparedLocalWorker::build_worker(self, impl core::convert::Into<alloc::string::String>, &awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_worker::WorkerNode, alloc::string::String>
 pub struct awaken_cli::PreparedProcess
+pub awaken_cli::PreparedProcess::coordinator_authorities: core::option::Option<awaken_cli::CoordinatorAuthorityHandles>
 pub awaken_cli::PreparedProcess::local_setup: core::option::Option<awaken_iam_host::local_browser::LocalSetupHandoff>
 pub awaken_cli::PreparedProcess::private_router: axum::routing::Router
 pub awaken_cli::PreparedProcess::public_router: axum::routing::Router

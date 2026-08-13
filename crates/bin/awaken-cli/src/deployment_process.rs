@@ -70,6 +70,18 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         postgres_schema,
     })
     .await?;
+    let coordinator_authorities =
+        stores
+            .coordinator
+            .as_ref()
+            .map(|stores| CoordinatorAuthorityHandles {
+                runtime_authority: persistence.runtime_authority.clone(),
+                worker_directory: persistence.worker_directory.clone(),
+                sessions: stores.sessions.clone(),
+                postgres_pool: persistence.postgres_pool.clone(),
+                run_recovery: persistence.run_recovery.clone(),
+                run_lifecycle: persistence.run_lifecycle.clone(),
+            });
     let executable_environment_wiring = executable_environment_registration::for_runtime_role(
         role,
         deployment,
@@ -143,7 +155,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
             worker_authenticator: Some(worker_authenticator),
             worker_placement_policy: coordinator_services.worker_placement_policy,
             worker_directory: Some(worker_directory),
-            runtime_authority: Some(persistence.runtime_authority),
+            runtime_authority: Some(persistence.runtime_authority.clone()),
             worker_observations: Some(worker_observations),
             control_service_authenticator: None,
             control_service,
@@ -159,6 +171,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         local_setup: identity.local_setup,
         registration_supervisor: prepared.registration_supervisor,
         service_lifecycle: prepared.service_lifecycle,
+        coordinator_authorities,
     })
 }
 

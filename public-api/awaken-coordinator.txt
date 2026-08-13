@@ -159,6 +159,9 @@ pub awaken_coordinator::CoordinatorDependencies::worker_file_application: alloc:
 pub awaken_coordinator::CoordinatorDependencies::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
 pub awaken_coordinator::CoordinatorDependencies::worker_skill_bundles: alloc::sync::Arc<dyn awaken_session_contract::skill_execution::SkillBundleSource<awaken_run_ingress_contract::dispatch::RunClaim>>
 pub struct awaken_coordinator::CoordinatorPersistence
+pub awaken_coordinator::CoordinatorPersistence::postgres_pool: core::option::Option<sqlx_postgres::PgPool>
+pub awaken_coordinator::CoordinatorPersistence::run_lifecycle: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed>>
+pub awaken_coordinator::CoordinatorPersistence::run_recovery: core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::thread::read::recovery::RunRecoverySource>>
 pub awaken_coordinator::CoordinatorPersistence::runtime_authority: alloc::sync::Arc<dyn awaken_runtime_host::authority::RuntimeAuthority>
 pub awaken_coordinator::CoordinatorPersistence::worker_directory: awaken_coordinator::WorkerDirectoryHandle
 pub struct awaken_coordinator::ManagedApplicationServices

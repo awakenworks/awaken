@@ -54,6 +54,7 @@ awaken-ext-builtin-tools.workspace = true
 awaken-run-ingress = { workspace = true, features = ["durable"] }
 awaken-work-store.workspace = true
 awaken-worker-transport-security.workspace = true
+awaken-worker-contract.workspace = true
 awaken-sandbox-policy-store = { workspace = true }
 awaken-resource-reclaimer = { workspace = true }
 awaken-webhook-managed = { workspace = true }
@@ -122,6 +123,7 @@ serde_json.workspace = true
 toml.workspace = true
 base64 = "0.22"
 url.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }
 
 [features]
 # Volatile startup helpers used by integration/scenario harnesses. The default
@@ -169,7 +171,6 @@ awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 awaken-scenario-host = { workspace = true }
 awaken-runtime = { workspace = true }
 awaken-store-inmem.workspace = true
-awaken-worker-contract = { workspace = true }
 awaken-sandbox-container.workspace = true
 # mcp_sessions drives the VaultRefresher refresh grant + the ext-mcp tool-id shape.
 awaken-ext-mcp = { workspace = true }
