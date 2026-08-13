@@ -298,6 +298,16 @@ image it deploys. It must not compile a second action matrix from a separately
 pinned library revision. The command does not load deployment configuration,
 read credentials, open storage, contact IAM, or publish policy.
 
+The same product publisher identity is bound to namespace-owned companion
+roles: `awaken.runtime.management:agent_publisher` permits Agent Workspace
+mutation and model-supply discovery, while
+`awaken.runtime.resources:agent_publisher` permits only `skill.*`. The external
+product must materialize the immutable Skill bundle in the exact execution
+Workspace before publishing an Agent that pins the returned Skill version.
+Neither role grants `file.*`, API-key administration, or model-supply mutation.
+This keeps one publisher principal and one exact Workspace while each profile
+owns its action and role vocabulary, as required by profile validation.
+
 | Invocation | Configuration/storage/network | Outcome |
 |---|---|---|
 | `management iam profile` | unavailable | deterministic `awaken.runtime.management` JSON |
