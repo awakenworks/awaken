@@ -354,7 +354,7 @@ pub fn control_router(input: ControlRouterInput) -> Router {
     let audit_plane = plane.management_audit_plane();
     let assistant_lifecycle = crate::admin_assistant_lifecycle_router(
         plane.clone(),
-        platform_workspace.clone(),
+        remote_iam.is_none().then(|| platform_workspace.clone()),
         assistant_model_selection,
     );
     let config_plane = config_router(plane);

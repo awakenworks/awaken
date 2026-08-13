@@ -40,6 +40,23 @@ use crate::{
 
 const CREDENTIAL_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Hosted tenant Workspaces are selected at authenticated request time. A
+/// process-local coordinate cannot safely recover or refresh their reserved
+/// Assistant registrations, so the fixed-workspace supervisor has no Agent
+/// work in that composition. Request-time ensure remains the sole publisher.
+struct RequestScopedPublicationReconciler;
+
+#[async_trait::async_trait]
+impl PublicationBindingReconciler for RequestScopedPublicationReconciler {
+    async fn reconcile(&self) -> Result<usize, String> {
+        Ok(0)
+    }
+
+    async fn reconcile_all(&self) -> Result<usize, String> {
+        Ok(0)
+    }
+}
+
 /// Control-owned ports and immutable composition facts.
 ///
 /// Execution repositories, dispatch queues, Runtime commit stores, resource
@@ -162,6 +179,7 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
         local_browser_auth,
         remote_iam,
     } = dependencies;
+    let request_scoped_execution_workspace = remote_iam.is_some();
 
     recover_and_supervise_credentials(secrets.clone(), credentials.clone(), &service_lifecycle)
         .await;
@@ -190,7 +208,8 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     }
     let config_service = Arc::new(config_service);
     let config_plane = ConfigPlane::new(config_service, config_store, tool_catalog);
-    if let Some(selection) = assistant_model_selection.clone()
+    if !request_scoped_execution_workspace
+        && let Some(selection) = assistant_model_selection.clone()
         && let Err(error) =
             seed_admin_assistant(&config_plane, &execution_workspace, selection).await
     {
@@ -198,12 +217,16 @@ pub async fn build_control_component(dependencies: ControlDependencies) -> Contr
     }
 
     let publication_reconciler: Arc<dyn PublicationBindingReconciler> =
-        Arc::new(ConfigServiceReconciler::new(
-            config_plane.clone(),
-            RESERVED_ADMIN_SCOPE,
-            execution_workspace.clone(),
-            vec![awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID.to_string()],
-        ));
+        if request_scoped_execution_workspace {
+            Arc::new(RequestScopedPublicationReconciler)
+        } else {
+            Arc::new(ConfigServiceReconciler::new(
+                config_plane.clone(),
+                RESERVED_ADMIN_SCOPE,
+                execution_workspace.clone(),
+                vec![awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID.to_string()],
+            ))
+        };
     let registration_supervisor = crate::StaticRegistrationSupervisor::start(
         publication_reconciler.clone(),
         environment_application,
