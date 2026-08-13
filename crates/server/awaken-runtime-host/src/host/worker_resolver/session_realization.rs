@@ -538,6 +538,7 @@ mod tests {
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
+                transcript_prefix: None,
             },
         );
         awaken_session_contract::FrozenSessionProjection {
@@ -549,6 +550,7 @@ mod tests {
             resources: Default::default(),
             toolsets: Vec::new(),
             mcp: Vec::new(),
+            request_context: Vec::new(),
         }
     }
 

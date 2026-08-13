@@ -163,6 +163,7 @@ mod tests {
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),
+            transcript_prefix: None,
         });
         let mut resources = SessionResourceState::default();
         resources

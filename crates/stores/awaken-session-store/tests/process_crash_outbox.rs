@@ -51,6 +51,7 @@ fn session() -> PersistedSession {
                     mounts: Vec::new(),
                     env: Vec::new(),
                     prompts: Vec::new(),
+                    transcript_prefix: None,
                 },
             ),
         ),

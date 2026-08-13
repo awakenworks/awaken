@@ -405,6 +405,17 @@ pub trait McpAttachmentRealizer: Send + Sync {
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
+    /// Install request-only messages derived from a frozen transcript prefix.
+    /// The default preserves compatibility for runtimes without model context;
+    /// implementations must never append these messages to `thread`.
+    fn install_session_request_context(
+        &self,
+        _thread: &str,
+        _messages: Vec<Message>,
+    ) -> Result<(), RunError> {
+        Ok(())
+    }
+
     /// Install the durable callback used at the exact sandbox creation boundary.
     fn install_environment_binding_sink(&self, _sink: Arc<dyn SessionEnvironmentBindingSink>) {}
     /// Install the exact realization fence before any physical environment can

@@ -895,6 +895,7 @@ mod mutation_tests {
                     mounts: Vec::new(),
                     env: Vec::new(),
                     prompts: Vec::new(),
+                    transcript_prefix: None,
                     resources: Default::default(),
                     initial_mcp: Vec::new(),
                 },

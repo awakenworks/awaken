@@ -5,10 +5,12 @@
 
 mod support;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
@@ -35,6 +37,8 @@ struct PreparingFake {
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
     repo: Option<Arc<dyn ManagedSessionRepository>>,
     fail_with: Option<RunErrorKind>,
+    committed: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+    request_contexts: Arc<Mutex<HashMap<String, Vec<Message>>>>,
 }
 
 #[derive(Default)]
@@ -65,6 +69,8 @@ fn lifecycle_test_state() -> (
         observed_durable: Arc::new(Mutex::new(Vec::new())),
         repo: None,
         fail_with: None,
+        committed: Arc::new(Mutex::new(HashMap::new())),
+        request_contexts: Arc::new(Mutex::new(HashMap::new())),
     })
     .with_session_repo(repository.clone())
     .with_lifecycle_notifier(notifier.clone());
@@ -73,6 +79,18 @@ fn lifecycle_test_state() -> (
 
 #[async_trait::async_trait]
 impl SessionRuntime for PreparingFake {
+    fn install_session_request_context(
+        &self,
+        thread: &str,
+        messages: Vec<Message>,
+    ) -> Result<(), RunError> {
+        self.request_contexts
+            .lock()
+            .unwrap()
+            .insert(thread.to_string(), messages);
+        Ok(())
+    }
+
     async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
         if let Some(repo) = &self.repo {
             match repo.get(thread).await {
@@ -118,6 +136,15 @@ impl SessionRuntime for PreparingFake {
     }
     async fn add_system(&self, _t: &str, _x: &str) -> Result<(), RunError> {
         Ok(())
+    }
+    async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
+        Ok(self
+            .committed
+            .lock()
+            .unwrap()
+            .get(thread)
+            .cloned()
+            .unwrap_or_default())
     }
     async fn define_outcome(
         &self,
@@ -174,6 +201,8 @@ struct Harness {
     staged: Arc<Mutex<Vec<awaken_session_contract::StageMcpAttachment>>>,
     observed_durable: Arc<Mutex<Vec<PersistedSession>>>,
     repo: Arc<dyn ManagedSessionRepository>,
+    committed: Arc<Mutex<HashMap<String, Vec<Message>>>>,
+    request_contexts: Arc<Mutex<HashMap<String, Vec<Message>>>>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -359,6 +388,8 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let staged = Arc::new(Mutex::new(Vec::new()));
     let observed_durable = Arc::new(Mutex::new(Vec::new()));
+    let committed = Arc::new(Mutex::new(HashMap::new()));
+    let request_contexts = Arc::new(Mutex::new(HashMap::new()));
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("open Session repository"),
     );
@@ -368,6 +399,8 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
         observed_durable: observed_durable.clone(),
         repo: Some(repo.clone()),
         fail_with,
+        committed: committed.clone(),
+        request_contexts: request_contexts.clone(),
     })
     .with_vaults(vaults.clone())
     .with_session_repo(repo.clone());
@@ -379,6 +412,8 @@ fn harness(fail_with: Option<RunErrorKind>) -> Harness {
         staged,
         observed_durable,
         repo,
+        committed,
+        request_contexts,
     }
 }
 
@@ -398,6 +433,8 @@ async fn check_bind_is_fail_closed_on_unknown_vault() {
         observed_durable: Arc::new(Mutex::new(Vec::new())),
         repo: None,
         fail_with: None,
+        committed: Arc::new(Mutex::new(HashMap::new())),
+        request_contexts: Arc::new(Mutex::new(HashMap::new())),
     })
     .with_vaults(vaults);
 
@@ -447,6 +484,92 @@ async fn call_with_headers(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, headers, value)
+}
+
+#[tokio::test]
+async fn transcript_prefix_is_frozen_projected_and_never_copied() {
+    /*
+     * Transcript-prefix cause/effect decision table. Causes: C1 source Session
+     * exists in the same Workspace; C2 requested end is within the committed
+     * prefix; C3 requested end exceeds it; C4 source is absent. Effects: E1
+     * freeze one RawCommitted slice reference and materialize exactly that
+     * prefix as request-only context; E2 target Thread remains empty; E3 reject
+     * before target creation. Constraints: the source may advance after the
+     * snapshot, but the frozen end/version may not; Workspace ownership is
+     * checked by the existing Session projection guard. Rules R1 C1+C2=>E1+E2;
+     * R2 C1+C3=>E3; R3 C4=>E3.
+     */
+    let h = harness(None);
+    let (status, source) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({ "agent": "branch-agent" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R1 source creation");
+    let source_id = source["id"].as_str().unwrap().to_string();
+    let source_messages = vec![
+        Message::text(MessageId("source-0".into()), Role::User, "first"),
+        Message::text(MessageId("source-1".into()), Role::Assistant, "second"),
+    ];
+    h.committed
+        .lock()
+        .unwrap()
+        .insert(source_id.clone(), source_messages.clone());
+
+    let (status, branch) = call(
+        &h.app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "branch-agent",
+            "x_awaken": {
+                "transcript_prefix": { "session_id": source_id, "end_seq": 1 }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "R1");
+    let branch_id = branch["id"].as_str().unwrap();
+    let contexts = h.request_contexts.lock().unwrap();
+    assert_eq!(contexts[branch_id], source_messages[..1], "R1 exact prefix");
+    drop(contexts);
+    assert!(
+        h.committed
+            .lock()
+            .unwrap()
+            .get(branch_id)
+            .is_none_or(Vec::is_empty),
+        "R1/R2 target transcript stays empty"
+    );
+    let persisted = h.repo.get(branch_id).await.expect("branch Session");
+    let prefix = persisted
+        .frozen_baseline()
+        .and_then(|baseline| baseline.transcript_prefix.as_ref())
+        .expect("frozen source reference");
+    assert_eq!(prefix.snapshot.thread_id.0, source_id);
+    assert_eq!(prefix.snapshot.end_seq, 1);
+
+    for (rule, prefix) in [
+        (
+            "R2",
+            json!({ "session_id": prefix.snapshot.thread_id.0.clone(), "end_seq": 3 }),
+        ),
+        ("R3", json!({ "session_id": "sesn_missing", "end_seq": 0 })),
+    ] {
+        let (status, _) = call(
+            &h.app,
+            "POST",
+            "/v1/sessions",
+            Some(json!({
+                "agent": "branch-agent",
+                "x_awaken": { "transcript_prefix": prefix }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{rule}");
+    }
 }
 
 const MCP_URL: &str = "https://mcp.example.com/sse";
@@ -2041,6 +2164,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
                 mcp_servers: Vec::new(),
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
+                x_awaken: None,
             },
             None,
         )
@@ -2072,6 +2196,7 @@ async fn create_session_commits_the_owned_fact_then_notifies_once() {
                 mcp_servers: Vec::new(),
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
+                x_awaken: None,
             },
             Some("wrkspc_acme".to_string()),
         )
@@ -2110,6 +2235,7 @@ async fn archive_session_commits_the_terminated_fact_once() {
                 mcp_servers: Vec::new(),
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
+                x_awaken: None,
             },
             Some("wrkspc_acme".to_string()),
         )
@@ -2163,6 +2289,7 @@ async fn delete_session_commits_the_deleted_fact_with_the_owner() {
                 mcp_servers: Vec::new(),
                 vault_ids: Vec::new(),
                 resources: Vec::new(),
+                x_awaken: None,
             },
             Some("wrkspc_acme".to_string()),
         )

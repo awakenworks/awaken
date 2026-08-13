@@ -241,6 +241,26 @@ pub struct SessionCreateParams {
     /// state layer lowers them into neutral input bindings.
     #[serde(default)]
     pub resources: Vec<ResourceInput>,
+    /// Explicit Awaken compatibility extensions. Product workflows may select a
+    /// committed source prefix without making it part of Anthropic's wire model.
+    #[serde(default)]
+    pub x_awaken: Option<SessionCreateExtensions>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionCreateExtensions {
+    #[serde(default)]
+    pub transcript_prefix: Option<TranscriptPrefixInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranscriptPrefixInput {
+    pub session_id: String,
+    /// Half-open committed message ordinal. Omitted freezes the latest prefix.
+    #[serde(default)]
+    pub end_seq: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

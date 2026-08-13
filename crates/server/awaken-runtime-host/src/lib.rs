@@ -1,11 +1,8 @@
 //! `awaken-runtime-host` — the managed-agents SERVICE layer.
 //!
-//! It owns the protocol-neutral [`SharedHost`] (the thread-keyed session
-//! substrate) and the two port adapters mounted over it: [`ManagedHost`] (the
-//! Managed Agents `SessionRuntime`) and [`RunApplicationHost`] (the neutral
-//! `RunApplication` behind the AI SDK / AG-UI / A2A wire adapters). Both hold
-//! the same `Arc<SharedHost>`, so a run started through one protocol can be
-//! resumed or observed through another on the *same thread*.
+//! It owns the protocol-neutral [`SharedHost`] plus two adapters: [`ManagedHost`]
+//! for Managed Agents and [`RunApplicationHost`] for AI SDK / AG-UI / A2A. Both
+//! share one host, so a run may resume or be observed through another protocol.
 //!
 //! The product process (`awaken-coordinator`) exposes these through routers;
 //! this crate owns the Runtime services behind its config, files, memory-store,
@@ -892,6 +889,15 @@ impl ManagedHost {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
+    fn install_session_request_context(
+        &self,
+        thread: &str,
+        messages: Vec<Message>,
+    ) -> Result<(), RunError> {
+        self.host.install_session_request_context(thread, messages);
+        Ok(())
+    }
+
     fn install_environment_binding_sink(
         &self,
         sink: Arc<dyn awaken_session_contract::SessionEnvironmentBindingSink>,

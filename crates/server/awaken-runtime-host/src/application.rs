@@ -435,6 +435,13 @@ mod acp_context_tests {
 }
 
 impl crate::SharedHost {
+    pub(crate) fn install_session_request_context(&self, session_id: &str, messages: Vec<Message>) {
+        self.session_slots.update(session_id, |slot| {
+            slot.request_context = messages;
+            slot.runtime = None;
+        });
+    }
+
     pub(crate) fn install_expected_environment_binding(
         &self,
         session_id: &str,
@@ -726,6 +733,9 @@ impl crate::SharedHost {
             }
             self.project_session_init(thread, &init)?;
             self.session_slots.update(thread, |slot| {
+                slot.request_context = projection.request_context.clone();
+            });
+            self.session_slots.update(thread, |slot| {
                 slot.has_mcp_projection = has_mcp_projection;
             });
             return Ok(());
@@ -747,6 +757,9 @@ impl crate::SharedHost {
         validate_baseline_projection(&baseline, &built_in_mounts)?;
         self.install_expected_environment_binding(thread, expected_environment_binding)?;
         self.project_session_init(thread, &init)?;
+        self.session_slots.update(thread, |slot| {
+            slot.request_context = projection.request_context.clone();
+        });
         if !synchronize_resources
             && projection.resources != awaken_session_contract::ResolvedSessionResources::default()
         {

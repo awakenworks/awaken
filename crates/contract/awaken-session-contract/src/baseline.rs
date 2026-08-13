@@ -242,6 +242,12 @@ pub struct ControlSessionCreationInputs {
     pub env: Vec<serde_json::Value>,
     #[serde(default)]
     pub prompts: Vec<String>,
+    /// Optional immutable committed-history prefix projected into every model
+    /// request for this Session. The referenced source Thread remains the sole
+    /// transcript authority; no source message is copied into target truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_prefix:
+        Option<awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec>,
     pub resources: crate::ResolvedSessionResources,
     #[serde(default)]
     pub initial_mcp: Vec<crate::McpAttachmentDraft>,
@@ -283,6 +289,7 @@ impl SessionCreationIntent {
             mounts,
             env,
             prompts,
+            transcript_prefix,
             resources,
             initial_mcp,
         } = self.control;
@@ -301,6 +308,7 @@ impl SessionCreationIntent {
                 mounts,
                 env,
                 prompts,
+                transcript_prefix,
             },
             execution_model_ref,
         );
@@ -337,6 +345,9 @@ pub struct SessionBaseline {
     pub env: Vec<serde_json::Value>,
     #[serde(default)]
     pub prompts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_prefix:
+        Option<awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec>,
 }
 
 pub struct SessionBaselineInputs {
@@ -351,6 +362,8 @@ pub struct SessionBaselineInputs {
     pub mounts: Vec<serde_json::Value>,
     pub env: Vec<serde_json::Value>,
     pub prompts: Vec<String>,
+    pub transcript_prefix:
+        Option<awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -388,6 +401,8 @@ impl SessionBaseline {
             mounts: &'a [serde_json::Value],
             env: &'a [serde_json::Value],
             prompts: &'a [String],
+            transcript_prefix:
+                &'a Option<awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec>,
         }
         let SessionBaselineInputs {
             environment,
@@ -401,6 +416,7 @@ impl SessionBaseline {
             mounts,
             env,
             prompts,
+            transcript_prefix,
         } = inputs;
         let fingerprint = SessionBaselineFingerprint(crate::stable_fingerprint(&Facts {
             environment: &environment,
@@ -415,6 +431,7 @@ impl SessionBaseline {
             mounts: &mounts,
             env: &env,
             prompts: &prompts,
+            transcript_prefix: &transcript_prefix,
         }));
         Self {
             fingerprint,
@@ -430,6 +447,7 @@ impl SessionBaseline {
             mounts,
             env,
             prompts,
+            transcript_prefix,
         }
     }
 }
@@ -562,6 +580,7 @@ mod tests {
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),
+            transcript_prefix: None,
         }
     }
 
@@ -583,6 +602,7 @@ mod tests {
             mounts: vec![serde_json::json!({"source": "control"})],
             env: vec![serde_json::json!({"name": "CONTROL"})],
             prompts: vec!["control".into()],
+            transcript_prefix: None,
             resources: crate::ResolvedSessionResources::default(),
             initial_mcp: Vec::new(),
         }

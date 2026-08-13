@@ -147,6 +147,7 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
+                transcript_prefix: None,
                 resources: Default::default(),
                 initial_mcp: Vec::new(),
             },

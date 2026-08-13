@@ -117,6 +117,7 @@ fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),
+            transcript_prefix: None,
         },
     );
     awaken_session_contract::FrozenSessionProjection {
@@ -128,6 +129,7 @@ fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
         resources: Default::default(),
         mcp: Vec::new(),
         toolsets: Vec::new(),
+        request_context: Vec::new(),
     }
 }
 #[async_trait::async_trait]

@@ -112,6 +112,7 @@ fn frozen_application_session(
                     mounts: Vec::new(),
                     env: Vec::new(),
                     prompts: Vec::new(),
+                    transcript_prefix: None,
                 },
             ),
         ),

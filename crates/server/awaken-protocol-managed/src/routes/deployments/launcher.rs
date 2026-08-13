@@ -184,6 +184,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
             mcp_servers: Vec::new(),
             vault_ids: request.vault_ids,
             resources,
+            x_awaken: None,
         };
         let session = match self
             .state

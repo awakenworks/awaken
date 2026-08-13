@@ -908,6 +908,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 mounts,
                 env,
                 prompts: vec![prompt.into()],
+                transcript_prefix: None,
             },
         );
         awaken_session_contract::FrozenSessionProjection {
@@ -922,6 +923,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             },
             mcp: Vec::new(),
             toolsets: Vec::new(),
+            request_context: Vec::new(),
         }
     }
 
@@ -964,7 +966,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     let observed = recorder.0.clone();
     let host = Arc::new(SharedHost::new(Arc::new(recorder), "stub"));
     let repository_claims = Arc::new(RepositoryClaimRecorder::default());
-    let _managed = crate::ManagedHost::new(host.clone())
+    let managed = crate::ManagedHost::new(host.clone())
         .with_repository_binding_verifier(repository_claims.clone())
         .install_dispatch_session_runtime();
     let frozen = projection("Use the bound Flow project.", true);
@@ -1084,6 +1086,53 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         );
         assert_eq!(prompt_count(&requests[3], "exact prompt"), 1, "P3");
     }
+
+    // Request-context decision rule C4: a frozen projection carries one
+    // materialized source prefix. Effect E4: the model sees it before current
+    // input while the target's committed Thread contains neither a copied source
+    // message nor any second transcript authority.
+    let mut contextual = projection("", false);
+    contextual.request_context = vec![Message::text(
+        MessageId("source-prefix".into()),
+        Role::User,
+        "prior branch context",
+    )];
+    host.install_frozen_session_projection("context-thread", contextual, None, true)
+        .await
+        .expect("C4 projection");
+    host.run(None, "context-thread", user("current branch input"))
+        .await
+        .expect("C4 run");
+    let request = observed
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("C4 request");
+    let user_text = request
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        user_text,
+        ["prior branch context", "current branch input"],
+        "C4/E4"
+    );
+    assert!(
+        managed
+            .committed_messages("context-thread")
+            .await
+            .expect("C4 committed truth")
+            .iter()
+            .all(|message| message.id.0 != "source-prefix"),
+        "C4/E4 request context is not copied into target truth"
+    );
 
     let replacement = projection("different", true);
     assert!(
@@ -3233,6 +3282,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),
+            transcript_prefix: None,
         },
     );
     host.install_frozen_session_projection(
@@ -3246,6 +3296,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             resources: Default::default(),
             mcp: Vec::new(),
             toolsets: Vec::new(),
+            request_context: Vec::new(),
         },
         None,
         true,

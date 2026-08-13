@@ -78,6 +78,9 @@ pub(crate) struct SessionRuntimeSlot {
     /// process-wide registry lock being held across I/O.
     pub lifecycle: Arc<tokio::sync::Mutex<()>>,
     pub runtime: Option<Arc<crate::host::SessionCtx>>,
+    /// Rebuildable model-only context materialized from the Session baseline's
+    /// immutable transcript-prefix reference. Never committed to this Thread.
+    pub request_context: Vec<awaken_agent_contract::agent::message::Message>,
     pub environment: Option<Arc<crate::session_environment::SessionEnvironment>>,
     /// Durable binding that recovery must adopt. If it is present while no
     /// environment is resident, cold context creation fails closed instead of

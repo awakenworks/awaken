@@ -54,6 +54,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/key-design-decisions.md` | Ready | Defines runtime-owned implementation decisions, explicit config graph, concrete-tool packaging, admin-tool ownership, neutral naming, publication-role placement, and rejected leaks |
 | `design/runtime-behavior.md` | Runtime-owned | Covers run lifecycle, activation/context split, live state apply versus durable commit, state/effects/events, extensions, cancellation, scheduling, eval |
 | `design/auxiliary-context-windows.md` | Ready | Defines shared transcript windows, extension ownership, and asynchronous Memory, Compact, and Outcome behavior |
+| `design/session-branch-prefixes.md` | Ready | Defines immutable cross-Session transcript prefixes without copied target history or parallel branch state |
 | `design/runtime-scenario-validation.md` | Ready | Owns runtime GWT scenario ids, scenario text, executable-test mapping, and scenario test organization |
 | `design/runtime-interface-boundaries.md` | Runtime-owned | Makes runtime role traits, activation/context/snapshot split, external publication-registration roles, executable snapshot contract, plugin contributions, tool decisions, and simple-design checks explicit |
 | `design/neutral-waist.md` | Runtime-owned | Runtime execution ports and extension points |
@@ -104,6 +105,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `design/key-design-decisions.md` | Decision record | Not required | n/a |
 | `design/runtime-behavior.md` | Role owner | Required | self |
 | `design/auxiliary-context-windows.md` | Design narrative | Not required | n/a |
+| `design/session-branch-prefixes.md` | Product/downstream mapping | Not required | n/a |
 | `design/runtime-scenario-validation.md` | Coverage map | Not required | n/a |
 | `design/runtime-interface-boundaries.md` | Role owner | Required | self |
 | `design/neutral-waist.md` | Delegated boundary narrative | Delegated | [runtime-interface-boundaries.md](design/runtime-interface-boundaries.md#role-catalog) |
