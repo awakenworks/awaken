@@ -247,6 +247,7 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     // | publications/{fingerprint}     | GET    | workspace.read       |
     // | publications/{fingerprint}     | POST   | workspace.write      |
     // | credential family              | read/write | apikey.read/write |
+    // | application MCP credential     | POST   | apikey.write         |
     // | unknown config family          | any    | unmapped/deny        |
     let get = Method::GET;
     let post = Method::POST;
@@ -315,6 +316,10 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     );
     assert_eq!(
         action_for(&post, "/v1/config/credentials/c1/validate"),
+        Some(APIKEY_WRITE)
+    );
+    assert_eq!(
+        action_for(&post, "/v1/config/application-mcp-credentials"),
         Some(APIKEY_WRITE)
     );
     assert_eq!(
