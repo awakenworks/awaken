@@ -248,10 +248,7 @@ impl RuntimeAuthority for DurableRuntimeAuthority {
             StoreKind::Postgres => self
                 .postgres_commit
                 .clone()
-                .map(|store| {
-                    Arc::new(LocalCommitAdapter::with_queries(store, PostgresQueries))
-                        as Arc<dyn LocalCommit>
-                })
+                .map(postgres_local_commit)
                 .ok_or_else(|| {
                     RuntimeAuthorityError::misconfigured(
                         "Postgres commit authority was not opened at startup",
@@ -378,6 +375,18 @@ fn thread_path_stem(thread: &str) -> String {
 
 struct PostgresQueries;
 
+/// Erase an already-open PostgreSQL commit coordinator behind the canonical
+/// Coordinator-owned [`LocalCommit`] query policy.
+///
+/// Product compositions use this inlet when they own process-pool startup but
+/// must retain authoritative cross-process reads. The concrete query policy
+/// stays private so there is one PostgreSQL read path and no downstream SQL or
+/// projection fallback to synchronize.
+#[must_use]
+pub fn postgres_local_commit(store: Arc<PostgresCommitCoordinator>) -> Arc<dyn LocalCommit> {
+    Arc::new(LocalCommitAdapter::with_queries(store, PostgresQueries))
+}
+
 #[async_trait::async_trait]
 impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
     async fn authoritative_run(
@@ -426,6 +435,21 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn postgres_local_commit_factory_keeps_the_query_policy_erased() {
+        // Factory-boundary cause/effect decision table:
+        // | Cause | Effect |
+        // | Coordinator opens Postgres itself | DurableRuntimeAuthority calls the factory |
+        // | product already owns the opened coordinator | the same factory returns LocalCommit |
+        // | downstream attempts to select query behavior | impossible: policy type stays private |
+        // This compile-time signature test deliberately needs no database: the
+        // store integration suite owns SQL behavior, while this test owns the
+        // public composition boundary and prevents leaking PostgresQueries.
+        let factory: fn(Arc<PostgresCommitCoordinator>) -> Arc<dyn LocalCommit> =
+            postgres_local_commit;
+        let _ = factory;
+    }
 
     #[test]
     fn local_layout_and_postgres_presence_follow_one_authority_decision_table() {

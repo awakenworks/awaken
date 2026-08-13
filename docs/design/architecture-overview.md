@@ -128,6 +128,16 @@ one capability containing commit, dispatch, wake, and stream-checkpoint access.
 The Host can therefore distinguish only local injected authority from a
 claim-fenced remote Worker projection; it cannot reopen or reselect a backend.
 
+A product composition that already owns an opened
+`PostgresCommitCoordinator` uses the Coordinator-owned
+`postgres_local_commit` factory to erase it behind `LocalCommit`. The factory
+retains the same private authoritative-query policy used by
+`DurableRuntimeAuthority`: Run, committed-message, open-wait, and lifecycle
+reads go to PostgreSQL rather than an in-process projection. The concrete query
+policy is not public, so downstream products cannot copy or selectively replace
+its SQL/read semantics. This is a composition inlet to the existing authority,
+not a second backend selector or persistence owner.
+
 `awaken-protocol-managed` is a driving anti-corruption layer. It translates the
 Managed HTTP contract into the existing Session application and Runtime Host
 interfaces; it is neither a Coordinator Runtime nor a persistence owner. Its

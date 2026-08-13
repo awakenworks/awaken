@@ -52,6 +52,7 @@ pub use coordinator_persistence::{
     open as open_coordinator_persistence, open_existing as open_existing_coordinator_persistence,
 };
 pub use extraction_references::ReferenceIndexedMemoryExtractions;
+pub use runtime_authority::postgres_local_commit;
 
 use std::sync::Arc;
 
