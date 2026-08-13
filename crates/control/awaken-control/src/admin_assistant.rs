@@ -23,13 +23,13 @@ use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{Extension, Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::{Value, json};
 
 #[derive(Clone)]
 struct AdminAssistantLifecycleState {
     plane: ConfigPlane,
-    execution_workspace: String,
+    fixed_execution_workspace: Option<String>,
     model_selection: Option<ModelSelection>,
 }
 
@@ -38,7 +38,7 @@ struct AdminAssistantLifecycleState {
 /// the setup-after-startup loop when a runnable model becomes available later.
 pub fn admin_assistant_lifecycle_router(
     plane: ConfigPlane,
-    execution_workspace: impl Into<String>,
+    fixed_execution_workspace: Option<String>,
     model_selection: Option<ModelSelection>,
 ) -> Router {
     Router::new()
@@ -48,28 +48,41 @@ pub fn admin_assistant_lifecycle_router(
         )
         .with_state(AdminAssistantLifecycleState {
             plane,
-            execution_workspace: execution_workspace.into(),
+            fixed_execution_workspace,
             model_selection,
         })
 }
 
 async fn ensure_admin_assistant(
     State(state): State<AdminAssistantLifecycleState>,
+    workspace: Option<Extension<awaken_tenancy::WorkspaceScope>>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    // Cloud IAM/workspace-path middleware owns tenant selection. A hosted
+    // request must use that trusted scope; the process-local workspace is only
+    // a fallback for explicit local/no-login composition.
+    let execution_workspace = workspace
+        .map(|Extension(workspace)| workspace.0)
+        .or(state.fixed_execution_workspace)
+        .filter(|workspace| !workspace.trim().is_empty())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "code": "assistant_workspace_unavailable",
+                    "title": "Assistant Workspace unavailable",
+                    "detail": "no trusted execution Workspace was resolved",
+                    "message": "no trusted execution Workspace was resolved",
+                })),
+            )
+        })?;
     let had_startup_selection = state.model_selection.is_some();
     let selection = state.model_selection.unwrap_or_default();
-    let first =
-        seed_admin_assistant(&state.plane, &state.execution_workspace, selection.clone()).await;
+    let first = seed_admin_assistant(&state.plane, &execution_workspace, selection.clone()).await;
     // A Worker-local ACP binding can become stale after startup, while a provider
     // connection added in the Console is immediately visible to Auto resolution.
     // Preserve an explicit usable selection first, then close that recovery loop.
     let result = if first.is_err() && selection != ModelSelection::Auto {
-        seed_admin_assistant(
-            &state.plane,
-            &state.execution_workspace,
-            ModelSelection::Auto,
-        )
-        .await
+        seed_admin_assistant(&state.plane, &execution_workspace, ModelSelection::Auto).await
     } else {
         first
     };
@@ -829,16 +842,96 @@ mod tests {
         let plane = ConfigPlane::new(Arc::new(service), store, tools);
         let state = AdminAssistantLifecycleState {
             plane,
-            execution_workspace: "workspace-live".into(),
+            fixed_execution_workspace: Some("workspace-live".into()),
             model_selection: Some(ModelSelection::Auto),
         };
 
-        let Json(result) = ensure_admin_assistant(State(state)).await.expect("ensure");
+        let Json(result) = ensure_admin_assistant(State(state), None)
+            .await
+            .expect("ensure");
         assert_eq!(result["status"], "ready");
         assert!(
             executable
                 .current("workspace-live", ADMIN_ASSISTANT_AGENT_ID)
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn lifecycle_ensure_uses_only_the_trusted_request_workspace_when_hosted() {
+        // Cause/effect graph: a trusted request scope selects the exact hosted
+        // execution Workspace; absent scope may use an explicit local fallback;
+        // absent scope + absent fallback fails before publication. A process-local
+        // coordinate can never override tenant selection.
+        //
+        // Decision table:
+        // | Rule | request scope | local fallback | effect |
+        // | H1 | tenant | local | publish only into tenant |
+        // | H2 | absent | local | publish into local (local composition) |
+        // | H3 | absent | absent | reject without publication |
+        let make_state = || {
+            let store = Arc::new(SqliteConfigStore::open_in_memory().unwrap());
+            let tools = Arc::new(ScopedToolCatalog::new(
+                Vec::new(),
+                RESERVED_ADMIN_SCOPE,
+                awaken_admin_assistant::admin_tool_descriptors(),
+            ));
+            let (service, executable) = test_config_service_with_catalog();
+            (
+                AdminAssistantLifecycleState {
+                    plane: ConfigPlane::new(Arc::new(service), store, tools),
+                    fixed_execution_workspace: Some("workspace-local".into()),
+                    model_selection: Some(ModelSelection::Auto),
+                },
+                executable,
+            )
+        };
+
+        let (state, executable) = make_state();
+        ensure_admin_assistant(
+            State(state),
+            Some(Extension(awaken_tenancy::WorkspaceScope(
+                "workspace-tenant".into(),
+            ))),
+        )
+        .await
+        .expect("H1 tenant publication");
+        assert!(
+            executable
+                .current("workspace-tenant", ADMIN_ASSISTANT_AGENT_ID)
+                .is_some(),
+            "H1"
+        );
+        assert!(
+            executable
+                .current("workspace-local", ADMIN_ASSISTANT_AGENT_ID)
+                .is_none(),
+            "H1"
+        );
+
+        let (state, executable) = make_state();
+        ensure_admin_assistant(State(state), None)
+            .await
+            .expect("H2 local publication");
+        assert!(
+            executable
+                .current("workspace-local", ADMIN_ASSISTANT_AGENT_ID)
+                .is_some(),
+            "H2"
+        );
+
+        let (mut state, executable) = make_state();
+        state.fixed_execution_workspace = None;
+        let (status, Json(problem)) = ensure_admin_assistant(State(state), None)
+            .await
+            .expect_err("H3 fail closed");
+        assert_eq!(status, StatusCode::BAD_REQUEST, "H3");
+        assert_eq!(problem["code"], "assistant_workspace_unavailable", "H3");
+        assert!(
+            executable
+                .current("workspace-local", ADMIN_ASSISTANT_AGENT_ID)
+                .is_none(),
+            "H3"
         );
     }
 
@@ -851,11 +944,11 @@ mod tests {
         );
         let state = AdminAssistantLifecycleState {
             plane,
-            execution_workspace: DEFAULT_SCOPE.into(),
+            fixed_execution_workspace: Some(DEFAULT_SCOPE.into()),
             model_selection: None,
         };
 
-        let (status, Json(problem)) = ensure_admin_assistant(State(state))
+        let (status, Json(problem)) = ensure_admin_assistant(State(state), None)
             .await
             .expect_err("an empty live catalog must fail closed");
         assert_eq!(status, StatusCode::CONFLICT);
@@ -880,14 +973,14 @@ mod tests {
         let plane = ConfigPlane::new(Arc::new(service), store, tools);
         let state = AdminAssistantLifecycleState {
             plane,
-            execution_workspace: "workspace-recovered".into(),
+            fixed_execution_workspace: Some("workspace-recovered".into()),
             model_selection: Some(ModelSelection::BackendDefault {
                 backend_ref: "acp:stale".into(),
                 configuration: Default::default(),
             }),
         };
 
-        let Json(result) = ensure_admin_assistant(State(state))
+        let Json(result) = ensure_admin_assistant(State(state), None)
             .await
             .expect("auto fallback");
         assert_eq!(result["status"], "ready");

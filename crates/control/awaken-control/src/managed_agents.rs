@@ -5,7 +5,6 @@
 //! the HTTP edge and never enters either repository.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, AgentKind, AgentLifecycle, ConfigWrite, ModelSelection,
@@ -29,50 +28,42 @@ use awaken_session_contract::{
     resolved_toolsets, toolset_policies,
 };
 use awaken_tenancy::ScopeId;
-use sha2::{Digest, Sha256};
 
+mod lifecycle_identity;
 mod model_controls;
+use lifecycle_identity::{lifecycle_timestamp, new_agent_id};
 use model_controls::{apply_model_extensions, inference_from_wire, model_config};
 
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 const STATE_MACHINE_PLUGIN_ID: &str = "state_machine";
 const MAX_MCP_SERVER_URL_BYTES: usize = 2048;
-static AGENT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-fn new_agent_id(workspace_id: &str) -> String {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let sequence = AGENT_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let entropy = format!(
-        "{workspace_id}:{}:{timestamp}:{sequence}",
-        std::process::id()
-    );
-    let digest = Sha256::digest(entropy.as_bytes());
-    let encoded = format!("{digest:x}");
-    format!("agent_{}", &encoded[..32])
-}
-
-fn lifecycle_timestamp() -> String {
-    let milliseconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default();
-    awaken_session_contract::epoch_millis_to_rfc3339(milliseconds)
-}
-
 pub struct ConfigPlaneManagedAgentRepository {
     plane: ConfigPlane,
-    platform_workspace: String,
+    fixed_platform_workspace: Option<String>,
 }
 
 impl ConfigPlaneManagedAgentRepository {
     pub fn new(plane: ConfigPlane, platform_workspace: impl Into<String>) -> Self {
         Self {
             plane,
-            platform_workspace: platform_workspace.into(),
+            fixed_platform_workspace: Some(platform_workspace.into()),
         }
+    }
+
+    /// Project the reserved Assistant through the authenticated request
+    /// Workspace. Hosted Control has no single process-owned tenant Workspace;
+    /// its IAM edge supplies the exact scope for every repository call.
+    pub fn request_scoped(plane: ConfigPlane) -> Self {
+        Self {
+            plane,
+            fixed_platform_workspace: None,
+        }
+    }
+
+    fn reserved_visible_in(&self, workspace_id: &str) -> bool {
+        self.fixed_platform_workspace
+            .as_deref()
+            .is_none_or(|fixed| fixed == workspace_id)
     }
 
     fn scope(workspace_id: &str) -> ScopeId {
@@ -90,7 +81,7 @@ impl ConfigPlaneManagedAgentRepository {
             .publication_at_revision(&Self::scope(workspace_id), agent_id, source_revision)
             .await
             .map_err(ManagedAgentError::Storage)?;
-        if direct.is_some() || workspace_id != self.platform_workspace {
+        if direct.is_some() || !self.reserved_visible_in(workspace_id) {
             return Ok(direct);
         }
         self.plane
@@ -124,7 +115,7 @@ impl ConfigPlaneManagedAgentRepository {
                     .is_some();
             return Ok(visible.then_some(current));
         }
-        if workspace_id != self.platform_workspace {
+        if !self.reserved_visible_in(workspace_id) {
             return Ok(None);
         }
         let reserved = self
@@ -1046,7 +1037,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             .list_revisions(&Self::scope(workspace_id), id)
             .await
             .map_err(ManagedAgentError::Storage)?;
-        if revisions.is_empty() && workspace_id == self.platform_workspace {
+        if revisions.is_empty() && self.reserved_visible_in(workspace_id) {
             revisions = self
                 .plane
                 .list_revisions(&ScopeId::from(RESERVED_ADMIN_SCOPE), id)
@@ -1907,7 +1898,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reserved_assistant_projects_only_into_the_platform_workspace() {
+    async fn reserved_assistant_projection_follows_the_composed_workspace_authority() {
+        // Cause/effect graph: local composition owns one fixed Workspace and
+        // hides the reserved Assistant elsewhere; hosted composition delegates
+        // scope selection to the authenticated request and projects the same
+        // reserved config after publication into that tenant Workspace.
+        //
+        // Decision table:
+        // | Rule | repository authority | requested Workspace | effect |
+        // | P1 | fixed A | A | project |
+        // | P2 | fixed A | B | not found |
+        // | P3 | request-scoped | B | project reserved Assistant |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let plane = plane(path.to_str().unwrap());
@@ -1926,7 +1927,15 @@ mod tests {
             )
             .await
             .unwrap();
-        let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
+        plane
+            .publish_for_execution_workspace(
+                &ScopeId::from(RESERVED_ADMIN_SCOPE),
+                "workspace-b",
+                &config.id,
+            )
+            .await
+            .unwrap();
+        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
 
         let projected = repository
             .retrieve(
@@ -1950,5 +1959,17 @@ mod tests {
                 .await,
             Err(ManagedAgentError::NotFound)
         ));
+        assert_eq!(
+            ConfigPlaneManagedAgentRepository::request_scoped(plane)
+                .retrieve(
+                    "workspace-b",
+                    awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID,
+                    None,
+                )
+                .await
+                .expect("P3 request-scoped projection")
+                .id,
+            awaken_admin_assistant::ADMIN_ASSISTANT_AGENT_ID
+        );
     }
 }
