@@ -211,6 +211,13 @@ pub struct OutcomeReport {
     pub iterations: Vec<OutcomeIteration>,
 }
 
+/// The next durable boundary reached while driving an Outcome. Awaiting keeps
+/// the active aggregate in Thread state; completed carries its terminal report.
+pub enum OutcomeDrive {
+    Awaiting,
+    Completed(OutcomeReport),
+}
+
 /// Immutable baseline and Resource inputs a new Session provisions before MCP
 /// generations are staged through the separate exact-generation port.
 #[derive(Debug, Clone)]
@@ -762,7 +769,14 @@ pub trait SessionRuntime: Send + Sync {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<OutcomeReport, RunError>;
+    ) -> Result<OutcomeDrive, RunError>;
+
+    /// Continue the active Outcome after the ordinary Run resume has committed.
+    /// `None` proves there is no active aggregate; implementations must rebuild
+    /// continuation exclusively from the Thread-owned Outcome state.
+    async fn continue_outcome(&self, _thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
+        Ok(None)
+    }
 
     /// The live-inbox queue on `thread`'s in-flight turn. The default reports
     /// an inactive queue, so a host without live-inbox wiring is unaffected.
@@ -998,7 +1012,7 @@ mod tests {
             _description: &str,
             _rubric: &str,
             _max_iterations: u32,
-        ) -> Result<OutcomeReport, RunError> {
+        ) -> Result<OutcomeDrive, RunError> {
             unreachable!("not exercised by the default-method tests")
         }
 

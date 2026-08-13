@@ -157,7 +157,7 @@ impl SessionRuntime for ContinuationRuntime {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeReport, RunError> {
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
         unreachable!("continuation tests do not define outcomes")
     }
 

@@ -26,6 +26,7 @@ use crate::state::{
 pub struct IterationReport {
     pub messages: Vec<Message>,
     pub outcome_id: Id,
+    pub description: String,
     pub iteration: u32,
     pub result: EvaluationResult,
     pub explanation: String,
@@ -121,7 +122,7 @@ impl<'a> Controller<'a> {
         definition
             .validate()
             .map_err(|error| Error::Domain(error.to_string()))?;
-        let mut aggregate = match self.state.active().map_err(state_error)? {
+        let aggregate = match self.state.active().map_err(state_error)? {
             Some(active) => {
                 if active.definition != definition {
                     return Err(Error::ActiveDefinitionConflict {
@@ -148,6 +149,20 @@ impl<'a> Controller<'a> {
             }
         };
 
+        self.drive(aggregate).await
+    }
+
+    /// Continue the one active Outcome from committed Thread state. `None`
+    /// means the Thread has no active Outcome; callers must not reconstruct a
+    /// definition or keep a parallel continuation registry.
+    pub async fn resume_active(&self) -> Result<Option<Report>, Error> {
+        let Some(aggregate) = self.state.active().map_err(state_error)? else {
+            return Ok(None);
+        };
+        self.drive(aggregate).await.map(Some)
+    }
+
+    async fn drive(&self, mut aggregate: Aggregate) -> Result<Report, Error> {
         loop {
             match aggregate.state.phase.clone() {
                 Phase::Defined => {
@@ -415,6 +430,7 @@ impl<'a> Controller<'a> {
                     ..evaluation.message_end.min(transcript.len())]
                     .to_vec(),
                 outcome_id: aggregate.state.outcome_id.clone(),
+                description: aggregate.definition.description.clone(),
                 iteration: evaluation.iteration,
                 result: evaluation_result(evaluation, &aggregate.definition),
                 explanation: evaluation.grade.explanation.clone(),
@@ -440,6 +456,7 @@ impl<'a> Controller<'a> {
             iterations.push(IterationReport {
                 messages: Vec::new(),
                 outcome_id: aggregate.state.outcome_id.clone(),
+                description: aggregate.definition.description.clone(),
                 iteration: aggregate.state.iteration,
                 result: EvaluationResult::Interrupted,
                 explanation: "the outcome was interrupted".into(),
@@ -810,6 +827,45 @@ mod tests {
             drive(&world, 2).await,
             Err(Error::WorkerAwaiting { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn embedded_controller_resumes_without_any_server_application() {
+        let world = World::new(&["FINAL"]).with_states(vec![
+            RunState::Awaiting,
+            RunState::Ended(EndCause::NaturalEnd),
+        ]);
+        let thread = ThreadId("embedded-worker".into());
+        let grader = RangeGrader;
+        let controller = Controller::new(
+            &thread,
+            &world,
+            &world,
+            &world,
+            RuntimeRunContext::new(),
+            &grader,
+        );
+
+        // Standalone cause/effect decision table: S1 no active aggregate ->
+        // `resume_active=None`; S2 valid definition + executor Awaiting -> typed
+        // external boundary with durable active state; S3 embedding resolves that
+        // boundary through the same Run port -> resume from Thread truth and
+        // complete; S4 resume after completion -> None. No Server/Managed type,
+        // store, route, or process registry participates in any rule.
+        assert!(controller.resume_active().await.unwrap().is_none());
+        assert!(matches!(
+            controller
+                .define_or_resume(
+                    Id("embedded-outcome".into()),
+                    Definition::new("ship", "FINAL", 2).unwrap(),
+                    binding(),
+                )
+                .await,
+            Err(Error::WorkerAwaiting { .. })
+        ));
+        let report = controller.resume_active().await.unwrap().unwrap();
+        assert_eq!(report.iterations[0].result, EvaluationResult::Satisfied);
+        assert!(controller.resume_active().await.unwrap().is_none());
     }
 
     #[tokio::test]

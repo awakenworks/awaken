@@ -105,9 +105,9 @@ pub use run_application::{
 pub use session::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, DelegatedRunSnapshot,
     LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, McpAttachmentRealizer, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionModelUsage, SessionRuntime,
-    SessionUsage, StepOutcome, ToolPermissionDecision,
+    LiveInboxSnapshot, McpAttachmentRealizer, OutcomeDrive, OutcomeIteration, OutcomeReport,
+    Pending, RunError, RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionModelUsage,
+    SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,

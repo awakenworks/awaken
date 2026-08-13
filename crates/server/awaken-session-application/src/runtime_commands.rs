@@ -12,9 +12,8 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::stream::sink::Sink;
 use awaken_agent_contract::thread::read::lifecycle::{RunLifecycleCursor, RunLifecyclePage};
 use awaken_session_contract::{
-    AgentCapabilities, DelegatedRun, OutcomeReport, Pending, PersistedSession,
-    ResolvedSkillBinding, RunError, SessionRepositoryError, SessionUsage, StepOutcome,
-    ToolPermissionDecision,
+    AgentCapabilities, DelegatedRun, OutcomeDrive, Pending, PersistedSession, ResolvedSkillBinding,
+    RunError, SessionRepositoryError, SessionUsage, StepOutcome, ToolPermissionDecision,
 };
 
 /// Application command payload for a Repository attached as a Session input.
@@ -353,10 +352,14 @@ impl SessionApplication {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         self.runtime
             .define_outcome(thread, description, rubric, max_iterations)
             .await
+    }
+
+    pub async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
+        self.runtime.continue_outcome(thread).await
     }
 
     pub async fn supports_mid_conversation_system(&self, thread: &str) -> bool {

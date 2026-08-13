@@ -24,6 +24,7 @@ use awaken_resource_contract::{
     ConfigVersion, MemoryStoreConfigVersion, ResourceAccess, ResourceBindingValidator,
     ResourceCatalogError,
 };
+use awaken_runtime_host::HostOutcomeDrive;
 
 fn live_host() -> Option<(SharedHost, String)> {
     let key = std::env::var("KIMI_API_KEY").ok()?;
@@ -231,7 +232,7 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
     // The judge is now an ordinary agent resolved by id; grade with a real one.
     let host = host.with_judge("judge");
 
-    let report = host
+    let progress = host
         .define_outcome(
             "goal-e2e",
             "Reply with exactly the single word BANANA and nothing else.",
@@ -240,6 +241,9 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
         )
         .await
         .expect("define_outcome");
+    let HostOutcomeDrive::Completed(report) = progress else {
+        panic!("live Outcome unexpectedly awaited external input");
+    };
 
     let last = report.iterations.last().expect("at least one round");
     eprintln!(

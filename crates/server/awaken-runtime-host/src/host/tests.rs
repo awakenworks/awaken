@@ -10,6 +10,13 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
+fn completed_outcome(progress: HostOutcomeDrive) -> HostOutcomeReport {
+    match progress {
+        HostOutcomeDrive::Completed(report) => report,
+        HostOutcomeDrive::Awaiting => panic!("test Outcome unexpectedly awaited input"),
+    }
+}
+
 fn native_credential_profile() -> awaken_runtime_contract::CredentialRealizationProfile {
     awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
 }
@@ -559,7 +566,7 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
     host.interrupt("t1").await.expect("interrupt");
     gate.notify_one();
 
-    let report = task.await.expect("join").expect("define_outcome");
+    let report = completed_outcome(task.await.expect("join").expect("define_outcome"));
     // Round 1 graded needs_revision; the interrupt ended the run before the
     // second round could conclude, so the outcome reports interrupted.
     assert_eq!(report.iterations[0].result, "needs_revision");
@@ -593,7 +600,7 @@ async fn worker_authority_loss_interrupts_active_session_before_revocation() {
     assert_eq!(host.interrupt_all_session_runs().await, 2);
     gate.notify_one();
 
-    let report = task.await.expect("join").expect("define_outcome");
+    let report = completed_outcome(task.await.expect("join").expect("define_outcome"));
     assert_eq!(
         report.iterations.last().expect("a round").result,
         "interrupted"

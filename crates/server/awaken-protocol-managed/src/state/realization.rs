@@ -43,7 +43,7 @@ mod tests {
         AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
         EnvironmentFingerprint, EnvironmentSnapshot, FailSessionRealization, IdempotencyRecord,
         McpAttachmentDraft, McpAttachmentOrigin, McpAttachmentState, McpGenerationRef,
-        McpRealizationReceipt, McpTarget, OutcomeReport, SessionBaseline, SessionBaselineInputs,
+        McpRealizationReceipt, McpTarget, SessionBaseline, SessionBaselineInputs,
         SessionBaselineState, SessionMcpAttachmentSet, SessionNetworkPolicy,
         SessionRealizationAction, SessionRealizationControl, SessionResourceState, SessionRevision,
         SessionRuntime, StageMcpAttachment, StepOutcome, ToolPermissionDecision,
@@ -91,7 +91,7 @@ mod tests {
             _description: &str,
             _rubric: &str,
             _max_iterations: u32,
-        ) -> Result<OutcomeReport, RunError> {
+        ) -> Result<OutcomeDrive, RunError> {
             unreachable!()
         }
 

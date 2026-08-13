@@ -11,8 +11,8 @@ use awaken_agent_contract::agent::message::{Id, Message, Role};
 use awaken_agent_contract::agent::run::EndCause;
 use awaken_protocol_managed::{ManagedState, router};
 use awaken_session_contract::{
-    AgentCapabilities, BuiltinTool, CustomTool, OutcomeIteration, OutcomeReport, Pending, RunError,
-    RunErrorKind, SessionRuntime, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, BuiltinTool, CustomTool, OutcomeDrive, OutcomeIteration, OutcomeReport,
+    Pending, RunError, RunErrorKind, SessionRuntime, StepOutcome, ToolPermissionDecision,
 };
 use axum::Router;
 use axum::body::Body;
@@ -263,7 +263,7 @@ impl SessionRuntime for EchoFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
     async fn resume_custom(
@@ -331,7 +331,7 @@ impl SessionRuntime for FailingFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
     fn model(&self) -> String {
@@ -663,7 +663,7 @@ impl SessionRuntime for CapableFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
     fn model(&self) -> String {
@@ -861,7 +861,7 @@ impl SessionRuntime for AwaitingFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
     async fn resume_custom(
@@ -908,8 +908,8 @@ impl SessionRuntime for OutcomeFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
-        Ok(OutcomeReport {
+    ) -> Result<OutcomeDrive, RunError> {
+        Ok(OutcomeDrive::Completed(OutcomeReport {
             iterations: vec![
                 OutcomeIteration {
                     messages: Vec::new(),
@@ -932,7 +932,7 @@ impl SessionRuntime for OutcomeFake {
                     explanation: "ok".into(),
                 },
             ],
-        })
+        }))
     }
     async fn resume_custom(
         &self,
@@ -1299,7 +1299,7 @@ impl SessionRuntime for CustomToolFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("no outcome"))
     }
     fn model(&self) -> String {
@@ -1571,7 +1571,7 @@ impl SessionRuntime for RecordingFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
     fn model(&self) -> String {
@@ -1779,7 +1779,7 @@ impl SessionRuntime for InterruptRedirectFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
     fn model(&self) -> String {

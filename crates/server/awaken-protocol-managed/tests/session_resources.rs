@@ -22,7 +22,7 @@ use awaken_resource_contract::{
     RetentionPolicy,
 };
 use awaken_session_contract::{
-    ManagedSessionRepository, OutcomeReport, RunError, SessionInit, SessionRuntime, StepOutcome,
+    ManagedSessionRepository, OutcomeDrive, RunError, SessionInit, SessionRuntime, StepOutcome,
     ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -719,7 +719,7 @@ impl SessionRuntime for AcceptingFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<OutcomeReport, RunError> {
+    ) -> Result<OutcomeDrive, RunError> {
         Err(RunError::internal("unused"))
     }
     fn model(&self) -> String {

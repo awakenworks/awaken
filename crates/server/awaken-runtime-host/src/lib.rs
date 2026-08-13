@@ -39,6 +39,7 @@ mod lazy_sandbox;
 mod live_inbox;
 mod managed_adapter_error;
 mod managed_model_capability;
+mod managed_outcome;
 mod managed_resource_projection;
 mod mcp;
 mod mcp_relay;
@@ -74,8 +75,8 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_runtime_contract::live_inbox::{LiveInboxMessageId, MessageOrigin, Offer};
 use awaken_session_contract::{
     AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime,
-    StepOutcome, ToolPermissionDecision,
+    LiveInboxSnapshot, OutcomeDrive, Pending, RunError, SessionRuntime, StepOutcome,
+    ToolPermissionDecision,
 };
 
 #[cfg(any(test, feature = "test-support"))]
@@ -83,7 +84,10 @@ pub use crate::authority::EphemeralRuntimeAuthority;
 pub use crate::authority::{
     LocalCommit, LocalCommitAdapter, LocalCommitQueries, RuntimeAuthority, RuntimeAuthorityError,
 };
-pub use crate::host::{CommittedStepReceipt, HostError, HostErrorKind, PendingTool};
+pub use crate::host::{
+    CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeReport,
+    PendingTool,
+};
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
 pub use crate::acp_tool_export::{AcpToolExport, AcpToolExporter};
@@ -1220,26 +1224,12 @@ impl SessionRuntime for ManagedHost {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<OutcomeReport, RunError> {
-        let report = self
-            .host
-            .define_outcome(thread, description, rubric, max_iterations)
-            .await
-            .map_err(to_run_error)?;
-        Ok(OutcomeReport {
-            iterations: report
-                .iterations
-                .into_iter()
-                .map(|it| OutcomeIteration {
-                    messages: it.messages,
-                    outcome_id: it.outcome_id,
-                    description: description.to_string(),
-                    iteration: it.iteration,
-                    result: it.result,
-                    explanation: it.explanation,
-                })
-                .collect(),
-        })
+    ) -> Result<OutcomeDrive, RunError> {
+        managed_outcome::define(&self.host, thread, description, rubric, max_iterations).await
+    }
+
+    async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
+        managed_outcome::resume(&self.host, thread).await
     }
 
     /// Replace only the already-selected model projection for one Session and

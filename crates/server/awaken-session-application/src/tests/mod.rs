@@ -210,7 +210,7 @@ impl SessionRuntime for NoopRuntime {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeReport, RunError> {
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
         Err(RunError::internal("unused test runtime"))
     }
 
@@ -264,7 +264,7 @@ impl SessionRuntime for SuccessfulRuntime {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeReport, RunError> {
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
         unreachable!("message test never defines an outcome")
     }
 
@@ -351,7 +351,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeReport, RunError> {
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
         Err(RunError::internal("unused test runtime"))
     }
 
