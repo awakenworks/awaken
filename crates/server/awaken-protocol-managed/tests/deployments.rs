@@ -158,6 +158,39 @@ async fn deployment_lifecycle_and_runs() {
     assert_eq!(page["data"].as_array().unwrap()[0]["id"], id);
 }
 
+#[tokio::test]
+async fn sdk_page_limit_deserializes_in_filtered_deployment_queries() {
+    // Cause/effect graph: C1 the official SDK serializes `limit` as a query
+    // string; C2 Deployment and DeploymentRun filters flatten the shared page
+    // query into a larger DTO. Effects: E1 both filtered endpoints admit the
+    // request, E2 the shared paginator applies the numeric limit, E3 malformed
+    // values fail at the HTTP boundary.
+    //
+    // | Rule | SDK string | Flattened query | Value | Outcome |
+    // |---|---|---|---|---|
+    // | P1 | yes | Deployment | 100 | 200 page |
+    // | P2 | yes | DeploymentRun | 100 | 200 page |
+    // | P3 | yes | Deployment | invalid | 400 |
+    let app = app();
+    let id = make_deployment(&app).await;
+    let _ = call(&app, "POST", &format!("/v1/deployments/{id}/run"), None).await;
+
+    for (rule, uri) in [
+        ("P1", "/v1/deployments?limit=100"),
+        (
+            "P2",
+            "/v1/deployment_runs?limit=100&deployment_id=does-not-match",
+        ),
+    ] {
+        let (status, page) = call(&app, "GET", uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{rule}");
+        assert!(page["data"].is_array(), "{rule}");
+    }
+
+    let (status, _) = call(&app, "GET", "/v1/deployments?limit=invalid", None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "P3");
+}
+
 /// The cron-schedule wire path (`cron.rs` reached through the deployments router):
 /// a create carrying a well-formed 5-field cron schedule is accepted and the
 /// schedule object (expression + timezone) is echoed back verbatim; a malformed
