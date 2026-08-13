@@ -200,10 +200,11 @@ pub trait CapabilityReader: Send + Sync {
 /// ids/names — never a secret.
 #[async_trait]
 pub trait ResourceInventory: Send + Sync {
-    /// Ids of the memory stores the platform can bind onto an agent.
-    async fn memory_stores(&self) -> Vec<String>;
-    /// Ids of the skills discoverable at run time.
-    async fn skills(&self) -> Vec<String>;
+    /// Ids of the memory stores the platform can bind onto an agent in the
+    /// trusted Workspace selected by the host.
+    async fn memory_stores(&self, workspace_id: &str) -> Vec<String>;
+    /// Ids of the skills discoverable at run time in that Workspace.
+    async fn skills(&self, workspace_id: &str) -> Vec<String>;
 }
 
 /// Validate a drafted [`AgentConfig`] exactly as `/v1/config/agents/validate` does —

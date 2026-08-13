@@ -37,6 +37,9 @@ pub struct ToolOperationContext {
     /// capability broker must fail closed when it requires run-bound authority.
     pub run_id: Option<RunId>,
     pub operation_id: String,
+    /// Trusted Workspace ownership inherited from the current attempt. This is
+    /// absent for legacy/direct unit invocations and is never model input.
+    pub execution_scope: Option<awaken_tenancy::ExecutionScopeRef>,
 }
 
 impl ToolOperationContext {
@@ -46,6 +49,7 @@ impl ToolOperationContext {
         Self {
             run_id: Some(RunId(run_id.into())),
             operation_id: operation_id.into(),
+            execution_scope: None,
         }
     }
 }
@@ -86,6 +90,7 @@ pub async fn with_tool_operation_id<T>(
         ToolOperationContext {
             run_id: None,
             operation_id,
+            execution_scope: None,
         },
         future,
     )
@@ -564,6 +569,7 @@ mod recovery_tests {
         let expected = ToolOperationContext {
             run_id: Some(RunId("run-7".into())),
             operation_id: "tool-batch:run-7:3:c1".into(),
+            execution_scope: None,
         };
         let seen = with_tool_operation_context(expected.clone(), async {
             (
