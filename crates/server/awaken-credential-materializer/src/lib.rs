@@ -12,6 +12,7 @@ mod credential_artifact;
 mod inference;
 #[cfg(feature = "authority")]
 mod oauth_refresh;
+mod platform_relay;
 mod secret_broker;
 
 pub use inference::{

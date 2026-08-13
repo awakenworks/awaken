@@ -2,6 +2,15 @@
 
 ## 2026-08-13
 
+- **Contract**: Built-in platform-held HTTP effects now freeze each credential
+  material field's exact header, query, or RFC 6901 JSON-pointer destinations in
+  `CredentialUsage`; single-secret, structured, OAuth, and malformed-placement
+  shapes fail closed before Gateway I/O.
+- **Consolidation**: Hosted Connector effects now select the neutral
+  `PlatformRelay` realization in a trusted Gateway process that composes the
+  canonical Credential repository, SecretStore, and pinned materializer. No
+  plaintext credential RPC, copied Vault, or false cryptographic-envelope
+  claim was introduced.
 - **Consolidation**: The hosted runtime route exporter now derives canonical
   flat and explicit Workspace-prefixed matchers from the same IAM route-policy
   descriptor; Cloud remains a generic matcher compiler with no route list.
@@ -208,3 +217,18 @@
   WAL and CAS for trusted hosted application MCP bearers.
 - Kept Managed Session creation and MCP normalization authoritative; hosted
   applications retain no local credential or Session fallback.
+
+## 2026-08-13 (Hosted governance credentials reuse canonical CRUD)
+
+- Extended the existing Credential CRUD with stable operation identity lookup
+  and exact reference validation for hosted governance products.
+- Kept generic business credential material exclusively in Awaken's existing
+  Credential repository and SecretStore; no Flow-local Vault or provider type
+  was added.
+
+## 2026-08-13 (Hosted credential references revalidate from durable identity)
+
+- Corrected generic hosted reference validation to consume only the durable
+  source id and exact Workspace/provider retained by the Resource.
+- Kept the operation key on create replay/lookup only, avoiding a second
+  product-owned identity mapping after restart.
