@@ -795,7 +795,7 @@ impl ManagedState {
             None => (
                 "assistant".to_string(),
                 self.application.model(),
-                "env_local".to_string(),
+                awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.to_string(),
                 None,
                 Default::default(),
                 default_tools,

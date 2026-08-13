@@ -82,6 +82,11 @@ pub enum CreateEnvironmentError {
 /// The Managed wire adapter reuses it in its `BetaEnvironment` projection.
 pub const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 
+/// Installation-global identity of the immutable built-in local Environment.
+/// Every ingress, Session default, and executable projection must reuse this
+/// value instead of maintaining a parallel literal convention.
+pub const BUILTIN_LOCAL_ENVIRONMENT_ID: &str = "env_local";
+
 /// Monotonic authored Environment revision. A Session freezes this value with
 /// the normalized snapshot so later registry edits cannot change its meaning.
 #[derive(
@@ -235,6 +240,48 @@ pub struct EnvironmentSandboxPolicyRef {
     pub version: u64,
 }
 
+/// Durable delivery operation appended atomically with one authored revision.
+/// The operation is a fact of the Environment aggregate; projection adapters
+/// may retry it, but must never infer a second work list from current rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentRegistrationOperation {
+    Register,
+    Withdraw,
+}
+
+/// One immutable entry in the Control-owned executable-registration outbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvironmentRegistrationIntent {
+    pub environment_id: String,
+    pub revision: EnvironmentRevision,
+    pub operation: EnvironmentRegistrationOperation,
+    pub delivered: bool,
+}
+
+impl EnvironmentRegistrationIntent {
+    #[must_use]
+    pub fn for_item(item: &EnvItem) -> Self {
+        Self {
+            environment_id: item.id.clone(),
+            revision: item.revision,
+            operation: if item.archived_at.is_some() {
+                EnvironmentRegistrationOperation::Withdraw
+            } else {
+                EnvironmentRegistrationOperation::Register
+            },
+            delivered: false,
+        }
+    }
+}
+
+/// Selects either normal retry work or the same durable log for rebuilding an
+/// empty executable projection after process recovery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentRegistrationIntentFilter {
+    Pending,
+    All,
+}
+
 impl EnvItem {
     /// Whether this is a self-hosted environment (`config.type == self_hosted`).
     #[must_use]
@@ -243,9 +290,12 @@ impl EnvItem {
     }
 
     /// Apply an [`EnvUpdate`] in place: present fields replace, a `metadata` key
-    /// mapped to `null` deletes it. One patch definition shared by every backend
-    /// (in-memory, sqlite, postgres) so the merge semantics can never drift.
-    pub fn apply(&mut self, patch: EnvUpdate) {
+    /// mapped to `null` deletes it. Returns whether canonical facts changed; a
+    /// no-op replay retains the revision and produces no new delivery intent.
+    /// One patch definition is shared by every backend so semantics cannot drift.
+    #[must_use]
+    pub fn apply(&mut self, patch: EnvUpdate) -> bool {
+        let before = self.clone();
         if let Some(name) = patch.name {
             self.name = name;
         }
@@ -273,12 +323,16 @@ impl EnvItem {
                 }
             }
         }
+        if *self == before {
+            return false;
+        }
         self.revision = EnvironmentRevision(
             self.revision
                 .0
                 .checked_add(1)
                 .expect("Environment revision exhausted"),
         );
+        true
     }
 }
 
@@ -501,7 +555,7 @@ pub trait EnvRegistry: Send + Sync {
     /// All non-archived environments, ascending by id.
     async fn list_active(&self) -> Vec<EnvItem>;
     /// Every current Environment projection, including archived definitions.
-    /// Reconciliation uses this to replay withdrawals after a failed publish.
+    /// This is a query surface only; executable delivery consumes the outbox.
     async fn list_all(&self) -> Vec<EnvItem>;
     /// The environment under `id` (archived or not).
     async fn get(&self, id: &str) -> Option<EnvItem>;
@@ -516,6 +570,24 @@ pub trait EnvRegistry: Send + Sync {
     async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem>;
     /// Archive `id` (stamps `archived_at`); `None` when it does not exist.
     async fn archive(&self, id: &str) -> Option<EnvItem>;
+    /// Read one exact outbox fact. Every authored revision has exactly one.
+    async fn registration_intent(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvironmentRegistrationIntent>, String>;
+    /// Read the authoritative outbox in deterministic per-Environment revision
+    /// order. `All` is used only to rebuild an empty projection at startup.
+    async fn registration_intents(
+        &self,
+        filter: EnvironmentRegistrationIntentFilter,
+    ) -> Result<Vec<EnvironmentRegistrationIntent>, String>;
+    /// Acknowledge successful idempotent projection delivery. Returning false
+    /// means the exact intent did not exist and is an invariant violation.
+    async fn mark_registration_intent_delivered(
+        &self,
+        intent: &EnvironmentRegistrationIntent,
+    ) -> Result<bool, String>;
 }
 
 #[cfg(test)]

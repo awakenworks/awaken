@@ -7,21 +7,30 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 #[cfg(test)]
 use awaken_environment_contract::EnvironmentConfig;
 use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvItem,
-    EnvRegistry, EnvUpdate, EnvironmentRevision, OBJECT_AT,
+    EnvRegistry, EnvUpdate, EnvironmentRegistrationIntent, EnvironmentRegistrationIntentFilter,
+    EnvironmentRevision, OBJECT_AT,
 };
 
 pub struct InMemoryEnvRegistry {
-    envs: Mutex<BTreeMap<String, EnvItem>>,
-    revisions: Mutex<BTreeMap<(String, EnvironmentRevision), EnvItem>>,
-    commands: Mutex<BTreeMap<String, (String, String)>>,
-    seq: AtomicU64,
+    state: Mutex<InMemoryEnvRegistryState>,
+    fail_acknowledgements: AtomicUsize,
+    intent_filters: Mutex<Vec<EnvironmentRegistrationIntentFilter>>,
+}
+
+#[derive(Default)]
+struct InMemoryEnvRegistryState {
+    envs: BTreeMap<String, EnvItem>,
+    revisions: BTreeMap<(String, EnvironmentRevision), EnvItem>,
+    commands: BTreeMap<String, (String, String)>,
+    intents: BTreeMap<(String, EnvironmentRevision), EnvironmentRegistrationIntent>,
+    seq: u64,
 }
 
 impl Default for InMemoryEnvRegistry {
@@ -34,11 +43,21 @@ impl InMemoryEnvRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            envs: Mutex::new(BTreeMap::new()),
-            revisions: Mutex::new(BTreeMap::new()),
-            commands: Mutex::new(BTreeMap::new()),
-            seq: AtomicU64::new(0),
+            state: Mutex::new(InMemoryEnvRegistryState::default()),
+            fail_acknowledgements: AtomicUsize::new(0),
+            intent_filters: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Test-support fault injection for the delivery/acknowledgement ambiguity.
+    pub fn fail_next_acknowledgements(&self, count: usize) {
+        self.fail_acknowledgements.store(count, Ordering::SeqCst);
+    }
+
+    /// Test-support observation of startup `All` versus steady-state `Pending`.
+    #[must_use]
+    pub fn registration_intent_filters(&self) -> Vec<EnvironmentRegistrationIntentFilter> {
+        self.intent_filters.lock().unwrap().clone()
     }
 }
 
@@ -49,21 +68,24 @@ impl EnvRegistry for InMemoryEnvRegistry {
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
         let fingerprint = command.fingerprint();
-        let mut commands = self.commands.lock().unwrap();
-        if let Some((existing_fingerprint, environment_id)) = commands.get(&command.command_id) {
+        let mut state = self.state.lock().unwrap();
+        if let Some((existing_fingerprint, environment_id)) =
+            state.commands.get(&command.command_id)
+        {
             if existing_fingerprint != &fingerprint {
                 return Err(CreateEnvironmentError::IdempotencyConflict);
             }
-            let item = self
-                .envs
-                .lock()
-                .unwrap()
-                .get(environment_id)
-                .cloned()
-                .ok_or_else(|| CreateEnvironmentError::Store("command target is missing".into()))?;
+            let item =
+                state.envs.get(environment_id).cloned().ok_or_else(|| {
+                    CreateEnvironmentError::Store("command target is missing".into())
+                })?;
             return Ok(CreateEnvironmentOutcome::Replayed(item));
         }
-        let n = self.seq.fetch_add(1, Ordering::SeqCst);
+        let n = state.seq;
+        state.seq = state
+            .seq
+            .checked_add(1)
+            .expect("Environment id sequence exhausted");
         let id = format!("env_{n:016}");
         let item = EnvItem {
             id: id.clone(),
@@ -76,19 +98,25 @@ impl EnvRegistry for InMemoryEnvRegistry {
             sandbox_policy: None,
             archived_at: None,
         };
-        self.envs.lock().unwrap().insert(id, item.clone());
-        self.revisions
-            .lock()
-            .unwrap()
+        state.envs.insert(id, item.clone());
+        state
+            .revisions
             .insert((item.id.clone(), item.revision), item.clone());
-        commands.insert(command.command_id, (fingerprint, item.id.clone()));
+        state.intents.insert(
+            (item.id.clone(), item.revision),
+            EnvironmentRegistrationIntent::for_item(&item),
+        );
+        state
+            .commands
+            .insert(command.command_id, (fingerprint, item.id.clone()));
         Ok(CreateEnvironmentOutcome::Created(item))
     }
 
     async fn list_active(&self) -> Vec<EnvItem> {
-        self.envs
+        self.state
             .lock()
             .unwrap()
+            .envs
             .values()
             .filter(|e| e.archived_at.is_none())
             .cloned()
@@ -96,43 +124,49 @@ impl EnvRegistry for InMemoryEnvRegistry {
     }
 
     async fn list_all(&self) -> Vec<EnvItem> {
-        self.envs.lock().unwrap().values().cloned().collect()
+        self.state.lock().unwrap().envs.values().cloned().collect()
     }
 
     async fn get(&self, id: &str) -> Option<EnvItem> {
-        self.envs.lock().unwrap().get(id).cloned()
+        self.state.lock().unwrap().envs.get(id).cloned()
     }
 
     async fn get_revision(&self, id: &str, revision: EnvironmentRevision) -> Option<EnvItem> {
-        self.revisions
+        self.state
             .lock()
             .unwrap()
+            .revisions
             .get(&(id.to_string(), revision))
             .cloned()
     }
 
     async fn exists(&self, id: &str) -> bool {
-        self.envs.lock().unwrap().contains_key(id)
+        self.state.lock().unwrap().envs.contains_key(id)
     }
 
     async fn update(&self, id: &str, patch: EnvUpdate) -> Option<EnvItem> {
-        let mut envs = self.envs.lock().unwrap();
-        let item = envs.get_mut(id)?;
+        let mut state = self.state.lock().unwrap();
+        let item = state.envs.get_mut(id)?;
         if item.archived_at.is_some() {
             return None;
         }
-        item.apply(patch);
+        if !item.apply(patch) {
+            return Some(item.clone());
+        }
         let item = item.clone();
-        self.revisions
-            .lock()
-            .unwrap()
+        state
+            .revisions
             .insert((item.id.clone(), item.revision), item.clone());
+        state.intents.insert(
+            (item.id.clone(), item.revision),
+            EnvironmentRegistrationIntent::for_item(&item),
+        );
         Some(item)
     }
 
     async fn archive(&self, id: &str) -> Option<EnvItem> {
-        let mut envs = self.envs.lock().unwrap();
-        let item = envs.get_mut(id)?;
+        let mut state = self.state.lock().unwrap();
+        let item = state.envs.get_mut(id)?;
         if item.archived_at.is_some() {
             return Some(item.clone());
         }
@@ -144,11 +178,73 @@ impl EnvRegistry for InMemoryEnvRegistry {
                 .expect("Environment revision exhausted"),
         );
         let item = item.clone();
-        self.revisions
+        state
+            .revisions
+            .insert((item.id.clone(), item.revision), item.clone());
+        state.intents.insert(
+            (item.id.clone(), item.revision),
+            EnvironmentRegistrationIntent::for_item(&item),
+        );
+        Some(item)
+    }
+
+    async fn registration_intent(
+        &self,
+        id: &str,
+        revision: EnvironmentRevision,
+    ) -> Result<Option<EnvironmentRegistrationIntent>, String> {
+        Ok(self
+            .state
             .lock()
             .unwrap()
-            .insert((item.id.clone(), item.revision), item.clone());
-        Some(item)
+            .intents
+            .get(&(id.to_string(), revision))
+            .cloned())
+    }
+
+    async fn registration_intents(
+        &self,
+        filter: EnvironmentRegistrationIntentFilter,
+    ) -> Result<Vec<EnvironmentRegistrationIntent>, String> {
+        self.intent_filters.lock().unwrap().push(filter);
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .intents
+            .values()
+            .filter(|intent| {
+                filter == EnvironmentRegistrationIntentFilter::All || !intent.delivered
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn mark_registration_intent_delivered(
+        &self,
+        intent: &EnvironmentRegistrationIntent,
+    ) -> Result<bool, String> {
+        if self
+            .fail_acknowledgements
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err("injected Environment registration acknowledgement failure".into());
+        }
+        let mut state = self.state.lock().unwrap();
+        let Some(stored) = state
+            .intents
+            .get_mut(&(intent.environment_id.clone(), intent.revision))
+        else {
+            return Ok(false);
+        };
+        if stored.operation != intent.operation {
+            return Err("Environment registration intent operation mismatch".into());
+        }
+        stored.delivered = true;
+        Ok(true)
     }
 }
 

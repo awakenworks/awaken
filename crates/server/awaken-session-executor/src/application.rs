@@ -924,11 +924,17 @@ fn validate_baseline_projection(
 
 #[cfg(test)]
 mod network_policy_tests {
-    /// Package projection cause/effect decision table: R1 an unprepared exact
-    /// Environment projects package managers losslessly and no image override;
-    /// R2 a prepared immutable image suppresses startup package installation and
-    /// becomes the sole sandbox image override. Empty managers disappear and no
-    /// protocol DTO reaches provisioning.
+    /// FMECA: F1 a prepared image and packages are both realized (S8/O3/D4,
+    /// RPN96) causes nondeterministic/double installation; mitigation makes the
+    /// digest the sole rootfs and clears package requirements. F2 no prepared
+    /// image drops authored packages (S7/O3/D3, RPN63); mitigation losslessly
+    /// projects non-empty managers with an exact revision resolution id.
+    /// Cause/effect graph: C1=prepared digest present; C2=authored packages;
+    /// E1=image rootfs; E2=runtime package install; constraint C1 XOR E2.
+    /// | Rule | C1 | C2 | E1 | E2 |
+    /// | R1   | 0  | 1  | 0  | 1  |
+    /// | R2   | 1  | 1  | 1  | 0  |
+    /// Empty managers disappear and no protocol DTO reaches provisioning.
     #[test]
     fn environment_packages_project_losslessly_to_the_provisioning_contract() {
         let environment = awaken_session_contract::EnvironmentSnapshot {

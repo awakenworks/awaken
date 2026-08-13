@@ -218,9 +218,10 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
         }
         EnvironmentApplicationError::Policy(error) => map_policy_error(error),
         EnvironmentApplicationError::PolicyStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-        EnvironmentApplicationError::Create(_) | EnvironmentApplicationError::Registration(_) => {
-            StatusCode::SERVICE_UNAVAILABLE
-        }
+        EnvironmentApplicationError::Create(_)
+        | EnvironmentApplicationError::Registration(_)
+        | EnvironmentApplicationError::RegistrationOutbox(_)
+        | EnvironmentApplicationError::RegistrationInvariant(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 
@@ -277,6 +278,18 @@ mod tests {
         );
         assert_eq!(
             map_application_error(EnvironmentApplicationError::PolicyStoreUnavailable),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // C6 outbox unavailable or structurally inconsistent -> E6 503; callers
+        // must not observe authoring success before executable acknowledgement.
+        assert_eq!(
+            map_application_error(EnvironmentApplicationError::RegistrationOutbox("x".into())),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            map_application_error(EnvironmentApplicationError::RegistrationInvariant(
+                "x".into()
+            )),
             StatusCode::SERVICE_UNAVAILABLE
         );
     }

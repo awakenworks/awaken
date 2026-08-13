@@ -284,7 +284,9 @@ impl SessionApplication {
         let environment_id = requested_environment_id
             .map(str::to_owned)
             .or_else(|| published_environment.map(|binding| binding.environment_id.clone()))
-            .unwrap_or_else(|| "env_local".to_string());
+            .unwrap_or_else(|| {
+                awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.to_string()
+            });
         let resolved = match (requested_environment_id, published_environment) {
             (None, Some(binding)) => {
                 self.environments
