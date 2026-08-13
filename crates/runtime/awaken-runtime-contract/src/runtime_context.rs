@@ -71,6 +71,11 @@ pub struct CaptureContext {
 
 #[derive(Clone, Default)]
 pub struct RuntimeRunContext {
+    /// Authorized Workspace ownership for this attempt. The ingress/session
+    /// boundary supplies the same [`awaken_tenancy::ExecutionScopeRef`] that is
+    /// persisted on durable dispatch; tools may consume it as trusted execution
+    /// context, but models and provider-authored arguments can never set it.
+    pub execution_scope: Option<awaken_tenancy::ExecutionScopeRef>,
     /// Request-only context assembled for this attempt. Executors may project
     /// these messages into the model request, but must never append them to the
     /// durable Thread transcript.
@@ -156,6 +161,13 @@ pub struct RuntimeRunContext {
 impl RuntimeRunContext {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Bind the Workspace ownership already verified by Session admission.
+    #[must_use]
+    pub fn with_execution_scope(mut self, scope: awaken_tenancy::ExecutionScopeRef) -> Self {
+        self.execution_scope = Some(scope);
+        self
     }
 
     /// Derive the process-local wiring for a child Run initiated by this Run.

@@ -51,6 +51,15 @@ impl ConfigPlane {
         ManagementAuditPlane::new(self.store.clone())
     }
 
+    /// Enumerate the existing authoring scopes for system-owned effect recovery.
+    /// Every returned scope must still be rebound through this plane before use.
+    pub async fn authoring_scopes(&self) -> Result<Vec<ScopeId>, String> {
+        self.store
+            .list_config_scopes()
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     /// The scope's tool catalog (D3): the descriptors a config in `scope` may name.
     pub fn catalog_for(&self, scope: &ScopeId) -> Vec<ToolDescriptor> {
         self.tools.catalog_for(scope)

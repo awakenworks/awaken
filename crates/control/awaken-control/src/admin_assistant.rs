@@ -22,9 +22,43 @@ use awaken_config_service::{ConfigPlane, RESERVED_ADMIN_SCOPE};
 use awaken_model_catalog::repo::CatalogRepo;
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::tool::current_tool_operation_context;
 use awaken_tenancy::ScopeId;
 use axum::{Extension, Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::{Value, json};
+
+/// One Workspace selector for every Assistant adapter. Hosted tools consume the
+/// Session admission scope carried by Runtime; self-hosted composition retains
+/// its explicitly provisioned Workspace. There is deliberately no ambient or
+/// process-local fallback for hosted calls.
+#[derive(Clone)]
+enum AssistantWorkspace {
+    Fixed(ScopeId),
+    CurrentAttempt,
+}
+
+impl AssistantWorkspace {
+    fn fixed(scope: impl Into<ScopeId>) -> Self {
+        Self::Fixed(scope.into())
+    }
+
+    fn current_attempt() -> Self {
+        Self::CurrentAttempt
+    }
+
+    fn resolve(&self) -> Result<ScopeId, String> {
+        match self {
+            Self::Fixed(scope) => Ok(scope.clone()),
+            Self::CurrentAttempt => current_tool_operation_context()
+                .and_then(|context| context.execution_scope)
+                .map(|scope| scope.0)
+                .filter(|scope| !scope.as_str().trim().is_empty())
+                .ok_or_else(|| {
+                    "Assistant tool has no trusted execution Workspace context".to_string()
+                }),
+        }
+    }
+}
 
 #[derive(Clone)]
 struct AdminAssistantLifecycleState {
@@ -146,7 +180,7 @@ pub struct CatalogCapabilityReader {
     /// The config-authoring plane, used to list existing agent ids in the scope.
     plane: ConfigPlane,
     /// The scope whose agents are listed (the tenant/default scope).
-    scope: ScopeId,
+    workspace: AssistantWorkspace,
     /// The data-plane resource inventory (memory stores + skills). `None` when the
     /// composition root cannot cleanly reach the data-plane handles at wire time.
     inventory: Option<Arc<dyn ResourceInventory>>,
@@ -175,9 +209,29 @@ impl CatalogCapabilityReader {
                 })
                 .collect(),
             plane,
-            scope: workspace.into(),
+            workspace: AssistantWorkspace::fixed(workspace),
             inventory,
         }
+    }
+
+    /// Hosted composition resolves tenant scope from the current Session Run.
+    pub fn request_scoped(
+        catalog: Arc<dyn CatalogRepo>,
+        global_tools: &[ToolDescriptor],
+        plugins: &[PluginCapability],
+        plane: ConfigPlane,
+        inventory: Option<Arc<dyn ResourceInventory>>,
+    ) -> Self {
+        let mut reader = Self::new(
+            catalog,
+            global_tools,
+            plugins,
+            plane,
+            ScopeId::from("unused-hosted-workspace"),
+            inventory,
+        );
+        reader.workspace = AssistantWorkspace::current_attempt();
+        reader
     }
 }
 
@@ -202,7 +256,11 @@ impl CapabilityReader for CatalogCapabilityReader {
         };
         // AgentConfig is the sole MCP authoring truth. Derive the capability
         // inventory from the same typed bindings instead of a parallel MCP catalog.
-        let (agents, mcp_servers) = match self.plane.list(&self.scope).await {
+        let scope = match self.workspace.resolve() {
+            Ok(scope) => scope,
+            Err(_) => return PlatformCapabilities::default(),
+        };
+        let (agents, mcp_servers) = match self.plane.list(&scope).await {
             Ok(configs) => {
                 let mut mcp_servers = Vec::new();
                 let agents = configs
@@ -223,7 +281,10 @@ impl CapabilityReader for CatalogCapabilityReader {
         };
         // Data-plane inventory (memory stores + skills) when reachable; else empty.
         let (memory_stores, skills) = match &self.inventory {
-            Some(inv) => (inv.memory_stores().await, inv.skills().await),
+            Some(inv) => (
+                inv.memory_stores(scope.as_str()).await,
+                inv.skills(scope.as_str()).await,
+            ),
             None => (Vec::new(), Vec::new()),
         };
         PlatformCapabilities {
@@ -248,8 +309,6 @@ impl CapabilityReader for CatalogCapabilityReader {
 pub struct HostResourceInventory {
     memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
     skills: Arc<dyn awaken_resource_contract::SkillStore>,
-    /// Platform-provisioned workspace used to address the skill catalog.
-    skill_workspace: String,
 }
 
 impl HostResourceInventory {
@@ -258,33 +317,29 @@ impl HostResourceInventory {
     pub fn new(
         memory: Arc<dyn awaken_resource_contract::ResourceCatalog>,
         skills: Arc<dyn awaken_resource_contract::SkillStore>,
-        skill_workspace: impl Into<String>,
+        _skill_workspace: impl Into<String>,
     ) -> Self {
-        Self {
-            memory,
-            skills,
-            skill_workspace: skill_workspace.into(),
-        }
+        Self { memory, skills }
     }
 }
 
 #[async_trait]
 impl ResourceInventory for HostResourceInventory {
-    async fn memory_stores(&self) -> Vec<String> {
+    async fn memory_stores(&self, workspace_id: &str) -> Vec<String> {
         // Active/suspended store ids from the durable catalog (sorted by id).
         self.memory
-            .list_memory_stores(&self.skill_workspace)
+            .list_memory_stores(workspace_id)
             .unwrap_or_default()
             .into_iter()
             .map(|d| d.id.to_string())
             .collect()
     }
 
-    async fn skills(&self) -> Vec<String> {
+    async fn skills(&self, workspace_id: &str) -> Vec<String> {
         // A repository read failure degrades to empty rather than failing the
         // capability call.
         self.skills
-            .list_definitions(&self.skill_workspace)
+            .list_definitions(workspace_id)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -300,14 +355,21 @@ impl ResourceInventory for HostResourceInventory {
 /// scope edge ([`ConfigPlane`]) so the scope-free service stays untouched.
 pub struct ConfigServiceDraftValidator {
     plane: ConfigPlane,
-    scope: ScopeId,
+    workspace: AssistantWorkspace,
 }
 
 impl ConfigServiceDraftValidator {
     pub fn new(plane: ConfigPlane, scope: impl Into<ScopeId>) -> Self {
         Self {
             plane,
-            scope: scope.into(),
+            workspace: AssistantWorkspace::fixed(scope),
+        }
+    }
+
+    pub fn request_scoped(plane: ConfigPlane) -> Self {
+        Self {
+            plane,
+            workspace: AssistantWorkspace::current_attempt(),
         }
     }
 }
@@ -316,8 +378,9 @@ impl ConfigServiceDraftValidator {
 impl DraftValidator for ConfigServiceDraftValidator {
     async fn validate(&self, draft: &AgentConfig) -> Result<(), String> {
         // This consumer only needs a human message; flatten the field-routed issue.
+        let scope = self.workspace.resolve()?;
         self.plane
-            .validate(&self.scope, draft)
+            .validate(&scope, draft)
             .await
             .map_err(|issue| issue.message)
     }
@@ -330,7 +393,7 @@ impl DraftValidator for ConfigServiceDraftValidator {
 /// agent list awaiting the operator's publish; `get` reads that stored draft back.
 pub struct ConfigServiceDraftStore {
     plane: ConfigPlane,
-    scope: ScopeId,
+    workspace: AssistantWorkspace,
     /// The SEPARATE data-plane resource store (ADR-0038): which resources an agent
     /// mounts, keyed by workspace + agent id. The assistant authors bindings through the same
     /// `DraftStore` port so a single tool call fills in a whole agent — config plus its
@@ -346,7 +409,18 @@ impl ConfigServiceDraftStore {
     ) -> Self {
         Self {
             plane,
-            scope: scope.into(),
+            workspace: AssistantWorkspace::fixed(scope),
+            resources,
+        }
+    }
+
+    pub fn request_scoped(
+        plane: ConfigPlane,
+        resources: Arc<dyn AgentInputBindingRepository>,
+    ) -> Self {
+        Self {
+            plane,
+            workspace: AssistantWorkspace::current_attempt(),
             resources,
         }
     }
@@ -364,11 +438,17 @@ impl ConfigServiceDraftStore {
                 () = cancellation.cancelled() => break,
                 _ = interval.tick() => {}
             }
-            if let Err(error) =
-                apply_pending_resource_effects(&self.plane, &self.scope, self.resources.as_ref())
-                    .await
-            {
-                eprintln!("resource binding reconciliation failed: {error}");
+            let scopes = match self.workspace.resolve() {
+                Ok(scope) => vec![scope],
+                Err(_) => self.plane.authoring_scopes().await.unwrap_or_default(),
+            };
+            for scope in scopes {
+                if let Err(error) =
+                    apply_pending_resource_effects(&self.plane, &scope, self.resources.as_ref())
+                        .await
+                {
+                    eprintln!("resource binding reconciliation failed: {error}");
+                }
             }
         }
         Ok(())
@@ -497,7 +577,7 @@ fn resource_config(
 #[async_trait]
 impl DraftStore for ConfigServiceDraftStore {
     async fn put(&self, draft: &AgentConfig) -> Result<(), String> {
-        self.plane.put(&self.scope, draft).await
+        self.plane.put(&self.workspace.resolve()?, draft).await
     }
 
     async fn put_audited(
@@ -506,7 +586,7 @@ impl DraftStore for ConfigServiceDraftStore {
         audit: &awaken_admin_assistant::AdminAuditEvent,
     ) -> Result<(), String> {
         self.plane
-            .put_with_audit(&self.scope, draft, audit)
+            .put_with_audit(&self.workspace.resolve()?, draft, audit)
             .await
             .map(|_| ())
     }
@@ -517,9 +597,10 @@ impl DraftStore for ConfigServiceDraftStore {
         audit: &awaken_admin_assistant::AdminAuditEvent,
         resources: Option<Vec<InputSpec>>,
     ) -> Result<(), String> {
+        let scope = self.workspace.resolve()?;
         let current = self
             .resources
-            .get_agent_inputs(self.scope.as_str(), &draft.id)
+            .get_agent_inputs(scope.as_str(), &draft.id)
             .map_err(|error| error.to_string())?;
         let revision = current.as_ref().map_or(1, |current| current.revision + 1);
         let environment = current.and_then(|current| current.environment);
@@ -535,9 +616,9 @@ impl DraftStore for ConfigServiceDraftStore {
             None => None,
         };
         self.plane
-            .put_with_audit_effect(&self.scope, draft, audit, effect.as_ref())
+            .put_with_audit_effect(&scope, draft, audit, effect.as_ref())
             .await?;
-        apply_pending_resource_effects(&self.plane, &self.scope, self.resources.as_ref())
+        apply_pending_resource_effects(&self.plane, &scope, self.resources.as_ref())
             .await
             .map_err(|error| format!("resources could not be bound: {error}"))?;
         Ok(())
@@ -548,25 +629,26 @@ impl DraftStore for ConfigServiceDraftStore {
         audit: &awaken_admin_assistant::AdminAuditEvent,
     ) -> Result<(), String> {
         self.plane
-            .record_management_audit(&self.scope, audit)
+            .record_management_audit(&self.workspace.resolve()?, audit)
             .await
             .map(|_| ())
     }
 
     async fn get(&self, id: &str) -> Result<Option<AgentConfig>, String> {
-        self.plane.get(&self.scope, id).await
+        self.plane.get(&self.workspace.resolve()?, id).await
     }
 
     async fn put_resources(&self, agent_id: &str, resources: Vec<InputSpec>) -> Result<(), String> {
+        let scope = self.workspace.resolve()?;
         let current = self
             .resources
-            .get_agent_inputs(self.scope.as_str(), agent_id)
+            .get_agent_inputs(scope.as_str(), agent_id)
             .map_err(|error| error.to_string())?;
         let revision = current.as_ref().map_or(1, |current| current.revision + 1);
         let environment = current.and_then(|current| current.environment);
         self.resources
             .put_agent_inputs(
-                self.scope.as_str(),
+                scope.as_str(),
                 resource_config(agent_id, resources, environment, revision)?,
             )
             .map_err(|error| error.to_string())?;
@@ -574,9 +656,10 @@ impl DraftStore for ConfigServiceDraftStore {
     }
 
     async fn get_resources(&self, agent_id: &str) -> Result<Vec<InputSpec>, String> {
+        let scope = self.workspace.resolve()?;
         let Some(cfg) = self
             .resources
-            .get_agent_inputs(self.scope.as_str(), agent_id)
+            .get_agent_inputs(scope.as_str(), agent_id)
             .map_err(|error| error.to_string())?
         else {
             return Ok(Vec::new());
@@ -792,6 +875,56 @@ mod tests {
             .run_resource_effect_reconciliation(cancellation)
             .await
             .expect("R2 cancelled reconciler exits");
+    }
+
+    #[tokio::test]
+    async fn hosted_draft_store_uses_only_the_run_execution_workspace() {
+        // Cause/effect decision table:
+        // | rule | trusted Run scope | effect |
+        // | H1   | workspace-tenant  | draft is written only in workspace-tenant |
+        // | H2   | absent            | fail closed; no process-local fallback |
+        // The existing fixed-store test above owns local/self-hosted behavior.
+        let plane = ConfigPlane::new(
+            Arc::new(test_config_service()),
+            Arc::new(SqliteConfigStore::open_in_memory().unwrap()),
+            Arc::new(StaticToolCatalog(Vec::new())),
+        );
+        let store = ConfigServiceDraftStore::request_scoped(
+            plane.clone(),
+            Arc::new(InMemoryAgentInputBindingRepository::new()),
+        );
+        let mut draft = admin_assistant_config();
+        draft.id = "tenant-draft".into();
+        let context = awaken_runtime_contract::tool::ToolOperationContext {
+            run_id: Some(awaken_agent_contract::agent::run::Id("run-tenant".into())),
+            operation_id: "operation-tenant".into(),
+            execution_scope: Some(awaken_tenancy::ExecutionScopeRef(ScopeId::from(
+                "workspace-tenant",
+            ))),
+        };
+        awaken_runtime_contract::tool::with_tool_operation_context(context, store.put(&draft))
+            .await
+            .expect("H1 scoped write");
+        assert!(
+            plane
+                .get(&ScopeId::from("workspace-tenant"), &draft.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "H1"
+        );
+        assert!(
+            plane
+                .get(&ScopeId::from("unused-hosted-workspace"), &draft.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "H1"
+        );
+        assert!(
+            store.put(&draft).await.unwrap_err().contains("no trusted"),
+            "H2"
+        );
     }
 
     #[tokio::test]
@@ -1114,8 +1247,11 @@ mod tests {
             .unwrap();
 
         let inv = HostResourceInventory::new(registry, skills, DEFAULT_SCOPE);
-        assert_eq!(inv.memory_stores().await, vec!["mem-1".to_string()]);
-        assert_eq!(inv.skills().await, vec!["greet".to_string()]);
+        assert_eq!(
+            inv.memory_stores("workspace").await,
+            vec!["mem-1".to_string()]
+        );
+        assert_eq!(inv.skills("workspace").await, vec!["greet".to_string()]);
     }
 
     /// The reader lists existing agent ids in the scope, excluding the reserved admin

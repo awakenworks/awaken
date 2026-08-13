@@ -447,6 +447,7 @@ pub(super) async fn execute_tool(
         ToolOperationContext {
             run_id: Some(run_id.clone()),
             operation_id,
+            execution_scope: context.execution_scope.clone(),
         },
         executor.invoke(call),
     );

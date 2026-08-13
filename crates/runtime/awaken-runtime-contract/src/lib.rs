@@ -104,6 +104,7 @@ pub use awaken_agent_contract::thread::read::transcript::{
 };
 // The cancellation token surfaced through `RunEndContext`/`RuntimeRunContext`;
 // re-exported so an extension forwards it without a direct `tokio-util` edge.
+pub use awaken_tenancy::ExecutionScopeRef;
 pub use resolution::{
     ResolutionManifest, ResolutionManifestError, ResolvedInputRef, ResolvedInputVersion,
     content_fingerprint,

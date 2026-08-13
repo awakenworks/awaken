@@ -350,6 +350,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     fn execution_context_with(
         &self,
         claim: &RunClaim,
+        execution_scope: Option<&crate::ExecutionScopeRef>,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
     ) -> RuntimeRunContext {
@@ -373,6 +374,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .runtime_context(self.cancellation.clone().unwrap_or_default(), Some(claim))
             .with_commit(fenced)
             .with_ownership(ownership);
+        if let Some(scope) = execution_scope {
+            ctx = ctx.with_execution_scope(scope.clone());
+        }
         if !credential_bindings.is_empty() {
             ctx = ctx.with_credential_realization(AttemptCredentialRealization::new(
                 credential_bindings.to_vec(),
@@ -572,7 +576,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // remain possible when the execution dependency being cancelled is down.
         if claimed.cancellation_requested {
             let attempt_executor = self.attempt_executor();
-            let context = self.execution_context_with(&claim, &None, &[]);
+            let context = self.execution_context_with(
+                &claim,
+                claimed.request.execution_scope.as_ref(),
+                &None,
+                &[],
+            );
             if let Err(error) = attempt_executor
                 .cancel(activation.clone(), context.clone())
                 .await
@@ -659,8 +668,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // through the injected provider — which owns how the model is reached (local
         // credentials or a gateway offering). `None` leaves the runtime's bound (host
         // default) executor, so a single-model deployment is unaffected.
-        let mut execution_context =
-            self.execution_context_with(&claim, &None, &claimed.credential_bindings);
+        let mut execution_context = self.execution_context_with(
+            &claim,
+            claimed.request.execution_scope.as_ref(),
+            &None,
+            &claimed.credential_bindings,
+        );
         let model_executor = self
             .exec
             .materialize_inference(&claimed.request.activation, &execution_context)?;
@@ -1002,7 +1015,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
             })?;
         }
-        let context = self.execution_context_with(&claim, &None, &[]);
+        let context = self.execution_context_with(
+            &claim,
+            claimed.request.execution_scope.as_ref(),
+            &None,
+            &[],
+        );
         let coordinator = context.commit.ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(
                 "claimed resolution failure has no commit coordinator".to_string(),
