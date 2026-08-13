@@ -242,15 +242,24 @@ mod tests {
     #[derive(Default)]
     struct EnvironmentRegistrar {
         registrations: Mutex<usize>,
+        fail_custom_once: AtomicBool,
     }
 
     #[async_trait::async_trait]
     impl ExecutableEnvironmentRegistrar for EnvironmentRegistrar {
         async fn register(
             &self,
-            _registration: ExecutableEnvironmentRegistration,
+            registration: ExecutableEnvironmentRegistration,
         ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
         {
+            if registration.definition.id
+                != awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+                && self.fail_custom_once.swap(false, Ordering::SeqCst)
+            {
+                return Err(ExecutableEnvironmentRegistrationError::Unavailable(
+                    "injected Environment recovery outage".into(),
+                ));
+            }
             *self.registrations.lock().unwrap() += 1;
             Ok(ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent)
         }
@@ -324,6 +333,94 @@ mod tests {
             ),
             Duration::from_secs(5),
             "R3"
+        );
+        service_lifecycle
+            .shutdown(Duration::from_secs(1))
+            .await
+            .expect("test supervisor stops cooperatively");
+    }
+
+    #[tokio::test]
+    async fn supervisor_rebuilds_with_all_until_success_then_uses_pending_only() {
+        // FMECA: F1 startup marks recovery complete after a partial replay
+        // (S9/O3/D5, RPN135) -> an empty executable projection stays incomplete;
+        // F2 every settled pass replays delivered history (S5/O6/D3, RPN90) ->
+        // redundant image/catalog work. Mitigation is the explicit supervisor
+        // state transition `Recovering(All) --success--> Settled(Pending)`;
+        // failures retain Recovering and wake carries no alternative work list.
+        //
+        // Cause/effect graph: C1 projection starts empty; C2 All replay fails;
+        // C3 retry succeeds; C4 subsequent wake. E1 first/second reads are All;
+        // E2 health is degraded then recovered; E3 third read is Pending.
+        // | Rule | recovered-before | pass result | effect |
+        // | S1 | F | error | All again, degraded |
+        // | S2 | F | success | transition settled |
+        // | S3 | T | success | Pending only |
+        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        registry
+            .create_once(awaken_environment_contract::CreateEnvironmentCommand {
+                command_id: "supervisor-state".into(),
+                name: "custom".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
+            })
+            .await
+            .unwrap();
+        let envs: Arc<dyn EnvRegistry> = registry.clone();
+        let registrar = Arc::new(EnvironmentRegistrar {
+            registrations: Mutex::new(0),
+            fail_custom_once: AtomicBool::new(true),
+        });
+        let environments = Arc::new(EnvironmentApplication::new(envs, registrar, None));
+        let agents = Arc::new(AgentRecovery {
+            fail: AtomicBool::new(false),
+        });
+        let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+        let supervisor = StaticRegistrationSupervisor::start_with_config(
+            agents,
+            environments,
+            RegistrationSupervisorConfig {
+                retry_min: Duration::from_secs(60),
+                retry_max: Duration::from_secs(60),
+                settled_interval: Duration::from_secs(60),
+            },
+            &service_lifecycle,
+        );
+
+        for _ in 0..1_000 {
+            if !registry.registration_intent_filters().is_empty()
+                && supervisor.health().snapshot().pending_domains == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        supervisor.wake();
+        for _ in 0..1_000 {
+            if registry.registration_intent_filters().len() >= 2
+                && supervisor.health().snapshot().pending_domains == 0
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        supervisor.wake();
+        for _ in 0..1_000 {
+            if registry.registration_intent_filters().len() >= 3 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            registry.registration_intent_filters(),
+            [
+                awaken_environment_contract::EnvironmentRegistrationIntentFilter::All,
+                awaken_environment_contract::EnvironmentRegistrationIntentFilter::All,
+                awaken_environment_contract::EnvironmentRegistrationIntentFilter::Pending,
+            ],
+            "S1/S2/S3"
         );
         service_lifecycle
             .shutdown(Duration::from_secs(1))

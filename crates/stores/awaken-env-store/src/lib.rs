@@ -974,6 +974,130 @@ mod tests {
             .expect("deterministic Environment migrations");
     }
 
+    #[tokio::test]
+    async fn migration_from_v8_seeds_exact_registration_history_once() {
+        // FMECA: F1 upgrading an existing authority leaves old revisions without
+        // intents (S9/O4/D7, RPN252); F2 the archived current row is expanded into
+        // registrations instead of its terminal withdrawal (S10/O2/D5, RPN100);
+        // F3 a restart duplicates seeded work (S6/O3/D3, RPN54). Mitigation is the
+        // checksum-ledgered V9 table plus V10 history seed.
+        // Cause/effect decision table:
+        // | Rule | legacy history | terminal | migration run | effect |
+        // | M1 | v1,v2 | no  | first  | two pending Register intents |
+        // | M2 | v1..v3 | yes | first  | v3 is pending Withdraw |
+        // | M3 | v1..v3 | yes | repeat | exactly the same three intents |
+        let connection = Connection::open_in_memory().unwrap();
+        let full = env_bundle().unwrap();
+        let legacy =
+            MigrationBundle::new(full.bundle_id(), full.migrations()[..8].to_vec()).unwrap();
+        let runner =
+            awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS).unwrap();
+        runner.run_bundle(&connection, &legacy).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO env_registry_env
+                    (env_id, seq, name, description, metadata_json, config_json,
+                     archived_at, revision, scope, sandbox_policy_json)
+                VALUES ('env_legacy', 0, 'legacy', '', '{}', '{"type":"self_hosted"}',
+                        '2026-01-01T00:00:00Z', 3, NULL, NULL);
+                INSERT INTO env_registry_revision
+                    (env_id, revision, name, description, metadata_json, config_json,
+                     archived_at, scope, sandbox_policy_json)
+                VALUES
+                    ('env_legacy', 1, 'v1', '', '{}', '{"type":"self_hosted"}', NULL, NULL, NULL),
+                    ('env_legacy', 2, 'v2', '', '{}', '{"type":"self_hosted"}', NULL, NULL, NULL),
+                    ('env_legacy', 3, 'v3', '', '{}', '{"type":"self_hosted"}',
+                     '2026-01-01T00:00:00Z', NULL, NULL);
+                "#,
+            )
+            .unwrap();
+        let applied = runner.run_bundle(&connection, &full).unwrap();
+        assert_eq!(
+            applied
+                .iter()
+                .map(|migration| migration.version)
+                .collect::<Vec<_>>(),
+            [9, 10],
+            "M1/M2"
+        );
+        assert!(
+            runner.run_bundle(&connection, &full).unwrap().is_empty(),
+            "M3"
+        );
+
+        let registry = SqliteEnvRegistry::from_connection(connection).unwrap();
+        let intents = registry
+            .registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(intents.len(), 3, "M3");
+        assert!(intents.iter().all(|intent| !intent.delivered), "M1-M3");
+        assert_eq!(
+            intents[0].operation,
+            EnvironmentRegistrationOperation::Register,
+            "M1"
+        );
+        assert_eq!(
+            intents[1].operation,
+            EnvironmentRegistrationOperation::Register,
+            "M1"
+        );
+        assert_eq!(
+            intents[2].operation,
+            EnvironmentRegistrationOperation::Withdraw,
+            "M2"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_intent_insert_rolls_back_the_whole_create_transaction() {
+        // FMECA: the intent insert fails after current/revision/command writes
+        // (S10/O3/D8, RPN240). Cause C1=injected final insert failure must imply
+        // E1=typed store error and E2=zero current, revision, command, and intent
+        // rows. This is the transaction-rollback rule the success conformance
+        // cannot prove merely by observing paired rows.
+        let registry = r();
+        registry
+            .conn
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER env_registry_fail_intent BEFORE INSERT \
+                 ON env_registry_registration_intent BEGIN \
+                 SELECT RAISE(ABORT, 'injected intent failure'); END;",
+            )
+            .unwrap();
+        let result = registry
+            .create_once(CreateEnvironmentCommand {
+                command_id: "rollback-create".into(),
+                name: "rollback".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: config(),
+            })
+            .await;
+        assert!(
+            matches!(result, Err(CreateEnvironmentError::Store(_))),
+            "E1"
+        );
+        let connection = registry.conn.lock().unwrap();
+        for (rule, table) in [
+            ("current", "env_registry_env"),
+            ("revision", "env_registry_revision"),
+            ("command", "env_registry_create_command"),
+            ("intent", "env_registry_registration_intent"),
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "E2/{rule}");
+        }
+    }
+
     fn config() -> EnvironmentConfig {
         EnvironmentConfig::SelfHosted
     }
@@ -1029,31 +1153,7 @@ mod tests {
         assert_eq!(up.config, config(), "config round-trips");
     }
 
-    #[tokio::test]
-    async fn revision_and_registration_intent_share_one_transactional_history() {
-        // FMECA and mitigations for the Control authority boundary:
-        // F1 revision commits without delivery intent (S9/O3/D7, RPN189) -> the
-        // same DB transaction inserts both rows and the FK binds the exact pair;
-        // F2 delivery succeeds but acknowledgement is lost (S5/O4/D2, RPN40) ->
-        // the intent remains pending and the idempotent registrar is retried;
-        // F3 archive is reconstructed as registration (S9/O2/D5, RPN90) -> the
-        // immutable operation is stored with the terminal revision, never inferred
-        // from a later current scan; F4 restart loses an in-memory projection
-        // (S7/O3/D2, RPN42) -> `All` replays the same durable intent log; F5 an
-        // identical update retry mints another revision (S6/O4/D3, RPN72) -> the
-        // canonical patch reports no fact change and appends neither row.
-        //
-        // Cause/effect graph: C1=create; C2=update; C3=archive; C4=acknowledged;
-        // C5=Pending filter; C6=All filter. Effects: E1=exact Register intent;
-        // E2=exact Withdraw intent; E3=acknowledged work absent from Pending;
-        // E4=all immutable intents remain recoverable.
-        // | Rule | mutation | ack | filter  | effect |
-        // | O1   | create   | no  | Pending | v1 Register (E1) |
-        // | O2   | update   | yes | Pending | v1 only (E1,E3) |
-        // | O2b  | same update | yes | All | still v1,v2 (no-op replay) |
-        // | O3   | archive  | no  | Pending | v1 + v3 Withdraw (E2,E3) |
-        // | O4   | all      | any | All     | v1,v2,v3 retained (E4) |
-        let registry = r();
+    async fn registration_outbox_conformance(registry: &dyn EnvRegistry) {
         let created = registry
             .create("outbox".into(), String::new(), BTreeMap::new(), config())
             .await;
@@ -1091,6 +1191,13 @@ mod tests {
                 .unwrap(),
             "O2"
         );
+        assert!(
+            registry
+                .mark_registration_intent_delivered(&v2)
+                .await
+                .unwrap(),
+            "O2 acknowledgement replay"
+        );
         let replayed = registry
             .update(
                 &created.id,
@@ -1113,6 +1220,8 @@ mod tests {
         );
 
         let archived = registry.archive(&created.id).await.expect("O3 archive");
+        let archived_replay = registry.archive(&created.id).await.expect("O3 replay");
+        assert_eq!(archived_replay.revision, archived.revision, "O3 replay");
         let pending = registry
             .registration_intents(EnvironmentRegistrationIntentFilter::Pending)
             .await
@@ -1138,6 +1247,34 @@ mod tests {
             "O4"
         );
         assert!(all[1].delivered, "O4 acknowledgement is retained");
+    }
+
+    #[tokio::test]
+    async fn every_registry_adapter_obeys_the_registration_outbox_decision_table() {
+        // FMECA and mitigations for the Control authority boundary:
+        // F1 revision commits without delivery intent (S9/O3/D7, RPN189) -> the
+        // same DB transaction inserts both rows and the FK binds the exact pair;
+        // F2 delivery succeeds but acknowledgement is lost (S5/O4/D2, RPN40) ->
+        // the intent remains pending and the idempotent registrar is retried;
+        // F3 archive is reconstructed as registration (S9/O2/D5, RPN90) -> the
+        // immutable operation is stored with the terminal revision, never inferred
+        // from a later current scan; F4 restart loses an in-memory projection
+        // (S7/O3/D2, RPN42) -> `All` replays the same durable intent log; F5 an
+        // identical update retry mints another revision (S6/O4/D3, RPN72) -> the
+        // canonical patch reports no fact change and appends neither row.
+        //
+        // Cause/effect graph: C1=create; C2=update; C3=archive; C4=acknowledged;
+        // C5=Pending filter; C6=All filter. Effects: E1=exact Register intent;
+        // E2=exact Withdraw intent; E3=acknowledged work absent from Pending;
+        // E4=all immutable intents remain recoverable.
+        // | Rule | mutation | ack | filter  | effect |
+        // | O1   | create   | no  | Pending | v1 Register (E1) |
+        // | O2   | update   | yes | Pending | v1 only (E1,E3) |
+        // | O2b  | same update | yes | All | still v1,v2 (no-op replay) |
+        // | O3   | archive  | no  | Pending | v1 + v3 Withdraw (E2,E3) |
+        // | O4   | all      | any | All     | v1,v2,v3 retained (E4) |
+        registration_outbox_conformance(&r()).await;
+        registration_outbox_conformance(&InMemoryEnvRegistry::new()).await;
     }
 
     #[tokio::test]
@@ -1194,6 +1331,73 @@ mod tests {
             .await
             .expect("schema pool");
         let r = PostgresEnvRegistry::with_pool(pool).await.expect("store");
+
+        // The shared cause/effect rules above run unchanged against PostgreSQL;
+        // this is adapter parity, not a PostgreSQL-specific reinterpretation.
+        registration_outbox_conformance(&r).await;
+
+        // PostgreSQL transaction-failure parity for the SQLite rollback rule:
+        // C1 the final intent insert raises -> E1 create fails and E2 every table
+        // count remains at its pre-command value.
+        let tables = [
+            "env_registry_env",
+            "env_registry_revision",
+            "env_registry_create_command",
+            "env_registry_registration_intent",
+        ];
+        let mut before = Vec::new();
+        for table in &tables {
+            before.push(
+                sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+                    .fetch_one(&r.pool)
+                    .await
+                    .unwrap(),
+            );
+        }
+        sqlx::query(
+            "CREATE FUNCTION env_registry_reject_intent() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected intent failure'; END $$",
+        )
+        .execute(&r.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER env_registry_fail_intent BEFORE INSERT \
+             ON env_registry_registration_intent FOR EACH ROW \
+             EXECUTE FUNCTION env_registry_reject_intent()",
+        )
+        .execute(&r.pool)
+        .await
+        .unwrap();
+        let failed = r
+            .create_once(CreateEnvironmentCommand {
+                command_id: "postgres-rollback".into(),
+                name: "rollback".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: config(),
+            })
+            .await;
+        assert!(
+            matches!(failed, Err(CreateEnvironmentError::Store(_))),
+            "E1"
+        );
+        for (index, table) in tables.iter().enumerate() {
+            let after = sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+                .fetch_one(&r.pool)
+                .await
+                .unwrap();
+            assert_eq!(after, before[index], "E2/{table}");
+        }
+        sqlx::query("DROP TRIGGER env_registry_fail_intent ON env_registry_registration_intent")
+            .execute(&r.pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP FUNCTION env_registry_reject_intent()")
+            .execute(&r.pool)
+            .await
+            .unwrap();
 
         let e = r
             .create("prod".into(), "d".into(), BTreeMap::new(), config())

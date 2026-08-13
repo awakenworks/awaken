@@ -152,6 +152,8 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-environment-image-build = { workspace = true, features = ["test-support"] }
+awaken-environment-realization-contract.workspace = true
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-credential-contract.workspace = true
 awaken-admin-config-api = { workspace = true, features = ["test-support"] }

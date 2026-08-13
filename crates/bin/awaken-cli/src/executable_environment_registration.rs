@@ -25,19 +25,25 @@ pub(crate) struct ExecutableEnvironmentWiring {
 
 impl ExecutableEnvironmentWiring {
     pub(crate) fn local(work: Arc<dyn WorkQueue>) -> Result<Self, String> {
+        Self::local_with_image_builds(work, None)
+    }
+
+    fn local_with_image_builds(
+        work: Arc<dyn WorkQueue>,
+        image_builds: Option<Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>,
+    ) -> Result<Self, String> {
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
-        let registrar: Arc<dyn ExecutableEnvironmentRegistrar> = Arc::new(
-            awaken_environment_execution_application::CoordinatorEnvironmentRegistrar::new(
-                Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
-                work,
-            ),
+        let registrar = coordinator_registrar(
+            Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog.clone())),
+            work,
+            image_builds.as_ref(),
         );
         Ok(Self {
             catalog,
             registrar,
             projection_refresher: None,
             private_router: Router::new(),
-            image_builds: None,
+            image_builds,
         })
     }
 
@@ -82,21 +88,7 @@ impl ExecutableEnvironmentWiring {
             .map_err(|error| error.to_string())?,
         );
         let image_builds = open_image_builds(deployment, schema, service_lifecycle).await?;
-        let build_aware: Arc<dyn ExecutableEnvironmentRegistrar> = match &image_builds {
-            Some(builds) => Arc::new(
-                awaken_environment_image_build::BuildAwareExecutableEnvironmentRegistrar::new(
-                    durable.clone(),
-                    builds.clone(),
-                ),
-            ),
-            None => durable.clone(),
-        };
-        let registrar: Arc<dyn ExecutableEnvironmentRegistrar> = Arc::new(
-            awaken_environment_execution_application::CoordinatorEnvironmentRegistrar::new(
-                build_aware,
-                work,
-            ),
-        );
+        let registrar = coordinator_registrar(durable.clone(), work, image_builds.as_ref());
         let private_router = executable_environment_registration_router_with_authenticator(
             registrar.clone(),
             authenticator,
@@ -120,17 +112,8 @@ pub(crate) async fn for_runtime_role(
 ) -> Result<ExecutableEnvironmentWiring, String> {
     match role {
         Role::AllInOne => {
-            let mut wiring = ExecutableEnvironmentWiring::local(work)?;
-            wiring.image_builds = open_image_builds(deployment, schema, service_lifecycle).await?;
-            if let Some(builds) = &wiring.image_builds {
-                wiring.registrar = Arc::new(
-                    awaken_environment_image_build::BuildAwareExecutableEnvironmentRegistrar::new(
-                        wiring.registrar,
-                        builds.clone(),
-                    ),
-                );
-            }
-            Ok(wiring)
+            let image_builds = open_image_builds(deployment, schema, service_lifecycle).await?;
+            ExecutableEnvironmentWiring::local_with_image_builds(work, image_builds)
         }
         Role::Coordinator => {
             ExecutableEnvironmentWiring::coordinator(deployment, schema, work, service_lifecycle)
@@ -140,6 +123,27 @@ pub(crate) async fn for_runtime_role(
             unreachable!("runtime process accepts only AllInOne or Coordinator")
         }
     }
+}
+
+fn coordinator_registrar(
+    registrar: Arc<dyn ExecutableEnvironmentRegistrar>,
+    work: Arc<dyn WorkQueue>,
+    image_builds: Option<&Arc<awaken_environment_image_build::EnvironmentImageBuildCoordinator>>,
+) -> Arc<dyn ExecutableEnvironmentRegistrar> {
+    let registrar = match image_builds {
+        Some(builds) => Arc::new(
+            awaken_environment_image_build::BuildAwareExecutableEnvironmentRegistrar::new(
+                registrar,
+                builds.clone(),
+            ),
+        ) as Arc<dyn ExecutableEnvironmentRegistrar>,
+        None => registrar,
+    };
+    Arc::new(
+        awaken_environment_execution_application::CoordinatorEnvironmentRegistrar::new(
+            registrar, work,
+        ),
+    )
 }
 
 async fn open_image_builds(
@@ -245,6 +249,57 @@ pub(crate) fn require_process_wiring(
 
 #[cfg(test)]
 mod startup_tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use awaken_environment_contract::{
+        EnvItem, EnvironmentConfig, EnvironmentPackages, EnvironmentRevision,
+    };
+    use awaken_environment_realization_contract::{
+        EnvironmentImageBuildDemand, EnvironmentImageBuildError, EnvironmentImageBuildStore,
+        EnvironmentImageBuilder,
+    };
+    use awaken_executable_environment_contract::ExecutableEnvironmentRegistration;
+
+    struct NeverRunBuilder;
+
+    #[async_trait]
+    impl EnvironmentImageBuilder for NeverRunBuilder {
+        async fn build(
+            &self,
+            _demand: &EnvironmentImageBuildDemand,
+        ) -> Result<String, EnvironmentImageBuildError> {
+            panic!("composition test does not run the asynchronous build worker")
+        }
+
+        async fn available(&self, _image: &str) -> Result<bool, EnvironmentImageBuildError> {
+            Ok(false)
+        }
+    }
+
+    fn packaged_registration(id: &str) -> ExecutableEnvironmentRegistration {
+        ExecutableEnvironmentRegistration::new(
+            EnvItem {
+                id: id.into(),
+                revision: EnvironmentRevision(1),
+                name: id.into(),
+                description: String::new(),
+                metadata: Default::default(),
+                scope: None,
+                config: EnvironmentConfig::Cloud {
+                    networking: Default::default(),
+                    packages: EnvironmentPackages {
+                        npm: vec!["tsx@4".into()],
+                        ..Default::default()
+                    },
+                },
+                sandbox_policy: None,
+                archived_at: None,
+            },
+            None,
+        )
+    }
+
     #[test]
     #[should_panic(expected = "runtime process requires executable Environment wiring")]
     fn missing_wiring_never_allocates_a_parallel_catalog_or_queue() {
@@ -253,5 +308,57 @@ mod startup_tests {
         // catalog/queue; E3 missing wiring -> startup failure. Positive E1/E2
         // are covered by role process; this test owns E3.
         let _ = super::require_process_wiring(None);
+    }
+
+    #[tokio::test]
+    async fn one_composition_path_makes_image_builds_strictly_optional() {
+        // FMECA: F1 AllInOne and Coordinator decorate registrars in different
+        // orders (S8/O3/D5, RPN120) -> only one role persists build demand; F2
+        // missing container-image provisioner still creates demand (S7/O4/D4,
+        // RPN112) -> package Environments fail in otherwise valid local mode.
+        // Mitigation: both roles call `coordinator_registrar`; `Some(builds)` is
+        // the sole BuildAware switch and `None` has no hidden demand source.
+        //
+        // Cause/effect decision table:
+        // | Rule | image coordinator | packaged registration | effects |
+        // | C1 | None | yes | catalog registers; no image service/demand |
+        // | C2 | Some | yes | same catalog path + exactly one Pending demand |
+        let without = super::ExecutableEnvironmentWiring::local(Arc::new(
+            awaken_work_store::InMemoryWorkQueue::new(),
+        ))
+        .unwrap();
+        assert!(without.image_builds.is_none(), "C1");
+        without
+            .registrar
+            .register(packaged_registration("without-builder"))
+            .await
+            .unwrap();
+        assert!(without.catalog.current("without-builder").is_some(), "C1");
+
+        let store =
+            Arc::new(awaken_environment_image_build::InMemoryEnvironmentImageBuildStore::new());
+        let builds = Arc::new(
+            awaken_environment_image_build::EnvironmentImageBuildCoordinator::new(
+                store.clone(),
+                Arc::new(NeverRunBuilder),
+                "registry/awaken@sha256:base",
+                awaken_environment_image_build::EnvironmentImageBuildPolicy::default(),
+            )
+            .unwrap(),
+        );
+        let with = super::ExecutableEnvironmentWiring::local_with_image_builds(
+            Arc::new(awaken_work_store::InMemoryWorkQueue::new()),
+            Some(builds),
+        )
+        .unwrap();
+        let registration = packaged_registration("with-builder");
+        let demand = EnvironmentImageBuildDemand::from_registration(
+            &registration,
+            "registry/awaken@sha256:base",
+        )
+        .unwrap();
+        with.registrar.register(registration).await.unwrap();
+        assert!(with.catalog.current("with-builder").is_some(), "C2");
+        assert!(store.get(&demand.build_key).await.unwrap().is_some(), "C2");
     }
 }

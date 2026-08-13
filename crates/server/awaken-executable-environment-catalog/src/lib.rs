@@ -332,4 +332,95 @@ mod tests {
             "E5"
         );
     }
+
+    #[tokio::test]
+    async fn out_of_order_and_concurrent_delivery_converge_monotonically() {
+        // FMECA: F1 v2 arrives before v1 (S7/O5/D3, RPN105) and stale v1
+        // replaces current; F2 two drainers deliver identical v3 concurrently
+        // (S5/O4/D3, RPN60) and conflict; F3 a late registration at/below a
+        // terminal lifecycle revision resurrects an archived Environment
+        // (S10/O3/D5, RPN150). Mitigation is one locked monotonic lifecycle
+        // state machine keyed by (Environment id, revision), with immutable
+        // history and withdrawal as the current-availability deny overlay.
+        //
+        // Cause/effect decision table:
+        // | Rule | incoming | current lifecycle | concurrent/equal | effect |
+        // | O1 | register v2 | none | no | v2 current |
+        // | O2 | register v1 | v2 active | no | v1 historical, v2 current |
+        // | O3 | register v3 twice | v2 active | yes | one current + one replay |
+        // | O4 | withdraw v4 | v3 active | no | no current, history retained |
+        // | O5 | register v3/v4 | v4 withdrawn | no | history only, no resurrection |
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let registrar = LocalExecutableEnvironmentRegistrar::new(catalog.clone());
+        assert_eq!(
+            registrar.register(registration(2, "two")).await.unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent,
+            "O1"
+        );
+        assert_eq!(
+            registrar.register(registration(1, "one")).await.unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::RegisteredHistorical,
+            "O2"
+        );
+        assert_eq!(
+            catalog.current("env-a").unwrap().definition.revision.0,
+            2,
+            "O2"
+        );
+        assert!(
+            catalog
+                .at_revision("env-a", EnvironmentRevision(1))
+                .is_some(),
+            "O2"
+        );
+
+        let (left, right) = tokio::join!(
+            registrar.register(registration(3, "three")),
+            registrar.register(registration(3, "three"))
+        );
+        let outcomes = [left.unwrap(), right.unwrap()];
+        assert!(
+            outcomes.contains(&ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent)
+                && outcomes.contains(&ExecutableEnvironmentRegistrationOutcome::AlreadyRegistered),
+            "O3"
+        );
+        assert_eq!(
+            catalog.current("env-a").unwrap().definition.revision.0,
+            3,
+            "O3"
+        );
+
+        assert_eq!(
+            registrar
+                .withdraw(ExecutableEnvironmentWithdrawal {
+                    environment_id: "env-a".into(),
+                    lifecycle_revision: EnvironmentRevision(4),
+                })
+                .await
+                .unwrap(),
+            ExecutableEnvironmentWithdrawalOutcome::WithdrawnCurrent,
+            "O4"
+        );
+        assert!(catalog.current("env-a").is_none(), "O4");
+        assert_eq!(
+            registrar
+                .register(registration(4, "terminal-late"))
+                .await
+                .unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::RegisteredHistorical,
+            "O5"
+        );
+        assert_eq!(
+            registrar.register(registration(3, "three")).await.unwrap(),
+            ExecutableEnvironmentRegistrationOutcome::AlreadyRegistered,
+            "O5"
+        );
+        assert!(catalog.current("env-a").is_none(), "O5");
+        assert!(
+            catalog
+                .at_revision("env-a", EnvironmentRevision(4))
+                .is_some(),
+            "O5 history"
+        );
+    }
 }

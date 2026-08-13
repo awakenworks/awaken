@@ -410,6 +410,7 @@ dependencies = [
  "awaken-environment-execution-application",
  "awaken-environment-image-build",
  "awaken-environment-package-image-builder",
+ "awaken-environment-realization-contract",
  "awaken-executable-agent-catalog",
  "awaken-executable-agent-contract",
  "awaken-executable-environment-catalog",

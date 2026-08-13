@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 #[cfg(test)]
@@ -19,6 +20,8 @@ use awaken_environment_contract::{
 
 pub struct InMemoryEnvRegistry {
     state: Mutex<InMemoryEnvRegistryState>,
+    fail_acknowledgements: AtomicUsize,
+    intent_filters: Mutex<Vec<EnvironmentRegistrationIntentFilter>>,
 }
 
 #[derive(Default)]
@@ -41,7 +44,20 @@ impl InMemoryEnvRegistry {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(InMemoryEnvRegistryState::default()),
+            fail_acknowledgements: AtomicUsize::new(0),
+            intent_filters: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Test-support fault injection for the delivery/acknowledgement ambiguity.
+    pub fn fail_next_acknowledgements(&self, count: usize) {
+        self.fail_acknowledgements.store(count, Ordering::SeqCst);
+    }
+
+    /// Test-support observation of startup `All` versus steady-state `Pending`.
+    #[must_use]
+    pub fn registration_intent_filters(&self) -> Vec<EnvironmentRegistrationIntentFilter> {
+        self.intent_filters.lock().unwrap().clone()
     }
 }
 
@@ -190,6 +206,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
         &self,
         filter: EnvironmentRegistrationIntentFilter,
     ) -> Result<Vec<EnvironmentRegistrationIntent>, String> {
+        self.intent_filters.lock().unwrap().push(filter);
         Ok(self
             .state
             .lock()
@@ -207,6 +224,15 @@ impl EnvRegistry for InMemoryEnvRegistry {
         &self,
         intent: &EnvironmentRegistrationIntent,
     ) -> Result<bool, String> {
+        if self
+            .fail_acknowledgements
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err("injected Environment registration acknowledgement failure".into());
+        }
         let mut state = self.state.lock().unwrap();
         let Some(stored) = state
             .intents

@@ -222,11 +222,19 @@ impl EnvironmentApplication {
             .registration_intents(filter)
             .await
             .map_err(EnvironmentApplicationError::RegistrationOutbox)?;
-        let count = u64::try_from(intents.len()).expect("registration intent count fits u64");
+        let mut delivered = 0_u64;
+        let mut first_error = None;
         for intent in intents {
-            self.deliver_intent(intent, replay_delivered).await?;
+            match self.deliver_intent(intent, replay_delivered).await {
+                Ok(()) => delivered = delivered.saturating_add(1),
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
         }
-        Ok(count)
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(delivered),
+        }
     }
 
     /// Rebuild an empty executable projection from the durable intent log. This
@@ -389,6 +397,17 @@ mod tests {
     };
 
     use super::*;
+
+    fn create_command(command_id: &str, name: &str) -> CreateEnvironmentCommand {
+        CreateEnvironmentCommand {
+            command_id: command_id.into(),
+            name: name.into(),
+            description: String::new(),
+            metadata: Default::default(),
+            scope: None,
+            config: EnvironmentConfig::SelfHosted,
+        }
+    }
 
     #[derive(Default)]
     struct RecordingRegistrar {
@@ -576,15 +595,16 @@ mod tests {
             1,
             "R2"
         );
-        let registrations = registrar.registrations.lock().unwrap();
-        assert_eq!(registrations.len(), 1, "R2");
-        assert!(
-            registrations
-                .iter()
-                .any(|registration| registration.definition.name == "Retained"),
-            "R2 exact retained revision"
-        );
-        drop(registrations);
+        {
+            let registrations = registrar.registrations.lock().unwrap();
+            assert_eq!(registrations.len(), 1, "R2");
+            assert!(
+                registrations
+                    .iter()
+                    .any(|registration| registration.definition.name == "Retained"),
+                "R2 exact retained revision"
+            );
+        }
         assert_eq!(
             application.drain_registration_intents().await.unwrap(),
             0,
@@ -594,6 +614,183 @@ mod tests {
             application.recover_registration_intents().await.unwrap(),
             2,
             "R4"
+        );
+    }
+
+    #[tokio::test]
+    async fn acknowledgement_loss_and_ambiguous_command_retry_converge_without_new_facts() {
+        // FMECA: F1 projection succeeds but outbox acknowledgement is lost
+        // (S7/O4/D5, RPN140); mitigation is idempotent exact redelivery. F2 the
+        // caller retries an ambiguously completed create/update/archive
+        // (S8/O5/D4, RPN160); mitigation is command identity plus no-op revision
+        // detection. F3 a terminal retry resurrects execution (S10/O2/D5,
+        // RPN100); mitigation is the frozen Withdraw operation.
+        //
+        // Cause/effect graph: C1 authority fact commits; C2 registrar succeeds;
+        // C3 ack fails; C4 same command/patch/archive is retried. E1 first call
+        // reports outbox failure while its intent stays pending; E2 retry may
+        // redeliver but creates no revision/intent; E3 ack converges to delivered;
+        // E4 archive retry remains the same terminal revision.
+        //
+        // | Rule | operation | C2 | C3 | C4 | effects |
+        // | A1 | create | T | T | F | E1 |
+        // | A2 | create | T | F | T | E2,E3 |
+        // | A3 | update/no-op | T | T/F | T | E2,E3 |
+        // | A4 | archive | T | T/F | T | E2,E3,E4 |
+        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let envs: Arc<dyn EnvRegistry> = registry.clone();
+        let registrar = Arc::new(RecordingRegistrar::default());
+        let application = EnvironmentApplication::new(envs.clone(), registrar.clone(), None);
+
+        registry.fail_next_acknowledgements(1);
+        assert!(
+            matches!(
+                application.create(create_command("ambiguous", "v1")).await,
+                Err(EnvironmentApplicationError::RegistrationOutbox(_))
+            ),
+            "A1"
+        );
+        let created = application
+            .create(create_command("ambiguous", "v1"))
+            .await
+            .expect("A2");
+        assert_eq!(created.revision, EnvironmentRevision(1), "A2");
+        assert_eq!(
+            registrar.registrations.lock().unwrap().len(),
+            2,
+            "A1/A2 at-least-once"
+        );
+
+        registrar.fail_registration.store(true, Ordering::SeqCst);
+        assert!(
+            application
+                .update(
+                    &created.id,
+                    EnvUpdate {
+                        name: Some("v2".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_err(),
+            "A3 pending update"
+        );
+        registrar.fail_registration.store(false, Ordering::SeqCst);
+        let replayed_update = application
+            .update(
+                &created.id,
+                EnvUpdate {
+                    name: Some("v2".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("A3 no-op retry drains existing intent");
+        assert_eq!(replayed_update.revision, EnvironmentRevision(2), "A3");
+
+        registry.fail_next_acknowledgements(1);
+        assert!(
+            matches!(
+                application.archive(&created.id).await,
+                Err(EnvironmentApplicationError::RegistrationOutbox(_))
+            ),
+            "A4 first terminal delivery succeeded but ack failed"
+        );
+        let terminal = application.archive(&created.id).await.expect("A4 retry");
+        assert_eq!(terminal.revision, EnvironmentRevision(3), "A4");
+        let all = envs
+            .registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3, "A2/A3/A4 exactly one intent per fact");
+        assert!(all.iter().all(|intent| intent.delivered), "A3/A4");
+        assert_eq!(
+            registrar.withdrawals.lock().unwrap().len(),
+            2,
+            "A4 at-least-once"
+        );
+    }
+
+    struct BarrierRegistrar {
+        barrier: tokio::sync::Barrier,
+        registrations: Mutex<Vec<ExecutableEnvironmentRegistration>>,
+    }
+
+    #[async_trait]
+    impl ExecutableEnvironmentRegistrar for BarrierRegistrar {
+        async fn register(
+            &self,
+            registration: ExecutableEnvironmentRegistration,
+        ) -> Result<ExecutableEnvironmentRegistrationOutcome, ExecutableEnvironmentRegistrationError>
+        {
+            self.barrier.wait().await;
+            self.registrations.lock().unwrap().push(registration);
+            Ok(ExecutableEnvironmentRegistrationOutcome::RegisteredCurrent)
+        }
+
+        async fn withdraw(
+            &self,
+            _withdrawal: ExecutableEnvironmentWithdrawal,
+        ) -> Result<ExecutableEnvironmentWithdrawalOutcome, ExecutableEnvironmentRegistrationError>
+        {
+            unreachable!("concurrency case contains only Register")
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_drainers_preserve_at_least_once_delivery_and_one_authority_fact() {
+        // FMECA: F1 two supervisors read the same pending row (S5/O4/D3,
+        // RPN60) -> duplicate delivery is allowed at the idempotent registrar;
+        // F2 competing acknowledgements lose the fact (S8/O2/D5, RPN80) -> ack
+        // is monotonic and repeatable; F3 concurrency mints a second revision
+        // (S8/O2/D4, RPN64) -> only the authority transaction creates facts.
+        // Decision table: R1(two reads before either ack) -> two identical
+        // attempts, one durable intent, pending=0; R2(next drain) -> zero work.
+        let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
+        let created = registry
+            .create_once(create_command("concurrent", "one"))
+            .await
+            .unwrap()
+            .item()
+            .clone();
+        let envs: Arc<dyn EnvRegistry> = registry.clone();
+        let registrar = Arc::new(BarrierRegistrar {
+            barrier: tokio::sync::Barrier::new(2),
+            registrations: Mutex::new(Vec::new()),
+        });
+        let application = Arc::new(EnvironmentApplication::new(
+            envs.clone(),
+            registrar.clone(),
+            None,
+        ));
+        let (left, right) = tokio::join!(
+            application.drain_registration_intents(),
+            application.drain_registration_intents()
+        );
+        assert_eq!(left.unwrap(), 1, "R1");
+        assert_eq!(right.unwrap(), 1, "R1");
+        {
+            let attempts = registrar.registrations.lock().unwrap();
+            assert_eq!(attempts.len(), 2, "R1 at-least-once");
+            assert!(
+                attempts
+                    .iter()
+                    .all(|attempt| attempt.definition.id == created.id),
+                "R1 exact fact"
+            );
+        }
+        assert_eq!(
+            envs.registration_intents(EnvironmentRegistrationIntentFilter::All)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "R1 one authority fact"
+        );
+        assert_eq!(
+            application.drain_registration_intents().await.unwrap(),
+            0,
+            "R2"
         );
     }
 
@@ -675,33 +872,25 @@ mod tests {
 
     #[tokio::test]
     async fn exact_reconciliation_isolated_from_unrelated_registration_failure() {
+        // FMECA: F1 one poison registration stops the ordered batch and starves
+        // later Environments (S8/O4/D5, RPN160). Mitigation: attempt every
+        // immutable intent, retain the first error for observability, and leave
+        // only failed acknowledgements pending. F2 dispatch readiness scans the
+        // whole catalog (S7/O4/D4, RPN112). Mitigation: exact reconciliation.
         // Decision table:
-        // R1 full replay + unrelated failure -> replay fails closed;
+        // R1 full replay + first custom Environment fails -> replay reports the
+        // failure but still registers the later healthy Environment;
         // R2 exact healthy id + same unrelated failure -> healthy registration succeeds;
         // R3 unknown id -> no registration and an explicit missing result.
         let envs: Arc<dyn EnvRegistry> = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
         let registrar = Arc::new(RecordingRegistrar::default());
         let application = EnvironmentApplication::new(envs, registrar.clone(), None);
-        let healthy = application
-            .create(CreateEnvironmentCommand {
-                command_id: "healthy".into(),
-                name: "Healthy".into(),
-                description: String::new(),
-                metadata: Default::default(),
-                scope: None,
-                config: EnvironmentConfig::SelfHosted,
-            })
+        application
+            .create(create_command("unrelated", "Unrelated"))
             .await
             .unwrap();
-        application
-            .create(CreateEnvironmentCommand {
-                command_id: "unrelated".into(),
-                name: "Unrelated".into(),
-                description: String::new(),
-                metadata: Default::default(),
-                scope: None,
-                config: EnvironmentConfig::SelfHosted,
-            })
+        let healthy = application
+            .create(create_command("healthy", "Healthy"))
             .await
             .unwrap();
         registrar.registrations.lock().unwrap().clear();
@@ -710,6 +899,15 @@ mod tests {
         assert!(
             application.recover_registration_intents().await.is_err(),
             "R1"
+        );
+        assert!(
+            registrar
+                .registrations
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|registration| registration.definition.name == "Healthy"),
+            "R1 failed predecessor does not starve later work"
         );
         registrar.registrations.lock().unwrap().clear();
         assert_eq!(

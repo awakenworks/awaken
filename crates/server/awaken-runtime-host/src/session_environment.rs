@@ -552,6 +552,7 @@ mod tests {
     #[derive(Default)]
     struct FakeContainerProvider {
         creates: std::sync::atomic::AtomicUsize,
+        specs: std::sync::Mutex<Vec<pc::SandboxSpec>>,
         renews: Arc<std::sync::atomic::AtomicUsize>,
         hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
         fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
@@ -663,11 +664,12 @@ mod tests {
     impl awaken_sandbox_container::ContainerEnvironmentProvider for FakeContainerProvider {
         async fn create_environment(
             &self,
-            _spec: &pc::SandboxSpec,
+            spec: &pc::SandboxSpec,
         ) -> Result<Arc<dyn awaken_sandbox_container::ContainerEnvironment>, pc::SandboxError>
         {
             self.creates
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.specs.lock().unwrap().push(spec.clone());
             Ok(Arc::new(FakeContainer {
                 renews: self.renews.clone(),
                 hand_spawns: self.hand_spawns.clone(),
@@ -1068,6 +1070,95 @@ mod tests {
         environment.refresh_skills().await.unwrap();
         environment.stop_bound_processes().await;
         environment.dispose().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepared_image_is_the_only_environment_to_container_image_conversion() {
+        // FMECA: F1 every authored Environment is implicitly converted to an
+        // image (S6/O5/D4, RPN120) -> self-hosted/package-free paths become
+        // dependent on a builder; F2 a ready immutable image is omitted from the
+        // provider request (S9/O3/D5, RPN135) -> packages are resolved again at
+        // runtime; F3 both prepared image and mutable packages reach the provider
+        // (S8/O3/D4, RPN96) -> two realization tracks can diverge. Mitigation is
+        // the canonical Snapshot projection: `prepared_image=Some` selects one
+        // Image environment and clears packages; `None` retains package inputs.
+        //
+        // Cause/effect decision table:
+        // | Rule | prepared image | packages | final provider SandboxSpec |
+        // | I1 | none | non-empty | no image; exact packages retained |
+        // | I2 | ready digest | non-empty | Image(digest); packages empty |
+        // This test crosses the final `SessionEnvironmentProvider::create`
+        // boundary, so it verifies the actual container adapter input rather
+        // than only an intermediate projection helper.
+        fn snapshot(
+            prepared_image: Option<String>,
+        ) -> awaken_session_contract::EnvironmentSnapshot {
+            awaken_session_contract::EnvironmentSnapshot {
+                environment_id: "image-flow".into(),
+                revision: awaken_session_contract::EnvironmentRevision(7),
+                self_hosted: false,
+                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                    "image-flow-v7".into(),
+                ),
+                sandbox: serde_json::json!({}),
+                sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
+                packages: awaken_session_contract::EnvironmentPackages {
+                    npm: vec!["tsx@4".into()],
+                    ..Default::default()
+                },
+                prepared_image,
+                network: awaken_session_contract::SessionNetworkPolicy::None,
+                credential_realization:
+                    awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+            }
+        }
+
+        let provider = Arc::new(FakeContainerProvider::default());
+        let environments = SessionEnvironmentProvider::container(
+            provider.clone(),
+            Vec::new(),
+            Arc::new(FakeHandExecutorFactory),
+            "/usr/local/bin/awaken-sandbox",
+        );
+        let unprepared =
+            crate::provisioning::environment_capacity_projection(&snapshot(None), true).spec;
+        let environment = environments.create(&unprepared).await.unwrap();
+        environment.dispose().await.unwrap();
+
+        let digest = "registry.example/awaken@sha256:0123456789abcdef";
+        let prepared = crate::provisioning::environment_capacity_projection(
+            &snapshot(Some(digest.into())),
+            true,
+        )
+        .spec;
+        let environment = environments.create(&prepared).await.unwrap();
+        environment.dispose().await.unwrap();
+
+        let specs = provider.specs.lock().unwrap();
+        assert_eq!(specs.len(), 2, "I1/I2 provider boundary");
+        assert_eq!(
+            specs[0].packages.managers.get("npm"),
+            Some(&vec!["tsx@4".to_string()]),
+            "I1"
+        );
+        assert!(
+            specs[0]
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("environment"))
+                .is_none(),
+            "I1"
+        );
+        assert!(specs[1].packages.managers.is_empty(), "I2/F3");
+        assert_eq!(
+            specs[1]
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("environment")),
+            Some(&serde_json::json!({"kind": "image", "reference": digest})),
+            "I2"
+        );
     }
 
     #[derive(Clone, Copy)]
