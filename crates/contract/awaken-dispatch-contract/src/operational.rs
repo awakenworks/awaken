@@ -24,6 +24,9 @@ pub enum LeaseLossReason {
     Expired,
     Cancelled,
     RetryExhausted,
+    /// The current owner could not yet acquire a subordinate execution
+    /// resource and explicitly returned the still-unstarted claim to the queue.
+    Relinquished,
 }
 
 /// One valid dispatch-authority transition.

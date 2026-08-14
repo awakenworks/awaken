@@ -556,6 +556,20 @@ pub trait DispatchQueue: Send + Sync {
         now_ms: u64,
     ) -> Result<usize, DispatchError>;
 
+    /// Return an exact, still-current claim to `pending` without consuming its
+    /// crash retry budget.
+    ///
+    /// This is the pre-execution admission rollback: a Worker may win the Run
+    /// queue and then discover that a subordinate authority (for example an
+    /// Environment's single active Session Work lease) is temporarily busy.
+    /// The complete claim fences the rollback, so a stale Worker cannot release
+    /// a replacement owner's Run. Pending input and attempt count are preserved.
+    async fn relinquish_claim(&self, _claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        Err(DispatchError::Rejected(
+            "dispatch backend does not support claim relinquish".to_string(),
+        ))
+    }
+
     /// Whether one exact fenced claim still owns a live dispatch lease.
     ///
     /// The default reuses the backend's authoritative epoch guard instead of

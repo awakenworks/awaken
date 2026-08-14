@@ -68,8 +68,8 @@ pub use awaken_dispatch_contract::{
 pub use awaken_dispatch_contract::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
     ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
-    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest,
-    StreamEventRequest, WorkerIdentityRequest,
+    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RelinquishRequest,
+    RenewRequest, SettleRequest, StreamEventRequest, WorkerIdentityRequest,
 };
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use clock::{Clock, ManualClock, SystemClock};

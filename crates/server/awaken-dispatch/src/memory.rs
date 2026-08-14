@@ -1060,6 +1060,37 @@ impl DispatchQueue for MemoryDispatchStore {
         Ok(renewed)
     }
 
+    async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let current = state
+            .rows
+            .get(&claim.run_id)
+            .filter(|row| row.state == RowState::Leased && row.lease_epoch == claim.epoch)
+            .and_then(|row| row.lease.as_ref())
+            .is_some_and(|lease| lease.owner == claim.owner);
+        if !current {
+            return Ok(SettleOutcome::Fenced);
+        }
+        if let Some(row) = state.rows.get_mut(&claim.run_id) {
+            row.state = RowState::Pending;
+            row.lease = None;
+        }
+        // Re-enter at the tail of its priority cohort. Otherwise one
+        // temporarily unresolvable head item would be claimed again before a
+        // newly submitted runnable peer and starve the queue.
+        state.order.retain(|run_id| run_id != &claim.run_id);
+        state.order.push(claim.run_id.clone());
+        push_operation(
+            &mut state,
+            DispatchOperation::LeaseLost {
+                claim: claim.clone(),
+                reason: LeaseLossReason::Relinquished,
+            },
+        );
+        Ok(SettleOutcome::Applied)
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

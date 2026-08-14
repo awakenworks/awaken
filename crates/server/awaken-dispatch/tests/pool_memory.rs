@@ -698,9 +698,9 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
 
 /// A drain task must SWALLOW a transient claim/drive error and keep going: when the
 /// resolver has no worker for a claimed run's thread, `worker_for` errors, the drive
-/// tick fails, and the task logs-and-backs-off rather than dying. The dispatch is
-/// left un-settled (still claimed), and the pool stays live — a later run on a mapped
-/// thread still drains.
+/// tick fails, and the task logs-and-backs-off rather than dying. The exact claim is
+/// relinquished to the tail without spending crash budget, and the pool stays live —
+/// a later run on a mapped thread still drains.
 #[tokio::test]
 async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
     let store = Arc::new(MemoryDispatchStore::new());
@@ -724,7 +724,8 @@ async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
     );
 
     // An orphan run whose thread has no worker: the pool claims it, then `worker_for`
-    // errors. The claim is real (the row goes Running) but nothing is ever driven.
+    // errors. The claim is real, but admission rollback returns it to Pending and
+    // rotates it behind later work rather than preserving a dead lease.
     pool.submit(activation_on("orphan-run", "orphan-thread"))
         .await
         .unwrap();
@@ -742,7 +743,7 @@ async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
     .await;
     assert!(
         claimed,
-        "the orphan run is present (claimed but never driven)"
+        "the orphan run remains pending for a later compatible runtime"
     );
     assert_eq!(
         commit.commit_count(),
@@ -759,7 +760,7 @@ async fn a_resolver_error_is_swallowed_and_the_drain_survives() {
         "the drain survived the resolver error and drove a later run"
     );
 
-    // The orphan dispatch is still present and un-settled (left for recovery).
+    // The orphan dispatch is still present and un-settled (left for later admission).
     assert!(
         store
             .list_dispatches()
@@ -1019,10 +1020,11 @@ async fn renewal_stops_when_claim_resolution_fails() {
     // Cause/effect decision table:
     // | Rule | claim | resolver/drive | local activity | renewal/recovery effect |
     // | R1 | live | blocked | present | exact lease renews (covered above) |
-    // | R2 | live | fails | removed | lease expires and a peer reclaims |
+    // | R2 | live | fails | removed | exact claim is relinquished; peer claims |
     // | R3 | absent | n/a | absent | no lease write (idle-poller test) |
     // R2 prevents the owner-wide heartbeat from indefinitely preserving an
-    // un-settled claim after provisioning or runtime construction has failed.
+    // un-settled claim after provisioning or runtime construction has failed;
+    // relinquish also avoids waiting a full lease or charging crash recovery.
     let store = Arc::new(MemoryDispatchStore::new());
     store
         .enqueue(RunDispatch::new(activation("resolver-failure")))
@@ -1051,7 +1053,6 @@ async fn renewal_stops_when_claim_resolution_fails() {
         wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
         "R2 resolver failure observed"
     );
-    tokio::time::sleep(Duration::from_millis(150)).await;
     let reclaimed = store
         .claim(
             "recovery-owner",
@@ -1061,7 +1062,11 @@ async fn renewal_stops_when_claim_resolution_fails() {
         )
         .await
         .unwrap();
-    assert!(reclaimed.is_some(), "R2 failed claim must expire");
+    let reclaimed = reclaimed.expect("R2 failed claim is immediately available");
+    assert!(
+        !reclaimed.recovered,
+        "R2 is admission rollback, not a crash"
+    );
 
     pool.shutdown().await;
 }
