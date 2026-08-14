@@ -538,7 +538,7 @@ fn embedded_resource_profile_authorizes_every_preset_reader_role() {
         };
         let read = AuthorizationRequest::direct(
             principal.clone(),
-            qualify_resource_action(FILE_READ),
+            qualify_action(FILE_READ),
             scope.clone(),
         );
         let read = iam.state.lock().unwrap().authz.authorize(&read);
@@ -549,8 +549,7 @@ fn embedded_resource_profile_authorizes_every_preset_reader_role() {
         );
 
         if role == "workspace_user" {
-            let write =
-                AuthorizationRequest::direct(principal, qualify_resource_action(FILE_WRITE), scope);
+            let write = AuthorizationRequest::direct(principal, qualify_action(FILE_WRITE), scope);
             let write = iam.state.lock().unwrap().authz.authorize(&write);
             assert_eq!(write.decision, AuthorizationDecision::Deny, "C2: {write:?}");
         }

@@ -359,7 +359,7 @@ async function main() {
     assert.equal(result.status, 200, JSON.stringify(result.body));
     call = iam.calls.at(-1);
     assert.deepEqual(call.body.principal, { kind: 'account', account_id: 'account-explicit' });
-    assert.equal(call.body.action, 'awaken.runtime.resources::skill.read');
+    assert.equal(call.body.action, 'awaken.workspace::skill.read');
     assert.deepEqual(call.body.scope, { kind: 'workspace', workspace_id: selectedWorkspace });
     result = await req(base, 'GET', `/v1/workspaces/${selectedWorkspace}/memory_stores`, explicitToken, { apiKey: true });
     assert.equal(result.status, 200, JSON.stringify(result.body));
@@ -373,7 +373,7 @@ async function main() {
     result = await req(base, 'GET', `/v1/workspaces/${selectedWorkspace}/config/catalog`, explicitToken);
     assert.equal(result.status, 200, JSON.stringify(result.body));
     call = iam.calls.at(-1);
-    assert.equal(call.body.action, 'awaken.runtime.management::model_supply.read');
+    assert.equal(call.body.action, 'awaken.workspace::model_supply.read');
     assert.deepEqual(call.body.scope, { kind: 'workspace', workspace_id: selectedWorkspace });
     pass('model-supply PEP uses its dedicated read action and trusted workspace');
 

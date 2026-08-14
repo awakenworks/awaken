@@ -498,3 +498,81 @@ This is a new role in the existing Management profile, not a second credential
 API, Vault, policy namespace or hosting-owned action matrix. Profile
 reconciliation and the existing credential PEP remain the only policy and
 enforcement paths.
+
+## Amendment (2026-08-15): one Workspace authorization language
+
+Control and Resources remain separate bounded contexts and retain their own
+applications, stores, migrations, ownership facts, and lifecycle rules. That
+internal DDD boundary does not justify two user-visible policy namespaces for
+operations that all target the same Awaken Workspace, use the same relying
+party, and are assigned together to the same humans and product workloads. The
+separate `awaken.runtime.management` and `awaken.runtime.resources` profiles
+duplicated `workspace.*`, split one publisher intent across companion roles,
+and allowed a hosted owner to receive only half of the required authority.
+
+Awaken now owns one `awaken.workspace` authorization profile for Control and
+Resources HTTP operations. The existing `awaken.runtime` profile remains
+separate because Run lifecycle has a different relying-party boundary,
+audience, caller lifecycle, and operational purpose.
+
+Static structure:
+
+```text
+Control routes ---- local actions --\
+                                    +-> Workspace PEP -> awaken.workspace profile
+Resources routes -- local actions --/                        |
+                                                             +-- hosted_admin
+                                                             +-- publisher
+                                                             `-- credential_ingress
+
+Hosted Run routes -> Runtime PEP -> awaken.runtime profile
+```
+
+The three hosted Workspace roles are intentionally small:
+
+| Role | Grants at an exact Workspace | Intended holder |
+|---|---|---|
+| `awaken.workspace:hosted_admin` | `workspace.*`, `apikey.*`, `model_supply.read`, `file.*`, `skill.*` | tenant Workspace owner |
+| `awaken.workspace:publisher` | `workspace.*`, `model_supply.read`, `skill.*` | Flow publication workload |
+| `awaken.workspace:credential_ingress` | `apikey.*` | Flow credential-ingress workload |
+
+Self-managed named roles are still projected from the one existing role
+catalog, but all their action and role identifiers are qualified exactly once
+under `awaken.workspace`. A role id names a stable capability set; it never
+contains an Org id, Workspace id, or scope kind. The active profile declares
+which scope kinds an action accepts, while the IAM role binding carries the
+concrete Workspace instance. This keeps role vocabulary finite and makes
+cross-Workspace isolation explicit in data rather than encoded into strings.
+
+`workspace_authorization_profile()` is the sole producer. Embedded IAM consumes
+it directly and `awaken control iam profile` serializes it. The separate
+`management_resource_authorization_profile()` producer and `profile resources`
+CLI projection are removed; no alias or request-time dual-profile fallback is
+kept. Both `RouteAuthz::Scoped` and `RouteAuthz::Resource` retain their route
+ownership meaning but qualify their local actions through the same Workspace
+namespace at the PEP boundary.
+
+Dynamic cutover:
+
+```text
+exact Awaken image exports awaken.workspace
+  -> PAP validates and activates the new profile
+  -> hosting reconciles new exact-Workspace bindings
+  -> readiness proves profile + required bindings + scope graph
+  -> Awaken PEP rollout emits only awaken.workspace actions
+  -> hosting revokes superseded role bindings
+  -> PAP CAS-retires both legacy active heads
+```
+
+| New profile | New binding | New PEP | Legacy heads/bindings | Result |
+|---|---|---|---|---|
+| absent/invalid | any | any | any | fail before rollout |
+| active | missing/foreign | any | retained | non-ready; repair exact binding |
+| active | exact | old | retained | old service remains authorized during bounded cutover |
+| active | exact | new | retained | new chain proven; finalization eligible |
+| active | exact | new | retired/revoked | terminal single-path state |
+| any | any | new | retired before new chain proof | forbidden rollout ordering |
+
+Legacy immutable revisions remain audit evidence, but their active heads and
+bindings do not. This is a release migration, not a permanent compatibility
+mode.

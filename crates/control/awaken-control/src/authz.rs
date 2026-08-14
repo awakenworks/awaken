@@ -139,19 +139,16 @@ mod remote;
 
 use bootstrap::bootstrap_admin_token;
 #[cfg(test)]
-use profiles::{
-    AUTHORIZATION_PROFILE_EPOCH, MANAGEMENT_CREDENTIAL_INGRESS_ROLE, RESOURCE_AGENT_PUBLISHER_ROLE,
-};
+use profiles::{AUTHORIZATION_PROFILE_EPOCH, AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE};
 pub use profiles::{
-    HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, HOSTED_RUNTIME_POLICY_NAMESPACE,
-    HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, MANAGEMENT_AGENT_PUBLISHER_ROLE,
-    MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE, MANAGEMENT_POLICY_NAMESPACE,
-    hosted_runtime_authorization_profile, management_authorization_profile,
-    management_resource_authorization_profile,
+    AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE, AWAKEN_WORKSPACE_POLICY_NAMESPACE,
+    AWAKEN_WORKSPACE_PUBLISHER_ROLE, HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
+    HOSTED_RUNTIME_POLICY_NAMESPACE, HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
+    hosted_runtime_authorization_profile, workspace_authorization_profile,
 };
 use profiles::{
-    qualify_action, qualify_hosted_runtime_action, qualify_resource_action, qualify_resource_role,
-    qualify_role,
+    LEGACY_MANAGEMENT_POLICY_NAMESPACE, LEGACY_RESOURCE_POLICY_NAMESPACE, qualify_action,
+    qualify_hosted_runtime_action, qualify_role,
 };
 pub use remote::RemoteManagementAuthz;
 
@@ -195,7 +192,9 @@ const RUN_CREATE: &str = "run.create";
 const RUN_READ: &str = "run.read";
 
 fn persisted_role(role: &str) -> RoleId {
-    if role.contains(':') {
+    if let Some(local) = legacy_local_role(role) {
+        qualify_role(local)
+    } else if role.contains(':') {
         RoleId(role.to_owned())
     } else {
         qualify_role(role)
@@ -203,8 +202,20 @@ fn persisted_role(role: &str) -> RoleId {
 }
 
 fn local_role(role: &str) -> &str {
-    role.strip_prefix(&format!("{MANAGEMENT_POLICY_NAMESPACE}:"))
+    role.strip_prefix(&format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:"))
+        .or_else(|| legacy_local_role(role))
         .unwrap_or(role)
+}
+
+fn legacy_local_role(role: &str) -> Option<&str> {
+    let local = role
+        .strip_prefix(&format!("{LEGACY_MANAGEMENT_POLICY_NAMESPACE}:"))
+        .or_else(|| role.strip_prefix(&format!("{LEGACY_RESOURCE_POLICY_NAMESPACE}:")))?;
+    Some(match local {
+        "hosted_workspace_admin" => "hosted_admin",
+        "agent_publisher" => "publisher",
+        unchanged => unchanged,
+    })
 }
 
 /// The embedded management-plane authorizer: authn (bearer token → principal)
@@ -300,14 +311,6 @@ impl ManagementAuthz {
         let issued = ApiTokenMinter::new(OsEntropy)
             .mint(directory, authz.policy_mut(), request)
             .map_err(|err| err.to_string())?;
-        let resource_binding = RoleBinding {
-            principal: principal.clone(),
-            role: qualify_resource_role(&spec.role),
-            scope: ScopeRef::Workspace {
-                workspace_id: WorkspaceId(spec.workspace_id.clone()),
-            },
-        };
-        authz.policy_mut().bind_role(resource_binding.clone());
         // Persist through the SqlStore ports, mirroring exactly what mint wrote
         // into the live engine: the token row and the principal→role binding at
         // the token's workspace scope.
@@ -324,8 +327,6 @@ impl ManagementAuthz {
             },
         )
         .map_err(|err| format!("persist role binding: {err}"))?;
-        RoleBindingRepo::add(&self.store, resource_binding)
-            .map_err(|err| format!("persist resource role binding: {err}"))?;
         Ok(issued)
     }
 
@@ -397,22 +398,25 @@ impl ManagementAuthz {
     }
 
     /// The mint-time role of `token`, derived from its principal's persisted
-    /// management-domain binding at the token's workspace. Resource-domain
-    /// bindings are deliberately ignored: the two PAP namespaces may evolve
-    /// independently even though they share the same principal and scope.
+    /// Workspace-profile binding at the token's workspace.
     fn role_of(&self, token: &ApiToken) -> Option<String> {
         let bindings = RoleBindingRepo::list_for_principal(&self.store, &token.principal)
             .expect("list principal bindings");
-        let management_bindings: Vec<_> = bindings
+        let workspace_bindings: Vec<_> = bindings
             .iter()
-            .filter(|binding| binding.role.0.starts_with(MANAGEMENT_POLICY_NAMESPACE))
+            .filter(|binding| {
+                binding
+                    .role
+                    .0
+                    .starts_with(AWAKEN_WORKSPACE_POLICY_NAMESPACE)
+            })
             .collect();
-        management_bindings
+        workspace_bindings
             .iter()
             .find(|b| {
                 matches!(&b.scope, ScopeRef::Workspace { workspace_id } if workspace_id == &token.workspace)
             })
-            .or_else(|| management_bindings.first())
+            .or_else(|| workspace_bindings.first())
             .map(|b| local_role(&b.role.0).to_owned())
     }
 
@@ -448,7 +452,7 @@ impl ManagementAuthz {
         action: &str,
         scope: ScopeRef,
     ) -> AuthorizationDecision {
-        self.authorize_action(principal, action, scope, ActionNamespace::Management)
+        self.authorize_action(principal, action, scope, ActionNamespace::Workspace)
     }
 
     fn authorize_action(
@@ -546,6 +550,48 @@ fn reconcile_builtin_profile(
         .expect("activate built-in authorization profile revision");
 }
 
+/// Remove one superseded active profile head after the canonical Workspace
+/// profile is active. Immutable revisions remain in IAM as audit evidence.
+fn retire_legacy_profile(
+    profiles: &AuthorizationProfileAdmin,
+    engine: &mut AuthzApi,
+    namespace: &str,
+) {
+    let namespace = awaken_iam_contract::NamespaceId(namespace.to_owned());
+    let Some(active) = profiles
+        .active(&namespace)
+        .expect("read legacy built-in authorization profile")
+    else {
+        return;
+    };
+    profiles
+        .retire(
+            engine,
+            &PolicySnapshot::default(),
+            &namespace,
+            active.revision,
+        )
+        .expect("retire legacy built-in authorization profile");
+}
+
+/// Consolidate durable local bindings before live-PDP hydration. The old two
+/// profile roles carried the same local role intent at the same scope, so both
+/// map to one canonical Workspace role and are then removed.
+fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) {
+    for legacy in RoleBindingRepo::list(store).expect("list legacy role bindings") {
+        let Some(local) = legacy_local_role(&legacy.role.0) else {
+            continue;
+        };
+        let canonical = RoleBinding {
+            principal: legacy.principal.clone(),
+            role: qualify_role(local),
+            scope: legacy.scope.clone(),
+        };
+        RoleBindingRepo::add(store, canonical).expect("add canonical Workspace role binding");
+        RoleBindingRepo::remove(store, &legacy).expect("remove legacy Workspace role binding");
+    }
+}
+
 /// Open embedded IAM for the platform-owned `Org -> Workspace` coordinates.
 /// Runtime deliberately has no Project authorization scope.
 pub fn embedded_iam_for_tenant(
@@ -562,6 +608,7 @@ pub fn embedded_iam_for_tenant(
     // and any external reader see the same catalog the evaluator derives from.
     let now = Timestamp(now_rfc3339());
     seed_named_roles(&store, &now).expect("seed the preset role catalog");
+    migrate_legacy_workspace_bindings(&store);
 
     // Single-machine Runtime has one hidden Org and one platform-provisioned
     // Workspace. Bind bootstrap authority at the Org (never Global) so it can
@@ -593,20 +640,6 @@ pub fn embedded_iam_for_tenant(
         },
     )
     .expect("ensure the bootstrap principal's org admin binding");
-    RoleBindingRepo::add(
-        &store,
-        RoleBinding {
-            principal: PrincipalRef::Service {
-                service_id: BOOTSTRAP_PRINCIPAL.to_string(),
-            },
-            role: qualify_resource_role("admin"),
-            scope: ScopeRef::Org {
-                org_id: OrgId(org_id.to_owned()),
-            },
-        },
-    )
-    .expect("ensure the bootstrap principal's resource org admin binding");
-
     let mut directory = ApiTokenDirectory::new();
     let mut engine = AuthzApi::new();
 
@@ -616,16 +649,9 @@ pub fn embedded_iam_for_tenant(
     )
     .expect("migrate authorization profile store");
     let profiles = AuthorizationProfileAdmin::new(Arc::new(profile_store));
-    reconcile_builtin_profile(&profiles, &mut engine, management_authorization_profile());
-
-    // Resource authorization is an independent PAP document/namespace. It reuses
-    // the same principals, role bindings, scope graph, and PDP, but can be replaced
-    // without changing management actions or any File/Memory/Skill service.
-    reconcile_builtin_profile(
-        &profiles,
-        &mut engine,
-        management_resource_authorization_profile(),
-    );
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    retire_legacy_profile(&profiles, &mut engine, LEGACY_MANAGEMENT_POLICY_NAMESPACE);
+    retire_legacy_profile(&profiles, &mut engine, LEGACY_RESOURCE_POLICY_NAMESPACE);
 
     engine.policy_mut().scope_graph_mut().assign_workspace(
         WorkspaceId(workspace_id.to_owned()),
@@ -688,15 +714,13 @@ pub fn embedded_iam_for_tenant(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActionNamespace {
-    Management,
-    Resource,
+    Workspace,
     HostedRuntime,
 }
 
 fn qualified_action(namespace: ActionNamespace, action: &str) -> awaken_iam_contract::ActionKey {
     match namespace {
-        ActionNamespace::Management => qualify_action(action),
-        ActionNamespace::Resource => qualify_resource_action(action),
+        ActionNamespace::Workspace => qualify_action(action),
         ActionNamespace::HostedRuntime => qualify_hosted_runtime_action(action),
     }
 }
@@ -1163,13 +1187,13 @@ pub async fn management_guard(
         RouteAuthz::Application => {
             return forbidden("application protocol must use the application-token guard");
         }
-        RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Management),
-        RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Resource),
+        RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Workspace),
+        RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Workspace),
         RouteAuthz::HostedRuntime {
             embedded_action,
             scope,
             ..
-        } => (embedded_action, scope, ActionNamespace::Resource),
+        } => (embedded_action, scope, ActionNamespace::Workspace),
         RouteAuthz::TokenAdmin => {
             // Delegated authorization: no equality fence here — the handler
             // evaluates apikey.* at the TARGET workspace, and the scope graph
@@ -1264,8 +1288,8 @@ pub async fn cloud_management_guard(
         RouteAuthz::Application => {
             return forbidden("application protocol must use the application-token guard");
         }
-        RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Management),
-        RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Resource),
+        RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Workspace),
+        RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Workspace),
         RouteAuthz::HostedRuntime { action, scope, .. } => {
             (action, scope, ActionNamespace::HostedRuntime)
         }
@@ -1839,6 +1863,9 @@ mod application_protocol_tests;
 #[cfg(test)]
 #[path = "authz_management_profile_tests.rs"]
 mod management_profile_tests;
+#[cfg(test)]
+#[path = "authz/migration_tests.rs"]
+mod migration_tests;
 #[cfg(test)]
 #[path = "authz/model_supply_tests.rs"]
 mod model_supply_tests;

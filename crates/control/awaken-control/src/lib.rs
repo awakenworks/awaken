@@ -45,14 +45,13 @@ pub use crate::application_mcp_credentials::application_mcp_credentials_router;
 // Embedded management-plane IAM (ADR-0042/0043 P1): the authorizer, its boot
 // fn, the mint spec (tests / operator embeddings), and the bootstrap constants.
 pub use crate::authz::{
-    ADMIN_TOKEN_FILE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID,
+    ADMIN_TOKEN_FILE, AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE, AWAKEN_WORKSPACE_POLICY_NAMESPACE,
+    AWAKEN_WORKSPACE_PUBLISHER_ROLE, BOOTSTRAP_PRINCIPAL, BOOTSTRAP_WORKSPACE, DEFAULT_ORG_ID,
     HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, HOSTED_RUNTIME_POLICY_NAMESPACE,
     HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, HostedRuntimePathMatch, HostedRuntimeRouteProfile,
-    MANAGEMENT_AGENT_PUBLISHER_ROLE, MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE,
-    MANAGEMENT_POLICY_NAMESPACE, ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz,
-    TokenSpec, embedded_iam, embedded_iam_for_tenant, embedded_iam_for_workspace,
-    hosted_runtime_authorization_profile, hosted_runtime_route_profile,
-    management_authorization_profile, management_resource_authorization_profile,
+    ManagementAuthz, ManagementIdentityMode, RemoteManagementAuthz, TokenSpec, embedded_iam,
+    embedded_iam_for_tenant, embedded_iam_for_workspace, hosted_runtime_authorization_profile,
+    hosted_runtime_route_profile, workspace_authorization_profile,
 };
 pub use crate::component::{ControlComponent, ControlDependencies, build_control_component};
 pub use crate::control_stores::{ControlStoreConfig, StoreBackend};

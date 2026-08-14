@@ -8,7 +8,7 @@ use awaken_iam_host::{AuthReject, LocalBrowserAuth, LocalBrowserAuthError, Local
 use axum::http::HeaderMap;
 use axum::http::header::COOKIE;
 
-use super::{ManagementAuthz, now_rfc3339, qualify_resource_role, qualify_role};
+use super::{ManagementAuthz, now_rfc3339, qualify_role};
 
 impl ManagementAuthz {
     /// Start the local browser handoff over this installation's existing,
@@ -31,23 +31,21 @@ impl ManagementAuthz {
         let principal = PrincipalRef::Account {
             account_id: account_id.clone(),
         };
-        for role in [qualify_role("admin"), qualify_resource_role("admin")] {
-            let binding = RoleBinding {
-                principal: principal.clone(),
-                role,
-                scope: ScopeRef::Org {
-                    org_id: self.org_id.clone(),
-                },
-            };
-            RoleBindingRepo::add(&self.store, binding.clone())
-                .expect("persist local browser admin binding");
-            self.state
-                .lock()
-                .expect("local IAM state lock")
-                .authz
-                .policy_mut()
-                .bind_role(binding);
-        }
+        let binding = RoleBinding {
+            principal: principal.clone(),
+            role: qualify_role("admin"),
+            scope: ScopeRef::Org {
+                org_id: self.org_id.clone(),
+            },
+        };
+        RoleBindingRepo::add(&self.store, binding.clone())
+            .expect("persist local browser admin binding");
+        self.state
+            .lock()
+            .expect("local IAM state lock")
+            .authz
+            .policy_mut()
+            .bind_role(binding);
         browser.attach_to(&self.gate);
     }
 

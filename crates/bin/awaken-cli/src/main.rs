@@ -53,12 +53,8 @@ async fn run(command: Command) -> Result<(), String> {
         }
         Command::DatabaseMigrate { config_path } => awaken_cli::migrate_service(config_path).await,
         Command::ControlIamProfile => print_json(
-            &awaken_control::management_authorization_profile(),
-            "Control IAM profile",
-        ),
-        Command::ControlIamResourceProfile => print_json(
-            &awaken_control::management_resource_authorization_profile(),
-            "Control resource IAM profile",
+            &awaken_control::workspace_authorization_profile(),
+            "Workspace IAM profile",
         ),
         Command::ControlIamRuntimeProfile => print_json(
             &awaken_control::hosted_runtime_authorization_profile(),
