@@ -127,7 +127,6 @@ pub awaken_cli::console::Command::Config::json: bool
 pub awaken_cli::console::Command::Control(awaken_cli::console::ServiceArgs)
 pub awaken_cli::console::Command::ControlHostedRuntimeRouteProfile
 pub awaken_cli::console::Command::ControlIamProfile
-pub awaken_cli::console::Command::ControlIamResourceProfile
 pub awaken_cli::console::Command::ControlIamRuntimeProfile
 pub awaken_cli::console::Command::Coordinator(awaken_cli::console::ServiceArgs)
 pub awaken_cli::console::Command::DatabaseMigrate

@@ -14,7 +14,6 @@ pub enum Command {
     Control(ServiceArgs),
     Coordinator(ServiceArgs),
     ControlIamProfile,
-    ControlIamResourceProfile,
     ControlIamRuntimeProfile,
     ControlHostedRuntimeRouteProfile,
     DatabaseMigrate {
@@ -65,9 +64,6 @@ fn parse_control_args(args: &[String]) -> Result<Command, String> {
     if args == ["iam", "profile"] {
         return Ok(Command::ControlIamProfile);
     }
-    if args == ["iam", "profile", "resources"] {
-        return Ok(Command::ControlIamResourceProfile);
-    }
     if args == ["iam", "profile", "runtime"] {
         return Ok(Command::ControlIamRuntimeProfile);
     }
@@ -75,10 +71,7 @@ fn parse_control_args(args: &[String]) -> Result<Command, String> {
         return Ok(Command::ControlHostedRuntimeRouteProfile);
     }
     if args.first().is_some_and(|arg| arg == "iam") {
-        return Err(
-            "control iam requires `profile`, `profile resources`, or `profile runtime` exactly"
-                .to_owned(),
-        );
+        return Err("control iam requires `profile` or `profile runtime` exactly".to_owned());
     }
     if args.first().is_some_and(|arg| arg == "surface") {
         return Err("control surface requires `profile runtime` exactly".to_owned());
@@ -256,7 +249,7 @@ fn is_help(value: &str) -> bool {
 
 pub fn print_help() {
     println!(
-        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Control IAM profile\n    control iam profile resources   Print the compiled Control resource IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    control surface profile runtime Print the hosted Control-to-Coordinator route profile\n    database migrate                Apply deployment schema migrations and exit\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open the browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nThe execution service is the separate `awaken-worker` binary."
+        "Awaken\n\nUSAGE:\n    awaken [COMMAND] [OPTIONS]\n\nRunning `awaken` without a command is the same as `awaken all-in-one`.\n\nCOMMANDS:\n    all-in-one                      Run Control, Coordinator, and the local Worker together\n    control                         Run only the authoring and publication service\n    coordinator                     Run only Session, Run, Dispatch, and Worker coordination\n    control iam profile             Print the compiled Workspace IAM profile\n    control iam profile runtime     Print the compiled Hosted Runtime IAM profile\n    control surface profile runtime Print the hosted Control-to-Coordinator route profile\n    database migrate                Apply deployment schema migrations and exit\n    doctor acp [--json]             Discover and diagnose supported local ACP agents\n    config [--json]                 Print effective, redacted configuration\n    version                         Print the installed version\n\nOPTIONS:\n    --config PATH         Read typed configuration from PATH\n    --port PORT           Override the listen port\n    --data-dir PATH       Override the persistent data root (default ~/.awaken)\n    --no-browser          Do not open the browser\n    --identity-mode MODE  no-login, self-managed, or awaken-cloud\n    --cloud-models MODE   disabled or enabled (requires awaken-cloud identity)\n    -h, --help            Print this help\n\nThe execution service is the separate `awaken-worker` binary."
     );
 }
 
@@ -317,15 +310,15 @@ mod tests {
             parse_args(["control".into(), "iam".into(), "profile".into()]).unwrap(),
             Command::ControlIamProfile
         );
-        assert_eq!(
+        assert!(
             parse_args([
                 "control".into(),
                 "iam".into(),
                 "profile".into(),
                 "resources".into()
             ])
-            .unwrap(),
-            Command::ControlIamResourceProfile
+            .is_err(),
+            "the retired parallel resource profile has no compatibility command"
         );
         assert_eq!(
             parse_args([

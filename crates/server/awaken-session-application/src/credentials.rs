@@ -56,7 +56,10 @@ impl SessionApplication {
         input: &mut ResolvedInput,
     ) -> Result<(), SessionPreparationError> {
         let ResolvedInputSource::Repository {
-            config, credential, ..
+            repository_id,
+            config,
+            credential,
+            ..
         } = &mut input.source
         else {
             return Ok(());
@@ -85,15 +88,23 @@ impl SessionApplication {
                 "Repository credential requires a configured credential vault",
             ))
         })?;
+        let usage = awaken_session_contract::repository_transport_credential_usage();
+        let material_binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+            owner_scope,
+            &(repository_id, config.version),
+            &usage,
+        );
         let access = credentials
             .credential_access_for_source(
                 &CredentialSourceId(binding.to_string()),
                 owner_scope,
-                awaken_session_contract::repository_transport_credential_usage(),
+                usage,
                 CredentialExecutionPolicy::exact(
                     selected_holder.clone(),
                     ModelExposurePolicy::Forbidden,
                 ),
+                selected_holder,
+                &material_binding,
             )
             .await
             .map_err(|error| {

@@ -1,6 +1,84 @@
 use super::*;
 
 #[test]
+fn hosted_member_bundle_reads_workspace_resources_and_runs_only_at_its_workspace() {
+    // Cause/effect graph: active Workspace+Runtime profiles and the two
+    // namespace-confined Member bindings at one exact Workspace -> read
+    // Workspace/File/Skill/Run; mutations and credentials stay denied; a
+    // sibling Workspace stays denied. This is the internal permission bundle
+    // Cloud replaces atomically for the one user-facing Member level.
+    //
+    // | action | exact Workspace | sibling Workspace |
+    // | read workspace/file/skill/run | allow | deny |
+    // | write workspace/file/skill/run or apikey.read | deny | deny |
+    let profiles =
+        AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
+    let mut engine = AuthzApi::new();
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    reconcile_builtin_profile(
+        &profiles,
+        &mut engine,
+        hosted_runtime_authorization_profile(),
+    );
+    let principal = PrincipalRef::Account {
+        account_id: awaken_iam_contract::AccountId("member".into()),
+    };
+    let workspace = WorkspaceId("workspace-a".into());
+    for role in [
+        AWAKEN_WORKSPACE_USER_ROLE,
+        HOSTED_RUNTIME_WORKSPACE_USER_ROLE,
+    ] {
+        engine.policy_mut().bind_role(RoleBinding {
+            principal: principal.clone(),
+            role: RoleId(role.into()),
+            scope: ScopeRef::Workspace {
+                workspace_id: workspace.clone(),
+            },
+        });
+    }
+    let decide = |action, target: &str| {
+        engine
+            .authorize(&AuthorizationRequest::direct(
+                principal.clone(),
+                action,
+                ScopeRef::Workspace {
+                    workspace_id: WorkspaceId(target.into()),
+                },
+            ))
+            .decision
+    };
+    for action in ["workspace.read", "file.read", "skill.read"] {
+        assert_eq!(
+            decide(qualify_action(action), "workspace-a"),
+            AuthorizationDecision::Allow
+        );
+        assert_eq!(
+            decide(qualify_action(action), "workspace-b"),
+            AuthorizationDecision::Deny
+        );
+    }
+    assert_eq!(
+        decide(qualify_hosted_runtime_action(RUN_READ), "workspace-a"),
+        AuthorizationDecision::Allow
+    );
+    for action in [
+        "workspace.write",
+        "file.write",
+        "skill.write",
+        "apikey.read",
+    ] {
+        assert_eq!(
+            decide(qualify_action(action), "workspace-a"),
+            AuthorizationDecision::Deny
+        );
+    }
+    assert_eq!(
+        decide(qualify_hosted_runtime_action(RUN_CREATE), "workspace-a"),
+        AuthorizationDecision::Deny
+    );
+}
+
+#[test]
 fn agent_executor_is_exact_workspace_and_hosted_run_only() {
     // Cause/effect graph: active canonical profiles (C1) + the existing
     // agent-executor role bound at one Workspace (C2) + action namespace and
@@ -17,12 +95,7 @@ fn agent_executor_is_exact_workspace_and_hosted_run_only() {
     let profiles =
         AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
     let mut engine = AuthzApi::new();
-    reconcile_builtin_profile(&profiles, &mut engine, management_authorization_profile());
-    reconcile_builtin_profile(
-        &profiles,
-        &mut engine,
-        management_resource_authorization_profile(),
-    );
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
     reconcile_builtin_profile(
         &profiles,
         &mut engine,
@@ -90,7 +163,7 @@ fn agent_executor_is_exact_workspace_and_hosted_run_only() {
             engine
                 .authorize(&AuthorizationRequest::direct(
                     principal.clone(),
-                    qualify_resource_action(action),
+                    qualify_action(action),
                     ScopeRef::Workspace {
                         workspace_id: workspace.clone(),
                     },
@@ -103,7 +176,7 @@ fn agent_executor_is_exact_workspace_and_hosted_run_only() {
 }
 
 #[test]
-fn agent_publisher_can_discover_but_cannot_administer_model_supply() {
+fn workspace_publisher_can_discover_but_cannot_administer_model_supply() {
     // Cause/effect graph: active canonical profile (C1) + exact publisher role
     // binding at one Workspace (C2) + requested action/namespace (C3) -> allow
     // Agent authoring, model discovery, and exact Skill materialization (E1),
@@ -122,12 +195,7 @@ fn agent_publisher_can_discover_but_cannot_administer_model_supply() {
     let profiles =
         AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
     let mut engine = AuthzApi::new();
-    reconcile_builtin_profile(&profiles, &mut engine, management_authorization_profile());
-    reconcile_builtin_profile(
-        &profiles,
-        &mut engine,
-        management_resource_authorization_profile(),
-    );
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
 
     let principal = PrincipalRef::Service {
         service_id: "flow-publisher".to_owned(),
@@ -135,14 +203,7 @@ fn agent_publisher_can_discover_but_cannot_administer_model_supply() {
     let workspace = WorkspaceId("workspace-flow".to_owned());
     engine.policy_mut().bind_role(RoleBinding {
         principal: principal.clone(),
-        role: RoleId(MANAGEMENT_AGENT_PUBLISHER_ROLE.to_owned()),
-        scope: ScopeRef::Workspace {
-            workspace_id: workspace.clone(),
-        },
-    });
-    engine.policy_mut().bind_role(RoleBinding {
-        principal: principal.clone(),
-        role: RoleId(RESOURCE_AGENT_PUBLISHER_ROLE.to_owned()),
+        role: RoleId(AWAKEN_WORKSPACE_PUBLISHER_ROLE.to_owned()),
         scope: ScopeRef::Workspace {
             workspace_id: workspace.clone(),
         },
@@ -184,7 +245,7 @@ fn agent_publisher_can_discover_but_cannot_administer_model_supply() {
         engine
             .authorize(&AuthorizationRequest::direct(
                 principal.clone(),
-                qualify_resource_action(action),
+                qualify_action(action),
                 ScopeRef::Workspace { workspace_id },
             ))
             .decision
@@ -221,9 +282,9 @@ fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
     //
     // Decision table:
     // | Role | workspace | apikey | model read | model connect/write |
-    // | hosted_workspace_admin | allow | allow | allow | deny/absent |
+    // | hosted_admin | allow | allow | allow | deny/absent |
     // | local workspace_admin | allow | allow | allow | allow |
-    let profile = management_authorization_profile();
+    let profile = workspace_authorization_profile();
     let hosted_grants = profile
         .document
         .grants
@@ -232,7 +293,7 @@ fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
             matches!(
                 &grant.subject,
                 awaken_iam_contract::GrantSubjectRef::Role { role_id }
-                    if role_id == MANAGEMENT_HOSTED_WORKSPACE_ADMIN_ROLE
+                    if role_id == AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE
             )
         })
         .map(|grant| grant.action_pattern.as_str())
@@ -240,9 +301,11 @@ fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
     assert_eq!(
         hosted_grants,
         [
-            "awaken.runtime.management::workspace.*",
-            "awaken.runtime.management::apikey.*",
-            "awaken.runtime.management::model_supply.read",
+            "awaken.workspace::workspace.*",
+            "awaken.workspace::apikey.*",
+            "awaken.workspace::model_supply.read",
+            "awaken.workspace::file.*",
+            "awaken.workspace::skill.*",
         ]
     );
     assert!(
@@ -254,7 +317,7 @@ fn hosted_workspace_role_can_read_but_cannot_author_model_supply() {
 
 #[test]
 fn credential_ingress_is_exact_workspace_and_apikey_only() {
-    // Cause/effect graph: canonical Management profile (C1) + independent
+    // Cause/effect graph: canonical Workspace profile (C1) + independent
     // credential-ingress binding (C2) + action and target Workspace (C3)
     // -> credential reads/writes at the bound Workspace (E1), while foreign
     // Workspace access and every non-credential family remain denied (E2).
@@ -267,12 +330,7 @@ fn credential_ingress_is_exact_workspace_and_apikey_only() {
     let profiles =
         AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
     let mut engine = AuthzApi::new();
-    reconcile_builtin_profile(&profiles, &mut engine, management_authorization_profile());
-    reconcile_builtin_profile(
-        &profiles,
-        &mut engine,
-        management_resource_authorization_profile(),
-    );
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
     reconcile_builtin_profile(
         &profiles,
         &mut engine,
@@ -285,7 +343,7 @@ fn credential_ingress_is_exact_workspace_and_apikey_only() {
     let workspace = WorkspaceId("workspace-flow".to_owned());
     engine.policy_mut().bind_role(RoleBinding {
         principal: principal.clone(),
-        role: RoleId(MANAGEMENT_CREDENTIAL_INGRESS_ROLE.to_owned()),
+        role: RoleId(AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE.to_owned()),
         scope: ScopeRef::Workspace {
             workspace_id: workspace.clone(),
         },
@@ -330,7 +388,7 @@ fn credential_ingress_is_exact_workspace_and_apikey_only() {
             engine
                 .authorize(&AuthorizationRequest::direct(
                     principal.clone(),
-                    qualify_resource_action(action),
+                    qualify_action(action),
                     ScopeRef::Workspace {
                         workspace_id: workspace.clone(),
                     },

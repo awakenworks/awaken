@@ -1,5 +1,15 @@
 # Wiki Update Log
 
+## 2026-08-15
+
+- **Consolidation**: Amended ADR-0061 so Control and Resources retain distinct
+  domain authorities while their same-Workspace IAM vocabulary is emitted once
+  as `awaken.workspace`; hosted roles now express stable intent and concrete
+  scope remains solely in IAM bindings.
+- **Migration**: Required activation and binding proof before PEP cutover, then
+  removal of superseded bindings and CAS retirement of both legacy profile
+  heads; no request-time fallback or permanent dual-profile path remains.
+
 ## 2026-08-14
 
 - Consolidated canonical Sandbox writable roots in the open container adapter
@@ -262,3 +272,10 @@
   receipts Session-owned.
 - Classified material-source and refresh unavailability into the existing
   retryable claim lifecycle; invalid projections and policy remain absorbing.
+
+## 2026-08-15 — Hosted sealing reuses the exact Vault compiler
+
+- Added one deployment issuer port after active-source, Workspace, revision,
+  holder, usage, and target-binding admission.
+- Kept `CredentialAccess` and the pinned materializer authoritative; hosted
+  transports cannot add a plaintext API, copied Vault, or unsealed fallback.
