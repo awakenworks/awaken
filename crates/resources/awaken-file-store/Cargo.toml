@@ -29,7 +29,7 @@ rusqlite = { workspace = true, optional = true }
 # core migrator (schema) is shared; each backend pulls its own runner.
 awaken-scoped-migration = { workspace = true, features = ["postgres"], optional = true }
 awaken-scoped-migration-sqlite = { workspace = true, optional = true }
-object_store = { version = "0.12", features = ["aws", "gcp"], optional = true }
+object_store = { version = "0.14", features = ["aws", "gcp"], optional = true }
 futures = { version = "0.3", optional = true }
 
 [features]
