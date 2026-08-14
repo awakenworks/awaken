@@ -590,6 +590,7 @@ mod tests {
                 runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
                 mcp_authoring: Default::default(),
                 agent_id: "agent-a".into(),
+                agent_revision: None,
                 model: "model".into(),
                 runtime: None,
                 delegate_ids: Vec::new(),

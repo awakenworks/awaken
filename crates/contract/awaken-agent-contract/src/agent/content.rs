@@ -38,6 +38,8 @@ pub enum ContentBlock {
     ToolResult {
         tool_use_id: String,
         content: Vec<ContentBlock>,
+        #[serde(default)]
+        is_error: bool,
     },
     /// The model's extended-thinking (reasoning) content, folded from the
     /// provider's reasoning stream (Axis 10b). It interleaves with `Text` in an
@@ -86,9 +88,18 @@ impl ContentBlock {
     }
 
     pub fn tool_result(tool_use_id: impl Into<String>, content: Vec<ContentBlock>) -> Self {
+        Self::tool_result_with_error(tool_use_id, content, false)
+    }
+
+    pub fn tool_result_with_error(
+        tool_use_id: impl Into<String>,
+        content: Vec<ContentBlock>,
+        is_error: bool,
+    ) -> Self {
         Self::ToolResult {
             tool_use_id: tool_use_id.into(),
             content,
+            is_error,
         }
     }
 

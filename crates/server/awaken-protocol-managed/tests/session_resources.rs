@@ -143,6 +143,9 @@ impl ExecutableAgentProfileSource for LifecycleAgent {
 
 fn empty_agent_view(backend_ref: &str) -> ExecutableAgentSessionProfile {
     ExecutableAgentSessionProfile {
+        name: None,
+        description: None,
+        source_revision: 0,
         environment: None,
         model: None,
         inference: Default::default(),
@@ -154,7 +157,7 @@ fn empty_agent_view(backend_ref: &str) -> ExecutableAgentSessionProfile {
         client_tools: Vec::new(),
         mcp_servers: Vec::new(),
         skills: Vec::new(),
-        delegate_ids: Vec::new(),
+        delegates: Vec::new(),
         advisor_model: None,
         resources: Vec::new(),
     }
@@ -199,7 +202,10 @@ impl ExecutableAgentProfileSource for SkillGraphAgent {
         Some(ExecutableAgentSessionProfile {
             skills: skill_bindings(prefix, count),
             // A legacy cycle must not count either Agent twice.
-            delegate_ids: vec![delegate.into()],
+            delegates: vec![awaken_executable_agent_contract::ExecutableAgentDelegate {
+                agent_id: delegate.into(),
+                source_revision: None,
+            }],
             ..empty_agent_view("genai")
         })
     }
@@ -229,9 +235,18 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
             // fixture's leaf is intentionally ordinary and integration-free; an
             // absent leaf would test the multiagent_unavailable rejection rather
             // than the inheritance rule below.
-            return Some(empty_agent_view("genai"));
+            return Some(ExecutableAgentSessionProfile {
+                name: Some("Published Researcher".into()),
+                description: Some("Reads primary sources".into()),
+                source_revision: 3,
+                model: Some("research-model".into()),
+                ..empty_agent_view("genai")
+            });
         }
         (agent_id == "integrated").then(|| ExecutableAgentSessionProfile {
+            name: Some("Published Coordinator".into()),
+            description: Some("Coordinates research".into()),
+            source_revision: 7,
             mcp_servers: vec![
                 awaken_executable_agent_contract::ExecutableAgentMcpServer {
                     name: "docs".into(),
@@ -257,7 +272,10 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
             skills: vec![awaken_agent_contract::AgentSkillBinding::custom(
                 "skill_release",
             )],
-            delegate_ids: vec!["researcher".into()],
+            delegates: vec![awaken_executable_agent_contract::ExecutableAgentDelegate {
+                agent_id: "researcher".into(),
+                source_revision: None,
+            }],
             ..empty_agent_view("genai")
         })
     }
@@ -840,6 +858,11 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     // | exact credential@7 | absent | stage credential@7 with Agent origin |
     // | public same-name URL | present | use Session URL with Session origin |
     // | Skill + delegate | n/a | persist Skill pin and prepare delegate once |
+    // FMECA: projecting the delegate as only its executable id loses its
+    // publication-owned name/version/model/tools and makes the Session response
+    // incompatible with `BetaManagedAgentsSessionAgent` (high severity, SDK/UI
+    // visible). Freezing the full child definition here and deriving Threads from
+    // it prevents both identity drift and a second child-Agent lookup path.
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let staged = runtime.staged.clone();
@@ -878,7 +901,14 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
         session["agent"]["skills"][0],
         json!({"type": "custom", "skill_id": "skill_release", "version": "latest"})
     );
-    assert_eq!(session["agent"]["multiagent"]["agents"][0], "researcher");
+    let child = &session["agent"]["multiagent"]["agents"][0];
+    assert_eq!(session["agent"]["name"], "Published Coordinator");
+    assert_eq!(session["agent"]["version"], 7);
+    assert_eq!(child["id"], "researcher");
+    assert_eq!(child["name"], "Published Researcher");
+    assert_eq!(child["description"], "Reads primary sources");
+    assert_eq!(child["version"], 3);
+    assert_eq!(child["model"]["id"], "research-model");
     assert_eq!(
         prepared.lock().unwrap()[0].delegate_ids,
         vec!["researcher".to_string()]

@@ -321,18 +321,26 @@ impl Transcoder for ManagedEncoder {
                 };
                 vec![ProjectedEvent::with_id(id.clone(), kind)]
             }
-            Fact::ToolResult { id, content, .. } if self.mcp_ids.contains(id) => {
+            Fact::ToolResult {
+                id,
+                content,
+                is_error,
+            } if self.mcp_ids.contains(id) => {
                 vec![ProjectedEvent::minted(OutboundKind::AgentMcpToolResult {
                     mcp_tool_use_id: id.clone(),
                     content: content.clone(),
-                    is_error: None,
+                    is_error: Some(*is_error),
                 })]
             }
-            Fact::ToolResult { id, content, .. } => {
+            Fact::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
                 vec![ProjectedEvent::minted(OutboundKind::AgentToolResult {
                     tool_use_id: id.clone(),
                     content: content.clone(),
-                    is_error: None,
+                    is_error: Some(*is_error),
                 })]
             }
             Fact::Awaiting {
@@ -463,6 +471,44 @@ fn terminal_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_agent_contract::agent::content::ContentBlock;
+
+    #[test]
+    fn managed_tool_results_preserve_success_and_error() {
+        // Cause/effect decision table: C1 ordinary/MCP identity; C2
+        // success/error. Every C1×C2 row emits the matching Managed event and
+        // exact boolean E1. FMECA: `null` erases Runtime failure and lets a BFF
+        // project an unsuccessful side effect as a completed application result.
+        let facts = [
+            Fact::ToolResult {
+                id: "ordinary".into(),
+                content: vec![ContentBlock::text("ok")],
+                is_error: false,
+            },
+            Fact::ToolResult {
+                id: "mcp".into(),
+                content: vec![ContentBlock::text("failed")],
+                is_error: true,
+            },
+        ];
+        let mut encoder = ManagedEncoder::default();
+        encoder.mcp_ids.insert("mcp".into());
+        let projected = encoder.transcode_facts(&facts);
+        assert!(matches!(
+            &projected[0].kind,
+            OutboundKind::AgentToolResult {
+                is_error: Some(false),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &projected[1].kind,
+            OutboundKind::AgentMcpToolResult {
+                is_error: Some(true),
+                ..
+            }
+        ));
+    }
 
     fn tool(name: &str, schema: serde_json::Value) -> CustomTool {
         CustomTool {

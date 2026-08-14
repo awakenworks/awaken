@@ -13,6 +13,9 @@ pub enum awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome
 pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::AlreadyWithdrawn
 pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::HistoricalNoop
 pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::WithdrawnCurrent
+pub struct awaken_executable_agent_contract::ExecutableAgentDelegate
+pub awaken_executable_agent_contract::ExecutableAgentDelegate::agent_id: alloc::string::String
+pub awaken_executable_agent_contract::ExecutableAgentDelegate::source_revision: core::option::Option<u64>
 pub struct awaken_executable_agent_contract::ExecutableAgentEnvironment
 pub awaken_executable_agent_contract::ExecutableAgentEnvironment::environment_id: alloc::string::String
 pub awaken_executable_agent_contract::ExecutableAgentEnvironment::revision: u64
@@ -34,14 +37,17 @@ pub struct awaken_executable_agent_contract::ExecutableAgentSessionProfile
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::advisor_model: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::backend_ref: alloc::string::String
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::client_tools: alloc::vec::Vec<awaken_agent_contract::toolset::ClientToolDescriptor>
-pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::delegate_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::delegates: alloc::vec::Vec<awaken_executable_agent_contract::ExecutableAgentDelegate>
+pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::description: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::environment: core::option::Option<awaken_executable_agent_contract::ExecutableAgentEnvironment>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::execution_model_ref: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::inference: awaken_runtime_contract::agent_bindings::InferenceOptions
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::mcp_servers: alloc::vec::Vec<awaken_executable_agent_contract::ExecutableAgentMcpServer>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::model: core::option::Option<alloc::string::String>
+pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::name: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::resources: alloc::vec::Vec<awaken_resource_contract::input::InputBinding>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::skills: alloc::vec::Vec<awaken_agent_contract::skill::AgentSkillBinding>
+pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::source_revision: u64
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::system: core::option::Option<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::tool_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_executable_agent_contract::ExecutableAgentSessionProfile::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
@@ -55,6 +61,7 @@ pub trait awaken_executable_agent_contract::ExecutableAgentInventorySource: core
 pub fn awaken_executable_agent_contract::ExecutableAgentInventorySource::current_registrations<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_executable_agent_contract::ExecutableAgentProfileSource: core::marker::Send + core::marker::Sync
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::agent_unavailable_in(&self, &str, &str) -> bool
+pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_at_revision_in(&self, &str, &str, u64) -> core::option::Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile>
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_in(&self, &str, &str) -> core::option::Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile>
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::unavailable_delegate_in(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub trait awaken_executable_agent_contract::ExecutableAgentRegistrar: core::marker::Send + core::marker::Sync

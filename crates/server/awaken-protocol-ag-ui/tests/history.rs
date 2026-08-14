@@ -129,6 +129,7 @@ async fn returns_the_persisted_transcript_in_ag_ui_message_shape() {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: "c1".into(),
                 content: vec![ContentBlock::text("42")],
+                is_error: false,
             }],
         },
     ]);

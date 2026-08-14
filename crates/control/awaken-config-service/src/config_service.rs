@@ -22,7 +22,9 @@ use crate::agent_projection::registered_session_profile;
 use crate::binding_resolver::ModelPublicationResolver;
 use crate::credential_reference::{CredentialReferenceValidator, validate_credential_references};
 use crate::plugin_validation::{PluginPublicationResolver, resolve_plugin_configuration};
-use crate::publication::{PublishError, prepare_agent_publication, snapshot_metadata};
+use crate::publication::{
+    PreparedPublication, PublishError, prepare_agent_publication, snapshot_metadata,
+};
 
 #[cfg(test)]
 use crate::ConfigPlane;
@@ -67,11 +69,6 @@ pub struct ConfigService {
     pub(crate) model_publication_resolver: Arc<dyn ModelPublicationResolver>,
     pub(crate) credential_reference_validator: Option<Arc<dyn CredentialReferenceValidator>>,
     pub(crate) plugin_publication_resolvers: Vec<Arc<dyn PluginPublicationResolver>>,
-}
-
-struct PreparedPublication {
-    publication: StoredPublication,
-    registration: ExecutableAgentRegistration,
 }
 
 impl ConfigService {
@@ -246,16 +243,19 @@ impl ConfigService {
         let publication =
             StoredPublication::published_at_revision(snapshot.clone(), id, source_revision)
                 .with_agent_inputs(stored_inputs);
-        let session_profile =
-            registered_session_profile(&snapshot, &resolved.authored_model_selection, defaults)
-                .ok_or_else(|| {
-                    PublishError::Registration(
-                        awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
-                            "Agent Session defaults changed while the publication was compiled"
-                                .into(),
-                        ),
-                    )
-                })?;
+        let session_profile = registered_session_profile(
+            &snapshot,
+            &resolved.config,
+            &resolved.authored_model_selection,
+            defaults,
+        )
+        .ok_or_else(|| {
+            PublishError::Registration(
+                awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
+                    "Agent Session defaults changed while the publication was compiled".into(),
+                ),
+            )
+        })?;
         Ok(PreparedPublication {
             publication,
             registration: ExecutableAgentRegistration {

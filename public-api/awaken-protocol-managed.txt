@@ -474,7 +474,7 @@ pub awaken_protocol_managed::types::session::AgentRef::Object(alloc::boxed::Box<
 impl awaken_protocol_managed::types::AgentRef
 pub fn awaken_protocol_managed::types::AgentRef::id(&self) -> &str
 pub fn awaken_protocol_managed::types::AgentRef::model_override(&self) -> awaken_protocol_managed::types::ModelOverride
-pub fn awaken_protocol_managed::types::AgentRef::version(&self) -> core::option::Option<u32>
+pub fn awaken_protocol_managed::types::AgentRef::version(&self) -> core::option::Option<u64>
 pub enum awaken_protocol_managed::types::session::AgentRefKind
 pub awaken_protocol_managed::types::session::AgentRefKind::Agent
 pub awaken_protocol_managed::types::session::AgentRefKind::AgentWithOverrides
@@ -671,6 +671,9 @@ pub enum awaken_protocol_managed::types::session::RetryStatus
 pub awaken_protocol_managed::types::session::RetryStatus::Exhausted
 pub awaken_protocol_managed::types::session::RetryStatus::Retrying
 pub awaken_protocol_managed::types::session::RetryStatus::Terminal
+pub enum awaken_protocol_managed::types::session::SessionMultiagentRosterEntry
+pub awaken_protocol_managed::types::session::SessionMultiagentRosterEntry::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterReference)
+pub awaken_protocol_managed::types::session::SessionMultiagentRosterEntry::Agent(awaken_protocol_managed::types::SessionThreadAgent)
 pub enum awaken_protocol_managed::types::session::SessionStatus
 pub awaken_protocol_managed::types::session::SessionStatus::Idle
 pub awaken_protocol_managed::types::session::SessionStatus::Rescheduling
@@ -703,7 +706,7 @@ pub awaken_protocol_managed::types::session::AgentRefObject::model: core::option
 pub awaken_protocol_managed::types::session::AgentRefObject::skills: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>>>
 pub awaken_protocol_managed::types::session::AgentRefObject::system: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::session::AgentRefObject::tools: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>>
-pub awaken_protocol_managed::types::session::AgentRefObject::version: core::option::Option<u32>
+pub awaken_protocol_managed::types::session::AgentRefObject::version: core::option::Option<u64>
 pub struct awaken_protocol_managed::types::session::ApiError
 pub awaken_protocol_managed::types::session::ApiError::kind: &'static str
 pub awaken_protocol_managed::types::session::ApiError::message: alloc::string::String
@@ -801,12 +804,12 @@ pub awaken_protocol_managed::types::session::SessionAgent::id: alloc::string::St
 pub awaken_protocol_managed::types::session::SessionAgent::kind: &'static str
 pub awaken_protocol_managed::types::session::SessionAgent::mcp_servers: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>
 pub awaken_protocol_managed::types::session::SessionAgent::model: awaken_protocol_managed::types::ModelConfig
-pub awaken_protocol_managed::types::session::SessionAgent::multiagent: core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
+pub awaken_protocol_managed::types::session::SessionAgent::multiagent: core::option::Option<awaken_protocol_managed::types::SessionMultiagentCoordinator>
 pub awaken_protocol_managed::types::session::SessionAgent::name: alloc::string::String
 pub awaken_protocol_managed::types::session::SessionAgent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::session::SessionAgent::system: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SessionAgent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
-pub awaken_protocol_managed::types::session::SessionAgent::version: u32
+pub awaken_protocol_managed::types::session::SessionAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
 pub struct awaken_protocol_managed::types::session::SessionAgentUpdate
@@ -832,6 +835,9 @@ pub awaken_protocol_managed::types::session::SessionError::message: alloc::strin
 pub awaken_protocol_managed::types::session::SessionError::retry_status: awaken_protocol_managed::types::RetryStatus
 impl awaken_protocol_managed::types::SessionError
 pub fn awaken_protocol_managed::types::SessionError::classify(&str, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_protocol_managed::types::session::SessionMultiagentCoordinator
+pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::SessionMultiagentRosterEntry>
+pub awaken_protocol_managed::types::session::SessionMultiagentCoordinator::kind: &'static str
 pub struct awaken_protocol_managed::types::session::SessionStats
 pub struct awaken_protocol_managed::types::session::SessionThread
 pub awaken_protocol_managed::types::session::SessionThread::agent: awaken_protocol_managed::types::SessionThreadAgent
@@ -855,7 +861,7 @@ pub awaken_protocol_managed::types::session::SessionThreadAgent::name: alloc::st
 pub awaken_protocol_managed::types::session::SessionThreadAgent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::session::SessionThreadAgent::system: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::session::SessionThreadAgent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
-pub awaken_protocol_managed::types::session::SessionThreadAgent::version: u32
+pub awaken_protocol_managed::types::session::SessionThreadAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
 pub struct awaken_protocol_managed::types::session::SessionThreadCacheCreationUsage
@@ -1104,7 +1110,7 @@ pub awaken_protocol_managed::types::AgentRef::Object(alloc::boxed::Box<awaken_pr
 impl awaken_protocol_managed::types::AgentRef
 pub fn awaken_protocol_managed::types::AgentRef::id(&self) -> &str
 pub fn awaken_protocol_managed::types::AgentRef::model_override(&self) -> awaken_protocol_managed::types::ModelOverride
-pub fn awaken_protocol_managed::types::AgentRef::version(&self) -> core::option::Option<u32>
+pub fn awaken_protocol_managed::types::AgentRef::version(&self) -> core::option::Option<u64>
 pub enum awaken_protocol_managed::types::AgentRefKind
 pub awaken_protocol_managed::types::AgentRefKind::Agent
 pub awaken_protocol_managed::types::AgentRefKind::AgentWithOverrides
@@ -1301,6 +1307,9 @@ pub enum awaken_protocol_managed::types::RetryStatus
 pub awaken_protocol_managed::types::RetryStatus::Exhausted
 pub awaken_protocol_managed::types::RetryStatus::Retrying
 pub awaken_protocol_managed::types::RetryStatus::Terminal
+pub enum awaken_protocol_managed::types::SessionMultiagentRosterEntry
+pub awaken_protocol_managed::types::SessionMultiagentRosterEntry::Advisor(awaken_protocol_managed::types::agent::AdvisorRosterReference)
+pub awaken_protocol_managed::types::SessionMultiagentRosterEntry::Agent(awaken_protocol_managed::types::SessionThreadAgent)
 pub enum awaken_protocol_managed::types::SessionStatus
 pub awaken_protocol_managed::types::SessionStatus::Idle
 pub awaken_protocol_managed::types::SessionStatus::Rescheduling
@@ -1333,7 +1342,7 @@ pub awaken_protocol_managed::types::AgentRefObject::model: core::option::Option<
 pub awaken_protocol_managed::types::AgentRefObject::skills: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>>>
 pub awaken_protocol_managed::types::AgentRefObject::system: core::option::Option<core::option::Option<alloc::string::String>>
 pub awaken_protocol_managed::types::AgentRefObject::tools: core::option::Option<core::option::Option<alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>>>
-pub awaken_protocol_managed::types::AgentRefObject::version: core::option::Option<u32>
+pub awaken_protocol_managed::types::AgentRefObject::version: core::option::Option<u64>
 pub struct awaken_protocol_managed::types::ApiError
 pub awaken_protocol_managed::types::ApiError::kind: &'static str
 pub awaken_protocol_managed::types::ApiError::message: alloc::string::String
@@ -1440,12 +1449,12 @@ pub awaken_protocol_managed::types::SessionAgent::id: alloc::string::String
 pub awaken_protocol_managed::types::SessionAgent::kind: &'static str
 pub awaken_protocol_managed::types::SessionAgent::mcp_servers: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentMcpServer>
 pub awaken_protocol_managed::types::SessionAgent::model: awaken_protocol_managed::types::ModelConfig
-pub awaken_protocol_managed::types::SessionAgent::multiagent: core::option::Option<awaken_protocol_managed::types::agent::MultiagentConfig>
+pub awaken_protocol_managed::types::SessionAgent::multiagent: core::option::Option<awaken_protocol_managed::types::SessionMultiagentCoordinator>
 pub awaken_protocol_managed::types::SessionAgent::name: alloc::string::String
 pub awaken_protocol_managed::types::SessionAgent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::SessionAgent::system: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SessionAgent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
-pub awaken_protocol_managed::types::SessionAgent::version: u32
+pub awaken_protocol_managed::types::SessionAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
 pub struct awaken_protocol_managed::types::SessionAgentUpdate
@@ -1471,6 +1480,9 @@ pub awaken_protocol_managed::types::SessionError::message: alloc::string::String
 pub awaken_protocol_managed::types::SessionError::retry_status: awaken_protocol_managed::types::RetryStatus
 impl awaken_protocol_managed::types::SessionError
 pub fn awaken_protocol_managed::types::SessionError::classify(&str, impl core::convert::Into<alloc::string::String>) -> Self
+pub struct awaken_protocol_managed::types::SessionMultiagentCoordinator
+pub awaken_protocol_managed::types::SessionMultiagentCoordinator::agents: alloc::vec::Vec<awaken_protocol_managed::types::SessionMultiagentRosterEntry>
+pub awaken_protocol_managed::types::SessionMultiagentCoordinator::kind: &'static str
 pub struct awaken_protocol_managed::types::SessionStats
 pub struct awaken_protocol_managed::types::SessionThread
 pub awaken_protocol_managed::types::SessionThread::agent: awaken_protocol_managed::types::SessionThreadAgent
@@ -1494,7 +1506,7 @@ pub awaken_protocol_managed::types::SessionThreadAgent::name: alloc::string::Str
 pub awaken_protocol_managed::types::SessionThreadAgent::skills: alloc::vec::Vec<awaken_protocol_managed::types::agent::AgentSkill>
 pub awaken_protocol_managed::types::SessionThreadAgent::system: core::option::Option<alloc::string::String>
 pub awaken_protocol_managed::types::SessionThreadAgent::tools: alloc::vec::Vec<awaken_session_contract::agent_config::AgentTool>
-pub awaken_protocol_managed::types::SessionThreadAgent::version: u32
+pub awaken_protocol_managed::types::SessionThreadAgent::version: u64
 impl core::convert::From<&awaken_protocol_managed::types::SessionAgent> for awaken_protocol_managed::types::SessionThreadAgent
 pub fn awaken_protocol_managed::types::SessionThreadAgent::from(&awaken_protocol_managed::types::SessionAgent) -> Self
 pub struct awaken_protocol_managed::types::SessionThreadCacheCreationUsage

@@ -25,6 +25,9 @@ pub fn awaken_cli::config::OperatingMode::as_str(self) -> &'static str
 pub enum awaken_cli::config::ResourceStoreBackend
 pub awaken_cli::config::ResourceStoreBackend::Embedded(std::path::PathBuf)
 pub awaken_cli::config::ResourceStoreBackend::Postgres(alloc::string::String)
+pub awaken_cli::config::ResourceStoreBackend::PostgresObject
+pub awaken_cli::config::ResourceStoreBackend::PostgresObject::object: awaken_file_store::object::ObjectFileStoreConfig
+pub awaken_cli::config::ResourceStoreBackend::PostgresObject::url: alloc::string::String
 impl awaken_cli::config::ResourceStoreBackend
 pub fn awaken_cli::config::ResourceStoreBackend::is_shared(&self) -> bool
 pub enum awaken_cli::config::Role
@@ -161,9 +164,11 @@ pub awaken_cli::CoordinatorAuthorityHandles::runtime_authority: alloc::sync::Arc
 pub awaken_cli::CoordinatorAuthorityHandles::sessions: alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>
 pub awaken_cli::CoordinatorAuthorityHandles::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
 pub struct awaken_cli::CoordinatorServiceAdapters
+pub awaken_cli::CoordinatorServiceAdapters::cloud_native_credential_realization: core::option::Option<awaken_credential_contract::CredentialRealizationProfile>
 pub awaken_cli::CoordinatorServiceAdapters::worker_authenticator: core::option::Option<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>
 pub awaken_cli::CoordinatorServiceAdapters::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
 impl awaken_cli::CoordinatorServiceAdapters
+pub fn awaken_cli::CoordinatorServiceAdapters::with_cloud_native_credential_realization(self, awaken_credential_contract::CredentialRealizationProfile) -> Self
 pub fn awaken_cli::CoordinatorServiceAdapters::with_worker_authenticator(self, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
 pub fn awaken_cli::CoordinatorServiceAdapters::with_worker_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> Self
 pub struct awaken_cli::DrainController

@@ -97,8 +97,10 @@ pub awaken_dispatch::CommitHashError::Serialize(alloc::string::String)
 pub enum awaken_dispatch::Error
 pub awaken_dispatch::Error::Dispatch(awaken_dispatch_contract::dispatch::DispatchError)
 pub awaken_dispatch::Error::Execution(awaken_runtime_contract::execution::Error)
+pub awaken_dispatch::Error::ResolutionNotReady(alloc::string::String)
 pub awaken_dispatch::Error::TerminalResolution(awaken_runtime_contract::execution::Error)
 impl awaken_dispatch::Error
+pub fn awaken_dispatch::Error::is_resolution_not_ready(&self) -> bool
 pub fn awaken_dispatch::Error::is_terminal_resolution(&self) -> bool
 pub enum awaken_dispatch::LiveRunControlError
 pub awaken_dispatch::LiveRunControlError::Dispatch(alloc::string::String)
@@ -228,7 +230,6 @@ pub fn awaken_dispatch::DispatchService<S>::spawn_with_wake(alloc::sync::Arc<awa
 pub async fn awaken_dispatch::DispatchService<S>::submit(&self, awaken_runtime_contract::activation::RunActivation) -> core::result::Result<(), awaken_dispatch::Error>
 pub struct awaken_dispatch::DispatchServiceConfig
 pub awaken_dispatch::DispatchServiceConfig::dead_letter_ttl: core::option::Option<core::time::Duration>
-pub awaken_dispatch::DispatchServiceConfig::lease_renewal_interval: core::option::Option<core::time::Duration>
 pub awaken_dispatch::DispatchServiceConfig::max_attempts: u64
 pub awaken_dispatch::DispatchServiceConfig::poll_interval: core::time::Duration
 pub awaken_dispatch::DispatchServiceConfig::terminal_reconciliation_interval: core::option::Option<core::time::Duration>
@@ -483,7 +484,6 @@ pub struct awaken_dispatch::SystemClock
 impl awaken_dispatch::Clock for awaken_dispatch::SystemClock
 pub fn awaken_dispatch::SystemClock::now_ms(&self) -> u64
 pub const awaken_dispatch::DEFAULT_LEASE_MS: u64
-pub const awaken_dispatch::DEFAULT_LEASE_RENEWAL: core::time::Duration
 pub trait awaken_dispatch::ClaimedCommitApplier: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch::ClaimedCommitApplier::apply<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_dispatch::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_dispatch::Clock: core::marker::Send + core::marker::Sync

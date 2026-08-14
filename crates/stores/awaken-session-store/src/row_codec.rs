@@ -289,6 +289,7 @@ pub(super) fn decode(row: EncodedSessionRow) -> Result<PersistedSession, serde_j
         runtime_placement: awaken_session_contract::SessionRuntimePlacement::LegacyUnspecified,
         mcp_authoring: SessionMcpAuthoringContext::default(),
         agent_id: row.agent_id,
+        agent_revision: None,
         model: row.model,
         runtime: runtime.runtime,
         delegate_ids: runtime.delegate_ids,

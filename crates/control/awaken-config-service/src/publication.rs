@@ -1,13 +1,23 @@
 //! Configuration publication preparation and values shared by the service and HTTP edge.
 
-use awaken_agent_config::{AgentConfig, AgentConfigRevision, ModelSelection};
-use awaken_executable_agent_contract::ExecutableAgentRegistrationError;
+use awaken_agent_config::{AgentConfig, AgentConfigRevision, ModelSelection, StoredPublication};
+use awaken_executable_agent_contract::{
+    ExecutableAgentRegistration, ExecutableAgentRegistrationError,
+};
 use awaken_runtime_contract::ResolutionManifest;
 
 use crate::binding_resolver::{
     ModelPublicationResolver, PublicationResolutionError, ResolvedPublicationModels,
 };
 use crate::compaction::apply_compaction;
+
+/// One prepared publication and the exact executable registration derived from
+/// it. Keeping the pair in the publication module prevents the Config service
+/// from growing a second transient publication representation.
+pub(crate) struct PreparedPublication {
+    pub(crate) publication: StoredPublication,
+    pub(crate) registration: ExecutableAgentRegistration,
+}
 
 /// A publish failure, split so the edge can map it to an HTTP status.
 #[derive(Debug, thiserror::Error)]

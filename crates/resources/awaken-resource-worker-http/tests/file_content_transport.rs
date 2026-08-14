@@ -105,6 +105,7 @@ fn frozen_application_session(
                     runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
                     mcp_authoring: Default::default(),
                     agent_id: "agent".into(),
+                    agent_revision: None,
                     model: "model".into(),
                     runtime: None,
                     delegate_ids: Vec::new(),

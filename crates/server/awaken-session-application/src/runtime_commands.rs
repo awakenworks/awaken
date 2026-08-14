@@ -89,6 +89,23 @@ impl SessionApplication {
     }
 
     #[must_use]
+    pub fn has_agent_profile_source(&self) -> bool {
+        self.config_source.is_some()
+    }
+
+    #[must_use]
+    pub fn session_profile_at_revision(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        self.config_source.as_ref().and_then(|source| {
+            source.session_profile_at_revision_in(workspace_id, agent_id, source_revision)
+        })
+    }
+
+    #[must_use]
     pub fn agent_unavailable(&self, workspace_id: &str, agent_id: &str) -> bool {
         self.config_source
             .as_ref()
@@ -112,13 +129,20 @@ impl SessionApplication {
         let mut seen = std::collections::BTreeSet::from([root_agent_id.to_string()]);
         let mut pending = root_view
             .into_iter()
-            .flat_map(|view| view.delegate_ids.iter().cloned())
+            .flat_map(|view| view.delegates.iter().cloned())
             .collect::<std::collections::VecDeque<_>>();
-        while let Some(agent_id) = pending.pop_front() {
+        while let Some(delegate) = pending.pop_front() {
+            let agent_id = delegate.agent_id;
             if !seen.insert(agent_id.clone()) {
                 continue;
             }
-            let Some(view) = self.session_profile(workspace_id, &agent_id) else {
+            let view = delegate
+                .source_revision
+                .and_then(|revision| {
+                    self.session_profile_at_revision(workspace_id, &agent_id, revision)
+                })
+                .or_else(|| self.session_profile(workspace_id, &agent_id));
+            let Some(view) = view else {
                 continue;
             };
             total = total.checked_add(view.skills.len()).ok_or_else(|| {
@@ -129,7 +153,7 @@ impl SessionApplication {
                     "a session supports at most 500 skills across all agents",
                 ));
             }
-            pending.extend(view.delegate_ids);
+            pending.extend(view.delegates);
         }
         Ok(())
     }

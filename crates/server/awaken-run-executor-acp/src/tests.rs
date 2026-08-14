@@ -1894,6 +1894,7 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
         ContentBlock::ToolResult {
             tool_use_id,
             content,
+            ..
         } => {
             assert_eq!(tool_use_id, "c1");
             assert_eq!(content[0], ContentBlock::text("file body"));

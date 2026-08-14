@@ -54,7 +54,8 @@ use crate::compact::{
     compact_backend as build_compact_backend, compact_runner as build_compact_runner,
 };
 use crate::config::{
-    build_runtime, config_permission_ruleset, server_config, server_gate_with_toolsets,
+    build_runtime_with_authorization, config_permission_ruleset, effective_tool_authorization,
+    server_config,
 };
 use crate::delegate::HostRunDelegationService;
 use crate::hub::{ThreadEvent, ThreadEventHub};

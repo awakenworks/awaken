@@ -390,13 +390,20 @@ impl SessionApplication {
                 environment,
                 runtime_placement: self.runtime_placement(),
                 agent_id,
+                agent_revision: profile.as_ref().map(|profile| profile.source_revision),
                 model,
                 execution_model_ref,
                 runtime: published_backend_ref.map(str::to_string),
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 delegate_ids: profile
                     .as_ref()
-                    .map(|profile| profile.delegate_ids.clone())
+                    .map(|profile| {
+                        profile
+                            .delegates
+                            .iter()
+                            .map(|delegate| delegate.agent_id.clone())
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 toolsets: tools.toolsets.clone(),
                 mounts,

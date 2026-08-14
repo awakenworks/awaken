@@ -64,6 +64,8 @@ pub async fn run_service_binary(role: ServiceRole) -> ExitCode {
 /// Run the exact Control, Coordinator, or AllInOne startup selected by the
 /// caller. Role-specific binaries and `awaken <role>` both terminate here.
 pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), String> {
+    awaken_credential_materializer::reject_ambient_api_key_environment()
+        .map_err(|error| error.to_string())?;
     let deployment_role = role.deployment_role();
     let mut deployment = ResolvedDeployment::load(ConfigOverrides {
         config_path: args.config_path,
