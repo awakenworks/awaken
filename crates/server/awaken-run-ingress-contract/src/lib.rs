@@ -36,9 +36,10 @@ pub use claimed_session::{ClaimedSessionControl, ClaimedSessionControlError};
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use dispatch::{
     AttemptCredentialBindingError, CasOutcome, Claimed, ClaimedCommitCommand, CommitEpochGuard,
-    Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome,
-    SubmitOptions, compile_attempt_credential_bindings, worker_credential_realization_capabilities,
+    Dispatch, DispatchCompletion, DispatchCredentialAdmissionError, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, SettleOutcome, SubmitOptions, compile_attempt_credential_bindings,
+    worker_credential_realization_capabilities,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

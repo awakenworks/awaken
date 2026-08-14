@@ -198,6 +198,32 @@ impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
 }
 
 impl HostWorkerResolver {
+    fn map_session_realization_drive_error(
+        error: awaken_session_contract::SessionRealizationDriveError,
+    ) -> awaken_run_ingress::Error {
+        match error {
+            awaken_session_contract::SessionRealizationDriveError::Effect(error)
+                if error.kind == awaken_session_contract::RunErrorKind::Unavailable =>
+            {
+                Self::execution_error(error.to_string())
+            }
+            awaken_session_contract::SessionRealizationDriveError::Control(
+                awaken_session_contract::SessionRealizationControlFailure::NotReady,
+            ) => awaken_run_ingress::Error::ResolutionNotReady(
+                "Session realization is not ready".into(),
+            ),
+            retryable @ (awaken_session_contract::SessionRealizationDriveError::Control(
+                awaken_session_contract::SessionRealizationControlFailure::StaleOwnership
+                | awaken_session_contract::SessionRealizationControlFailure::Conflict
+                | awaken_session_contract::SessionRealizationControlFailure::Unavailable(_),
+            )
+            | awaken_session_contract::SessionRealizationDriveError::DidNotConverge) => {
+                Self::execution_error(retryable.to_string())
+            }
+            error => Self::terminal_resolution_error(error.to_string()),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) async fn realize_session(
         host: &SharedHost,
@@ -255,11 +281,11 @@ impl HostWorkerResolver {
             directive,
         )
         .await
-        // The canonical driver has already delivered `fail_session_realization`
-        // before returning an error, so this is the narrow absorbing failure
-        // class that the Run claim may terminalize immediately. Environment
-        // adoption and other resolver failures remain ordinary retryable errors.
-        .map_err(|error| Self::terminal_resolution_error(error.to_string()))
+        // The canonical driver has already persisted whether an effect is
+        // retryable. Preserve that classification at the WorkQueue boundary:
+        // temporary dependency/control failures relinquish the claim, while only
+        // absorbing Session failures terminalize the Run.
+        .map_err(Self::map_session_realization_drive_error)
     }
 }
 
@@ -268,6 +294,75 @@ mod tests {
     use super::*;
     use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn session_realization_preserves_retryable_and_absorbing_failure_classes() {
+        // Cause/effect graph: C1 the canonical driver classifies an effect as
+        // Unavailable, C2 Control reports transient ownership/readiness, or C3
+        // the phase is permanently invalid. Effects: C1/C2 relinquish or defer
+        // the WorkQueue claim; only C3 becomes TerminalResolution. This preserves
+        // the Session aggregate's already-persisted retry decision instead of
+        // creating a second host-side policy.
+        //
+        // | Rule | driver cause | effect |
+        // | R1 | unavailable effect | retryable Execution |
+        // | R2 | Control unavailable/conflict | retryable Execution |
+        // | R3 | Control not ready | ResolutionNotReady |
+        // | R4 | permanent effect/invalid Control | TerminalResolution |
+        let retryable_effect = HostWorkerResolver::map_session_realization_drive_error(
+            awaken_session_contract::SessionRealizationDriveError::Effect(
+                awaken_session_contract::RunError::unavailable_classified(
+                    "mcp_material_source_unavailable",
+                    "materializer unavailable",
+                ),
+            ),
+        );
+        assert!(matches!(
+            retryable_effect,
+            awaken_run_ingress::Error::Execution(_)
+        ));
+
+        let retryable_control = HostWorkerResolver::map_session_realization_drive_error(
+            awaken_session_contract::SessionRealizationDriveError::Control(
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                    "repository unavailable".into(),
+                ),
+            ),
+        );
+        assert!(matches!(
+            retryable_control,
+            awaken_run_ingress::Error::Execution(_)
+        ));
+
+        let not_ready = HostWorkerResolver::map_session_realization_drive_error(
+            awaken_session_contract::SessionRealizationDriveError::Control(
+                awaken_session_contract::SessionRealizationControlFailure::NotReady,
+            ),
+        );
+        assert!(matches!(
+            not_ready,
+            awaken_run_ingress::Error::ResolutionNotReady(_)
+        ));
+
+        for permanent in [
+            awaken_session_contract::SessionRealizationDriveError::Effect(
+                awaken_session_contract::RunError::classified(
+                    "mcp_credential_revision_mismatch",
+                    "invalid revision",
+                ),
+            ),
+            awaken_session_contract::SessionRealizationDriveError::Control(
+                awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                    "invalid phase".into(),
+                ),
+            ),
+        ] {
+            assert!(matches!(
+                HostWorkerResolver::map_session_realization_drive_error(permanent),
+                awaken_run_ingress::Error::TerminalResolution(_)
+            ));
+        }
+    }
 
     #[test]
     fn worker_projection_distinguishes_preparation_from_lease_only_context_omission() {

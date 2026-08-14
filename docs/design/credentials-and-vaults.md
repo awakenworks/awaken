@@ -432,8 +432,13 @@ Legacy `Direct` provenance survives serialization and durable queue/database
 round trips, so compatibility decoding cannot launder it into an admissible
 Control reference. Broad Worker selection preflights the same authoritative
 credential admission kernel and skips an incompatible row; an exact claim keeps
-the explicit error. This prevents one incompatible high-priority row from
-blocking later valid work without creating a second selection policy.
+the explicit error. That preflight decodes the contract-owned frozen Session
+runtime projection and admits every MCP generation's exact access/holder pair
+against the selected Worker's installed capabilities through the same
+`CredentialAccess::admit` kernel. The Session generation remains the holder and
+receipt authority; dispatch does not persist a parallel MCP attempt binding.
+This prevents one incompatible high-priority row from blocking later valid work
+without creating a second selection policy.
 `ResolvedModelCandidate` remains the only Model access authority, and Session
 `vault_ids` never override it. Automatic LLM Vault authoring is deferred until a
 separate proposal defines its application service, transaction/saga,

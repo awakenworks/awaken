@@ -182,51 +182,6 @@ pub(crate) fn environment_capacity_projection(
     EnvironmentCapacityProjection { spec, shape_id }
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct DispatchedSessionRuntimeProjection {
-    environment: awaken_session_contract::EnvironmentSnapshot,
-    /// `None` retains publication inheritance; `Some([])` is an explicit clear.
-    toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
-    /// `None` is reserved for legacy dispatches that predate MCP effect
-    /// projection. New dispatches always carry `Some`, including `Some([])` for
-    /// an exact removal-all. These are canonical generation-fenced effect
-    /// inputs, not a second desired-state registry.
-    #[serde(default)]
-    mcp_stages: Option<Vec<awaken_session_contract::StageMcpAttachment>>,
-}
-
-type DecodedSessionRuntimeProjection = (
-    awaken_session_contract::EnvironmentSnapshot,
-    Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
-    Option<Vec<awaken_session_contract::StageMcpAttachment>>,
-);
-
-pub(crate) fn encode_session_runtime_envelope(
-    environment: awaken_session_contract::EnvironmentSnapshot,
-    toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
-    mcp_stages: Vec<awaken_session_contract::StageMcpAttachment>,
-) -> Result<awaken_run_ingress::SessionRuntimeEnvelope, serde_json::Error> {
-    Ok(awaken_run_ingress::SessionRuntimeEnvelope::new(
-        serde_json::to_string(&DispatchedSessionRuntimeProjection {
-            environment,
-            toolsets,
-            mcp_stages: Some(mcp_stages),
-        })?,
-    ))
-}
-
-pub(crate) fn decode_session_runtime_envelope(
-    envelope: &awaken_run_ingress::SessionRuntimeEnvelope,
-) -> Result<DecodedSessionRuntimeProjection, serde_json::Error> {
-    let projection: DispatchedSessionRuntimeProjection =
-        serde_json::from_str(&envelope.projection_json)?;
-    Ok((
-        projection.environment,
-        projection.toolsets,
-        projection.mcp_stages,
-    ))
-}
-
 fn mime_type_for_path(path: &str) -> &'static str {
     match std::path::Path::new(path)
         .extension()

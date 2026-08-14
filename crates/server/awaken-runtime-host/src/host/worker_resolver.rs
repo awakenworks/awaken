@@ -28,7 +28,9 @@ mod tests {
     /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
     /// the immutable dispatch envelope. Legacy absence remains eager, an exact
     /// on-tool-use projection stays sandbox-free during Brain resolution, and a
-    /// malformed projection fails before any Sandbox can be created.
+    /// malformed projection is rejected by claim admission before any Worker or
+    /// Sandbox effect. Moving C3 earlier preserves fail-closed behavior while
+    /// keeping one projection decoder at the run-ingress contract boundary.
     #[tokio::test]
     async fn cold_worker_runtime_projection_decision_table() {
         use awaken_run_ingress::{Clock, DispatchQueue};
@@ -55,7 +57,7 @@ mod tests {
             "C1"
         );
 
-        let runtime = crate::provisioning::encode_session_runtime_envelope(
+        let runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
             deferred_environment(),
             Some(Vec::new()),
             Vec::new(),
@@ -102,19 +104,14 @@ mod tests {
             )
             .await
             .expect("enqueue invalid projection");
-        let invalid = store
+        let error = store
             .claim("worker-a", 1_000, now, &Default::default())
             .await
-            .expect("claim invalid projection")
-            .expect("invalid projection available");
-        let error = match resolver.worker_for_claimed(&invalid).await {
-            Ok(_) => panic!("C3 malformed runtime projection must fail closed"),
-            Err(error) => error,
-        };
+            .expect_err("C3 malformed runtime projection must fail claim admission");
         assert!(
             error
                 .to_string()
-                .contains("invalid Session runtime projection")
+                .contains("Session runtime credential projection is invalid")
         );
         assert!(
             host.session_environment("cold-invalid").await.is_none(),
@@ -462,7 +459,7 @@ mod tests {
             credential: None,
             selected_plaintext_holder: None,
         };
-        let runtime = crate::provisioning::encode_session_runtime_envelope(
+        let runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
             deferred_environment(),
             Some(Vec::new()),
             vec![stage],

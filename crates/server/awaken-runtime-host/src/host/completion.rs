@@ -358,7 +358,7 @@ impl SharedHost {
             // canonical SandboxSpec identity used by Worker pool receipts.
             let preferred_shape =
                 crate::provisioning::environment_capacity_projection(&environment, true).shape_id;
-            let envelope = crate::provisioning::encode_session_runtime_envelope(
+            let envelope = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
                 environment,
                 toolsets,
                 mcp_stages,

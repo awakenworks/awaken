@@ -27,9 +27,10 @@ async fn dispatched_mcp_effect_projection_decision_table() {
         .to_string(),
     );
     assert!(
-        crate::provisioning::decode_session_runtime_envelope(&legacy)
+        legacy
+            .decode_projection()
             .expect("R1 legacy envelope")
-            .2
+            .mcp_stages
             .is_none(),
         "R1"
     );

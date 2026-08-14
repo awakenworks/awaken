@@ -831,3 +831,21 @@ case that must prove Worker-held substitution and provider-enforced no-bypass
 networking; built-in providers fail closed when they cannot prove that cell.
 Platform ACP/MCP realization and automatic LLM Vault authoring remain separately
 gated work and cannot be inferred from the implemented Native platform contract.
+
+## 2026-08-15 amendment: Session MCP admission joins the existing claim boundary
+
+The frozen Session runtime projection is now a public run-ingress contract value
+rather than a private Runtime Host serialization shape. Before committing a
+Worker claim, the existing dispatch credential compiler decodes that projection
+and admits every MCP generation's paired access and selected Worker holder
+against the Worker's installed materializer capabilities through the same
+`CredentialAccess::admit` kernel used by inference. Broad selection skips a row
+that cannot admit the complete frozen credential set; an exact claim returns the
+typed run-ingress admission failure before any external effect.
+
+The Session MCP generation remains the sole durable holder and effect-receipt
+authority. Dispatch persists no parallel MCP attempt binding, Runtime performs
+no credential or holder reselection, and the generic runtime credential contract
+contains no Session vocabulary. Material-source or refresh-provider
+unavailability relinquishes the claim through the existing retry path; invalid
+projection, policy, or holder facts remain absorbing failures.
