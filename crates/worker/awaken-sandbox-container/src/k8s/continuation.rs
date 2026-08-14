@@ -7,7 +7,7 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::Api;
-use kube::api::DeleteParams;
+use kube::api::{DeleteParams, Preconditions};
 
 use super::error::api_not_found;
 use super::names::continuation_claim_name;
@@ -16,6 +16,30 @@ use super::{ContainerPlan, RuntimeError, backend, hardened_security_context};
 
 const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+pub(super) const CLAIM_UID_ANNOTATION: &str = "awaken.dev/continuation-claim-uid";
+
+pub(super) fn claim_uid(claim: &PersistentVolumeClaim) -> Result<String, RuntimeError> {
+    claim
+        .metadata
+        .uid
+        .clone()
+        .ok_or_else(|| backend("Kubernetes continuation PVC has no UID"))
+}
+
+pub(super) fn bind_claim_uid(pod: &mut k8s_openapi::api::core::v1::Pod, uid: &str) {
+    pod.metadata
+        .annotations
+        .get_or_insert_with(Default::default)
+        .insert(CLAIM_UID_ANNOTATION.into(), uid.into());
+}
+
+pub(super) fn bound_claim_uid(pod: &k8s_openapi::api::core::v1::Pod) -> Option<&str> {
+    pod.metadata
+        .annotations
+        .as_ref()?
+        .get(CLAIM_UID_ANNOTATION)
+        .map(String::as_str)
+}
 
 pub(super) fn build_claim(
     id: &str,
@@ -93,12 +117,33 @@ pub(super) fn append_init_container(
 pub(super) async fn delete_claim(
     claims: &Api<PersistentVolumeClaim>,
     pod_name: &str,
+    expected_uid: &str,
 ) -> Result<(), RuntimeError> {
     let runtime_id = pod_name
         .strip_prefix("awaken-")
         .ok_or_else(|| backend("invalid managed Kubernetes Pod identity"))?;
     let name = continuation_claim_name(runtime_id);
-    match claims.delete(&name, &DeleteParams::default()).await {
+    let observed = match claims.get(&name).await {
+        Ok(claim) => claim,
+        Err(error) if api_not_found(&error) => return Ok(()),
+        Err(error) => return Err(backend(error)),
+    };
+    let uid = claim_uid(&observed)?;
+    if uid != expected_uid {
+        return Err(backend(format!(
+            "continuation PVC `{name}` incarnation changed before disposal"
+        )));
+    }
+    let resource_version = observed
+        .metadata
+        .resource_version
+        .clone()
+        .ok_or_else(|| backend("Kubernetes continuation PVC has no resourceVersion"))?;
+    let params = DeleteParams::default().preconditions(Preconditions {
+        uid: Some(uid),
+        resource_version: Some(resource_version),
+    });
+    match claims.delete(&name, &params).await {
         Ok(_) => {}
         Err(error) if api_not_found(&error) => return Ok(()),
         Err(error) => return Err(backend(error)),
@@ -233,6 +278,21 @@ mod tests {
             )
             .is_err(),
             "V3/E4"
+        );
+
+        let mut fenced = super::super::build_pod_with_continuation(
+            "session-1",
+            &plan(),
+            &None,
+            None,
+            &[],
+            Some("awc-session-1"),
+        );
+        bind_claim_uid(&mut fenced, "claim-incarnation-1");
+        assert_eq!(
+            bound_claim_uid(&fenced),
+            Some("claim-incarnation-1"),
+            "V2/C3"
         );
     }
 }

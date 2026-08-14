@@ -513,3 +513,24 @@ remain the generic contract. A filesystem archive, CSI snapshot, or another
 orchestrator driver is an implementation behind that contract and must own its
 complete create/verify/restore/delete behavior rather than introduce a fallback
 track.
+
+## 2026-08-14 amendment: writable roots and active-volume deletion have one fence
+
+`awaken-sandbox-container` is the sole owner of canonical mutable-root
+normalization. Runtime projection and hosted checkpoint decorators consume the
+same exported function; a product composition must not restate workspace,
+output, or temporary roots. Persisted continuation metadata is evidence only
+and is revalidated against that canonical contract before adoption or archive.
+
+The retained PVC incarnation is bound into the Pod realization before the Pod
+is created. Explicit disposal observes that binding once and deletes the claim
+with the observed UID/resourceVersion precondition; it never rediscovers a
+same-name replacement after deleting the Pod. A synchronous create failure
+rolls back only resources created by that attempt under their observed
+identities. A Worker crash leaves deterministic resources for the existing
+Session realization retry, while terminal Session reconciliation still owns
+eventual cleanup. No cluster-wide claim collector is introduced.
+The same open adapter publishes the complete checkpoint-sensitive runtime
+configuration-home set: ACP bridge state, backend-native state, and XDG
+configuration. Product decorators consume this projection unchanged; they do
+not keep a second path list that a new ACP or backend could silently bypass.

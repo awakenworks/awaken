@@ -1,5 +1,16 @@
 # Wiki Update Log
 
+## 2026-08-14
+
+- Consolidated canonical Sandbox writable roots in the open container adapter
+  so Kubernetes projection and closed checkpoint drivers cannot drift.
+- Bound active PVC UID evidence into each Pod realization, fenced intentional
+  claim deletion, and made synchronous partial creation roll back only the
+  resources created by that attempt.
+- Exposed the runtime-owned ACP, backend-native, and XDG configuration-home
+  contract so checkpoint decorators exclude provider caches without copying
+  process defaults or agent-specific path lists.
+
 ## 2026-08-13
 
 - **Contract**: Built-in platform-held HTTP effects now freeze each credential

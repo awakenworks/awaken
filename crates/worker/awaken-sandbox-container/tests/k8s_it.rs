@@ -221,3 +221,78 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     );
     rt.remove(&replacement).await.expect("delete replacement");
 }
+
+#[tokio::test]
+async fn stale_disposal_cannot_delete_a_recreated_claim_incarnation() {
+    /* PVC-disposal decision table KPV1. C1 an old durable handle binds PVC UID A;
+     * C2 authorized disposal removes A; C3 the same Session realization name is
+     * recreated with PVC UID B; C4 a delayed stale disposer presents A.
+     * R1 C1+C2+C3+C4 => reject before deleting Pod/PVC B; R2 current handle B =>
+     * delete both. FMECA: name-only deletion can destroy the next generation's
+     * active filesystem (S5/O2/D4=40).
+     */
+    let Some(rt) = live_runtime().await else {
+        return;
+    };
+    let rt = rt.with_continuation_volume(K8sContinuationVolume {
+        storage_class_name: None,
+        size: "1Gi".into(),
+    });
+    let scope = format!("claim-fence-{}", std::process::id());
+    let first = rt.create(&scope, &plan(&["sleep", "30"])).await.unwrap();
+    let old = rt.handle_extra(&first).await.unwrap().unwrap();
+    rt.remove_with_handle(&first, Some(&old)).await.unwrap();
+
+    let second = rt.create(&scope, &plan(&["sleep", "30"])).await.unwrap();
+    let current = rt.handle_extra(&second).await.unwrap().unwrap();
+    assert_ne!(old, current, "KPV1 distinct PVC incarnations");
+    assert!(
+        rt.remove_with_handle(&second, Some(&old)).await.is_err(),
+        "KPV1 stale deletion is fenced"
+    );
+    assert_eq!(rt.inspect(&second).await.unwrap(), ContainerState::Running);
+    rt.remove_with_handle(&second, Some(&current))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn failed_realization_rolls_back_only_its_unbound_claim() {
+    /* Partial-create decision table KPV2. C1 a live conflicting Pod occupies the
+     * deterministic name without a continuation claim; C2 a new attempt creates
+     * its PVC then fails Pod realization verification. R1 C1+C2 => preserve the
+     * observed Pod and delete only the unbound newly-created PVC. A Worker crash
+     * is intentionally different: the deterministic claim remains adoptable.
+     */
+    let Some(plain) = live_runtime().await else {
+        return;
+    };
+    let scope = format!("claim-rollback-{}", std::process::id());
+    let pod = plain.create(&scope, &plan(&["sleep", "30"])).await.unwrap();
+    let Some(retained) = live_runtime().await else {
+        plain.remove(&pod).await.unwrap();
+        return;
+    };
+    let retained = retained.with_continuation_volume(K8sContinuationVolume {
+        storage_class_name: None,
+        size: "1Gi".into(),
+    });
+    assert!(
+        retained
+            .create(&scope, &plan(&["sleep", "30"]))
+            .await
+            .is_err()
+    );
+
+    let client = kube::Client::try_default().await.unwrap();
+    let claims = kube::Api::<k8s_openapi::api::core::v1::PersistentVolumeClaim>::namespaced(
+        client, "default",
+    );
+    let claim = format!("awc-{}", pod.strip_prefix("awaken-").unwrap());
+    assert!(
+        claims.get_opt(&claim).await.unwrap().is_none(),
+        "KPV2 rollback"
+    );
+    assert_eq!(plain.inspect(&pod).await.unwrap(), ContainerState::Running);
+    plain.remove(&pod).await.unwrap();
+}

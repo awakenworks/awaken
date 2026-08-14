@@ -247,6 +247,7 @@ mod tests {
             blobs: Default::default(),
             file_store: None,
             live_input_projection: false,
+            runtime_handle: None,
             realized: Vec::new(),
             recovered: false,
             lifecycle: Arc::new(crate::ContainerCleanupState::completed(None)),

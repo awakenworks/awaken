@@ -31,6 +31,7 @@ mod packages;
 mod podman_plan;
 mod process_env;
 use process_env::environment_keepalive_command;
+pub use process_env::runtime_configuration_homes;
 mod recovery;
 mod resident_hand;
 mod runtime;
@@ -44,10 +45,11 @@ pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
 pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
-    ContainerRuntime, ContainerState, PackageImageProvisioner, RuntimeAgentProcess, RuntimeError,
+    ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
+    RuntimeAgentProcess, RuntimeError,
 };
 pub use secret::SecretBytes;
-pub use writable::writable_dirs;
+pub use writable::{checkpoint_writable_roots, validate_checkpoint_writable_roots, writable_dirs};
 
 /// Capabilities common to one concrete container runtime. Network denial is
 /// runtime evidence rather than an isolation-class assumption: Docker/Podman
@@ -98,23 +100,6 @@ pub struct BindPlan {
     pub credential_file_path: Option<String>,
 }
 
-/// A memory-store mount carried into a remote container runtime. The authoritative
-/// [`pc::MemoryMounter`] resolves the exact (possibly claim-fenced) store before the
-/// runtime starts; Kubernetes seeds these bytes into a pod-scoped writable volume
-/// and the provider harvests that same volume through the mounter on disposal.
-/// This avoids a second pod-local Memory database and does not grant the untrusted
-/// Pod network access to the Resource authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryMount {
-    pub store_id: String,
-    /// Sandbox-absolute path the agent sees the store at (the shared volume mount).
-    pub mount_path: String,
-    pub access: pc::MountAccess,
-    /// A bounded tar archive rooted at the Memory mount. It is produced by the
-    /// canonical mounter, never by a Kubernetes-side Resource client.
-    pub snapshot_tar: Vec<u8>,
-}
-
 /// A neutral container plan rendered from a [`pc::SandboxSpec`] — the input a
 /// bollard `create_container` (or the k8s planner) consumes. Pure and testable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,15 +121,6 @@ pub struct ContainerPlan {
     /// The rootfs the agent runs on (Image / private IsolatedRoot). Honored by the
     /// rootless-podman adapter; the docker/k8s adapters run `image` directly.
     pub rootfs: RootfsPlan,
-}
-
-/// Deployment-owned provisioning policy for a Kubernetes Session's retained
-/// active mutable filesystem. It is feature-independent so the typed runtime
-/// configuration has one shape even when a binary does not compile K8s support.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct K8sContinuationVolume {
-    pub storage_class_name: Option<String>,
-    pub size: String,
 }
 
 #[cfg(test)]
@@ -1337,6 +1313,13 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 return Err(err(error));
             }
         };
+        let runtime_handle = match self.runtime.handle_extra(&container_id).await {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                let _ = self.runtime.remove(&container_id).await;
+                return Err(err(error));
+            }
+        };
         // Report each mount's realization: a byte mount is a Bind and a Memory
         // store is the canonical mounter's copy projection. Built from spec.mounts
         // directly because native volumes do not align with the byte-bind list.
@@ -1365,6 +1348,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             blobs: self.blobs.clone(),
             file_store: self.file_store.clone(),
             live_input_projection: self.runtime.supports_live_input_projection(),
+            runtime_handle,
             realized,
             recovered: false,
             lifecycle: Arc::new(ContainerCleanupState {
@@ -1407,6 +1391,11 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
                 .and_then(|value| value.get("live_input_projection"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
+            runtime_handle: handle
+                .extra
+                .as_ref()
+                .and_then(|value| value.get("runtime_handle"))
+                .cloned(),
             realized: Vec::new(),
             recovered: true,
             lifecycle: Arc::new(ContainerCleanupState::completed(
@@ -1546,6 +1535,8 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// Frozen capability of the concrete resident Pod. Older adopted Pods do not
     /// gain a projector merely because the newly started runtime supports one.
     live_input_projection: bool,
+    /// Runtime-owned incarnation evidence carried through Worker adoption.
+    runtime_handle: Option<serde_json::Value>,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
     /// Host staging dir for materialized inline-mount content, held for the container's
@@ -1820,10 +1811,14 @@ impl ContainerCleanupState {
         &self,
         runtime: &R,
         container_id: &str,
+        runtime_handle: Option<&serde_json::Value>,
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.remove_done.lock().await;
         if !*done {
-            runtime.remove(container_id).await.map_err(err)?;
+            runtime
+                .remove_with_handle(container_id, runtime_handle)
+                .await
+                .map_err(err)?;
             if let Some(memory) = self.memory.lock().await.take() {
                 for mount in memory {
                     mount.handle.teardown().await;
@@ -1844,12 +1839,19 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
 
     fn handle(&self) -> pc::SandboxHandle {
         let mut h = pc::SandboxHandle::new("container", &self.id);
-        h.extra = Some(serde_json::json!({
+        let mut extra = serde_json::json!({
             "container_id": self.container_id,
             "outputs_path": self.outputs_path,
             "base_env": self.base_env,
             "live_input_projection": self.live_input_projection,
-        }));
+        });
+        if let Some(runtime_handle) = &self.runtime_handle {
+            extra
+                .as_object_mut()
+                .expect("container handle metadata is an object")
+                .insert("runtime_handle".into(), runtime_handle.clone());
+        }
+        h.extra = Some(extra);
         h
     }
 
@@ -1946,7 +1948,11 @@ impl<R: ContainerRuntime + 'static> pc::Sandbox for ContainerSandbox<R> {
             }
         }
         self.lifecycle
-            .dispose_once(self.runtime.as_ref(), &self.container_id)
+            .dispose_once(
+                self.runtime.as_ref(),
+                &self.container_id,
+                self.runtime_handle.as_ref(),
+            )
             .await
     }
 }
