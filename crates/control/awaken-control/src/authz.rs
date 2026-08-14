@@ -863,16 +863,15 @@ enum RouteFamilyPolicy {
     TokenAdmin,
 }
 
+const HOSTED_RUN_POLICY: RouteFamilyPolicy = RouteFamilyPolicy::HostedRuntime {
+    read: RUN_READ,
+    write: RUN_CREATE,
+    embedded_read: WORKSPACE_READ,
+    embedded_write: WORKSPACE_WRITE,
+};
+
 const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/sessions",
-        RouteFamilyPolicy::HostedRuntime {
-            read: RUN_READ,
-            write: RUN_CREATE,
-            embedded_read: WORKSPACE_READ,
-            embedded_write: WORKSPACE_WRITE,
-        },
-    ),
+    RoutePolicyDescriptor::hosted_runtime("/v1/sessions", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::hosted_runtime(
         "/v1/dreams",
         RouteFamilyPolicy::Resource {
@@ -880,48 +879,12 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
             write: WORKSPACE_WRITE,
         },
     ),
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/a2a",
-        RouteFamilyPolicy::Resource {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    ),
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/message:send",
-        RouteFamilyPolicy::Resource {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    ),
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/message:stream",
-        RouteFamilyPolicy::Resource {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    ),
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/ai-sdk",
-        RouteFamilyPolicy::Resource {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    ),
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/ag-ui",
-        RouteFamilyPolicy::Resource {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    ),
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/durable",
-        RouteFamilyPolicy::Resource {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    ),
+    RoutePolicyDescriptor::hosted_runtime("/v1/a2a", HOSTED_RUN_POLICY),
+    RoutePolicyDescriptor::hosted_runtime("/v1/message:send", HOSTED_RUN_POLICY),
+    RoutePolicyDescriptor::hosted_runtime("/v1/message:stream", HOSTED_RUN_POLICY),
+    RoutePolicyDescriptor::hosted_runtime("/v1/ai-sdk", HOSTED_RUN_POLICY),
+    RoutePolicyDescriptor::hosted_runtime("/v1/ag-ui", HOSTED_RUN_POLICY),
+    RoutePolicyDescriptor::hosted_runtime("/v1/durable", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::hosted_runtime(
         "/v1/files",
         RouteFamilyPolicy::Resource {
@@ -950,13 +913,7 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
             write: WORKSPACE_WRITE,
         },
     ),
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/awaken/sessions",
-        RouteFamilyPolicy::Resource {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
-        },
-    ),
+    RoutePolicyDescriptor::hosted_runtime("/v1/awaken/sessions", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::control("/v1/config/iam/tokens", RouteFamilyPolicy::TokenAdmin),
     RoutePolicyDescriptor::hosted_runtime(
         "/v1/application-access-tokens",
