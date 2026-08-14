@@ -72,6 +72,88 @@ async fn acp_permission_titles_use_the_canonical_mcp_tool_identity() {
     }
 }
 
+#[tokio::test]
+async fn acp_mcp_server_name_drift_uses_only_conservative_session_alias_consensus() {
+    // Cause/effect graph: C1 the ACP server name matches a Session alias; C2 it
+    // drifts to the MCP implementation's advertised name; C3 all configured
+    // alias policies allow; C4 any alias denies; C5 no deny but one alias asks.
+    // Effects: E1 exact-alias policy only; E2 allow; E3 deny; E4 await. FMECA:
+    // blindly trusting the reported name bypasses authored policy (S10/O4/D8),
+    // while choosing one arbitrary alias can widen authority (S10/O3/D7).
+    // Consensus preserves the sole neutral policy and fails closed.
+    //
+    // | Rule | C1 | C2 | Alias verdicts | Effect |
+    // |---|---|---|---|---|
+    // | A1 | T | F | browser=allow, pilot=deny | E1 allow |
+    // | A2 | F | T | allow, allow | E2 allow |
+    // | A3 | F | T | allow, deny | E3 deny |
+    // | A4 | F | T | allow, ask | E4 await |
+    struct AliasPolicy {
+        pilot: &'static str,
+        browser: &'static str,
+    }
+    #[async_trait]
+    impl ToolPermissionPolicy for AliasPolicy {
+        async fn evaluate(&self, call: &ToolCall) -> ToolPermissionVerdict {
+            let behavior = if call.tool_id.starts_with("mcp__pilot__") {
+                self.pilot
+            } else if call.tool_id.starts_with("mcp__browser__") {
+                self.browser
+            } else {
+                "ask"
+            };
+            match behavior {
+                "allow" => ToolPermissionVerdict::Allow,
+                "deny" => ToolPermissionVerdict::Deny {
+                    reason: "denied by alias policy".into(),
+                },
+                _ => ToolPermissionVerdict::RequireConfirmation {
+                    correlation_id: format!("confirm:{}", call.call_id),
+                },
+            }
+        }
+    }
+
+    async fn verdict(pilot: &'static str, browser: &'static str, tool: &str) -> PermissionVerdict {
+        let base = NeutralPermissionResolver {
+            policy: Arc::new(AliasPolicy { pilot, browser }),
+        };
+        AliasedMcpPermissionResolver {
+            base: &base,
+            mcp_server_names: &["pilot".into(), "browser".into()],
+        }
+        .resolve(&PermissionAsk {
+            tool: tool.into(),
+            call_id: "alias-call".into(),
+            arguments: serde_json::json!({"url": "https://example.test"}),
+        })
+        .await
+    }
+
+    assert_eq!(
+        verdict("deny", "allow", "mcp.browser.browser_navigate").await,
+        PermissionVerdict::Allow,
+        "A1"
+    );
+    assert_eq!(
+        verdict("allow", "allow", "mcp.playwright.browser_navigate").await,
+        PermissionVerdict::Allow,
+        "A2"
+    );
+    assert_eq!(
+        verdict("allow", "deny", "mcp.playwright.browser_navigate").await,
+        PermissionVerdict::Deny,
+        "A3"
+    );
+    assert_eq!(
+        verdict("allow", "ask", "mcp.playwright.browser_navigate").await,
+        PermissionVerdict::Await {
+            correlation_id: "confirm:alias-call".into(),
+        },
+        "A4"
+    );
+}
+
 #[test]
 fn terminal_business_outcome_is_not_rewritten_by_cleanup_failure() {
     let outcome = preserve_terminal_outcome(
