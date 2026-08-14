@@ -549,7 +549,7 @@ pub fn mount_with_managed_and_application_access_and_models(
     let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
         host.skill_store().expect("test-support Skill store"),
     ));
-    let (managed, data, worker_private, _) = mount_with_managed_over_and_models(
+    let (managed, data, application, worker_private, _) = mount_with_managed_over_and_models(
         host,
         managed_state,
         ManagedApplicationServices {
@@ -572,8 +572,11 @@ pub fn mount_with_managed_and_application_access_and_models(
         },
     )
     .expect("test-support Worker transport must assemble");
-    let public =
-        with_scenario_worker_transport(managed.merge(data), worker_private, remote_worker_required);
+    let public = with_scenario_worker_transport(
+        managed.merge(data).merge(application),
+        worker_private,
+        remote_worker_required,
+    );
     with_scenario_session_lifecycle(public, supervised_sessions)
 }
 
@@ -716,6 +719,7 @@ pub fn mount_with_managed_application_access_models_and_dreams(
         Router,
         Router,
         Router,
+        Router,
         Arc<awaken_dream_application::DreamApplication>,
     ),
     WorkerTransportBuildError,
@@ -741,31 +745,32 @@ fn mount_with_managed_over(
     let worker_skill_bundles = Arc::new(awaken_resource_application::StoreSkillBundleSource::new(
         host.skill_store().expect("test-support Skill store"),
     ));
-    let (managed, public, worker_private, dreams) = mount_with_managed_over_and_models(
-        host,
-        managed_state,
-        ManagedApplicationServices {
-            session_application,
-            resource_catalog,
-            application_access,
-            model_inventory: None,
-            dream_process_store: ephemeral_dream_process_store(),
-        },
-        ManagedRoutingExtensions {
-            resource_management_router: resources,
-            memory_stores,
-            worker_file_application,
-            worker_skill_bundles,
-            worker_authenticator: Arc::new(
-                awaken_worker_transport_security::HeaderWorkerAuthenticator,
-            ),
-            worker_placement_policy: None,
-            worker_directory: test_worker_directory(),
-        },
-    )
-    .expect("test-support Worker transport must assemble");
+    let (managed, public, application, worker_private, dreams) =
+        mount_with_managed_over_and_models(
+            host,
+            managed_state,
+            ManagedApplicationServices {
+                session_application,
+                resource_catalog,
+                application_access,
+                model_inventory: None,
+                dream_process_store: ephemeral_dream_process_store(),
+            },
+            ManagedRoutingExtensions {
+                resource_management_router: resources,
+                memory_stores,
+                worker_file_application,
+                worker_skill_bundles,
+                worker_authenticator: Arc::new(
+                    awaken_worker_transport_security::HeaderWorkerAuthenticator,
+                ),
+                worker_placement_policy: None,
+                worker_directory: test_worker_directory(),
+            },
+        )
+        .expect("test-support Worker transport must assemble");
     let public = with_scenario_worker_transport(
-        managed.merge(public),
+        managed.merge(public).merge(application),
         worker_private,
         remote_worker_required,
     );
@@ -782,6 +787,7 @@ fn mount_with_managed_over_and_models(
     routing: ManagedRoutingExtensions,
 ) -> Result<
     (
+        Router,
         Router,
         Router,
         Router,
@@ -886,6 +892,7 @@ fn mount_with_managed_over_and_models(
             awaken_authz_enforce::application_guard,
         ));
     }
+    let application = ai_sdk.merge(ag_ui);
     let a2a = awaken_protocol_a2a::router_with_storage_root(admitted_runs, host.storage_dir());
     // A coordinator-only Host owns both dispatch and committed Thread truth but
     // deliberately has no execution pool. Start its one environment-free repair
@@ -986,11 +993,17 @@ fn mount_with_managed_over_and_models(
     );
     let managed = managed.merge(resource_management_router).merge(models);
     let local_workspace = host.local_workspace().to_string();
-    let router = ai_sdk.merge(ag_ui).merge(a2a).merge(durable_ops);
+    let router = a2a.merge(durable_ops);
     let router = with_local_workspace_scope(router, local_workspace);
     let worker_transport =
         with_local_workspace_scope(worker_transport, host.local_workspace().to_string());
-    Ok((managed, router, worker_transport, dream_application))
+    Ok((
+        managed,
+        router,
+        application,
+        worker_transport,
+        dream_application,
+    ))
 }
 
 fn with_local_workspace_scope(router: Router, local_workspace: String) -> Router {
