@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 mod session_profile;
 
 pub use session_profile::{
-    ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentProfileSource,
-    ExecutableAgentSessionProfile,
+    ExecutableAgentDelegate, ExecutableAgentEnvironment, ExecutableAgentMcpServer,
+    ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
 
 /// One immutable Control publication made available for future Coordinator

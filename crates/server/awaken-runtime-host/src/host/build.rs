@@ -1406,7 +1406,6 @@ impl SharedHost {
         &self,
         thread: &str,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
-        permission: Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy>,
         commit: Arc<crate::store::HostCommit>,
         parent_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
@@ -1422,6 +1421,39 @@ impl SharedHost {
         {
             return Ok(None);
         }
+        let workspace = self.thread_workspace(thread);
+        let delivered = self
+            .session_slots
+            .read(thread, |slot| slot.agent_publications.clone())
+            .unwrap_or_default();
+        let delivered_source = (!delivered.is_empty())
+            .then(|| awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(delivered))
+            .transpose()
+            .map_err(|error| {
+                HostError::bad_request(format!("invalid claimed Agent publications: {error}"))
+            })?
+            .map(|source| {
+                Arc::new(source) as Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>
+            });
+        let publication_source = delivered_source.or_else(|| self.agent_publications.clone());
+        let agent_publications = awaken_runtime_contract::freeze_delegation_publications(
+            parent_snapshot,
+            publication_source.as_deref(),
+            &workspace,
+        )
+        .map_err(|error| {
+            HostError::bad_request(format!(
+                "cannot freeze Agent delegation publications: {error}"
+            ))
+        })?;
+        let frozen_source = Arc::new(
+            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(
+                agent_publications.clone(),
+            )
+            .map_err(|error| {
+                HostError::bad_request(format!("invalid Agent publication closure: {error}"))
+            })?,
+        );
         let scheduler = if self.deployment.durable {
             let recovery_projection = commit.recovery_projection();
             let claimed_commit = self
@@ -1437,16 +1469,16 @@ impl SharedHost {
                 claimed_commit,
                 recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
+                agent_publications,
             })
         } else {
             None
         };
         let acp = self.acp.clone().map(|acp| {
             let sandbox = sandbox.clone();
-            let permission = permission.clone();
-            Arc::new(move |backend| {
+            Arc::new(move |backend, permission| {
                 Ok(
-                    acp.executor_for(sandbox.clone(), permission.clone(), backend, Vec::new())
+                    acp.executor_for(sandbox.clone(), permission, backend, Vec::new())
                         as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
                 )
             }) as crate::agent_runner::ChildAcpExecutorFactory
@@ -1459,9 +1491,10 @@ impl SharedHost {
                 acp,
                 remote: self.remote_attempt_executor.clone(),
                 remote_credentials: self.remote_credential_realization.clone(),
+                web_search: Some(self.web_search_plugin(thread)),
             },
-            self.agent_publications.clone(),
-            self.thread_workspace(thread),
+            Some(frozen_source),
+            workspace,
         )
         .map_err(|error| HostError::bad_request(error.to_string()))?
         .with_scheduler(scheduler);
@@ -1487,10 +1520,7 @@ impl SharedHost {
         let resolver: Arc<dyn WorkerResolver<AnyDispatchStore>> = Arc::new(HostWorkerResolver {
             host: Arc::downgrade(self),
         });
-        let config = DispatchServiceConfig {
-            lease_renewal_interval: Some(awaken_run_ingress::DEFAULT_LEASE_RENEWAL),
-            ..DispatchServiceConfig::default()
-        };
+        let config = DispatchServiceConfig::default();
         let concurrency = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);

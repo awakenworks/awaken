@@ -212,7 +212,7 @@ impl SessionEnvironment {
             Self::Namespace(sandbox) => sandbox.rooted_tools(),
             // Descriptors remain the canonical built-in set; execution is forced
             // through this environment's bound remote hand in `SessionCtx`.
-            Self::Container { .. } => awaken_ext_builtin_tools::executable_hand_tools(),
+            Self::Container { .. } => awaken_ext_builtin_tools::all_hand_tools(),
         }
     }
 

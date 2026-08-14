@@ -2,8 +2,8 @@
 //! dispatch and commits. It carries no store and trusts no client-side clock.
 
 use awaken_run_ingress_contract::{
-    RegisteredWorker, RegistryMutation, RunClaim, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerRegistration,
+    ClaimedSessionControlError, RegisteredWorker, RegistryMutation, RunClaim, WorkerHeartbeat,
+    WorkerIdentity, WorkerManifest, WorkerRegistration,
 };
 use serde_json::{Value, json};
 
@@ -171,9 +171,12 @@ impl WorkerControlClient {
         identity: &WorkerIdentity,
         claim: &RunClaim,
         session_id: &str,
-    ) -> Result<Option<awaken_session_contract::SessionRealizationDirective>, String> {
+    ) -> Result<
+        Option<awaken_session_contract::SessionRealizationDirective>,
+        ClaimedSessionControlError,
+    > {
         let body = self
-            .post(
+            .realization_response(
                 "/v1/worker/session/resume",
                 json!({
                     "identity": identity,
@@ -181,13 +184,16 @@ impl WorkerControlClient {
                     "session_id": session_id,
                 }),
             )
-            .await?;
+            .await
+            .map_err(ClaimedSessionControlError::from)?;
         body.get("realization")
             .filter(|value| !value.is_null())
             .cloned()
             .map(serde_json::from_value)
             .transpose()
-            .map_err(|error| format!("Session resume directive decode: {error}"))
+            .map_err(|error| {
+                ClaimedSessionControlError::new(format!("Session resume directive decode: {error}"))
+            })
     }
 
     pub async fn activate_session_realization(

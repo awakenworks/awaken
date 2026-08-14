@@ -121,6 +121,7 @@ impl ConfigService {
             let session_profile = if let Some(defaults) = frozen_defaults {
                 registered_session_profile(
                     &publication.snapshot,
+                    &source.config,
                     &source.config.model_binding,
                     Some(defaults),
                 )
@@ -139,6 +140,7 @@ impl ConfigService {
                 });
                 registered_session_profile(
                     &publication.snapshot,
+                    &source.config,
                     &source.config.model_binding,
                     defaults,
                 )
@@ -151,6 +153,7 @@ impl ConfigService {
             } else {
                 Ok(historical_session_profile(
                     &publication.snapshot,
+                    &source.config,
                     &source.config.model_binding,
                 ))
             };

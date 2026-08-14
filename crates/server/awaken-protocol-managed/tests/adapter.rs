@@ -778,10 +778,12 @@ async fn session_capability_objects_match_wire_contract() {
         s["agent"]["skills"],
         serde_json::json!([{ "type": "custom", "skill_id": "deploy", "version": "latest" }])
     );
-    assert_eq!(
-        s["agent"]["multiagent"],
-        serde_json::json!({ "type": "coordinator", "agents": ["researcher"] })
-    );
+    assert_eq!(s["agent"]["multiagent"]["type"], "coordinator");
+    let child = &s["agent"]["multiagent"]["agents"][0];
+    assert_eq!(child["id"], "researcher");
+    assert_eq!(child["name"], "researcher");
+    assert_eq!(child["type"], "agent");
+    assert_eq!(child["version"], 1);
     assert_eq!(s["resources"], serde_json::json!([]));
 }
 
@@ -836,6 +838,7 @@ impl SessionRuntime for AwaitingFake {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "call-1".into(),
                     content: vec![ContentBlock::text("wrote x.txt")],
+                    is_error: false,
                 }],
             },
             Message::text(Id("a2".into()), Role::Assistant, "done"),
@@ -1277,6 +1280,7 @@ impl SessionRuntime for CustomToolFake {
                 content: vec![ContentBlock::ToolResult {
                     tool_use_id: "cc1".into(),
                     content,
+                    is_error: false,
                 }],
             },
             Message::text(Id("a2".into()), Role::Assistant, format!("got: {text}")),

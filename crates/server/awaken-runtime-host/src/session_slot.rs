@@ -102,6 +102,9 @@ pub(crate) struct SessionRuntimeSlot {
     /// so lease-only realization must retain this authority instead of trying
     /// to reconstruct it from the backend projection.
     pub published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+    /// Immutable non-parent publication closure delivered by the current Run
+    /// claim. It is rebuildable execution input, not a Worker-owned catalog.
+    pub agent_publications: Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
     pub model_ref: Option<String>,
     /// Process-local copy of the backend frozen in the Session baseline. It is
     /// validated against the immutable publication before runtime construction.

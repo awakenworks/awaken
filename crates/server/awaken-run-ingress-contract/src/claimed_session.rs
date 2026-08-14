@@ -10,12 +10,28 @@ use awaken_session_contract::{SessionRealizationControl, SessionRealizationDirec
 /// Failure crossing the authenticated claim-fenced Session-control boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("claimed Session control failed: {0}")]
-pub struct ClaimedSessionControlError(String);
+pub struct ClaimedSessionControlError(awaken_session_contract::SessionRealizationControlFailure);
 
 impl ClaimedSessionControlError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(awaken_session_contract::SessionRealizationControlFailure::Unavailable(message.into()))
+    }
+
+    #[must_use]
+    pub const fn is_not_ready(&self) -> bool {
+        matches!(
+            self.0,
+            awaken_session_contract::SessionRealizationControlFailure::NotReady
+        )
+    }
+}
+
+impl From<awaken_session_contract::SessionRealizationControlFailure>
+    for ClaimedSessionControlError
+{
+    fn from(error: awaken_session_contract::SessionRealizationControlFailure) -> Self {
+        Self(error)
     }
 }
 

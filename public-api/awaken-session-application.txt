@@ -144,6 +144,7 @@ pub async fn awaken_session_application::SessionApplication::continue_outcome(&s
 pub async fn awaken_session_application::SessionApplication::define_outcome(&self, &str, &str, &str, u32) -> core::result::Result<awaken_session_contract::session::OutcomeDrive, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::delegated_runs(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::session::DelegatedRun>, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::end_runtime_session(&self, &str) -> core::result::Result<(), awaken_session_contract::session::RunError>
+pub fn awaken_session_application::SessionApplication::has_agent_profile_source(&self) -> bool
 pub async fn awaken_session_application::SessionApplication::interrupt(&self, &str) -> core::result::Result<(), awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::missing_vault(&self, &str, &[alloc::string::String]) -> core::result::Result<core::option::Option<alloc::string::String>, awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::model(&self) -> alloc::string::String
@@ -159,6 +160,7 @@ pub async fn awaken_session_application::SessionApplication::runtime_owns_thread
 pub async fn awaken_session_application::SessionApplication::session(&self, &str) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_contract::session_repo::SessionRepositoryError>
 pub fn awaken_session_application::SessionApplication::session_memory_store(&self, &str, &str) -> core::result::Result<awaken_resource_contract::catalog::MemoryStoreDefinition, awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::session_profile(&self, &str, &str) -> core::option::Option<awaken_executable_agent_contract::session_profile::ExecutableAgentSessionProfile>
+pub fn awaken_session_application::SessionApplication::session_profile_at_revision(&self, &str, &str, u64) -> core::option::Option<awaken_executable_agent_contract::session_profile::ExecutableAgentSessionProfile>
 pub async fn awaken_session_application::SessionApplication::session_transcript(&self, &str, &str) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::session_usage(&self, &str) -> core::result::Result<awaken_session_contract::session::SessionUsage, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::supports_mid_conversation_system(&self, &str) -> bool

@@ -401,6 +401,21 @@ impl PlacementRequirements {
             ..Self::default()
         }
     }
+
+    /// Author a current-contract request that may run locally or on a compatible
+    /// registered Worker. [`Default`] remains the durable legacy decoder posture
+    /// (v0), so new admission code must use this constructor instead of silently
+    /// publishing an obsolete protocol requirement.
+    #[must_use]
+    pub fn remote_preferred() -> Self {
+        Self {
+            contract_version: CURRENT_CONTRACT_VERSION,
+            location: ExecutionLocation::RemotePreferred,
+            dispatch_contract_version: CURRENT_CONTRACT_VERSION,
+            runtime_protocol_version: CURRENT_CONTRACT_VERSION,
+            ..Self::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

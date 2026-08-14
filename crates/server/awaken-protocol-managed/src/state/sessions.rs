@@ -8,6 +8,76 @@ use super::session_mcp_projection::typed_mcp_servers;
 use crate::types::AgentRef;
 
 impl ManagedState {
+    fn resolved_session_multiagent(
+        &self,
+        workspace_id: &str,
+        profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
+        caps: &AgentCapabilities,
+    ) -> Result<Option<crate::types::SessionMultiagentCoordinator>, StateError> {
+        let (delegates, advisor_model) = profile.map_or_else(
+            || {
+                (
+                    caps.delegates
+                        .iter()
+                        .cloned()
+                        .map(
+                            |agent_id| awaken_executable_agent_contract::ExecutableAgentDelegate {
+                                agent_id,
+                                source_revision: None,
+                            },
+                        )
+                        .collect(),
+                    None,
+                )
+            },
+            |profile| (profile.delegates.clone(), profile.advisor_model.clone()),
+        );
+        if delegates.is_empty() && advisor_model.is_none() {
+            return Ok(None);
+        }
+        let mut agents = Vec::with_capacity(delegates.len() + usize::from(advisor_model.is_some()));
+        for delegate in delegates {
+            let resolved = delegate
+                .source_revision
+                .and_then(|revision| {
+                    self.application.session_profile_at_revision(
+                        workspace_id,
+                        &delegate.agent_id,
+                        revision,
+                    )
+                })
+                .or_else(|| {
+                    self.application
+                        .session_profile(workspace_id, &delegate.agent_id)
+                });
+            let child = match resolved {
+                Some(profile) => Self::thread_agent_from_profile(&delegate.agent_id, profile),
+                None if profile.is_none() => {
+                    Self::thread_agent_from_profile(&delegate.agent_id, Default::default())
+                }
+                None => {
+                    return Err(StateError::Run(RunError::bad_request(format!(
+                        "multiagent_unavailable: Agent `{}` publication revision {:?} is unavailable",
+                        delegate.agent_id, delegate.source_revision
+                    ))));
+                }
+            };
+            agents.push(crate::types::SessionMultiagentRosterEntry::Agent(child));
+        }
+        if let Some(model) = advisor_model {
+            agents.push(crate::types::SessionMultiagentRosterEntry::Advisor(
+                crate::types::agent::AdvisorRosterReference {
+                    model,
+                    kind: crate::types::agent::AdvisorRosterReferenceKind::Advisor,
+                },
+            ));
+        }
+        Ok(Some(crate::types::SessionMultiagentCoordinator {
+            kind: "coordinator",
+            agents,
+        }))
+    }
+
     pub(super) const fn wire_session_status(execution: SessionExecutionState) -> SessionStatus {
         match execution {
             SessionExecutionState::Preparing | SessionExecutionState::Activating => {
@@ -269,7 +339,26 @@ impl ManagedState {
             },
         };
         let agent_id = req.agent.id().to_string();
-        let config_view = self.application.session_profile(&owner_scope, &agent_id);
+        let requested_agent_version = req.agent.version();
+        let config_view = requested_agent_version
+            .and_then(|version| {
+                self.application
+                    .session_profile_at_revision(&owner_scope, &agent_id, version)
+            })
+            .or_else(|| {
+                requested_agent_version
+                    .is_none()
+                    .then(|| self.application.session_profile(&owner_scope, &agent_id))
+                    .flatten()
+            });
+        if let Some(version) = requested_agent_version
+            && config_view.is_none()
+            && self.application.has_agent_profile_source()
+        {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "agent_version_unavailable: Agent `{agent_id}` version {version} is unavailable"
+            ))));
+        }
         let is_built_in_dream_agent = agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
             && req
                 .metadata
@@ -316,18 +405,38 @@ impl ManagedState {
             }),
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
-        let agent_version = req.agent.version().unwrap_or(1);
-        let delegate_ids = config_view
+        let agent_version = requested_agent_version
+            .or_else(|| config_view.as_ref().map(|profile| profile.source_revision))
+            .unwrap_or(1)
+            .max(1);
+        let delegate_ids: Vec<String> = config_view
             .as_ref()
-            .map(|view| view.delegate_ids.clone())
+            .map(|view| {
+                view.delegates
+                    .iter()
+                    .map(|delegate| delegate.agent_id.clone())
+                    .collect()
+            })
             .unwrap_or_default();
         let selected_geo = selected_model
             .as_ref()
             .and_then(|model| model.inference_geo.as_deref());
-        for delegate_id in &delegate_ids {
-            let delegate = self
-                .application
-                .session_profile(&owner_scope, delegate_id)
+        for delegate_ref in config_view
+            .as_ref()
+            .into_iter()
+            .flat_map(|profile| profile.delegates.iter())
+        {
+            let delegate_id = &delegate_ref.agent_id;
+            let delegate = delegate_ref
+                .source_revision
+                .and_then(|revision| {
+                    self.application.session_profile_at_revision(
+                        &owner_scope,
+                        delegate_id,
+                        revision,
+                    )
+                })
+                .or_else(|| self.application.session_profile(&owner_scope, delegate_id))
                 .ok_or_else(|| {
                     StateError::Run(RunError::bad_request(format!(
                         "multiagent_unavailable: Agent `{delegate_id}` has no executable profile"
@@ -590,6 +699,9 @@ impl ManagedState {
                     ordered_vault_ids: req.vault_ids.clone(),
                 },
                 agent_id: agent_id.clone(),
+                agent_revision: config_view.as_ref().and_then(|profile| {
+                    (profile.source_revision > 0).then_some(profile.source_revision)
+                }),
                 model: resolved_model.id.clone(),
                 execution_model_ref,
                 runtime: published_backend_ref,
@@ -620,6 +732,8 @@ impl ManagedState {
             .map_err(Self::map_creation_error)?;
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let session_tools = project::managed_tools(&effective_tools);
+        let session_multiagent =
+            self.resolved_session_multiagent(&owner_scope, config_view.as_ref(), &caps)?;
         let mut session = Session {
             id: id.clone(),
             kind: "session",
@@ -629,8 +743,13 @@ impl ManagedState {
                 version: agent_version,
                 // Echo the accepted official override or the published Agent model.
                 model: resolved_model,
-                name: agent_id.clone(),
-                description: None,
+                name: config_view
+                    .as_ref()
+                    .and_then(|profile| profile.name.clone())
+                    .unwrap_or_else(|| agent_id.clone()),
+                description: config_view
+                    .as_ref()
+                    .and_then(|profile| profile.description.clone()),
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
                 tools: session_tools,
                 // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
@@ -645,15 +764,7 @@ impl ManagedState {
                             .collect()
                     },
                 ),
-                multiagent: config_view.as_ref().map_or_else(
-                    || project::agent_multiagent(&caps),
-                    |view| {
-                        project::agent_multiagent_roster(
-                            &view.delegate_ids,
-                            view.advisor_model.as_deref(),
-                        )
-                    },
-                ),
+                multiagent: session_multiagent,
             },
             budget: persisted
                 .budget
@@ -742,6 +853,7 @@ impl ManagedState {
     pub(crate) fn rehydrated_session(
         &self,
         id: &str,
+        owner_scope: &str,
         persisted: Option<PersistedSession>,
     ) -> Result<Session, StateError> {
         let caps = self.application.capabilities_for(id);
@@ -752,6 +864,7 @@ impl ManagedState {
         let default_tools = project::agent_tools(&caps);
         let (
             agent_id,
+            agent_revision,
             model,
             environment_id,
             title,
@@ -762,11 +875,12 @@ impl ManagedState {
             archived_at,
         ) = match persisted {
             Some(p) => {
-                let (agent_id, model, environment_id) = p
+                let (agent_id, agent_revision, model, environment_id) = p
                     .frozen_baseline()
                     .map(|baseline| {
                         (
                             baseline.agent_id.clone(),
+                            baseline.agent_revision,
                             baseline.model.clone(),
                             baseline.environment.environment_id.clone(),
                         )
@@ -774,6 +888,7 @@ impl ManagedState {
                     .unwrap_or_else(|| {
                         (
                             "assistant".into(),
+                            None,
                             self.application.model(),
                             p.environment_id().to_string(),
                         )
@@ -782,6 +897,7 @@ impl ManagedState {
                 let archived_at = p.archived_at().map(str::to_owned);
                 (
                     agent_id,
+                    agent_revision,
                     model,
                     environment_id,
                     p.title,
@@ -794,6 +910,7 @@ impl ManagedState {
             }
             None => (
                 "assistant".to_string(),
+                None,
                 self.application.model(),
                 awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.to_string(),
                 None,
@@ -805,21 +922,49 @@ impl ManagedState {
             ),
         };
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
+        let profile = agent_revision
+            .and_then(|revision| {
+                self.application
+                    .session_profile_at_revision(owner_scope, &agent_id, revision)
+            })
+            .or_else(|| {
+                agent_revision
+                    .is_none()
+                    .then(|| self.application.session_profile(owner_scope, &agent_id))
+                    .flatten()
+            });
+        if let Some(revision) = agent_revision
+            && profile.is_none()
+        {
+            return Err(StateError::Run(RunError::unavailable(format!(
+                "Agent `{agent_id}` publication revision {revision} is unavailable during Session recovery"
+            ))));
+        }
+        let multiagent = self.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps)?;
         Ok(Session {
             id: id.to_string(),
             kind: "session",
             agent: SessionAgent {
                 id: agent_id.clone(),
                 kind: "agent",
-                version: 1,
+                version: profile
+                    .as_ref()
+                    .map(|profile| profile.source_revision)
+                    .unwrap_or(1)
+                    .max(1),
                 model: ModelConfig::new(model),
-                name: agent_id,
-                description: None,
-                system: None,
+                name: profile
+                    .as_ref()
+                    .and_then(|profile| profile.name.clone())
+                    .unwrap_or_else(|| agent_id.clone()),
+                description: profile
+                    .as_ref()
+                    .and_then(|profile| profile.description.clone()),
+                system: profile.as_ref().and_then(|profile| profile.system.clone()),
                 tools: agent_tools,
                 mcp_servers,
                 skills: project::agent_skills(&caps),
-                multiagent: project::agent_multiagent(&caps),
+                multiagent,
             },
             budget: projected_budget,
             environment_id,
@@ -864,14 +1009,15 @@ impl ManagedState {
             .delegated_runs(id)
             .await
             .map_err(StateError::Run)?;
+        let delegation_transcripts = self.delegation_transcripts(&delegated_runs).await?;
         let mut record = SessionRecord::new(
             persisted.agent_id().unwrap_or("assistant").to_string(),
-            self.rehydrated_session(id, Some(persisted.clone()))?,
+            self.rehydrated_session(id, &owner_scope, Some(persisted.clone()))?,
             persisted.resources,
             Vec::new(),
             Default::default(),
         );
-        self.append_delegation_projections(&mut record, &delegated_runs);
+        self.append_delegation_projections(&mut record, &delegated_runs, &delegation_transcripts);
         self.sessions
             .lock()
             .unwrap()

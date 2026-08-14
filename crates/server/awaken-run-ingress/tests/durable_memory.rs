@@ -15,6 +15,7 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_ext_builtin_tools::{MessageSendRequest, MessageSender};
+use awaken_run_ingress::PlacementRequirements;
 use awaken_run_ingress::{
     DispatchOutcome, DispatchQueue, DispatchWorker, DurableRunIngress, Inbox, ManualClock,
     MemoryDispatchStore, Outbox, OutboxMessageSender, PendingInput, RunDispatch,
@@ -42,6 +43,42 @@ fn send_request(target: &str, content: &str, operation_id: &str) -> MessageSendR
         source_run_id: "source-run".to_string(),
         operation_id: operation_id.to_string(),
     }
+}
+
+#[tokio::test]
+async fn an_unclaimable_parent_mediated_run_remains_scheduled_for_a_compatible_worker() {
+    // Cause/effect graph and decision table:
+    // C1 placement is locally claimable -> E1 start_run claims and drives it;
+    // C2 placement is RemoteRequired -> E2 local start returns None and the one
+    // durable queue retains the exact pending Run for a registered Worker;
+    // C3 the same stable request is retried -> E3 enqueue remains idempotent.
+    // R1=C1/E1 is covered by `a_persisted_frozen_candidate_routes_through_the_gateway`.
+    // R2=C2/E2 and R3=C2+C3/E2+E3 are owned here. FMECA: dropping C2 after a
+    // failed local claim leaves a parent waiting for a child boundary that no
+    // Worker can ever observe; the pending-row assertion detects that loss.
+    let store = Arc::new(MemoryDispatchStore::new());
+    let worker = DispatchWorker::new(
+        text_runtime(),
+        store.clone(),
+        Arc::new(MemoryCommitCoordinator::new()),
+        "parent-worker",
+    );
+    let request = RunDispatch::new(activation("remote-child"))
+        .with_placement(PlacementRequirements::remote_required());
+
+    assert!(
+        worker
+            .start_run(request.clone(), 0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(worker.start_run(request, 1).await.unwrap().is_none());
+
+    let rows = store.list_dispatches().await.unwrap();
+    assert_eq!(rows.len(), 1, "R2+R3/E2+E3");
+    assert_eq!(rows[0].run_id.0, "remote-child");
+    assert_eq!(rows[0].state, awaken_run_ingress::DispatchState::Pending);
 }
 
 #[derive(Default)]

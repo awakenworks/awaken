@@ -1,5 +1,9 @@
 use super::*;
 
+fn test_thread_agent(id: &str) -> SessionThreadAgent {
+    ManagedState::thread_agent_from_profile(id, Default::default())
+}
+
 #[tokio::test]
 async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_worker_ack() {
     // Cause/effect graph: C1 placement is a registered Worker; C2 the durable
@@ -88,7 +92,7 @@ async fn child_thread_archive_is_runtime_backed_fail_closed_and_idempotent() {
         record.child_threads.push(ManagedState::child_thread(
             &record.session,
             "child-1",
-            "researcher",
+            test_thread_agent("researcher"),
         ));
     }
 
@@ -141,10 +145,18 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     {
         let mut sessions = state.sessions.lock().unwrap();
         let record = sessions.get_mut(&session.id).unwrap();
-        let mut idle = ManagedState::child_thread(&record.session, "child-idle", "researcher");
+        let mut idle = ManagedState::child_thread(
+            &record.session,
+            "child-idle",
+            test_thread_agent("researcher"),
+        );
         idle.status = SessionThreadStatus::Idle;
         record.child_threads.push(idle);
-        let mut terminated = ManagedState::child_thread(&record.session, "child-ended", "reviewer");
+        let mut terminated = ManagedState::child_thread(
+            &record.session,
+            "child-ended",
+            test_thread_agent("reviewer"),
+        );
         terminated.status = SessionThreadStatus::Terminated;
         terminated.archived_at = Some(PROCESSED_AT.to_string());
         record.child_threads.push(terminated);
@@ -423,17 +435,17 @@ async fn archive_terminal_cleanup_tears_down_each_unique_runtime_once() {
         record.child_threads.push(ManagedState::child_thread(
             &record.session,
             "child-a",
-            "researcher",
+            test_thread_agent("researcher"),
         ));
         record.child_threads.push(ManagedState::child_thread(
             &record.session,
             "child-b",
-            "reviewer",
+            test_thread_agent("reviewer"),
         ));
         record.child_threads.push(ManagedState::child_thread(
             &record.session,
             "child-a",
-            "duplicate-projection",
+            test_thread_agent("duplicate-projection"),
         ));
     }
     *delegated.lock().unwrap() = vec![
@@ -625,7 +637,7 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
         record.child_threads.push(ManagedState::child_thread(
             &record.session,
             "child-fails",
-            "researcher",
+            test_thread_agent("researcher"),
         ));
     }
 
@@ -739,6 +751,7 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
                     runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: Default::default(),
                     agent_id: "coder".into(),
+                    agent_revision: None,
                     model: "kimi-k2".into(),
                     runtime: Some("acp:custom".into()),
                     delegate_ids: Vec::new(),

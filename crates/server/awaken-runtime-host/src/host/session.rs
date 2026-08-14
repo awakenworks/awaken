@@ -837,12 +837,15 @@ impl SharedHost {
         // with one, its rules/default decide every MCP call. Do not project a second
         // confirmation list through Session state: that path cannot survive recovery
         // without duplicating the published policy.
-        let authored_permission = config_permission_ruleset(
-            installed
-                .as_ref()
-                .map(|c| c.resolved_spec.plugin_config.plugins())
-                .unwrap_or(&self.plugin_config),
-        );
+        let published_configuration = installed
+            .as_ref()
+            .map(|snapshot| snapshot.resolved_spec.plugin_config.clone())
+            .unwrap_or_else(|| {
+                awaken_runtime_contract::agent_bindings::ResolvedConfiguration::new(
+                    Default::default(),
+                    self.plugin_config.clone(),
+                )
+            });
         let published_toolsets = installed
             .as_ref()
             .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
@@ -859,7 +862,9 @@ impl SharedHost {
             .iter()
             .map(|t| t.id().to_string())
             .collect();
-        let has_explicit_tool_policy = authored_permission.is_some() || !toolsets.is_empty();
+        let has_explicit_tool_policy = config_permission_ruleset(published_configuration.plugins())
+            .is_some()
+            || !toolsets.is_empty();
         let pre_authorized =
             pre_authorized_tool_ids(&mcp.tool_ids, &admin_ids, has_explicit_tool_policy);
         // The workspace skill dir is negotiated by the agent/hand definition: its
@@ -877,13 +882,10 @@ impl SharedHost {
             })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| crate::skills::DEFAULT_SKILLS_SUBDIR.to_string());
-        let apply_base_gate = !pre_authorized.is_empty() || has_explicit_tool_policy;
-        let permission = crate::config::server_permission_policy_with_toolsets(
-            authored_permission.clone(),
-            &pre_authorized,
-            &toolsets,
-        );
-        let base_gate = server_gate_with_toolsets(authored_permission, &pre_authorized, &toolsets);
+        let authorization =
+            effective_tool_authorization(&published_configuration, &pre_authorized, &toolsets);
+        let permission = authorization.policy.clone();
+        let base_gate = authorization.gate.clone();
         // R1/R2: the runtime is built with the host default executor; each run then
         // resolves its *effective* model (its `model_ref_override`, else its snapshot
         // binding) to an executor at the resolve seam and sets it on the run context.
@@ -891,12 +893,15 @@ impl SharedHost {
         // switch needs no session rebuild, and a database-less worker runs the
         // configured model without a session-level registry.
         let mut runtime = match env.as_ref() {
-            Some(env) => build_runtime(self.llm.clone(), env.as_ref()),
-            None => build_runtime(self.llm.clone(), &crate::config::DeferredHandToolSource),
+            Some(env) => {
+                build_runtime_with_authorization(self.llm.clone(), env.as_ref(), &authorization)
+            }
+            None => build_runtime_with_authorization(
+                self.llm.clone(),
+                &crate::config::DeferredHandToolSource,
+                &authorization,
+            ),
         };
-        if apply_base_gate {
-            runtime = runtime.with_gate(base_gate.clone());
-        }
         // Register the management tool executables globally (ADR-0052 D3): the
         // registry stays global, the compile-time scope fence is what restricts them.
         for tool in &self.admin_tools {
@@ -910,13 +915,8 @@ impl SharedHost {
             ));
         }
         if let Some(env) = env.clone()
-            && let Some(service) = self.run_delegation(
-                thread,
-                env,
-                permission.clone(),
-                commit.clone(),
-                installed.as_ref(),
-            )?
+            && let Some(service) =
+                self.run_delegation(thread, env, commit.clone(), installed.as_ref())?
         {
             runtime = runtime.with_run_delegation(service);
         }
@@ -1187,16 +1187,7 @@ impl SharedHost {
             .iter()
             .any(|id| id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
         {
-            let credentials = self.credential_materializer.clone().map(|materializer| {
-                Arc::new(crate::web_search::HostWebSearchCredentialResolver::new(
-                    materializer,
-                    self.thread_workspace(thread),
-                )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
-            });
-            let plugin = Arc::new(awaken_ext_builtin_tools::WebSearchPlugin::new(
-                self.web_search_providers.clone(),
-                credentials,
-            ));
+            let plugin = self.web_search_plugin(thread);
             if is_acp {
                 Some(
                     plugin

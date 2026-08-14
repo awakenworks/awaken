@@ -2,7 +2,7 @@
 //! implementations, plus the `BuiltinTool` / `Toolset` serde wire shape.
 
 use awaken_ext_builtin_tools::{
-    BuiltinTool, Toolset, builtin_tools, executable_hand_tools, web_hand_tools,
+    BuiltinTool, Toolset, all_hand_tools, builtin_tools, executable_hand_tools, web_hand_tools,
 };
 use awaken_runtime_contract::tool::ToolExecutionTarget;
 use std::collections::BTreeSet;
@@ -23,9 +23,8 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
         .map(|tool| tool.descriptor.id)
         .collect();
 
-    let implementation_ids: BTreeSet<String> = executable_hand_tools()
+    let implementation_ids: BTreeSet<String> = all_hand_tools()
         .iter()
-        .chain(web_hand_tools().iter())
         .map(|tool| tool.id().to_string())
         .collect();
 
@@ -45,7 +44,7 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
 
 #[test]
 fn hand_tool_execution_targets_follow_the_placement_decision_table() {
-    for tool in executable_hand_tools().into_iter().chain(web_hand_tools()) {
+    for tool in all_hand_tools() {
         assert_eq!(
             tool.execution_target(),
             ToolExecutionTarget::Sandbox,
@@ -53,6 +52,30 @@ fn hand_tool_execution_targets_follow_the_placement_decision_table() {
             tool.id()
         );
     }
+}
+
+#[test]
+fn grep_descriptor_exposes_every_executor_input() {
+    // Cause/effect graph: C1 GrepTool requires a regex pattern; C2 it requires
+    // the spill-file path. C1+C2 -> E1 the model can inspect a large managed
+    // tool result without rereading and respilling the entire file.
+    // Decision rule G1 requires both fields in properties and required.
+    // FMECA: omitting `path` made Anthropic's >100k-result spill recovery
+    // undiscoverable and drove agents into repeated web fetch/search loops.
+    let grep = builtin_tools()
+        .into_iter()
+        .find(|tool| tool.descriptor.id == "grep")
+        .expect("grep descriptor");
+    let properties = grep.descriptor.parameters["properties"]
+        .as_object()
+        .expect("G1 properties");
+    assert!(properties.contains_key("pattern"), "G1/C1");
+    assert!(properties.contains_key("path"), "G1/C2");
+    assert_eq!(
+        grep.descriptor.parameters["required"],
+        serde_json::json!(["pattern", "path"]),
+        "G1/E1"
+    );
 }
 
 #[test]

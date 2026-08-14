@@ -19,8 +19,13 @@ use crate::snapshot::{
     AgentId, AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 
-/// A loop-step ceiling used when the builder is not told otherwise.
-const DEFAULT_MAX_STEPS: usize = 16;
+/// Canonical loop-step ceiling when an Agent does not author an override.
+///
+/// Protocol adapters, the config authoring plane, administrative assistant, and
+/// direct snapshot builder all consume this one value. It is deliberately
+/// large enough for a normal plan + multi-tool + result turn while remaining a
+/// hard runaway backstop.
+pub const DEFAULT_MAX_STEPS: usize = 16;
 
 impl ExecutableAgentSnapshot {
     /// Start building a config for the agent identified by `id`.
@@ -278,6 +283,7 @@ mod tests {
             .model(ModelBinding::new("p", "primary", "genai"))
             .build();
         assert!(single.resolved_spec.model_candidates.is_empty());
+        assert_eq!(single.resolved_spec.max_steps, DEFAULT_MAX_STEPS);
 
         // Candidates land on the resolved spec as ordered pool fallbacks.
         let pooled = ExecutableAgentSnapshot::builder("a")

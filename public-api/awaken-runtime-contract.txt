@@ -1031,6 +1031,7 @@ pub fn awaken_runtime_contract::resolved::normalize_model_tool_schema(serde_json
 pub mod awaken_runtime_contract::resolver
 pub enum awaken_runtime_contract::resolver::Error
 pub awaken_runtime_contract::resolver::Error::FingerprintMismatch
+pub awaken_runtime_contract::resolver::Error::InvalidDelegationGraph
 pub awaken_runtime_contract::resolver::Error::SnapshotNotFound
 pub struct awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
 impl awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots
@@ -1053,6 +1054,8 @@ pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::current
 pub fn awaken_runtime_contract::resolver::StaticPublishedAgentSnapshots::exact(&self, &str, &awaken_runtime_contract::resolved::CatalogFingerprint) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub trait awaken_runtime_contract::resolver::RunResolver
 pub fn awaken_runtime_contract::resolver::RunResolver::resolve(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> core::result::Result<awaken_runtime_contract::resolved::ResolvedRun, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::freeze_delegation_publications(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolver::resolve_delegate_snapshot(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &awaken_runtime_contract::agent_bindings::AgentDelegateBinding, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
 pub mod awaken_runtime_contract::resume
 pub enum awaken_runtime_contract::resume::ResumeError
 pub awaken_runtime_contract::resume::ResumeError::CorrelationMismatch
@@ -1964,6 +1967,7 @@ pub struct awaken_runtime_contract::ToolWait
 pub awaken_runtime_contract::ToolWait::correlation_id: alloc::string::String
 pub awaken_runtime_contract::ToolWait::kind: awaken_runtime_contract::tool_batch::ToolWaitKind
 pub const awaken_runtime_contract::A2A_RUNTIME_CAPABILITY: &str
+pub const awaken_runtime_contract::DEFAULT_MAX_STEPS: usize
 pub const awaken_runtime_contract::NATIVE_RUNTIME_CAPABILITY: &str
 pub trait awaken_runtime_contract::AgentSnapshotResolver
 pub fn awaken_runtime_contract::AgentSnapshotResolver::get_snapshot(&self, &awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId) -> core::result::Result<core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
@@ -2067,5 +2071,7 @@ pub fn awaken_runtime_contract::compile_candidate_credential_bindings(&[&awaken_
 pub fn awaken_runtime_contract::content_fingerprint<T: serde_core::ser::Serialize + ?core::marker::Sized>(&T) -> core::result::Result<alloc::string::String, serde_json::error::Error>
 pub fn awaken_runtime_contract::evaluate_boundary(&awaken_runtime_contract::runtime_context::RuntimeRunContext, &awaken_agent_contract::agent::run::Id, &[awaken_agent_contract::agent::message::Message]) -> awaken_runtime_contract::boundary::BoundaryOutcome
 pub fn awaken_runtime_contract::execution_capability(&str) -> alloc::string::String
+pub fn awaken_runtime_contract::freeze_delegation_publications(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>, awaken_runtime_contract::resolver::Error>
+pub fn awaken_runtime_contract::resolve_delegate_snapshot(&awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, &awaken_runtime_contract::agent_bindings::AgentDelegateBinding, core::option::Option<&dyn awaken_runtime_contract::resolver::PublishedAgentSnapshotSource>, &str) -> core::result::Result<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot, awaken_runtime_contract::resolver::Error>
 pub fn awaken_runtime_contract::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
 pub fn awaken_runtime_contract::verify_credential_realization_receipt(&[awaken_runtime_contract::credential::AttemptCredentialBinding], &awaken_runtime_contract::credential::CredentialRealizationReceipt) -> core::result::Result<(), awaken_runtime_contract::credential::CredentialReceiptError>

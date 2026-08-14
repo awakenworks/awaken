@@ -105,11 +105,6 @@ pub use wake::{LocalWakeSignal, WakeSignal};
 pub use worker::{DEFAULT_LEASE_MS, DispatchWorker, claim_bound_ownership_verifier};
 pub use worker_context::InferenceMaterializerFn;
 
-/// Canonical renewal cadence for a ten-second claim lease. Both Coordinator
-/// and remote Worker pools use this policy; wake transport selection does not
-/// change lease ownership.
-pub const DEFAULT_LEASE_RENEWAL: std::time::Duration = std::time::Duration::from_secs(10);
-
 #[cfg(feature = "durable")]
 fn next_supersession_epoch(max_epoch: i64) -> Result<i64, DispatchError> {
     max_epoch.checked_add(1).ok_or_else(|| {
@@ -239,12 +234,22 @@ pub enum Error {
     /// instead of pretending the Worker crashed.
     #[error(transparent)]
     TerminalResolution(awaken_runtime_contract::execution::Error),
+    /// The claimed Run is valid, but its Session's Environment Work slot is
+    /// still occupied. This is scheduling pressure, not a Worker crash or an
+    /// absorbing Session failure.
+    #[error("Session resolution is not ready: {0}")]
+    ResolutionNotReady(String),
 }
 
 impl Error {
     #[must_use]
     pub fn is_terminal_resolution(&self) -> bool {
         matches!(self, Self::TerminalResolution(_))
+    }
+
+    #[must_use]
+    pub fn is_resolution_not_ready(&self) -> bool {
+        matches!(self, Self::ResolutionNotReady(_))
     }
 }
 

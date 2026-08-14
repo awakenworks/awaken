@@ -787,6 +787,7 @@ mod tests {
             content: vec![ContentBlock::ToolResult {
                 tool_use_id: "c1".into(),
                 content: vec![ContentBlock::text("42")],
+                is_error: false,
             }],
         }];
         let encoded = encode_history(&messages);
@@ -805,10 +806,12 @@ mod tests {
                 ContentBlock::ToolResult {
                     tool_use_id: "c1".into(),
                     content: vec![ContentBlock::text("a")],
+                    is_error: false,
                 },
                 ContentBlock::ToolResult {
                     tool_use_id: "c2".into(),
                     content: vec![ContentBlock::text("b")],
+                    is_error: false,
                 },
             ],
         }];
@@ -884,6 +887,7 @@ mod tests {
                     content: vec![ContentBlock::ToolResult {
                         tool_use_id: "c1".into(),
                         content: vec![ContentBlock::text("42")],
+                        is_error: false,
                     }],
                 },
             ],

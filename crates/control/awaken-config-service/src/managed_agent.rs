@@ -138,7 +138,12 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
     Ok(AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
-        max_steps: body.get("max_steps").and_then(Value::as_u64).unwrap_or(8) as usize,
+        max_steps: body
+            .get("max_steps")
+            .and_then(Value::as_u64)
+            .map_or(awaken_runtime_contract::DEFAULT_MAX_STEPS, |value| {
+                value as usize
+            }),
         delegation_limits,
         model_binding,
         inference: Default::default(),
@@ -423,6 +428,10 @@ mod tests {
 
         let missing = agent_config_from_managed("a".into(), &json!({})).expect("absent model");
         assert!(missing.model_binding.is_auto());
+        assert_eq!(
+            missing.max_steps,
+            awaken_runtime_contract::DEFAULT_MAX_STEPS
+        );
     }
 
     #[test]

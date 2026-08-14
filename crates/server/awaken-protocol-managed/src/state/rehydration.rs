@@ -68,12 +68,13 @@ impl ManagedState {
             .as_ref()
             .map(|session| session.resources.clone())
             .unwrap_or_default();
-        let session = self.rehydrated_session(id, persisted)?;
+        let session = self.rehydrated_session(id, &owner_scope, persisted)?;
         let delegated_runs = self
             .application
             .delegated_runs(id)
             .await
             .map_err(StateError::Run)?;
+        let delegation_transcripts = self.delegation_transcripts(&delegated_runs).await?;
         let mut record = SessionRecord::new(
             agent_id,
             session,
@@ -81,7 +82,7 @@ impl ManagedState {
             events,
             projected_message_ids,
         );
-        self.append_delegation_projections(&mut record, &delegated_runs);
+        self.append_delegation_projections(&mut record, &delegated_runs, &delegation_transcripts);
         self.sessions
             .lock()
             .unwrap()

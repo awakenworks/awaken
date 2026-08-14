@@ -214,6 +214,7 @@ pub use awaken_run_ingress_contract::run_dispatch::ExecutionScopeRef
 pub use awaken_run_ingress_contract::run_dispatch::PlacementRequirements
 pub struct awaken_run_ingress_contract::run_dispatch::RunDispatch
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::activation: awaken_runtime_contract::activation::RunActivation
+pub awaken_run_ingress_contract::run_dispatch::RunDispatch::agent_publications: alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::inference_plaintext_holder: core::option::Option<awaken_credential_contract::PlaintextHolder>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::placement: awaken_worker_contract::PlacementRequirements
@@ -228,6 +229,7 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::new(awaken_runtim
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_agent_publications(self, alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_inference_plaintext_holder(self, awaken_credential_contract::PlaintextHolder) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_placement(self, awaken_worker_contract::PlacementRequirements) -> Self
@@ -328,7 +330,10 @@ impl awaken_run_ingress_contract::ClaimedCommitRequest
 pub fn awaken_run_ingress_contract::ClaimedCommitRequest::new(awaken_run_ingress_contract::dispatch::ClaimedCommitCommand, awaken_worker_contract::WorkerIdentity) -> Self
 pub struct awaken_run_ingress_contract::ClaimedSessionControlError(_)
 impl awaken_run_ingress_contract::ClaimedSessionControlError
+pub const fn awaken_run_ingress_contract::ClaimedSessionControlError::is_not_ready(&self) -> bool
 pub fn awaken_run_ingress_contract::ClaimedSessionControlError::new(impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<awaken_session_contract::session_realization::SessionRealizationControlFailure> for awaken_run_ingress_contract::ClaimedSessionControlError
+pub fn awaken_run_ingress_contract::ClaimedSessionControlError::from(awaken_session_contract::session_realization::SessionRealizationControlFailure) -> Self
 pub struct awaken_run_ingress_contract::CommitEpochGuard
 impl awaken_run_ingress_contract::dispatch::CommitEpochGuard
 pub fn awaken_run_ingress_contract::dispatch::CommitEpochGuard::is_live_at(&self, u64) -> bool
@@ -401,6 +406,7 @@ impl core::convert::From<&awaken_run_ingress_contract::dispatch::Lease> for awak
 pub fn awaken_run_ingress_contract::dispatch::RunClaim::from(&awaken_run_ingress_contract::dispatch::Lease) -> Self
 pub struct awaken_run_ingress_contract::RunDispatch
 pub awaken_run_ingress_contract::RunDispatch::activation: awaken_runtime_contract::activation::RunActivation
+pub awaken_run_ingress_contract::RunDispatch::agent_publications: alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub awaken_run_ingress_contract::RunDispatch::execution_scope: core::option::Option<awaken_tenancy::ExecutionScopeRef>
 pub awaken_run_ingress_contract::RunDispatch::inference_plaintext_holder: core::option::Option<awaken_credential_contract::PlaintextHolder>
 pub awaken_run_ingress_contract::RunDispatch::placement: awaken_worker_contract::PlacementRequirements
@@ -415,6 +421,7 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::new(awaken_runtim
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::run_id(&self) -> &awaken_agent_contract::agent::run::Id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::thread_id(&self) -> &awaken_agent_contract::agent::thread::Id
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_agent_publications(self, alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_execution_scope(self, awaken_tenancy::ExecutionScopeRef) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_inference_plaintext_holder(self, awaken_credential_contract::PlaintextHolder) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_placement(self, awaken_worker_contract::PlacementRequirements) -> Self

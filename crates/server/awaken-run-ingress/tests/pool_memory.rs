@@ -74,6 +74,24 @@ struct RejectingResolver {
     calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+struct NotReadyResolver {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl WorkerResolver<MemoryDispatchStore> for NotReadyResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<MemWorker>, Error> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(Error::ResolutionNotReady(
+            "synthetic Environment Work pressure".into(),
+        ))
+    }
+}
+
 #[async_trait]
 impl WorkerResolver<MemoryDispatchStore> for RejectingResolver {
     async fn worker_for(
@@ -952,23 +970,30 @@ async fn completion_sink_is_signalled_for_an_awaiting_run() {
     pool.shutdown().await;
 }
 
-/// The renewal heartbeat keeps a long run's lease alive: while a drive is frozen in
-/// its tool for far longer than the base lease, the pool's renewal loop keeps
-/// extending the lease so a peer's recovery claim can never steal the run.
+/// Claim renewal cause/effect graph and FMECA. Causes: C1 a claimed Run is still
+/// driving; C2 execution exceeds the base lease; C3 a peer tries to recover it.
+/// Effects: E1 the exact claim is renewed; E2 the peer cannot reclaim; E3 renewal
+/// stops when drive settles. Decision rule R1=C1+C2+C3=>E1+E2, then !C1=>E3.
+/// Failure mode: caller-owned renewal omitted foreground child Runs and could
+/// duplicate effects after lease expiry (critical); the worker-owned guard makes
+/// every pool/service/foreground drive follow this one rule.
 #[tokio::test]
-async fn the_renewal_loop_keeps_a_long_run_from_being_reclaimed() {
+async fn every_drive_renews_its_exact_claim_until_settlement() {
     use std::sync::atomic::Ordering;
 
     let release = Arc::new(tokio::sync::Semaphore::new(0));
     let (runtime, ran) = blocking_tool_runtime(release.clone());
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let worker = worker_over(runtime, store.clone(), commit.clone());
+    let worker = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "pool").with_lease_ms(100),
+    );
     let resolver = Arc::new(MapResolver {
         workers: HashMap::from([(harness::THREAD.to_string(), worker)]),
     });
     let clock = Arc::new(SystemClock);
-    // A short 100ms lease with a 20ms renewal cadence (well under half the lease).
+    // A short lease proves the worker derives a safe renewal cadence for the
+    // exact drive; the pool owns no parallel heartbeat.
     let lease_ms = 100;
     let pool = DispatchPool::spawn(
         store.clone(),
@@ -977,7 +1002,6 @@ async fn the_renewal_loop_keeps_a_long_run_from_being_reclaimed() {
         lease_ms,
         DispatchServiceConfig {
             poll_interval: Duration::from_millis(10),
-            lease_renewal_interval: Some(Duration::from_millis(20)),
             ..Default::default()
         },
         resolver,
@@ -1039,7 +1063,6 @@ async fn renewal_stops_when_claim_resolution_fails() {
         lease_ms,
         DispatchServiceConfig {
             poll_interval: Duration::from_secs(3600),
-            lease_renewal_interval: Some(Duration::from_millis(20)),
             ..Default::default()
         },
         Arc::new(RejectingResolver {
@@ -1068,6 +1091,68 @@ async fn renewal_stops_when_claim_resolution_fails() {
         "R2 is admission rollback, not a crash"
     );
 
+    pool.shutdown().await;
+}
+
+#[tokio::test]
+async fn session_work_backpressure_relinquishes_once_then_retries_with_a_floor() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Cause/effect graph: C1 a valid Run claim reaches a Session whose one
+    // Environment Work slot is occupied; C2 the resolver returns typed NotReady;
+    // C3 queue polling is configured below the admission floor. C1+C2 -> E1
+    // relinquish without crash accounting; C2+C3 -> E2 no warning-speed hot
+    // reacquisition. Once the slot changes, the same durable row remains eligible.
+    //
+    // | Rule | resolver | poll | first 100 ms effect | durable row effect |
+    // | B1 | NotReady | 10 ms | one resolution attempt | immediately reclaimable |
+    // | B2 | fault | any | warning/backoff path | covered by R2 above |
+    //
+    // FMECA: treating expected Environment serialization as a fault produced
+    // ~20 claim/relinquish cycles per second, inflated lease epochs, and hid real
+    // Worker failures. Holding the lease instead would starve the rightful next
+    // owner, so the canonical pool relinquishes once and rate-limits retry.
+    let store = Arc::new(MemoryDispatchStore::new());
+    store
+        .enqueue(RunDispatch::new(activation("session-work-pressure")))
+        .await
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(SystemClock),
+        "waiting-owner",
+        DEFAULT_LEASE_MS,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_millis(10),
+            ..Default::default()
+        },
+        Arc::new(NotReadyResolver {
+            calls: calls.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+
+    assert!(
+        wait_for(|| calls.load(Ordering::SeqCst) == 1).await,
+        "B1/E1"
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "B1/E2");
+    assert!(
+        store
+            .claim(
+                "ready-owner",
+                DEFAULT_LEASE_MS,
+                SystemClock.now_ms(),
+                &Default::default(),
+            )
+            .await
+            .unwrap()
+            .is_some(),
+        "B1 remains durable and immediately reclaimable"
+    );
     pool.shutdown().await;
 }
 

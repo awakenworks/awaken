@@ -68,6 +68,8 @@ pub(super) struct RehydrateFake {
     pub(super) delegated: Arc<std::sync::Mutex<Vec<DelegatedRun>>>,
     pub(super) order: Arc<std::sync::Mutex<Vec<&'static str>>>,
     pub(super) committed: Arc<std::sync::Mutex<Option<Vec<Message>>>>,
+    pub(super) committed_by_thread:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<Message>>>>,
     pub(super) pending: Arc<std::sync::Mutex<Option<awaken_session_contract::Pending>>>,
     pub(super) ended: Arc<std::sync::Mutex<Vec<String>>>,
     pub(super) reject_environment_adoption: Arc<std::sync::atomic::AtomicBool>,
@@ -131,6 +133,15 @@ impl SessionRuntime for RehydrateFake {
 
     async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
         self.order.lock().unwrap().push("history");
+        if let Some(messages) = self
+            .committed_by_thread
+            .lock()
+            .unwrap()
+            .get(thread)
+            .cloned()
+        {
+            return Ok(messages);
+        }
         if let Some(messages) = self.committed.lock().unwrap().clone() {
             return Ok(messages);
         }

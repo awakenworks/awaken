@@ -8,6 +8,7 @@
 //! DispatchQueue aggregate free of run-outcome truth.
 
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use awaken_agent_contract::agent::awaiting::AwaitReason;
@@ -129,6 +130,21 @@ struct AttemptControlGuard {
     run_id: RunId,
 }
 
+/// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
+/// owns the claim, rather than to each caller (pool, daemon, or foreground child),
+/// so every execution path has the same lease behavior.
+struct ClaimLeaseRenewal {
+    shutdown: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ClaimLeaseRenewal {
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+        self.task.abort();
+    }
+}
+
 impl Drop for AttemptControlGuard {
     fn drop(&mut self) {
         self.runtime.deregister_attempt_controls(&self.run_id);
@@ -136,6 +152,44 @@ impl Drop for AttemptControlGuard {
 }
 
 impl<S: Dispatch + 'static> DispatchWorker<S> {
+    fn renew_claim_while_driving(&self, claim: &RunClaim) -> ClaimLeaseRenewal {
+        let store = self.store.clone();
+        let run_id = claim.run_id.clone();
+        let owner = claim.owner.clone();
+        let lease_ms = self.lease_ms;
+        let interval = Duration::from_millis((lease_ms / 3).max(1));
+        let clock = self.ownership_clock.clone();
+        let shutdown = CancellationToken::new();
+        let task_shutdown = shutdown.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = task_shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(interval) => {
+                        match store.renew_lease(&run_id, &owner, lease_ms, clock.now_ms()).await {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                tracing::warn!(
+                                    run_id = %run_id.0,
+                                    %owner,
+                                    "dispatch lease renewal lost exact claim ownership"
+                                );
+                                break;
+                            }
+                            Err(error) => tracing::warn!(
+                                run_id = %run_id.0,
+                                %owner,
+                                %error,
+                                "dispatch lease renewal failed"
+                            ),
+                        }
+                    }
+                }
+            }
+        });
+        ClaimLeaseRenewal { shutdown, task }
+    }
+
     /// Wire a worker to its runtime, dispatch store, and durable commit boundary.
     /// The `commit` handle is the single source of durable truth: it is the
     /// commit coordinator the runtime writes through *and* the read port the
@@ -325,16 +379,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self.store
     }
 
-    /// This worker's lease owner id — the daemon renews this owner's leases.
-    pub(crate) fn owner(&self) -> &str {
-        &self.owner
-    }
-
-    /// This worker's lease duration, for the daemon's renewal heartbeat.
-    pub(crate) fn lease_ms(&self) -> u64 {
-        self.lease_ms
-    }
-
     /// A runtime context bound to this worker's commit boundary, for an
     /// out-of-band commit such as a durable cancel.
     pub(crate) fn execution_context(&self) -> RuntimeRunContext {
@@ -460,6 +504,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         request: awaken_run_ingress_contract::RunDispatch,
         now_ms: u64,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        let unclaimed_request = request.clone();
         let claimed = self
             .store
             .claim_new_run(
@@ -471,6 +516,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             )
             .await?;
         let Some(claimed) = claimed else {
+            // A parent may mediate a child whose frozen placement belongs to a
+            // registered remote Worker. Local exact-claim admission deliberately
+            // returns `None` for that request, but `None` must not discard the
+            // child: idempotently enqueue the same stable Run so the compatible
+            // process pool can claim it while the parent observes committed truth.
+            self.store.enqueue(unclaimed_request).await?;
             return Ok(None);
         };
         self.drive_claimed(claimed, now_ms).await
@@ -559,6 +610,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // rejected and abandons instead of clobbering the reclaimer's dispatch.
         let lease_epoch = claimed.lease.epoch;
         let claim = RunClaim::from(&claimed.lease);
+        let _lease_renewal = self.renew_claim_while_driving(&claim);
         if let Some(projection) = &self.recovery_projection {
             let snapshot = self.store.load_recovery_snapshot(&claim).await?;
             projection.install(&run_id, snapshot).map_err(|error| {

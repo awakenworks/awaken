@@ -472,7 +472,11 @@ impl WebSearchPlugin {
         let descriptor = web_search_descriptor();
         let tool = erase_for(
             WebSearchTool::configured(provider, config, self.credentials.clone()),
-            ToolExecutionTarget::Sandbox,
+            // Search is a configured Worker plugin: provider selection and exact
+            // credential materialization live at the Brain boundary. Sending it
+            // to the static Environment Hand loses that configuration and yields
+            // an `unknown tool` after permission was already granted.
+            ToolExecutionTarget::Brain,
         );
         Ok((descriptor, tool))
     }
@@ -772,7 +776,10 @@ mod tests {
     /// Cause/effect table: C1 free provider/no pin -> executable; C2 paid
     /// provider/exact pin/resolver -> credential consumed and normalized output;
     /// C3 paid/no pin -> config error before tool/network; C4 duplicate id ->
-    /// composition error. These are the minimal independent provider decisions.
+    /// composition error; C5 configured search -> Brain execution so its
+    /// provider and credential resolver remain attached. FMECA: routing C5 to
+    /// the static Hand produces an authorized `unknown tool` and loses the
+    /// Worker-held credential boundary.
     #[tokio::test]
     async fn provider_registry_drives_validation_dispatch_and_credentials() {
         let free = fake_provider("free", false);
@@ -787,6 +794,7 @@ mod tests {
         let (_, free_tool) = plugin
             .configured_tool(Some(&json!({ "provider_id": "free", "options": {} })))
             .unwrap();
+        assert_eq!(free_tool.execution_target(), ToolExecutionTarget::Brain);
         let output = free_tool
             .invoke(ToolCall {
                 call_id: "free-call".into(),

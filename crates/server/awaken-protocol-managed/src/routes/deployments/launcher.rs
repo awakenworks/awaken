@@ -167,7 +167,7 @@ impl DeploymentSessionLauncher for ManagedDeploymentSessionLauncher {
             agent: crate::types::AgentRef::Object(Box::new(crate::types::AgentRefObject {
                 id: request.agent.id,
                 kind: Some(crate::types::AgentRefKind::Agent),
-                version: Some(agent_version),
+                version: Some(agent_version.into()),
                 system: None,
                 tools: None,
                 mcp_servers: None,

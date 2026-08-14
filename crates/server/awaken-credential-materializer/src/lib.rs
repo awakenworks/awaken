@@ -25,6 +25,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 
+mod ambient_environment;
+pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
+
 use awaken_agent_contract::RedactedString;
 use awaken_credential::CredentialRefresher;
 use awaken_credential_contract::CredentialSourceId;

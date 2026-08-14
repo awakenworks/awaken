@@ -908,6 +908,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
                 runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 mcp_authoring: Default::default(),
                 agent_id: "agent".into(),
+                agent_revision: None,
                 model: "model".into(),
                 runtime: None,
                 delegate_ids: Vec::new(),
@@ -3424,6 +3425,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
             mcp_authoring: Default::default(),
             agent_id: "assistant".into(),
+            agent_revision: None,
             model: "stub".into(),
             runtime: None,
             delegate_ids: Vec::new(),
@@ -6809,6 +6811,47 @@ fn durable_dispatch_carries_the_frozen_session_resource_manifest_and_scope() {
         dispatch.session_thread_id, None,
         "a resource-bearing ordinary Run must not be promoted to a Session"
     );
+}
+
+/// Coordinator-to-Worker publication cause/effect/FMECA design. C1 a parent
+/// activation references a published child; C2 the Coordinator owns the sole
+/// executable catalog. E1 `resolved_dispatch` embeds the exact child snapshot;
+/// E2 no mutable catalog handle crosses the queue. Rule A1=C1+C2=>E1+E2.
+/// FMECA: omitting the snapshot strands every remote delegation (high severity,
+/// repeated claim failure); the assertion detects the omission at admission and
+/// the cold-Worker decision-table test verifies the receiving half.
+#[test]
+fn durable_dispatch_freezes_the_delegation_publication_closure() {
+    use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
+    use awaken_runtime_contract::snapshot::AgentId;
+
+    let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
+        .fingerprint("researcher-current")
+        .build();
+    let publications =
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([child.clone()])
+            .expect("A1 publication source");
+    let host = SharedHost::new(Arc::new(OkModel), "host-default")
+        .with_agent_publications(Arc::new(publications));
+    let parent = awaken_runtime_contract::ExecutableAgentSnapshot::builder("coordinator")
+        .agent_bindings(AgentBindings {
+            delegates: vec![AgentDelegateBinding {
+                agent_id: AgentId("researcher".into()),
+                source_revision: None,
+                recursive_self: false,
+            }],
+            ..Default::default()
+        })
+        .build();
+    let activation = awaken_runtime_contract::RunActivation::new(
+        awaken_agent_contract::agent::run::Id("run-publication-closure".into()),
+        awaken_agent_contract::agent::thread::Id("thread-publication-closure".into()),
+        parent,
+        Vec::new(),
+    );
+
+    let dispatch = host.resolved_dispatch(activation).expect("A1 admission");
+    assert_eq!(dispatch.agent_publications, vec![child], "A1/E1+E2");
 }
 
 #[test]

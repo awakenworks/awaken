@@ -33,10 +33,21 @@ async fn create_session(app: &Router) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// The built-in hand tools fold into one `agent_toolset_20260401` reference: the six
+/// The built-in hand tools fold into one `agent_toolset_20260401` reference: the
 /// registered tools stay (read/glob/grep auto-allowed → toolset default;
-/// bash/write/edit gated → `always_ask`), and the two the host doesn't register
-/// (web_fetch/web_search) are disabled. Offered skills appear on `agent.skills`.
+/// bash/write/edit/web_fetch gated → `always_ask`), while configurable
+/// `web_search` is disabled when no search connector is published. Offered skills
+/// appear on `agent.skills`.
+///
+/// Cause/effect graph and decision table:
+/// C1=the host registers a static tool, C2=the effective policy requires approval,
+/// C3=a configurable connector is absent; E1=the tool remains enabled,
+/// E2=its wire policy is `always_ask`, E3=the tool is disabled.
+/// R1(C1,C2,!C3)->E1+E2 covers `web_fetch`; R2(!C1,!C2,C3)->E3 covers
+/// `web_search`; R3(C1,!C2,!C3)->the default config covers read/glob/grep.
+/// FMECA: advertising absent search would create an inexecutable tool (fail closed
+/// through E3); disabling fetch would hide a real capability (caught by R1); losing
+/// the approval policy could perform network I/O without consent (caught by E2).
 #[tokio::test]
 async fn managed_session_folds_builtins_into_the_agent_toolset() {
     let skill = SkillSpec::new(
@@ -61,7 +72,7 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
                 { "name": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
+                { "name": "web_fetch", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
             ],
             "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }
@@ -92,8 +103,17 @@ async fn managed_session_advertises_custom_tools() {
     assert!(custom["input_schema"].is_object());
 }
 
-/// A delegate roster is advertised as a `coordinator` multiagent object naming the
-/// delegate agent ids.
+/// A delegate roster is advertised as a `coordinator` multiagent object containing
+/// the complete frozen child Agent definitions, not a parallel list of ids.
+///
+/// Cause/effect graph and decision table:
+/// C1=root publication delegates to researcher, C2=researcher publication resolves,
+/// C3=the resolved publication has an exact revision; E1=coordinator is advertised,
+/// E2=one full child object carries id/name/type/version.
+/// R1(C1,C2,C3)->E1+E2. A missing C2 or C3 fails Session creation in production and
+/// is covered at the projection boundary. FMECA: id-only projection loses frozen
+/// child behavior after catalog drift; asserting every identity/revision field
+/// detects that high-severity compatibility regression.
 #[tokio::test]
 async fn managed_session_advertises_multiagent_roster() {
     let app = build_delegation_router();
@@ -101,5 +121,11 @@ async fn managed_session_advertises_multiagent_roster() {
 
     assert_eq!(session["agent"]["multiagent"]["type"], "coordinator");
     let agents = session["agent"]["multiagent"]["agents"].as_array().unwrap();
-    assert!(agents.iter().any(|a| a == "researcher"));
+    let researcher = agents
+        .iter()
+        .find(|agent| agent["id"] == "researcher")
+        .expect("the frozen researcher Agent is advertised");
+    assert_eq!(researcher["name"], "researcher");
+    assert_eq!(researcher["type"], "agent");
+    assert_eq!(researcher["version"], 1);
 }

@@ -405,7 +405,7 @@ impl LlmExecutor for GenaiExecutor {
         .map_err(|_| Error::Timeout("model call timed out".to_string()))?
         .map_err(|err| classify_error(&err.to_string()))?;
 
-        require_visible_response(from_genai_response(response))
+        require_usable_response(from_genai_response(response))
     }
 
     async fn infer_streaming(
@@ -560,7 +560,7 @@ impl LlmExecutor for GenaiExecutor {
         if !reasoning.trim().is_empty() {
             output.blocks.insert(0, ContentBlock::thinking(reasoning));
         }
-        require_visible_response(ChatResponse {
+        require_usable_response(ChatResponse {
             output,
             usage,
             stop_reason,
@@ -850,6 +850,7 @@ fn to_genai_part(block: &ContentBlock) -> ContentPart {
         ContentBlock::ToolResult {
             tool_use_id,
             content,
+            ..
         } => ContentPart::ToolResponse(ToolResponse::new(
             tool_use_id.clone(),
             extract_text(content),
@@ -905,10 +906,26 @@ pub fn from_genai_response(response: genai::chat::ChatResponse) -> ChatResponse 
     }
 }
 
-fn require_visible_response(response: ChatResponse) -> Result<ChatResponse> {
+fn require_usable_response(response: ChatResponse) -> Result<ChatResponse> {
     if response.output.text_content().trim().is_empty() && response.output.tool_calls().is_empty() {
         return Err(Error::Provider(
             "model returned no visible assistant content or tool call".into(),
+        ));
+    }
+    // Some OpenAI-compatible reasoning providers occasionally serialize their
+    // private tool-call wire language as assistant text. Committing that text as
+    // a successful turn silently drops the requested side effect. Do not parse
+    // or execute it here: only the SDK's typed ToolCall is trusted. A retryable
+    // provider error lets the canonical run retry policy obtain a structured
+    // response without creating a second provider-specific tool parser.
+    if response.output.tool_calls().is_empty()
+        && response
+            .output
+            .text_content()
+            .contains("<｜｜DSML｜｜tool_calls>")
+    {
+        return Err(Error::Provider(
+            "model serialized a tool call as assistant text instead of structured tool data".into(),
         ));
     }
     Ok(response)
@@ -929,9 +946,50 @@ mod visible_response_tests {
             stop_reason: Some(StopReason::EndTurn),
         };
 
-        let error = require_visible_response(response).unwrap_err();
+        let error = require_usable_response(response).unwrap_err();
         assert!(matches!(error, Error::Provider(_)));
         assert!(error.is_retryable());
+    }
+
+    /// Textual-tool-call cause/effect graph, decision table, and FMECA. Causes:
+    /// C1 typed tool calls exist; C2 assistant text has the unambiguous DSML
+    /// tool-call sentinel. Effects: E1 accept typed or ordinary text; E2 reject
+    /// serialized tool syntax as a retryable provider fault without executing
+    /// it. Rules T1=C1=>E1, T2=!C1&C2=>E2, and T3=!C1&!C2=>E1. FMECA: committing
+    /// serialized tool syntax is critical because an expected external effect
+    /// never occurs while the Session looks successful; this sole provider seam
+    /// detects it even on the tool-free reserved final step, and deliberately
+    /// avoids a second, injection-prone tool parser.
+    #[test]
+    fn textual_dsml_tool_calls_always_fail_closed() {
+        let serialized = || ChatResponse {
+            output: AssistantOutput::text(
+                "<｜｜DSML｜｜tool_calls> <｜｜DSML｜｜invoke name=\"publish\">",
+            ),
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        };
+
+        let error = require_usable_response(serialized()).expect_err("T2/E2");
+        assert!(matches!(error, Error::Provider(_)), "T2/E2");
+        assert!(error.is_retryable(), "T2/E2");
+
+        let ordinary = ChatResponse {
+            output: AssistantOutput::text("ordinary final answer"),
+            usage: None,
+            stop_reason: Some(StopReason::EndTurn),
+        };
+        assert!(require_usable_response(ordinary).is_ok(), "T3/E1");
+
+        let typed = ChatResponse {
+            output: AssistantOutput::from_blocks(vec![
+                ContentBlock::text("<｜｜DSML｜｜tool_calls>"),
+                ContentBlock::tool_use("call-1", "publish", serde_json::json!({})),
+            ]),
+            usage: None,
+            stop_reason: Some(StopReason::ToolUse),
+        };
+        assert!(require_usable_response(typed).is_ok(), "T1/E1");
     }
 }
 

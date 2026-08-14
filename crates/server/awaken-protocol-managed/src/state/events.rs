@@ -7,7 +7,7 @@ use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
 
 struct DelegateCall {
     run_id: String,
-    agent_name: String,
+    agent_id: String,
     sent: Vec<ContentBlock>,
     received: Vec<ContentBlock>,
     status: DelegationStatus,
@@ -279,13 +279,91 @@ impl ManagedState {
                 });
                 DelegateCall {
                     run_id: delegation.run_id.0.clone(),
-                    agent_name: delegation.agent_id.clone(),
+                    agent_id: delegation.agent_id.clone(),
                     sent: sent.unwrap_or_default(),
                     received: received.unwrap_or_default(),
                     status: delegation.status,
                 }
             })
             .collect()
+    }
+
+    /// Read each child Run's committed transcript from the Runtime authority.
+    /// This is deliberately a read model input to the Managed projection, not a
+    /// child transcript owned or persisted by the protocol adapter.
+    pub(super) async fn delegation_transcripts(
+        &self,
+        delegations: &[DelegatedRun],
+    ) -> Result<
+        std::collections::HashMap<String, Vec<awaken_agent_contract::agent::message::Message>>,
+        StateError,
+    > {
+        let mut transcripts = std::collections::HashMap::new();
+        for delegation in delegations {
+            transcripts.insert(
+                delegation.run_id.0.clone(),
+                self.application
+                    .committed_messages(&delegation.run_id.0)
+                    .await
+                    .map_err(StateError::Run)?,
+            );
+        }
+        Ok(transcripts)
+    }
+
+    fn append_child_transcript_projection(
+        &self,
+        record: &mut SessionRecord,
+        thread_id: &str,
+        messages: &[awaken_agent_contract::agent::message::Message],
+    ) {
+        let new_messages = messages
+            .iter()
+            .filter(|message| {
+                record
+                    .projected_child_message_ids
+                    .insert((thread_id.to_string(), message.id.0.clone()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if new_messages.is_empty() {
+            return;
+        }
+        let mut projected_tool_ids = std::collections::HashSet::new();
+        let mut prior_mcp_ids = Vec::new();
+        for event in &record.events {
+            if record
+                .event_thread_owners
+                .get(&event.id)
+                .map(String::as_str)
+                != Some(thread_id)
+            {
+                continue;
+            }
+            match event.kind {
+                OutboundKind::AgentToolUse { .. } | OutboundKind::AgentCustomToolUse { .. } => {
+                    projected_tool_ids.insert(event.id.clone());
+                }
+                OutboundKind::AgentMcpToolUse { .. } => {
+                    projected_tool_ids.insert(event.id.clone());
+                    prior_mcp_ids.push(event.id.clone());
+                }
+                _ => {}
+            }
+        }
+        for projected in
+            project_messages_with_mcp_ids(&new_messages, None, &projected_tool_ids, prior_mcp_ids)
+        {
+            let id = projected.id.unwrap_or_else(|| self.next_event_id());
+            record
+                .event_thread_owners
+                .insert(id.clone(), thread_id.to_string());
+            record.events.push(Event {
+                id,
+                kind: projected.kind,
+                processed_at: Some(PROCESSED_AT.to_string()),
+            });
+        }
     }
 
     /// Sole Runtime relationship -> Managed child Thread/event projector. Live
@@ -295,61 +373,101 @@ impl ManagedState {
         &self,
         record: &mut SessionRecord,
         delegations: &[DelegatedRun],
+        transcripts: &std::collections::HashMap<
+            String,
+            Vec<awaken_agent_contract::agent::message::Message>,
+        >,
     ) {
         for d in Self::delegate_calls(delegations, &record.events) {
             let thread_id = d.run_id;
-            let name = d.agent_name;
+            let agent = record
+                .session
+                .agent
+                .multiagent
+                .as_ref()
+                .and_then(|coordinator| {
+                    coordinator.agents.iter().find_map(|entry| match entry {
+                        crate::types::SessionMultiagentRosterEntry::Agent(agent)
+                            if agent.id == d.agent_id =>
+                        {
+                            Some(agent.clone())
+                        }
+                        _ => None,
+                    })
+                })
+                .unwrap_or_else(|| {
+                    Self::thread_agent_from_profile(&d.agent_id, Default::default())
+                });
+            let name = agent.name.clone();
             let existing = record
                 .child_threads
                 .iter()
                 .position(|thread| thread.id == thread_id);
             let is_new = existing.is_none();
             let index = existing.unwrap_or_else(|| {
-                let child = Self::child_thread(&record.session, &thread_id, &name);
+                let child = Self::child_thread(&record.session, &thread_id, agent);
                 record.child_threads.push(child);
                 record.child_threads.len() - 1
             });
             let was_idle = record.child_threads[index].status == SessionThreadStatus::Idle;
             let completed = d.status == DelegationStatus::Completed;
-            let mut kinds = Vec::new();
             if is_new {
-                kinds.extend([
-                    OutboundKind::SessionThreadCreated {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                    OutboundKind::SessionThreadStatusRunning {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                    OutboundKind::AgentThreadMessageSent {
-                        to_session_thread_id: thread_id.clone(),
-                        to_agent_name: Some(name.clone()),
-                        content: d.sent,
-                    },
-                ]);
+                record.events.extend(
+                    [
+                        OutboundKind::SessionThreadCreated {
+                            session_thread_id: thread_id.clone(),
+                            agent_name: name.clone(),
+                        },
+                        OutboundKind::SessionThreadStatusRunning {
+                            session_thread_id: thread_id.clone(),
+                            agent_name: name.clone(),
+                        },
+                        OutboundKind::AgentThreadMessageSent {
+                            to_session_thread_id: thread_id.clone(),
+                            to_agent_name: Some(name.clone()),
+                            content: d.sent,
+                        },
+                    ]
+                    .into_iter()
+                    .map(|kind| Event {
+                        id: self.next_event_id(),
+                        kind,
+                        processed_at: Some(PROCESSED_AT.to_string()),
+                    }),
+                );
             }
+            self.append_child_transcript_projection(
+                record,
+                &thread_id,
+                transcripts
+                    .get(&thread_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            );
             if completed && !was_idle {
                 record.child_threads[index].status = SessionThreadStatus::Idle;
                 record.child_threads[index].updated_at = PROCESSED_AT.to_string();
-                kinds.extend([
-                    OutboundKind::AgentThreadMessageReceived {
-                        from_session_thread_id: thread_id.clone(),
-                        from_agent_name: Some(name.clone()),
-                        content: d.received,
-                    },
-                    OutboundKind::SessionThreadStatusIdle {
-                        session_thread_id: thread_id,
-                        agent_name: name,
-                        stop_reason: StopReason::EndTurn,
-                    },
-                ]);
+                record.events.extend(
+                    [
+                        OutboundKind::AgentThreadMessageReceived {
+                            from_session_thread_id: thread_id.clone(),
+                            from_agent_name: Some(name.clone()),
+                            content: d.received,
+                        },
+                        OutboundKind::SessionThreadStatusIdle {
+                            session_thread_id: thread_id,
+                            agent_name: name,
+                            stop_reason: StopReason::EndTurn,
+                        },
+                    ]
+                    .into_iter()
+                    .map(|kind| Event {
+                        id: self.next_event_id(),
+                        kind,
+                        processed_at: Some(PROCESSED_AT.to_string()),
+                    }),
+                );
             }
-            record.events.extend(kinds.into_iter().map(|kind| Event {
-                id: self.next_event_id(),
-                kind,
-                processed_at: Some(PROCESSED_AT.to_string()),
-            }));
         }
     }
 
@@ -410,6 +528,9 @@ impl ManagedState {
         preview_ids: PreviewAllocations,
         lifecycle_start: RunLifecycleCursor,
     ) -> Result<(), StateError> {
+        let transcripts = self
+            .delegation_transcripts(outcome.delegated_runs())
+            .await?;
         let terminal_cursor = self
             .terminal_cursor_after(session_id, lifecycle_start, &outcome)
             .await?;
@@ -418,7 +539,13 @@ impl ManagedState {
                 "committed Run terminal is missing from the lifecycle feed",
             )));
         }
-        self.append_step(session_id, outcome, preview_ids, terminal_cursor)
+        self.append_step(
+            session_id,
+            outcome,
+            preview_ids,
+            terminal_cursor,
+            &transcripts,
+        )
     }
 
     /// Append one step's projected events to the session, minting ids where the
@@ -432,6 +559,10 @@ impl ManagedState {
         outcome: StepOutcome,
         mut preview_ids: PreviewAllocations,
         terminal_cursor: Option<RunLifecycleCursor>,
+        delegation_transcripts: &std::collections::HashMap<
+            String,
+            Vec<awaken_agent_contract::agent::message::Message>,
+        >,
     ) -> Result<(), StateError> {
         let pending = outcome.pending();
         let delegated_runs = outcome.delegated_runs().to_vec();
@@ -529,7 +660,7 @@ impl ManagedState {
                 processed_at: Some(PROCESSED_AT.to_string()),
             });
         }
-        self.append_delegation_projections(record, &delegated_runs);
+        self.append_delegation_projections(record, &delegated_runs, delegation_transcripts);
         record.project_runtime_status(SessionStatus::Idle);
         self.broadcast_committed_from(session_id, record, start);
         Ok(())
@@ -1491,6 +1622,7 @@ mod tests {
                 .with_run_id(local_run.clone()),
                 PreviewAllocations::default(),
                 Some(RunLifecycleCursor(60)),
+                &Default::default(),
             )
             .unwrap();
         runtime.lifecycle.lock().unwrap().extend([
@@ -1565,6 +1697,7 @@ mod tests {
                 .with_run_id(local_run.clone()),
                 PreviewAllocations::default(),
                 Some(RunLifecycleCursor(80)),
+                &Default::default(),
             )
             .unwrap();
         state.refresh_committed_events(&thread).await.unwrap();

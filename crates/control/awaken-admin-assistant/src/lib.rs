@@ -909,7 +909,9 @@ impl RawTool for DraftAgent {
         let config = AgentConfig {
             id: args.id,
             instructions: args.instructions,
-            max_steps: args.max_steps.unwrap_or(8),
+            max_steps: args
+                .max_steps
+                .unwrap_or(awaken_runtime_contract::DEFAULT_MAX_STEPS),
             delegation_limits: Default::default(),
             model_binding,
             inference: Default::default(),

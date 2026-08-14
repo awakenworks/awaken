@@ -122,6 +122,116 @@ mod tests {
         );
     }
 
+    /// Cold-Worker delegation cause/effect decision table and FMECA. Causes:
+    /// C1 the Worker has no process-local publication catalog; C2 the claim
+    /// carries the exact child publication; C3 the bundle is absent. Effects:
+    /// E1 parent context and `agent_run` admission are constructed from claim
+    /// truth; E2 C3 fails before inference. Rules D1=C1+C2=>E1 and
+    /// D2=C1+C3=>E2. FMECA: dropping the bundle is high severity and previously
+    /// caused an endlessly retried Session; D2 turns it into a classified,
+    /// claim-settled setup failure while D1 proves no Control lookup is needed.
+    #[tokio::test]
+    async fn cold_worker_uses_only_the_claimed_delegation_publication_closure() {
+        use awaken_run_ingress::{Clock, DispatchQueue};
+        use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
+        use awaken_runtime_contract::snapshot::{
+            AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
+            AgentSnapshotMetadata,
+        };
+
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+        );
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+        let child = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
+            .fingerprint("researcher-v2")
+            .metadata(AgentSnapshotMetadata {
+                source: AgentConfigRevisionRef {
+                    agent_id: AgentId("researcher".into()),
+                    revision: 2,
+                },
+                publication_version: AgentPublicationVersion("researcher-v2".into()),
+                resolution: Default::default(),
+                fingerprint: AgentSnapshotFingerprint("researcher-v2".into()),
+            })
+            .build();
+        let delegated = |thread: &str, run: &str| {
+            let mut activation = test_activation(thread, run);
+            activation.snapshot.resolved_spec.plugin_config.agent = AgentBindings {
+                delegates: vec![AgentDelegateBinding {
+                    agent_id: AgentId("researcher".into()),
+                    source_revision: Some(2),
+                    recursive_self: false,
+                }],
+                ..Default::default()
+            };
+            activation
+        };
+
+        store
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(delegated(
+                    "cold-delegation",
+                    "run-cold-delegation",
+                ))
+                .with_agent_publications(vec![child]),
+            )
+            .await
+            .expect("enqueue D1");
+        let complete = store
+            .claim("worker-a", 1_000, now, &Default::default())
+            .await
+            .expect("claim D1")
+            .expect("D1 available");
+        resolver
+            .worker_for_claimed(&complete)
+            .await
+            .expect("D1/E1 claimed publication constructs delegation");
+
+        let missing_store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                .expect("missing dispatch store"),
+        );
+        let missing_host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_dispatch_store(missing_store.clone()),
+        );
+        let _missing_managed =
+            crate::ManagedHost::new(missing_host.clone()).install_dispatch_session_runtime();
+        let missing_resolver = HostWorkerResolver {
+            host: Arc::downgrade(&missing_host),
+        };
+        missing_store
+            .enqueue(awaken_run_ingress::RunDispatch::new(delegated(
+                "cold-delegation-missing",
+                "run-cold-delegation-missing",
+            )))
+            .await
+            .expect("enqueue D2");
+        let missing = missing_store
+            .claim("worker-a", 1_000, now, &Default::default())
+            .await
+            .expect("claim D2")
+            .expect("D2 available");
+        let error = match missing_resolver.worker_for_claimed(&missing).await {
+            Ok(_) => panic!("D2/E2 missing closure must fail closed"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("incomplete Agent publication closure"),
+            "D2/E2: {error}"
+        );
+    }
+
     /// D1-D5: durable lazy placement is fenced by the current dispatch claim.
     /// Brain resolution stays sandbox-free; a replacement claim rejects stale
     /// publication; and a crash gap after dispatch binding is repaired by adoption.
@@ -550,6 +660,7 @@ mod tests {
                 runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
                 mcp_authoring: Default::default(),
                 agent_id: "agent-a".into(),
+                agent_revision: None,
                 model: "model".into(),
                 runtime: None,
                 delegate_ids: Vec::new(),

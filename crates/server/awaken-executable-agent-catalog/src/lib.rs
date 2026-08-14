@@ -525,6 +525,16 @@ impl ExecutableAgentProfileSource for ExecutableAgentCatalog {
             .map(|registration| registration.session_profile)
     }
 
+    fn session_profile_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        self.at_revision(workspace_id, agent_id, source_revision)
+            .map(|registration| registration.session_profile)
+    }
+
     fn agent_unavailable_in(&self, workspace_id: &str, agent_id: &str) -> bool {
         self.is_unavailable(workspace_id, agent_id)
     }

@@ -176,7 +176,7 @@ pub fn remote_worker_placement(
     let mut placement = if remote_required || !required_credentials.is_empty() {
         PlacementRequirements::remote_required()
     } else {
-        PlacementRequirements::default()
+        PlacementRequirements::remote_preferred()
     };
     placement.required_credentials = required_credentials;
     placement.required_acp_capabilities = worker_acp_capabilities(models);
@@ -276,6 +276,17 @@ impl SharedHost {
             ));
         }
         let thread = activation.thread_id.0.clone();
+        let workspace = self.thread_workspace(&thread);
+        let agent_publications = awaken_runtime_contract::freeze_delegation_publications(
+            &activation.snapshot,
+            self.agent_publications.as_deref(),
+            &workspace,
+        )
+        .map_err(|error| {
+            HostError::bad_request(format!(
+                "cannot freeze Agent delegation publications: {error}"
+            ))
+        })?;
         let resources = self.thread_resource_manifest(&thread);
         let runtime_projection = self
             .session_slots
@@ -322,7 +333,8 @@ impl SharedHost {
                 )
             });
         let mut request = RunDispatch::new(activation)
-            .with_traceparent(awaken_observability::current_traceparent());
+            .with_traceparent(awaken_observability::current_traceparent())
+            .with_agent_publications(agent_publications);
         if is_session_dispatch {
             request = request.for_session(ThreadId(thread.clone()));
         }

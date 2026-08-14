@@ -102,11 +102,17 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
         ToolsetSource,
     };
 
-    let permission = |value: Option<AgentToolPermissionPolicy>| match value
-        .unwrap_or(AgentToolPermissionPolicy::AlwaysAllow)
-    {
-        AgentToolPermissionPolicy::AlwaysAllow => ToolPermissionRequirement::AlwaysAllow,
-        AgentToolPermissionPolicy::AlwaysAsk => ToolPermissionRequirement::AlwaysAsk,
+    let permission = |value: Option<AgentToolPermissionPolicy>,
+                      fallback: ToolPermissionRequirement| match value {
+        Some(AgentToolPermissionPolicy::AlwaysAllow) => ToolPermissionRequirement::AlwaysAllow,
+        Some(AgentToolPermissionPolicy::AlwaysAsk) => ToolPermissionRequirement::AlwaysAsk,
+        None => fallback,
+    };
+    let default_permission = |source: &ToolsetSource| match source {
+        ToolsetSource::Agent => ToolPermissionRequirement::AlwaysAllow,
+        // Managed Agents defaults MCP to confirmation so a tool added later by
+        // the remote server cannot silently gain execution authority.
+        ToolsetSource::Mcp { .. } => ToolPermissionRequirement::AlwaysAsk,
     };
     tools
         .iter()
@@ -133,7 +139,10 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
                 enabled: default_config
                     .and_then(|value| value.enabled)
                     .unwrap_or(true),
-                permission: permission(default_config.and_then(|value| value.permission_policy)),
+                permission: permission(
+                    default_config.and_then(|value| value.permission_policy),
+                    default_permission(&source),
+                ),
             };
             let overrides = match &source {
                 ToolsetSource::Agent => {
@@ -149,7 +158,7 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
                                         .unwrap_or(default.enabled),
                                     permission: config
                                         .and_then(|value| value.permission_policy)
-                                        .map(|value| permission(Some(value)))
+                                        .map(|value| permission(Some(value), default.permission))
                                         .unwrap_or(default.permission),
                                 },
                             }
@@ -165,7 +174,7 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
                                     enabled: config.enabled.unwrap_or(default.enabled),
                                     permission: config
                                         .permission_policy
-                                        .map(|value| permission(Some(value)))
+                                        .map(|value| permission(Some(value), default.permission))
                                         .unwrap_or(default.permission),
                                 },
                             }),
@@ -180,7 +189,7 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
                             enabled: config.enabled.unwrap_or(default.enabled),
                             permission: config
                                 .permission_policy
-                                .map(|value| permission(Some(value)))
+                                .map(|value| permission(Some(value), default.permission))
                                 .unwrap_or(default.permission),
                         },
                     })
@@ -293,5 +302,60 @@ mod tests {
             "T2"
         );
         assert!(!is_agent_toolset_member("parallel_web_search"), "T3");
+    }
+
+    #[test]
+    fn managed_toolset_permission_defaults_and_overrides_match_the_wire_contract() {
+        // Cause/effect graph: C1 Agent vs MCP source selects the Managed default;
+        // C2 an explicit toolset default replaces it; C3 an exact tool config
+        // replaces that default. Effects are the one normalized policies used by
+        // model visibility, Native authorization, and ACP authorization.
+        //
+        // | Rule | source | explicit default | exact override | effect |
+        // | P1 | Agent | absent | absent | always_allow |
+        // | P2 | MCP | absent | absent | always_ask |
+        // | P3 | MCP | always_allow | absent | always_allow |
+        // | P4 | MCP | always_allow | always_ask | always_ask |
+        // FMECA: treating P2 like P1 silently authorizes tools added later by an
+        // MCP server; applying P3 after P4 discards the most-specific authoring.
+        use awaken_agent_contract::ToolPermissionRequirement::{AlwaysAllow, AlwaysAsk};
+
+        let policies = toolset_policies(&[
+            AgentTool::AgentToolset20260401 {
+                configs: Vec::new(),
+                default_config: None,
+            },
+            AgentTool::McpToolset {
+                mcp_server_name: "safe-default".into(),
+                configs: Vec::new(),
+                default_config: None,
+            },
+            AgentTool::McpToolset {
+                mcp_server_name: "overridden".into(),
+                configs: vec![AgentToolConfig {
+                    name: "delete_issue".into(),
+                    enabled: None,
+                    permission_policy: Some(AgentToolPermissionPolicy::AlwaysAsk),
+                }],
+                default_config: Some(AgentToolDefaultConfig {
+                    enabled: None,
+                    permission_policy: Some(AgentToolPermissionPolicy::AlwaysAllow),
+                }),
+            },
+        ]);
+
+        assert_eq!(policies[0].default.permission, AlwaysAllow, "P1");
+        assert_eq!(policies[1].default.permission, AlwaysAsk, "P2");
+        assert_eq!(
+            policies[1].policy_for("future_tool").permission,
+            AlwaysAsk,
+            "P2"
+        );
+        assert_eq!(policies[2].default.permission, AlwaysAllow, "P3");
+        assert_eq!(
+            policies[2].policy_for("delete_issue").permission,
+            AlwaysAsk,
+            "P4"
+        );
     }
 }

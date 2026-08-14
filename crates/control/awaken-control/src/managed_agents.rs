@@ -393,7 +393,9 @@ fn config_from_create(
     let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
-        max_steps: extensions.max_steps.unwrap_or(8),
+        max_steps: extensions
+            .max_steps
+            .unwrap_or(awaken_runtime_contract::DEFAULT_MAX_STEPS),
         delegation_limits: Default::default(),
         model_binding,
         inference,
@@ -583,11 +585,13 @@ fn project(revision: AgentConfigRevision) -> Agent {
         .any(|id| id == STATE_MACHINE_PLUGIN_ID)
         .then(|| config.plugin_config.get(STATE_MACHINE_PLUGIN_ID).cloned())
         .flatten();
-    let x_awaken =
-        (config.max_steps != 8 || state_machine.is_some()).then_some(AwakenAgentExtensions {
-            max_steps: (config.max_steps != 8).then_some(config.max_steps),
-            state_machine,
-        });
+    let x_awaken = (config.max_steps != awaken_runtime_contract::DEFAULT_MAX_STEPS
+        || state_machine.is_some())
+    .then_some(AwakenAgentExtensions {
+        max_steps: (config.max_steps != awaken_runtime_contract::DEFAULT_MAX_STEPS)
+            .then_some(config.max_steps),
+        state_machine,
+    });
     Agent {
         id: id.clone(),
         object_type: "agent",
@@ -1786,7 +1790,7 @@ mod tests {
         // eliminate the first inference and must fail admission.
         //
         // | rule | operation | extension | effect |
-        // | S1 | create | omitted | stores 8; response omits extension |
+        // | S1 | create | omitted | stores canonical default; response omits extension |
         // | S2 | create | 40 + state machine | stores and returns both |
         // | S3 | update | omitted | preserves 40 + state machine |
         // | S4 | update | 24, machine omitted | versions 24; preserves machine |
@@ -1797,6 +1801,14 @@ mod tests {
             "workspace-a",
         );
 
+        let default_config =
+            config_from_create("default-proof".into(), create_params("default-proof"))
+                .expect("S1 config");
+        assert_eq!(
+            default_config.max_steps,
+            awaken_runtime_contract::DEFAULT_MAX_STEPS,
+            "S1"
+        );
         let default = repository
             .create("workspace-a", create_params("default"))
             .await

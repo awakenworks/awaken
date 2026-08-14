@@ -42,16 +42,35 @@ pub(crate) fn build_chat_request(
     // `ToolPresentation` (alias + description override) is applied over the combined set,
     // covering static and MCP tools uniformly. An empty presentation returns the set
     // unchanged, so the tool face stays byte-identical for an agent with no overrides.
+    // A plugin-provided DynamicTool owns both the live descriptor and executor.
+    // Publication may still carry the same id as a selection/policy placeholder;
+    // withhold that static copy at this single convergence seam so providers never
+    // receive two names and the live plugin schema remains authoritative. Plugin
+    // merge already rejects duplicate dynamic owners before this point.
+    let dynamic_ids = dynamic
+        .iter()
+        .map(|tool| tool.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
     let combined: Vec<ToolDescriptor> = spec
         .tool_descriptors
         .iter()
+        .filter(|tool| !dynamic_ids.contains(tool.id.as_str()))
         .chain(dynamic.iter())
-        .filter(|tool| {
-            spec.plugin_config
-                .agent
-                .tool_policy(&tool.id)
-                .is_none_or(|policy| policy.enabled)
-        })
+        .filter(
+            |tool| match spec.plugin_config.agent.tool_policy(&tool.id) {
+                Some(policy) => policy.enabled,
+                // A normalized publication with any toolsets must explicitly bind
+                // each MCP server toolset. Session plugins may be shared live wiring,
+                // but they cannot broaden a child Agent whose publication omitted
+                // that server. Empty toolsets retain legacy exact-id behavior.
+                None if !spec.plugin_config.agent.toolsets.is_empty()
+                    && tool.id.starts_with("mcp__") =>
+                {
+                    false
+                }
+                None => true,
+            },
+        )
         .cloned()
         .collect();
     // `model_tools` applies the alias/description overrides, withholds deferred tools the
@@ -230,7 +249,15 @@ pub(crate) fn assistant_message(run_id: &RunId, step: usize, blocks: Vec<Content
 }
 
 pub(crate) fn tool_result_message(call: &ToolCall, output: &ToolOutput) -> Message {
-    tool_result_message_from(&call.call_id, &output.content)
+    Message {
+        id: MessageId::tool_result(&call.call_id),
+        role: Role::Tool,
+        content: vec![ContentBlock::tool_result_with_error(
+            call.call_id.clone(),
+            output.content.clone(),
+            output.is_error,
+        )],
+    }
 }
 
 /// A tool-role message carrying a structured `ToolResult` block addressed to the

@@ -135,6 +135,7 @@ fn tool_result(id: &str, call: &str, text: &str) -> Message {
         content: vec![ContentBlock::ToolResult {
             tool_use_id: call.into(),
             content: vec![ContentBlock::text(text)],
+            is_error: false,
         }],
     }
 }

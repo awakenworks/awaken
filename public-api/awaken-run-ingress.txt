@@ -97,8 +97,10 @@ pub awaken_run_ingress::CommitHashError::Serialize(alloc::string::String)
 pub enum awaken_run_ingress::Error
 pub awaken_run_ingress::Error::Dispatch(awaken_run_ingress_contract::dispatch::DispatchError)
 pub awaken_run_ingress::Error::Execution(awaken_runtime_contract::execution::Error)
+pub awaken_run_ingress::Error::ResolutionNotReady(alloc::string::String)
 pub awaken_run_ingress::Error::TerminalResolution(awaken_runtime_contract::execution::Error)
 impl awaken_run_ingress::Error
+pub fn awaken_run_ingress::Error::is_resolution_not_ready(&self) -> bool
 pub fn awaken_run_ingress::Error::is_terminal_resolution(&self) -> bool
 pub enum awaken_run_ingress::LiveRunControlError
 pub awaken_run_ingress::LiveRunControlError::Dispatch(alloc::string::String)
@@ -228,7 +230,6 @@ pub fn awaken_run_ingress::DispatchService<S>::spawn_with_wake(alloc::sync::Arc<
 pub async fn awaken_run_ingress::DispatchService<S>::submit(&self, awaken_runtime_contract::activation::RunActivation) -> core::result::Result<(), awaken_run_ingress::Error>
 pub struct awaken_run_ingress::DispatchServiceConfig
 pub awaken_run_ingress::DispatchServiceConfig::dead_letter_ttl: core::option::Option<core::time::Duration>
-pub awaken_run_ingress::DispatchServiceConfig::lease_renewal_interval: core::option::Option<core::time::Duration>
 pub awaken_run_ingress::DispatchServiceConfig::max_attempts: u64
 pub awaken_run_ingress::DispatchServiceConfig::poll_interval: core::time::Duration
 pub awaken_run_ingress::DispatchServiceConfig::terminal_reconciliation_interval: core::option::Option<core::time::Duration>
@@ -483,7 +484,6 @@ pub struct awaken_run_ingress::SystemClock
 impl awaken_run_ingress::Clock for awaken_run_ingress::SystemClock
 pub fn awaken_run_ingress::SystemClock::now_ms(&self) -> u64
 pub const awaken_run_ingress::DEFAULT_LEASE_MS: u64
-pub const awaken_run_ingress::DEFAULT_LEASE_RENEWAL: core::time::Duration
 pub trait awaken_run_ingress::ClaimedCommitApplier: core::marker::Send + core::marker::Sync
 pub fn awaken_run_ingress::ClaimedCommitApplier::apply<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::thread::commit::operation::CommitOperation) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::commit::operation::CommitReceipt, awaken_run_ingress::ApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_run_ingress::Clock: core::marker::Send + core::marker::Sync

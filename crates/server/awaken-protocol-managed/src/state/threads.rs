@@ -12,9 +12,16 @@ impl ManagedState {
         session_id: &str,
         thread_id: &str,
         mut event: Event,
+        owner_thread_id: Option<&str>,
     ) -> Option<Event> {
         if thread_id == format!("{session_id}:primary") {
+            return owner_thread_id.is_none().then_some(event);
+        }
+        if owner_thread_id == Some(thread_id) {
             return Some(event);
+        }
+        if owner_thread_id.is_some() {
+            return None;
         }
         let is_own_status = match &event.kind {
             OutboundKind::SessionThreadStatusRunning {
@@ -94,28 +101,47 @@ impl ManagedState {
         }
     }
 
-    /// A subagent child thread: a `session_thread` whose parent is the primary and
-    /// whose `agent` is a minimal snapshot of the delegate `agent_name`.
+    pub(crate) fn thread_agent_from_profile(
+        agent_id: &str,
+        profile: awaken_executable_agent_contract::ExecutableAgentSessionProfile,
+    ) -> SessionThreadAgent {
+        let tools =
+            crate::project::managed_tools(&awaken_session_contract::SessionToolConfiguration {
+                toolsets: profile.toolsets,
+                client_tools: profile.client_tools,
+            });
+        SessionThreadAgent {
+            id: agent_id.to_owned(),
+            kind: "agent",
+            version: profile.source_revision.max(1),
+            model: ModelConfig::from_inference(
+                profile
+                    .model
+                    .or(profile.execution_model_ref)
+                    .unwrap_or_default(),
+                profile.inference,
+            ),
+            name: profile.name.unwrap_or_else(|| agent_id.to_owned()),
+            description: profile.description,
+            system: profile.system,
+            tools,
+            mcp_servers: super::session_mcp_projection::profile_mcp_servers(&profile.mcp_servers),
+            skills: profile
+                .skills
+                .into_iter()
+                .map(crate::types::agent::AgentSkill::from_binding)
+                .collect(),
+        }
+    }
+
+    /// A subagent child thread freezes the exact Agent definition already held
+    /// by the parent Session; thread creation never looks up current authoring
+    /// state or fabricates a second minimal Agent representation.
     pub(crate) fn child_thread(
         session: &Session,
         thread_id: &str,
-        agent_name: &str,
+        agent: SessionThreadAgent,
     ) -> SessionThread {
-        // Reuse the one `SessionAgent` shape rather than rebuild the agent object
-        // inline; the delegate's config is unknown here, so it is a minimal snapshot.
-        let agent = SessionThreadAgent::from(&SessionAgent {
-            id: agent_name.to_string(),
-            kind: "agent",
-            version: 1,
-            model: ModelConfig::new(""),
-            name: agent_name.to_string(),
-            description: None,
-            system: None,
-            tools: Vec::new(),
-            mcp_servers: Vec::new(),
-            skills: Vec::new(),
-            multiagent: None,
-        });
         SessionThread {
             id: thread_id.to_string(),
             kind: "session_thread",
@@ -176,7 +202,10 @@ impl ManagedState {
             .events
             .iter()
             .cloned()
-            .filter_map(|event| Self::project_event_for_thread(id, thread_id, event))
+            .filter_map(|event| {
+                let owner = record.event_thread_owners.get(&event.id);
+                Self::project_event_for_thread(id, thread_id, event, owner.map(String::as_str))
+            })
             .collect::<Vec<_>>();
         let page = paginate_by_id(&events, cursor, limit, |event| event.id.as_str())
             .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;
@@ -185,6 +214,17 @@ impl ManagedState {
             next_page: page.next_page,
             has_more: page.has_more,
         })
+    }
+
+    /// Return the disposable thread owner of one committed projection event.
+    /// Runtime transcripts remain authoritative; this lookup only lets the live
+    /// broadcaster apply the same isolation rule as paginated listing.
+    pub(crate) fn event_thread_owner(&self, id: &str, event_id: &str) -> Option<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|record| record.event_thread_owners.get(event_id).cloned())
     }
 
     /// `POST /v1/sessions/{id}/threads/{thread_id}/archive`. Archiving the primary

@@ -350,6 +350,9 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
             .ok()?;
         Some(
             awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                name: None,
+                description: None,
+                source_revision: snapshot.metadata.source.revision,
                 model: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
                 inference: snapshot.resolved_spec.plugin_config.inference.clone(),
                 execution_model_ref: Some(snapshot.resolved_spec.model_binding.model_ref.clone()),
@@ -360,7 +363,7 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for FixedAge
                 client_tools: Vec::new(),
                 mcp_servers,
                 skills: bindings.skills.clone(),
-                delegate_ids: Vec::new(),
+                delegates: Vec::new(),
                 advisor_model: bindings
                     .advisor
                     .as_ref()

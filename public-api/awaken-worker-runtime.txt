@@ -72,7 +72,7 @@ pub async fn awaken_worker_runtime::WorkerControlClient::mark_quiesced(&self, &a
 pub fn awaken_worker_runtime::WorkerControlClient::new(awaken_worker_transport_security::WorkerUpstream) -> Self
 pub async fn awaken_worker_runtime::WorkerControlClient::register(&self, impl core::convert::Into<alloc::string::String>, awaken_worker_contract::WorkerManifest) -> core::result::Result<awaken_worker_contract::RegisteredWorker, alloc::string::String>
 pub async fn awaken_worker_runtime::WorkerControlClient::register_classified(&self, impl core::convert::Into<alloc::string::String>, awaken_worker_contract::WorkerManifest) -> core::result::Result<awaken_worker_contract::RegisteredWorker, awaken_worker_runtime::WorkerRegistrationError>
-pub async fn awaken_worker_runtime::WorkerControlClient::resume_session(&self, &awaken_worker_contract::WorkerIdentity, &awaken_run_ingress_contract::dispatch::RunClaim, &str) -> core::result::Result<core::option::Option<awaken_session_contract::session_realization::SessionRealizationDirective>, alloc::string::String>
+pub async fn awaken_worker_runtime::WorkerControlClient::resume_session(&self, &awaken_worker_contract::WorkerIdentity, &awaken_run_ingress_contract::dispatch::RunClaim, &str) -> core::result::Result<core::option::Option<awaken_session_contract::session_realization::SessionRealizationDirective>, awaken_run_ingress_contract::claimed_session::ClaimedSessionControlError>
 pub struct awaken_worker_runtime::WorkerControlSessionClient
 impl awaken_worker_runtime::WorkerControlSessionClient
 pub fn awaken_worker_runtime::WorkerControlSessionClient::new(awaken_worker_runtime::WorkerControlClient, awaken_worker_contract::WorkerIdentity) -> Self

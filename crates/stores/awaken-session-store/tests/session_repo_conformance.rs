@@ -70,6 +70,7 @@ fn session(id: &str, title: &str) -> PersistedSession {
                     runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: Default::default(),
                     agent_id: "assistant".into(),
+                    agent_revision: None,
                     model: "kimi".into(),
                     runtime: Some("acp:custom".into()),
                     delegate_ids: vec!["researcher".into()],

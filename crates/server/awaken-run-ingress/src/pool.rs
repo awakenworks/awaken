@@ -37,7 +37,7 @@ use crate::service::DispatchServiceConfig;
 use crate::wake::{LocalWakeSignal, WakeSignal};
 use crate::worker::DispatchWorker;
 use awaken_run_ingress_contract::RunDispatch;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Resolves the worker that owns a thread's runtime. The pool claims from the one
 /// shared queue, then asks the resolver for the session worker carrying the
@@ -126,7 +126,6 @@ pub struct DispatchPool<S> {
     drains: Vec<JoinHandle<()>>,
     wake_coordinator: JoinHandle<()>,
     maintenance: JoinHandle<()>,
-    renewal: Option<JoinHandle<()>>,
     completion: Option<Arc<dyn CompletionSink>>,
     admission: Arc<PoolAdmission>,
 }
@@ -197,85 +196,7 @@ struct PoolAdmission {
     gate: tokio::sync::RwLock<DrainAdmission>,
     in_flight: Arc<AtomicU32>,
     wake: Notify,
-    active_runs: Arc<ActiveRuns>,
     max_attempts: u64,
-}
-
-/// Exact Runs whose claim is still being resolved or driven by this process.
-///
-/// The durable queue owns claim truth; this is only the process-local liveness
-/// projection used by lease renewal. In particular, a resolver/drive failure
-/// removes the Run immediately so an un-settled claim can expire and recover.
-#[derive(Default)]
-struct ActiveRuns {
-    entries: std::sync::Mutex<std::collections::BTreeMap<String, (RunId, usize, u64)>>,
-    next_generation: AtomicU64,
-}
-
-impl ActiveRuns {
-    fn enter(self: &Arc<Self>, run_id: RunId) -> ActiveRunGuard {
-        let mut active = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let generation = if let Some((_, count, generation)) = active.get_mut(&run_id.0) {
-            *count += 1;
-            *generation
-        } else {
-            let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-            active.insert(run_id.0.clone(), (run_id.clone(), 1, generation));
-            generation
-        };
-        ActiveRunGuard {
-            active: self.clone(),
-            run_id,
-            generation,
-        }
-    }
-
-    fn snapshot(&self) -> Vec<RunId> {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .map(|(run_id, _, _)| run_id.clone())
-            .collect()
-    }
-
-    /// Stop renewing a claim after durable truth says this owner no longer owns
-    /// it. A later claim of the same Run receives a fresh generation, so dropping
-    /// a stale drive guard cannot erase or decrement the new activity record.
-    fn forget(&self, run_id: &RunId) -> bool {
-        self.entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&run_id.0)
-            .is_some()
-    }
-}
-
-struct ActiveRunGuard {
-    active: Arc<ActiveRuns>,
-    run_id: RunId,
-    generation: u64,
-}
-
-impl Drop for ActiveRunGuard {
-    fn drop(&mut self) {
-        let mut active = self
-            .active
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((_, count, generation)) = active.get_mut(&self.run_id.0)
-            && *generation == self.generation
-        {
-            *count -= 1;
-            if *count == 0 {
-                active.remove(&self.run_id.0);
-            }
-        }
-    }
 }
 
 impl Default for PoolAdmission {
@@ -290,7 +211,6 @@ impl PoolAdmission {
             gate: tokio::sync::RwLock::new(DrainAdmission::default()),
             in_flight: Arc::new(AtomicU32::new(0)),
             wake: Notify::new(),
-            active_runs: Arc::new(ActiveRuns::default()),
             max_attempts,
         }
     }
@@ -437,6 +357,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
                     resolver.clone(),
                     completion.clone(),
                     admission.clone(),
+                    config.poll_interval,
                 ))
             })
             .collect();
@@ -455,17 +376,6 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             resolver.clone(),
             completion.clone(),
         ));
-        let renewal = config.lease_renewal_interval.map(|interval| {
-            tokio::spawn(renewal_loop(
-                store.clone(),
-                clock.clone(),
-                shutdown.clone(),
-                owner.clone(),
-                lease_ms,
-                interval,
-                admission.clone(),
-            ))
-        });
         Self {
             store,
             clock,
@@ -477,7 +387,6 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             drains,
             wake_coordinator,
             maintenance,
-            renewal,
             completion,
             admission,
         }
@@ -546,10 +455,6 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             // durable intent is accepted and that owner must settle it.
             return Ok(true);
         };
-        let _active_run = self
-            .admission
-            .active_runs
-            .enter(claimed.lease.run_id.clone());
         let worker = match self.resolver.worker_for_claimed(&claimed).await {
             Ok(worker) => worker,
             Err(error) => {
@@ -610,9 +515,6 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         }
         let _ = self.wake_coordinator.await;
         let _ = self.maintenance.await;
-        if let Some(renewal) = self.renewal {
-            let _ = renewal.await;
-        }
     }
 }
 
@@ -628,6 +530,7 @@ async fn drain_loop<S: Dispatch + 'static>(
     resolver: Arc<dyn WorkerResolver<S>>,
     completion: Option<Arc<dyn CompletionSink>>,
     admission: Arc<PoolAdmission>,
+    poll_interval: Duration,
 ) {
     loop {
         tokio::select! {
@@ -654,6 +557,12 @@ async fn drain_loop<S: Dispatch + 'static>(
             // commit (terminal-is-final fence) never reaches here: `drive_claimed`
             // absorbs it as an already-done settle, so this only fires on genuine
             // faults.
+            Err(err) if err.is_resolution_not_ready() => {
+                // WorkQueue serializes Runs that share one Environment. A
+                // predecessor releasing that slot is normal backpressure, not a
+                // fault; cap retries independently of a very small queue poll.
+                tokio::time::sleep(poll_interval.max(Duration::from_millis(250))).await;
+            }
             Err(err) => {
                 tracing::warn!(owner = %owner, error = %err, "drain tick failed; retrying");
             }
@@ -718,7 +627,6 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         return Ok(false);
     };
     let _in_flight = InFlightGuard::new(admission.in_flight.clone());
-    let _active_run = admission.active_runs.enter(claimed.lease.run_id.clone());
     // Route to the runtime that owns this run's thread, then drive+settle there.
     // The resolved worker shares this store and owner, so the settle it performs
     // acts on the same row this task just claimed.
@@ -837,63 +745,6 @@ async fn maintenance_loop<S: Dispatch + 'static>(
         tokio::select! {
             _ = shutdown.cancelled() => break,
             _ = tokio::time::sleep(config.poll_interval) => {}
-        }
-    }
-}
-
-/// Renew every near-expiry lease this process owns, so a long run is not reclaimed
-/// while still executing (ADR-0024). One heartbeat for the whole pool.
-async fn renewal_loop<S: Dispatch + 'static>(
-    store: Arc<S>,
-    clock: Arc<dyn Clock>,
-    shutdown: CancellationToken,
-    owner: String,
-    lease_ms: u64,
-    interval: Duration,
-    admission: Arc<PoolAdmission>,
-) {
-    loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => break,
-            _ = tokio::time::sleep(interval) => {
-                renew_active_runs_once(
-                    store.as_ref(),
-                    clock.as_ref(),
-                    &owner,
-                    lease_ms,
-                    admission.active_runs.as_ref(),
-                )
-                .await;
-            }
-        }
-    }
-}
-
-async fn renew_active_runs_once<S: Dispatch + 'static>(
-    store: &S,
-    clock: &dyn Clock,
-    owner: &str,
-    lease_ms: u64,
-    active_runs: &ActiveRuns,
-) {
-    let now = clock.now_ms();
-    for run_id in active_runs.snapshot() {
-        match store.renew_lease(&run_id, owner, lease_ms, now).await {
-            Ok(true) => {}
-            Ok(false) => {
-                active_runs.forget(&run_id);
-                tracing::warn!(
-                    run_id = %run_id.0,
-                    %owner,
-                    "dispatch lease renewal lost ownership; stopped local renewal"
-                );
-            }
-            Err(error) => tracing::warn!(
-                run_id = %run_id.0,
-                %owner,
-                %error,
-                "dispatch lease renewal failed"
-            ),
         }
     }
 }
@@ -1050,39 +901,5 @@ mod in_flight_tests {
             )],
             "R3"
         );
-    }
-
-    #[test]
-    fn forgotten_generation_cannot_remove_a_later_claim_of_the_same_run() {
-        let active = Arc::new(ActiveRuns::default());
-        let run_id = RunId("run-1".into());
-        let stale = active.enter(run_id.clone());
-        assert!(active.forget(&run_id));
-
-        let current = active.enter(run_id.clone());
-        drop(stale);
-        assert_eq!(active.snapshot(), vec![run_id.clone()]);
-
-        drop(current);
-        assert!(active.snapshot().is_empty());
-    }
-
-    #[tokio::test]
-    async fn lost_durable_ownership_stops_further_local_renewal() {
-        let active = Arc::new(ActiveRuns::default());
-        let run_id = RunId("missing-run".into());
-        let _drive = active.enter(run_id);
-        let store = crate::memory::MemoryDispatchStore::new();
-
-        renew_active_runs_once(
-            &store,
-            &crate::clock::SystemClock,
-            "stale-owner",
-            100,
-            active.as_ref(),
-        )
-        .await;
-
-        assert!(active.snapshot().is_empty());
     }
 }

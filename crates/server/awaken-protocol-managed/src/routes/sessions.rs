@@ -158,7 +158,7 @@ struct SessionListParams {
     page: Option<SessionCursor>,
     order: SessionListOrder,
     agent_id: Option<String>,
-    agent_version: Option<u32>,
+    agent_version: Option<u64>,
     created_gt: Option<chrono::DateTime<chrono::FixedOffset>>,
     created_gte: Option<chrono::DateTime<chrono::FixedOffset>>,
     created_lt: Option<chrono::DateTime<chrono::FixedOffset>>,
@@ -208,7 +208,7 @@ fn parse_session_list(raw: Option<&str>) -> Result<SessionListParams, WireErr> {
             "order" => params.order = SessionListOrder::parse(&value)?,
             "agent_id" => params.agent_id = Some(value.into_owned()),
             "agent_version" => {
-                params.agent_version = Some(value.parse::<u32>().map_err(|_| {
+                params.agent_version = Some(value.parse::<u64>().map_err(|_| {
                     error_response(StateError::Run(RunError::bad_request(
                         "agent_version must be a positive integer",
                     )))
@@ -1171,14 +1171,21 @@ async fn stream_thread_events(
     let primary = tid == format!("{id}:primary");
     let project_session = id.clone();
     let project_thread = tid.clone();
+    let project_state = Arc::clone(&state);
     Ok(Sse::new(live_sse_stream(
         snapshot,
         rx,
         previews,
         move |frame| match frame {
             StreamFrame::Committed(event) => {
-                ManagedState::project_event_for_thread(&project_session, &project_thread, event)
-                    .map(StreamFrame::Committed)
+                let owner = project_state.event_thread_owner(&project_session, &event.id);
+                ManagedState::project_event_for_thread(
+                    &project_session,
+                    &project_thread,
+                    event,
+                    owner.as_deref(),
+                )
+                .map(StreamFrame::Committed)
             }
             preview @ StreamFrame::Preview(_) if primary => Some(preview),
             StreamFrame::Preview(_) => None,

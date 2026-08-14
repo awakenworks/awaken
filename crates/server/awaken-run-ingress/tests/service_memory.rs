@@ -310,9 +310,9 @@ async fn service_dead_letters_a_poison_run() {
 }
 
 #[tokio::test]
-async fn daemon_runs_with_lease_renewal_and_ttl_gc_enabled() {
-    // Exercises the renewal heartbeat and the ttl-GC branch of the daemon loop:
-    // the run drains, and both background steps fire on a real clock.
+async fn daemon_runs_with_worker_owned_renewal_and_ttl_gc_enabled() {
+    // Renewal is owned by the worker's exact drive; this exercises that common
+    // path through the daemon together with the daemon-owned ttl-GC branch.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -321,7 +321,6 @@ async fn daemon_runs_with_lease_renewal_and_ttl_gc_enabled() {
         Arc::new(SystemClock),
         DispatchServiceConfig {
             poll_interval: Duration::from_millis(5),
-            lease_renewal_interval: Some(Duration::from_millis(5)),
             dead_letter_ttl: Some(Duration::from_millis(1)),
             ..Default::default()
         },

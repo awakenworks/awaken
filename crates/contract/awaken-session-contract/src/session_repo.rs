@@ -895,6 +895,7 @@ mod mutation_tests {
                     },
                     runtime_placement: crate::SessionRuntimePlacement::Local,
                     agent_id: "assistant".into(),
+                    agent_revision: None,
                     model: "model".into(),
                     execution_model_ref: "model".into(),
                     runtime: None,

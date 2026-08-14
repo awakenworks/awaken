@@ -414,16 +414,21 @@ impl SessionApplication {
                 if let Some(advisor) = profile.advisor_model {
                     models.insert(advisor);
                 }
-                profile.delegate_ids
+                profile.delegates
             })
             .unwrap_or_default();
         let mut visited = std::collections::BTreeSet::new();
-        while let Some(agent_id) = pending.pop() {
+        while let Some(delegate) = pending.pop() {
+            let agent_id = delegate.agent_id;
             if !visited.insert(agent_id.clone()) {
                 continue;
             }
-            let profile = source
-                .session_profile_in(workspace_id, &agent_id)
+            let profile = delegate
+                .source_revision
+                .and_then(|revision| {
+                    source.session_profile_at_revision_in(workspace_id, &agent_id, revision)
+                })
+                .or_else(|| source.session_profile_in(workspace_id, &agent_id))
                 .ok_or_else(|| {
                     RunError::bad_request(format!(
                         "budget_price_roster_unavailable: agent `{agent_id}` has no executable profile"
@@ -439,7 +444,7 @@ impl SessionApplication {
                     ))
                 })?;
             models.insert(model);
-            pending.extend(profile.delegate_ids);
+            pending.extend(profile.delegates);
             if visited.len() > 25 {
                 return Err(RunError::bad_request(
                     "budget_price_roster_unavailable: multi-agent roster exceeds 25 agents",

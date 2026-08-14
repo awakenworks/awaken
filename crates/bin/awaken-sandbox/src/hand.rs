@@ -17,7 +17,7 @@ use std::os::unix::fs::PermissionsExt;
 use awaken_connection_plan::{
     ConnectionPlan, TokioChannelFactory, bind_tcp, bind_unix, connect_with_retry,
 };
-use awaken_ext_builtin_tools::executable_hand_tools;
+use awaken_ext_builtin_tools::all_hand_tools;
 use std::sync::Arc;
 
 use awaken_tool_relay::{FsOperationLedger, HandOperationLedger, HandSession, serve_hand};
@@ -144,7 +144,7 @@ pub async fn serve_with_operation_ledger(
                 read: tokio::io::stdin(),
                 write: tokio::io::stdout(),
             };
-            let session = HandSession::new(executable_hand_tools(), ledger);
+            let session = HandSession::new(all_hand_tools(), ledger);
             serve_hand(channel, session)
                 .await
                 .map_err(|error| format!("hand stdio: {error}"))
@@ -170,7 +170,7 @@ pub async fn serve_with_operation_ledger(
                     .map_err(|e| format!("hand accept: {e}"))?;
                 let ledger = ledger.clone();
                 tokio::spawn(async move {
-                    let session = HandSession::new(executable_hand_tools(), ledger);
+                    let session = HandSession::new(all_hand_tools(), ledger);
                     let _ = serve_hand(channel, session).await;
                 });
             }
@@ -187,7 +187,7 @@ pub async fn serve_with_operation_ledger(
                     .map_err(|e| format!("hand accept: {e}"))?;
                 let ledger = ledger.clone();
                 tokio::spawn(async move {
-                    let session = HandSession::new(executable_hand_tools(), ledger);
+                    let session = HandSession::new(all_hand_tools(), ledger);
                     let _ = serve_hand(channel, session).await;
                 });
             }
@@ -209,7 +209,7 @@ pub async fn serve_with_operation_ledger(
                 .await
                 {
                     Ok(channel) => {
-                        let session = HandSession::new(executable_hand_tools(), ledger.clone());
+                        let session = HandSession::new(all_hand_tools(), ledger.clone());
                         let _ = serve_hand(channel, session).await;
                         eprintln!("awaken-sandbox hand: brain link closed; re-dialing");
                     }
@@ -247,7 +247,7 @@ async fn run_nats(
         .subscribe(subject.to_string())
         .await
         .map_err(|e| format!("hand NATS subscribe {subject}: {e}"))?;
-    let mut session = HandSession::new(executable_hand_tools(), ledger);
+    let mut session = HandSession::new(all_hand_tools(), ledger);
     eprintln!(
         "awaken-sandbox hand: serving the executor channel over NATS {url} subject '{subject}'"
     );

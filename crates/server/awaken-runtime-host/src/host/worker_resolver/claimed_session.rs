@@ -64,10 +64,17 @@ pub(super) async fn install_claimed_session_projection(
         .resume_frozen(&claim, &thread_id.0)
         .await
         .map_err(|error| {
-            HostWorkerResolver::execution_error(format!(
-                "run {} frozen Session resume failed: {error}",
-                claimed.lease.run_id.0
-            ))
+            if error.is_not_ready() {
+                awaken_run_ingress::Error::ResolutionNotReady(format!(
+                    "run {} is waiting for its Session Environment Work slot",
+                    claimed.lease.run_id.0
+                ))
+            } else {
+                HostWorkerResolver::execution_error(format!(
+                    "run {} frozen Session resume failed: {error}",
+                    claimed.lease.run_id.0
+                ))
+            }
         })?
         .ok_or_else(|| {
             HostWorkerResolver::execution_error(

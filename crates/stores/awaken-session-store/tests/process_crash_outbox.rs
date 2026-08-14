@@ -44,6 +44,7 @@ fn session() -> PersistedSession {
                     runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     mcp_authoring: Default::default(),
                     agent_id: "assistant".into(),
+                    agent_revision: None,
                     model: "model".into(),
                     runtime: None,
                     delegate_ids: Vec::new(),

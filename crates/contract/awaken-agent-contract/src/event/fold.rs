@@ -111,12 +111,13 @@ pub fn fold_messages(new_messages: &[Message], pending: Option<(&str, bool)>) ->
                     if let ContentBlock::ToolResult {
                         tool_use_id,
                         content,
+                        is_error,
                     } = block
                     {
                         out.push(Fact::ToolResult {
                             id: tool_use_id.clone(),
                             content: content.clone(),
-                            is_error: false,
+                            is_error: *is_error,
                         });
                     }
                 }
@@ -207,6 +208,7 @@ pub fn fold_history(messages: &[Message], sink: &mut impl HistorySink) {
                     if let ContentBlock::ToolResult {
                         tool_use_id,
                         content,
+                        ..
                     } = block
                     {
                         sink.tool_result(&message.id.0, sub, tool_use_id, content);
@@ -549,23 +551,46 @@ mod tests {
     }
 
     #[test]
-    fn tool_role_projects_tool_result_with_is_error_false() {
-        let msg = Message::new(
-            Id("t1".into()),
-            Role::Tool,
-            vec![ContentBlock::tool_result(
-                "c1",
-                vec![ContentBlock::text("ok")],
-            )],
-        );
-        let events = fold_messages(&[msg], None);
+    fn tool_role_preserves_the_tool_result_error_decision() {
+        // Cause/effect graph: C1 the executor reports success/error; C2 the
+        // result is committed as a Tool-role message. Effect E1 the folded fact
+        // preserves C1 exactly. Decision rows R1=C1(success)+C2 => false and
+        // R2=C1(error)+C2 => true. FMECA: losing the bit makes a failed external
+        // effect appear complete to every protocol and product projection.
+        let messages = [
+            Message::new(
+                Id("t1".into()),
+                Role::Tool,
+                vec![ContentBlock::tool_result(
+                    "c1",
+                    vec![ContentBlock::text("ok")],
+                )],
+            ),
+            Message::new(
+                Id("t2".into()),
+                Role::Tool,
+                vec![ContentBlock::tool_result_with_error(
+                    "c2",
+                    vec![ContentBlock::text("failed")],
+                    true,
+                )],
+            ),
+        ];
+        let events = fold_messages(&messages, None);
         assert_eq!(
             events,
-            vec![Fact::ToolResult {
-                id: "c1".into(),
-                content: vec![ContentBlock::text("ok")],
-                is_error: false,
-            }]
+            vec![
+                Fact::ToolResult {
+                    id: "c1".into(),
+                    content: vec![ContentBlock::text("ok")],
+                    is_error: false,
+                },
+                Fact::ToolResult {
+                    id: "c2".into(),
+                    content: vec![ContentBlock::text("failed")],
+                    is_error: true,
+                },
+            ]
         );
     }
 

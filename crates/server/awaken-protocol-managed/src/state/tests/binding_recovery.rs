@@ -1,5 +1,95 @@
 use super::*;
 
+struct RevisionedProfiles(std::sync::atomic::AtomicU64);
+
+impl RevisionedProfiles {
+    fn profile(
+        agent_id: &str,
+        revision: u64,
+    ) -> awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+        let delegates = (agent_id == "coordinator")
+            .then(|| {
+                vec![awaken_executable_agent_contract::ExecutableAgentDelegate {
+                    agent_id: "researcher".into(),
+                    source_revision: Some(revision),
+                }]
+            })
+            .unwrap_or_default();
+        awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+            name: Some(format!("{agent_id}-v{revision}")),
+            description: Some(format!("revision {revision}")),
+            source_revision: revision,
+            model: Some("test-model".into()),
+            execution_model_ref: Some("test-model".into()),
+            backend_ref: "native".into(),
+            delegates,
+            ..Default::default()
+        }
+    }
+}
+
+impl awaken_executable_agent_contract::ExecutableAgentProfileSource for RevisionedProfiles {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        Some(Self::profile(
+            agent_id,
+            self.0.load(std::sync::atomic::Ordering::SeqCst),
+        ))
+    }
+
+    fn session_profile_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        Some(Self::profile(agent_id, source_revision))
+    }
+}
+
+#[tokio::test]
+async fn cold_projection_uses_the_session_pinned_agent_revision() {
+    // Cause/effect graph: C1 Session freezes coordinator revision 7; C2 the
+    // current catalog advances to revision 8; C3 the disposable Managed cache is
+    // lost; C4 durable recovery reads the baseline pin. Effects: E1 root identity
+    // remains v7; E2 the full child definition remains v7; E3 no current-v8
+    // presentation leaks into the historical Session.
+    //
+    // Decision table: R1 C1+!C2 -> E1+E2; R2 C1+C2+!C3 -> cached E1+E2;
+    // R3 C1+C2+C3+C4 -> rebuilt E1+E2+E3. FMECA: resolving current state during
+    // R3 would silently rewrite an old Session's Agent name, version, model, and
+    // child roster after restart (high severity, externally visible); the durable
+    // `agent_revision` pin and exact profile lookup detect and eliminate it.
+    let repo = Arc::new(ephemeral_session_repo());
+    let profiles = Arc::new(RevisionedProfiles(std::sync::atomic::AtomicU64::new(7)));
+    let state = ManagedState::new_with_mcp(RehydrateFake::default())
+        .with_config_source(profiles.clone())
+        .with_session_repo(repo);
+    let request = serde_json::from_value(serde_json::json!({"agent":"coordinator"})).unwrap();
+    let created = state.create_session(request, None).await.unwrap();
+    assert_eq!(created.agent.name, "coordinator-v7", "R1");
+    profiles.0.store(8, std::sync::atomic::Ordering::SeqCst);
+    state.sessions.lock().unwrap().remove(&created.id);
+    state.ensure_session(&created.id).await.unwrap();
+    let recovered = state.get_session(&created.id).unwrap();
+    assert_eq!(recovered.agent.name, "coordinator-v7", "R3/E1");
+    assert_eq!(recovered.agent.version, 7, "R3/E1");
+    let crate::types::SessionMultiagentRosterEntry::Agent(child) = &recovered
+        .agent
+        .multiagent
+        .as_ref()
+        .expect("coordinator roster")
+        .agents[0]
+    else {
+        panic!("expected child Agent");
+    };
+    assert_eq!(child.name, "researcher-v7", "R3/E2-E3");
+    assert_eq!(child.version, 7, "R3/E2-E3");
+}
+
 #[tokio::test]
 async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     // Cause/effect table: C1 durable Session exists, C2 binding absent,
@@ -296,7 +386,7 @@ fn rehydrated_session_restores_persisted_config() {
             .unwrap(),
         }]);
     let session = state
-        .rehydrated_session("sesn_1", Some(persisted))
+        .rehydrated_session("sesn_1", DEFAULT_SCOPE, Some(persisted))
         .expect("valid durable projection");
     assert_eq!(session.agent.id, "coder");
     assert_eq!(session.agent.model.id, "kimi-k2");
@@ -324,7 +414,7 @@ fn rehydrated_session_restores_persisted_config() {
 fn rehydrated_session_falls_back_without_persisted_config() {
     let state = ManagedState::new_with_mcp(RehydrateFake::default());
     let session = state
-        .rehydrated_session("sesn_1", None)
+        .rehydrated_session("sesn_1", DEFAULT_SCOPE, None)
         .expect("legacy fallback projection");
     assert_eq!(session.agent.id, "assistant");
     assert_eq!(session.agent.model.id, "host-default-model");
@@ -358,12 +448,17 @@ fn persisted_session_rejects_corrupt_tools_before_rehydration() {
 #[tokio::test]
 async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
     // Cause/effect graph: C1 cache is cold; C2 durable Session and committed
-    // transcript exist; C3 Runtime projection is stale. Effects: E1 rebuild the
-    // HTTP/history/delegation read model; E2 perform no Environment, Resource,
-    // or MCP realization. Decision rule R1 C1+C2+C3 => E1+E2. Runtime recovery
-    // belongs to the explicit reconciler/run-admission tests below. FMECA:
+    // transcript exist; C3 Runtime projection is stale; C4 a durable child Run
+    // has its own committed transcript. Effects: E1 rebuild the HTTP/history/
+    // delegation read model; E2 perform no Environment, Resource, or MCP
+    // realization; E3 expose the child transcript only through its child Thread.
+    // Decision rules: R1 C1+C2+C3+!C4 => E1+E2; R2 C1+C2+C3+C4 => E1+E2+E3.
+    // Runtime recovery belongs to the explicit reconciler/run-admission tests
+    // below. FMECA:
     // driving effects from GET can duplicate mounts/credentials or turn an
-    // outage into a read failure (S8/O5/D7), so cold reads remain pure.
+    // outage into a read failure (S8/O5/D7), so cold reads remain pure; flattening
+    // child tool events into the primary Thread destroys context isolation
+    // (S8/O4/D6), so R2 asserts both inclusion and exclusion projections.
     let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
     let mut persisted = sample_persisted("sesn_1");
     persisted.environment.set_resident("opaque-runtime-binding");
@@ -394,6 +489,20 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
         client_executed: true,
     });
+    runtime.committed_by_thread.lock().unwrap().insert(
+        "child-durable".into(),
+        vec![Message::new(
+            awaken_agent_contract::agent::message::Id("child-assistant-tool".into()),
+            awaken_agent_contract::agent::message::Role::Assistant,
+            vec![
+                awaken_agent_contract::agent::content::ContentBlock::ToolUse {
+                    id: "child-tool-use-1".into(),
+                    name: "web_search".into(),
+                    input: serde_json::json!({"query":"managed child isolation"}),
+                },
+            ],
+        )],
+    );
     runtime.delegated.lock().unwrap().push(DelegatedRun {
         run_id: awaken_agent_contract::agent::run::Id("child-durable".into()),
         parent_call_id: "call-durable".into(),
@@ -434,8 +543,8 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
     );
     assert_eq!(
         order.lock().unwrap().as_slice(),
-        &["history", "delegations"],
-        "a read opens only read-side transcript/delegation projections"
+        &["history", "delegations", "history"],
+        "a read opens only the primary and child transcript/delegation projections"
     );
     assert!(restored_runtimes.lock().unwrap().is_empty(), "read-only");
     assert!(
@@ -460,6 +569,28 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         encoded["data"].as_array().unwrap().iter().any(|event| {
             event["type"] == "agent.custom_tool_use" && event["id"] == "call-submit"
         })
+    );
+    let child_events = restarted
+        .list_thread_events("sesn_1", "child-durable", None, None)
+        .expect("list isolated child events");
+    assert!(
+        child_events.data.iter().any(|event| {
+            event.id == "child-tool-use-1"
+                && matches!(event.kind, OutboundKind::AgentToolUse { .. })
+        }),
+        "R2/E3"
+    );
+    let primary_events = restarted
+        .list_thread_events("sesn_1", "sesn_1:primary", None, None)
+        .expect("list isolated primary events");
+    assert_eq!(
+        primary_events
+            .data
+            .iter()
+            .filter(|event| event.id == "call-submit")
+            .count(),
+        1,
+        "R2/E3 child projection is not flattened into primary"
     );
 }
 

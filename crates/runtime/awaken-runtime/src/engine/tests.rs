@@ -160,6 +160,8 @@ fn toolset_policy_changes_the_actual_model_tool_surface() {
     // | Agent | true    | always_ask    | yes           |
     // | MCP   | false   | always_allow  | no            |
     // | MCP   | true    | always_allow  | yes           |
+    // | MCP server absent from normalized toolsets | - | no          |
+    // | legacy publication (no toolsets) | -       | yes            |
     use awaken_runtime_contract::agent_bindings::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
@@ -213,6 +215,7 @@ fn toolset_policy_changes_the_actual_model_tool_surface() {
     let dynamic = vec![
         descriptor("mcp__docs__search"),
         descriptor("mcp__docs__fetch"),
+        descriptor("mcp__browser__navigate"),
     ];
 
     let request = build_chat_request(
@@ -228,6 +231,94 @@ fn toolset_policy_changes_the_actual_model_tool_surface() {
         .map(|tool| tool.id.as_str())
         .collect::<Vec<_>>();
     assert_eq!(visible, vec!["omega", "mcp__docs__fetch"]);
+
+    // FMECA: Session-scoped dynamic plugins are live wiring shared by a Session;
+    // without this explicit-source fence a delegated Agent can see its parent's
+    // undeclared connector. A legacy snapshot with no typed toolsets keeps its
+    // historical dynamic exact-id face rather than being silently narrowed.
+    let legacy = build_chat_request(
+        &spec(""),
+        &[],
+        &[user_message()],
+        &[descriptor("mcp__browser__navigate")],
+        &Default::default(),
+    );
+    assert_eq!(
+        legacy
+            .tools
+            .iter()
+            .map(|tool| tool.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["mcp__browser__navigate"]
+    );
+}
+
+#[test]
+fn a_live_dynamic_tool_replaces_its_publication_selection_placeholder() {
+    // Cause/effect graph: C1 a publication carries an enabled catalog descriptor;
+    // C2 the selected plugin contributes the same canonical id and its live
+    // executable descriptor. E1 the provider sees the id exactly once; E2 its
+    // schema is the live plugin schema; E3 the ordinary enabled policy still
+    // controls visibility. Constraint: plugin merge rejects two dynamic owners.
+    //
+    // Decision table:
+    // | C1 static | C2 dynamic same id | enabled | provider face        |
+    // | yes       | no                 | yes     | static once          |
+    // | yes       | yes                | yes     | dynamic once (R1)    |
+    // | yes       | yes                | no      | absent (R2)          |
+    // FMECA: forwarding both copies is rejected by OpenAI-compatible providers;
+    // preferring the frozen placeholder can expose a schema the live executor
+    // does not implement. The convergence seam therefore gives the one live
+    // DynamicTool ownership of that model-facing id.
+    let placeholder = awaken_runtime_contract::resolved::ToolDescriptor::pinned(
+        "catalog",
+        "evidence_lookup",
+        "publication placeholder",
+        serde_json::json!({"type": "object", "properties": {}}),
+    );
+    let live = awaken_runtime_contract::resolved::ToolDescriptor::pinned(
+        "plugin",
+        "evidence_lookup",
+        "configured provider search",
+        serde_json::json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"]
+        }),
+    );
+    let mut configured = spec("");
+    configured.tool_descriptors = vec![placeholder];
+
+    let request = build_chat_request(
+        &configured,
+        &[],
+        &[user_message()],
+        std::slice::from_ref(&live),
+        &Default::default(),
+    );
+    assert_eq!(request.tools, vec![live.clone()], "R1/E1+E2");
+
+    configured.plugin_config.agent.toolsets = vec![
+        awaken_runtime_contract::agent_bindings::ToolsetPolicy {
+            source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
+            default: Default::default(),
+            overrides: vec![awaken_runtime_contract::agent_bindings::ToolPolicyOverride {
+                name: "evidence_lookup".into(),
+                policy: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+                    enabled: false,
+                    permission: awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAllow,
+                },
+            }],
+        },
+    ];
+    let hidden = build_chat_request(
+        &configured,
+        &[],
+        &[user_message()],
+        &[live],
+        &Default::default(),
+    );
+    assert!(hidden.tools.is_empty(), "R2/E3");
 }
 
 fn numbered(n: usize) -> Message {

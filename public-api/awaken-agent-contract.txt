@@ -42,6 +42,7 @@ pub awaken_agent_contract::agent::content::ContentBlock::Thinking
 pub awaken_agent_contract::agent::content::ContentBlock::Thinking::text: alloc::string::String
 pub awaken_agent_contract::agent::content::ContentBlock::ToolResult
 pub awaken_agent_contract::agent::content::ContentBlock::ToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_agent_contract::agent::content::ContentBlock::ToolResult::is_error: bool
 pub awaken_agent_contract::agent::content::ContentBlock::ToolResult::tool_use_id: alloc::string::String
 pub awaken_agent_contract::agent::content::ContentBlock::ToolUse
 pub awaken_agent_contract::agent::content::ContentBlock::ToolUse::id: alloc::string::String
@@ -53,6 +54,7 @@ pub fn awaken_agent_contract::agent::content::ContentBlock::image_url(impl core:
 pub fn awaken_agent_contract::agent::content::ContentBlock::text(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::thinking(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::tool_result(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
+pub fn awaken_agent_contract::agent::content::ContentBlock::tool_result_with_error(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, bool) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::tool_use(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, serde_json::value::Value) -> Self
 pub enum awaken_agent_contract::agent::content::ImageSource
 pub awaken_agent_contract::agent::content::ImageSource::Base64

@@ -87,6 +87,7 @@ pub awaken_worker_contract::PlacementRequirements::sandbox: awaken_provisioning_
 pub awaken_worker_contract::PlacementRequirements::sandbox_backend: core::option::Option<alloc::string::String>
 impl awaken_worker_contract::PlacementRequirements
 pub fn awaken_worker_contract::PlacementRequirements::is_legacy_default(&self) -> bool
+pub fn awaken_worker_contract::PlacementRequirements::remote_preferred() -> Self
 pub fn awaken_worker_contract::PlacementRequirements::remote_required() -> Self
 impl core::default::Default for awaken_worker_contract::PlacementRequirements
 pub fn awaken_worker_contract::PlacementRequirements::default() -> Self
