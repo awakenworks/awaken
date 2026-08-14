@@ -40,7 +40,9 @@ pub use awaken_mcp_wire::{
 };
 
 pub use client::{McpConnection, connect_tools};
-pub use credential::{AuthChallenge, Credential, CredentialRefresher};
+pub use credential::{
+    AuthChallenge, AuthRetrySafety, Credential, CredentialRefresher, auth_retry_safety,
+};
 pub use error::McpError;
 pub use http::{HttpTransport, HttpTransportBuilder};
 pub use id_mapping::{to_tool_id, tool_namespace};

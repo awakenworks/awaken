@@ -1173,6 +1173,69 @@ async fn process_secret_decision_table_fences_container_runtime_invocation() {
 }
 
 #[tokio::test]
+async fn resident_hand_is_the_only_pid1_path_and_receives_no_platform_credential() {
+    /*
+     * Resident placement cause/effect graph and decision table.
+     * Causes: C1 resident config absent/present; C2 executable blank; C3 port
+     * zero; C4 Session spec contains a Process secret; C5 resource limits are
+     * positive/zero. Effects: E1 legacy
+     * keepalive PID1; E2 exactly one `hand --listen` PID1; E3 durable ledger
+     * path only in base env; E4 reject invalid config before runtime; E5 never
+     * serialize Process/platform credentials into Pod base env.
+     * Rules: RP1 !C1=>E1; RP2 C1+!C2+!C3=>E2+E3+E5;
+     * RP3 C2||C3||zero(C5)=>E4. FMECA: duplicate Hand placement would permit concurrent
+     * side effects (severity 5); selecting one command in ContainerProvider is
+     * the mitigation. Credential disclosure through environment serialization
+     * is severity 5; the existing Process-secret materialization boundary and
+     * this negative assertion mitigate/detect it.
+     */
+    assert!(ResidentHandConfig::new(" ", 7777).is_err());
+    assert!(ResidentHandConfig::new("awaken-sandbox", 0).is_err());
+    assert!(
+        ResidentHandConfig::new("awaken-sandbox", 7777)
+            .unwrap()
+            .with_resource_limits(0, 1)
+            .is_err()
+    );
+
+    let runtime = Arc::new(FakeRuntime::default());
+    provider(runtime.clone())
+        .with_resident_hand(ResidentHandConfig::new("/opt/awaken-sandbox", 7777).unwrap())
+        .create_container(&spec("resident"))
+        .await
+        .unwrap();
+
+    let state = runtime.st.lock().unwrap();
+    assert_eq!(
+        state.created_command.get("cid-resident").unwrap(),
+        &vec![
+            "/opt/awaken-sandbox".to_string(),
+            "hand".to_string(),
+            "--listen".to_string(),
+            "127.0.0.1:7777".to_string(),
+        ]
+    );
+    let env = state.created_env.get("cid-resident").unwrap();
+    assert!(env.iter().any(|(name, value)| {
+        name == "AWAKEN_HAND_LEDGER_DIR" && value == "/tmp/.awaken-hand-operations"
+    }));
+    assert!(
+        env.iter()
+            .any(|(name, value)| { name == "AWAKEN_HAND_LEDGER_MAX_ENTRIES" && value == "4096" })
+    );
+    assert!(
+        env.iter()
+            .any(|(name, value)| name == "AWAKEN_HAND_MAX_CONNECTIONS" && value == "16")
+    );
+    assert!(env.iter().all(|(name, value)| {
+        name != "API_KEY"
+            && !name.contains("TOKEN")
+            && !name.contains("SECRET")
+            && value != "container-process-secret"
+    }));
+}
+
+#[tokio::test]
 async fn full_lifecycle_create_channel_process_artifacts_lease_dispose() {
     let rt =
         Arc::new(FakeRuntime::default().with_artifact("a1", "/mnt/session/outputs/o.txt", b"hi"));

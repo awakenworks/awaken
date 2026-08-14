@@ -11,6 +11,12 @@ use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::ContainerProvider;
 use awaken_sandbox_container::{ContainerEnvironmentCapacity, ContainerEnvironmentProvider};
 
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+use crate::deployment_config::ContainerHandResidency;
 use crate::deployment_config::SandboxTier;
 #[cfg(any(
     feature = "container-docker",
@@ -28,6 +34,13 @@ struct BuiltContainerEnvironment {
     provider: Arc<dyn ContainerEnvironmentProvider>,
     capacity: Option<Arc<dyn ContainerEnvironmentCapacity>>,
 }
+
+#[cfg(any(
+    feature = "container-docker",
+    feature = "container-podman",
+    feature = "container-k8s"
+))]
+const RESIDENT_HAND_PORT: u16 = 7777;
 
 /// The one container-environment realization assembled from a deployment.
 ///
@@ -83,6 +96,12 @@ fn finish<R: awaken_sandbox_container::ContainerRuntime + 'static>(
     package_provisioner: Option<Arc<dyn awaken_sandbox_container::PackageImageProvisioner>>,
 ) -> Result<BuiltContainerEnvironment, String> {
     let mut provider = ContainerProvider::new(runtime, container_image(image)?);
+    if settings.container_hand_residency == ContainerHandResidency::Resident {
+        provider = provider.with_resident_hand(awaken_sandbox_container::ResidentHandConfig::new(
+            settings.container_hand_bin.clone(),
+            RESIDENT_HAND_PORT,
+        )?);
+    }
     if let Some(package_provisioner) = package_provisioner {
         provider = provider.with_package_provisioner(package_provisioner);
     }
@@ -228,6 +247,11 @@ pub async fn build_container_environment(
     image: Option<&str>,
     settings: &crate::deployment_config::SandboxSettings,
 ) -> Result<ContainerEnvironmentComponents, String> {
+    if settings.container_hand_residency == ContainerHandResidency::Resident
+        && tier != SandboxTier::K8s
+    {
+        return Err("resident container Hand currently requires the Kubernetes Pod channel".into());
+    }
     let built = match tier {
         #[cfg(feature = "container-docker")]
         SandboxTier::Docker => {
@@ -245,15 +269,15 @@ pub async fn build_container_environment(
             // Exec-attached Session environments do not publish an ACP port. Keep the
             // constructor's legacy address inert until that adapter parameter is removed.
             let inert = "127.0.0.1:1".parse().expect("literal socket address");
-            let runtime = Arc::new(
-                awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, inert)
-                    .await
-                    .map_err(|error| format!("k8s runtime: {error}"))?
-                    .with_restricted_egress_policy(
-                        settings.k8s_network_policy_enforcement.is_some(),
-                    )
-                    .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone()),
-            );
+            let mut runtime = awaken_sandbox_container::k8s::K8sRuntime::connect(namespace, inert)
+                .await
+                .map_err(|error| format!("k8s runtime: {error}"))?
+                .with_restricted_egress_policy(settings.k8s_network_policy_enforcement.is_some())
+                .with_image_pull_secrets(settings.k8s_image_pull_secrets.clone());
+            if settings.container_hand_residency == ContainerHandResidency::Resident {
+                runtime = runtime.with_pod_channel_port(RESIDENT_HAND_PORT);
+            }
+            let runtime = Arc::new(runtime);
             let package_provisioner = k8s_package_provisioner(settings).await?;
             finish(runtime, image, settings, package_provisioner)?
         }
@@ -311,6 +335,33 @@ pub async fn build_container_environment(
 #[cfg(all(test, feature = "container-podman"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn resident_hand_rejects_a_runtime_without_the_private_pod_channel() {
+        /*
+         * Builder decision table: C1=resident/attached; C2=K8s/other tier.
+         * R1 attached+any supported tier builds normally; R2 resident+K8s
+         * reaches the Pod-channel builder; R3 resident+other rejects before
+         * daemon access. FMECA: accepting loopback Resident on Docker/Podman
+         * creates an unreachable Hand (S4/O3/D2); centralized builder rejection
+         * prevents downstream compositions from bypassing CLI validation.
+         */
+        let settings = crate::deployment_config::SandboxSettings {
+            container_hand_residency: ContainerHandResidency::Resident,
+            ..Default::default()
+        };
+        let error = match build_container_environment(
+            SandboxTier::Podman,
+            Some("sandbox:latest"),
+            &settings,
+        )
+        .await
+        {
+            Ok(_) => panic!("R3 must reject Resident outside Kubernetes"),
+            Err(error) => error,
+        };
+        assert!(error.contains("requires the Kubernetes Pod channel"));
+    }
 
     #[test]
     fn provider_selection_supports_direct_and_warm_pool_shapes() {

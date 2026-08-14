@@ -23,7 +23,6 @@ RULES = {
         'expect("managed Session revision',
         'expect("Session aggregate is an object',
     ),
-    "scripts/e2e/memoryd_container_e2e.sh": ("timeout --foreground",),
 }
 
 PERSISTENCE_PORT_MARKERS = ("impl CommitCoordinator for", "impl RunRecoverySource for")

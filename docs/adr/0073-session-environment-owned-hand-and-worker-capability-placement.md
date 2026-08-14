@@ -169,3 +169,45 @@ This reuses the existing `SandboxSpec`, capacity-shape derivation,
 those contracts and the Kubernetes adapter; the only new value object is the
 neutral `ResourceRequests`. Product plans, prices, tenant tiers, cloud node
 costs, and autoscaler policy remain outside this repository.
+
+## 2026-08-14 amendment: resident Hand continuity and opaque ACP recovery
+
+Kubernetes container environments may keep the Hand listener and its operation
+ledger inside the Session-owned Pod. This is a different realization of the
+existing SessionEnvironment-owned Hand, not a separately placed Hand service.
+The Pod exposes no Service. An eligible Worker opens the private channel through
+the provider's existing environment capability after validating the exact
+Sandbox handle, Session generation, image evidence and current claim epoch.
+
+The resident Hand ledger is the sole effect fence for its tool calls. A stable
+operation id admits one executor, lets reconnecting callers join a live
+operation, and returns a process-local completed result without executing again.
+Durable files contain only claim/completion fencing metadata, never a
+`HandResult`, tool output, provider credential, or MCP credential: another ACP
+or tool process in the sandbox may share the same uid and must gain no secret by
+reading the ledger directory. Any claim recovered after Hand process loss,
+whether or not the former process reached its completion marker, is
+`Indeterminate`; it is never replayed because its result deliberately cannot be
+recovered from disk. The Hand still owns no model client, commit authority,
+Session lifecycle state, provider credential or runtime database.
+
+Worker failure therefore has two distinct outcomes:
+
+1. the Session Pod survives: a higher-epoch replacement Worker adopts the same
+   Sandbox and reopens the resident Hand channel; and
+2. the Session Pod is gone: the provider fails continuity and the existing
+   Session/Sandbox recovery policy decides whether to restore or terminate.
+
+ACP is an opaque external executor and does not expose a durable turn receipt.
+The existing same-process retry remains limited to a proven pre-session
+handshake failure. A cross-process recovered ACP claim has no sound way to prove
+whether its prompt or an MCP effect was dispatched, so the current claim owner
+commits the existing `EndCause::Indeterminate` and settles the dispatch without
+relaunching the prompt. No `AcpAttemptStage`, parallel protocol journal or new
+terminal variant is introduced. A future resumable ACP path must be explicitly
+capability-gated by an official idempotent receipt.
+
+The default container realization remains attached exec. Resident selection is
+admissible only when the provider truthfully exposes a reopenable channel and a
+durable operation ledger. Unknown selections and resident mode on non-Kubernetes
+providers fail before capability advertisement or Sandbox creation.
