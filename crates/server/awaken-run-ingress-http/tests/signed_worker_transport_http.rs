@@ -956,6 +956,50 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T4"
     );
 
+    // T22: a registered Worker that loses subordinate admission can return its
+    // exact unstarted claim immediately; a replay from the prior epoch is fenced.
+    assert!(
+        queue
+            .relinquish_claim(&claim)
+            .await
+            .expect("signed relinquish")
+            .applied(),
+        "T22"
+    );
+    WorkerControlClient::new(upstream.clone())
+        .heartbeat(
+            &registered.snapshot.identity,
+            WorkerHeartbeat {
+                sequence: 3,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: Default::default(),
+                acp_capability_observations: Default::default(),
+            },
+        )
+        .await
+        .expect("relinquish removes the Run from Worker in-flight capacity");
+    let replacement = queue
+        .claim(
+            &registered.snapshot.identity.lease_owner(),
+            30_000,
+            claimed.lease.expires_ms + 1,
+            &Default::default(),
+        )
+        .await
+        .expect("reclaim relinquished Run")
+        .expect("relinquished Run is pending without waiting for lease expiry");
+    assert_eq!(replacement.lease.epoch, claim.epoch + 1, "T22");
+    assert!(
+        !queue
+            .relinquish_claim(&claim)
+            .await
+            .expect("stale relinquish is a fenced no-op")
+            .applied(),
+        "T22"
+    );
+
     // FMECA T21: graceful restart can begin after the committed answer becomes
     // visible but before asynchronous Run settlement. Deregistration is the last
     // exact-incarnation boundary and releases that residual Work immediately;

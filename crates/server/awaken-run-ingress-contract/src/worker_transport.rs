@@ -128,6 +128,13 @@ pub struct RenewRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelinquishRequest {
+    pub claim: RunClaim,
+    #[serde(default)]
+    pub identity: Option<WorkerIdentity>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettleRequest {
     pub run_id: String,
     #[serde(default)]

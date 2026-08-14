@@ -991,6 +991,42 @@ impl DispatchQueue for SqliteDispatchStore {
         .await
     }
 
+    async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let claim = claim.clone();
+        self.with_conn(move |conn, p| {
+            let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let changed = tx
+                .execute(
+                    &format!(
+                        "UPDATE {p}_dispatch SET status = 'pending', lease_owner = NULL, \
+                         lease_until = NULL, created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
+                         WHERE run_id = ?1 AND status = 'running' \
+                         AND lease_owner = ?2 AND lease_epoch = ?3"
+                    ),
+                    params![claim.run_id.0, claim.owner, epoch],
+                )
+                .map_err(reject)?;
+            if changed != 1 {
+                let _ = tx.rollback();
+                return Ok(SettleOutcome::Fenced);
+            }
+            insert_operation(
+                &tx,
+                p,
+                &DispatchOperation::LeaseLost {
+                    claim,
+                    reason: LeaseLossReason::Relinquished,
+                },
+            )?;
+            tx.commit().map_err(reject)?;
+            Ok(SettleOutcome::Applied)
+        })
+        .await
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

@@ -24,9 +24,10 @@ use awaken_run_ingress::{
     CredentialRealizationRequest as CredentialRealizationReq,
     DeliverAndClaimRequest as DeliverAndClaimReq, DispatchQueue, EnqueueRequest as EnqueueReq,
     HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy, RecoveryRequest as RecoveryReq,
-    RegisterWorkerRequest as RegisterWorkerReq, RenewRequest as RenewReq, RunClaim,
-    SettleRequest as SettleReq, StreamEventRequest as StreamEventReq, WorkerDirectory,
-    WorkerIdentity, WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
+    RegisterWorkerRequest as RegisterWorkerReq, RelinquishRequest as RelinquishReq,
+    RenewRequest as RenewReq, RunClaim, SettleRequest as SettleReq,
+    StreamEventRequest as StreamEventReq, WorkerDirectory, WorkerIdentity,
+    WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
 use awaken_run_ingress::{ApplicationError as HostError, ApplicationErrorKind};
@@ -365,6 +366,7 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/dispatch/claim_run", post(claim_run))
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
+        .route("/v1/worker/dispatch/relinquish", post(relinquish))
         .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
         .route(
             "/v1/worker/dispatch/claim_is_current",
@@ -1348,6 +1350,31 @@ async fn renew_owned(
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "renewed": renewed }))
+    }
+    .await;
+    respond(result)
+}
+
+async fn relinquish(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<RelinquishReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated worker does not own the relinquished claim",
+            ));
+        }
+        let relinquished = service
+            .dispatch
+            .relinquish_claim(&request.claim)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .applied();
+        Ok(json!({ "relinquished": relinquished }))
     }
     .await;
     respond(result)

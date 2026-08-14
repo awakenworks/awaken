@@ -28,8 +28,8 @@ use awaken_run_ingress_contract::{
     ClaimWorkerRequest, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     CredentialRealizationRequest, DeliverAndClaimRequest, DispatchError, DispatchOutcome,
     DispatchQueue, DispatchSummary, EnqueueRequest, Inbox, Outbox, PendingInput, PendingRecord,
-    RecoveryRequest, RenewRequest, RunClaim, RunDispatch, SettleOutcome, SettleRequest,
-    StreamEventRequest, SubmitOptions,
+    RecoveryRequest, RelinquishRequest, RenewRequest, RunClaim, RunDispatch, SettleOutcome,
+    SettleRequest, StreamEventRequest, SubmitOptions,
 };
 use awaken_run_ingress_contract::{
     ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
@@ -704,6 +704,29 @@ impl DispatchQueue for HttpDispatchQueue {
             .await?;
         let _ = (lease_ms, now_ms);
         Ok(v.get("renewed").and_then(|r| r.as_u64()).unwrap_or(0) as usize)
+    }
+
+    async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let v = self
+            .post_idempotent(
+                "/v1/worker/dispatch/relinquish",
+                &RelinquishRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if v.get("relinquished")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
     }
 
     async fn settle(

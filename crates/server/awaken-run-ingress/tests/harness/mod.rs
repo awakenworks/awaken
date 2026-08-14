@@ -685,6 +685,12 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
     ) -> Result<usize, awaken_run_ingress::DispatchError> {
         self.inner.renew_owned_leases(owner, lease_ms, now_ms).await
     }
+    async fn relinquish_claim(
+        &self,
+        claim: &awaken_run_ingress::RunClaim,
+    ) -> Result<awaken_run_ingress::SettleOutcome, awaken_run_ingress::DispatchError> {
+        self.inner.relinquish_claim(claim).await
+    }
     async fn settle(
         &self,
         run_id: &RunId,
@@ -1636,6 +1642,50 @@ pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &
             .unwrap()
             .is_some()
     );
+}
+
+/// Cause/effect table for pre-execution admission rollback:
+///
+/// | claim | subordinate admission | effect |
+/// |---|---|---|
+/// | current owner/epoch | temporarily unavailable | return to pending without crash budget |
+/// | stale owner/epoch | replacement already claimed | fence without changing replacement |
+pub async fn assert_relinquish_claim<S: awaken_run_ingress::Dispatch>(store: &S) {
+    use awaken_run_ingress::{DispatchState, RunClaim, RunDispatch, SettleOutcome};
+
+    store
+        .enqueue(RunDispatch::new(activation("relinquish-run")))
+        .await
+        .unwrap();
+    let first = store
+        .claim("owner-a", 1_000, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("R1 initial claim");
+    let first_claim = RunClaim::from(&first.lease);
+    assert_eq!(
+        store.relinquish_claim(&first_claim).await.unwrap(),
+        SettleOutcome::Applied,
+        "R1 exact owner returns the unstarted Run"
+    );
+    let pending = store.list_dispatches().await.unwrap();
+    assert_eq!(pending[0].state, DispatchState::Pending, "R1");
+    assert_eq!(pending[0].attempt_count, 0, "R1 is not a crash recovery");
+
+    let replacement = store
+        .claim("owner-b", 1_000, 1, &Default::default())
+        .await
+        .unwrap()
+        .expect("R1 released Run is immediately claimable");
+    assert_eq!(replacement.lease.epoch, first.lease.epoch + 1);
+    assert_eq!(
+        store.relinquish_claim(&first_claim).await.unwrap(),
+        SettleOutcome::Fenced,
+        "R2 stale owner cannot release the replacement"
+    );
+    let leased = store.list_dispatches().await.unwrap();
+    assert_eq!(leased[0].state, DispatchState::Leased, "R2");
+    assert_eq!(leased[0].attempt_count, 0, "R2");
 }
 
 /// Shared spec for the near-expiry heartbeat (ADR-0024, O3): a bulk renewal only

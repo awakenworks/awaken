@@ -51,6 +51,6 @@ pub use run_dispatch::{
 pub use worker_transport::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
     ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
-    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RenewRequest, SettleRequest,
-    StreamEventRequest, WorkerIdentityRequest,
+    HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RelinquishRequest,
+    RenewRequest, SettleRequest, StreamEventRequest, WorkerIdentityRequest,
 };
