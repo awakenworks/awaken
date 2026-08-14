@@ -487,3 +487,50 @@ closes the interval, accumulates its duration, and emits the existing
 `session.runtime_interval_closed` fact in the same root CAS. This reuses
 `PersistedSession::close_runtime_interval` and the one lifecycle outbox; no
 realization-specific usage event or billing state is introduced.
+
+## 2026-08-14 amendment: active Kubernetes storage follows the existing binding
+
+The Kubernetes adapter may realize the canonical mutable roots on one retained
+PVC without adding a storage lifecycle aggregate. The persisted Resident
+`SandboxHandle` remains the association authority: its Session-derived Sandbox
+scope deterministically names both Pod and PVC. Kubernetes labels are evidence
+for exact-realization verification only; filesystem discovery and a separate
+Session-to-PVC table are forbidden. Hibernated state continues to replace the
+live binding with the existing opaque `SandboxCheckpointRef`.
+
+The PVC is created and digest-verified before the Pod, carries no Pod or Worker
+owner reference, and is mounted at each canonical writable root through a
+distinct pre-created subpath. A Worker crash therefore leaves Pod and PVC
+running; a terminal-Pod rebuild deletes only the observed Pod incarnation and
+reattaches the same PVC. Explicit `Sandbox::dispose` is the sole active-volume
+deletion path. The suspend sequence reaches it only after `ReadyToDispose` has
+durably committed verified checkpoint evidence, while terminal Session cleanup
+reuses its existing fenced deletion effect.
+
+This is not a second checkpoint mechanism. `SandboxCheckpointStore`,
+`Sandbox::checkpoint`, provider `restore`, and Session Environment transitions
+remain the generic contract. A filesystem archive, CSI snapshot, or another
+orchestrator driver is an implementation behind that contract and must own its
+complete create/verify/restore/delete behavior rather than introduce a fallback
+track.
+
+## 2026-08-14 amendment: writable roots and active-volume deletion have one fence
+
+`awaken-sandbox-container` is the sole owner of canonical mutable-root
+normalization. Runtime projection and hosted checkpoint decorators consume the
+same exported function; a product composition must not restate workspace,
+output, or temporary roots. Persisted continuation metadata is evidence only
+and is revalidated against that canonical contract before adoption or archive.
+
+The retained PVC incarnation is bound into the Pod realization before the Pod
+is created. Explicit disposal observes that binding once and deletes the claim
+with the observed UID/resourceVersion precondition; it never rediscovers a
+same-name replacement after deleting the Pod. A synchronous create failure
+rolls back only resources created by that attempt under their observed
+identities. A Worker crash leaves deterministic resources for the existing
+Session realization retry, while terminal Session reconciliation still owns
+eventual cleanup. No cluster-wide claim collector is introduced.
+The same open adapter publishes the complete checkpoint-sensitive runtime
+configuration-home set: ACP bridge state, backend-native state, and XDG
+configuration. Product decorators consume this projection unchanged; they do
+not keep a second path list that a new ACP or backend could silently bypass.

@@ -6,6 +6,24 @@ use awaken_provisioning_contract as pc;
 
 use crate::ContainerPlan;
 
+/// A memory-store mount carried into a remote container runtime. The canonical
+/// MemoryMounter seeds and harvests these bytes; the Pod receives no Resource
+/// authority credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryMount {
+    pub store_id: String,
+    pub mount_path: String,
+    pub access: pc::MountAccess,
+    pub snapshot_tar: Vec<u8>,
+}
+
+/// Deployment-owned policy for a Kubernetes Session's retained active volume.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct K8sContinuationVolume {
+    pub storage_class_name: Option<String>,
+    pub size: String,
+}
+
 /// A container/pod runtime failure.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
@@ -126,6 +144,16 @@ pub trait ContainerRuntime: Send + Sync {
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError>;
 
+    /// Runtime-owned, non-secret incarnation evidence persisted inside the
+    /// canonical SandboxHandle. Most runtimes need none; Kubernetes uses it to
+    /// fence retained-volume deletion across Worker replacement.
+    async fn handle_extra(
+        &self,
+        _container_id: &str,
+    ) -> Result<Option<serde_json::Value>, RuntimeError> {
+        Ok(None)
+    }
+
     async fn spawn(
         &self,
         _container_id: &str,
@@ -170,4 +198,12 @@ pub trait ContainerRuntime: Send + Sync {
     ) -> Result<Vec<u8>, RuntimeError>;
     async fn touch_lease(&self, container_id: &str) -> Result<(), RuntimeError>;
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError>;
+
+    async fn remove_with_handle(
+        &self,
+        container_id: &str,
+        _runtime_handle: Option<&serde_json::Value>,
+    ) -> Result<(), RuntimeError> {
+        self.remove(container_id).await
+    }
 }

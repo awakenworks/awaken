@@ -1,5 +1,16 @@
 # Wiki Update Log
 
+## 2026-08-14
+
+- Consolidated canonical Sandbox writable roots in the open container adapter
+  so Kubernetes projection and closed checkpoint drivers cannot drift.
+- Bound active PVC UID evidence into each Pod realization, fenced intentional
+  claim deletion, and made synchronous partial creation roll back only the
+  resources created by that attempt.
+- Exposed the runtime-owned ACP, backend-native, and XDG configuration-home
+  contract so checkpoint decorators exclude provider caches without copying
+  process defaults or agent-specific path lists.
+
 ## 2026-08-13
 
 - **Contract**: Built-in platform-held HTTP effects now freeze each credential
@@ -232,3 +243,12 @@
   source id and exact Workspace/provider retained by the Resource.
 - Kept the operation key on create replay/lookup only, avoiding a second
   product-owned identity mapping after restart.
+
+## 2026-08-14 — Reuse the Session binding for active continuation volumes
+
+- Extended the one Kubernetes Sandbox realization with a deterministic,
+  non-Pod-owned continuation PVC; no PVC registry or filesystem scan was added.
+- Worker failure preserves the live Pod, terminal-Pod recovery reuses the PVC,
+  and only the existing explicit Sandbox disposal path deletes active storage.
+- Kept the generic checkpoint store/provider contract and Session Environment
+  state as the sole hibernation and restore authorities.

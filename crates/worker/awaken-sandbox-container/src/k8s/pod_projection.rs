@@ -11,24 +11,54 @@ use super::names::{cfg_owner_label, configmap_name, credential_secret_name};
 use crate::{BindPlan, ContainerPlan};
 
 pub(super) const CONFIGMAP_KEY: &str = "content";
+pub(super) const CONTINUATION_VOLUME: &str = "continuation-state";
 
 pub(super) fn append_writable_and_cache_volumes(
     plan: &ContainerPlan,
+    continuation_claim: Option<&str>,
     volumes: &mut Vec<Volume>,
     agent_mounts: &mut Vec<VolumeMount>,
-) {
-    for (index, directory) in crate::writable_dirs(plan).into_iter().enumerate() {
-        let name = format!("rw-{index}");
+) -> Vec<String> {
+    let writable = crate::writable_dirs(plan);
+    let continuation_subpaths = continuation_claim
+        .map(|_| {
+            (0..writable.len())
+                .map(|index| format!("root-{index}"))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(claim_name) = continuation_claim {
         volumes.push(Volume {
-            name: name.clone(),
-            empty_dir: Some(EmptyDirVolumeSource::default()),
+            name: CONTINUATION_VOLUME.to_owned(),
+            persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
+                claim_name: claim_name.to_owned(),
+                read_only: Some(false),
+            }),
             ..Default::default()
         });
-        agent_mounts.push(VolumeMount {
-            name,
-            mount_path: directory,
-            ..Default::default()
-        });
+    }
+    for (index, directory) in writable.into_iter().enumerate() {
+        if continuation_claim.is_some() {
+            agent_mounts.push(VolumeMount {
+                name: CONTINUATION_VOLUME.to_owned(),
+                mount_path: directory,
+                sub_path: Some(continuation_subpaths[index].clone()),
+                read_only: Some(false),
+                ..Default::default()
+            });
+        } else {
+            let name = format!("rw-{index}");
+            volumes.push(Volume {
+                name: name.clone(),
+                empty_dir: Some(EmptyDirVolumeSource::default()),
+                ..Default::default()
+            });
+            agent_mounts.push(VolumeMount {
+                name,
+                mount_path: directory,
+                ..Default::default()
+            });
+        }
     }
     for (index, bind) in plan.binds.iter().enumerate() {
         let Some(claim) = bind
@@ -53,6 +83,7 @@ pub(super) fn append_writable_and_cache_volumes(
             ..Default::default()
         });
     }
+    continuation_subpaths
 }
 
 pub(super) fn content_binds(plan: &ContainerPlan) -> Vec<&BindPlan> {
@@ -140,5 +171,67 @@ pub(super) fn build_credential_secret(
             k8s_openapi::ByteString(bytes.to_vec()),
         )])),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use awaken_provisioning_contract as pc;
+
+    use super::*;
+    use crate::{ContainerPlan, NetworkMode, RootfsPlan};
+
+    #[test]
+    fn cache_volume_projects_the_exact_existing_pvc() {
+        // FMECA: F1 K8s ignores a CacheVolume bind (S7 O5 D3, RPN105);
+        // F2 node hostPath is substituted for a portable claim (S9 O3 D4,
+        // RPN108); F3 read-only intent is lost (S8 O2 D3, RPN48). The provider
+        // resolves CacheVolume to a namespaced PVC reference before this pure
+        // Pod projection; no second cache implementation exists here.
+        // Cause graph: C1=PVC reference present; C2=read-only; C3=ordinary bind.
+        // Effects: E1=PVC volume+mount; E2=read-only preserved; E3=no PVC.
+        // | Rule | C1 | C2 | C3 | Effect |
+        // | K1   | 1  | 1  | 0  | E1,E2  |
+        // | K2   | 0  | -  | 1  | E3     |
+        let plan = ContainerPlan {
+            image: "agent:1".into(),
+            command: vec!["sleep".into(), "30".into()],
+            env: Vec::new(),
+            packages: Default::default(),
+            binds: vec![crate::BindPlan {
+                source_ref: format!("{}build-cache-v7", crate::cache_volume::PVC_BIND_REF_PREFIX),
+                mount_path: "/workspace/.cache/build".into(),
+                read_only: true,
+                content: None,
+                content_bytes: None,
+                secret_content: None,
+                secret_writeback: false,
+                credential_file_path: None,
+            }],
+            outputs_volume: "/mnt/session/outputs".into(),
+            network: NetworkMode::Open,
+            requests: pc::ResourceRequests::default(),
+            limits: pc::ResourceLimits::default(),
+            memory_mounts: Vec::new(),
+            rootfs: RootfsPlan::HostUserland,
+        };
+        let mut volumes = Vec::new();
+        let mut mounts = Vec::new();
+        append_writable_and_cache_volumes(&plan, None, &mut volumes, &mut mounts);
+        let volume = volumes
+            .iter()
+            .find(|volume| volume.persistent_volume_claim.is_some())
+            .expect("K1 PVC volume");
+        assert_eq!(
+            volume.persistent_volume_claim.as_ref().unwrap().claim_name,
+            "build-cache-v7",
+            "K1"
+        );
+        let mount = mounts
+            .iter()
+            .find(|mount| mount.name == volume.name)
+            .expect("K1 PVC mount");
+        assert_eq!(mount.mount_path, "/workspace/.cache/build", "K1");
+        assert_eq!(mount.read_only, Some(true), "K1/K2");
     }
 }

@@ -21,8 +21,8 @@ use awaken_agent_channel::{AgentChannel, AgentTransport, SplitChannel};
 use awaken_provisioning_contract as pc;
 use k8s_openapi::api::core::v1::{
     ConfigMap, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
-    LocalObjectReference, Pod, PodSecurityContext, PodSpec, Secret, SecretVolumeSource, Volume,
-    VolumeMount,
+    LocalObjectReference, PersistentVolumeClaim, Pod, PodSecurityContext, PodSpec, Secret,
+    SecretVolumeSource, Volume, VolumeMount,
 };
 #[cfg(test)]
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Status;
@@ -40,6 +40,8 @@ use crate::{
 
 mod channel;
 mod client;
+mod continuation;
+mod creation;
 mod error;
 mod live_inputs;
 mod memory;
@@ -52,7 +54,9 @@ use client::K8sClients;
 pub(crate) use client::install_rustls_crypto_provider;
 use error::api_not_found;
 pub(crate) use error::{api_conflict, backend};
-use names::{configmap_name, credential_secret_name, k8s_runtime_id, pod_name};
+use names::{
+    configmap_name, continuation_claim_name, credential_secret_name, k8s_runtime_id, pod_name,
+};
 use pod_projection::{
     CONFIGMAP_KEY, append_writable_and_cache_volumes, build_configmap, build_credential_secret,
     content_binds, credential_binds, credential_key,
@@ -93,6 +97,7 @@ pub struct K8sRuntime {
     /// Private resident-process port reached only through the authenticated Pod
     /// port-forward subresource. `None` preserves the legacy channel topology.
     pod_channel_port: Option<u16>,
+    continuation_volume: Option<crate::K8sContinuationVolume>,
 }
 
 impl K8sRuntime {
@@ -115,6 +120,7 @@ impl K8sRuntime {
             image_pull_secrets: Vec::new(),
             restricted_egress_policy: false,
             pod_channel_port: None,
+            continuation_volume: None,
         })
     }
 
@@ -160,6 +166,15 @@ impl K8sRuntime {
         self
     }
 
+    /// Persist every canonical writable root on one PVC which is deliberately
+    /// not owned by the Pod or Worker. Terminal-Pod rebuild reuses it; explicit
+    /// Environment disposal removes it.
+    #[must_use]
+    pub fn with_continuation_volume(mut self, config: crate::K8sContinuationVolume) -> Self {
+        self.continuation_volume = Some(config);
+        self
+    }
+
     /// A runtime backed by a **lazy** client (no cluster dial), for unit-testing the
     /// builder + Pod-assembly paths; the live `create`/`wait`/… methods still need a
     /// real apiserver (exercised by the gated `k8s_it` integration test).
@@ -176,6 +191,7 @@ impl K8sRuntime {
             image_pull_secrets: Vec::new(),
             restricted_egress_policy: false,
             pod_channel_port: None,
+            continuation_volume: None,
         }
     }
 
@@ -195,6 +211,10 @@ impl K8sRuntime {
         Api::namespaced(self.clients.control.clone(), &self.namespace)
     }
 
+    fn persistent_volume_claims(&self) -> Api<PersistentVolumeClaim> {
+        Api::namespaced(self.clients.control.clone(), &self.namespace)
+    }
+
     async fn cleanup_projected_content(&self, container_id: &str) {
         let selector = format!("awaken-cfg-owner={container_id}");
         let params = ListParams::default().labels(&selector);
@@ -208,6 +228,76 @@ impl K8sRuntime {
             .await;
     }
 
+    async fn remove_bound(
+        &self,
+        container_id: &str,
+        persisted_claim_uid: Option<&str>,
+    ) -> Result<(), RuntimeError> {
+        let pods = self.pods();
+        let observed_pod = match pods.get(container_id).await {
+            Ok(pod) => Some(pod),
+            Err(error) if api_not_found(&error) => None,
+            Err(error) => return Err(backend(error)),
+        };
+        let pod_claim_uid = observed_pod
+            .as_ref()
+            .and_then(continuation::bound_claim_uid)
+            .map(str::to_owned);
+        if let (Some(expected), Some(actual)) = (persisted_claim_uid, pod_claim_uid.as_deref())
+            && expected != actual
+        {
+            return Err(backend(
+                "Sandbox Pod is bound to a different continuation PVC incarnation",
+            ));
+        }
+        let expected_claim_uid = persisted_claim_uid.or(pod_claim_uid.as_deref());
+        if self.continuation_volume.is_some() && expected_claim_uid.is_none() {
+            let runtime_id = container_id
+                .strip_prefix("awaken-")
+                .ok_or_else(|| backend("invalid managed Kubernetes Pod identity"))?;
+            let claim_name = continuation_claim_name(runtime_id);
+            match self.persistent_volume_claims().get(&claim_name).await {
+                Err(error) if api_not_found(&error) => {}
+                Err(error) => return Err(backend(error)),
+                Ok(_) => {
+                    return Err(backend(
+                        "continuation PVC exists without persisted incarnation evidence",
+                    ));
+                }
+            }
+        }
+
+        self.cleanup_projected_content(container_id).await;
+        if let Some(pod) = observed_pod {
+            let uid = pod
+                .metadata
+                .uid
+                .ok_or_else(|| backend("Kubernetes Sandbox Pod has no UID"))?;
+            let resource_version = pod
+                .metadata
+                .resource_version
+                .ok_or_else(|| backend("Kubernetes Sandbox Pod has no resourceVersion"))?;
+            match pods
+                .delete(
+                    container_id,
+                    &DeleteParams::default().preconditions(kube::api::Preconditions {
+                        uid: Some(uid),
+                        resource_version: Some(resource_version),
+                    }),
+                )
+                .await
+            {
+                Ok(_) => await_pod_deleted(&pods, container_id).await?,
+                Err(error) if api_not_found(&error) => {}
+                Err(error) => return Err(backend(error)),
+            }
+        }
+        if let Some(uid) = expected_claim_uid {
+            continuation::delete_claim(&self.persistent_volume_claims(), container_id, uid).await?;
+        }
+        Ok(())
+    }
+
     /// Probe the apiserver (for tests / health checks): `Ok` iff it responds.
     pub async fn ping(&self) -> Result<(), RuntimeError> {
         self.pods()
@@ -219,12 +309,17 @@ impl K8sRuntime {
 
     fn pod(&self, id: &str, plan: &ContainerPlan) -> Pod {
         let rendezvous = self.rendezvous.map(|a| a.to_string());
-        let mut pod = build_pod(
+        let claim = self
+            .continuation_volume
+            .as_ref()
+            .map(|_| continuation_claim_name(id));
+        let mut pod = build_pod_with_continuation(
             id,
             plan,
             &self.owner,
             rendezvous.as_deref(),
             &self.image_pull_secrets,
+            claim.as_deref(),
         );
         let labels = pod.metadata.labels.get_or_insert_with(Default::default);
         labels.insert(crate::MANAGED_SANDBOX_LABEL.to_string(), "1".to_string());
@@ -246,6 +341,17 @@ fn build_pod(
     owner: &Option<OwnerReference>,
     rendezvous: Option<&str>,
     image_pull_secrets: &[String],
+) -> Pod {
+    build_pod_with_continuation(id, plan, owner, rendezvous, image_pull_secrets, None)
+}
+
+fn build_pod_with_continuation(
+    id: &str,
+    plan: &ContainerPlan,
+    owner: &Option<OwnerReference>,
+    rendezvous: Option<&str>,
+    image_pull_secrets: &[String],
+    continuation_claim: Option<&str>,
 ) -> Pod {
     {
         let mut agent_env: Vec<EnvVar> = plan
@@ -305,7 +411,13 @@ fn build_pod(
             });
         }
 
-        append_writable_and_cache_volumes(plan, &mut volumes, &mut agent_mounts);
+        let continuation_subpaths = append_writable_and_cache_volumes(
+            plan,
+            continuation_claim,
+            &mut volumes,
+            &mut agent_mounts,
+        );
+        continuation::append_init_container(plan, &continuation_subpaths, &mut init_containers);
         live_inputs::append_projection(plan, &mut volumes, &mut agent_mounts, &mut sidecars);
 
         // Inline content has no host path a Pod can bind, so every item is backed by
@@ -525,98 +637,20 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn create(&self, id: &str, plan: &ContainerPlan) -> Result<String, RuntimeError> {
-        admit_network(&plan.network, self.restricted_egress_policy)?;
-        // Fail closed on a limit k8s cannot enforce at the Pod-spec level (pids), rather
-        // than silently placing the spec and dropping the cap — the tier advertises
-        // `resource_limits`, so honoring it means refusing what it cannot enforce.
-        if let Some(limit) = unenforceable_k8s_limit(&plan.limits) {
-            return Err(RuntimeError::Backend(format!(
-                "k8s cannot enforce a per-Pod `{limit}` limit (it is a node/kubelet \
-                 setting, not a Pod-spec field); refusing to place a `{limit}`-limited \
-                spec on the k8s tier rather than silently dropping the cap"
-            )));
+        creation::create(self, id, plan).await
+    }
+    async fn handle_extra(
+        &self,
+        container_id: &str,
+    ) -> Result<Option<serde_json::Value>, RuntimeError> {
+        if self.continuation_volume.is_none() {
+            return Ok(None);
         }
-        let runtime_id = k8s_runtime_id(id)?;
-        let pods = self.pods();
-        reap_terminal_pod(&pods, &pod_name(&runtime_id)).await?;
-        // Realize ordinary inline-content mounts as ConfigMaps *before* the Pod: the
-        // Pod's volumes reference them by name. Managed Files deliberately bypass
-        // this immutable path and use the one stable live projector after readiness.
-        let cms = self.configmaps();
-        for (i, bind) in content_binds(plan).iter().enumerate() {
-            if crate::live_inputs::manages(bind) {
-                continue;
-            }
-            let mut cm = build_configmap(
-                &runtime_id,
-                i,
-                bind.content.as_deref(),
-                bind.content_bytes.as_deref(),
-                &self.owner,
-            );
-            stamp_realization(&mut cm)?;
-            create_or_verify(&cms, &cm).await?;
-        }
-        let secrets = self.secrets();
-        for (i, bind) in credential_binds(plan).iter().enumerate() {
-            let mut secret = build_credential_secret(
-                &runtime_id,
-                i,
-                credential_key(bind),
-                bind.secret_content
-                    .as_ref()
-                    .expect("credential bind has secret bytes")
-                    .expose(),
-                &self.owner,
-            );
-            stamp_realization(&mut secret)?;
-            create_or_verify(&secrets, &secret).await?;
-        }
-        let mut pod = self.pod(&runtime_id, plan);
-        stamp_pod_realization(&mut pod)?;
-        let outcome = create_or_verify_with_status(&pods, &pod).await?;
-        let was_created = outcome.created;
-        let mut created = outcome.object;
-        let name = created
-            .metadata
-            .name
-            .clone()
-            .ok_or_else(|| backend("created pod has no name"))?;
-        if created
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(crate::RUNTIME_OWNER_LABEL))
-            != Some(&self.owner_id)
-        {
-            // The immutable digest already proved this is the same frozen Session
-            // realization. Transfer only the runtime-owner lease with the observed
-            // resourceVersion as the optimistic-concurrency fence; a concurrent
-            // claimant gets 409 and must not steal a live Pod silently.
-            created
-                .metadata
-                .labels
-                .get_or_insert_with(Default::default)
-                .insert(
-                    crate::RUNTIME_OWNER_LABEL.to_string(),
-                    self.owner_id.clone(),
-                );
-            pods.replace(&name, &PostParams::default(), &created)
-                .await
-                .map_err(backend)?;
-        }
-        realization::await_pod_ready(&pods, &name).await?;
-        // Memory is mutable Session state. Seed a newly-created volume exactly
-        // once; an adopted Pod already contains the live writes that the new
-        // Worker must preserve and eventually harvest through the same mounter.
-        if was_created {
-            memory::project_snapshots(self, &name, plan).await?;
-        }
-        // This is also the idempotent recovery path: an identical Pod realization
-        // is adopted first, then the current Session manifest replaces its managed
-        // files without changing the Pod or its realization digest.
-        live_inputs::project_manifest(self, &name, plan).await?;
-        Ok(name)
+        let pod = self.pods().get(container_id).await.map_err(backend)?;
+        let uid = continuation::bound_claim_uid(&pod).ok_or_else(|| {
+            backend("Kubernetes Sandbox Pod has no continuation PVC incarnation evidence")
+        })?;
+        Ok(Some(serde_json::json!({ "continuation_claim_uid": uid })))
     }
 
     async fn spawn(
@@ -867,16 +901,18 @@ impl ContainerRuntime for K8sRuntime {
     }
 
     async fn remove(&self, container_id: &str) -> Result<(), RuntimeError> {
-        // Reap the Pod's inline-content ConfigMaps too. Owner GC covers the owned case;
-        // this best-effort sweep (label = the Pod name) covers the ownerless dev/e2e case
-        // so inline-content maps don't leak. It precedes the Pod delete and never fails it.
-        self.cleanup_projected_content(container_id).await;
-        let pods = self.pods();
-        match pods.delete(container_id, &DeleteParams::default()).await {
-            Ok(_) => await_pod_deleted(&pods, container_id).await,
-            Err(error) if api_not_found(&error) => Ok(()),
-            Err(error) => Err(backend(error)),
-        }
+        self.remove_bound(container_id, None).await
+    }
+
+    async fn remove_with_handle(
+        &self,
+        container_id: &str,
+        runtime_handle: Option<&serde_json::Value>,
+    ) -> Result<(), RuntimeError> {
+        let claim_uid = runtime_handle
+            .and_then(|value| value.get("continuation_claim_uid"))
+            .and_then(serde_json::Value::as_str);
+        self.remove_bound(container_id, claim_uid).await
     }
 }
 
@@ -1677,53 +1713,6 @@ mod tests {
         assert_eq!(m.mount_path, "/acp-config/config.toml");
         assert_eq!(m.sub_path.as_deref(), Some("content"));
         assert_eq!(m.read_only, Some(true));
-    }
-
-    #[test]
-    fn cache_volume_projects_the_exact_existing_pvc() {
-        // FMECA: F1 K8s ignores a CacheVolume bind (S7 O5 D3, RPN105);
-        // F2 node hostPath is substituted for a portable claim (S9 O3 D4,
-        // RPN108); F3 read-only intent is lost (S8 O2 D3, RPN48). The provider
-        // resolves CacheVolume to a namespaced PVC reference before this pure
-        // Pod projection; no second cache implementation exists here.
-        // Cause graph: C1=PVC reference present; C2=read-only; C3=ordinary bind.
-        // Effects: E1=PVC volume+mount; E2=read-only preserved; E3=no PVC.
-        // | Rule | C1 | C2 | C3 | Effect |
-        // | K1   | 1  | 1  | 0  | E1,E2  |
-        // | K2   | 0  | -  | 1  | E3     |
-        let mut plan = plan_with_memory(Vec::new());
-        plan.binds.push(crate::BindPlan {
-            source_ref: format!("{}build-cache-v7", crate::cache_volume::PVC_BIND_REF_PREFIX),
-            mount_path: "/workspace/.cache/build".into(),
-            read_only: true,
-            content: None,
-            content_bytes: None,
-            secret_content: None,
-            secret_writeback: false,
-            credential_file_path: None,
-        });
-        let spec = build_pod("run-pvc", &plan, &None, None, &[]).spec.unwrap();
-        let volume = spec
-            .volumes
-            .as_ref()
-            .unwrap()
-            .iter()
-            .find(|volume| volume.persistent_volume_claim.is_some())
-            .expect("K1 PVC volume");
-        assert_eq!(
-            volume.persistent_volume_claim.as_ref().unwrap().claim_name,
-            "build-cache-v7",
-            "K1"
-        );
-        let mount = spec.containers[0]
-            .volume_mounts
-            .as_ref()
-            .unwrap()
-            .iter()
-            .find(|mount| mount.name == volume.name)
-            .expect("K1 PVC mount");
-        assert_eq!(mount.mount_path, "/workspace/.cache/build", "K1");
-        assert_eq!(mount.read_only, Some(true), "K1/K2");
     }
 
     #[test]

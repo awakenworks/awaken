@@ -2,6 +2,19 @@
 
 use super::*;
 
+const DEFAULT_XDG_CONFIG_HOME: &str = "/workspace/.config";
+const DEFAULT_XDG_CACHE_HOME: &str = "/workspace/.cache";
+const ACP_CONFIG_HOME: &str = "/workspace/.acp-config";
+const CODEX_CONFIG_HOME: &str = "/workspace/.codex";
+
+/// Runtime-owned configuration homes which may contain provider-created
+/// credential caches. Checkpoint decorators consume this exact contract instead
+/// of copying process-environment defaults.
+#[must_use]
+pub fn runtime_configuration_homes() -> &'static [&'static str] {
+    &[ACP_CONFIG_HOME, CODEX_CONFIG_HOME, DEFAULT_XDG_CONFIG_HOME]
+}
+
 fn workspace_scoped_path(value: &str) -> bool {
     let path = std::path::Path::new(value);
     path.is_absolute()
@@ -12,6 +25,29 @@ fn workspace_scoped_path(value: &str) -> bool {
                 std::path::Component::CurDir | std::path::Component::ParentDir
             )
         })
+}
+
+#[cfg(test)]
+mod configuration_home_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_sensitive_configuration_homes_have_one_open_projection() {
+        /* Cause/effect table CH1: C1=ACP bridge config, C2=backend-native
+         * config, C3=runtime XDG config. R1 C1+C2+C3 => one stable open-owned
+         * exclusion set; omitting any row can persist a provider credential
+         * cache in a product checkpoint (FMECA S5/O2/D5=50).
+         */
+        assert_eq!(
+            runtime_configuration_homes(),
+            [
+                "/workspace/.acp-config",
+                "/workspace/.codex",
+                "/workspace/.config"
+            ],
+            "CH1"
+        );
+    }
 }
 
 /// Keep the caller's last explicit workspace-scoped path, otherwise install
@@ -83,8 +119,8 @@ impl<R: ContainerRuntime + 'static> ContainerSandbox<R> {
             },
         ]);
         bind_workspace_path(&mut command, "HOME", "/workspace");
-        bind_workspace_path(&mut command, "XDG_CONFIG_HOME", "/workspace/.config");
-        bind_workspace_path(&mut command, "XDG_CACHE_HOME", "/workspace/.cache");
+        bind_workspace_path(&mut command, "XDG_CONFIG_HOME", DEFAULT_XDG_CONFIG_HOME);
+        bind_workspace_path(&mut command, "XDG_CACHE_HOME", DEFAULT_XDG_CACHE_HOME);
         pc::materialize_process_command(
             &self.base_env,
             command,

@@ -59,6 +59,9 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
             .collect(),
+        // Standalone CLI keeps ephemeral Kubernetes writable roots. Hosted
+        // composition explicitly injects its retained-volume policy.
+        k8s_continuation_volume: None,
         container_hand_bin: file
             .container_hand_bin
             .clone()

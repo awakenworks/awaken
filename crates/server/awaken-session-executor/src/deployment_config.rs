@@ -290,6 +290,10 @@ pub struct SandboxSettings {
     pub k8s_network_policy_enforcement: Option<K8sNetworkPolicyEnforcement>,
     /// Existing namespace-local Secrets used by kubelet for private image pulls.
     pub k8s_image_pull_secrets: Vec<String>,
+    /// Optional retained active-filesystem PVC policy. Association is derived
+    /// from the existing Session Sandbox realization; this is provisioning
+    /// policy, not a second lifecycle registry.
+    pub k8s_continuation_volume: Option<awaken_sandbox_container::K8sContinuationVolume>,
     /// Executable path for the Awaken Hand inside a container image.
     pub container_hand_bin: String,
     /// Whether the container Hand is Worker-attached or Environment-resident.
@@ -335,6 +339,7 @@ impl Default for SandboxSettings {
             k8s_namespace: "default".to_owned(),
             k8s_network_policy_enforcement: None,
             k8s_image_pull_secrets: Vec::new(),
+            k8s_continuation_volume: None,
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
             container_hand_residency: ContainerHandResidency::AttachedExec,
             container_hand_idle_secs: 300,

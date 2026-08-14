@@ -70,6 +70,13 @@ pub(super) fn pod_name(id: &str) -> String {
     format!("awaken-{id}")
 }
 
+/// Deterministic active-state claim for the same encoded Sandbox realization.
+/// `awc-` is deliberately shorter than the Pod prefix so even the bounded
+/// hashed runtime id remains within the 63-byte DNS-label limit.
+pub(super) fn continuation_claim_name(id: &str) -> String {
+    format!("awc-{id}")
+}
+
 /// Deterministic ConfigMap name for the i-th inline-content mount.
 pub(super) fn configmap_name(id: &str, i: usize) -> String {
     format!("{}-cfg-{i}", pod_name(id))
@@ -149,9 +156,14 @@ mod tests {
         }
 
         let pod = pod_name(&runtime_id);
+        let claim = continuation_claim_name(&runtime_id);
         let configmap = configmap_name(&runtime_id, usize::MAX);
         let secret = credential_secret_name(&runtime_id, usize::MAX);
         assert!(is_dns_name(&pod, K8S_DNS_LABEL_MAX_LEN), "N3 pod: {pod}");
+        assert!(
+            is_dns_name(&claim, K8S_DNS_LABEL_MAX_LEN),
+            "N3 continuation PVC: {claim}"
+        );
         assert!(
             is_dns_name(&configmap, K8S_DNS_SUBDOMAIN_MAX_LEN),
             "N3 ConfigMap: {configmap}"
