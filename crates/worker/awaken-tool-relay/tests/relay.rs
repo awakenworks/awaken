@@ -52,9 +52,76 @@ impl HandOperationLedger for TestOperationLedger {
         self.inner.begin(operation_id).await
     }
 
+    async fn wait(&self, operation_id: &str) -> Result<Option<HandResult>, String> {
+        self.inner.wait(operation_id).await
+    }
+
     async fn complete(&self, operation_id: &str, result: &HandResult) -> Result<(), String> {
         self.inner.complete(operation_id, result).await
     }
+}
+
+struct BlockingEcho {
+    runs: Arc<AtomicU32>,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl RawTool for BlockingEcho {
+    fn id(&self) -> &str {
+        "blocking_echo"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(ToolOutput::ok(call.call_id, "joined"))
+    }
+}
+
+#[tokio::test]
+async fn a_reconnected_session_joins_the_live_operation_instead_of_replaying() {
+    // Cause/effect graph for ADR-0073 resident-Hand rule H2:
+    // C1 one resident Hand process shares one FsOperationLedger; C2 request A
+    // has durably claimed operation O and is still executing; C3 a replacement
+    // Worker connection sends O with a different transport correlation id.
+    // E1 request B waits for A; E2 both receive the same result; E3 the tool
+    // side effect count is exactly one. Constraint: the join exists only while
+    // the same Hand process owns the in-flight map. FMECA control: this detects
+    // the severity-5 duplicate-effect mode after Worker/channel loss; a claim
+    // from a prior Hand process is covered separately by H4 and remains
+    // Indeterminate.
+    let directory = TestDirectory::create();
+    let ledger: Arc<dyn HandOperationLedger> =
+        Arc::new(FsOperationLedger::open(directory.path()).expect("open shared ledger"));
+    let runs = Arc::new(AtomicU32::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let tool = Arc::new(BlockingEcho {
+        runs: runs.clone(),
+        started: started.clone(),
+        release: release.clone(),
+    }) as Arc<dyn RawTool>;
+    let request = HandRequest::new(1, call("call-live", "blocking_echo", "x"));
+    let mut first = HandSession::new([tool.clone()], ledger.clone());
+    let first_request = request.clone();
+    let first_task = tokio::spawn(async move { first.handle(first_request).await });
+    started.notified().await;
+
+    let mut second = HandSession::new([tool], ledger);
+    let mut retry = request;
+    retry.correlation_id = 2;
+    let second_task = tokio::spawn(async move { second.handle(retry).await });
+    tokio::task::yield_now().await;
+    assert!(!second_task.is_finished(), "H2/E1 joins the live execution");
+
+    release.notify_one();
+    let first_reply = first_task.await.expect("first session task");
+    let second_reply = second_task.await.expect("replacement session task");
+    assert_eq!(first_reply.result, second_reply.result, "H2/E2");
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "H2/E3");
 }
 
 fn test_session(tools: impl IntoIterator<Item = Arc<dyn RawTool>>) -> HandSession {
@@ -271,14 +338,16 @@ async fn different_transport_ids_with_one_operation_id_run_the_effect_once() {
 }
 
 #[tokio::test]
-async fn filesystem_ledger_survives_a_hand_restart() {
-    // Cause/effect graph: C1 first Hand claims and completes an operation;
-    // C2 its response may be lost and that Hand is destroyed; C3 a replacement
-    // Hand opens the same Environment-owned ledger and receives the same stable
-    // operation id. Effects: E1 the replacement returns the durable result and
-    // E2 the tool side effect count remains one. Decision rule D1 is
-    // C1+C2+C3→E1+E2; a new ledger root is deliberately a different Environment
-    // and therefore outside this idempotency scope.
+async fn filesystem_ledger_fences_replay_but_never_persists_tool_output() {
+    // Cause/effect/FMECA graph for ADR-0073 rules H4 and H9: C1 a Hand claims
+    // and completes operation O with secret-bearing output; C2 the same live
+    // Hand receives O again; C3 that Hand dies and a replacement opens the
+    // Environment-owned ledger. Effects: E1 C2 returns the process-local cached
+    // result without replay; E2 durable files contain neither result nor secret;
+    // E3 C3 is Indeterminate and never executes O. Decision rules:
+    // D1=C1+C2+live-process -> E1; D2=C1+C3+prior-process -> E2+E3. This controls
+    // both severity-5 duplicate effects and severity-5 credential/output
+    // disclosure to another same-uid sandbox process.
     let directory = TestDirectory::create();
     let runs = Arc::new(AtomicU32::new(0));
     let tool = || {
@@ -292,8 +361,21 @@ async fn filesystem_ledger_survives_a_hand_restart() {
         [tool()],
         Arc::new(FsOperationLedger::open(directory.path()).expect("open first ledger")),
     );
-    let request = HandRequest::new(1, call("c1", "echo", "durable"));
+    let secret = "credential-secret-must-not-reach-disk"; // awaken-allow: secret
+    let request = HandRequest::new(1, call("c1", "echo", secret));
     let first_reply = first.handle(request.clone()).await;
+    let mut same_process_retry = request.clone();
+    same_process_retry.correlation_id = 2;
+    let same_process_reply = first.handle(same_process_retry).await;
+    assert_eq!(first_reply.result, same_process_reply.result, "H9/E1");
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "H9/E1 no replay");
+
+    for entry in std::fs::read_dir(directory.path()).expect("read ledger directory") {
+        let bytes = std::fs::read(entry.expect("ledger entry").path()).expect("read ledger file");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(!text.contains(secret), "H9/E2 no secret-bearing output");
+        assert!(!text.contains("ToolOutput"), "H9/E2 no serialized result");
+    }
     drop(first);
 
     let mut restarted = HandSession::new(
@@ -304,16 +386,173 @@ async fn filesystem_ledger_survives_a_hand_restart() {
     retry.correlation_id = 99;
     let retry_reply = restarted.handle(retry).await;
 
-    assert_eq!(first_reply.result, retry_reply.result);
+    assert_eq!(retry_reply.result, HandResult::Indeterminate, "H4/E3");
     assert_eq!(
         runs.load(Ordering::SeqCst),
         1,
-        "restart did not re-run effect"
+        "H4/E3 restart did not re-run effect"
     );
 }
 
 #[tokio::test]
-async fn filesystem_ledger_accepts_a_long_nested_workflow_operation_identity() {
+async fn a_prior_hand_claim_without_a_result_remains_indeterminate() {
+    // Cause/effect graph for ADR-0073 rule H4: C1 the first Hand durably claims
+    // operation O; C2 that Hand process disappears before a result is durable;
+    // C3 another Hand opens the same ledger. E1 the replacement reports
+    // Indeterminate and E2 it does not acquire Execute. Constraint: only a
+    // process-local in-flight owner may produce H2/InFlight. FMECA mitigation:
+    // this is the fail-closed control for Hand/Pod loss and prevents an
+    // ambiguous severity-5 side effect from being replayed as Worker recovery.
+    let directory = TestDirectory::create();
+    let first = FsOperationLedger::open(directory.path()).expect("open first Hand ledger");
+    assert_eq!(
+        first.begin("operation-with-lost-hand").await.unwrap(),
+        LedgerAdmission::Execute,
+        "H4/C1"
+    );
+    drop(first);
+
+    let replacement =
+        FsOperationLedger::open(directory.path()).expect("open replacement Hand ledger");
+    assert_eq!(
+        replacement.begin("operation-with-lost-hand").await.unwrap(),
+        LedgerAdmission::Indeterminate,
+        "H4/E1+E2"
+    );
+}
+
+#[tokio::test]
+async fn failed_claim_persistence_never_leaves_a_phantom_in_flight_owner() {
+    /*
+     * Ledger rule H7 / FMECA persistence fault. Causes: C1 admission has an
+     * otherwise new operation; C2 its ledger directory disappears before the
+     * claim-file open; C3 the same live process retries. Effects: E1 both calls
+     * return a definite pre-dispatch ledger error; E2 neither returns InFlight
+     * or waits. Constraint: every open/write/sync failure follows the same
+     * cleanup outcome, so the observable open failure proves the local join
+     * reservation is not leaked.
+     */
+    let directory = TestDirectory::create();
+    let ledger = FsOperationLedger::open(directory.path()).expect("open ledger");
+    std::fs::remove_dir_all(directory.path()).expect("inject missing ledger root");
+
+    let first = ledger.begin("claim-open-fault").await;
+    let retry = ledger.begin("claim-open-fault").await;
+    assert!(first.is_err(), "H7/E1 first admission");
+    assert!(
+        retry.is_err(),
+        "H7/E1+E2 retry must not join a phantom owner"
+    );
+}
+
+#[tokio::test]
+async fn append_only_capacity_fails_new_operations_but_keeps_existing_results() {
+    /*
+     * Capacity rule H7. Causes: C1 append-only capacity is one; C2 operation A
+     * has a durable claim/result; C3 new operation B arrives; C4 A is retried.
+     * Effects: E1 B fails before dispatch; E2 A remains cached. Constraint: no
+     * live claim/result is garbage-collected to manufacture capacity. This is
+     * the inode-exhaustion FMECA control and preserves at-most-once semantics.
+     */
+    let directory = TestDirectory::create();
+    let ledger =
+        FsOperationLedger::open_with_max_entries(directory.path(), 1).expect("open bounded ledger");
+    let result = HandResult::ok(ToolOutput::ok("a", "done"));
+    assert_eq!(ledger.begin("a").await.unwrap(), LedgerAdmission::Execute);
+    ledger.complete("a", &result).await.unwrap();
+
+    let error = ledger.begin("b").await.expect_err("H7/E1 capacity");
+    assert!(error.contains("capacity 1 is exhausted"));
+    assert_eq!(
+        ledger.begin("a").await.unwrap(),
+        LedgerAdmission::Cached(result),
+        "H7/E2"
+    );
+}
+
+#[tokio::test]
+async fn an_interrupted_hashed_claim_is_typed_indeterminate_not_ledger_unavailable() {
+    /*
+     * Interrupted-write rule H4. Causes: C1 a long identity uses a hashed stem;
+     * C2 its durable claim exists but contains no complete identity after a
+     * simulated interrupted write; C3 a replacement Hand admits the same id.
+     * Effects: E1 typed Indeterminate; E2 never Execute. A non-empty mismatched
+     * identity remains a collision error, so interruption cannot weaken digest
+     * collision detection.
+     */
+    let directory = TestDirectory::create();
+    let operation_id = "nested-operation:".repeat(20);
+    let first = FsOperationLedger::open(directory.path()).unwrap();
+    assert_eq!(
+        first.begin(&operation_id).await.unwrap(),
+        LedgerAdmission::Execute
+    );
+    drop(first);
+    let claim = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(Result::unwrap)
+        .find(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|value| value == "claim")
+        })
+        .expect("hashed claim")
+        .path();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(claim)
+        .unwrap();
+
+    let replacement = FsOperationLedger::open(directory.path()).unwrap();
+    assert_eq!(
+        replacement.begin(&operation_id).await.unwrap(),
+        LedgerAdmission::Indeterminate,
+        "H4/E1+E2"
+    );
+}
+
+#[tokio::test]
+async fn an_in_flight_join_deadline_returns_indeterminate_without_replay() {
+    /*
+     * Join deadline rule H8. Causes: C1 operation A is live and blocked; C2 a
+     * reconnect uses the same operation id; C3 its safety wait expires. Effects:
+     * E1 reconnect returns Indeterminate; E2 side-effect invocation count stays
+     * one; E3 the original owner can still complete. The waiter never cancels or
+     * replays the effect.
+     */
+    let directory = TestDirectory::create();
+    let ledger: Arc<dyn HandOperationLedger> =
+        Arc::new(FsOperationLedger::open(directory.path()).unwrap());
+    let runs = Arc::new(AtomicU32::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let tool = Arc::new(BlockingEcho {
+        runs: runs.clone(),
+        started: started.clone(),
+        release: release.clone(),
+    }) as Arc<dyn RawTool>;
+    let request = HandRequest::new(1, call("deadline", "blocking_echo", "x"));
+    let mut owner = HandSession::new([tool.clone()], ledger.clone());
+    let owner_request = request.clone();
+    let owner_task = tokio::spawn(async move { owner.handle(owner_request).await });
+    started.notified().await;
+
+    let mut waiter = HandSession::new([tool], ledger)
+        .with_in_flight_wait_timeout(std::time::Duration::from_millis(10));
+    let reply = waiter.handle(request).await;
+    assert_eq!(reply.result, HandResult::Indeterminate, "H8/E1");
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "H8/E2");
+    release.notify_one();
+    assert!(
+        matches!(owner_task.await.unwrap().result, HandResult::Ok { .. }),
+        "H8/E3"
+    );
+}
+
+#[tokio::test]
+async fn filesystem_ledger_accepts_and_fences_a_long_nested_workflow_operation_identity() {
     let directory = TestDirectory::create();
     let ledger = FsOperationLedger::open(directory.path()).expect("open ledger");
     let operation_id = format!(
@@ -341,11 +580,17 @@ async fn filesystem_ledger_accepts_a_long_nested_workflow_operation_identity() {
 
     let restarted = FsOperationLedger::open(directory.path()).expect("reopen ledger");
     assert_eq!(
+        ledger.begin(&operation_id).await.unwrap(),
+        LedgerAdmission::Cached(result.clone()),
+        "the live Hand retains the completed result"
+    );
+
+    assert_eq!(
         restarted
             .begin(&operation_id)
             .await
-            .expect("long identity survives restart"),
-        LedgerAdmission::Cached(result)
+            .expect("long identity remains fenced after restart"),
+        LedgerAdmission::Indeterminate
     );
 
     for entry in std::fs::read_dir(directory.path()).expect("read ledger directory") {

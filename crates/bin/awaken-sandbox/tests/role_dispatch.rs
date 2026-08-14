@@ -25,6 +25,11 @@ fn run(args: &[&str]) -> (bool, String) {
 
 #[test]
 fn an_unknown_role_fails_and_names_the_valid_roles() {
+    // Cause/effect graph: C1=known acp/hand role, C2=unknown or retired role.
+    // Effects: E1=dispatch to its sole owner; E2=non-zero with only canonical
+    // roles. Decision R1(C1)->E1 is covered by the role tests; R2(C2)->E2 is
+    // this row and proves the retired memoryd process cannot remain a second
+    // Memory authority.
     let (ok, text) = run(&["definitely-not-a-role"]);
     assert!(!ok, "an unknown role must exit non-zero");
     assert!(
@@ -32,7 +37,7 @@ fn an_unknown_role_fails_and_names_the_valid_roles() {
         "the error names the offending role: {text}"
     );
     assert!(
-        text.contains("acp") && text.contains("hand") && text.contains("memoryd"),
+        text.contains("acp") && text.contains("hand") && !text.contains("memoryd"),
         "the error lists the valid roles: {text}"
     );
 }
@@ -42,7 +47,7 @@ fn no_role_prints_usage_and_fails() {
     let (ok, text) = run(&[]);
     assert!(!ok, "no role must exit non-zero");
     assert!(
-        text.contains("usage") && text.contains("acp|hand|memoryd"),
+        text.contains("usage") && text.contains("acp|hand") && !text.contains("memoryd"),
         "with no role the binary prints usage: {text}"
     );
 }
@@ -71,17 +76,5 @@ fn the_hand_role_routes_into_the_real_arg_parser_when_built_fat() {
     assert!(
         text.contains("hand requires") && text.contains("--unix"),
         "a fat build reaches the real parse_hand_args (not the stub): {text}"
-    );
-}
-
-/// A thin build (no `memoryd` feature) stubs the `memoryd` role likewise.
-#[cfg(not(feature = "memoryd"))]
-#[test]
-fn the_memoryd_role_stub_demands_its_feature_when_built_thin() {
-    let (ok, text) = run(&["memoryd"]);
-    assert!(!ok, "the memoryd stub must exit non-zero");
-    assert!(
-        text.contains("memoryd") && text.contains("--features memoryd"),
-        "the thin build tells the operator to rebuild with --features memoryd: {text}"
     );
 }

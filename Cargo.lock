@@ -1970,12 +1970,11 @@ dependencies = [
  "async-nats",
  "awaken-connection-plan",
  "awaken-ext-builtin-tools",
- "awaken-memory-store",
  "awaken-runtime-contract",
- "awaken-sandbox-memoryd",
  "awaken-tool-relay",
  "futures",
  "serde_json",
+ "thiserror 2.0.19",
  "tokio",
 ]
 

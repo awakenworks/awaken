@@ -1012,3 +1012,11 @@ with real installed CLIs prove the external contract and verify that Awaken
 does not read, copy or persist user login files. Documentation, relevant unit
 and integration tests, final diff review and a scoped commit are required before
 the implementation is complete.
+
+## 2026-08-14 amendment: the standalone memoryd role is retired
+
+ADR-0053 now makes the injected `MemoryStoreMounter` the sole Memory
+realization authority. The earlier execution-plane `memoryd` sidecar argv and
+ambient-reader statements are historical and no longer describe a runnable
+role. FUSE and copy/CAS selection remain typed behavior of the mounter installed
+by the composition root; no Pod-local SQLite configuration is accepted.

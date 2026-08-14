@@ -228,3 +228,66 @@ async fn unreachable_token_endpoint_surfaces_the_challenge() {
     assert!(message.contains("auth challenge: HTTP 401"), "{message}");
     assert!(message.contains("Bearer realm=\"mcp\""), "{message}");
 }
+
+struct StaticRefresher {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl CredentialRefresher for StaticRefresher {
+    async fn refresh(&self, _challenge: &AuthChallenge) -> Option<Credential> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(Credential::Bearer("fresh-but-not-replayed".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn tools_call_rotates_after_auth_challenge_but_is_never_replayed() {
+    // Cause/effect graph: C1=effectful tools/call; C2=upstream returns 401;
+    // C3=refresh succeeds. Effects E1=credential rotates for a later request;
+    // E2=the current call surfaces the challenge; E3=upstream receives exactly
+    // one call. Decision rule MR2=C1+C2+C3=>E1+E2+E3. FMECA: blindly treating
+    // 401 as proof of no effect could duplicate an external mutation.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut socket).await;
+        respond(
+            &mut socket,
+            "401 Unauthorized",
+            "WWW-Authenticate: Bearer realm=\"mcp\"\r\n",
+            "",
+        )
+        .await;
+        let replayed =
+            tokio::time::timeout(std::time::Duration::from_millis(150), listener.accept())
+                .await
+                .is_ok();
+        (request, replayed)
+    });
+    let refresher = Arc::new(StaticRefresher {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let transport = HttpTransportBuilder::new(url)
+        .credential(Credential::Bearer("expired".to_string()))
+        .refresher(refresher.clone() as Arc<dyn CredentialRefresher>)
+        .build();
+
+    let error = transport
+        .call_tool("mutate", serde_json::json!({"value": 1}))
+        .await
+        .expect_err("MR2 challenge surfaces");
+    assert!(
+        error.to_string().contains("auth challenge: HTTP 401"),
+        "MR2/E2"
+    );
+    let (request, replayed) = server.await.unwrap();
+    assert!(request.contains("tools/call"), "MR2/C1");
+    assert!(!replayed, "MR2/E3");
+    assert_eq!(
+        refresher.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "MR2/E1"
+    );
+}

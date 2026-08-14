@@ -3,7 +3,7 @@
 //!
 //! The claim/lease contract is: a claimed dispatch is *owned* for `lease_ms`; a
 //! second owner cannot claim it until the lease expires (crash recovery), and the
-//! owner keeps it alive by renewing. These tests pin the five load-bearing rules:
+//! owner keeps it alive by renewing. These tests pin the six load-bearing rules:
 //!
 //! 1. a live lease fences a second claim (no two owners drive one run at once);
 //! 2. an expired lease is reclaimed, then driven-and-settled exactly once;
@@ -14,6 +14,8 @@
 //! 5. a run reclaimed while a non-recoverable tool is genuinely in flight does
 //!    NOT replay the tool: its committed Executing phase becomes an Indeterminate
 //!    result, while the stale owner's late commit remains fenced.
+//! 6. a reclaimed opaque ACP turn is terminally Indeterminate and its prompt is
+//!    never sent again without an official idempotent receipt.
 
 mod harness;
 
@@ -287,6 +289,116 @@ async fn expired_lease_is_reclaimed_and_driven_exactly_once() {
         "a settled dispatch is not claimable again"
     );
     assert_eq!(infers.load(Ordering::SeqCst), 1, "and never re-executed");
+}
+
+#[tokio::test]
+async fn expired_opaque_acp_claim_is_indeterminate_without_prompt_replay() {
+    // ACP recovery cause/effect graph:
+    // C1=expired claim is reclaimed; C2=backend is opaque ACP/native;
+    // C3=committed terminal truth already exists. Effects: E1=commit the
+    // existing Indeterminate terminal and settle Done; E2=ordinary committed-
+    // truth recovery; E3=execute the recoverable native attempt. Constraints:
+    // C3 dominates C2, and only C1+ACP+!C3 reaches E1.
+    //
+    // Decision table:
+    // | Rule | C1 recovered | backend | C3 terminal | Effect |
+    // | A1 | yes | ACP | no | E1, zero executor calls |
+    // | A2 | yes | any | yes | E2 (covered below by stale terminal) |
+    // | A3 | yes | Native | no | E3 (expired_lease... test above) |
+    // | A4 | no | ACP | no | normal ACP execution (executor suite owner) |
+    //
+    // FMECA: replay after an unobserved ACP/MCP dispatch can duplicate an
+    // external mutation (S5/O2/D5). Conservative Indeterminate reduces the
+    // effect to an explicit unknown terminal; no guessed protocol stage or
+    // second effect journal is introduced.
+    let (runtime, infers) = counting_text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let run = RunId("run-acp".to_string());
+    let mut acp = activation("run-acp");
+    acp.snapshot.resolved_spec.model_binding.binding.backend_ref = "acp:claude".to_string();
+
+    store
+        .enqueue(RunDispatch::new(acp))
+        .await
+        .expect("A1 enqueue ACP dispatch");
+    assert!(
+        store
+            .claim("owner-a", LEASE, 0, &Default::default())
+            .await
+            .expect("A1 first claim")
+            .is_some(),
+        "A1 first owner holds the opaque turn"
+    );
+
+    let worker_b =
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "owner-b").with_lease_ms(LEASE);
+    assert_eq!(
+        worker_b.tick(LEASE + 1).await.expect("A1 recovery"),
+        Some((run.clone(), RunState::Ended(EndCause::Indeterminate))),
+        "A1"
+    );
+    assert_eq!(
+        infers.load(Ordering::SeqCst),
+        0,
+        "A1 prompt was not replayed"
+    );
+    assert_eq!(
+        CommittedThreadView::run(commit.as_ref(), &run)
+            .expect("A1 committed terminal")
+            .state,
+        RunState::Ended(EndCause::Indeterminate),
+        "A1 committed truth"
+    );
+    assert_eq!(store.dispatch_count(), 0, "A1 settled Done");
+}
+
+#[tokio::test]
+async fn committed_terminal_truth_dominates_opaque_acp_recovery() {
+    // This is decision-table rule A2 from the preceding cause/effect graph:
+    // C1=recovered claim, C2=opaque ACP backend, C3=committed terminal exists.
+    // C3 dominates C2, so E2 settles the exact existing terminal without a new
+    // inference and without replacing it by Indeterminate. FMECA: ordering the
+    // ACP guard first would corrupt known truth and bypass shared inbox cleanup.
+    let (runtime, infers) = counting_text_runtime();
+    let store = Arc::new(MemoryDispatchStore::new());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let mut acp = activation("run-acp-committed");
+    acp.snapshot.resolved_spec.model_binding.binding.backend_ref = "acp:claude".to_string();
+
+    store
+        .enqueue(RunDispatch::new(acp.clone()))
+        .await
+        .expect("A2 enqueue");
+    assert!(
+        store
+            .claim("owner-a", LEASE, 0, &Default::default())
+            .await
+            .expect("A2 claim")
+            .is_some()
+    );
+    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    assert_eq!(
+        runtime
+            .execute(acp, context)
+            .await
+            .expect("A2 commit truth"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert_eq!(infers.load(Ordering::SeqCst), 1);
+
+    let worker_b =
+        DispatchWorker::new(runtime, store.clone(), commit, "owner-b").with_lease_ms(LEASE);
+    assert_eq!(
+        worker_b.tick(LEASE + 1).await.expect("A2 recovery"),
+        Some((
+            RunId("run-acp-committed".to_string()),
+            RunState::Ended(EndCause::NaturalEnd)
+        )),
+        "A2 committed terminal remains authoritative"
+    );
+    assert_eq!(infers.load(Ordering::SeqCst), 1, "A2 never re-executes");
+    assert_eq!(store.dispatch_count(), 0, "A2 settles Done");
 }
 
 // --- 3. A terminal committed record short-circuits a stale reclaim ----------

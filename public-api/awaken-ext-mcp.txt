@@ -20,6 +20,10 @@ pub mod awaken_ext_mcp::credential
 pub use awaken_ext_mcp::credential::AuthChallenge
 pub use awaken_ext_mcp::credential::Credential
 pub use awaken_ext_mcp::credential::CredentialRefresher
+pub enum awaken_ext_mcp::credential::AuthRetrySafety
+pub awaken_ext_mcp::credential::AuthRetrySafety::Never
+pub awaken_ext_mcp::credential::AuthRetrySafety::ReadOnly
+pub fn awaken_ext_mcp::credential::auth_retry_safety(&serde_json::value::Value) -> awaken_ext_mcp::credential::AuthRetrySafety
 pub mod awaken_ext_mcp::error
 pub enum awaken_ext_mcp::error::McpError
 pub awaken_ext_mcp::error::McpError::DuplicateServerName(alloc::string::String)
@@ -224,6 +228,9 @@ pub awaken_ext_mcp::types::McpResourceDefinition::name: alloc::string::String
 pub awaken_ext_mcp::types::McpResourceDefinition::size: core::option::Option<u64>
 pub awaken_ext_mcp::types::McpResourceDefinition::title: core::option::Option<alloc::string::String>
 pub awaken_ext_mcp::types::McpResourceDefinition::uri: alloc::string::String
+pub enum awaken_ext_mcp::AuthRetrySafety
+pub awaken_ext_mcp::AuthRetrySafety::Never
+pub awaken_ext_mcp::AuthRetrySafety::ReadOnly
 pub enum awaken_ext_mcp::ListChangedKind
 pub awaken_ext_mcp::ListChangedKind::Prompts
 pub awaken_ext_mcp::ListChangedKind::Resources
@@ -406,6 +413,7 @@ pub fn awaken_ext_mcp::stdio::StdioTransport::list_tools<'life0, 'async_trait>(&
 pub fn awaken_ext_mcp::stdio::StdioTransport::read_resource<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<serde_json::value::Value, awaken_mcp_wire::types::McpTransportError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_ext_mcp::SamplingHandler: core::marker::Send + core::marker::Sync
 pub fn awaken_ext_mcp::SamplingHandler::create_message<'life0, 'async_trait>(&'life0 self, awaken_ext_mcp::sampling::SamplingRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_ext_mcp::sampling::SamplingResponse, awaken_ext_mcp::sampling::SamplingError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_ext_mcp::auth_retry_safety(&serde_json::value::Value) -> awaken_ext_mcp::credential::AuthRetrySafety
 pub async fn awaken_ext_mcp::connect_tools(&str, alloc::sync::Arc<dyn awaken_ext_mcp::transport::McpToolTransport>) -> core::result::Result<awaken_ext_mcp::client::McpConnection, awaken_ext_mcp::error::McpError>
 pub fn awaken_ext_mcp::mark_sensitive<S: core::convert::AsRef<str>>(&mut serde_json::value::Value, &[S])
 pub fn awaken_ext_mcp::mcp_tool_descriptor(&str, &awaken_mcp_wire::types::McpToolDefinition) -> core::result::Result<awaken_runtime_contract::resolved::ToolDescriptor, awaken_ext_mcp::error::McpError>

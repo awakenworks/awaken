@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput};
+use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability};
 use awaken_sandbox_local::DiscoveredSkillFile;
 use tokio::sync::Mutex;
 
@@ -66,7 +66,7 @@ impl ContainerSkillCache {
 }
 
 struct HandBinding {
-    process: Box<dyn pc::ProcessHandle>,
+    process: Option<Box<dyn pc::ProcessHandle>>,
     executor: Arc<dyn ToolExecutor>,
 }
 
@@ -114,13 +114,18 @@ impl HandLifecycle {
 const HAND_STOP_GRACE: Duration = Duration::from_secs(2);
 
 async fn stop_hand_binding(binding: HandBinding, event: &'static str) -> bool {
+    let Some(process) = binding.process else {
+        // A resident Hand belongs to the Session Pod, not to this Worker
+        // attachment. Dropping the channel must never terminate the workload.
+        return true;
+    };
     let started = std::time::Instant::now();
     if let Err(error) =
-        awaken_run_executor_acp::Supervisor::reap(binding.process.as_ref(), HAND_STOP_GRACE).await
+        awaken_run_executor_acp::Supervisor::reap(process.as_ref(), HAND_STOP_GRACE).await
     {
         awaken_observability::record_hand_lifecycle(event, "error", started.elapsed());
         tracing::warn!(
-            process = %binding.process.id(),
+            process = %process.id(),
             error = %error,
             "failed to reap Session hand within the bounded signal ladder"
         );
@@ -146,6 +151,7 @@ pub(crate) struct RefreshingHandExecutor {
     operation_scope: String,
     lifecycle: Arc<HandLifecycle>,
     idle_after: Duration,
+    residency: crate::deployment_config::ContainerHandResidency,
 }
 
 impl RefreshingHandExecutor {
@@ -155,6 +161,7 @@ impl RefreshingHandExecutor {
         factory: Arc<dyn HandExecutorFactory>,
         hand_bin: impl Into<String>,
         idle_after: Duration,
+        residency: crate::deployment_config::ContainerHandResidency,
     ) -> Result<Self, pc::SandboxError> {
         let hand_bin = hand_bin.into();
         let operation_scope = sandbox.id().to_string();
@@ -163,6 +170,7 @@ impl RefreshingHandExecutor {
             factory.as_ref(),
             &hand_bin,
             &operation_scope,
+            residency,
         )
         .await?;
         let (activity, observed_activity) = tokio::sync::watch::channel(0);
@@ -179,8 +187,11 @@ impl RefreshingHandExecutor {
                 activity,
             }),
             idle_after,
+            residency,
         };
-        executor.spawn_idle_hibernation(observed_activity);
+        if residency == crate::deployment_config::ContainerHandResidency::AttachedExec {
+            executor.spawn_idle_hibernation(observed_activity);
+        }
         Ok(executor)
     }
 
@@ -189,8 +200,42 @@ impl RefreshingHandExecutor {
         factory: &dyn HandExecutorFactory,
         hand_bin: &str,
         operation_scope: &str,
+        residency: crate::deployment_config::ContainerHandResidency,
     ) -> Result<HandBinding, pc::SandboxError> {
         let started = std::time::Instant::now();
+        if residency == crate::deployment_config::ContainerHandResidency::Resident {
+            // Pod Running/Ready can become observable a few scheduler ticks
+            // before PID 1 has bound its loopback listener. Retry only this
+            // pre-dispatch attachment boundary; an operation is never replayed.
+            let mut attempts = 0_u8;
+            let channel = loop {
+                attempts += 1;
+                match sandbox.open_agent_channel().await {
+                    Ok(channel) => break channel,
+                    Err(error) if attempts < 50 => {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        tracing::debug!(attempts, error = %error, "resident Hand is not ready");
+                    }
+                    Err(error) => {
+                        awaken_observability::record_hand_lifecycle(
+                            "attach_resident",
+                            "error",
+                            started.elapsed(),
+                        );
+                        return Err(error);
+                    }
+                }
+            };
+            awaken_observability::record_hand_lifecycle("attach_resident", "ok", started.elapsed());
+            return Ok(HandBinding {
+                executor: factory.bind(
+                    channel,
+                    operation_scope,
+                    ToolRecoveryCapability::DurableRequest,
+                ),
+                process: None,
+            });
+        }
         let process = match sandbox
             .spawn_agent_process(pc::Command {
                 argv: vec![hand_bin.to_owned(), "hand".into(), "--stdio".into()],
@@ -209,8 +254,12 @@ impl RefreshingHandExecutor {
         awaken_observability::add_live_hand(1);
         awaken_observability::record_hand_lifecycle("launch", "ok", started.elapsed());
         Ok(HandBinding {
-            executor: factory.bind(process.channel, operation_scope),
-            process: process.process,
+            executor: factory.bind(
+                process.channel,
+                operation_scope,
+                ToolRecoveryCapability::NonRecoverable,
+            ),
+            process: Some(process.process),
         })
     }
 
@@ -281,6 +330,7 @@ impl RefreshingHandExecutor {
             self.factory.as_ref(),
             &self.hand_bin,
             &self.operation_scope,
+            self.residency,
         )
         .await;
         awaken_observability::record_hand_lifecycle(
@@ -298,6 +348,17 @@ impl RefreshingHandExecutor {
 
 #[async_trait]
 impl ToolExecutor for RefreshingHandExecutor {
+    fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
+        match self.residency {
+            crate::deployment_config::ContainerHandResidency::AttachedExec => {
+                ToolRecoveryCapability::NonRecoverable
+            }
+            crate::deployment_config::ContainerHandResidency::Resident => {
+                ToolRecoveryCapability::DurableRequest
+            }
+        }
+    }
+
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
         if self.lifecycle.closed.load(Ordering::Acquire) {
             return Err(ToolError::UnavailableBeforeDispatch(

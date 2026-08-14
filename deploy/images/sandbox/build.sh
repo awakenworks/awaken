@@ -116,6 +116,10 @@ accept_hand() {
     "$engine" run --rm --entrypoint /usr/local/bin/awaken-sandbox "$image" hand --stdio </dev/null
 }
 
+image_exists() {
+  "$engine" image inspect "$image" >/dev/null 2>&1
+}
+
 accept_image() {
   [[ $($engine image inspect --format '{{index .Config.Labels "org.awaken.environment-packages"}}' "$image" 2>/dev/null) == 2 ]] || return 1
   accept_hand || return 1
@@ -124,8 +128,8 @@ accept_image() {
     'command -v curl >/dev/null && curl --version >/dev/null && cargo clippy --version >/dev/null && rustfmt --version >/dev/null'
 }
 
-if { [[ $ensure_existing == full ]] && accept_image; } \
-  || { [[ $ensure_existing == hand ]] && accept_hand; }; then
+if { [[ $ensure_existing == full ]] && image_exists && accept_image; } \
+  || { [[ $ensure_existing == hand ]] && image_exists && accept_hand; }; then
   echo "reusing accepted sandbox image: $image"
   exit 0
 fi

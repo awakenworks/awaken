@@ -12,10 +12,12 @@ use awaken_run_executor_acp::AgentChannelType;
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
 use awaken_sandbox_local::{DiscoveredSkillFile, LocalSandbox, NamespaceSandbox};
 
+mod agent_sandbox;
 mod container_files;
 mod container_repositories;
 mod container_skills;
 mod provider;
+pub(crate) use agent_sandbox::AgentSandbox;
 use container_skills::{ContainerSkillCache, RefreshingHandExecutor};
 pub(crate) use provider::SessionEnvironmentProvider;
 
@@ -27,52 +29,8 @@ pub trait HandExecutorFactory: Send + Sync {
         &self,
         channel: Box<dyn AgentChannelType>,
         operation_scope: &str,
+        recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor>;
-}
-
-/// Segregated capability needed by the ACP channel adapter. Keeping it beside
-/// the Session owner avoids teaching the neutral provisioning contract about
-/// async byte channels.
-#[async_trait]
-pub(crate) trait AgentSandbox: Send + Sync {
-    fn is_container(&self) -> bool;
-
-    /// Whether a child runs as the trusted host user and can consume that user's
-    /// PATH/HOME-owned CLI identity. Namespace and container environments cannot
-    /// truthfully provide this without mounting/copying credentials.
-    fn supports_host_identity(&self) -> bool;
-
-    fn config_home(&self) -> String;
-
-    /// Jail-relative/interior path used to materialize the config home. This is
-    /// distinct from [`Self::config_home`] on the Workdir tier, where the child
-    /// sees an absolute host path but the file writer accepts only a logical
-    /// path below the Session root.
-    fn config_home_logical(&self) -> String;
-
-    /// Workspace path understood by the ACP agent inside this environment.
-    ///
-    /// This is the host-realized absolute root for Workdir and the stable interior
-    /// path for transparent Namespace/Container tiers. It is sent on ACP
-    /// `session/new`/`session/load`, whose cwd is authoritative for CLI file tools.
-    fn workspace_cwd(&self) -> String;
-
-    async fn materialize_inline(
-        &self,
-        logical: &str,
-        contents: &[u8],
-    ) -> Result<(), pc::SandboxError>;
-
-    async fn spawn_agent(
-        &self,
-        command: pc::Command,
-    ) -> Result<
-        (
-            Box<dyn pc::ProcessHandle>,
-            Box<dyn awaken_run_executor_acp::AgentChannelType>,
-        ),
-        pc::SandboxError,
-    >;
 }
 
 /// One realized sandbox shared by every Run attempt in a Session.
@@ -142,6 +100,7 @@ impl SessionEnvironment {
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: &str,
         hand_idle_after: std::time::Duration,
+        hand_residency: crate::deployment_config::ContainerHandResidency,
         capabilities: pc::SandboxCapabilities,
     ) -> Result<Self, pc::SandboxError> {
         let skills = Arc::new(ContainerSkillCache::default());
@@ -152,6 +111,7 @@ impl SessionEnvironment {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
+                hand_residency,
             )
             .await?,
         );
@@ -475,69 +435,6 @@ impl pc::RepositoryRealizer for SessionEnvironment {
     }
 }
 
-#[async_trait]
-impl AgentSandbox for SessionEnvironment {
-    fn is_container(&self) -> bool {
-        matches!(self, Self::Container { .. })
-    }
-
-    fn supports_host_identity(&self) -> bool {
-        matches!(self, Self::Workdir(_))
-    }
-
-    fn config_home(&self) -> String {
-        match self {
-            // A bound container is already running and its root filesystem may
-            // be read-only. Late ACP config therefore lives in the one writable,
-            // Session-owned workspace rather than the creation-time /acp-config
-            // mount used by the legacy one-shot source.
-            Self::Container { .. } => "/workspace/.acp-config".to_string(),
-            Self::Namespace(_) => "/workspace/.acp-config".to_string(),
-            Self::Workdir(sandbox) => sandbox
-                .workspace_path()
-                .join(".acp-config")
-                .to_string_lossy()
-                .into_owned(),
-        }
-    }
-
-    fn config_home_logical(&self) -> String {
-        match self {
-            Self::Container { .. } => "/workspace/.acp-config".to_string(),
-            Self::Namespace(_) => "/workspace/.acp-config".to_string(),
-            Self::Workdir(_) => ".acp-config".to_string(),
-        }
-    }
-
-    fn workspace_cwd(&self) -> String {
-        match self {
-            Self::Workdir(sandbox) => sandbox.workspace_path().to_string_lossy().into_owned(),
-            Self::Namespace(_) | Self::Container { .. } => "/workspace".to_string(),
-        }
-    }
-
-    async fn materialize_inline(
-        &self,
-        logical: &str,
-        contents: &[u8],
-    ) -> Result<(), pc::SandboxError> {
-        self.materialize_inline(logical, contents).await
-    }
-
-    async fn spawn_agent(
-        &self,
-        command: pc::Command,
-    ) -> Result<
-        (
-            Box<dyn pc::ProcessHandle>,
-            Box<dyn awaken_run_executor_acp::AgentChannelType>,
-        ),
-        pc::SandboxError,
-    > {
-        self.spawn_agent(command).await
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,6 +452,7 @@ mod tests {
         specs: std::sync::Mutex<Vec<pc::SandboxSpec>>,
         renews: Arc<std::sync::atomic::AtomicUsize>,
         hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
+        resident_channel_opens: Arc<std::sync::atomic::AtomicUsize>,
         fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
         shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     }
@@ -562,6 +460,7 @@ mod tests {
     struct FakeContainer {
         renews: Arc<std::sync::atomic::AtomicUsize>,
         hand_spawns: Arc<std::sync::atomic::AtomicUsize>,
+        resident_channel_opens: Arc<std::sync::atomic::AtomicUsize>,
         fail_hand_spawn_at: Arc<std::sync::atomic::AtomicUsize>,
         shared: Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     }
@@ -598,6 +497,7 @@ mod tests {
             &self,
             _channel: Box<dyn AgentChannelType>,
             _operation_scope: &str,
+            _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
         ) -> Arc<dyn ToolExecutor> {
             Arc::new(FakeHandExecutor)
         }
@@ -673,6 +573,7 @@ mod tests {
             Ok(Arc::new(FakeContainer {
                 renews: self.renews.clone(),
                 hand_spawns: self.hand_spawns.clone(),
+                resident_channel_opens: self.resident_channel_opens.clone(),
                 fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
                 shared: self.shared.clone(),
             }))
@@ -686,6 +587,7 @@ mod tests {
             Ok(Arc::new(FakeContainer {
                 renews: self.renews.clone(),
                 hand_spawns: self.hand_spawns.clone(),
+                resident_channel_opens: self.resident_channel_opens.clone(),
                 fail_hand_spawn_at: self.fail_hand_spawn_at.clone(),
                 shared: self.shared.clone(),
             }))
@@ -694,6 +596,17 @@ mod tests {
 
     #[async_trait]
     impl awaken_sandbox_container::ContainerEnvironment for FakeContainer {
+        async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannelType>, pc::SandboxError> {
+            self.resident_channel_opens
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (ours, mut theirs) = tokio::io::duplex(64 * 1024);
+            tokio::spawn(async move {
+                let mut sink = Vec::new();
+                let _ = theirs.read_to_end(&mut sink).await;
+            });
+            Ok(Box::new(ours))
+        }
+
         async fn spawn_agent_process(
             &self,
             command: pc::Command,
@@ -1242,6 +1155,7 @@ mod tests {
             &self,
             _channel: Box<dyn AgentChannelType>,
             _operation_scope: &str,
+            _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
         ) -> Arc<dyn ToolExecutor> {
             Arc::new(BlockingHandExecutor {
                 started: self.started.clone(),
@@ -1265,6 +1179,7 @@ mod tests {
             &self,
             _channel: Box<dyn AgentChannelType>,
             _operation_scope: &str,
+            _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
         ) -> Arc<dyn ToolExecutor> {
             self.binds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Arc::new(ScriptedHandExecutor {
@@ -1276,6 +1191,58 @@ mod tests {
                     .unwrap_or(ScriptedHandOutcome::Success),
             })
         }
+    }
+
+    #[tokio::test]
+    async fn resident_hand_survives_worker_detach_and_is_reopened_on_adoption() {
+        /*
+         * Resident-Hand HA cause/effect graph and decision table.
+         * Causes: C1 residency=resident; C2 Session Pod exists; C3 original
+         * Worker attachment closes; C4 replacement Worker adopts the handle;
+         * C5 Pod/Hand itself fails. Constraints: C4 requires C2; C5 excludes
+         * healthy adoption. Effects: E1 no attached `hand --stdio` child; E2
+         * open one provider-owned Pod channel per Worker binding; E3 advertise
+         * DurableRequest recovery; E4 detaching does not signal the resident
+         * process; E5 Pod/Hand failure is not masked as Worker recovery.
+         * Rules: RH1 C1+C2=>E1+E2+E3; RH2 C1+C2+C3+C4=>E2+E4;
+         * RH3 C5=>E5 (covered by channel/open failure tests).
+         * FMECA: Worker crash loses only the ephemeral channel (severity 2,
+         * detectable by channel failure); re-adoption/open-channel is the
+         * mitigation. A Pod/Hand crash remains severity 4 and requires workload
+         * recovery, not a duplicate Worker-side Hand.
+         */
+        let provider = Arc::new(FakeContainerProvider::default());
+        let factory =
+            ScriptedHandFactory::new([ScriptedHandOutcome::Success, ScriptedHandOutcome::Success]);
+        let environments =
+            SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
+                provider.clone(),
+                None,
+                Vec::new(),
+                factory,
+                "/usr/local/bin/awaken-sandbox",
+                std::time::Duration::ZERO,
+                crate::deployment_config::ContainerHandResidency::Resident,
+            );
+
+        let original = environments.create(&spec()).await.unwrap();
+        let handle = original.handle();
+        assert_eq!(
+            original.tool_executor().recovery_capability("write"),
+            awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest
+        );
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 1);
+
+        original.stop_bound_processes().await;
+        let adopted = environments.adopt(&handle).await.unwrap();
+        assert_eq!(provider.hand_spawns.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.resident_channel_opens.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.renews.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            adopted.tool_executor().recovery_capability("bash"),
+            awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest
+        );
     }
 
     #[tokio::test]
@@ -1747,6 +1714,7 @@ mod tests {
         let container = FakeContainer {
             renews: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             hand_spawns: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            resident_channel_opens: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             fail_hand_spawn_at: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             shared: shared.clone(),
         };

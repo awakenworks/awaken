@@ -49,6 +49,7 @@ pub fn awaken_tool_relay::wire::HandResult::ok(awaken_runtime_contract::tool::To
 pub enum awaken_tool_relay::LedgerAdmission
 pub awaken_tool_relay::LedgerAdmission::Cached(awaken_tool_relay::wire::HandResult)
 pub awaken_tool_relay::LedgerAdmission::Execute
+pub awaken_tool_relay::LedgerAdmission::InFlight
 pub awaken_tool_relay::LedgerAdmission::Indeterminate
 pub enum awaken_tool_relay::ServeError
 pub awaken_tool_relay::ServeError::Decode(alloc::string::String)
@@ -56,9 +57,11 @@ pub awaken_tool_relay::ServeError::Io(alloc::string::String)
 pub struct awaken_tool_relay::FsOperationLedger
 impl awaken_tool_relay::FsOperationLedger
 pub fn awaken_tool_relay::FsOperationLedger::open(impl core::convert::Into<std::path::PathBuf>) -> core::result::Result<Self, alloc::string::String>
+pub fn awaken_tool_relay::FsOperationLedger::open_with_max_entries(impl core::convert::Into<std::path::PathBuf>, usize) -> core::result::Result<Self, alloc::string::String>
 impl awaken_tool_relay::HandOperationLedger for awaken_tool_relay::FsOperationLedger
 pub fn awaken_tool_relay::FsOperationLedger::begin<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_relay::LedgerAdmission, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_relay::FsOperationLedger::complete<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_tool_relay::wire::HandResult) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_tool_relay::FsOperationLedger::wait<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_tool_relay::wire::HandResult>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub struct awaken_tool_relay::HandError
 pub awaken_tool_relay::HandError::kind: awaken_tool_relay::wire::HandErrorKind
 pub awaken_tool_relay::HandError::message: alloc::string::String
@@ -81,19 +84,25 @@ impl awaken_tool_relay::HandSession
 pub async fn awaken_tool_relay::HandSession::handle(&mut self, awaken_tool_relay::wire::HandRequest) -> awaken_tool_relay::wire::HandReply
 pub fn awaken_tool_relay::HandSession::new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>, alloc::sync::Arc<dyn awaken_tool_relay::HandOperationLedger>) -> Self
 pub fn awaken_tool_relay::HandSession::with_catalog_fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_tool_relay::HandSession::with_in_flight_wait_timeout(self, core::time::Duration) -> Self
 pub struct awaken_tool_relay::RemoteToolExecutor<S>
 impl<S> awaken_tool_relay::RemoteToolExecutor<S> where S: awaken_agent_channel::AgentChannel
 pub async fn awaken_tool_relay::RemoteToolExecutor<S>::call_hand(&self, &awaken_runtime_contract::llm::ToolCall) -> awaken_tool_relay::wire::HandResult
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::new(S) -> Self
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::with_catalog_fingerprint(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_tool_relay::RemoteToolExecutor<S>::with_durable_request_recovery(self) -> Self
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::with_operation_scope(self, impl core::convert::Into<alloc::string::String>) -> Self
 impl<S> awaken_runtime_contract::tool::ToolExecutor for awaken_tool_relay::RemoteToolExecutor<S> where S: awaken_agent_channel::AgentChannel
 pub fn awaken_tool_relay::RemoteToolExecutor<S>::invoke<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_tool_relay::RemoteToolExecutor<S>::recovery_capability(&self, &str) -> awaken_runtime_contract::tool::ToolRecoveryCapability
+pub const awaken_tool_relay::DEFAULT_FS_LEDGER_MAX_ENTRIES: usize
 pub trait awaken_tool_relay::HandOperationLedger: core::marker::Send + core::marker::Sync
 pub fn awaken_tool_relay::HandOperationLedger::begin<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_relay::LedgerAdmission, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_relay::HandOperationLedger::complete<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_tool_relay::wire::HandResult) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_tool_relay::HandOperationLedger::wait<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_tool_relay::wire::HandResult>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 impl awaken_tool_relay::HandOperationLedger for awaken_tool_relay::FsOperationLedger
 pub fn awaken_tool_relay::FsOperationLedger::begin<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_tool_relay::LedgerAdmission, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_tool_relay::FsOperationLedger::complete<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_tool_relay::wire::HandResult) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_tool_relay::FsOperationLedger::wait<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_tool_relay::wire::HandResult>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub async fn awaken_tool_relay::serve_hand<S>(S, awaken_tool_relay::HandSession) -> core::result::Result<(), awaken_tool_relay::ServeError> where S: awaken_agent_channel::AgentChannel
 pub type awaken_tool_relay::CorrelationId = u64
