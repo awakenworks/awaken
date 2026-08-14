@@ -40,7 +40,7 @@ pub(super) fn qualify_resource_action(action: &str) -> ActionKey {
     ActionKey::in_namespace(&NamespaceId(RESOURCE_POLICY_NAMESPACE.to_owned()), action)
 }
 
-fn qualify_hosted_runtime_action(action: &str) -> ActionKey {
+pub(super) fn qualify_hosted_runtime_action(action: &str) -> ActionKey {
     ActionKey::in_namespace(
         &NamespaceId(HOSTED_RUNTIME_POLICY_NAMESPACE.to_owned()),
         action,
