@@ -88,6 +88,33 @@ impl ServerRequestError {
     }
 }
 
+/// Build the one JSON-RPC reply for a request initiated by the peer. Protocol
+/// health checks are owned here so every transport answers them identically;
+/// application requests delegate to the optional host handler and unknown
+/// methods fail closed.
+pub async fn server_request_reply(
+    request_handler: Option<&Arc<dyn ServerRequestHandler>>,
+    id: &Value,
+    method: &str,
+    params: Value,
+) -> Value {
+    let result = if method == "ping" {
+        Ok(json!({}))
+    } else if let Some(handler) = request_handler {
+        handler.handle(id, method, params).await
+    } else {
+        Err(ServerRequestError::method_not_found(method))
+    };
+    match result {
+        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err(err) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": err.code, "message": err.message },
+        }),
+    }
+}
+
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, McpTransportError>>>>>;
 
 /// A JSON-RPC peer over a byte stream: sends requests/notifications and demuxes
@@ -267,22 +294,7 @@ async fn dispatch(
             let handler = request_handler.clone();
             let write_tx = write_tx.clone();
             tokio::spawn(async move {
-                let reply = match handler {
-                    Some(handler) => match handler.handle(&id, &method, params).await {
-                        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                        Err(err) => json!({
-                            "jsonrpc": "2.0", "id": id,
-                            "error": { "code": err.code, "message": err.message },
-                        }),
-                    },
-                    None => {
-                        let err = ServerRequestError::method_not_found(&method);
-                        json!({
-                            "jsonrpc": "2.0", "id": id,
-                            "error": { "code": err.code, "message": err.message },
-                        })
-                    }
-                };
+                let reply = server_request_reply(handler.as_ref(), &id, &method, params).await;
                 let _ = write_tx.send(format!("{reply}\n")).await;
             });
         }
@@ -418,6 +430,26 @@ mod tests {
         server_w.write_all(line.as_bytes()).await.unwrap();
         let reply = read_line(&mut server_r).await;
         assert_eq!(reply["error"]["code"], -32601);
+    }
+
+    #[tokio::test]
+    async fn protocol_ping_is_answered_without_an_application_handler() {
+        // Causes: C1 peer request method is `ping`; C2 an application handler
+        // exists. Effects: E1 return `{}` success; E2 delegate to the handler;
+        // E3 return method-not-found. Constraint: C1 overrides C2 because ping
+        // is transport health, not application work. Decision rules: P1
+        // C1+!C2 -> E1 (this case); P2 C1+C2 -> E1; P3 !C1+C2 -> E2 (handler
+        // test); P4 !C1+!C2 -> E3 (method-not-found test). FMECA: mapping P1 to
+        // E3 makes a compliant MCP peer terminate its Session, losing the next
+        // tool response after the side effect may already have happened.
+        let (_peer, _notif, mut server_r, mut server_w) = wired(None);
+        let line = format!(
+            "{}\n",
+            json!({ "jsonrpc": "2.0", "id": 9, "method": "ping", "params": {} })
+        );
+        server_w.write_all(line.as_bytes()).await.unwrap();
+        let reply = read_line(&mut server_r).await;
+        assert_eq!(reply, json!({ "jsonrpc": "2.0", "id": 9, "result": {} }));
     }
 
     #[tokio::test]

@@ -7893,11 +7893,15 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     // | P1 | default | no | published agent-a | evict; rebuild agent-a |
     // | P2 | default | yes | agent-a | reject projection install |
     // | P3 | absent/matching | no | same baseline | install/rebuild safely |
+    // | P4 | frozen matching | yes | same baseline | reuse; successor queues |
     //
     // P1 and P2 are the distributed authority-transition regressions exercised
     // here. P3 is covered by
     // `cold_session_uses_its_frozen_agent_projection_for_internal_history_reads`
-    // and the idempotent projection tests above.
+    // and the idempotent projection tests above. P4 prevents an approval event
+    // racing the preceding turn's terminal cleanup from rebinding or rejecting
+    // the already-frozen Runtime. FMECA: rejecting P4 loses the approved input;
+    // rebuilding it risks changing Hand/MCP effects under an active run.
     let snapshot = crate::config::server_config(
         "agent-a",
         "stub",
@@ -7981,6 +7985,39 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         host.thread_agent_projection("active-projection").is_none(),
         "P2 rejection precedes every projection mutation"
     );
+
+    let frozen_init = awaken_session_contract::SessionInit {
+        workspace_id: host.local_workspace().into(),
+        agent_id: "agent-a".into(),
+        delegate_ids: Vec::new(),
+        toolsets: None,
+        resource_revision: 0,
+        resources: Default::default(),
+        model: Some("stub".into()),
+        runtime: Some("default".into()),
+        environment: on_tool_use_environment(),
+    };
+    crate::ManagedHost::new(host.clone())
+        .prepare_session("active-frozen-projection", frozen_init.clone())
+        .await
+        .expect("P4 initial frozen coordinates");
+    let frozen_active = host
+        .ctx_for("active-frozen-projection", None)
+        .await
+        .expect("P4 context built after frozen authority");
+    *frozen_active.active_run.lock().expect("active run mutex") =
+        Some(RunId("frozen-active-run".into()));
+    crate::ManagedHost::new(host.clone())
+        .prepare_session("active-frozen-projection", frozen_init)
+        .await
+        .expect("P4 reuses the immutable active projection");
+    let retained = host
+        .session_slots
+        .read("active-frozen-projection", |slot| {
+            Arc::ptr_eq(slot.runtime.as_ref().expect("P4 runtime"), &frozen_active)
+        })
+        .unwrap_or(false);
+    assert!(retained, "P4 keeps the one resident Runtime");
 }
 
 #[tokio::test]

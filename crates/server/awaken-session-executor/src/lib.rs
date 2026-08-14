@@ -1295,20 +1295,32 @@ impl SessionRuntime for ManagedHost {
         // Projection installation is the authority transition: discard only the
         // rebuildable context while retaining any independently-owned Environment.
         // A live run cannot be rebound underneath its already-created activation.
-        let active_run = self
+        let active_projection = self
             .host
             .session_slots
             .read(thread, |slot| {
-                slot.runtime.as_ref().and_then(|context| {
-                    context
-                        .active_run
-                        .lock()
-                        .expect("active run mutex poisoned")
-                        .clone()
-                })
+                (
+                    slot.runtime.as_ref().and_then(|context| {
+                        context
+                            .active_run
+                            .lock()
+                            .expect("active run mutex poisoned")
+                            .clone()
+                    }),
+                    slot.baseline.is_some() || slot.session_dispatch,
+                )
             })
-            .flatten();
-        if active_run.is_some() {
+            .unwrap_or((None, false));
+        if active_projection.0.is_some() && active_projection.1 {
+            // The Session application has already installed this durable
+            // dispatch projection (or a claimed Worker installed the complete
+            // immutable baseline), and the live context was necessarily built
+            // after that authority transition. A successor event may be admitted
+            // while the preceding turn is finishing; its execution mutex provides
+            // ordering, so keep the exact resident projection instead of rebinding.
+            return Ok(());
+        }
+        if active_projection.0.is_some() {
             return Err(RunError::internal(
                 "cannot install a frozen Session projection while its Runtime is active",
             ));
