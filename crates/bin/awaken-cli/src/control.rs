@@ -301,6 +301,7 @@ async fn prepare_control_process_with_model_supply(
             executable_environment_wiring: Some(executable_environment_wiring),
             worker_authenticator: None,
             worker_placement_policy: None,
+            cloud_native_credential_realization: None,
             worker_directory: None,
             runtime_authority: None,
             worker_observations: Some(worker_observations),

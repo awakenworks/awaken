@@ -63,6 +63,8 @@ pub struct CoordinatorServiceAdapters {
     pub worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
     pub worker_placement_policy: Option<Arc<dyn awaken_run_ingress::PlacementPolicy>>,
+    pub cloud_native_credential_realization:
+        Option<awaken_runtime_contract::CredentialRealizationProfile>,
 }
 
 impl CoordinatorServiceAdapters {
@@ -81,6 +83,17 @@ impl CoordinatorServiceAdapters {
         policy: Arc<dyn awaken_run_ingress::PlacementPolicy>,
     ) -> Self {
         self.worker_placement_policy = Some(policy);
+        self
+    }
+
+    /// Select the exact credential holders frozen into Cloud Native Session
+    /// snapshots by the canonical Environment application.
+    #[must_use]
+    pub fn with_cloud_native_credential_realization(
+        mut self,
+        profile: awaken_runtime_contract::CredentialRealizationProfile,
+    ) -> Self {
+        self.cloud_native_credential_realization = Some(profile);
         self
     }
 }

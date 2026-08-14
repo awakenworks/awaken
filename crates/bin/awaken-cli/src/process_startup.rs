@@ -32,6 +32,8 @@ pub(super) struct ProcessStartup {
     pub(super) worker_authenticator:
         Option<Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>,
     pub(super) worker_placement_policy: Option<Arc<dyn awaken_run_ingress::PlacementPolicy>>,
+    pub(super) cloud_native_credential_realization:
+        Option<awaken_runtime_contract::CredentialRealizationProfile>,
     pub(super) worker_directory: Option<awaken_coordinator::WorkerDirectoryHandle>,
     pub(super) runtime_authority: Option<Arc<dyn awaken_runtime_host::RuntimeAuthority>>,
     pub(super) worker_observations: Option<worker_observation_wiring::WorkerObservationWiring>,
