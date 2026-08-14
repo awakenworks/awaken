@@ -43,6 +43,21 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Profiled
         })
     }
 
+    fn session_profile_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        (workspace_id == "workspace" && agent_id == "profiled" && source_revision == 7).then(|| {
+            awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                model: Some("historical-model".into()),
+                execution_model_ref: Some("historical-execution-model".into()),
+                ..Default::default()
+            }
+        })
+    }
+
     fn agent_unavailable_in(&self, workspace_id: &str, agent_id: &str) -> bool {
         self.unavailable && workspace_id == "workspace" && agent_id == "profiled"
     }
@@ -361,6 +376,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
         agent_id: "profiled".into(),
+        source_revision: None,
         model: model.map(str::to_owned),
         mounts: vec![serde_json::json!({"mount_id": "workspace"})],
         env: vec![serde_json::json!({"name": "PROJECT"})],
@@ -442,6 +458,24 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             ),
         ],
         "P1/E3"
+    );
+
+    let mut historical_command = command("profiled-historical", None);
+    historical_command.source_revision = Some(7);
+    let historical = available
+        .create_profiled_session(historical_command)
+        .await
+        .expect("exact historical publication");
+    assert_eq!(historical.model(), Some("historical-model"));
+
+    let mut missing_command = command("profiled-missing", None);
+    missing_command.source_revision = Some(8);
+    assert!(
+        available
+            .create_profiled_session(missing_command)
+            .await
+            .is_err(),
+        "an unproven exact publication fails closed"
     );
 
     let mismatched = available

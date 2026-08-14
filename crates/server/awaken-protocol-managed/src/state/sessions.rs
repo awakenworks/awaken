@@ -364,7 +364,16 @@ impl ManagedState {
                 .metadata
                 .get("awaken.session.origin")
                 .is_some_and(|origin| origin == "dream");
+        if let Some(requested_agent_version) = requested_agent_version
+            && config_view.is_none()
+            && !is_built_in_dream_agent
+        {
+            return Err(StateError::Run(RunError::bad_request(format!(
+                "agent_version_unavailable: agent `{agent_id}` has no executable publication at version {requested_agent_version}"
+            ))));
+        }
         if config_view.is_none()
+            && requested_agent_version.is_none()
             && self.application.agent_unavailable(&owner_scope, &agent_id)
             && !is_built_in_dream_agent
         {

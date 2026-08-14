@@ -70,6 +70,20 @@ pub trait ExecutableAgentProfileSource: Send + Sync {
         agent_id: &str,
     ) -> Option<ExecutableAgentSessionProfile>;
 
+    /// Read the Session defaults frozen with one exact executable publication.
+    ///
+    /// Current selection and historical replay are deliberately separate: an
+    /// implementation that cannot prove an exact revision must fail closed
+    /// instead of silently returning the mutable current profile.
+    fn session_profile_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        _agent_id: &str,
+        _source_revision: u64,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        None
+    }
+
     fn agent_unavailable_in(&self, _workspace_id: &str, _agent_id: &str) -> bool {
         false
     }
