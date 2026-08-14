@@ -602,15 +602,24 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
 
     async fn acquire_session_work(
         &self,
-        _environment_id: &str,
-        _session_id: &str,
-        _worker_owner: &str,
-        _now_ms: u64,
+        environment_id: &str,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
     ) -> Result<
         Option<awaken_session_contract::work_queue::SessionWorkLease>,
         awaken_session_contract::work_queue::WorkQueueError,
     > {
-        Ok(None)
+        Ok(self.awakened.lock().unwrap().contains(session_id).then(|| {
+            awaken_session_contract::work_queue::SessionWorkLease {
+                work_id: format!("work:{session_id}"),
+                environment_id: environment_id.to_string(),
+                session_id: session_id.to_string(),
+                owner: worker_owner.to_string(),
+                epoch: 1,
+                expires_at_unix_ms: now_ms.saturating_add(30_000),
+            }
+        }))
     }
 }
 
