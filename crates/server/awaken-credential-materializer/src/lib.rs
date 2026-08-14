@@ -1343,6 +1343,43 @@ mod tests {
         assert_eq!(bundle.expires_at_unix_ms, Some(u64::MAX));
     }
 
+    #[tokio::test]
+    async fn sandbox_secret_broker_accepts_and_fences_exact_vault_references() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("github.com".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("repository-token")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .expect("repository credential");
+        let reference = format!("{}@{}", source.id.0, source.version);
+        let broker = PinnedCredentialMaterializer::new(credentials, secrets);
+
+        assert_eq!(
+            broker.materialize(&reference).await.unwrap(),
+            b"repository-token",
+            "the exact Resource backing reference reaches the sandbox"
+        );
+        assert_eq!(
+            broker
+                .materialize(&format!("{}@2", source.id.0))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "sandbox error: credential material revision mismatch",
+            "a rotated or stale exact reference fails closed"
+        );
+    }
+
     /// Cause-effect graph for the one external material-source path:
     ///
     /// C1 external resolver installed -> C2 envelope recipient/live

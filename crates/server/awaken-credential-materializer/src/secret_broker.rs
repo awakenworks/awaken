@@ -2,6 +2,42 @@
 
 use super::*;
 
+#[cfg(feature = "authority")]
+fn split_exact_vault_reference(reference: &str) -> Result<(&str, Option<u64>), String> {
+    if reference.is_empty() {
+        return Err("credential reference is empty".into());
+    }
+    let Some((source_id, revision)) = reference.rsplit_once('@') else {
+        return Ok((reference, None));
+    };
+    if revision.is_empty() || !revision.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok((reference, None));
+    }
+    let revision = revision
+        .parse::<u64>()
+        .map_err(|_| "credential reference revision is invalid".to_string())?;
+    if source_id.is_empty() || revision == 0 {
+        return Err("credential reference must name a source and positive revision".into());
+    }
+    Ok((source_id, Some(revision)))
+}
+
+#[cfg(feature = "authority")]
+fn verify_exact_vault_revision(
+    source: &awaken_credential_vault::CredentialSource,
+    revision: Option<u64>,
+) -> Result<(), String> {
+    let Some(expected) = revision else {
+        return Ok(());
+    };
+    let actual = u64::try_from(source.version)
+        .map_err(|_| "credential material revision is invalid".to_string())?;
+    if actual != expected {
+        return Err("credential material revision mismatch".into());
+    }
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer {
     async fn materialize(
@@ -52,9 +88,13 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         ));
         #[cfg(feature = "authority")]
         {
-            let source = self.load_active_source(reference).await.map_err(|error| {
+            let (source_id, revision) = split_exact_vault_reference(reference)
+                .map_err(awaken_provisioning_contract::SandboxError::new)?;
+            let source = self.load_active_source(source_id).await.map_err(|error| {
                 awaken_provisioning_contract::SandboxError::new(error.to_string())
             })?;
+            verify_exact_vault_revision(&source, revision)
+                .map_err(awaken_provisioning_contract::SandboxError::new)?;
             self.materialize_source(&source)
                 .await
                 .map(|secret| secret.expose_secret().as_bytes().to_vec())
@@ -117,9 +157,13 @@ impl awaken_provisioning_contract::SecretBroker for PinnedCredentialMaterializer
         }
         #[cfg(feature = "authority")]
         {
-            let source = self.load_active_source(reference).await.map_err(|error| {
+            let (source_id, revision) = split_exact_vault_reference(reference)
+                .map_err(awaken_provisioning_contract::SandboxError::new)?;
+            let source = self.load_active_source(source_id).await.map_err(|error| {
                 awaken_provisioning_contract::SandboxError::new(error.to_string())
             })?;
+            verify_exact_vault_revision(&source, revision)
+                .map_err(awaken_provisioning_contract::SandboxError::new)?;
             source.material_ref.as_ref().ok_or_else(|| {
                 awaken_provisioning_contract::SandboxError::new(format!(
                     "credential {} has no material",
