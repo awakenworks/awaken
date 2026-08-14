@@ -437,6 +437,16 @@ registries, authorization grants, or Sandbox handles.
 These are network adapters over existing authority ports. They do not create a
 universal Resource domain or allow Worker database access.
 
+Before a Worker claim is committed, Run ingress decodes the frozen
+`SessionRuntimeEnvelope` through the run-ingress contract and checks each MCP
+attachment's exact access and selected Worker holder against that Worker's
+installed materializer capabilities. Broad selection skips an incompatible
+row; an exact claim returns the typed admission failure. Runtime materialization
+or provider unavailability relinquishes the claim for the existing retry path,
+while malformed projections, invalid policy, and exhausted realization remain
+absorbing failures. The MCP generation protocol and its receipt remain the sole
+durable effect authority; claim admission adds no second attachment state.
+
 For File inputs, the local and distributed paths now use the same
 `FileContentSource` port. `StoreFileContentSource` resolves the public `FileId`
 through the authoritative `FileCatalog` and reads its immutable blob. A remote

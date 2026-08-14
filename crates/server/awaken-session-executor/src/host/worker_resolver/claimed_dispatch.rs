@@ -292,20 +292,17 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             None
         };
         let dispatched_mcp_stages = if let Some(envelope) = &claimed.request.session_runtime {
-            let (environment, toolsets, mcp_stages) =
-                crate::provisioning::decode_session_runtime_envelope(envelope).map_err(
-                    |error| {
-                        Self::execution_error(format!(
-                            "run {} has an invalid Session runtime projection: {error}",
-                            claimed.lease.run_id.0
-                        ))
-                    },
-                )?;
-            host.install_environment_projection(&thread_id.0, &environment)
+            let projection = envelope.decode_projection().map_err(|error| {
+                Self::execution_error(format!(
+                    "run {} has an invalid Session runtime projection: {error}",
+                    claimed.lease.run_id.0
+                ))
+            })?;
+            host.install_environment_projection(&thread_id.0, &projection.environment)
                 .map_err(|error| Self::execution_error(error.to_string()))?;
             host.session_slots
-                .update(&thread_id.0, |slot| slot.toolsets = toolsets);
-            mcp_stages
+                .update(&thread_id.0, |slot| slot.toolsets = projection.toolsets);
+            projection.mcp_stages
         } else {
             None
         };

@@ -35,6 +35,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::run_dispatch::RunDispatch;
 
+/// Complete claim-time credential admission failure for one dispatch.
+///
+/// Inference failures retain the Runtime contract's neutral vocabulary. Session
+/// MCP projection failures belong here because durable Run ingress is the only
+/// boundary that joins the frozen Session envelope to Worker claim admission.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DispatchCredentialAdmissionError {
+    #[error(transparent)]
+    Attempt(#[from] AttemptCredentialBindingError),
+    #[error("Session runtime credential projection is invalid: {0}")]
+    InvalidSessionCredentialProjection(String),
+    #[error("Session MCP credential and selected plaintext holder must be present together")]
+    InvalidSessionMcpCredentialBinding,
+    #[error("Session MCP credential usage is unsupported")]
+    InvalidSessionMcpCredentialUsage,
+    #[error("Session MCP credentials require a Worker plaintext holder")]
+    UnsupportedSessionMcpHolder,
+    #[error("Session MCP credential admission failed: {0}")]
+    SessionAdmission(awaken_runtime_contract::CredentialAdmissionError),
+}
+
 pub fn worker_credential_realization_capabilities(
     worker: &WorkerSnapshot,
 ) -> Result<CredentialRealizationCapabilities, AttemptCredentialBindingError> {
@@ -51,19 +72,63 @@ pub fn compile_attempt_credential_bindings(
     installed: &CredentialRealizationCapabilities,
     claim_epoch: u64,
     now_unix_ms: u64,
-) -> Result<Vec<AttemptCredentialBinding>, AttemptCredentialBindingError> {
+) -> Result<Vec<AttemptCredentialBinding>, DispatchCredentialAdmissionError> {
     let candidates = request
         .activation
         .snapshot
         .resolved_spec
         .attempt_candidates(request.activation.model_ref_override.as_deref());
-    awaken_runtime_contract::compile_candidate_credential_bindings(
+    let bindings = awaken_runtime_contract::compile_candidate_credential_bindings(
         &candidates,
         request.inference_plaintext_holder.as_ref(),
         installed,
         claim_epoch,
         now_unix_ms,
-    )
+    )?;
+    if let Some(envelope) = &request.session_runtime {
+        let projection = envelope.decode_projection().map_err(|error| {
+            DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(error.to_string())
+        })?;
+        for stage in projection.mcp_stages.into_iter().flatten() {
+            match (
+                stage.credential.as_ref(),
+                stage.selected_plaintext_holder.as_ref(),
+            ) {
+                (None, None) => {}
+                (Some(access), Some(holder)) => {
+                    if holder.boundary != awaken_runtime_contract::PlaintextBoundary::Worker {
+                        return Err(DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder);
+                    }
+                    match &access.usage {
+                        awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme }
+                            if name.eq_ignore_ascii_case("authorization")
+                                && scheme.as_deref().is_some_and(|scheme| {
+                                    scheme.eq_ignore_ascii_case("bearer")
+                                }) => {}
+                        _ => {
+                            return Err(
+                                DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage,
+                            );
+                        }
+                    }
+                    access
+                        .admit(
+                            holder,
+                            awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+                            installed,
+                            now_unix_ms,
+                        )
+                        .map_err(DispatchCredentialAdmissionError::SessionAdmission)?;
+                }
+                _ => {
+                    return Err(
+                        DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding,
+                    );
+                }
+            }
+        }
+    }
+    Ok(bindings)
 }
 
 /// Read-only eligibility check for a scheduler selecting among multiple rows.
@@ -983,6 +1048,138 @@ mod tests {
         }
     }
 
+    fn session_runtime_with_mcp(
+        credential: Option<CredentialAccess>,
+        selected_plaintext_holder: Option<PlaintextHolder>,
+    ) -> crate::SessionRuntimeEnvelope {
+        let worker = holder(PlaintextBoundary::Worker, "worker-a");
+        crate::SessionRuntimeEnvelope::from_projection(
+            awaken_session_contract::EnvironmentSnapshot {
+                environment_id: "environment-a".into(),
+                revision: awaken_session_contract::EnvironmentRevision(1),
+                self_hosted: true,
+                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                    "environment-a@1".into(),
+                ),
+                sandbox: serde_json::json!({}),
+                sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
+                packages: Default::default(),
+                prepared_image: None,
+                network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                    inference_holder: worker.clone(),
+                    mcp_holder: worker.clone(),
+                    resource_holder: worker,
+                },
+            },
+            Some(Vec::new()),
+            vec![awaken_session_contract::StageMcpAttachment {
+                workspace_id: "workspace-a".into(),
+                generation: awaken_session_contract::McpGenerationRef {
+                    session_id: "session-a".into(),
+                    attachment_id: awaken_session_contract::McpAttachmentId("mcp-a".into()),
+                    generation: awaken_session_contract::McpGeneration(1),
+                    runtime_incarnation: "worker-a".into(),
+                    lease_epoch: 1,
+                    lease_expires_at_unix_ms: 10_000,
+                },
+                realization_id: "realization-a".into(),
+                stage_idempotency_key: "stage-a".into(),
+                name: "mcp-a".into(),
+                target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test")
+                    .expect("valid MCP target"),
+                prompts_as_skills: false,
+                credential,
+                selected_plaintext_holder,
+            }],
+        )
+        .expect("Session runtime projection serializes")
+    }
+
+    #[test]
+    fn session_mcp_credentials_join_the_existing_claim_admission() {
+        // Cause/effect graph: C1 the frozen Session projection carries an MCP
+        // credential; C2 credential and selected holder are paired; C3 usage is
+        // canonical Authorization Bearer; C4 holder is Worker; C5 the selected
+        // Worker's installed materializer supports the exact source/holder/relay.
+        // Effects: all causes admit the row without adding a second durable
+        // binding (the Session generation already owns its holder/receipt), while
+        // any failed cause rejects or skips the claim before Worker effects.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | M1 | N | - | - | - | - | admit credential-free |
+        // | M2 | Y | Y | Y | Y | Y | admit through common kernel |
+        // | M3 | Y | N | - | - | - | invalid paired binding |
+        // | M4 | Y | Y | N | - | - | invalid usage |
+        // | M5 | Y | Y | Y | Y | N | installed capability error |
+        let worker = holder(PlaintextBoundary::Worker, "worker-a");
+        let access = |usage| {
+            CredentialAccess::new(
+                CredentialRef {
+                    id: "mcp-credential".into(),
+                    revision: 3,
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                usage,
+                CredentialExecutionPolicy::exact(worker.clone(), ModelExposurePolicy::Forbidden),
+            )
+        };
+        let installed = capabilities(&worker, CredentialRealizationKind::WorkerRelay);
+
+        let mut anonymous = a_request();
+        anonymous.session_runtime = Some(session_runtime_with_mcp(None, None));
+        assert_eq!(
+            compile_attempt_credential_bindings(&anonymous, &installed, 1, 10),
+            Ok(Vec::new()),
+            "M1"
+        );
+
+        let bearer = access(CredentialUsage::HttpHeader {
+            name: "Authorization".into(),
+            scheme: Some("Bearer".into()),
+        });
+        let mut admitted = a_request();
+        admitted.session_runtime = Some(session_runtime_with_mcp(
+            Some(bearer.clone()),
+            Some(worker.clone()),
+        ));
+        assert_eq!(
+            compile_attempt_credential_bindings(&admitted, &installed, 1, 10),
+            Ok(Vec::new()),
+            "M2"
+        );
+
+        let mut unpaired = a_request();
+        unpaired.session_runtime = Some(session_runtime_with_mcp(Some(bearer.clone()), None));
+        assert_eq!(
+            compile_attempt_credential_bindings(&unpaired, &installed, 1, 10),
+            Err(DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding),
+            "M3"
+        );
+
+        let mut invalid_usage = a_request();
+        invalid_usage.session_runtime = Some(session_runtime_with_mcp(
+            Some(access(CredentialUsage::ProviderAdapter)),
+            Some(worker.clone()),
+        ));
+        assert_eq!(
+            compile_attempt_credential_bindings(&invalid_usage, &installed, 1, 10),
+            Err(DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage),
+            "M4"
+        );
+
+        let mut missing_materializer = installed.clone();
+        missing_materializer.material_sources.clear();
+        assert_eq!(
+            compile_attempt_credential_bindings(&admitted, &missing_materializer, 1, 10),
+            Err(DispatchCredentialAdmissionError::SessionAdmission(
+                CredentialAdmissionError::MaterialSourceUnsupported,
+            )),
+            "M5"
+        );
+    }
+
     #[derive(Clone, Copy)]
     enum BindingFixture {
         CredentialFree,
@@ -1298,7 +1495,12 @@ mod tests {
                     );
                 }
                 BindingExpected::Error(expected) => {
-                    assert_eq!(actual, Err(expected), "{}", rule.id);
+                    assert_eq!(
+                        actual,
+                        Err(DispatchCredentialAdmissionError::Attempt(expected)),
+                        "{}",
+                        rule.id
+                    );
                 }
             }
         }
