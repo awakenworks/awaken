@@ -47,12 +47,24 @@ impl SessionApplication {
                 }
                 McpAttachmentCandidateTarget::Normalized(target) => target,
             };
+            let holder =
+                awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
+                    .mcp_holder;
+            let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            };
+            let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+                workspace_id,
+                &target,
+                &usage,
+            );
             let credential = match candidate.published_credential {
                 Some((id, revision)) => {
                     let source_id = awaken_credential_contract::CredentialSourceId(id.clone());
                     let access = if let Some(credentials) = self.credential_source() {
                         let access = credentials
-                            .mcp_access_for_source(&source_id, workspace_id)
+                            .mcp_access_for_source(&source_id, workspace_id, &holder, &binding)
                             .await
                             .map_err(|error| {
                                 RunError::bad_request(format!(
@@ -69,10 +81,7 @@ impl SessionApplication {
                         awaken_credential_contract::CredentialAccess::new(
                             awaken_credential_contract::CredentialRef { id, revision },
                             awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
-                            awaken_credential_contract::CredentialUsage::HttpHeader {
-                                name: "authorization".into(),
-                                scheme: Some("Bearer".into()),
-                            },
+                            usage,
                             awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
                         )
                     };
@@ -94,7 +103,12 @@ impl SessionApplication {
                         match source_id {
                             Some(source_id) => Some(
                                 credentials
-                                    .mcp_access_for_source(&source_id, workspace_id)
+                                    .mcp_access_for_source(
+                                        &source_id,
+                                        workspace_id,
+                                        &holder,
+                                        &binding,
+                                    )
                                     .await
                                     .map_err(|error| {
                                         RunError::bad_request(format!(

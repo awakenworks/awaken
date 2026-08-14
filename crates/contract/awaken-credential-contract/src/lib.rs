@@ -893,6 +893,44 @@ impl CredentialMaterialBinding {
     }
 }
 
+/// Stable authenticated-data identity for one recipient-bound credential
+/// payload. Both an issuer and the exact material resolver call this helper;
+/// deployments must not invent another fingerprint over the same authority.
+#[must_use]
+pub fn credential_envelope_payload_fingerprint(
+    access: &CredentialAccess,
+    selected_holder: &PlaintextHolder,
+    binding: &CredentialMaterialBinding,
+) -> String {
+    awaken_agent_contract::stable_fingerprint(&(
+        &access.credential,
+        access.material_source,
+        &access.usage,
+        &access.policy,
+        selected_holder,
+        binding,
+    ))
+}
+
+/// Exact plaintext-to-ciphertext boundary supplied by a hosted deployment.
+/// The Vault remains the sole material authority; an issuer receives only the
+/// already-selected revision, holder, usage and target binding and returns the
+/// existing recipient-bound envelope value.
+pub struct CredentialEnvelopeIssuance {
+    pub access: CredentialAccess,
+    pub selected_holder: PlaintextHolder,
+    pub binding: CredentialMaterialBinding,
+    pub material: RedactedString,
+}
+
+#[async_trait]
+pub trait CredentialEnvelopeIssuer: Send + Sync {
+    async fn issue(
+        &self,
+        request: CredentialEnvelopeIssuance,
+    ) -> Result<CredentialEnvelope, String>;
+}
+
 /// One already-selected resolution request. This is the complete input to every
 /// Control reference, Worker-private, or recipient-bound envelope adapter.
 #[derive(Debug, Clone, Copy)]

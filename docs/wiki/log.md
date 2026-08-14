@@ -262,3 +262,10 @@
   receipts Session-owned.
 - Classified material-source and refresh unavailability into the existing
   retryable claim lifecycle; invalid projections and policy remain absorbing.
+
+## 2026-08-15 — Hosted sealing reuses the exact Vault compiler
+
+- Added one deployment issuer port after active-source, Workspace, revision,
+  holder, usage, and target-binding admission.
+- Kept `CredentialAccess` and the pinned materializer authoritative; hosted
+  transports cannot add a plaintext API, copied Vault, or unsealed fallback.

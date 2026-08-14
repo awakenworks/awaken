@@ -59,6 +59,40 @@ struct FakeProbe {
     seen: Mutex<Vec<(String, String)>>,
 }
 
+#[derive(Default)]
+struct RecordingEnvelopeIssuer {
+    issued: Mutex<Vec<(String, u64, String)>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_credential_contract::CredentialEnvelopeIssuer for RecordingEnvelopeIssuer {
+    async fn issue(
+        &self,
+        request: awaken_credential_contract::CredentialEnvelopeIssuance,
+    ) -> Result<awaken_credential_contract::CredentialEnvelope, String> {
+        self.issued.lock().unwrap().push((
+            request.access.credential.id.clone(),
+            request.access.credential.revision,
+            request.material.expose_secret().to_string(),
+        ));
+        Ok(
+            awaken_credential_contract::CredentialEnvelope::SealedForWorker {
+                envelope_ref: awaken_credential_contract::SealedCredentialEnvelopeRef {
+                    id: "test-envelope".into(),
+                    payload_fingerprint:
+                        awaken_credential_contract::credential_envelope_payload_fingerprint(
+                            &request.access,
+                            &request.selected_holder,
+                            &request.binding,
+                        ),
+                },
+                recipient: request.selected_holder.trust_domain,
+                expires_at_unix_ms: u64::MAX,
+            },
+        )
+    }
+}
+
 impl FakeProbe {
     fn new(status: McpProbeStatus) -> Arc<Self> {
         Arc::new(Self {
@@ -195,12 +229,29 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
         .is_none(),
         "H5 source selection is tenant scoped"
     );
+    let holder =
+        awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
+    let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+        name: "authorization".into(),
+        scheme: Some("Bearer".into()),
+    };
+    let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+        "workspace-a",
+        &"https://flow.example.test/mcp",
+        &usage,
+    );
     assert_eq!(
-        SessionCredentialSource::mcp_access_for_source(h.state.as_ref(), &source, "workspace-a",)
-            .await
-            .unwrap()
-            .credential
-            .revision,
+        SessionCredentialSource::mcp_access_for_source(
+            h.state.as_ref(),
+            &source,
+            "workspace-a",
+            &holder,
+            &binding,
+        )
+        .await
+        .unwrap()
+        .credential
+        .revision,
         2
     );
 }
@@ -1394,6 +1445,105 @@ async fn static_bearer_credential_is_secret_free_and_round_trips() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(validation["has_refresh_token"], false);
     assert_eq!(validation["status"], "unknown");
+}
+
+#[tokio::test]
+async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
+    let h = harness();
+    let vault_id = create_vault(&h, "envelope authority").await;
+    let (status, credential) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "static_bearer",
+            "mcp_server_url": "https://mcp.example.com/sse",
+            "token": "recipient-bound-secret" // awaken-allow: secret
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let source_id = h
+        .state
+        .credential_source_id(&vault_id, credential["id"].as_str().unwrap())
+        .unwrap();
+    use awaken_credential_vault::repo::CredentialRepo;
+    let source_workspace = h.credentials.get(&source_id).await.unwrap().workspace_id;
+    let issuer = Arc::new(RecordingEnvelopeIssuer::default());
+    let state = VaultState::new(h.secrets.clone(), h.credentials.clone())
+        .with_envelope_issuer(issuer.clone());
+    let holder =
+        awaken_credential_contract::CredentialRealizationProfile::self_hosted_native().mcp_holder;
+    let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+        name: "authorization".into(),
+        scheme: Some("Bearer".into()),
+    };
+    let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+        &source_workspace,
+        &"https://mcp.example.com/sse",
+        &usage,
+    );
+
+    // Cause/effect decision table for the only plaintext-to-envelope boundary:
+    //
+    // | Rule | active exact source | exact Workspace | exact holder/target | Effect |
+    // |---|---|---|---|---|
+    // | R1 | yes | yes | yes | open the selected revision once and attach one envelope |
+    // | R2 | yes | no | yes | reject before the issuer and attach nothing |
+    // | R3 | no | yes | yes | reject before the issuer and attach nothing |
+    //
+    // Holder/target integrity is cryptographically represented by the payload
+    // fingerprint returned by the issuer; the contract admission decision table
+    // separately proves mismatched recipients and fingerprints are rejected.
+    let access = SessionCredentialSource::mcp_access_for_source(
+        &state,
+        &source_id,
+        &source_workspace,
+        &holder,
+        &binding,
+    )
+    .await
+    .expect("R1 exact source issues one envelope");
+    assert!(access.envelope.is_some());
+    assert_eq!(
+        issuer.issued.lock().unwrap().as_slice(),
+        &[(
+            source_id.0.clone(),
+            access.credential.revision,
+            "recipient-bound-secret".into(),
+        )]
+    );
+
+    assert!(
+        SessionCredentialSource::mcp_access_for_source(
+            &state,
+            &source_id,
+            "workspace-b",
+            &holder,
+            &binding,
+        )
+        .await
+        .is_err(),
+        "R2 cross-Workspace source must fail closed"
+    );
+    assert_eq!(issuer.issued.lock().unwrap().len(), 1);
+
+    let mut source = h.credentials.get(&source_id).await.unwrap();
+    source.status = awaken_credential_vault::CredentialStatus::Disabled;
+    h.credentials.put(source).await.unwrap();
+    assert!(
+        SessionCredentialSource::mcp_access_for_source(
+            &state,
+            &source_id,
+            &source_workspace,
+            &holder,
+            &binding,
+        )
+        .await
+        .is_err(),
+        "R3 disabled source must fail before plaintext opens"
+    );
+    assert_eq!(issuer.issued.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

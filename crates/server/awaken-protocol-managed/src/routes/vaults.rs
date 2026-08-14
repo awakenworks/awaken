@@ -39,6 +39,7 @@ use crate::control::vault_acl::{
 };
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_contract::{CredentialEnvelopeIssuance, CredentialEnvelopeIssuer};
 use awaken_credential_vault::repo::{
     APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, CredentialMaterialPatch,
     CredentialRepo, CredentialRetirement, advance_credential_revision, enter_credential,
@@ -214,6 +215,7 @@ pub struct VaultState {
     /// credentials, when the process startup wires one. `None` keeps every
     /// validation `unknown` (never a false `valid`).
     probe: Option<Arc<dyn McpProbe>>,
+    envelope_issuer: Option<Arc<dyn CredentialEnvelopeIssuer>>,
     inner: std::sync::Mutex<Store>,
     vault_seq: AtomicU64,
     cred_seq: AtomicU64,
@@ -226,6 +228,7 @@ impl VaultState {
             secrets,
             credentials,
             probe: None,
+            envelope_issuer: None,
             inner: std::sync::Mutex::new(Store::default()),
             vault_seq: AtomicU64::new(0),
             cred_seq: AtomicU64::new(0),
@@ -286,6 +289,15 @@ impl VaultState {
     #[must_use]
     pub fn with_probe(mut self, probe: Arc<dyn McpProbe>) -> Self {
         self.probe = Some(probe);
+        self
+    }
+
+    /// Install the deployment-owned cryptographic transport adapter. Selection,
+    /// revision, holder, usage and target binding remain Vault/Session facts;
+    /// the adapter can only seal that exact request.
+    #[must_use]
+    pub fn with_envelope_issuer(mut self, issuer: Arc<dyn CredentialEnvelopeIssuer>) -> Self {
+        self.envelope_issuer = Some(issuer);
         self
     }
 
@@ -395,6 +407,8 @@ impl VaultState {
         workspace_id: Option<&str>,
         usage: awaken_credential_contract::CredentialUsage,
         policy: awaken_credential_contract::CredentialExecutionPolicy,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<
         (
             awaken_credential_vault::CredentialSource,
@@ -422,7 +436,7 @@ impl VaultState {
                 "credential revision is negative".into(),
             )
         })?;
-        let access = CredentialAccess::new(
+        let mut access = CredentialAccess::new(
             CredentialRef {
                 id: source_id.0.clone(),
                 revision,
@@ -431,30 +445,54 @@ impl VaultState {
             usage,
             policy,
         );
+        if let Some(issuer) = &self.envelope_issuer {
+            let material =
+                awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
+            let envelope = issuer
+                .issue(CredentialEnvelopeIssuance {
+                    access: access.clone(),
+                    selected_holder: selected_holder.clone(),
+                    binding: binding.clone(),
+                    material,
+                })
+                .await
+                .map_err(awaken_credential_vault::CredentialError::InvalidSource)?;
+            access = access.with_envelope(envelope);
+        }
         Ok((source, access))
     }
 
     /// Compile one exact, secret-free execution pin for a previously selected
-    /// credential source. Selection and material opening remain separate: this
-    /// reads only the active source revision and never opens secret material.
+    /// credential source. The open deployment reads only the active revision;
+    /// an installed hosted issuer may open that exact material solely to attach
+    /// the existing recipient-bound envelope to the returned secret-free pin.
     pub async fn credential_access_for_source(
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
         usage: awaken_credential_contract::CredentialUsage,
         policy: awaken_credential_contract::CredentialExecutionPolicy,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<
         awaken_credential_contract::CredentialAccess,
         awaken_credential_vault::CredentialError,
     > {
-        self.exact_access_for_source(source_id, Some(workspace_id), usage, policy)
-            .await
-            .map(|(_, access)| access)
+        self.exact_access_for_source(
+            source_id,
+            Some(workspace_id),
+            usage,
+            policy,
+            selected_holder,
+            binding,
+        )
+        .await
+        .map(|(_, access)| access)
     }
 
     /// Compile one exact, secret-free execution pin for a previously selected
-    /// MCP credential. Selection and material opening remain separate: this
-    /// reads only the credential row revision and opaque material references.
+    /// MCP credential. Without a hosted issuer this reads only the revision and
+    /// opaque references; with one it seals that exact revision for the holder.
     pub async fn mcp_access_for_source(
         &self,
         source_id: &CredentialSourceId,
@@ -462,7 +500,19 @@ impl VaultState {
         awaken_credential_contract::CredentialAccess,
         awaken_credential_vault::CredentialError,
     > {
-        self.compile_mcp_access_for_source(source_id, None).await
+        let holder = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
+            .mcp_holder;
+        let usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        };
+        let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+            "unscoped-control",
+            &source_id.0,
+            &usage,
+        );
+        self.compile_mcp_access_for_source(source_id, None, &holder, &binding)
+            .await
     }
 
     /// The single MCP execution-pin compiler. `workspace_id` narrows admission
@@ -472,6 +522,8 @@ impl VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: Option<&str>,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<
         awaken_credential_contract::CredentialAccess,
         awaken_credential_vault::CredentialError,
@@ -489,6 +541,8 @@ impl VaultState {
                     scheme: Some("Bearer".into()),
                 },
                 CredentialExecutionPolicy::self_hosted_mcp(),
+                selected_holder,
+                binding,
             )
             .await?;
         let revision = access.credential.revision;
@@ -666,8 +720,10 @@ impl SessionCredentialSource for VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
-        self.compile_mcp_access_for_source(source_id, Some(workspace_id))
+        self.compile_mcp_access_for_source(source_id, Some(workspace_id), selected_holder, binding)
             .await
             .map_err(|error| error.to_string())
     }
@@ -678,10 +734,20 @@ impl SessionCredentialSource for VaultState {
         workspace_id: &str,
         usage: awaken_credential_contract::CredentialUsage,
         policy: awaken_credential_contract::CredentialExecutionPolicy,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
-        VaultState::credential_access_for_source(self, source_id, workspace_id, usage, policy)
-            .await
-            .map_err(|error| error.to_string())
+        VaultState::credential_access_for_source(
+            self,
+            source_id,
+            workspace_id,
+            usage,
+            policy,
+            selected_holder,
+            binding,
+        )
+        .await
+        .map_err(|error| error.to_string())
     }
 }
 

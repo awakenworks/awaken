@@ -73,6 +73,8 @@ struct McpSourceCommand {
 struct SourceCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
+    selected_holder: awaken_runtime_contract::PlaintextHolder,
+    binding: awaken_runtime_contract::CredentialMaterialBinding,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -81,6 +83,8 @@ struct CredentialAccessCommand {
     workspace_id: String,
     usage: awaken_runtime_contract::CredentialUsage,
     policy: awaken_runtime_contract::CredentialExecutionPolicy,
+    selected_holder: awaken_runtime_contract::PlaintextHolder,
+    binding: awaken_runtime_contract::CredentialMaterialBinding,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -234,7 +238,12 @@ async fn mcp_access(
 ) -> axum::response::Response {
     let result = state
         .credentials
-        .mcp_access_for_source(&command.source_id, &command.workspace_id)
+        .mcp_access_for_source(
+            &command.source_id,
+            &command.workspace_id,
+            &command.selected_holder,
+            &command.binding,
+        )
         .await;
     response(result)
 }
@@ -250,6 +259,8 @@ async fn credential_access(
             &command.workspace_id,
             command.usage,
             command.policy,
+            &command.selected_holder,
+            &command.binding,
         )
         .await;
     response(result)
@@ -460,12 +471,16 @@ impl SessionCredentialSource for HttpControlServiceClient {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
+        selected_holder: &awaken_runtime_contract::PlaintextHolder,
+        binding: &awaken_runtime_contract::CredentialMaterialBinding,
     ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
         self.post(
             MCP_ACCESS_PATH,
             &SourceCommand {
                 source_id: source_id.clone(),
                 workspace_id: workspace_id.to_owned(),
+                selected_holder: selected_holder.clone(),
+                binding: binding.clone(),
             },
         )
         .await
@@ -477,6 +492,8 @@ impl SessionCredentialSource for HttpControlServiceClient {
         workspace_id: &str,
         usage: awaken_runtime_contract::CredentialUsage,
         policy: awaken_runtime_contract::CredentialExecutionPolicy,
+        selected_holder: &awaken_runtime_contract::PlaintextHolder,
+        binding: &awaken_runtime_contract::CredentialMaterialBinding,
     ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
         self.post(
             CREDENTIAL_ACCESS_PATH,
@@ -485,6 +502,8 @@ impl SessionCredentialSource for HttpControlServiceClient {
                 workspace_id: workspace_id.to_owned(),
                 usage,
                 policy,
+                selected_holder: selected_holder.clone(),
+                binding: binding.clone(),
             },
         )
         .await

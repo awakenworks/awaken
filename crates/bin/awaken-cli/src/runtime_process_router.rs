@@ -267,6 +267,7 @@ pub(super) async fn prepare_runtime_routers(
                 )),
                 process.managed_services.tunnel_application.clone(),
                 Some(managed_rate_limiter.clone()),
+                process.managed_services.credential_envelope_issuer.clone(),
                 coordinator_content_eraser,
                 content_capture_ceiling,
                 iam.clone(),

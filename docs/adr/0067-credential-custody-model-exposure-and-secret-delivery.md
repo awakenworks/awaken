@@ -849,3 +849,20 @@ no credential or holder reselection, and the generic runtime credential contract
 contains no Session vocabulary. Material-source or refresh-provider
 unavailability relinquishes the claim through the existing retry path; invalid
 projection, policy, or holder facts remain absorbing failures.
+
+## 2026-08-15 amendment: hosted sealing extends the exact Vault boundary
+
+The canonical Vault compiler may receive one deployment-owned
+`CredentialEnvelopeIssuer` port. It first validates the active source, exact
+Workspace, revision, selected holder, usage and target binding through the
+existing Credential repository and policy. Only then may the issuer receive
+that exact material and return the existing recipient-bound
+`CredentialEnvelope`; the secret-free `CredentialAccess` remains the sole
+published execution value.
+
+The open self-hosted composition installs no issuer and retains its existing
+in-process materialization. A hosted deployment may implement cryptographic
+sealing and Worker-private unsealing behind this port, but it may not add a
+plaintext material API, copied Vault, independent credential selector, or a
+second access contract. Issuance failure fails the compilation operation; it
+never falls back to an unsealed hosted reference or a different holder.

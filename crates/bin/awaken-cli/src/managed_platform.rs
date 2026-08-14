@@ -12,6 +12,8 @@ pub struct ManagedServiceAdapters {
     pub request_limiter: Option<Arc<dyn awaken_protocol_managed::ManagedRequestLimiter>>,
     pub list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     pub tunnel_application: Option<Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>>,
+    pub credential_envelope_issuer:
+        Option<Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>,
     /// The browser-serving origin routes Awaken's exported Managed-runtime
     /// families to the canonical Coordinator. This changes presentation only;
     /// it never mounts runtime state or handlers in Control.
@@ -43,6 +45,18 @@ impl ManagedServiceAdapters {
         application: Arc<dyn awaken_protocol_managed::ManagedTunnelApplication>,
     ) -> Self {
         self.tunnel_application = Some(application);
+        self
+    }
+
+    /// Install the hosted cryptographic transport at the existing Vault
+    /// compilation boundary. The adapter cannot select a credential, holder,
+    /// usage or target; it seals only the exact request supplied by Control.
+    #[must_use]
+    pub fn with_credential_envelope_issuer(
+        mut self,
+        issuer: Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>,
+    ) -> Self {
+        self.credential_envelope_issuer = Some(issuer);
         self
     }
 
