@@ -39,14 +39,15 @@ impl HostWorkerResolver {
             Self::execution_error("a delegated child recovery has no parent Session environment")
         })?;
         let snapshot = &claimed.request.activation.snapshot;
-        let mut runtime = crate::config::build_runtime(host.llm.clone(), environment.as_ref());
-        let authored = crate::config::config_permission_ruleset(
-            snapshot.resolved_spec.plugin_config.plugins(),
-        );
-        let permission = crate::config::server_permission_policy_with_toolsets(
-            authored,
+        let authorization = crate::config::effective_tool_authorization(
+            &snapshot.resolved_spec.plugin_config,
             &[],
             &snapshot.resolved_spec.plugin_config.agent.toolsets,
+        );
+        let mut runtime = crate::config::build_runtime_with_authorization(
+            host.llm.clone(),
+            environment.as_ref(),
+            &authorization,
         );
         // The parent Session context owns the one hydrated commit/read boundary.
         // Reopening the same durable file here creates a parallel projection:
@@ -57,7 +58,6 @@ impl HostWorkerResolver {
             .run_delegation(
                 &session_thread_id.0,
                 environment.clone(),
-                permission.clone(),
                 commit.clone(),
                 Some(snapshot),
             )
@@ -67,10 +67,9 @@ impl HostWorkerResolver {
         }
         let acp = host.acp.clone().map(|acp| {
             let environment = environment.clone();
-            let permission = permission.clone();
-            Arc::new(move |backend| {
+            Arc::new(move |backend, permission| {
                 Ok(
-                    acp.executor_for(environment.clone(), permission.clone(), backend, Vec::new())
+                    acp.executor_for(environment.clone(), permission, backend, Vec::new())
                         as Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor>,
                 )
             }) as crate::agent_runner::ChildAcpExecutorFactory
@@ -79,13 +78,26 @@ impl HostWorkerResolver {
             acp,
             remote: host.remote_attempt_executor.clone(),
             remote_credentials: host.remote_credential_realization.clone(),
+            web_search: Some(host.web_search_plugin(&session_thread_id.0)),
         };
         let runtime = Arc::new(runtime);
-        let attempt = crate::agent_runner::child_attempt_executor(runtime, snapshot, &adapters)
-            .map_err(|error| Self::execution_error(error.to_string()))?;
+        let attempt = crate::agent_runner::child_attempt_executor(
+            runtime,
+            snapshot,
+            &adapters,
+            authorization.policy,
+        )
+        .map_err(|error| Self::execution_error(error.to_string()))?;
         let worker = self.boundary_worker(host, claimed, commit, false).await?;
         let mut worker =
             Arc::into_inner(worker).expect("a new child recovery boundary worker is not shared");
+        // A cold/replacement child must resolve the same publication-pinned model
+        // as the original attempt. The Runtime's host fallback is intentionally
+        // unconfigured on a database-independent Worker; omitting this common
+        // materializer silently turns a recovered child into a different Agent.
+        if let Some(materializer) = host.worker_inference_materializer() {
+            worker = worker.with_inference_materializer(materializer);
+        }
         worker.install_attempt_executor(attempt);
         worker = worker
             .with_context(parent.attempt_context.clone())
@@ -213,6 +225,49 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         let run_thread_id = claimed.request.thread_id();
         let agent_id = claimed.request.activation.snapshot.root_agent_id.0.as_str();
         let agent_id = (!agent_id.is_empty()).then_some(agent_id);
+        let publication_workspace = claimed
+            .request
+            .execution_scope
+            .as_ref()
+            .map_or_else(|| host.local_workspace(), |scope| scope.0.0.as_str());
+        let claimed_agent_publications = claimed.request.agent_publications.clone();
+        let claimed_source = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(
+            claimed_agent_publications.clone(),
+        )
+        .map_err(|error| {
+            Self::execution_error(format!(
+                "run {} has invalid Agent publications: {error}",
+                claimed.lease.run_id.0
+            ))
+        })?;
+        let expected_publications = awaken_runtime_contract::freeze_delegation_publications(
+            &claimed.request.activation.snapshot,
+            Some(&claimed_source),
+            publication_workspace,
+        )
+        .map_err(|error| {
+            Self::execution_error(format!(
+                "run {} has an incomplete Agent publication closure: {error}",
+                claimed.lease.run_id.0
+            ))
+        })?;
+        let fingerprints = |snapshots: &[awaken_runtime_contract::ExecutableAgentSnapshot]| {
+            let mut values = snapshots
+                .iter()
+                .map(|snapshot| snapshot.fingerprint.0.clone())
+                .collect::<Vec<_>>();
+            values.sort_unstable();
+            values
+        };
+        if fingerprints(&expected_publications) != fingerprints(&claimed_agent_publications) {
+            return Err(Self::execution_error(format!(
+                "run {} has an inexact Agent publication closure",
+                claimed.lease.run_id.0
+            )));
+        }
+        host.session_slots.update(&thread_id.0, |slot| {
+            slot.agent_publications = claimed_agent_publications
+        });
         let dispatched_resources = if let Some(envelope) = &claimed.request.session_resources {
             let scope = claimed
                 .request

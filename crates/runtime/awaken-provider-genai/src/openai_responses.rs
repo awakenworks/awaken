@@ -90,6 +90,7 @@ fn request_body(request: &ChatRequest) -> Result<Value, Error> {
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
+                    ..
                 } => items.push(json!({
                     "type":"function_call_output", "call_id":tool_use_id,
                     "output":extract_text(content)

@@ -227,6 +227,10 @@ pub struct ControlSessionCreationInputs {
     #[serde(default)]
     pub runtime_placement: SessionRuntimePlacement,
     pub agent_id: String,
+    /// Exact immutable Agent publication selected for this Session. Historical
+    /// rows without a pin retain `None` and use their legacy recovery behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_revision: Option<u64>,
     pub model: String,
     #[serde(default)]
     pub execution_model_ref: String,
@@ -280,6 +284,7 @@ impl SessionCreationIntent {
             environment,
             runtime_placement,
             agent_id,
+            agent_revision,
             model,
             execution_model_ref,
             runtime,
@@ -301,6 +306,7 @@ impl SessionCreationIntent {
                 runtime_placement,
                 mcp_authoring,
                 agent_id,
+                agent_revision,
                 model,
                 runtime,
                 delegate_ids,
@@ -328,6 +334,8 @@ pub struct SessionBaseline {
     pub runtime_placement: SessionRuntimePlacement,
     pub mcp_authoring: SessionMcpAuthoringContext,
     pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_revision: Option<u64>,
     pub model: String,
     /// Runtime coordinate resolved from `model` by the published Agent source.
     /// It is fingerprinted with the baseline and never inferred from public
@@ -355,6 +363,7 @@ pub struct SessionBaselineInputs {
     pub runtime_placement: SessionRuntimePlacement,
     pub mcp_authoring: SessionMcpAuthoringContext,
     pub agent_id: String,
+    pub agent_revision: Option<u64>,
     pub model: String,
     pub runtime: Option<String>,
     pub delegate_ids: Vec<String>,
@@ -393,6 +402,7 @@ impl SessionBaseline {
             runtime_placement: SessionRuntimePlacement,
             mcp_authoring: &'a SessionMcpAuthoringContext,
             agent_id: &'a str,
+            agent_revision: Option<u64>,
             model: &'a str,
             execution_model_ref: &'a str,
             runtime: &'a Option<String>,
@@ -409,6 +419,7 @@ impl SessionBaseline {
             runtime_placement,
             mcp_authoring,
             agent_id,
+            agent_revision,
             model,
             runtime,
             delegate_ids,
@@ -423,6 +434,7 @@ impl SessionBaseline {
             runtime_placement,
             mcp_authoring: &mcp_authoring,
             agent_id: &agent_id,
+            agent_revision,
             model: &model,
             execution_model_ref: &execution_model_ref,
             runtime: &runtime,
@@ -439,6 +451,7 @@ impl SessionBaseline {
             runtime_placement,
             mcp_authoring,
             agent_id,
+            agent_revision,
             model,
             execution_model_ref,
             runtime,
@@ -573,6 +586,7 @@ mod tests {
             runtime_placement: SessionRuntimePlacement::Local,
             mcp_authoring: SessionMcpAuthoringContext::default(),
             agent_id: "agent".into(),
+            agent_revision: None,
             model: "model".into(),
             runtime: None,
             delegate_ids: Vec::new(),
@@ -593,6 +607,7 @@ mod tests {
             environment: environment(1, network),
             runtime_placement: SessionRuntimePlacement::Local,
             agent_id: "agent".into(),
+            agent_revision: None,
             model: "model".into(),
             execution_model_ref: "model".into(),
             runtime: Some("native".into()),

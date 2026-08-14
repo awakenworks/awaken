@@ -652,6 +652,7 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
                     },
                     mcp_authoring: Default::default(),
                     agent_id: "agent".into(),
+                    agent_revision: None,
                     model: "model".into(),
                     runtime: None,
                     delegate_ids: Vec::new(),

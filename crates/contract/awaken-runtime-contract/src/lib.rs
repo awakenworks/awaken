@@ -111,7 +111,8 @@ pub use resolution::{
 };
 pub use resolved::{CatalogFingerprint, InferenceEndpoint, ModelBinding, ResolvedSpec};
 pub use resolver::{
-    AgentSnapshotResolver, PublishedAgentSnapshotSource, RunResolver, StaticPublishedAgentSnapshots,
+    AgentSnapshotResolver, PublishedAgentSnapshotSource, RunResolver,
+    StaticPublishedAgentSnapshots, freeze_delegation_publications, resolve_delegate_snapshot,
 };
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runtime_context::{
@@ -121,7 +122,7 @@ pub use snapshot::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-pub use snapshot_builder::ExecutableAgentSnapshotBuilder;
+pub use snapshot_builder::{DEFAULT_MAX_STEPS, ExecutableAgentSnapshotBuilder};
 pub use tokio_util::sync::CancellationToken;
 pub use tool::{
     RawTool, RawToolRegistry, Tool, ToolExecutionTarget, ToolExecutor, ToolOutput,

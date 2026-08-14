@@ -435,6 +435,7 @@ async fn an_mcp_tool_call_projects_mcp_events() {
                 vec![ContentBlock::ToolResult {
                     tool_use_id: "mc1".into(),
                     content: vec![ContentBlock::text("3 hits")],
+                    is_error: false,
                 }],
             ),
         ])
@@ -536,6 +537,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
                 vec![ContentBlock::ToolResult {
                     tool_use_id: "d1".into(),
                     content: vec![ContentBlock::text("here are the docs")],
+                    is_error: false,
                 }],
             ),
         ])

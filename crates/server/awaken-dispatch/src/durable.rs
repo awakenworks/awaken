@@ -464,5 +464,6 @@ fn exec_error(err: Error) -> ExecError {
     match err {
         Error::Execution(err) | Error::TerminalResolution(err) => err,
         Error::Dispatch(err) => ExecError::Execution(err.to_string()),
+        Error::ResolutionNotReady(message) => ExecError::Execution(message),
     }
 }

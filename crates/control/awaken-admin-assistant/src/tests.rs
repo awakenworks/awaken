@@ -585,7 +585,12 @@ async fn draft_agent_rejects_bad_arguments_without_aborting() {
 }
 
 #[tokio::test]
-async fn draft_agent_defaults_max_steps_to_eight() {
+async fn draft_agent_uses_the_canonical_default_max_steps() {
+    // Default-budget cause/effect and FMECA rule: C1 the assistant draft omits
+    // max_steps -> E1 store Runtime's one canonical default; an explicit value
+    // remains covered by the patch tests. A private value here would make the
+    // assistant author Agents with behavior different from Managed creation,
+    // so equality detects that medium-severity configuration drift.
     let h = Harness::new();
     let out = h
         .tool(CREATE_DRAFT_TOOL)
@@ -597,7 +602,7 @@ async fn draft_agent_defaults_max_steps_to_eight() {
         .unwrap();
     assert!(!out.is_error);
     let stored = h.store.stored("support").unwrap();
-    assert_eq!(stored.max_steps, 8);
+    assert_eq!(stored.max_steps, awaken_runtime_contract::DEFAULT_MAX_STEPS);
     assert!(stored.model_binding.is_auto());
 }
 

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::{Message, Role};
 use awaken_ext_builtin_tools::{
-    Toolset, WebSearchPlugin, WebSearchProviderRegistry, builtin_tools, executable_hand_tools,
+    Toolset, WebSearchPlugin, WebSearchProviderRegistry, all_hand_tools, builtin_tools,
 };
 use awaken_ext_permission::{
     Mode, PermissionRule, PermissionRuleset, RuleBasedToolPermissionPolicy, ToolCallPattern,
@@ -21,6 +21,7 @@ use awaken_ext_state_machine::{STATE_MACHINE_PLUGIN_ID, StateMachinePlugin};
 use awaken_runtime::{PermissionGate, Runtime};
 use awaken_runtime_contract::capability::PluginCapability;
 use awaken_runtime_contract::llm::LlmExecutor;
+use awaken_runtime_contract::permission::{ToolGateHook, ToolPermissionPolicy};
 use awaken_runtime_contract::plugin::Plugin;
 use awaken_runtime_contract::resolved::{ContextPolicy, ModelBinding, ToolDescriptor};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
@@ -176,30 +177,35 @@ pub(crate) fn effective_ruleset_with_toolsets(
     resolved
 }
 
-pub(crate) fn server_gate_with_toolsets(
-    authored: Option<PermissionRuleset>,
-    extra_allowed: &[String],
-    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
-) -> Arc<dyn awaken_runtime_contract::permission::ToolGateHook> {
-    Arc::new(PermissionGate::new(server_permission_policy_with_toolsets(
-        authored,
-        extra_allowed,
-        toolsets,
-    )))
+/// One compiled authorization value consumed by Native and ACP execution.
+/// Agent publication, Session-local replacement, and legacy plugin policy all
+/// converge here; callers cannot independently rebuild a gate and ACP policy.
+#[derive(Clone)]
+pub(crate) struct EffectiveToolAuthorization {
+    pub(crate) gate: Arc<dyn ToolGateHook>,
+    pub(crate) policy: Arc<dyn ToolPermissionPolicy>,
+    explicit: bool,
 }
 
-pub(crate) fn server_permission_policy_with_toolsets(
-    authored: Option<PermissionRuleset>,
+pub(crate) fn effective_tool_authorization(
+    configuration: &awaken_runtime_contract::agent_bindings::ResolvedConfiguration,
     extra_allowed: &[String],
     toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
-) -> Arc<dyn awaken_runtime_contract::permission::ToolPermissionPolicy> {
-    Arc::new(RuleBasedToolPermissionPolicy::new(
+) -> EffectiveToolAuthorization {
+    let authored = config_permission_ruleset(configuration.plugins());
+    let explicit = authored.is_some() || !toolsets.is_empty() || !extra_allowed.is_empty();
+    let policy: Arc<dyn ToolPermissionPolicy> = Arc::new(RuleBasedToolPermissionPolicy::new(
         effective_ruleset_with_toolsets(authored, extra_allowed, toolsets),
-    ))
+    ));
+    EffectiveToolAuthorization {
+        gate: Arc::new(PermissionGate::new(policy.clone())),
+        policy,
+        explicit,
+    }
 }
 
 fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
-    let registered: HashSet<String> = executable_hand_tools()
+    let registered: HashSet<String> = all_hand_tools()
         .iter()
         .map(|t| t.id().to_string())
         .collect();
@@ -270,6 +276,10 @@ pub fn advertised_tools(
 /// known; the config compiler selects or hides it from typed `MultiagentConfig`.
 pub fn authorable_tools() -> Vec<ToolDescriptor> {
     let mut tools = hand_tool_descriptors();
+    // WebSearch execution remains owned exclusively by its configured plugin.
+    // The descriptor belongs in the publication catalog so an authored
+    // `agent_toolset_20260401` can enable that one plugin-provided capability.
+    tools.push(awaken_ext_builtin_tools::web_search_descriptor());
     tools.push(delegation_descriptor());
     tools
 }
@@ -403,7 +413,7 @@ pub(crate) struct DeferredHandToolSource;
 
 impl RuntimeToolSource for DeferredHandToolSource {
     fn runtime_tools(&self) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
-        awaken_ext_builtin_tools::executable_hand_tools()
+        all_hand_tools()
     }
 }
 
@@ -438,6 +448,22 @@ pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
         runtime = runtime.with_tool(tool);
     }
     runtime
+}
+
+/// Materialize the effective Agent/Session authorization onto the ordinary
+/// Native runtime. Root Runs, delegated Runs, and recovered delegated Runs use
+/// this same installation seam; only their frozen configuration input differs.
+pub(crate) fn build_runtime_with_authorization<S: RuntimeToolSource + ?Sized>(
+    llm: Arc<dyn LlmExecutor>,
+    sandbox: &S,
+    authorization: &EffectiveToolAuthorization,
+) -> Runtime {
+    let runtime = build_runtime(llm, sandbox);
+    if authorization.explicit {
+        runtime.with_gate(authorization.gate.clone())
+    } else {
+        runtime
+    }
 }
 
 #[cfg(test)]
@@ -488,6 +514,28 @@ mod tests {
             descriptor.kind,
             awaken_runtime_contract::resolved::ToolKind::ClientExecuted
         );
+    }
+
+    #[test]
+    fn authorable_network_tools_match_their_single_runtime_owners() {
+        // Cause/effect graph and decision table:
+        // C1 WebFetch has one static RawTool owner; C2 WebSearch has one
+        // configured plugin owner. E1 each exact id appears once in the
+        // publication catalog; E2 WebFetch remains in the static bundle; E3
+        // WebSearch is not duplicated into that bundle.
+        // R1=C1+C2 => E1+E2+E3. FMECA: omitting either descriptor silently
+        // compiles an authored enabled tool to disabled, while registering
+        // Search statically would create a second unconfigured execution path.
+        let catalog = authorable_tools();
+        let count = |id: &str| catalog.iter().filter(|tool| tool.id == id).count();
+        assert_eq!(count("web_fetch"), 1, "R1/E1");
+        assert_eq!(count("web_search"), 1, "R1/E1");
+
+        let static_ids = awaken_ext_builtin_tools::web_hand_tools()
+            .into_iter()
+            .map(|tool| tool.id().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(static_ids, vec!["web_fetch"], "R1/E2+E3");
     }
 
     #[test]

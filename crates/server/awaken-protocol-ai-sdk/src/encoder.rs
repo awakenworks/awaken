@@ -823,6 +823,7 @@ mod tests {
                     content: vec![ContentBlock::Text {
                         text: "\"data\"".into(),
                     }],
+                    is_error: false,
                 }],
             },
         ];
@@ -846,6 +847,7 @@ mod tests {
                     content: vec![ContentBlock::Text {
                         text: "\"data\"".into(),
                     }],
+                    is_error: false,
                 }],
             },
         ];

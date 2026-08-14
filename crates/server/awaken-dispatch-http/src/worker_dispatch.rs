@@ -489,34 +489,39 @@ async fn session_resume(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<SessionResumeReq>,
 ) -> (StatusCode, Json<Value>) {
-    let result = async {
-        let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
+    let result: Result<Value, RealizationHttpError> = async {
+        let authority = claim_authority(&service, &worker, Some(&request.identity), false)
+            .await
+            .map_err(RealizationHttpError::from)?;
         if authority.owner != request.claim.owner {
-            return Err(HostError::bad_request(
+            return Err(RealizationHttpError::from(HostError::bad_request(
                 "authenticated worker does not own the Session resume claim",
-            ));
+            )));
         }
         let guard = service
             .dispatch
             .lock_commit_epoch(&request.claim)
             .await
-            .map_err(|error| HostError::internal(error.to_string()))?
-            .ok_or_else(|| HostError::bad_request("Session resume claim is stale"))?;
+            .map_err(|error| HostError::internal(error.to_string()))
+            .map_err(RealizationHttpError::from)?
+            .ok_or_else(|| {
+                RealizationHttpError::from(HostError::bad_request("Session resume claim is stale"))
+            })?;
         if !guard.is_live_at(authority.now_ms) {
-            return Err(HostError::bad_request(
+            return Err(RealizationHttpError::from(HostError::bad_request(
                 "Session resume claim lease has expired",
-            ));
+            )));
         }
         let dispatch = guard.request();
         if dispatch.run_id() != &request.claim.run_id {
-            return Err(HostError::bad_request(
+            return Err(RealizationHttpError::from(HostError::bad_request(
                 "guarded dispatch does not match the Session resume claim",
-            ));
+            )));
         }
         if dispatch.session_thread_id().0 != request.session_id {
-            return Err(HostError::bad_request(
+            return Err(RealizationHttpError::from(HostError::bad_request(
                 "Session resume target does not match the claimed Run",
-            ));
+            )));
         }
         acquire_session_work_owner(
             &service,
@@ -526,10 +531,9 @@ async fn session_resume(
             awaken_session_contract::work_queue::SessionWorkAcquisition::ClaimedRun,
         )
         .await?;
-        let control = service
-            .session_control
-            .as_ref()
-            .ok_or_else(|| HostError::internal("Session control is not configured"))?;
+        let control = service.session_control.as_ref().ok_or_else(|| {
+            RealizationHttpError::from(HostError::internal("Session control is not configured"))
+        })?;
         let registry_expiry = authority
             .snapshot
             .as_ref()
@@ -557,19 +561,23 @@ async fn session_resume(
             .await
         {
             Ok(realization) => Some(realization),
-            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady) => None,
-            Err(error) => return Err(HostError::bad_request(error.to_string())),
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady) => {
+                return Err(RealizationHttpError::Control(
+                    awaken_session_contract::SessionRealizationControlFailure::NotReady,
+                ));
+            }
+            Err(error) => return Err(RealizationHttpError::Control(error)),
         };
         if !guard.is_live_at(service.clock.now_ms()) {
-            return Err(HostError::bad_request(
+            return Err(RealizationHttpError::from(HostError::bad_request(
                 "Session resume claim expired before realization assignment",
-            ));
+            )));
         }
         drop(guard);
         Ok(json!({ "realization": realization }))
     }
     .await;
-    respond(result)
+    respond_realization(result)
 }
 
 #[derive(Deserialize)]
@@ -584,9 +592,13 @@ async fn verify_session_realization_authority(
     identity: &WorkerIdentity,
     session_id: &str,
     lease: &awaken_session_contract::SessionRealizationLease,
-) -> Result<(), HostError> {
-    verify_worker_identity(worker, identity).map_err(HostError::bad_request)?;
-    let authority = claim_authority(service, worker, Some(identity), false).await?;
+) -> Result<(), RealizationHttpError> {
+    verify_worker_identity(worker, identity)
+        .map_err(HostError::bad_request)
+        .map_err(RealizationHttpError::from)?;
+    let authority = claim_authority(service, worker, Some(identity), false)
+        .await
+        .map_err(RealizationHttpError::from)?;
     if lease.owner != identity.worker_id
         || lease.runtime_incarnation != identity.lease_owner()
         || !awaken_session_contract::realization_lease_is_live_at(
@@ -594,9 +606,9 @@ async fn verify_session_realization_authority(
             authority.now_ms,
         )
     {
-        return Err(HostError::bad_request(
+        return Err(RealizationHttpError::from(HostError::bad_request(
             "Session realization lease is not owned by the authenticated Worker incarnation",
-        ));
+        )));
     }
     acquire_session_work_owner(
         service,
@@ -615,24 +627,38 @@ async fn acquire_session_work_owner(
     worker_owner: &str,
     now_ms: u64,
     acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
-) -> Result<(), HostError> {
+) -> Result<(), RealizationHttpError> {
     use awaken_session_contract::work_queue::SessionWorkOwnership;
 
+    match session_work_ownership(service, session_id, worker_owner, now_ms, acquisition)
+        .await
+        .map_err(RealizationHttpError::from)?
+    {
+        SessionWorkOwnership::NotRequired => Ok(()),
+        SessionWorkOwnership::Leased(lease) if lease.owner == worker_owner => Ok(()),
+        SessionWorkOwnership::Unowned | SessionWorkOwnership::Leased(_) => {
+            Err(RealizationHttpError::Control(
+                awaken_session_contract::SessionRealizationControlFailure::NotReady,
+            ))
+        }
+    }
+}
+
+async fn session_work_ownership(
+    service: &WorkerDispatchService,
+    session_id: &str,
+    worker_owner: &str,
+    now_ms: u64,
+    acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
+) -> Result<awaken_session_contract::work_queue::SessionWorkOwnership, HostError> {
     let authority = service
         .session_work
         .as_ref()
         .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
-    match authority
+    authority
         .acquire_session_work(session_id, worker_owner, now_ms, acquisition)
         .await
-        .map_err(|error| HostError::internal(error.to_string()))?
-    {
-        SessionWorkOwnership::NotRequired => Ok(()),
-        SessionWorkOwnership::Leased(lease) if lease.owner == worker_owner => Ok(()),
-        SessionWorkOwnership::Unowned | SessionWorkOwnership::Leased(_) => Err(
-            HostError::bad_request("Session Work is currently owned by another Worker"),
-        ),
-    }
+        .map_err(|error| HostError::internal(error.to_string()))
 }
 
 fn session_control(
@@ -676,7 +702,8 @@ async fn begin_session_realization(
                 "Session realization renewal exceeds authenticated Worker authority",
             )));
         }
-        acquire_session_work_owner(
+        use awaken_session_contract::work_queue::SessionWorkOwnership;
+        match session_work_ownership(
             &service,
             &request.command.session_id,
             &request.identity.lease_owner(),
@@ -684,7 +711,27 @@ async fn begin_session_realization(
             awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
         )
         .await
-        .map_err(RealizationHttpError::from)?;
+        .map_err(RealizationHttpError::from)?
+        {
+            SessionWorkOwnership::NotRequired => {}
+            SessionWorkOwnership::Leased(lease)
+                if lease.owner == request.identity.lease_owner() => {}
+            // A settled Run retires its self-hosted Session Work before the
+            // longer-lived local realization lease next comes due. That is a
+            // normal retirement proof, not evidence that another Worker stole
+            // authority. Preserve the typed lifecycle result so the Worker
+            // quietly revokes only its stale process-local projection.
+            SessionWorkOwnership::Unowned => {
+                return Err(RealizationHttpError::Control(
+                    awaken_session_contract::SessionRealizationControlFailure::NotReady,
+                ));
+            }
+            SessionWorkOwnership::Leased(_) => {
+                return Err(RealizationHttpError::Control(
+                    awaken_session_contract::SessionRealizationControlFailure::StaleOwnership,
+                ));
+            }
+        }
         let realization = session_control(&service)
             .map_err(RealizationHttpError::from)?
             .begin_session_realization(request.command)
@@ -806,14 +853,10 @@ async fn claim_is_current(
                 "guarded dispatch does not match the claim",
             ));
         }
-        acquire_session_work_owner(
-            &service,
-            &dispatch.session_thread_id().0,
-            &request.claim.owner,
-            authority.now_ms,
-            awaken_session_contract::work_queue::SessionWorkAcquisition::ClaimedRun,
-        )
-        .await?;
+        // This endpoint answers only the DispatchQueue claim question. Session
+        // Work admission belongs to `session_resume`; mutating it from every
+        // ownership probe creates a second scheduler and turns ordinary
+        // pre-execution checks into a claim/relinquish hot loop.
         Ok(json!({ "current": true }))
     }
     .await;

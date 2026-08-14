@@ -30,7 +30,6 @@ impl ClaimedSessionControl for WorkerControlSessionClient {
         self.control
             .resume_session(&self.identity, claim, session_id)
             .await
-            .map_err(ClaimedSessionControlError::new)
     }
 }
 

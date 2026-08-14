@@ -138,6 +138,7 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
                 environment,
                 runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 agent_id: "agent".into(),
+                agent_revision: None,
                 model: "model".into(),
                 execution_model_ref: "model".into(),
                 runtime: None,

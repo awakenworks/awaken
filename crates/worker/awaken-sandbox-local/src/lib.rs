@@ -21,7 +21,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_ext_builtin_tools::executable_hand_tools;
+use awaken_ext_builtin_tools::all_hand_tools;
 use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
@@ -435,7 +435,7 @@ pub(crate) fn rooted_hand_tools(
     runtime_paths: RuntimePathEnv,
     deny_egress: bool,
 ) -> Vec<Arc<dyn HandTool>> {
-    executable_hand_tools()
+    all_hand_tools()
         .into_iter()
         .map(|inner| {
             Arc::new(RootedTool::new(
@@ -709,7 +709,7 @@ pub(crate) fn namespace_raw_tools(
     runtime_paths: RuntimePathEnv,
     namespace_shell: namespace::NamespaceToolShell,
 ) -> Vec<Arc<dyn RawTool>> {
-    executable_hand_tools()
+    all_hand_tools()
         .into_iter()
         .map(|inner| {
             hand_tool_as_raw(Arc::new(RootedTool::namespace(

@@ -134,6 +134,12 @@ pub struct RunDispatch {
     /// their historical eager behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_runtime: Option<SessionRuntimeEnvelope>,
+    /// Complete immutable publication closure required by this activation's
+    /// delegation graph. The activation already carries the parent snapshot;
+    /// this bundle contains only its non-self targets and crosses to a cold
+    /// Worker instead of granting that Worker mutable catalog access.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_publications: Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
     /// Provider-neutral Environment creation shape. This is a placement
     /// preference only: workers without a ready receipt remain eligible and use
     /// the canonical cold path.
@@ -165,6 +171,7 @@ impl RunDispatch {
             execution_scope: None,
             session_resources: None,
             session_runtime: None,
+            agent_publications: Vec::new(),
             preferred_environment_shape: None,
             inference_plaintext_holder: None,
             placement: PlacementRequirements::default(),
@@ -202,6 +209,16 @@ impl RunDispatch {
     #[must_use]
     pub fn with_session_runtime(mut self, runtime: SessionRuntimeEnvelope) -> Self {
         self.session_runtime = Some(runtime);
+        self
+    }
+
+    /// Attach the exact delegation-publication closure frozen at admission.
+    #[must_use]
+    pub fn with_agent_publications(
+        mut self,
+        publications: Vec<awaken_runtime_contract::ExecutableAgentSnapshot>,
+    ) -> Self {
+        self.agent_publications = publications;
         self
     }
 
@@ -369,6 +386,29 @@ mod tests {
         assert_eq!(recovered.session_runtime, Some(runtime));
     }
 
+    /// Delegation-publication transport cause/effect and FMECA design. Causes:
+    /// C1 the parent activation has a remote-only delegate publication; C2 a
+    /// legacy row omits the new bundle. Effects: E1 the exact immutable child
+    /// snapshot survives queue serialization; E2 C2 remains readable as empty.
+    /// Rules P1=C1=>E1, P2=!C1+C2=>E2. FMECA: losing the bundle (high severity,
+    /// cold Worker cannot create `agent_run`) is detected by P1; older rows have
+    /// no invented authority and fail closed later when delegation is attempted.
+    #[test]
+    fn delegation_publications_round_trip_and_legacy_rows_default_empty() {
+        let child = ExecutableAgentSnapshot::builder("researcher")
+            .instructions("research")
+            .fingerprint("researcher-v1")
+            .build();
+        let request = RunDispatch::new(activation()).with_agent_publications(vec![child.clone()]);
+        let wire = serde_json::to_value(&request).expect("P1 serialize");
+        let restored: RunDispatch = serde_json::from_value(wire).expect("P1 deserialize");
+        assert_eq!(restored.agent_publications, vec![child], "P1/E1");
+
+        let legacy_wire = serde_json::to_value(RunDispatch::new(activation())).unwrap();
+        let restored: RunDispatch = serde_json::from_value(legacy_wire).expect("P2 legacy");
+        assert!(restored.agent_publications.is_empty(), "P2/E2");
+    }
+
     /// A `None` traceparent is omitted on the wire (`skip_serializing_if`), so a row
     /// written by an older writer (no trace) is byte-identical and deserializes back
     /// to `None` rather than dead-lettering — the documented forward/back-compat
@@ -389,6 +429,7 @@ mod tests {
         assert!(back.execution_scope.is_none());
         assert!(back.session_resources.is_none());
         assert!(back.session_runtime.is_none());
+        assert!(back.agent_publications.is_empty());
         assert!(back.placement.is_legacy_default());
     }
 

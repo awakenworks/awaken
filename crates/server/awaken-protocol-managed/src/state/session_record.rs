@@ -1,6 +1,6 @@
 //! Disposable per-process projection of one durable Session aggregate.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::*;
 
@@ -14,6 +14,14 @@ pub(super) struct SessionRecord {
     /// is durable authority; this set only prevents a peer refresh and the local
     /// request finisher from projecting the same committed message twice.
     pub(super) projected_message_ids: HashSet<String>,
+    /// Child Runtime message identities already lowered into the same Session
+    /// event projection. The qualified key prevents two isolated child Runs from
+    /// colliding when a provider reuses a message id.
+    pub(super) projected_child_message_ids: HashSet<(String, String)>,
+    /// Disposable ownership index for events projected from child transcripts.
+    /// The event remains in `events`; this map only filters the one projection
+    /// into the primary or matching child Managed Thread.
+    pub(super) event_thread_owners: HashMap<String, String>,
     /// Last committed Run lifecycle fact consumed by this disposable projection.
     pub(super) projected_lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor,
     /// Exact committed lifecycle positions already lowered locally or from the
@@ -74,6 +82,8 @@ impl SessionRecord {
             resource_state,
             events,
             projected_message_ids,
+            projected_child_message_ids: Default::default(),
+            event_thread_owners: Default::default(),
             projected_lifecycle_cursor: Default::default(),
             projected_terminal_cursors: Default::default(),
             child_threads: Vec::new(),

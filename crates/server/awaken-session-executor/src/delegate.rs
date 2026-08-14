@@ -55,6 +55,40 @@ struct ResolvedDelegationTarget {
 }
 
 impl HostRunDelegationService {
+    fn target_is_terminal_without_external_action(snapshot: &ExecutableAgentSnapshot) -> bool {
+        use awaken_runtime_contract::agent_bindings::ToolPermissionRequirement;
+        use awaken_runtime_contract::resolved::ToolKind;
+
+        let bindings = &snapshot.resolved_spec.plugin_config.agent;
+        if bindings.toolsets.is_empty()
+            || !bindings.mcp_servers.is_empty()
+            || bindings.advisor.is_some()
+            || !bindings.delegates.is_empty()
+            || snapshot
+                .resolved_spec
+                .plugin_ids
+                .iter()
+                .any(|id| id != awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
+        {
+            return false;
+        }
+        snapshot
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .filter(|tool| {
+                bindings
+                    .tool_policy(&tool.id)
+                    .is_none_or(|policy| policy.enabled)
+            })
+            .all(|tool| {
+                tool.kind == ToolKind::Regular
+                    && bindings.tool_policy(&tool.id).is_some_and(|policy| {
+                        policy.permission == ToolPermissionRequirement::AlwaysAllow
+                    })
+            })
+    }
+
     pub(crate) fn new(
         llm: Arc<dyn LlmExecutor>,
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
@@ -93,39 +127,29 @@ impl HostRunDelegationService {
                     binding.agent_id.0
                 )));
             }
-            let snapshot = if binding.recursive_self {
-                if binding.agent_id != parent.root_agent_id {
-                    return Err(DelegationExecutionError::new(
+            let snapshot = awaken_runtime_contract::resolve_delegate_snapshot(
+                parent,
+                binding,
+                publications,
+                workspace,
+            )
+            .map_err(|_| {
+                if binding.recursive_self {
+                    DelegationExecutionError::new(
                         "recursive-self delegation target does not match its owner",
-                    ));
-                }
-                parent.clone()
-            } else {
-                let source = publications.ok_or_else(|| {
+                    )
+                } else if publications.is_none() {
                     DelegationExecutionError::new(format!(
                         "delegate agent {:?} has no publication source",
                         binding.agent_id.0
                     ))
-                })?;
-                binding
-                    .source_revision
-                    .and_then(|revision| {
-                        source.at_revision(workspace, &binding.agent_id, revision)
-                    })
-                    .or_else(|| {
-                        binding
-                            .source_revision
-                            .is_none()
-                            .then(|| source.current(workspace, &binding.agent_id))
-                            .flatten()
-                    })
-                    .ok_or_else(|| {
-                        DelegationExecutionError::new(format!(
-                            "delegate agent {:?} revision {:?} has no published executable snapshot",
-                            binding.agent_id.0, binding.source_revision
-                        ))
-                    })?
-            };
+                } else {
+                    DelegationExecutionError::new(format!(
+                        "delegate agent {:?} revision {:?} has no published executable snapshot",
+                        binding.agent_id.0, binding.source_revision
+                    ))
+                }
+            })?;
             if snapshot.root_agent_id != binding.agent_id {
                 return Err(DelegationExecutionError::new(
                     "published delegate snapshot identity does not match its target",
@@ -230,12 +254,12 @@ impl RunDelegationService for HostRunDelegationService {
     }
 
     fn supports_parallel_completion(&self, arguments: &Value) -> bool {
-        // A child is an ordinary Run and may reach HITL. Until it settles, the
-        // parent cannot promise terminal-only completion to the batch barrier.
-        // Independently dispatched children regain parallelism at the RunService
-        // scheduler rather than by making this false promise.
-        let _ = arguments;
-        false
+        let Ok(input) = DelegationToolInput::try_from(arguments) else {
+            return false;
+        };
+        self.targets.get(&input.agent_id).is_some_and(|target| {
+            Self::target_is_terminal_without_external_action(&target.snapshot)
+        })
     }
 
     fn allows_recursive_target(&self, agent_id: &AgentId) -> bool {
@@ -430,6 +454,81 @@ mod durable_cancel_tests {
     }
 
     #[test]
+    fn only_children_proven_not_to_await_enter_the_parallel_barrier() {
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+
+        // Cause/effect graph: C1 every enabled child tool is server-executed and
+        // always_allow; C2 any tool can ask/client-execute; C3 the child owns MCP,
+        // nested delegation, advisor, or an unclassified plugin. C1 -> E1 admit
+        // the runtime's durable parallel child barrier. C2|C3 -> E2 retain the
+        // serial boundary that can represent one exact HITL continuation.
+        //
+        // | Rule | C1 terminal proof | C2 external action | C3 open extension | Effect |
+        // | R1   | yes               | no                 | no                | E1 parallel |
+        // | R2   | no                | yes                | no                | E2 serial   |
+        // | R3   | no                | either             | yes               | E2 serial   |
+        //
+        // FMECA: promising terminal completion for an always_ask/MCP child can
+        // collapse several independent requires_action threads into one parent
+        // ticket; rejecting an all-allow closed child serializes Anthropic-style
+        // fan-out. The immutable child publication is the sole proof source.
+        let mut child = crate::config::server_config(
+            "researcher",
+            "stub",
+            &HashSet::new(),
+            &HashSet::new(),
+            &[],
+            &Default::default(),
+            &[],
+            awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+        );
+        let overrides = child
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .map(|tool| ToolPolicyOverride {
+                name: tool.id.clone(),
+                policy: ToolExecutionPolicy {
+                    enabled: true,
+                    permission: ToolPermissionRequirement::AlwaysAllow,
+                },
+            })
+            .collect();
+        child.resolved_spec.plugin_config.agent.toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides,
+        }];
+        assert!(
+            HostRunDelegationService::target_is_terminal_without_external_action(&child),
+            "R1/E1"
+        );
+
+        child.resolved_spec.plugin_config.agent.toolsets[0].overrides[0]
+            .policy
+            .permission = ToolPermissionRequirement::AlwaysAsk;
+        assert!(
+            !HostRunDelegationService::target_is_terminal_without_external_action(&child),
+            "R2/E2"
+        );
+
+        child.resolved_spec.plugin_config.agent.toolsets[0].overrides[0]
+            .policy
+            .permission = ToolPermissionRequirement::AlwaysAllow;
+        child
+            .resolved_spec
+            .plugin_ids
+            .push("unclassified-plugin".into());
+        assert!(
+            !HostRunDelegationService::target_is_terminal_without_external_action(&child),
+            "R3/E2"
+        );
+    }
+
+    #[test]
     fn delegation_target_resolution_freezes_exact_or_current_once() {
         // Cause graph: C1=edge has an exact revision; C2=that publication exists;
         // C3=edge intentionally omits a revision. C1+C2 -> E1 freeze exact even
@@ -545,6 +644,7 @@ mod durable_cancel_tests {
             claimed_commit: None,
             recovery_projection: None,
             session_resources: None,
+            agent_publications: Vec::new(),
         };
         let child_snapshot = crate::config::server_config(
             "researcher",

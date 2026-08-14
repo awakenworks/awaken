@@ -30,6 +30,16 @@ pub use web::{
     web_search_descriptor,
 };
 
+/// The one complete static Hand registry used by every SessionEnvironment.
+/// `web_search` is deliberately absent because its configured plugin is the
+/// sole execution owner; all other built-in Sandbox tools live here.
+pub fn all_hand_tools() -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    executable_hand_tools()
+        .into_iter()
+        .chain(web_hand_tools())
+        .collect()
+}
+
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use serde::{Deserialize, Serialize};
@@ -79,11 +89,7 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
             "Find files matching a glob",
             path_arg("pattern", "glob pattern"),
         ),
-        hand_tool(
-            "grep",
-            "Search file contents",
-            path_arg("pattern", "regular expression"),
-        ),
+        hand_tool("grep", "Search file contents", grep_args()),
         hand_tool("web_fetch", "Fetch a URL", path_arg("url", "URL to fetch")),
         task_tool_with_recovery(
             "send_message",
@@ -181,6 +187,17 @@ fn edit_args() -> serde_json::Value {
             "new": { "type": "string" },
         },
         "required": ["path", "old", "new"],
+    })
+}
+
+fn grep_args() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "pattern": { "type": "string", "description": "regular expression" },
+            "path": { "type": "string", "description": "file path to search" },
+        },
+        "required": ["pattern", "path"],
     })
 }
 

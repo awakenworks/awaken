@@ -23,9 +23,27 @@ pub struct ExecutableAgentEnvironment {
     pub revision: u64,
 }
 
+/// One delegate edge frozen by the coordinator publication. The target revision
+/// is part of the edge, not re-selected when a later Session or child Thread is
+/// projected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutableAgentDelegate {
+    pub agent_id: String,
+    pub source_revision: Option<u64>,
+}
+
 /// Exact Session-facing defaults frozen from one executable publication.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ExecutableAgentSessionProfile {
+    /// Managed Agent identity is presentation rather than executable behavior,
+    /// but it still belongs to this exact publication revision and must survive
+    /// Session/Thread snapshot projection.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub source_revision: u64,
     pub model: Option<String>,
     /// Provider-neutral controls frozen from the same publication as `model`.
     pub inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
@@ -37,7 +55,8 @@ pub struct ExecutableAgentSessionProfile {
     pub client_tools: Vec<ClientToolDescriptor>,
     pub mcp_servers: Vec<ExecutableAgentMcpServer>,
     pub skills: Vec<AgentSkillBinding>,
-    pub delegate_ids: Vec<String>,
+    #[serde(default)]
+    pub delegates: Vec<ExecutableAgentDelegate>,
     pub advisor_model: Option<String>,
     pub resources: Vec<InputBinding>,
     pub environment: Option<ExecutableAgentEnvironment>,
@@ -55,10 +74,23 @@ pub trait ExecutableAgentProfileSource: Send + Sync {
         false
     }
 
+    /// Resolve an exact publication. Sources that only support current profiles
+    /// remain compatible, but may return it only when its revision matches.
+    fn session_profile_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        self.session_profile_in(workspace_id, agent_id)
+            .filter(|profile| profile.source_revision == source_revision)
+    }
+
     fn unavailable_delegate_in(&self, workspace_id: &str, agent_id: &str) -> Option<String> {
         self.session_profile_in(workspace_id, agent_id)?
-            .delegate_ids
+            .delegates
             .into_iter()
+            .map(|delegate| delegate.agent_id)
             .find(|delegate| self.agent_unavailable_in(workspace_id, delegate))
     }
 }
@@ -78,7 +110,16 @@ mod tests {
             (workspace == "workspace" && agent == "coordinator").then(|| {
                 ExecutableAgentSessionProfile {
                     backend_ref: "native".into(),
-                    delegate_ids: vec!["live".into(), "archived".into()],
+                    delegates: vec![
+                        ExecutableAgentDelegate {
+                            agent_id: "live".into(),
+                            source_revision: Some(1),
+                        },
+                        ExecutableAgentDelegate {
+                            agent_id: "archived".into(),
+                            source_revision: Some(1),
+                        },
+                    ],
                     ..Default::default()
                 }
             })

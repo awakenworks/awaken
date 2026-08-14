@@ -136,16 +136,19 @@ impl ConfigService {
             resolved.advisor,
         )
         .map_err(|error| PublishError::Compile(error.to_string()))?;
-        let session_profile =
-            registered_session_profile(&snapshot, &resolved.authored_model_selection, Some(inputs))
-                .ok_or_else(|| {
-                    PublishError::Registration(
-                        awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
-                            "preview Session defaults changed while the snapshot was compiled"
-                                .into(),
-                        ),
-                    )
-                })?;
+        let session_profile = registered_session_profile(
+            &snapshot,
+            &resolved.config,
+            &resolved.authored_model_selection,
+            Some(inputs),
+        )
+        .ok_or_else(|| {
+            PublishError::Registration(
+                awaken_executable_agent_contract::ExecutableAgentRegistrationError::Invalid(
+                    "preview Session defaults changed while the snapshot was compiled".into(),
+                ),
+            )
+        })?;
         self.registrar
             .register(ExecutableAgentRegistration {
                 workspace_id: workspace.as_str().to_owned(),

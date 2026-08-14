@@ -150,6 +150,7 @@ fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
             runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
+            agent_revision: None,
             model: "model".into(),
             runtime: None,
             delegate_ids: Vec::new(),
@@ -576,7 +577,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .await
             .expect("signed exact-claim verification")
     );
-    assert_eq!(session_work.acquisitions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        session_work.acquisitions.load(Ordering::SeqCst),
+        0,
+        "claim verification has no Session scheduler side effect"
+    );
 
     // Cause graph: signed exact incarnation -> live registry lease -> identity
     // owns the exact Run claim -> guarded Run thread equals Session -> resume the
@@ -603,20 +608,25 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T16 | exact/live | explicit renewal | Control NotReady | preserve typed reply |
     // | T17 | exact/live | Work owned by other Worker | yes | reject resume before Control |
     // | T18 | exact/live | Work owner changes before phase | - | reject phase before Control |
-    // | T19 | exact/live | exact Work owner | claim check | atomically renew Work |
+    // | T19 | exact/live | any Work owner | claim check | no Session Work mutation |
     // | T20 | exact/live | exact Work owner | settle | release Work, then settle Run |
     // | T21 | exact/live | active Work remains | deregister | release exact incarnation |
     // | T22 | child Run | parent Work exact | verify/resume | use parent Session affinity |
     // | T23 | child Run | borrowed parent Work | settle | retain Work for waiting parent |
+    // | T24 | exact/live | retired Work is unowned | renewal | typed NotReady; no Control call |
+    //
+    // FMECA T24: a settled self-hosted Run retires Work before its longer
+    // realization lease expires. Classifying that expected absence as another
+    // Worker's ownership produces a false critical alarm and obscures the true
+    // lifecycle edge; the transport now preserves NotReady so the Worker uses
+    // its one quiet local-projection retirement path.
     let client = WorkerControlClient::new(upstream.clone());
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
-    assert!(
-        client
-            .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
-            .await
-            .is_err(),
-        "T17"
-    );
+    let unavailable = client
+        .resume_session(&registered.snapshot.identity, &claim, "signed-thread")
+        .await
+        .expect_err("T17");
+    assert!(unavailable.is_not_ready(), "T17 preserves backpressure");
     assert!(session_control.begins.lock().unwrap().is_empty(), "T17");
     *session_work.owner.lock().unwrap() = None;
     let resumed = client
@@ -664,6 +674,18 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("T10");
     assert_eq!(session_control.begins.lock().unwrap().len(), 2, "T10");
+    *session_work.owner.lock().unwrap() = Some("retired-or-replaced-work".into());
+    assert!(
+        matches!(
+            client
+                .begin_session_realization(&registered.snapshot.identity, renewal.clone())
+                .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+        ),
+        "T24"
+    );
+    assert_eq!(session_control.begins.lock().unwrap().len(), 2, "T24");
+    *session_work.owner.lock().unwrap() = Some(registered.snapshot.identity.lease_owner());
     *session_control.begin_failure.lock().unwrap() =
         Some(awaken_session_contract::SessionRealizationControlFailure::NotReady);
     assert!(
@@ -916,7 +938,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         queue
             .claim_is_current(&claim, 10_001)
             .await
-            .expect("T20 next Session acquires released Work"),
+            .expect("T20 next Session claim remains current"),
         "T20"
     );
 

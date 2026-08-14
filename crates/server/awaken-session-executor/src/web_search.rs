@@ -10,8 +10,30 @@ use awaken_runtime_contract::{
     CredentialRealizationKind, CredentialRef, CredentialUsage, ModelExposurePolicy,
     PlaintextBoundary, PlaintextHolder,
 };
+use std::sync::Arc;
 
 use awaken_credential_materializer::PinnedCredentialMaterializer;
+
+impl crate::host::SharedHost {
+    /// Build the one configured WebSearch plugin used by both root and delegated
+    /// Native runtimes. Provider selection stays in the immutable publication;
+    /// this adapter supplies only the Worker-held credential materialization edge.
+    pub(crate) fn web_search_plugin(
+        &self,
+        thread: &str,
+    ) -> Arc<awaken_ext_builtin_tools::WebSearchPlugin> {
+        let credentials = self.credential_materializer.clone().map(|materializer| {
+            Arc::new(HostWebSearchCredentialResolver::new(
+                materializer,
+                self.thread_workspace(thread),
+            )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
+        });
+        Arc::new(awaken_ext_builtin_tools::WebSearchPlugin::new(
+            self.web_search_providers.clone(),
+            credentials,
+        ))
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct HostWebSearchCredentialResolver {
@@ -64,7 +86,6 @@ impl WebSearchCredentialResolver for HostWebSearchCredentialResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     use awaken_runtime_contract::tool::{ToolCall, ToolError};
 

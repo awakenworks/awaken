@@ -238,6 +238,7 @@ impl SessionRuntime for DelegateFake {
                 vec![ContentBlock::ToolResult {
                     tool_use_id: "d1".into(),
                     content: vec![ContentBlock::text("here are the docs")],
+                    is_error: false,
                 }],
             ),
         ])

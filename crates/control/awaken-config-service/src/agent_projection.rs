@@ -1,10 +1,11 @@
 //! Pure projection from one immutable publication into the existing neutral
 //! Session configuration view carried by executable registration.
 
-use awaken_agent_config::ModelSelection;
+use awaken_agent_config::AgentConfig;
 use awaken_config_resolver::AgentInputConfig;
 use awaken_executable_agent_contract::{
-    ExecutableAgentEnvironment, ExecutableAgentMcpServer, ExecutableAgentSessionProfile,
+    ExecutableAgentDelegate, ExecutableAgentEnvironment, ExecutableAgentMcpServer,
+    ExecutableAgentSessionProfile,
 };
 use awaken_runtime_contract::{ExecutableAgentSnapshot, ResolvedInputVersion};
 
@@ -13,10 +14,17 @@ use awaken_runtime_contract::{ExecutableAgentSnapshot, ResolvedInputVersion};
 /// closed so Control cannot register a mixed-revision application view.
 pub(crate) fn registered_session_profile(
     snapshot: &ExecutableAgentSnapshot,
-    authored_model_selection: &ModelSelection,
+    authored: &AgentConfig,
+    authored_model_selection: &awaken_agent_config::ModelSelection,
     current_defaults: Option<AgentInputConfig>,
 ) -> Option<ExecutableAgentSessionProfile> {
-    project(snapshot, authored_model_selection, current_defaults, true)
+    project(
+        snapshot,
+        authored,
+        authored_model_selection,
+        current_defaults,
+        true,
+    )
 }
 
 /// Historical exact revisions remain addressable for replay even when the
@@ -25,15 +33,17 @@ pub(crate) fn registered_session_profile(
 /// first, and this projection intentionally carries no guessed defaults.
 pub(crate) fn historical_session_profile(
     snapshot: &ExecutableAgentSnapshot,
-    authored_model_selection: &ModelSelection,
+    authored: &AgentConfig,
+    authored_model_selection: &awaken_agent_config::ModelSelection,
 ) -> ExecutableAgentSessionProfile {
-    project(snapshot, authored_model_selection, None, false)
+    project(snapshot, authored, authored_model_selection, None, false)
         .expect("historical projection ignores unavailable Session defaults")
 }
 
 fn project(
     snapshot: &ExecutableAgentSnapshot,
-    authored_model_selection: &ModelSelection,
+    authored: &AgentConfig,
+    authored_model_selection: &awaken_agent_config::ModelSelection,
     current_defaults: Option<AgentInputConfig>,
     require_exact_defaults: bool,
 ) -> Option<ExecutableAgentSessionProfile> {
@@ -63,12 +73,15 @@ fn project(
     };
     let managed_model = crate::render_managed_model_id(authored_model_selection)
         .or_else(|_| {
-            crate::render_managed_model_id(&ModelSelection::Pinned(
+            crate::render_managed_model_id(&awaken_agent_config::ModelSelection::Pinned(
                 spec.model_binding.binding.clone(),
             ))
         })
         .ok();
     Some(ExecutableAgentSessionProfile {
+        name: authored.name.clone(),
+        description: authored.description.clone(),
+        source_revision: snapshot.metadata.source.revision,
         model: managed_model,
         inference: spec.plugin_config.inference.clone(),
         execution_model_ref: Some(spec.model_binding.binding.model_ref.clone()),
@@ -120,10 +133,13 @@ fn project(
             })
             .collect(),
         skills: bindings.skills,
-        delegate_ids: bindings
+        delegates: bindings
             .delegates
             .into_iter()
-            .map(|binding| binding.agent_id.0)
+            .map(|binding| ExecutableAgentDelegate {
+                agent_id: binding.agent_id.0,
+                source_revision: binding.source_revision,
+            })
             .collect(),
         advisor_model: bindings.advisor.map(|advisor| advisor.model),
         resources: defaults.inputs,
@@ -187,19 +203,39 @@ mod tests {
             }],
             revision,
         };
-        let model = ModelSelection::Pinned(spec_model(&snapshot));
-        let exact = registered_session_profile(&snapshot, &model, Some(defaults(2))).unwrap();
+        let authored = AgentConfig {
+            model_binding: awaken_agent_config::ModelSelection::Pinned(spec_model(&snapshot)),
+            name: Some("Agent A".into()),
+            description: Some("Published identity".into()),
+            ..Default::default()
+        };
+        let exact = registered_session_profile(
+            &snapshot,
+            &authored,
+            &authored.model_binding,
+            Some(defaults(2)),
+        )
+        .unwrap();
         assert_eq!(exact.resources.len(), 1, "P1");
+        assert_eq!(exact.name.as_deref(), Some("Agent A"), "P1 identity");
+        assert_eq!(exact.source_revision, 4, "P1 version");
         assert!(
-            registered_session_profile(&snapshot, &model, Some(defaults(3))).is_none(),
+            registered_session_profile(
+                &snapshot,
+                &authored,
+                &authored.model_binding,
+                Some(defaults(3)),
+            )
+            .is_none(),
             "P2"
         );
         assert!(
-            registered_session_profile(&snapshot, &model, None).is_none(),
+            registered_session_profile(&snapshot, &authored, &authored.model_binding, None)
+                .is_none(),
             "P3"
         );
         assert!(
-            historical_session_profile(&snapshot, &model)
+            historical_session_profile(&snapshot, &authored, &authored.model_binding)
                 .resources
                 .is_empty(),
             "P4"

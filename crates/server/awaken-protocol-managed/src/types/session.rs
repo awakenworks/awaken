@@ -143,7 +143,7 @@ pub struct AgentRefObject {
     #[serde(rename = "type", default)]
     pub kind: Option<AgentRefKind>,
     #[serde(default)]
-    pub version: Option<u32>,
+    pub version: Option<u64>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub system: Option<Option<String>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
@@ -184,7 +184,7 @@ impl AgentRef {
     }
 
     /// The agent version the client pinned, if any (`None` = latest).
-    pub fn version(&self) -> Option<u32> {
+    pub fn version(&self) -> Option<u64> {
         match self {
             AgentRef::Id(_) => None,
             AgentRef::Object(obj) => obj.version,
@@ -487,7 +487,7 @@ pub struct SessionAgent {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
-    pub version: u32,
+    pub version: u64,
     pub model: ModelConfig,
     pub name: String,
     /// SDK-required (nullable) fields; emitted as `null` when the host has none.
@@ -498,7 +498,23 @@ pub struct SessionAgent {
     pub skills: Vec<AgentSkill>,
     /// The multiagent coordinator roster, omitted when the agent delegates to no one.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub multiagent: Option<super::agent::MultiagentConfig>,
+    pub multiagent: Option<SessionMultiagentCoordinator>,
+}
+
+/// The Session response freezes full child Agent definitions, unlike the Agent
+/// authoring response whose coordinator roster contains versioned references.
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionMultiagentCoordinator {
+    #[serde(rename = "type")]
+    pub kind: &'static str,
+    pub agents: Vec<SessionMultiagentRosterEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum SessionMultiagentRosterEntry {
+    Agent(SessionThreadAgent),
+    Advisor(super::agent::AdvisorRosterReference),
 }
 
 /// `BetaManagedAgentsSessionThreadAgent` — the agent snapshot frozen for one
@@ -509,7 +525,7 @@ pub struct SessionThreadAgent {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
-    pub version: u32,
+    pub version: u64,
     pub model: ModelConfig,
     pub name: String,
     pub description: Option<String>,
@@ -1699,10 +1715,20 @@ mod tests {
             tools: Vec::new(),
             mcp_servers: Vec::new(),
             skills: Vec::new(),
-            multiagent: Some(super::super::agent::MultiagentConfig::Coordinator {
-                agents: vec![super::super::agent::MultiagentRosterEntry::Id(
-                    "researcher".into(),
-                )],
+            multiagent: Some(SessionMultiagentCoordinator {
+                kind: "coordinator",
+                agents: vec![SessionMultiagentRosterEntry::Agent(SessionThreadAgent {
+                    id: "researcher".into(),
+                    kind: "agent",
+                    version: 3,
+                    model: ModelConfig::new("model-2"),
+                    name: "Researcher".into(),
+                    description: None,
+                    system: None,
+                    tools: Vec::new(),
+                    mcp_servers: Vec::new(),
+                    skills: Vec::new(),
+                })],
             }),
         };
         let projected = serde_json::to_value(SessionThreadAgent::from(&session_agent)).unwrap();
