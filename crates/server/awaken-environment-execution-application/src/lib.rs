@@ -37,6 +37,8 @@ pub struct EnvironmentExecutionApplication {
     work: Arc<dyn WorkQueue>,
     execution_source: Arc<dyn ExecutableEnvironmentRegistrationSource>,
     image_readiness: Option<Arc<dyn EnvironmentImageReadiness>>,
+    cloud_native_credential_realization:
+        Option<awaken_credential_contract::CredentialRealizationProfile>,
 }
 
 impl EnvironmentExecutionApplication {
@@ -49,12 +51,25 @@ impl EnvironmentExecutionApplication {
             work,
             execution_source,
             image_readiness: None,
+            cloud_native_credential_realization: None,
         }
     }
 
     #[must_use]
     pub fn with_image_readiness(mut self, readiness: Arc<dyn EnvironmentImageReadiness>) -> Self {
         self.image_readiness = Some(readiness);
+        self
+    }
+
+    /// Install the deployment-owned exact credential profile for Cloud Native
+    /// Environments. Self-hosted and ACP Sessions retain their canonical local
+    /// profiles; this is normalization input, not a runtime fallback order.
+    #[must_use]
+    pub fn with_cloud_native_credential_realization(
+        mut self,
+        profile: awaken_credential_contract::CredentialRealizationProfile,
+    ) -> Self {
+        self.cloud_native_credential_realization = Some(profile);
         self
     }
 
@@ -109,6 +124,7 @@ impl EnvironmentExecutionApplication {
             runtime,
             mcp_targets,
             self.image_readiness.as_ref(),
+            self.cloud_native_credential_realization.as_ref(),
             true,
         )
         .await
@@ -172,6 +188,7 @@ impl EnvironmentExecutionApplication {
             runtime,
             mcp_targets,
             self.image_readiness.as_ref(),
+            self.cloud_native_credential_realization.as_ref(),
             true,
         )
         .await
@@ -458,6 +475,9 @@ async fn snapshot_from_registration(
     runtime: Option<&str>,
     mcp_targets: &[awaken_session_contract::McpTarget],
     image_readiness: Option<&Arc<dyn EnvironmentImageReadiness>>,
+    cloud_native_credential_realization: Option<
+        &awaken_credential_contract::CredentialRealizationProfile,
+    >,
     wait_for_image: bool,
 ) -> Result<Option<awaken_session_contract::EnvironmentSnapshot>, EnvironmentImageBuildError> {
     let item = &registration.definition;
@@ -467,27 +487,14 @@ async fn snapshot_from_registration(
     let packages = item.config.packages();
     let network = session_network_policy(&item.config, mcp_targets);
     let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
-    let inference_holder = if acp {
-        awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Workload,
-            "awaken.workload.acp",
+    let credential_realization = if acp {
+        awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
+    } else if matches!(item.config, EnvironmentConfig::Cloud { .. }) {
+        cloud_native_credential_realization.cloned().unwrap_or_else(
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native,
         )
     } else {
-        awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            "awaken.worker",
-        )
-    };
-    let credential_realization = awaken_credential_contract::CredentialRealizationProfile {
-        inference_holder,
-        mcp_holder: awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-        ),
-        resource_holder: awaken_credential_contract::PlaintextHolder::new(
-            awaken_credential_contract::PlaintextBoundary::Worker,
-            awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
-        ),
+        awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
     };
     let (sandbox, sandbox_provisioning, idle_retention) = match &registration.sandbox_policy {
         Some(policy) if policy.disabled => return Ok(None),
@@ -566,6 +573,7 @@ impl awaken_session_contract::EnvironmentWarmupSource for EnvironmentExecutionAp
                 None,
                 &[],
                 self.image_readiness.as_ref(),
+                self.cloud_native_credential_realization.as_ref(),
                 false,
             )
             .await
@@ -880,16 +888,18 @@ mod tests {
     async fn snapshot_compilation_follows_the_network_and_runtime_decision_table() {
         // Cause/effect graph: C1 Environment kind; C2 limited/unrestricted network;
         // C3 MCP exception and exact target; C4 package-manager exception; C5
-        // Native/ACP runtime. Effects: E1 frozen network is canonical, E2 only
-        // exact allowed hosts are added, E3 inference plaintext holder is Worker
-        // for Native and Workload for ACP, E4 fingerprint changes with semantics.
+        // Native/ACP runtime; C6 an exact hosted Cloud Native profile is installed.
+        // Effects: E1 frozen network is canonical, E2 only exact allowed hosts are
+        // added, E3 self-hosted/default Native selects Worker, E4 ACP selects
+        // Workload, E5 Cloud Native selects the installed Platform holder only,
+        // E6 the exact holder changes the frozen fingerprint.
         //
-        // | Rule | kind/network | MCP exact | packages | runtime | effects |
-        // | S1 | SelfHosted | n/a | n/a | Native | unrestricted, Worker |
-        // | S2 | Cloud limited | disabled | disabled | Native | no network, Worker |
-        // | S3 | Cloud limited | enabled+target | enabled | ACP | exact MCP+registries, Workload |
-        // | S4 | Cloud unrestricted | n/a | n/a | Native | unrestricted, Worker |
-        let (_, _, registrar, application) = fixture();
+        // | Rule | kind/network | runtime | hosted profile | effects |
+        // | S1 | SelfHosted | Native | installed | unrestricted, E3 |
+        // | S2 | Cloud limited | Native | absent | no network, E3 |
+        // | S3 | Cloud limited+exceptions | ACP | installed | exact allowlist, E4 |
+        // | S4 | Cloud unrestricted | Native | installed | unrestricted, E5,E6 |
+        let (catalog, work, registrar, application) = fixture();
         registrar
             .register(registration("self", 1, EnvironmentConfig::SelfHosted))
             .await
@@ -936,15 +946,29 @@ mod tests {
             .await
             .unwrap();
 
-        let self_hosted = application.snapshot("self", None).await.unwrap().unwrap();
+        let platform_profile = awaken_credential_contract::CredentialRealizationProfile {
+            inference_holder: awaken_credential_contract::PlaintextHolder::new(
+                awaken_credential_contract::PlaintextBoundary::Platform,
+                "hosted.example.gateway",
+            ),
+            ..awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
+        };
+        let hosted_application = EnvironmentExecutionApplication::new(work, catalog)
+            .with_cloud_native_credential_realization(platform_profile.clone());
+
+        let self_hosted = hosted_application
+            .snapshot("self", None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             self_hosted.network,
             awaken_session_contract::SessionNetworkPolicy::Unrestricted,
             "S1"
         );
         assert_eq!(
-            self_hosted.credential_realization.inference_holder.boundary,
-            awaken_credential_contract::PlaintextBoundary::Worker,
+            self_hosted.credential_realization,
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
             "S1"
         );
         let closed = application.snapshot("closed", None).await.unwrap().unwrap();
@@ -953,9 +977,14 @@ mod tests {
             awaken_session_contract::SessionNetworkPolicy::None,
             "S2"
         );
+        assert_eq!(
+            closed.credential_realization,
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native(),
+            "S2 E3"
+        );
         let target = awaken_session_contract::McpTarget::parse_http("https://Mcp.Example.test/rpc")
             .expect("valid MCP target");
-        let exceptions = application
+        let exceptions = hosted_application
             .snapshot_for_session("exceptions", Some("acp:stdio"), &[target])
             .await
             .unwrap()
@@ -978,19 +1007,30 @@ mod tests {
             "S3 package registry"
         );
         assert_eq!(
-            exceptions.credential_realization.inference_holder.boundary,
-            awaken_credential_contract::PlaintextBoundary::Workload,
-            "S3"
+            exceptions.credential_realization,
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp(),
+            "S3 E4"
         );
-        let open = application.snapshot("open", None).await.unwrap().unwrap();
+        let open = hosted_application
+            .snapshot("open", None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             open.network,
             awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-            "S4"
+            "S4 network"
         );
+        assert_eq!(open.credential_realization, platform_profile, "S4 E5");
         assert_ne!(
-            closed.config_fingerprint, exceptions.config_fingerprint,
-            "E4"
+            application
+                .snapshot("open", None)
+                .await
+                .unwrap()
+                .unwrap()
+                .config_fingerprint,
+            open.config_fingerprint,
+            "S4 E6"
         );
     }
 
