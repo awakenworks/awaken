@@ -35,7 +35,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0-dev"
+version = "1.0.0"
 edition = "2024"
 license = "Apache-2.0"
 
@@ -208,3 +208,6 @@ rusqlite = { version = ">=0.32, <0.41", features = ["bundled"] }
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+[profile.release]
+strip = "symbols"

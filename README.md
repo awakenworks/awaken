@@ -7,12 +7,51 @@ Apache-2.0; code packages may use their own file or package license metadata.
 Start with [docs/README.md](docs/README.md) for the bounded contexts, runtime
 coverage target, architecture invariants, and documentation checks.
 
-## Quick start
+## Install
 
-Build one program, then start it:
+Release archives contain the `awaken` executable, this README, and the Apache
+2.0 license. The executable already contains the web console; Node.js is not
+required at runtime.
+
+Linux x86-64:
 
 ```console
-cargo build -p awaken-cli --bin awaken
+curl -LO https://github.com/awakenworks/awaken/releases/download/v1.0.0/awaken-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/awakenworks/awaken/releases/download/v1.0.0/awaken-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+sha256sum -c awaken-v1.0.0-x86_64-unknown-linux-gnu.tar.gz.sha256
+tar -xzf awaken-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 awaken-v1.0.0-x86_64-unknown-linux-gnu/awaken /usr/local/bin/awaken
+awaken --version
+```
+
+The release also publishes macOS archives for Apple Silicon and Intel, and a
+Windows x86-64 ZIP. Select the asset whose target name matches your system:
+
+| System | Release target |
+| --- | --- |
+| Linux x86-64 | `x86_64-unknown-linux-gnu` |
+| macOS Apple Silicon | `aarch64-apple-darwin` |
+| macOS Intel | `x86_64-apple-darwin` |
+| Windows x86-64 | `x86_64-pc-windows-msvc` |
+
+Each archive has a sibling `.sha256` file. Verify it before extracting the
+archive. GitHub also publishes a build-provenance attestation for every release
+asset; with the GitHub CLI installed, verify it with
+`gh attestation verify <archive> --repo awakenworks/awaken`.
+
+To build from source, install Rust 1.96.0, Node.js, and pnpm 11.6.0, then run:
+
+```console
+pnpm install --frozen-lockfile
+cargo build --locked --release -p awaken-cli --bin awaken
+./target/release/awaken --version
+```
+
+## Quick start
+
+Start the installed program:
+
+```console
 awaken all-in-one
 ```
 
