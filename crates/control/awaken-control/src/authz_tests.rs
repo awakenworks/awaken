@@ -257,7 +257,11 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     fn action_for(method: &Method, path: &str) -> Option<&'static str> {
         match super::action_for(method, path) {
             Some(RouteAuthz::Scoped { action, .. }) => Some(action),
-            Some(RouteAuthz::Resource { .. } | RouteAuthz::HostedRuntime { .. }) => None,
+            Some(
+                RouteAuthz::Application
+                | RouteAuthz::Resource { .. }
+                | RouteAuthz::HostedRuntime { .. },
+            ) => None,
             Some(RouteAuthz::TokenAdmin) => panic!("{path} is not a Scoped route"),
             None => None,
         }
@@ -460,19 +464,21 @@ fn resource_pep_maps_only_resource_routes_and_is_total_by_method() {
 }
 
 #[test]
-fn session_lifecycle_uses_the_existing_hosted_run_namespace() {
-    // Cause/effect graph: one canonical Session family (C1) + HTTP method
-    // (C2) -> the already-owned Hosted Run lifecycle action (E1), while the
-    // embedded plane keeps its existing resource-Workspace action (E2). This
-    // prevents Cloud from accidentally asking the resource profile for broad
-    // `workspace.*` and does not create a second Session route or role.
+fn runtime_protocol_adapters_use_the_existing_hosted_run_namespace() {
+    // Cause/effect graph: a protocol adapter backed by the canonical Run (C1) +
+    // HTTP method (C2) -> the already-owned Hosted Run lifecycle action (E1),
+    // while the embedded plane keeps its existing resource-Workspace action
+    // (E2). Resource adapters remain outside this table (constraint C3). This
+    // prevents Cloud from asking the resource profile for broad `workspace.*`
+    // and does not create another protocol route, role, or action vocabulary.
     //
     // Decision table:
-    // | Session path | Method | Hosted action | Embedded action |
-    // | collection | GET/HEAD | run.read | workspace.read |
-    // | collection | POST | run.create | workspace.write |
-    // | nested | GET | run.read | workspace.read |
-    // | nested | POST/DELETE | run.create | workspace.write |
+    // | Run-backed family | Method | Hosted action | Embedded action |
+    // | any listed adapter | GET/HEAD | run.read | workspace.read |
+    // | any listed adapter | POST/DELETE | run.create | workspace.write |
+    // Application-token mint/revoke is in this table because the token is an
+    // ephemeral projection of one frozen Session Run, not a credential-vault
+    // mutation. The trusted backend still authenticates before this PEP.
     fn actions(method: &Method, path: &str) -> (&'static str, &'static str) {
         match super::action_for(method, path) {
             Some(RouteAuthz::HostedRuntime {
@@ -484,22 +490,21 @@ fn session_lifecycle_uses_the_existing_hosted_run_namespace() {
         }
     }
 
-    for method in [Method::GET, Method::HEAD] {
-        assert_eq!(actions(&method, "/v1/sessions"), (RUN_READ, WORKSPACE_READ));
-        assert_eq!(
-            actions(&method, "/v1/sessions/session-1/threads"),
-            (RUN_READ, WORKSPACE_READ)
-        );
-    }
-    for method in [Method::POST, Method::DELETE] {
-        assert_eq!(
-            actions(&method, "/v1/sessions"),
-            (RUN_CREATE, WORKSPACE_WRITE)
-        );
-        assert_eq!(
-            actions(&method, "/v1/sessions/session-1/events"),
-            (RUN_CREATE, WORKSPACE_WRITE)
-        );
+    for path in [
+        "/v1/sessions/session-1/threads",
+        "/v1/a2a",
+        "/v1/message:send",
+        "/v1/message:stream",
+        "/v1/durable/session-1",
+        "/v1/awaken/sessions/session-1/live-inbox",
+        "/v1/application-access-tokens/token-1",
+    ] {
+        for method in [Method::GET, Method::HEAD] {
+            assert_eq!(actions(&method, path), (RUN_READ, WORKSPACE_READ));
+        }
+        for method in [Method::POST, Method::DELETE] {
+            assert_eq!(actions(&method, path), (RUN_CREATE, WORKSPACE_WRITE));
+        }
     }
 }
 
@@ -1153,7 +1158,11 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     fn scoped(method: Method, path: &str) -> Option<&'static str> {
         match super::action_for(&method, path) {
             Some(RouteAuthz::Scoped { action, .. }) => Some(action),
-            Some(RouteAuthz::Resource { .. } | RouteAuthz::HostedRuntime { .. }) => None,
+            Some(
+                RouteAuthz::Application
+                | RouteAuthz::Resource { .. }
+                | RouteAuthz::HostedRuntime { .. },
+            ) => None,
             Some(RouteAuthz::TokenAdmin) => panic!("{path} is TokenAdmin, not Scoped"),
             None => None,
         }

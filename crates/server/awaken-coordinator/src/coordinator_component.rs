@@ -73,8 +73,13 @@ pub struct CoordinatorDependencies {
 
 /// Complete Coordinator application surface.
 pub struct CoordinatorComponent {
-    /// User, Session, Deployment, and Resources product surface.
+    /// Service-authenticated Session, Deployment, and Resources product surface.
     pub router: Router,
+    /// Browser application protocols, already protected by the canonical
+    /// application-token guard. Process composition must not wrap these routes
+    /// in the service-token IAM edge because both credentials use the standard
+    /// `Authorization` header and represent distinct authorities.
+    pub application_router: Router,
     /// Official Managed data routes before the process IAM/audit/admission edge.
     pub managed_router: Router,
     /// Control-to-Coordinator and Worker-to-Coordinator service surface. Process
@@ -159,7 +164,7 @@ pub async fn build_coordinator_component(
         worker_directory.clone(),
         worker_authenticator.clone(),
     );
-    let (managed, data, worker_transport, dream_application) =
+    let (managed, data, application, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
             host,
             managed_state,
@@ -227,6 +232,7 @@ pub async fn build_coordinator_component(
 
     Ok(CoordinatorComponent {
         router: data,
+        application_router: application,
         managed_router: managed,
         private_router,
         management_router,

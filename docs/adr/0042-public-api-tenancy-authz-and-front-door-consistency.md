@@ -253,6 +253,26 @@ OpenAI *deployment* in the URL, not an org/project tenancy hierarchy.
   at project scope; until then project paths change *selection*, never
   *authority*.
 
+## Amendment (2026-08-14): Browser application capabilities refine the shared bearer envelope
+
+D3's shared HTTP bearer envelope remains, but later implementation established
+two deliberately distinct credentials at the same Coordinator origin. Trusted
+backend routes such as Session lifecycle and application-token issuance use the
+service/IAM bearer. Browser-facing AI SDK and AG-UI routes use the short-lived
+application capability defined by [Application authentication](../application-authentication.md),
+which binds an external thread to one existing Managed Session.
+
+Because both credentials occupy the standard `Authorization: Bearer` header,
+the process MUST NOT stack the service/IAM PEP outside the application PEP.
+Coordinator owns one structural split: service routes are wrapped by the
+deployment IAM edge; AI SDK and AG-UI are already wrapped by the canonical
+application guard and are merged afterwards. Token mint/revoke remains on the
+service edge and the application token cannot call it. An application protocol
+accidentally presented to the service guard fails closed. This refines D3's
+"same auth" language into one shared transport envelope with the least
+authority appropriate to each caller; it does not introduce another runtime,
+Session store, proxy, tenancy model, or protocol route.
+
 ## References
 
 - [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) — front-door axis vs

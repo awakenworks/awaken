@@ -812,17 +812,25 @@ def worker_listener_partition_violations(
         r"let managed = managed\.merge\(resource_management_router\)\.merge\(models\);",
         coordinator_source,
     )
-    public_match = re.search(r"let router = ai_sdk(.*?)Ok\(\(managed, router,", coordinator_source, re.S)
-    if managed_match is None or public_match is None:
+    application_match = re.search(
+        r"let application = ai_sdk\.merge\(ag_ui\);", coordinator_source
+    )
+    public_match = re.search(
+        r"let router = a2a\.merge\(durable_ops\);(.*?)"
+        r"Ok\(\(\s*managed,\s*router,\s*application,\s*worker_transport,",
+        coordinator_source,
+        re.S,
+    )
+    if managed_match is None or application_match is None or public_match is None:
         errors.append("Coordinator Managed/public route partition is missing")
     elif ".merge(worker_transport)" in public_match.group(1):
         errors.append("Coordinator public router merges the Worker transport")
     for required in (
-        "Ok((managed, router, worker_transport, dream_application))",
+        "application_router: application",
         ".merge(worker_transport)",
         ".merge(environment_warmups)",
     ):
-        owner = coordinator_source if required.startswith("Ok(") else component_source
+        owner = component_source
         if required not in owner:
             errors.append(f"private Worker surface is missing `{required}`")
     if 'Some("127.0.0.1:0".to_owned())' not in boundary_source:
@@ -1334,17 +1342,21 @@ def selftest() -> None:
     # public merge -> reject accidental exposure or an unusable local Worker.
     worker_partition = (
         "let managed = managed.merge(resource_management_router).merge(models); "
-        "let router = ai_sdk.merge(ag_ui); "
-        "Ok((managed, router, worker_transport, dream_application))"
+        "let application = ai_sdk.merge(ag_ui); "
+        "let router = a2a.merge(durable_ops); "
+        "Ok((managed, router, application, worker_transport, dream_application))"
     )
-    private_partition = ".merge(worker_transport).merge(environment_warmups)"
+    private_partition = (
+        "application_router: application "
+        ".merge(worker_transport).merge(environment_warmups)"
+    )
     assert worker_listener_partition_violations(
         worker_partition,
         private_partition,
         'Some("127.0.0.1:0".to_owned())',
     ) == []  # O11c R1
     assert worker_listener_partition_violations(
-        worker_partition.replace("ai_sdk.merge(ag_ui)", "ai_sdk.merge(worker_transport)"),
+        worker_partition.replace("a2a.merge(durable_ops)", "a2a.merge(worker_transport)"),
         "",
         "",
     )  # O11d R2

@@ -640,8 +640,9 @@ pub(super) async fn prepare_runtime_routers(
     )
     .await
     .map_err(|error| format!("build Coordinator component: {error}"))?;
-    let coordinator_data = awaken_control::protect_authorized_router(
+    let coordinator_data = awaken_control::protect_runtime_protocol_routers(
         coordinator.router,
+        coordinator.application_router,
         deployment_iam.clone(),
         deployment_remote_iam.clone(),
     );

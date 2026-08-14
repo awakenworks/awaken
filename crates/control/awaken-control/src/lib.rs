@@ -485,3 +485,19 @@ pub fn protect_authorized_router(
     }
     router
 }
+
+/// Compose the Coordinator's two authenticated public protocol domains.
+///
+/// Service/runtime routes enter the deployment IAM edge. AI SDK and AG-UI are
+/// supplied separately because Coordinator has already installed the canonical
+/// application-token guard on them. Merging the application router only after
+/// layering prevents the standard `Authorization` header from being consumed
+/// once as a Cloud/service JWT and again as an application capability.
+pub fn protect_runtime_protocol_routers(
+    service_router: Router,
+    application_router: Router,
+    iam: Option<Arc<ManagementAuthz>>,
+    remote_iam: Option<Arc<RemoteManagementAuthz>>,
+) -> Router {
+    protect_authorized_router(service_router, iam, remote_iam).merge(application_router)
+}
