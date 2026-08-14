@@ -1138,22 +1138,40 @@ fn a_configured_zero_grace_exits_immediately_even_on_sigterm() {
     );
 }
 
-/// Cause/effect rule R1: only an installed registration-bound Memory projection
-/// is evidence for Session Resource support. Without it, the standard manifest
-/// must not advertise a capability backed only by a catalog handle.
+/// Session Resource composition cause/effect decision table. C1 the canonical
+/// registration-bound remote projection is absent/present. E1 the immutable
+/// manifest omits/publishes `session-resources/v1`. The positive rule proves
+/// platform composers reuse the same identity-bound upstream as the standalone
+/// Worker instead of manufacturing capability text or a second Resource client.
+///
+/// | Rule | C1 remote projection | E1 manifest capability |
+/// |---|---|---|
+/// | R1 | absent | omitted |
+/// | R2 | present | published |
 #[test]
-fn resource_capability_requires_the_registered_memory_projection() {
-    let worker = WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
-        "http://control",
-    ))
-    .with_standard_manifest(Default::default())
-    .build()
-    .expect("R1 no unsupported Resource claim");
+fn resource_capability_follows_the_canonical_registered_remote_projection() {
+    let builder = || {
+        WorkerNodeBuilder::new(awaken_worker_transport_security::WorkerUpstream::new(
+            "http://control",
+        ))
+        .with_standard_manifest(Default::default())
+    };
+    let without = builder().build().expect("R1 no unsupported Resource claim");
     assert!(
-        !worker
+        !without
             .manifest()
             .capabilities
             .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
         "R1"
+    );
+    let with = builder()
+        .with_remote_session_resource_support()
+        .build()
+        .expect("R2 canonical remote Resource projection");
+    assert!(
+        with.manifest()
+            .capabilities
+            .contains(awaken_worker_contract::SESSION_RESOURCES_CAPABILITY),
+        "R2"
     );
 }
