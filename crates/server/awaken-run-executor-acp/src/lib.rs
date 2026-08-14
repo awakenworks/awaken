@@ -624,6 +624,11 @@ impl AcpRunExecutor {
             .map(|message| message.id.0.clone())
             .unwrap_or_else(|| "empty-input".to_string());
         let mut turn_ordinal = 0_u64;
+        let mcp_server_names = session
+            .mcp_session_servers
+            .iter()
+            .map(|server| server.name.clone())
+            .collect::<Vec<_>>();
         let narrowed_permission =
             context
                 .tool_permission_policy
@@ -632,11 +637,16 @@ impl AcpRunExecutor {
                     base: self.permission.as_ref(),
                     narrowing,
                 });
-        let base_permission = narrowed_permission
+        let configured_permission = narrowed_permission
             .as_ref()
             .map_or(self.permission.as_ref(), |resolver| {
                 resolver as &dyn PermissionResolver
             });
+        let aliased_permission = AliasedMcpPermissionResolver {
+            base: configured_permission,
+            mcp_server_names: &mcp_server_names,
+        };
+        let base_permission = &aliased_permission as &dyn PermissionResolver;
         let resumed_permission = permission_resume
             .as_ref()
             .map(|decision| ResumedPermissionResolver::new(base_permission, decision));
@@ -1234,6 +1244,16 @@ struct NarrowedPermissionResolver<'a> {
     narrowing: &'a dyn ToolPermissionPolicy,
 }
 
+/// Some ACP adapters report an MCP server's protocol-advertised name instead
+/// of the alias supplied in `session/new`. The Session aliases remain the only
+/// policy namespaces. This adapter evaluates a drifted name against those
+/// existing namespaces and combines their verdicts conservatively; it neither
+/// owns nor widens policy.
+struct AliasedMcpPermissionResolver<'a> {
+    base: &'a dyn PermissionResolver,
+    mcp_server_names: &'a [String],
+}
+
 fn canonical_permission_tool_id(tool: &str) -> String {
     let Some(mcp) = tool.strip_prefix("mcp.") else {
         return tool.to_string();
@@ -1266,19 +1286,67 @@ impl PermissionResolver for NarrowedPermissionResolver<'_> {
 }
 
 #[async_trait]
+impl PermissionResolver for AliasedMcpPermissionResolver<'_> {
+    async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
+        let Some(mcp) = ask.tool.strip_prefix("mcp.") else {
+            return self.base.resolve(ask).await;
+        };
+        let Some((reported_server, tool_name)) = mcp.split_once('.') else {
+            return self.base.resolve(ask).await;
+        };
+        if reported_server.is_empty()
+            || tool_name.is_empty()
+            || self.mcp_server_names.is_empty()
+            || self
+                .mcp_server_names
+                .iter()
+                .any(|name| name == reported_server)
+        {
+            return self.base.resolve(ask).await;
+        }
+
+        let mut confirmation = None;
+        for server_name in self.mcp_server_names {
+            let candidate = PermissionAsk {
+                tool: format!("mcp.{server_name}.{tool_name}"),
+                call_id: ask.call_id.clone(),
+                arguments: ask.arguments.clone(),
+            };
+            match self.base.resolve(&candidate).await {
+                PermissionVerdict::Deny => return PermissionVerdict::Deny,
+                PermissionVerdict::Await { correlation_id } => {
+                    confirmation.get_or_insert(correlation_id);
+                }
+                PermissionVerdict::Allow => {}
+            }
+        }
+        confirmation.map_or(PermissionVerdict::Allow, |correlation_id| {
+            PermissionVerdict::Await { correlation_id }
+        })
+    }
+}
+
+#[async_trait]
 impl PermissionResolver for NeutralPermissionResolver {
     async fn resolve(&self, ask: &PermissionAsk) -> PermissionVerdict {
-        let ctx = ToolCall {
-            tool_id: canonical_permission_tool_id(&ask.tool),
-            call_id: ask.call_id.clone(),
-            arguments: ask.arguments.clone(),
-        };
-        match self.policy.evaluate(&ctx).await {
-            ToolPermissionVerdict::Allow => PermissionVerdict::Allow,
-            ToolPermissionVerdict::Deny { .. } => PermissionVerdict::Deny,
-            ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
-                PermissionVerdict::Await { correlation_id }
-            }
+        resolve_neutral_permission(self.policy.as_ref(), ask).await
+    }
+}
+
+async fn resolve_neutral_permission(
+    policy: &dyn ToolPermissionPolicy,
+    ask: &PermissionAsk,
+) -> PermissionVerdict {
+    let ctx = ToolCall {
+        tool_id: canonical_permission_tool_id(&ask.tool),
+        call_id: ask.call_id.clone(),
+        arguments: ask.arguments.clone(),
+    };
+    match policy.evaluate(&ctx).await {
+        ToolPermissionVerdict::Allow => PermissionVerdict::Allow,
+        ToolPermissionVerdict::Deny { .. } => PermissionVerdict::Deny,
+        ToolPermissionVerdict::RequireConfirmation { correlation_id } => {
+            PermissionVerdict::Await { correlation_id }
         }
     }
 }
