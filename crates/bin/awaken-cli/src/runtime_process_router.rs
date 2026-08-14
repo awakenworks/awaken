@@ -35,6 +35,7 @@ pub(super) async fn prepare_runtime_routers(
             as Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>
     });
     let worker_placement_policy = process.worker_placement_policy;
+    let cloud_native_credential_realization = process.cloud_native_credential_realization;
     let (
         executable_agent_catalog,
         executable_agent_registrar,
@@ -299,6 +300,10 @@ pub(super) async fn prepare_runtime_routers(
             environment_work,
             executable_environment_catalog,
         );
+    let environment_execution = match cloud_native_credential_realization {
+        Some(profile) => environment_execution.with_cloud_native_credential_realization(profile),
+        None => environment_execution,
+    };
     let environment_execution = match executable_environment_image_builds {
         Some(builds) => environment_execution.with_image_readiness(builds),
         None => environment_execution,
