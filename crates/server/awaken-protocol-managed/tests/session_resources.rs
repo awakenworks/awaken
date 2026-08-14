@@ -1565,16 +1565,24 @@ async fn repository_access_compiler_follows_the_decision_table() {
         };
         let holder = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
             .resource_holder;
+        let usage = awaken_session_contract::repository_transport_credential_usage();
+        let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+            "workspace-a",
+            &("repository-a", 1_u64),
+            &usage,
+        );
         let vaults = awaken_protocol_managed::VaultState::new(secrets, credentials);
         let actual = vaults
             .credential_access_for_source(
                 &source_id,
                 "workspace-a",
-                awaken_session_contract::repository_transport_credential_usage(),
+                usage,
                 awaken_credential_contract::CredentialExecutionPolicy::exact(
                     holder.clone(),
                     awaken_credential_contract::ModelExposurePolicy::Forbidden,
                 ),
+                &holder,
+                &binding,
             )
             .await;
         match (rule.expected, actual) {

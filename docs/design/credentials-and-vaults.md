@@ -255,11 +255,15 @@ process. Flow receives only a bounded upstream result plus a secret-free
 receipt. Process separation therefore requires neither a plaintext material RPC
 nor a copied Vault.
 
-The current `CredentialEnvelope` values are validation metadata for installed
-resolvers, not a cryptographic network-delivery implementation: there is no
-issuer, recipient-key registry, ciphertext transport, replay ledger, or KMS
-unwrap protocol. A Gateway that cannot compose the canonical materializer and
-stores must fail closed until such an independently reviewed transport exists.
+`CredentialEnvelope` is the single recipient-bound transport contract. The
+canonical Vault compiler optionally delegates the plaintext-to-ciphertext step
+to a deployment-owned `CredentialEnvelopeIssuer` only after exact source,
+Workspace, revision, holder, usage and target binding validation. Open
+self-hosted composition installs no issuer. A hosted implementation owns its
+KMS, ciphertext transport and Worker-private resolver, while reusing the same
+`CredentialAccess`, payload fingerprint and pinned materializer; failure cannot
+fall back to an unsealed hosted reference. Deployments without either the
+in-process stores or that reviewed transport fail closed.
 
 The vault ACL inside `awaken-protocol-managed` maps this wire ⇄ the neutral domain below; the
 domain's `CredentialAuth` variants stay neutral (`Bearer`/`OAuth`/`EnvVar`/`ApiKey`),

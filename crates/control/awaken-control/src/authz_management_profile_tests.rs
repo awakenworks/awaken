@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn management_profile_is_one_deterministic_workspace_scoped_contract() {
+fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
     // Cause/effect decision table:
     // | Cause | Effect |
     // | repeated construction | byte-identical profile |
@@ -10,13 +10,13 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
     // | agent publisher discovers executable model supply | allow exact model_supply.read |
     // | agent publisher accesses credentials or mutates supply | no matching grant |
     // Deployment input cannot change the namespace, vocabulary, scope, or grants.
-    let first = management_authorization_profile();
-    let second = management_authorization_profile();
+    let first = workspace_authorization_profile();
+    let second = workspace_authorization_profile();
     assert_eq!(
         serde_json::to_value(&first).unwrap(),
         serde_json::to_value(&second).unwrap()
     );
-    assert_eq!(first.namespace.0, MANAGEMENT_POLICY_NAMESPACE);
+    assert_eq!(first.namespace.0, AWAKEN_WORKSPACE_POLICY_NAMESPACE);
     assert_eq!(first.created_at.0, AUTHORIZATION_PROFILE_EPOCH);
 
     let actions = first
@@ -29,9 +29,11 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
     assert_eq!(
         actions,
         [
-            "awaken.runtime.management::workspace.*",
-            "awaken.runtime.management::apikey.*",
-            "awaken.runtime.management::model_supply.*",
+            "awaken.workspace::workspace.*",
+            "awaken.workspace::apikey.*",
+            "awaken.workspace::model_supply.*",
+            "awaken.workspace::file.*",
+            "awaken.workspace::skill.*",
         ]
     );
     assert!(
@@ -43,13 +45,11 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
     );
     assert!(!first.document.grants.is_empty());
     assert!(first.document.grants.iter().all(|grant| {
-        grant
-            .action_pattern
-            .starts_with("awaken.runtime.management::")
+        grant.action_pattern.starts_with("awaken.workspace::")
             && matches!(
                 &grant.subject,
                 GrantSubjectRef::Role { role_id }
-                    if role_id.starts_with("awaken.runtime.management:")
+                    if role_id.starts_with("awaken.workspace:")
             )
     }));
     let publisher_grants = first
@@ -60,7 +60,7 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
             matches!(
                 &grant.subject,
                 GrantSubjectRef::Role { role_id }
-                    if role_id == MANAGEMENT_AGENT_PUBLISHER_ROLE
+                    if role_id == AWAKEN_WORKSPACE_PUBLISHER_ROLE
             )
         })
         .map(|grant| grant.action_pattern.as_str())
@@ -68,8 +68,9 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
     assert_eq!(
         publisher_grants,
         [
-            "awaken.runtime.management::workspace.*",
-            "awaken.runtime.management::model_supply.read",
+            "awaken.workspace::workspace.*",
+            "awaken.workspace::model_supply.read",
+            "awaken.workspace::skill.*",
         ],
         "the publisher may discover models and author configuration, without credential or model-supply administration"
     );
@@ -88,14 +89,14 @@ fn management_profile_is_one_deterministic_workspace_scoped_contract() {
             matches!(
                 &grant.subject,
                 GrantSubjectRef::Role { role_id }
-                    if role_id == MANAGEMENT_CREDENTIAL_INGRESS_ROLE
+                    if role_id == AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE
             )
         })
         .map(|grant| grant.action_pattern.as_str())
         .collect::<Vec<_>>();
     assert_eq!(
         credential_ingress_grants,
-        ["awaken.runtime.management::apikey.*"],
+        ["awaken.workspace::apikey.*"],
         "credential ingress must not inherit any non-credential authority"
     );
 }
@@ -114,7 +115,7 @@ fn built_in_profile_reconciles_changed_contract_once_and_hydrates_replays() {
      */
     let profiles = AuthorizationProfileAdmin::new(Arc::new(InMemoryStore::new()));
     let mut engine = AuthzApi::new();
-    let current = management_authorization_profile();
+    let current = workspace_authorization_profile();
     let mut legacy = current.clone();
     legacy
         .document
@@ -167,5 +168,74 @@ fn built_in_profile_reconciles_changed_contract_once_and_hydrates_replays() {
             .unwrap()
             .revision,
         2
+    );
+}
+
+#[test]
+fn workspace_cutover_retires_both_legacy_active_heads_without_deleting_history() {
+    use awaken_iam_contract::{AuthorizationProfileDocument, NamespaceId, ProfileLifecycle};
+    use awaken_iam_server::InMemoryStore;
+
+    // Cause-effect graph: either legacy namespace may have an active immutable
+    // revision; once the canonical Workspace profile is active, exact CAS
+    // retirement removes both heads from PDP composition while preserving each
+    // revision as retired evidence. An absent legacy head is a no-op.
+    //
+    // | management head | resources head | terminal active profiles |
+    // | active | active | awaken.workspace only |
+    // | absent | active | awaken.workspace only |
+    let profiles = AuthorizationProfileAdmin::new(Arc::new(InMemoryStore::new()));
+    let mut engine = AuthzApi::new();
+    for namespace in [
+        LEGACY_MANAGEMENT_POLICY_NAMESPACE,
+        LEGACY_RESOURCE_POLICY_NAMESPACE,
+    ] {
+        let draft = profiles
+            .create_draft(CreateAuthorizationProfile {
+                namespace: NamespaceId(namespace.to_owned()),
+                document: AuthorizationProfileDocument::default(),
+                created_at: awaken_iam_contract::Timestamp(AUTHORIZATION_PROFILE_EPOCH.to_owned()),
+            })
+            .unwrap();
+        assert!(
+            profiles
+                .validate(&draft.namespace, draft.revision)
+                .unwrap()
+                .valid
+        );
+        profiles
+            .activate(
+                &mut engine,
+                &PolicySnapshot::default(),
+                &draft.namespace,
+                draft.revision,
+                ActivateAuthorizationProfile {
+                    expected_active_revision: None,
+                },
+            )
+            .unwrap();
+    }
+
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    for namespace in [
+        LEGACY_MANAGEMENT_POLICY_NAMESPACE,
+        LEGACY_RESOURCE_POLICY_NAMESPACE,
+    ] {
+        retire_legacy_profile(&profiles, &mut engine, namespace);
+        let namespace = NamespaceId(namespace.to_owned());
+        assert!(profiles.active(&namespace).unwrap().is_none());
+        assert_eq!(
+            profiles.get(&namespace, 1).unwrap().unwrap().lifecycle,
+            ProfileLifecycle::Retired
+        );
+    }
+    assert_eq!(
+        engine
+            .snapshot()
+            .active_profiles
+            .iter()
+            .map(|profile| profile.namespace.0.as_str())
+            .collect::<Vec<_>>(),
+        [AWAKEN_WORKSPACE_POLICY_NAMESPACE]
     );
 }

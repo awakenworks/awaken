@@ -2,7 +2,8 @@
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialSourceId, CredentialUsage,
+    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding, CredentialSourceId,
+    CredentialUsage, PlaintextHolder,
 };
 use awaken_environment_contract::EnvItem;
 use awaken_environment_realization_contract::EnvironmentImageBuildError;
@@ -25,6 +26,8 @@ pub trait SessionCredentialSource: Send + Sync {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
+        selected_holder: &PlaintextHolder,
+        binding: &CredentialMaterialBinding,
     ) -> Result<CredentialAccess, String>;
 
     async fn credential_access_for_source(
@@ -33,6 +36,8 @@ pub trait SessionCredentialSource: Send + Sync {
         workspace_id: &str,
         usage: CredentialUsage,
         policy: CredentialExecutionPolicy,
+        selected_holder: &PlaintextHolder,
+        binding: &CredentialMaterialBinding,
     ) -> Result<CredentialAccess, String>;
 }
 
