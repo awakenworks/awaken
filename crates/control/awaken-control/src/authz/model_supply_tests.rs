@@ -1,6 +1,108 @@
 use super::*;
 
 #[test]
+fn agent_executor_is_exact_workspace_and_hosted_run_only() {
+    // Cause/effect graph: active canonical profiles (C1) + the existing
+    // agent-executor role bound at one Workspace (C2) + action namespace and
+    // target Workspace (C3) -> Hosted Session read/create authority at the
+    // exact Workspace (E1); foreign Workspace and Management/Resource actions
+    // remain default-deny (E2).
+    //
+    // Decision table:
+    // | Namespace/action | Bound Workspace | Result |
+    // | hosted run.read/run.create | yes | allow |
+    // | hosted run.read/run.create | no | deny |
+    // | management apikey/model/workspace | yes | deny |
+    // | resource file/skill | yes | deny |
+    let profiles =
+        AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
+    let mut engine = AuthzApi::new();
+    reconcile_builtin_profile(&profiles, &mut engine, management_authorization_profile());
+    reconcile_builtin_profile(
+        &profiles,
+        &mut engine,
+        management_resource_authorization_profile(),
+    );
+    reconcile_builtin_profile(
+        &profiles,
+        &mut engine,
+        hosted_runtime_authorization_profile(),
+    );
+
+    let principal = PrincipalRef::Service {
+        service_id: "flow-agent-executor".to_owned(),
+    };
+    let workspace = WorkspaceId("workspace-flow".to_owned());
+    engine.policy_mut().bind_role(RoleBinding {
+        principal: principal.clone(),
+        role: RoleId(HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE.to_owned()),
+        scope: ScopeRef::Workspace {
+            workspace_id: workspace.clone(),
+        },
+    });
+
+    let decide = |action, workspace_id| {
+        engine
+            .authorize(&AuthorizationRequest::direct(
+                principal.clone(),
+                qualify_hosted_runtime_action(action),
+                ScopeRef::Workspace { workspace_id },
+            ))
+            .decision
+    };
+    for action in [RUN_READ, RUN_CREATE] {
+        assert_eq!(
+            decide(action, workspace.clone()),
+            AuthorizationDecision::Allow,
+            "{action} exact Workspace"
+        );
+        assert_eq!(
+            decide(action, WorkspaceId("workspace-other".to_owned())),
+            AuthorizationDecision::Deny,
+            "{action} foreign Workspace"
+        );
+    }
+
+    for action in [
+        "workspace.read",
+        "workspace.write",
+        "apikey.read",
+        "apikey.write",
+        "model_supply.read",
+        "model_supply.write",
+    ] {
+        assert_eq!(
+            engine
+                .authorize(&AuthorizationRequest::direct(
+                    principal.clone(),
+                    qualify_action(action),
+                    ScopeRef::Workspace {
+                        workspace_id: workspace.clone(),
+                    },
+                ))
+                .decision,
+            AuthorizationDecision::Deny,
+            "management {action}"
+        );
+    }
+    for action in ["file.read", "file.write", "skill.read", "skill.write"] {
+        assert_eq!(
+            engine
+                .authorize(&AuthorizationRequest::direct(
+                    principal.clone(),
+                    qualify_resource_action(action),
+                    ScopeRef::Workspace {
+                        workspace_id: workspace.clone(),
+                    },
+                ))
+                .decision,
+            AuthorizationDecision::Deny,
+            "resource {action}"
+        );
+    }
+}
+
+#[test]
 fn agent_publisher_can_discover_but_cannot_administer_model_supply() {
     // Cause/effect graph: active canonical profile (C1) + exact publisher role
     // binding at one Workspace (C2) + requested action/namespace (C3) -> allow

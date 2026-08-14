@@ -149,7 +149,10 @@ pub use profiles::{
     hosted_runtime_authorization_profile, management_authorization_profile,
     management_resource_authorization_profile,
 };
-use profiles::{qualify_action, qualify_resource_action, qualify_resource_role, qualify_role};
+use profiles::{
+    qualify_action, qualify_hosted_runtime_action, qualify_resource_action, qualify_resource_role,
+    qualify_role,
+};
 pub use remote::RemoteManagementAuthz;
 
 /// Name of the bootstrap admin-token file under the management directory.
@@ -188,6 +191,8 @@ const FILE_READ: &str = "file.read";
 const FILE_WRITE: &str = "file.write";
 const SKILL_READ: &str = "skill.read";
 const SKILL_WRITE: &str = "skill.write";
+const RUN_CREATE: &str = "run.create";
+const RUN_READ: &str = "run.read";
 
 fn persisted_role(role: &str) -> RoleId {
     if role.contains(':') {
@@ -443,18 +448,18 @@ impl ManagementAuthz {
         action: &str,
         scope: ScopeRef,
     ) -> AuthorizationDecision {
-        let request = AuthorizationRequest::direct(principal, qualify_action(action), scope);
-        self.gate.authorize(request)
+        self.authorize_action(principal, action, scope, ActionNamespace::Management)
     }
 
-    fn authorize_resource(
+    fn authorize_action(
         &self,
         principal: PrincipalRef,
         action: &str,
         scope: ScopeRef,
+        namespace: ActionNamespace,
     ) -> AuthorizationDecision {
         let request =
-            AuthorizationRequest::direct(principal, qualify_resource_action(action), scope);
+            AuthorizationRequest::direct(principal, qualified_action(namespace, action), scope);
         self.gate.authorize(request)
     }
 
@@ -681,6 +686,21 @@ pub fn embedded_iam_for_tenant(
 
 // ---- Middleware --------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionNamespace {
+    Management,
+    Resource,
+    HostedRuntime,
+}
+
+fn qualified_action(namespace: ActionNamespace, action: &str) -> awaken_iam_contract::ActionKey {
+    match namespace {
+        ActionNamespace::Management => qualify_action(action),
+        ActionNamespace::Resource => qualify_resource_action(action),
+        ActionNamespace::HostedRuntime => qualify_hosted_runtime_action(action),
+    }
+}
+
 /// How the guard authorizes a mapped management route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteAuthz {
@@ -694,6 +714,15 @@ enum RouteAuthz {
     /// namespace instead of stacking a second resource middleware.
     Resource {
         action: &'static str,
+        scope: ScopeClass,
+    },
+    /// Hosted Session lifecycle. Cloud evaluates the Awaken-owned `run.*`
+    /// profile; embedded/self-managed composition retains its existing
+    /// resource-Workspace policy because it has no separately activated hosted
+    /// release profile.
+    HostedRuntime {
+        action: &'static str,
+        embedded_action: &'static str,
         scope: ScopeClass,
     },
     /// The `/v1/config/iam/tokens*` family: the guard authenticates and stamps
@@ -825,15 +854,23 @@ enum RouteFamilyPolicy {
         read: &'static str,
         write: &'static str,
     },
+    HostedRuntime {
+        read: &'static str,
+        write: &'static str,
+        embedded_read: &'static str,
+        embedded_write: &'static str,
+    },
     TokenAdmin,
 }
 
 const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     RoutePolicyDescriptor::hosted_runtime(
         "/v1/sessions",
-        RouteFamilyPolicy::Resource {
-            read: WORKSPACE_READ,
-            write: WORKSPACE_WRITE,
+        RouteFamilyPolicy::HostedRuntime {
+            read: RUN_READ,
+            write: RUN_CREATE,
+            embedded_read: WORKSPACE_READ,
+            embedded_write: WORKSPACE_WRITE,
         },
     ),
     RoutePolicyDescriptor::hosted_runtime(
@@ -1165,9 +1202,14 @@ pub async fn management_guard(
         Err(AuthReject::Invalid) => return unauthorized("invalid API token"),
     };
 
-    let (action, scope_class, resource_action) = match route {
-        RouteAuthz::Scoped { action, scope } => (action, scope, false),
-        RouteAuthz::Resource { action, scope } => (action, scope, true),
+    let (action, scope_class, action_namespace) = match route {
+        RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Management),
+        RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Resource),
+        RouteAuthz::HostedRuntime {
+            embedded_action,
+            scope,
+            ..
+        } => (embedded_action, scope, ActionNamespace::Resource),
         RouteAuthz::TokenAdmin => {
             // Delegated authorization: no equality fence here — the handler
             // evaluates apikey.* at the TARGET workspace, and the scope graph
@@ -1232,11 +1274,7 @@ pub async fn management_guard(
         return forbidden("the route has no resolvable authorization target");
     };
 
-    let decision = if resource_action {
-        authz.authorize_resource(principal, action, target_scope)
-    } else {
-        authz.authorize(principal, action, target_scope)
-    };
+    let decision = authz.authorize_action(principal, action, target_scope, action_namespace);
     match decision {
         AuthorizationDecision::Allow => next.run(req).await,
         // P1 has no approval flow to discharge the obligation, so an
@@ -1262,9 +1300,12 @@ pub async fn cloud_management_guard(
     let Some(route) = action_for(req.method(), req.uri().path()) else {
         return forbidden("no management action is mapped for this route");
     };
-    let (action, scope_class, resource_action) = match route {
-        RouteAuthz::Scoped { action, scope } => (action, scope, false),
-        RouteAuthz::Resource { action, scope } => (action, scope, true),
+    let (action, scope_class, action_namespace) = match route {
+        RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Management),
+        RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Resource),
+        RouteAuthz::HostedRuntime { action, scope, .. } => {
+            (action, scope, ActionNamespace::HostedRuntime)
+        }
         RouteAuthz::TokenAdmin => {
             return forbidden("API-token administration belongs to self-managed IAM");
         }
@@ -1295,11 +1336,7 @@ pub async fn cloud_management_guard(
     let authz_for_pdp = authz.clone();
     let principal_for_pdp = principal.clone();
     let decision = match tokio::task::spawn_blocking(move || {
-        if resource_action {
-            authz_for_pdp.authorize_resource(principal_for_pdp, action, target_scope)
-        } else {
-            authz_for_pdp.authorize(principal_for_pdp, action, target_scope)
-        }
+        authz_for_pdp.authorize_action(principal_for_pdp, action, target_scope, action_namespace)
     })
     .await
     {
@@ -1386,6 +1423,15 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
                 action: read,
                 scope: ScopeClass::Workspace,
             }),
+            RouteFamilyPolicy::HostedRuntime {
+                read,
+                embedded_read,
+                ..
+            } => Some(RouteAuthz::HostedRuntime {
+                action: read,
+                embedded_action: embedded_read,
+                scope: ScopeClass::Workspace,
+            }),
             RouteFamilyPolicy::TokenAdmin => Some(RouteAuthz::TokenAdmin),
         };
     }
@@ -1396,6 +1442,20 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
         },
         RouteFamilyPolicy::Resource { read, write } => RouteAuthz::Resource {
             action: if is_read { read } else { write },
+            scope: ScopeClass::Workspace,
+        },
+        RouteFamilyPolicy::HostedRuntime {
+            read,
+            write,
+            embedded_read,
+            embedded_write,
+        } => RouteAuthz::HostedRuntime {
+            action: if is_read { read } else { write },
+            embedded_action: if is_read {
+                embedded_read
+            } else {
+                embedded_write
+            },
             scope: ScopeClass::Workspace,
         },
         RouteFamilyPolicy::TokenAdmin => RouteAuthz::TokenAdmin,
