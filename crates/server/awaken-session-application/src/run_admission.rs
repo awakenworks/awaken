@@ -36,6 +36,13 @@ pub struct CreateProfiledSessionCommand {
     pub owner_scope: String,
     pub session_id: String,
     pub agent_id: String,
+    /// Exact executable publication source revision. `None` selects the current
+    /// publication for ordinary interactive authoring.
+    pub source_revision: Option<u64>,
+    /// Exact Environment selected by the product at Session creation. The
+    /// Session application resolves and freezes it without mutating the
+    /// published Agent's authored defaults.
+    pub environment_id: Option<String>,
     pub model: Option<String>,
     pub mounts: Vec<serde_json::Value>,
     pub env: Vec<serde_json::Value>,
@@ -261,6 +268,8 @@ impl SessionApplication {
             owner_scope,
             session_id,
             agent_id,
+            source_revision,
+            environment_id: requested_environment_id,
             model: requested_model,
             mounts,
             env,
@@ -271,8 +280,18 @@ impl SessionApplication {
             metadata,
             tools: requested_tools,
         } = command;
-        let profile = self.session_profile(&owner_scope, &agent_id);
-        if self.agent_unavailable(&owner_scope, &agent_id) {
+        let profile = source_revision.map_or_else(
+            || self.session_profile(&owner_scope, &agent_id),
+            |revision| self.session_profile_at_revision(&owner_scope, &agent_id, revision),
+        );
+        if let Some(revision) = source_revision
+            && profile.is_none()
+        {
+            return Err(RunError::bad_request(format!(
+                "agent_version_unavailable: agent `{agent_id}` has no executable publication at version {revision}"
+            )));
+        }
+        if source_revision.is_none() && self.agent_unavailable(&owner_scope, &agent_id) {
             return Err(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             )));
@@ -337,7 +356,7 @@ impl SessionApplication {
             .filter(|backend| !backend.is_empty());
         let mut environment = self
             .resolve_session_environment(
-                None,
+                requested_environment_id.as_deref(),
                 profile
                     .as_ref()
                     .and_then(|profile| profile.environment.as_ref()),
@@ -437,6 +456,8 @@ impl SessionApplication {
             owner_scope: workspace_id.to_string(),
             session_id: thread_id.to_string(),
             agent_id: agent_id.to_string(),
+            source_revision: None,
+            environment_id: None,
             model: None,
             mounts: Vec::new(),
             env: Vec::new(),
