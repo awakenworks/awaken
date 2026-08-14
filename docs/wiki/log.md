@@ -252,3 +252,13 @@
   and only the existing explicit Sandbox disposal path deletes active storage.
 - Kept the generic checkpoint store/provider contract and Session Environment
   state as the sole hibernation and restore authorities.
+
+## 2026-08-15 — Admit the complete Session credential projection before effects
+
+- Moved the frozen Session runtime projection schema into the existing
+  run-ingress contract and removed the Runtime Host's duplicate private shape.
+- Made broad selection and exact claim admit MCP holder/access pins through the
+  same credential kernel used by inference, while keeping MCP generations and
+  receipts Session-owned.
+- Classified material-source and refresh unavailability into the existing
+  retryable claim lifecycle; invalid projections and policy remain absorbing.

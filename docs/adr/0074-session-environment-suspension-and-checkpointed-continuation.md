@@ -534,3 +534,18 @@ The same open adapter publishes the complete checkpoint-sensitive runtime
 configuration-home set: ACP bridge state, backend-native state, and XDG
 configuration. Product decorators consume this projection unchanged; they do
 not keep a second path list that a new ACP or backend could silently bypass.
+
+## 2026-08-15 amendment: realization retries preserve the existing claim lifecycle
+
+Session realization driver failures are classified at the existing Host claim
+boundary. Material resolver or refresh-adapter unavailability, transient Control
+authority loss, and an unconverged retryable stage relinquish the claim so the
+durable realization budget can retry the same generation. Not-ready state keeps
+the existing resolution-not-ready outcome. Invalid effects, corrupt projection,
+policy rejection, and permanent Control errors retain the absorbing terminal
+resolution outcome.
+
+This classification changes no Session state machine, retry queue, or effect
+protocol. The same Session realization generation, lease fence, MCP publication
+receipt, and crash-retry budget remain authoritative; a Runtime Host adapter may
+map an error into those outcomes but cannot create another retry authority.

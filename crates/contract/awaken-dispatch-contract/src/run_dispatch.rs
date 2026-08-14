@@ -80,6 +80,23 @@ impl SessionResourceEnvelope {
     }
 }
 
+/// Canonical secret-free payload carried by [`SessionRuntimeEnvelope`].
+///
+/// The durable ingress contract owns this wire shape because both claim
+/// admission and Runtime realization must inspect the same frozen facts. The
+/// Session aggregate remains the desired-state authority; this is only its
+/// dispatch projection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DispatchedSessionRuntimeProjection {
+    pub environment: awaken_session_contract::EnvironmentSnapshot,
+    /// `None` retains publication inheritance; `Some([])` is an explicit clear.
+    pub toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+    /// `None` is reserved for legacy rows predating MCP effect projection. New
+    /// dispatches always carry `Some`, including `Some([])`.
+    #[serde(default)]
+    pub mcp_stages: Option<Vec<awaken_session_contract::StageMcpAttachment>>,
+}
+
 /// Dispatch-neutral envelope for the immutable Session runtime projection.
 ///
 /// Environment and tool-policy vocabulary remain owned by the Session bounded
@@ -97,6 +114,26 @@ impl SessionRuntimeEnvelope {
         Self {
             projection_json: projection_json.into(),
         }
+    }
+
+    pub fn from_projection(
+        environment: awaken_session_contract::EnvironmentSnapshot,
+        toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+        mcp_stages: Vec<awaken_session_contract::StageMcpAttachment>,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self::new(serde_json::to_string(
+            &DispatchedSessionRuntimeProjection {
+                environment,
+                toolsets,
+                mcp_stages: Some(mcp_stages),
+            },
+        )?))
+    }
+
+    pub fn decode_projection(
+        &self,
+    ) -> Result<DispatchedSessionRuntimeProjection, serde_json::Error> {
+        serde_json::from_str(&self.projection_json)
     }
 }
 
@@ -374,16 +411,46 @@ mod tests {
         assert_eq!(legacy.resource_revision, 0);
     }
 
+    /// Projection-ownership causes/effects: C1 current code constructs the
+    /// contract-owned projection; C2 a durable dispatch serializes it. Effects:
+    /// E1 the environment and explicit empty policy sets decode exactly; E2 the
+    /// opaque envelope remains byte-stable through queue serialization. Rule P1
+    /// covers C1=>E1 and P2 covers C1+C2=>E2, preventing Runtime Host from
+    /// regaining a parallel private schema.
     #[test]
-    fn frozen_session_runtime_projection_round_trips_without_session_vocabulary() {
-        let runtime = SessionRuntimeEnvelope::new(
-            r#"{"environment":{"sandbox_provisioning":"on_tool_use"},"toolsets":[]}"#,
-        );
+    fn frozen_session_runtime_projection_round_trips_through_its_contract_owner() {
+        let environment = awaken_session_contract::EnvironmentSnapshot {
+            environment_id: "environment-a".into(),
+            revision: awaken_session_contract::EnvironmentRevision(1),
+            self_hosted: true,
+            config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                "environment-a@1".into(),
+            ),
+            sandbox: serde_json::json!({}),
+            sandbox_provisioning: Default::default(),
+            idle_retention: Default::default(),
+            packages: Default::default(),
+            prepared_image: None,
+            network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+            credential_realization:
+                awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
+        };
+        let runtime = SessionRuntimeEnvelope::from_projection(
+            environment.clone(),
+            Some(Vec::new()),
+            Vec::new(),
+        )
+        .expect("P1 encode");
+        let projection = runtime.decode_projection().expect("P1 decode");
+        assert_eq!(projection.environment, environment, "P1/E1");
+        assert_eq!(projection.toolsets, Some(Vec::new()), "P1/E1");
+        assert_eq!(projection.mcp_stages, Some(Vec::new()), "P1/E1");
+
         let request = RunDispatch::new(activation()).with_session_runtime(runtime.clone());
 
         let json = serde_json::to_string(&request).expect("serializes");
         let recovered: RunDispatch = serde_json::from_str(&json).expect("deserializes");
-        assert_eq!(recovered.session_runtime, Some(runtime));
+        assert_eq!(recovered.session_runtime, Some(runtime), "P2/E2");
     }
 
     /// Delegation-publication transport cause/effect and FMECA design. Causes:
