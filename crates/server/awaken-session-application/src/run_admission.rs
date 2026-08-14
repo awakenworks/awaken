@@ -39,6 +39,10 @@ pub struct CreateProfiledSessionCommand {
     /// Exact executable publication source revision. `None` selects the current
     /// publication for ordinary interactive authoring.
     pub source_revision: Option<u64>,
+    /// Exact Environment selected by the product at Session creation. The
+    /// Session application resolves and freezes it without mutating the
+    /// published Agent's authored defaults.
+    pub environment_id: Option<String>,
     pub model: Option<String>,
     pub mounts: Vec<serde_json::Value>,
     pub env: Vec<serde_json::Value>,
@@ -265,6 +269,7 @@ impl SessionApplication {
             session_id,
             agent_id,
             source_revision,
+            environment_id: requested_environment_id,
             model: requested_model,
             mounts,
             env,
@@ -351,7 +356,7 @@ impl SessionApplication {
             .filter(|backend| !backend.is_empty());
         let mut environment = self
             .resolve_session_environment(
-                None,
+                requested_environment_id.as_deref(),
                 profile
                     .as_ref()
                     .and_then(|profile| profile.environment.as_ref()),
@@ -452,6 +457,7 @@ impl SessionApplication {
             session_id: thread_id.to_string(),
             agent_id: agent_id.to_string(),
             source_revision: None,
+            environment_id: None,
             model: None,
             mounts: Vec::new(),
             env: Vec::new(),
