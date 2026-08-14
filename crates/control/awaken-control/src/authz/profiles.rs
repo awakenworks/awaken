@@ -19,8 +19,12 @@ pub const AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE: &str = "awaken.workspace:cre
 /// Resources access plus read-only platform model supply. Cloud binds this role
 /// instead of local `workspace_admin`, whose BYOK authority remains self-hosted.
 pub const AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str = "awaken.workspace:hosted_admin";
+/// Hosted human member: the existing read-only Workspace role, fully qualified
+/// under the one Awaken Workspace authorization language.
+pub const AWAKEN_WORKSPACE_USER_ROLE: &str = "awaken.workspace:workspace_user";
 pub const HOSTED_RUNTIME_POLICY_NAMESPACE: &str = "awaken.runtime";
 pub const HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE: &str = "awaken.runtime:workspace_admin";
+pub const HOSTED_RUNTIME_WORKSPACE_USER_ROLE: &str = "awaken.runtime:workspace_user";
 pub const HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE: &str = "awaken.runtime:agent_executor";
 pub(super) const LEGACY_MANAGEMENT_POLICY_NAMESPACE: &str = "awaken.runtime.management";
 pub(super) const LEGACY_RESOURCE_POLICY_NAMESPACE: &str = "awaken.runtime.resources";
@@ -209,21 +213,35 @@ pub fn hosted_runtime_authorization_profile() -> CreateAuthorizationProfile {
                     allowed_scope_kinds: vec![ScopeKind::Workspace],
                 })
                 .collect(),
-            grants: [
-                HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
-                HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
-            ]
-            .into_iter()
-            .map(|role_id| GrantSnapshot {
-                id: format!("{HOSTED_RUNTIME_POLICY_NAMESPACE}:grant:role:{role_id}"),
-                subject: GrantSubjectRef::Role {
-                    role_id: role_id.to_owned(),
+            grants: vec![
+                GrantSnapshot {
+                    id: format!("{HOSTED_RUNTIME_POLICY_NAMESPACE}:grant:role:workspace_admin"),
+                    subject: GrantSubjectRef::Role {
+                        role_id: HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE.to_owned(),
+                    },
+                    action_pattern: action_pattern.clone(),
+                    scope: ScopeRef::Global,
+                    effect: GrantEffect::Allow,
                 },
-                action_pattern: action_pattern.clone(),
-                scope: ScopeRef::Global,
-                effect: GrantEffect::Allow,
-            })
-            .collect(),
+                GrantSnapshot {
+                    id: format!("{HOSTED_RUNTIME_POLICY_NAMESPACE}:grant:role:workspace_user"),
+                    subject: GrantSubjectRef::Role {
+                        role_id: HOSTED_RUNTIME_WORKSPACE_USER_ROLE.to_owned(),
+                    },
+                    action_pattern: qualify_hosted_runtime_action("run.read").0,
+                    scope: ScopeRef::Global,
+                    effect: GrantEffect::Allow,
+                },
+                GrantSnapshot {
+                    id: format!("{HOSTED_RUNTIME_POLICY_NAMESPACE}:grant:role:agent_executor"),
+                    subject: GrantSubjectRef::Role {
+                        role_id: HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE.to_owned(),
+                    },
+                    action_pattern,
+                    scope: ScopeRef::Global,
+                    effect: GrantEffect::Allow,
+                },
+            ],
             ..AuthorizationProfileDocument::default()
         },
         created_at,

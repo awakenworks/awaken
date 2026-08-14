@@ -6,12 +6,14 @@ fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
     use awaken_iam_server::{AuthorizationProfileAdmin, InMemoryStore};
 
     // Cause graph: canonical Hosted lifecycle vocabulary -> one immutable
-    // profile -> two role grants. Cloud may bind roles at an exact Workspace,
+    // profile -> the two human access levels plus the workload role. Cloud may
+    // bind one human role at an exact Workspace,
     // but cannot add actions or reinterpret their scope.
     //
     // Decision table:
     // | role | action | allowed scope | profile effect |
-    // | workspace_admin | run.create/read/resume/cancel | Workspace | allow |
+    // | hosted_admin | run.create/read/resume/cancel | Workspace | allow |
+    // | workspace_user | run.read | Workspace | allow |
     // | agent_executor | run.create/read/resume/cancel | Workspace | allow |
     // | either | credential/management action | any | absent/default deny |
     // | release profile | IAM PAP validation | any | valid before deployment |
@@ -58,27 +60,33 @@ fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
             .iter()
             .all(|rule| rule.allowed_scope_kinds == [ScopeKind::Workspace])
     );
-    let role_ids = first
+    let role_actions = first
         .document
         .grants
         .iter()
         .map(|grant| match &grant.subject {
-            GrantSubjectRef::Role { role_id } => role_id.as_str(),
+            GrantSubjectRef::Role { role_id } => (role_id.as_str(), grant.action_pattern.as_str()),
             _ => panic!("Hosted lifecycle grants must be role-owned"),
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        role_ids,
+        role_actions,
         [
-            HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
-            HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
+            (HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE, "awaken.runtime::run.*"),
+            (
+                HOSTED_RUNTIME_WORKSPACE_USER_ROLE,
+                "awaken.runtime::run.read"
+            ),
+            (HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE, "awaken.runtime::run.*"),
         ]
     );
-    assert!(first.document.grants.iter().all(|grant| {
-        grant.action_pattern == "awaken.runtime::run.*"
-            && grant.scope == ScopeRef::Global
-            && grant.effect == GrantEffect::Allow
-    }));
+    assert!(
+        first
+            .document
+            .grants
+            .iter()
+            .all(|grant| { grant.scope == ScopeRef::Global && grant.effect == GrantEffect::Allow })
+    );
     let pap = AuthorizationProfileAdmin::new(Arc::new(InMemoryStore::new()));
     let draft = pap.create_draft(first).unwrap();
     let validation = pap.validate(&draft.namespace, draft.revision).unwrap();

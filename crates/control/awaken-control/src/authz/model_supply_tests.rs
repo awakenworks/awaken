@@ -1,6 +1,84 @@
 use super::*;
 
 #[test]
+fn hosted_member_bundle_reads_workspace_resources_and_runs_only_at_its_workspace() {
+    // Cause/effect graph: active Workspace+Runtime profiles and the two
+    // namespace-confined Member bindings at one exact Workspace -> read
+    // Workspace/File/Skill/Run; mutations and credentials stay denied; a
+    // sibling Workspace stays denied. This is the internal permission bundle
+    // Cloud replaces atomically for the one user-facing Member level.
+    //
+    // | action | exact Workspace | sibling Workspace |
+    // | read workspace/file/skill/run | allow | deny |
+    // | write workspace/file/skill/run or apikey.read | deny | deny |
+    let profiles =
+        AuthorizationProfileAdmin::new(Arc::new(awaken_iam_server::InMemoryStore::new()));
+    let mut engine = AuthzApi::new();
+    reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
+    reconcile_builtin_profile(
+        &profiles,
+        &mut engine,
+        hosted_runtime_authorization_profile(),
+    );
+    let principal = PrincipalRef::Account {
+        account_id: awaken_iam_contract::AccountId("member".into()),
+    };
+    let workspace = WorkspaceId("workspace-a".into());
+    for role in [
+        AWAKEN_WORKSPACE_USER_ROLE,
+        HOSTED_RUNTIME_WORKSPACE_USER_ROLE,
+    ] {
+        engine.policy_mut().bind_role(RoleBinding {
+            principal: principal.clone(),
+            role: RoleId(role.into()),
+            scope: ScopeRef::Workspace {
+                workspace_id: workspace.clone(),
+            },
+        });
+    }
+    let decide = |action, target: &str| {
+        engine
+            .authorize(&AuthorizationRequest::direct(
+                principal.clone(),
+                action,
+                ScopeRef::Workspace {
+                    workspace_id: WorkspaceId(target.into()),
+                },
+            ))
+            .decision
+    };
+    for action in ["workspace.read", "file.read", "skill.read"] {
+        assert_eq!(
+            decide(qualify_action(action), "workspace-a"),
+            AuthorizationDecision::Allow
+        );
+        assert_eq!(
+            decide(qualify_action(action), "workspace-b"),
+            AuthorizationDecision::Deny
+        );
+    }
+    assert_eq!(
+        decide(qualify_hosted_runtime_action(RUN_READ), "workspace-a"),
+        AuthorizationDecision::Allow
+    );
+    for action in [
+        "workspace.write",
+        "file.write",
+        "skill.write",
+        "apikey.read",
+    ] {
+        assert_eq!(
+            decide(qualify_action(action), "workspace-a"),
+            AuthorizationDecision::Deny
+        );
+    }
+    assert_eq!(
+        decide(qualify_hosted_runtime_action(RUN_CREATE), "workspace-a"),
+        AuthorizationDecision::Deny
+    );
+}
+
+#[test]
 fn agent_executor_is_exact_workspace_and_hosted_run_only() {
     // Cause/effect graph: active canonical profiles (C1) + the existing
     // agent-executor role bound at one Workspace (C2) + action namespace and

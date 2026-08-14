@@ -576,3 +576,26 @@ exact Awaken image exports awaken.workspace
 Legacy immutable revisions remain audit evidence, but their active heads and
 bindings do not. This is a release migration, not a permanent compatibility
 mode.
+
+## Amendment (2026-08-15): two simple human levels, atomically composed
+
+Hosted users need read-only Run visibility as well as Workspace/Resource
+visibility. IAM intentionally confines every profile's role ids to its own
+namespace, so Awaken keeps Workspace and Runtime capabilities separate and the
+hosting composition maps them to two user-facing access levels:
+
+| Access level | Workspace role | Runtime role |
+|---|---|---|
+| Member | `awaken.workspace:workspace_user` | `awaken.runtime:workspace_user` (`run.read`) |
+| Administrator | `awaken.workspace:hosted_admin` | `awaken.runtime:workspace_admin` (`run.*`) |
+
+The host must replace each level as one atomic exact-Workspace role bundle; it
+must not expose the internal pair as two independent UI toggles or execute a
+revoke/grant sequence. `awaken.runtime:agent_executor` remains a separate
+workload role because it expresses execution delegation rather than human
+membership. Role ids remain finite intent names, while IAM bindings carry the
+concrete Workspace instance.
+
+This extends the 2026-07-29 runtime profile with the read-only human role. It
+does not merge the Runtime and Workspace PEP/profile boundaries or change
+self-hosted role behavior.
