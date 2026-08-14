@@ -915,13 +915,7 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     ),
     RoutePolicyDescriptor::hosted_runtime("/v1/awaken/sessions", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::control("/v1/config/iam/tokens", RouteFamilyPolicy::TokenAdmin),
-    RoutePolicyDescriptor::hosted_runtime(
-        "/v1/application-access-tokens",
-        RouteFamilyPolicy::Scoped {
-            read: APIKEY_READ,
-            write: APIKEY_WRITE,
-        },
-    ),
+    RoutePolicyDescriptor::hosted_runtime("/v1/application-access-tokens", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::control(
         "/v1/config/credentials",
         RouteFamilyPolicy::Scoped {

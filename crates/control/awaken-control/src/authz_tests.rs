@@ -472,6 +472,9 @@ fn runtime_protocol_adapters_use_the_existing_hosted_run_namespace() {
     // | Run-backed family | Method | Hosted action | Embedded action |
     // | any listed adapter | GET/HEAD | run.read | workspace.read |
     // | any listed adapter | POST/DELETE | run.create | workspace.write |
+    // Application-token mint/revoke is in this table because the token is an
+    // ephemeral projection of one frozen Session Run, not a credential-vault
+    // mutation. The trusted backend still authenticates before this PEP.
     fn actions(method: &Method, path: &str) -> (&'static str, &'static str) {
         match super::action_for(method, path) {
             Some(RouteAuthz::HostedRuntime {
@@ -492,6 +495,7 @@ fn runtime_protocol_adapters_use_the_existing_hosted_run_namespace() {
         "/v1/ag-ui",
         "/v1/durable/session-1",
         "/v1/awaken/sessions/session-1/live-inbox",
+        "/v1/application-access-tokens/token-1",
     ] {
         for method in [Method::GET, Method::HEAD] {
             assert_eq!(actions(&method, path), (RUN_READ, WORKSPACE_READ));
