@@ -138,6 +138,15 @@ pub struct ContainerPlan {
     pub rootfs: RootfsPlan,
 }
 
+/// Deployment-owned provisioning policy for a Kubernetes Session's retained
+/// active mutable filesystem. It is feature-independent so the typed runtime
+/// configuration has one shape even when a binary does not compile K8s support.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct K8sContinuationVolume {
+    pub storage_class_name: Option<String>,
+    pub size: String,
+}
+
 #[cfg(test)]
 mod planner_tests {
     use super::*;

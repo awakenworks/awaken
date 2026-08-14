@@ -1,0 +1,238 @@
+//! Kubernetes realization of one retained active-filesystem volume.
+
+use k8s_openapi::api::core::v1::{
+    Container, PersistentVolumeClaim, PersistentVolumeClaimSpec, VolumeMount,
+    VolumeResourceRequirements,
+};
+use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+use kube::Api;
+use kube::api::DeleteParams;
+
+use super::error::api_not_found;
+use super::names::continuation_claim_name;
+use super::pod_projection::CONTINUATION_VOLUME;
+use super::{ContainerPlan, RuntimeError, backend, hardened_security_context};
+
+const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+pub(super) fn build_claim(
+    id: &str,
+    config: &crate::K8sContinuationVolume,
+) -> Result<PersistentVolumeClaim, RuntimeError> {
+    let size = config.size.trim();
+    if size.is_empty() {
+        return Err(backend("k8s continuation volume size cannot be empty"));
+    }
+    let storage_class_name = config
+        .storage_class_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    Ok(PersistentVolumeClaim {
+        metadata: ObjectMeta {
+            name: Some(continuation_claim_name(id)),
+            labels: Some(std::collections::BTreeMap::from([
+                ("app".into(), "awaken-sandbox".into()),
+                ("awaken-continuation".into(), "active".into()),
+            ])),
+            // Worker and Pod failure must not cascade into active Session data.
+            owner_references: None,
+            ..Default::default()
+        },
+        spec: Some(PersistentVolumeClaimSpec {
+            access_modes: Some(vec!["ReadWriteOnce".into()]),
+            resources: Some(VolumeResourceRequirements {
+                requests: Some(std::collections::BTreeMap::from([(
+                    "storage".into(),
+                    Quantity(size.to_owned()),
+                )])),
+                ..Default::default()
+            }),
+            storage_class_name,
+            volume_mode: Some("Filesystem".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+pub(super) fn append_init_container(
+    plan: &ContainerPlan,
+    subpaths: &[String],
+    init_containers: &mut Vec<Container>,
+) {
+    if subpaths.is_empty() {
+        return;
+    }
+    let directories = subpaths
+        .iter()
+        .map(|path| format!("/state/{path}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    init_containers.push(Container {
+        name: "continuation-init".into(),
+        image: Some(plan.image.clone()),
+        command: Some(vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("mkdir -p {directories}"),
+        ]),
+        volume_mounts: Some(vec![VolumeMount {
+            name: CONTINUATION_VOLUME.to_owned(),
+            mount_path: "/state".into(),
+            ..Default::default()
+        }]),
+        security_context: Some(hardened_security_context()),
+        ..Default::default()
+    });
+}
+
+pub(super) async fn delete_claim(
+    claims: &Api<PersistentVolumeClaim>,
+    pod_name: &str,
+) -> Result<(), RuntimeError> {
+    let runtime_id = pod_name
+        .strip_prefix("awaken-")
+        .ok_or_else(|| backend("invalid managed Kubernetes Pod identity"))?;
+    let name = continuation_claim_name(runtime_id);
+    match claims.delete(&name, &DeleteParams::default()).await {
+        Ok(_) => {}
+        Err(error) if api_not_found(&error) => return Ok(()),
+        Err(error) => return Err(backend(error)),
+    }
+    let deadline = tokio::time::Instant::now() + DELETE_TIMEOUT;
+    loop {
+        match claims.get(&name).await {
+            Err(error) if api_not_found(&error) => return Ok(()),
+            Err(error) => return Err(backend(error)),
+            Ok(_) if tokio::time::Instant::now() >= deadline => {
+                return Err(backend(format!(
+                    "continuation PVC `{name}` was not deleted within {}s",
+                    DELETE_TIMEOUT.as_secs()
+                )));
+            }
+            Ok(_) => tokio::time::sleep(DELETE_POLL).await,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use awaken_provisioning_contract as pc;
+
+    use super::*;
+    use crate::{ContainerPlan, NetworkMode, RootfsPlan};
+
+    fn plan() -> ContainerPlan {
+        ContainerPlan {
+            image: "agent:1".into(),
+            command: vec!["sleep".into(), "30".into()],
+            env: Vec::new(),
+            packages: Default::default(),
+            binds: Vec::new(),
+            outputs_volume: "/mnt/session/outputs".into(),
+            network: NetworkMode::Open,
+            requests: pc::ResourceRequests::default(),
+            limits: pc::ResourceLimits::default(),
+            memory_mounts: Vec::new(),
+            rootfs: RootfsPlan::HostUserland,
+        }
+    }
+
+    #[test]
+    fn pvc_is_one_non_owned_binding_for_every_mutable_root() {
+        /* Active-volume cause/effect graph and decision table.
+         * Causes: C1 continuation policy absent/present; C2 canonical writable
+         * roots are workspace/output/tmp; C3 Pod or Worker ownership disappears;
+         * C4 storage policy is blank/valid. Effects: E1 legacy emptyDirs; E2 one
+         * deterministic PVC with no ownerReference; E3 distinct pre-created
+         * subpaths mounted at every C2 root; E4 fail before an API write.
+         * Rules: V1 !C1=>E1; V2 C1+C2+C3+valid(C4)=>E2+E3;
+         * V3 C1+blank(C4)=>E4. FMECA: a Pod-owned claim makes Pod recovery lose
+         * live Session data (S5/O2/D3=30), while reusing one subpath for several
+         * roots aliases unrelated data (S4/O2/D3=24). This module is the single
+         * owner of both claim and mount identity.
+         */
+        let config = crate::K8sContinuationVolume {
+            storage_class_name: Some("fast-rwo".into()),
+            size: "8Gi".into(),
+        };
+        let claim = build_claim("session-1", &config).unwrap();
+        assert_eq!(claim.metadata.name.as_deref(), Some("awc-session-1"), "V2");
+        assert!(claim.metadata.owner_references.is_none(), "V2/C3");
+        let claim_spec = claim.spec.as_ref().unwrap();
+        assert_eq!(claim_spec.storage_class_name.as_deref(), Some("fast-rwo"));
+        assert_eq!(
+            claim_spec.access_modes.as_deref(),
+            Some(&[String::from("ReadWriteOnce")][..])
+        );
+
+        let pod = super::super::build_pod_with_continuation(
+            "session-1",
+            &plan(),
+            &None,
+            None,
+            &[],
+            Some("awc-session-1"),
+        );
+        let spec = pod.spec.unwrap();
+        let continuation = spec
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|volume| volume.name == CONTINUATION_VOLUME)
+            .collect::<Vec<_>>();
+        assert_eq!(continuation.len(), 1, "V2");
+        assert_eq!(
+            continuation[0]
+                .persistent_volume_claim
+                .as_ref()
+                .map(|source| source.claim_name.as_str()),
+            Some("awc-session-1"),
+            "V2"
+        );
+        let mounts = spec.containers[0]
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|mount| mount.name == CONTINUATION_VOLUME)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mounts
+                .iter()
+                .map(|mount| (mount.mount_path.as_str(), mount.sub_path.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("/workspace", Some("root-0")),
+                ("/mnt/session/outputs", Some("root-1")),
+                ("/tmp", Some("root-2")),
+            ],
+            "V2/E3"
+        );
+        let init = spec
+            .init_containers
+            .as_ref()
+            .and_then(|containers| containers.iter().find(|c| c.name == "continuation-init"))
+            .expect("V2 initializes subpaths before kubelet mounts the agent");
+        assert!(
+            init.command.as_ref().unwrap()[2].contains("/state/root-0 /state/root-1 /state/root-2"),
+            "V2/E3"
+        );
+        assert!(
+            build_claim(
+                "session-1",
+                &crate::K8sContinuationVolume {
+                    storage_class_name: None,
+                    size: "  ".into(),
+                }
+            )
+            .is_err(),
+            "V3/E4"
+        );
+    }
+}

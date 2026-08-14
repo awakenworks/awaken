@@ -232,3 +232,12 @@
   source id and exact Workspace/provider retained by the Resource.
 - Kept the operation key on create replay/lookup only, avoiding a second
   product-owned identity mapping after restart.
+
+## 2026-08-14 — Reuse the Session binding for active continuation volumes
+
+- Extended the one Kubernetes Sandbox realization with a deterministic,
+  non-Pod-owned continuation PVC; no PVC registry or filesystem scan was added.
+- Worker failure preserves the live Pod, terminal-Pod recovery reuses the PVC,
+  and only the existing explicit Sandbox disposal path deletes active storage.
+- Kept the generic checkpoint store/provider contract and Session Environment
+  state as the sole hibernation and restore authorities.

@@ -487,3 +487,29 @@ closes the interval, accumulates its duration, and emits the existing
 `session.runtime_interval_closed` fact in the same root CAS. This reuses
 `PersistedSession::close_runtime_interval` and the one lifecycle outbox; no
 realization-specific usage event or billing state is introduced.
+
+## 2026-08-14 amendment: active Kubernetes storage follows the existing binding
+
+The Kubernetes adapter may realize the canonical mutable roots on one retained
+PVC without adding a storage lifecycle aggregate. The persisted Resident
+`SandboxHandle` remains the association authority: its Session-derived Sandbox
+scope deterministically names both Pod and PVC. Kubernetes labels are evidence
+for exact-realization verification only; filesystem discovery and a separate
+Session-to-PVC table are forbidden. Hibernated state continues to replace the
+live binding with the existing opaque `SandboxCheckpointRef`.
+
+The PVC is created and digest-verified before the Pod, carries no Pod or Worker
+owner reference, and is mounted at each canonical writable root through a
+distinct pre-created subpath. A Worker crash therefore leaves Pod and PVC
+running; a terminal-Pod rebuild deletes only the observed Pod incarnation and
+reattaches the same PVC. Explicit `Sandbox::dispose` is the sole active-volume
+deletion path. The suspend sequence reaches it only after `ReadyToDispose` has
+durably committed verified checkpoint evidence, while terminal Session cleanup
+reuses its existing fenced deletion effect.
+
+This is not a second checkpoint mechanism. `SandboxCheckpointStore`,
+`Sandbox::checkpoint`, provider `restore`, and Session Environment transitions
+remain the generic contract. A filesystem archive, CSI snapshot, or another
+orchestrator driver is an implementation behind that contract and must own its
+complete create/verify/restore/delete behavior rather than introduce a fallback
+track.

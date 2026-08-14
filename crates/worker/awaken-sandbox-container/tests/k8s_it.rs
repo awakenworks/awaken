@@ -7,7 +7,7 @@
 use awaken_provisioning_contract as pc;
 use awaken_sandbox_container::k8s::K8sRuntime;
 use awaken_sandbox_container::{
-    ContainerPlan, ContainerRuntime, ContainerState, NetworkMode, RootfsPlan,
+    ContainerPlan, ContainerRuntime, ContainerState, K8sContinuationVolume, NetworkMode, RootfsPlan,
 };
 
 fn plan(cmd: &[&str]) -> ContainerPlan {
@@ -134,17 +134,32 @@ async fn create_fails_closed_on_a_pids_limit_k8s_cannot_enforce() {
 async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     /* Terminal-recovery FMECA graph on a real apiserver. C1 the deterministic
      * Pod name exists; C2 it reaches Succeeded; C3 Kubernetes supplies UID and
-     * resourceVersion. Effects: E1 create deletes only that observed incarnation,
-     * E2 recreates the deterministic name with a different UID, and E3 reaches
-     * Running. The pure decision table owns missing-identity C4 => preserve.
-     * Rule KTR1=C1+C2+C3=>E1+E2+E3.
+     * resourceVersion; C4 its non-Pod-owned continuation PVC contains a marker.
+     * Effects: E1 create deletes only that observed Pod incarnation, E2 recreates
+     * the deterministic name with a different UID, E3 reattaches the PVC and
+     * reaches Running only after reading the marker, and E4 explicit remove
+     * cleans up Pod and claim. The pure decision table owns missing-identity
+     * C5 => preserve. Rule KTR1=C1+C2+C3+C4=>E1+E2+E3, then dispose=>E4.
+     * FMECA mitigation exercised: terminal-Pod GC must not cascade into active
+     * volume loss (S5/O2/D3=30).
      */
     let Some(rt) = live_runtime().await else {
         return;
     };
+    let rt = rt.with_continuation_volume(K8sContinuationVolume {
+        storage_class_name: None,
+        size: "1Gi".into(),
+    });
     let scope = format!("terminal-replace-{}", std::process::id());
     let first = rt
-        .create(&scope, &plan(&["sh", "-c", "sleep 1"]))
+        .create(
+            &scope,
+            &plan(&[
+                "sh",
+                "-c",
+                "printf preserved > /workspace/recovery-proof && sleep 1",
+            ]),
+        )
         .await
         .expect("create first incarnation");
     let client = kube::Client::try_default()
@@ -180,7 +195,14 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     }
 
     let replacement = rt
-        .create(&scope, &plan(&["sleep", "30"]))
+        .create(
+            &scope,
+            &plan(&[
+                "sh",
+                "-c",
+                "test \"$(cat /workspace/recovery-proof)\" = preserved && sleep 30",
+            ]),
+        )
         .await
         .expect("replace the terminal incarnation");
     assert_eq!(replacement, first, "KTR1 deterministic name");
@@ -194,7 +216,8 @@ async fn a_terminal_pod_is_replaced_under_its_observed_identity_fence() {
     assert_ne!(replacement_uid, first_uid, "KTR1 exact incarnation changed");
     assert_eq!(
         rt.inspect(&replacement).await.unwrap(),
-        ContainerState::Running
+        ContainerState::Running,
+        "KTR1 the replacement Pod reattached the retained PVC bytes"
     );
     rt.remove(&replacement).await.expect("delete replacement");
 }
