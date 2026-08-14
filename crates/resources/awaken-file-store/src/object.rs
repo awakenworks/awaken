@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use object_store::{ObjectStore, PutPayload, path::Path as ObjPath};
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path as ObjPath};
 
 use crate::{FileStore, FileStoreError, content_id, safe_id};
 
