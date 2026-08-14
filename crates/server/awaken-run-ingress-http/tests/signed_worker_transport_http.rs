@@ -43,6 +43,8 @@ struct RecordingSessionWorkAuthority {
     owner: Mutex<Option<String>>,
     acquisitions: AtomicUsize,
     releases: AtomicUsize,
+    acquired_sessions: Mutex<Vec<String>>,
+    released_sessions: Mutex<Vec<String>>,
 }
 
 #[async_trait::async_trait]
@@ -54,11 +56,16 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
         session_id: &str,
         worker_owner: &str,
         now_ms: u64,
+        _acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
     ) -> Result<
         awaken_session_contract::work_queue::SessionWorkOwnership,
         awaken_session_contract::work_queue::WorkQueueError,
     > {
         self.acquisitions.fetch_add(1, Ordering::SeqCst);
+        self.acquired_sessions
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
         let mut owner = self.owner.lock().unwrap();
         if owner
             .as_deref()
@@ -83,10 +90,14 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
 
     async fn release_session_work(
         &self,
-        _session_id: &str,
+        session_id: &str,
         worker_owner: &str,
         _now_ms: u64,
     ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
+        self.released_sessions
+            .lock()
+            .unwrap()
+            .push(session_id.to_string());
         let mut owner = self.owner.lock().unwrap();
         if owner.as_deref() != Some(worker_owner) {
             return Ok(false);
@@ -595,6 +606,8 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T19 | exact/live | exact Work owner | claim check | atomically renew Work |
     // | T20 | exact/live | exact Work owner | settle | release Work, then settle Run |
     // | T21 | exact/live | active Work remains | deregister | release exact incarnation |
+    // | T22 | child Run | parent Work exact | verify/resume | use parent Session affinity |
+    // | T23 | child Run | borrowed parent Work | settle | retain Work for waiting parent |
     let client = WorkerControlClient::new(upstream.clone());
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
     assert!(
@@ -795,6 +808,68 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .expect("T9");
     assert_eq!(*session_control.failures.lock().unwrap(), 1, "T9");
 
+    // FMECA T22/T23: an outcome/delegated child has its own Run/thread
+    // lifecycle but borrows the parent's Session Environment. Addressing Work
+    // by the child thread deadlocks behind the waiting parent's one active
+    // Environment lease; releasing the borrowed Work at child settlement
+    // fences the still-running parent. The existing session_thread_id affinity
+    // is therefore used for admission/resume, while only a root Run releases.
+    let mut child_activation = activation();
+    child_activation.run_id = RunId("signed-child-run".into());
+    child_activation.thread_id = ThreadId("signed-child-thread".into());
+    queue
+        .enqueue(RunDispatch::new(child_activation).for_session(ThreadId("signed-thread".into())))
+        .await
+        .expect("T22 child dispatch");
+    let child = queue
+        .claim(
+            &registered.snapshot.identity.lease_owner(),
+            30_000,
+            10_000,
+            &Default::default(),
+        )
+        .await
+        .expect("T22 child claim")
+        .expect("T22 child is independently claimable");
+    let child_claim = awaken_run_ingress::RunClaim::from(&child.lease);
+    session_work.acquired_sessions.lock().unwrap().clear();
+    assert!(
+        queue
+            .claim_is_current(&child_claim, 10_000)
+            .await
+            .expect("T22 child claim verification"),
+        "T22"
+    );
+    client
+        .resume_session(&registered.snapshot.identity, &child_claim, "signed-thread")
+        .await
+        .expect("T22 child resumes parent Session")
+        .expect("T22 parent projection remains frozen");
+    assert!(
+        session_work
+            .acquired_sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|session_id| session_id == "signed-thread"),
+        "T22 every child Work check uses the parent Session"
+    );
+    let releases_before_child = session_work.releases.load(Ordering::SeqCst);
+    queue
+        .settle(
+            &child_claim.run_id,
+            child_claim.epoch,
+            awaken_run_ingress::DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("T23 child settlement");
+    assert_eq!(
+        session_work.releases.load(Ordering::SeqCst),
+        releases_before_child,
+        "T23 child settlement retains the parent's Work"
+    );
+
     // FMECA T20: leaving the outer Session Work active after its subordinate Run
     // settles blocks every queued Session in the same Environment. The exact
     // owner release is part of the private registered-Worker settlement chain;
@@ -813,6 +888,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T20"
     );
     assert_eq!(session_work.releases.load(Ordering::SeqCst), 1, "T20");
+    assert_eq!(
+        session_work.released_sessions.lock().unwrap().as_slice(),
+        ["signed-thread"],
+        "T20 only the root Run releases its Session Work"
+    );
 
     let mut next_activation = activation();
     next_activation.run_id = RunId("signed-run-next".into());
@@ -840,6 +920,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T20"
     );
 
+    let begins_before_expired_claim = session_control.begins.lock().unwrap().len();
     clock.set(20_000);
     WorkerControlClient::new(upstream.clone())
         .heartbeat(
@@ -869,7 +950,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .is_err(),
         "T4"
     );
-    assert_eq!(session_control.begins.lock().unwrap().len(), 3, "T4");
+    assert_eq!(
+        session_control.begins.lock().unwrap().len(),
+        begins_before_expired_claim,
+        "T4"
+    );
 
     // FMECA T21: graceful restart can begin after the committed answer becomes
     // visible but before asynchronous Run settlement. Deregistration is the last

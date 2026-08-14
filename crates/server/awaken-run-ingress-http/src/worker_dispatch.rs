@@ -511,7 +511,7 @@ async fn session_resume(
                 "guarded dispatch does not match the Session resume claim",
             ));
         }
-        if dispatch.thread_id().0 != request.session_id {
+        if dispatch.session_thread_id().0 != request.session_id {
             return Err(HostError::bad_request(
                 "Session resume target does not match the claimed Run",
             ));
@@ -521,6 +521,7 @@ async fn session_resume(
             &request.session_id,
             &request.identity.lease_owner(),
             authority.now_ms,
+            awaken_session_contract::work_queue::SessionWorkAcquisition::ClaimedRun,
         )
         .await?;
         let control = service
@@ -600,6 +601,7 @@ async fn verify_session_realization_authority(
         session_id,
         &identity.lease_owner(),
         authority.now_ms,
+        awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
     )
     .await?;
     Ok(())
@@ -610,6 +612,7 @@ async fn acquire_session_work_owner(
     session_id: &str,
     worker_owner: &str,
     now_ms: u64,
+    acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
 ) -> Result<(), HostError> {
     use awaken_session_contract::work_queue::SessionWorkOwnership;
 
@@ -618,7 +621,7 @@ async fn acquire_session_work_owner(
         .as_ref()
         .ok_or_else(|| HostError::internal("Session Work authority is not configured"))?;
     match authority
-        .acquire_session_work(session_id, worker_owner, now_ms)
+        .acquire_session_work(session_id, worker_owner, now_ms, acquisition)
         .await
         .map_err(|error| HostError::internal(error.to_string()))?
     {
@@ -676,6 +679,7 @@ async fn begin_session_realization(
             &request.command.session_id,
             &request.identity.lease_owner(),
             authority.now_ms,
+            awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
         )
         .await
         .map_err(RealizationHttpError::from)?;
@@ -802,9 +806,10 @@ async fn claim_is_current(
         }
         acquire_session_work_owner(
             &service,
-            &dispatch.thread_id().0,
+            &dispatch.session_thread_id().0,
             &request.claim.owner,
             authority.now_ms,
+            awaken_session_contract::work_queue::SessionWorkAcquisition::ClaimedRun,
         )
         .await?;
         Ok(json!({ "current": true }))
@@ -1373,14 +1378,16 @@ async fn settle(
             return Ok(json!({ "settled": false }));
         };
         let thread_id = guard.request().thread_id().clone();
+        let session_thread_id = guard.request().session_thread_id().clone();
+        let owns_session_work = thread_id == session_thread_id;
         drop(guard);
         // When configured, registered-Worker Session Work is the outer ownership
         // fence. Release it only after every claim-fenced commit has completed
         // and immediately before the subordinate Run delivery settles. Generic
         // Run-only compositions have no synthetic Work item to acquire or clear.
-        if let Some(session_work) = service.session_work.as_ref() {
+        if owns_session_work && let Some(session_work) = service.session_work.as_ref() {
             let released = session_work
-                .release_session_work(&thread_id.0, &claim.owner, authority.now_ms)
+                .release_session_work(&session_thread_id.0, &claim.owner, authority.now_ms)
                 .await
                 .map_err(|error| HostError::internal(error.to_string()))?;
             if !released {

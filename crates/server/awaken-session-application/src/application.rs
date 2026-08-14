@@ -538,7 +538,7 @@ fn claim_once(fence: &AtomicBool) -> bool {
 async fn self_hosted_work_environment(
     application: &SessionApplication,
     session_id: &str,
-) -> Result<Option<String>, awaken_session_contract::work_queue::WorkQueueError> {
+) -> Result<Option<(String, bool)>, awaken_session_contract::work_queue::WorkQueueError> {
     let session = match application.session_repository().get(session_id).await {
         Ok(session) => session,
         Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
@@ -551,7 +551,12 @@ async fn self_hosted_work_environment(
     Ok(session
         .frozen_baseline()
         .filter(|baseline| baseline.environment.self_hosted)
-        .map(|baseline| baseline.environment.environment_id.clone()))
+        .map(|baseline| {
+            (
+                baseline.environment.environment_id.clone(),
+                session.is_terminal(),
+            )
+        }))
 }
 
 #[async_trait::async_trait]
@@ -561,15 +566,39 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
         session_id: &str,
         worker_owner: &str,
         now_ms: u64,
+        acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
     ) -> Result<
         awaken_session_contract::work_queue::SessionWorkOwnership,
         awaken_session_contract::work_queue::WorkQueueError,
     > {
         use awaken_session_contract::work_queue::SessionWorkOwnership;
 
-        let Some(environment_id) = self_hosted_work_environment(self, session_id).await? else {
+        let Some((environment_id, terminal)) =
+            self_hosted_work_environment(self, session_id).await?
+        else {
             return Ok(SessionWorkOwnership::NotRequired);
         };
+        let acquired = self
+            .environments
+            .acquire_session_work(&environment_id, session_id, worker_owner, now_ms)
+            .await?;
+        if acquired.is_some()
+            || terminal
+            || acquisition
+                == awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal
+        {
+            return Ok(acquired
+                .map(SessionWorkOwnership::Leased)
+                .unwrap_or(SessionWorkOwnership::Unowned));
+        }
+        // A predecessor may retire the stable Session Work item after a
+        // successor admission already attempted to wake it. The authenticated,
+        // claimed successor Run is itself a durable wake intent: revive through
+        // the one WorkQueue path and retry acquisition exactly once. Terminal
+        // Sessions are excluded above and can never be resurrected here.
+        self.environments
+            .wake_session_work(&environment_id, session_id)
+            .await?;
         Ok(self
             .environments
             .acquire_session_work(&environment_id, session_id, worker_owner, now_ms)
@@ -584,7 +613,9 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for SessionA
         worker_owner: &str,
         now_ms: u64,
     ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
-        let Some(environment_id) = self_hosted_work_environment(self, session_id).await? else {
+        let Some((environment_id, _terminal)) =
+            self_hosted_work_environment(self, session_id).await?
+        else {
             return Ok(true);
         };
         // Renew-and-compare through the one WorkQueue authority before retiring.

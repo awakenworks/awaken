@@ -86,6 +86,12 @@ placement. Registered dispatch atomically acquires that exact Session item from
 the same `WorkQueue`; an official/custom Worker holding it wins, and the
 registered attempt is rejected. Run claim checks and realization renewal renew
 the same Work lease, while every realization phase verifies the exact owner.
+`SessionWorkAcquisition` makes the trigger explicit: a live `ClaimedRun` may
+repair a stopped item when predecessor retirement wins a wake race, but
+`RealizationRenewal` cannot resurrect stopped Work after its Run settled.
+Delegated children use the existing `RunDispatch::session_thread_id()` parent
+affinity and borrow that Work; child settlement retains it for the waiting
+parent, while a root Run owns its release.
 After claim-fenced effects commit, private registered dispatch releases that
 Session Work immediately before settling the subordinate Run. Public custom
 Workers retain the official explicit `stop` operation. Graceful registered
@@ -161,6 +167,9 @@ Worker trigger
   -> registered adapter only: atomically acquire the exact same Work item
   -> optionally claim a subordinate Run attempt
   -> authenticate Worker incarnation and verify live Work + Run epochs
+  -> claimed Run only: repair a stopped item and retry once after a lost wake
+     realization renewal: never wake stopped Work
+  -> delegated child: use parent session_thread_id and retain Work on child settle
   -> resume frozen Session projection
   -> acquire per-Session realization admission
   -> stage physical effects
@@ -214,6 +223,9 @@ authoritative path, not a compensating parallel mechanism.
 | Work/repository storage is unavailable, corrupt, or its epoch is exhausted | authority cannot be proven or a fence could repeat | 9/3/3 · 81 | typed storage-failure and epoch-boundary tests | fail closed with service/storage error; never substitute empty ownership, zero, or a saturated epoch; retry outages, quarantine corrupt Session truth |
 | Ordinary Cloud or non-Session Run reaches shared verifier | false rejection from an unrelated Work boundary | 6/4/5 · 120 | authority scope rules W1–W3 | missing/Cloud Session returns `NotRequired`; only frozen self-hosted Session requires Work ownership |
 | Registered Worker answer commits immediately before process restart | predecessor Work remains active and blocks every queued Session for one TTL | 8/4/4 · 128 | signed transport T20/T21, WorkQueue G1/G2, multi-restart CLI E2E | exact Run settlement releases its Session; exact graceful deregistration stops any residual owner rows; crash path retains TTL fencing |
+| Successor wake loses to predecessor retirement | approved/queued Run remains behind stopped Work | 9/3/5 · 135 | Session Work W3 and real same-Session continuation | live `ClaimedRun` reuses canonical wake after failed acquire and retries once; no second queue/state exists |
+| Realization renewal revives stopped Work after Run settlement | orphan active lease blocks every Session in the Environment | 9/3/5 · 135 | Session Work W5 and Native final-state inspection | `RealizationRenewal` may renew dispatched Work but never wake stopped Work; it stays unowned and the stale local projection is revoked |
+| Child Run uses child thread for Work or releases borrowed parent Work | parent/child deadlock or waiting parent loses its fence | 10/2/5 · 100 | signed transport T22/T23 and durable child-run regression | use canonical `session_thread_id()` for Work/resume; only a root Run whose own thread equals that affinity releases |
 
 The reduced decision table for the interacting ownership causes is:
 
@@ -227,6 +239,9 @@ The reduced decision table for the interacting ownership causes is:
 | F6 | terminal | any | any | any | reject execution; retire Work |
 | F7 | yes | exact predecessor | committed/settling | exact | release Work, then settle Run |
 | F8 | yes | exact graceful incarnation | any residual | any | deregistration releases only that incarnation |
+| F9 | yes/stopped | claimed successor | exact/live | any | wake canonical item, retry once, then lease or remain unowned |
+| F10 | yes/stopped | realization renewal | n/a | any | remain unowned; never resurrect |
+| F11 | delegated child | parent Work exact/live | child claim exact/live | exact | resume through parent affinity; retain Work on child settle |
 
 ## Implementation classification
 
@@ -256,6 +271,9 @@ The reduced decision table for the interacting ownership causes is:
 - registered dispatch acquires/renews/verifies the exact Session Work owner
   before using its existing Run and realization fences, then releases it on
   exact settlement or graceful incarnation deregistration.
+- the same authority classifies `ClaimedRun` versus `RealizationRenewal`, and
+  registered transport consistently uses `RunDispatch::session_thread_id()`;
+  no wake flag, child lease table, or release counter is persisted.
 - Worker Control naming and transport express frozen Session realization.
 
 ### Added
@@ -288,6 +306,8 @@ Tests attach their cause/effect tables to the owning cases. Required rules are:
 | U6 | conflicting MCP | any | n/a | no | reject before insertion |
 | U7 | yes | yes | settled | yes | release exact Work; next queued Session runs |
 | U8 | yes | yes | restart before settle | yes | deregistration releases predecessor immediately |
+| U9 | yes | stopped | claimed successor | yes | wake once and acquire; renewal stays unowned |
+| U10 | child affinity | yes | child exact | yes | parent Work is renewed and retained until root settlement |
 
 ## Consequences
 

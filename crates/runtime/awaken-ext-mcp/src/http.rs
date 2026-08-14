@@ -23,6 +23,7 @@
 //! failure the challenge (including `WWW-Authenticate`) surfaces as a
 //! [`McpTransportError::ServerError`] prefixed with `auth challenge:`.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::Duration;
@@ -36,10 +37,11 @@ use futures::StreamExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::credential::{AuthChallenge, Credential, CredentialRefresher};
-use crate::jsonrpc::{ServerNotification, ServerRequestError, ServerRequestHandler};
+use crate::jsonrpc::{ServerNotification, ServerRequestHandler, server_request_reply};
 use crate::progress::McpProgressUpdate;
 use crate::router::{NotificationSinks, route};
 use crate::sse::SseParser;
@@ -66,6 +68,9 @@ struct HttpShared {
     session_id: Mutex<Option<String>>,
     sinks: Arc<NotificationSinks>,
     request_handler: Option<Arc<dyn ServerRequestHandler>>,
+    /// JSON-RPC responses may arrive on the standalone GET stream rather than
+    /// the request's POST body. One request id owns one response sender.
+    pending_responses: tokio::sync::Mutex<HashMap<i64, oneshot::Sender<Value>>>,
     /// Connection health. Starts `true`; a connection-level transport failure
     /// (refused / reset / DNS / timeout on `send`) latches it `false`, while a
     /// server that ANSWERS — even with a protocol/server error status — restores
@@ -141,25 +146,18 @@ impl HttpShared {
             .and_then(Value::as_str)
             .map(str::to_string);
         let id = value.get("id").filter(|v| !v.is_null()).cloned();
+        if method.is_none()
+            && let Some(response_id) = id.as_ref().and_then(Value::as_i64)
+            && let Some(sender) = self.pending_responses.lock().await.remove(&response_id)
+        {
+            let _ = sender.send(value);
+            return;
+        }
         match (method, id) {
             (Some(method), Some(id)) => {
                 let params = value.get("params").cloned().unwrap_or(Value::Null);
-                let reply = match &self.request_handler {
-                    Some(handler) => match handler.handle(&id, &method, params).await {
-                        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                        Err(err) => json!({
-                            "jsonrpc": "2.0", "id": id,
-                            "error": { "code": err.code, "message": err.message },
-                        }),
-                    },
-                    None => {
-                        let err = ServerRequestError::method_not_found(&method);
-                        json!({
-                            "jsonrpc": "2.0", "id": id,
-                            "error": { "code": err.code, "message": err.message },
-                        })
-                    }
-                };
+                let reply =
+                    server_request_reply(self.request_handler.as_ref(), &id, &method, params).await;
                 // Fire-and-forget reply.
                 let _ = self.post_builder(&reply).send().await;
             }
@@ -177,10 +175,37 @@ impl HttpShared {
         }
     }
 
+    /// Decode one complete SSE data field. A matching response terminates the
+    /// request; every other valid peer message follows the existing router.
+    async fn route_sse_data(
+        self: &Arc<Self>,
+        data: &str,
+        id: i64,
+    ) -> Option<Result<Value, McpTransportError>> {
+        let value = match serde_json::from_str::<Value>(data) {
+            Ok(value) => value,
+            Err(error) => return Some(Err(McpTransportError::ProtocolError(error.to_string()))),
+        };
+        if value.get("method").is_none() {
+            return Some(match value.get("id").and_then(Value::as_i64) {
+                Some(response_id) if response_id == id => Ok(value),
+                response_id => Err(McpTransportError::ProtocolError(format!(
+                    "MCP response id {response_id:?} does not match request id {id}"
+                ))),
+            });
+        }
+        self.dispatch_incoming(value).await;
+        None
+    }
+
     /// Send `body` and return the JSON-RPC message that answers request `id`.
     /// Notifications and server requests seen in an SSE response are routed as
     /// they arrive, so a call's progress streams live.
-    async fn request(self: &Arc<Self>, body: &Value, id: i64) -> Result<Value, McpTransportError> {
+    async fn request_post(
+        self: &Arc<Self>,
+        body: &Value,
+        id: i64,
+    ) -> Result<Option<Value>, McpTransportError> {
         let mut response = self
             .record_send(self.post_builder(body).send().await)
             .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
@@ -216,7 +241,7 @@ impl HttpShared {
                     "HTTP {status}: {text}"
                 )));
             }
-            return extract_result(parse_sse_or_json(&text)?);
+            return Ok(Some(parse_sse_or_json(&text)?));
         }
 
         if !status.is_success() {
@@ -229,20 +254,59 @@ impl HttpShared {
             let chunk = chunk.map_err(|e| McpTransportError::TransportError(e.to_string()))?;
             let text = String::from_utf8_lossy(&chunk);
             for data in parser.push(&text) {
-                let Ok(value) = serde_json::from_str::<Value>(&data) else {
-                    continue;
-                };
-                let is_response = value.get("method").is_none()
-                    && value.get("id").and_then(Value::as_i64) == Some(id);
-                if is_response {
-                    return extract_result(value);
+                if let Some(result) = self.route_sse_data(&data, id).await {
+                    return result.map(Some);
                 }
-                self.dispatch_incoming(value).await;
             }
         }
-        Err(McpTransportError::TransportError(
-            "SSE stream ended before the response".to_string(),
-        ))
+        // Streamable HTTP peers may end a chunked response immediately after a
+        // complete `data:` line. EOF is the delimiter in that legal shape, so
+        // flush the sole parser before reporting a missing response.
+        for data in parser.finish() {
+            if let Some(result) = self.route_sse_data(&data, id).await {
+                return result.map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Send one request. The response may legally arrive either in the POST
+    /// body or on the already-open standalone GET stream; both routes resolve
+    /// this request's single pending-response slot.
+    async fn request(self: &Arc<Self>, body: &Value, id: i64) -> Result<Value, McpTransportError> {
+        let (sender, mut receiver) = oneshot::channel();
+        self.pending_responses.lock().await.insert(id, sender);
+        let direct = self.request_post(body, id);
+        tokio::pin!(direct);
+        let mut streamed = None;
+        let direct_result = tokio::select! {
+            result = &mut direct => Some(result),
+            result = &mut receiver => {
+                streamed = Some(result);
+                None
+            }
+        };
+        let raw = match (direct_result, streamed) {
+            (Some(Ok(Some(value))), _) => Ok(value),
+            (Some(Ok(None)), _) => tokio::time::timeout(self.timeout, receiver)
+                .await
+                .map_err(|_| {
+                    McpTransportError::TransportError(
+                        "SSE stream ended before the response".to_string(),
+                    )
+                })?
+                .map_err(|_| {
+                    McpTransportError::TransportError("MCP response route closed".to_string())
+                }),
+            (Some(Err(error)), _) => Err(error),
+            (None, Some(Ok(value))) => Ok(value),
+            (None, Some(Err(_))) => Err(McpTransportError::TransportError(
+                "MCP response route closed".to_string(),
+            )),
+            (None, None) => unreachable!("select records one completed response route"),
+        };
+        self.pending_responses.lock().await.remove(&id);
+        extract_result(raw?)
     }
 }
 
@@ -327,6 +391,7 @@ impl HttpTransportBuilder {
                 session_id: Mutex::new(None),
                 sinks: Arc::new(NotificationSinks::new()),
                 request_handler: handler,
+                pending_responses: tokio::sync::Mutex::new(HashMap::new()),
                 alive: AtomicBool::new(true),
             }),
             next_id: AtomicI64::new(1),
@@ -482,12 +547,12 @@ async fn listen(shared: Arc<HttpShared>) {
                 let mut parser = SseParser::new();
                 while let Some(Ok(chunk)) = stream.next().await {
                     let text = String::from_utf8_lossy(&chunk);
-                    for data in parser.push(&text) {
-                        if let Ok(value) = serde_json::from_str::<Value>(&data) {
-                            shared.dispatch_incoming(value).await;
-                        }
-                    }
+                    dispatch_sse_events(&shared, parser.push(&text)).await;
                 }
+                // The peer may close immediately after a complete data line.
+                // Route that final event through the same request-id demux as
+                // delimiter-terminated events before reconnecting.
+                dispatch_sse_events(&shared, parser.finish()).await;
             }
             // Auth failure: reconnect only if the host refresher produces a
             // fresh credential; otherwise stop rather than hammer the server.
@@ -502,6 +567,14 @@ async fn listen(shared: Arc<HttpShared>) {
         }
         // Brief backoff before reconnecting.
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+async fn dispatch_sse_events(shared: &Arc<HttpShared>, events: Vec<String>) {
+    for data in events {
+        if let Ok(value) = serde_json::from_str::<Value>(&data) {
+            shared.dispatch_incoming(value).await;
+        }
     }
 }
 
@@ -520,7 +593,7 @@ fn parse_sse_or_json(text: &str) -> Result<Value, McpTransportError> {
     }
     let mut parser = SseParser::new();
     let mut events = parser.push(text);
-    events.extend(parser.push("\n\n"));
+    events.extend(parser.finish());
     events
         .into_iter()
         .rev()
@@ -758,6 +831,88 @@ mod tests {
         let request = captured[0].to_ascii_lowercase();
         assert!(request.contains("authorization: bearer tok"), "{request}");
         assert!(request.contains("x-org-id: org-42"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn sse_eof_flush_follows_the_stream_termination_decision_table() {
+        // Causes: C1 response is SSE; C2 matching JSON-RPC id is complete;
+        // C3 a trailing blank event delimiter is present. Effect E1 returns the
+        // committed response; E2 reports a transport error. Constraints: C2 is
+        // mandatory, while C3 is optional because EOF terminates the last SSE
+        // event. Decision rules: S1 C1+C2+C3 -> E1 (covered by the ordinary SSE
+        // tests); S2 C1+C2+!C3 -> E1 (this regression); S3 C1+!C2 -> E2.
+        // FMECA: dropping S2 makes a successful side-effecting tool call appear
+        // failed, encourages an unsafe duplicate retry, and leaves a valid MCP
+        // Session to be misdiagnosed as lost.
+        let body = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let (url, server) = serve(vec![response]).await;
+        let transport = HttpTransportBuilder::new(url).build();
+        assert!(transport.list_tools().await.expect("S2/E1").is_empty());
+        server.await.expect("fixture completes");
+    }
+
+    #[tokio::test]
+    async fn get_stream_response_follows_the_dual_response_route_decision_table() {
+        // Causes: C1 POST carries the matching response; C2 standalone GET
+        // carries it; C3 neither route carries it before the timeout. Exactly
+        // one of C1/C2 may satisfy the request. Effects: E1 resolve once through
+        // the request-id slot; E2 return the bounded transport error. Rules:
+        // G1 C1+!C2 -> E1 (ordinary HTTP/SSE tests); G2 !C1+C2 -> E1 (this
+        // regression); G3 !C1+!C2+C3 -> E2 (existing missing-response path).
+        // FMECA: missing G2 drops a successful side-effecting tool result, after
+        // which an agent may duplicate the effect and reuse a stale MCP Session.
+        let empty_sse = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
+        let (url, server) = serve(vec![empty_sse]).await;
+        let transport = HttpTransportBuilder::new(url).build();
+        let shared = Arc::clone(&transport.shared);
+        let routed = tokio::spawn(async move {
+            loop {
+                if shared.pending_responses.lock().await.contains_key(&1) {
+                    shared
+                        .dispatch_incoming(json!({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "result": { "tools": [] }
+                        }))
+                        .await;
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        assert!(transport.list_tools().await.expect("G2/E1").is_empty());
+        routed.await.expect("GET response routed");
+        server.await.expect("POST fixture completes");
+    }
+
+    #[tokio::test]
+    async fn get_stream_eof_routes_the_pending_response_decision_rule() {
+        // Causes: C1 the standalone GET event carries the pending request id;
+        // C2 its final data line lacks a blank delimiter; C3 the stream ends.
+        // Effect E1 resolves the single pending-response slot. Rule L1
+        // C1+C2+C3 -> E1. Constraint: POST and GET share that one slot, so the
+        // response cannot be committed twice. FMECA: omitting the GET EOF rule
+        // reports a false transport failure after the remote tool side effect,
+        // then retries against a stale or closed MCP Session.
+        let transport = HttpTransportBuilder::new("http://unused").build();
+        let shared = Arc::clone(&transport.shared);
+        let (sender, receiver) = oneshot::channel();
+        shared.pending_responses.lock().await.insert(7, sender);
+        let mut parser = SseParser::new();
+        assert!(
+            parser
+                .push(
+                    "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}"
+                )
+                .is_empty()
+        );
+        dispatch_sse_events(&shared, parser.finish()).await;
+        assert_eq!(receiver.await.expect("L1/E1")["result"]["ok"], true);
+        assert!(shared.pending_responses.lock().await.is_empty());
     }
 
     #[tokio::test]

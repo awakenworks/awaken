@@ -250,18 +250,25 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
 #[tokio::test]
 async fn session_work_authority_classifies_scope_before_queue_access() {
     // Cause/effect graph: C1 no Session root; C2 a Cloud Session; C3 a
-    // self-hosted Session without a claimable Work item. Effects: E1/C1 and
-    // E1/C2 are outside the Work ownership boundary; E2/C3 is inside the
-    // boundary but currently unowned. This prevents ordinary non-Session Runs
-    // from failing merely because the registered dispatch verifier shares the
-    // same authority adapter.
+    // self-hosted nonterminal Session whose stopped Work can be revived by a
+    // claimed successor; C4 terminal self-hosted Session; C5 renewal without a
+    // Run claim. Effects: E1/C1 and
+    // E1/C2 are outside the Work ownership boundary; E2/C3 reuses the canonical
+    // wake path then leases once; E3/C4 and E3/C5 stay unowned. FMECA: without E2, a
+    // predecessor retire racing a successor wake loses the approved input;
+    // applying E2 to C4 resurrects terminal effects; applying it to C5 revives
+    // settled Work with no Run left to release it and blocks the Environment.
     //
     // | Rule | Session | Environment | Queue result | Effect |
     // |---|---|---|---|---|
     // | W1 | absent | n/a | not called | NotRequired |
     // | W2 | present | Cloud | not called | NotRequired |
-    // | W3 | present | self-hosted | no lease | Unowned |
-    use awaken_session_contract::work_queue::{SessionWorkLeaseAuthority, SessionWorkOwnership};
+    // | W3 | present | self-hosted/nonterminal | stopped | wake + Leased |
+    // | W4 | present | self-hosted/terminal | stopped | Unowned; no wake |
+    // | W5 | present | self-hosted/nonterminal renewal | stopped | Unowned; no wake |
+    use awaken_session_contract::work_queue::{
+        SessionWorkAcquisition, SessionWorkLeaseAuthority, SessionWorkOwnership,
+    };
 
     let repo = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -269,28 +276,90 @@ async fn session_work_authority_classifies_scope_before_queue_access() {
     );
     create(repo.as_ref(), persisted("cloud-work", false, "idle")).await;
     create(repo.as_ref(), persisted("self-work", true, "idle")).await;
-    let app = application(repo, Arc::new(RecordingEnvironmentSource::default()));
+    create(repo.as_ref(), persisted("renewal-work", true, "idle")).await;
+    create(
+        repo.as_ref(),
+        persisted("terminal-work", true, "terminated"),
+    )
+    .await;
+    let environments = Arc::new(RecordingEnvironmentSource::default());
+    let app = application(repo, environments.clone());
 
     assert_eq!(
-        app.acquire_session_work("missing", "owner", 1)
-            .await
-            .expect("W1"),
+        app.acquire_session_work(
+            "missing",
+            "owner",
+            1,
+            SessionWorkAcquisition::RealizationRenewal,
+        )
+        .await
+        .expect("W1"),
         SessionWorkOwnership::NotRequired,
         "W1"
     );
     assert_eq!(
-        app.acquire_session_work("cloud-work", "owner", 1)
-            .await
-            .expect("W2"),
+        app.acquire_session_work(
+            "cloud-work",
+            "owner",
+            1,
+            SessionWorkAcquisition::RealizationRenewal,
+        )
+        .await
+        .expect("W2"),
         SessionWorkOwnership::NotRequired,
         "W2"
     );
-    assert_eq!(
-        app.acquire_session_work("self-work", "owner", 1)
-            .await
-            .expect("W3"),
-        SessionWorkOwnership::Unowned,
+    let SessionWorkOwnership::Leased(lease) = app
+        .acquire_session_work("self-work", "owner", 1, SessionWorkAcquisition::ClaimedRun)
+        .await
+        .expect("W3")
+    else {
+        panic!("W3 must revive and lease the stopped Session Work");
+    };
+    assert_eq!(lease.owner, "owner", "W3");
+    assert!(
+        environments.awakened.lock().unwrap().contains("self-work"),
         "W3"
+    );
+    assert_eq!(
+        app.acquire_session_work(
+            "terminal-work",
+            "owner",
+            1,
+            SessionWorkAcquisition::ClaimedRun,
+        )
+        .await
+        .expect("W4"),
+        SessionWorkOwnership::Unowned,
+        "W4"
+    );
+    assert!(
+        !environments
+            .awakened
+            .lock()
+            .unwrap()
+            .contains("terminal-work"),
+        "W4"
+    );
+    assert_eq!(
+        app.acquire_session_work(
+            "renewal-work",
+            "renewal-owner",
+            2,
+            SessionWorkAcquisition::RealizationRenewal,
+        )
+        .await
+        .expect("W5"),
+        SessionWorkOwnership::Unowned,
+        "W5"
+    );
+    assert!(
+        !environments
+            .awakened
+            .lock()
+            .unwrap()
+            .contains("renewal-work"),
+        "W5"
     );
 }
 

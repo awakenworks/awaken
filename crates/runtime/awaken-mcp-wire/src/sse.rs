@@ -46,6 +46,13 @@ impl SseParser {
         }
         events
     }
+
+    /// Finish an ended stream, treating EOF as the delimiter for its final
+    /// complete event. This is the single termination rule shared by buffered,
+    /// POST-stream, and standalone GET-stream consumers.
+    pub fn finish(&mut self) -> Vec<String> {
+        self.push("\n\n")
+    }
 }
 
 #[cfg(test)]
@@ -80,6 +87,23 @@ mod tests {
         // Only the terminating blank line dispatches the event.
         let events = parser.push("\n\n");
         assert_eq!(events, vec!["{\"partial\":true}".to_string()]);
+    }
+
+    #[test]
+    fn eof_finishes_a_complete_event_without_a_blank_delimiter() {
+        // Causes: C1 a data field is complete; C2 a blank delimiter is absent;
+        // C3 EOF occurs. Effect E1 dispatches the data exactly once. Decision
+        // rule F1 C1+!C2+C3 -> E1. Constraint: incomplete non-data input never
+        // creates an event. FMECA: losing F1 discards a successful JSON-RPC
+        // response and can trigger a duplicate side-effecting tool retry.
+        let mut parser = SseParser::new();
+        assert!(
+            parser
+                .push("event: message\ndata: {\"ok\":true}")
+                .is_empty()
+        );
+        assert_eq!(parser.finish(), vec!["{\"ok\":true}".to_string()]);
+        assert!(parser.finish().is_empty(), "EOF is idempotent");
     }
 
     #[test]
