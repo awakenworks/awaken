@@ -498,6 +498,10 @@ impl DispatchQueue for AnyDispatchStore {
         delegate!(self, renew_owned_leases(owner, lease_ms, now_ms))
     }
 
+    async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        delegate!(self, relinquish_claim(claim))
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,

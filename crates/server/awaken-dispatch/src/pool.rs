@@ -550,7 +550,13 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
             .admission
             .active_runs
             .enter(claimed.lease.run_id.clone());
-        let worker = self.resolver.worker_for_claimed(&claimed).await?;
+        let worker = match self.resolver.worker_for_claimed(&claimed).await {
+            Ok(worker) => worker,
+            Err(error) => {
+                relinquish_after_resolution_failure(self.store.as_ref(), &claimed).await;
+                return Err(error);
+            }
+        };
         if let Some((settled_run, state)) = worker.drive_claimed(claimed, now).await?
             && let Some(sink) = &self.completion
         {
@@ -711,9 +717,6 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     let Some(claimed) = claimed else {
         return Ok(false);
     };
-    // A successful claim proves that more work may be queued. Hand one permit to
-    // a peer before driving this run so capacity scales without idle pollers.
-    admission.wake.notify_one();
     let _in_flight = InFlightGuard::new(admission.in_flight.clone());
     let _active_run = admission.active_runs.enter(claimed.lease.run_id.clone());
     // Route to the runtime that owns this run's thread, then drive+settle there.
@@ -724,13 +727,23 @@ async fn claim_and_drive<S: Dispatch + 'static>(
     // constructing the session runtime. Legacy resolvers use the default method,
     // which derives the same thread/agent arguments as before.
     let settled = match resolver.worker_for_claimed(&claimed).await {
-        Ok(worker) => worker.drive_claimed(claimed, now).await?,
+        Ok(worker) => {
+            // Resolution succeeded, so this claim will make forward progress.
+            // Only now hand a permit to a peer: notifying before resolution
+            // would let a temporarily inadmissible head item hot-loop and starve
+            // later runnable work.
+            admission.wake.notify_one();
+            worker.drive_claimed(claimed, now).await?
+        }
         Err(error) if error.is_terminal_resolution() => {
             resolver
                 .settle_claimed_resolution_failure(&claimed, error)
                 .await?
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            relinquish_after_resolution_failure(store.as_ref(), &claimed).await;
+            return Err(error);
+        }
     };
     if let Some((run_id, state)) = settled
         && let Some(sink) = completion
@@ -739,6 +752,26 @@ async fn claim_and_drive<S: Dispatch + 'static>(
         sink.settled(&run_id, &state);
     }
     Ok(true)
+}
+
+async fn relinquish_after_resolution_failure<S: Dispatch + 'static>(store: &S, claimed: &Claimed) {
+    let claim = crate::RunClaim::from(&claimed.lease);
+    match store.relinquish_claim(&claim).await {
+        Ok(crate::SettleOutcome::Applied) => {}
+        Ok(crate::SettleOutcome::Fenced) => tracing::debug!(
+            run_id = %claim.run_id.0,
+            owner = %claim.owner,
+            epoch = claim.epoch,
+            "resolution failure claim was already fenced before relinquish"
+        ),
+        Err(error) => tracing::warn!(
+            run_id = %claim.run_id.0,
+            owner = %claim.owner,
+            epoch = claim.epoch,
+            %error,
+            "failed to relinquish claim after resolution failure"
+        ),
+    }
 }
 
 struct InFlightGuard(Arc<AtomicU32>);

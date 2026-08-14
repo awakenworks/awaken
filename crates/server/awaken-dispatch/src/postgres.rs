@@ -953,6 +953,38 @@ impl DispatchQueue for PostgresDispatchStore {
         Ok(result.rows_affected() as usize)
     }
 
+    async fn relinquish_claim(&self, claim: &RunClaim) -> Result<SettleOutcome, DispatchError> {
+        let p = NS;
+        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let changed = sqlx::query(&format!(
+            "UPDATE {p}_dispatch SET status = 'pending', lease_owner = NULL, \
+             lease_until = NULL, created_at = clock_timestamp() \
+             WHERE run_id = $1 AND status = 'running' \
+             AND lease_owner = $2 AND lease_epoch = $3"
+        ))
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(epoch)
+        .execute(&mut *tx)
+        .await
+        .map_err(reject)?;
+        if changed.rows_affected() != 1 {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        }
+        insert_operation(
+            &mut tx,
+            &DispatchOperation::LeaseLost {
+                claim: claim.clone(),
+                reason: LeaseLossReason::Relinquished,
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(reject)?;
+        Ok(SettleOutcome::Applied)
+    }
+
     async fn settle(
         &self,
         run_id: &RunId,
