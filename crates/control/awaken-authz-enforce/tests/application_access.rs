@@ -37,12 +37,14 @@ fn app(store: Arc<ApplicationAccessStore>) -> Router {
         Path(thread): Path<String>,
         resolved: Option<axum::Extension<awaken_tenancy::ResolvedResourceId>>,
         agent: Option<axum::Extension<awaken_tenancy::ResolvedAgentId>>,
+        workspace: Option<axum::Extension<awaken_tenancy::WorkspaceScope>>,
         Json(body): Json<Value>,
     ) -> Json<Value> {
         Json(json!({
             "thread": thread,
             "resolved": resolved.map(|axum::Extension(value)| value.0),
             "agent": agent.map(|axum::Extension(value)| value.0),
+            "workspace": workspace.map(|axum::Extension(value)| value.0),
             "body": body,
         }))
     }
@@ -134,6 +136,7 @@ async fn exact_binding_rewrites_to_the_existing_managed_session() {
     assert_eq!(body["body"]["threadId"], "sesn_existing");
     assert_eq!(body["body"]["agentId"], "support");
     assert_eq!(body["agent"], "support");
+    assert_eq!(body["workspace"], "ws-1");
     assert!(!body["resolved"].as_str().unwrap().starts_with("app_"));
 
     let missing = router
@@ -158,6 +161,66 @@ async fn exact_binding_rewrites_to_the_existing_managed_session() {
         .await
         .unwrap();
     assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Cause/effect graph extension: the authenticated application token's exact
+/// Workspace (C7) and an optional path-selected Workspace (C8) must agree before
+/// the bound Session reaches a protocol adapter. Decision rules: R8 no path
+/// selection -> publish C7 downstream; R9 C8 == C7 -> publish the same scope;
+/// R10 C8 != C7 -> 403 before adapter dispatch. This keeps tenancy in the
+/// existing application credential instead of relying on a second outer PEP.
+#[tokio::test]
+async fn application_token_fences_and_projects_its_workspace() {
+    async fn workspace(
+        axum::Extension(scope): axum::Extension<awaken_tenancy::WorkspaceScope>,
+    ) -> String {
+        scope.0
+    }
+
+    let store = Arc::new(ApplicationAccessStore::new());
+    let token = mint(&store, "workspace", grant(&["ai-sdk"], &["thread.run"]));
+    let router = Router::new()
+        .route("/v1/ai-sdk/chat", post(workspace))
+        .layer(axum::middleware::from_fn_with_state(
+            store,
+            application_guard,
+        ));
+    let scoped_request = |selected: Option<&str>| {
+        let mut request = request(
+            "POST",
+            "/v1/ai-sdk/chat",
+            Some(&token),
+            json!({"threadId": "customer-thread", "messages": []}),
+        );
+        if let Some(selected) = selected {
+            request
+                .extensions_mut()
+                .insert(awaken_authz_enforce::RequestTenancy {
+                    workspace_id: selected.to_owned(),
+                });
+        }
+        request
+    };
+
+    let bare = router.clone().oneshot(scoped_request(None)).await.unwrap();
+    assert_eq!(bare.status(), StatusCode::OK, "R8");
+    assert_eq!(
+        to_bytes(bare.into_body(), usize::MAX).await.unwrap(),
+        "ws-1"
+    );
+
+    let exact = router
+        .clone()
+        .oneshot(scoped_request(Some("ws-1")))
+        .await
+        .unwrap();
+    assert_eq!(exact.status(), StatusCode::OK, "R9");
+
+    let foreign = router
+        .oneshot(scoped_request(Some("ws-foreign")))
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN, "R10");
 }
 
 /// Decision rules from the graph above: R3 protocol false, R4 operation false,

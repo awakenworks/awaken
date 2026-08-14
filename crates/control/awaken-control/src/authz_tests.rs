@@ -257,7 +257,11 @@ fn the_route_table_maps_reads_to_read_actions_and_mutations_to_writes() {
     fn action_for(method: &Method, path: &str) -> Option<&'static str> {
         match super::action_for(method, path) {
             Some(RouteAuthz::Scoped { action, .. }) => Some(action),
-            Some(RouteAuthz::Resource { .. } | RouteAuthz::HostedRuntime { .. }) => None,
+            Some(
+                RouteAuthz::Application
+                | RouteAuthz::Resource { .. }
+                | RouteAuthz::HostedRuntime { .. },
+            ) => None,
             Some(RouteAuthz::TokenAdmin) => panic!("{path} is not a Scoped route"),
             None => None,
         }
@@ -491,8 +495,6 @@ fn runtime_protocol_adapters_use_the_existing_hosted_run_namespace() {
         "/v1/a2a",
         "/v1/message:send",
         "/v1/message:stream",
-        "/v1/ai-sdk/chat",
-        "/v1/ag-ui",
         "/v1/durable/session-1",
         "/v1/awaken/sessions/session-1/live-inbox",
         "/v1/application-access-tokens/token-1",
@@ -1156,7 +1158,11 @@ fn af_covers_the_deployment_environment_and_agent_families() {
     fn scoped(method: Method, path: &str) -> Option<&'static str> {
         match super::action_for(&method, path) {
             Some(RouteAuthz::Scoped { action, .. }) => Some(action),
-            Some(RouteAuthz::Resource { .. } | RouteAuthz::HostedRuntime { .. }) => None,
+            Some(
+                RouteAuthz::Application
+                | RouteAuthz::Resource { .. }
+                | RouteAuthz::HostedRuntime { .. },
+            ) => None,
             Some(RouteAuthz::TokenAdmin) => panic!("{path} is TokenAdmin, not Scoped"),
             None => None,
         }

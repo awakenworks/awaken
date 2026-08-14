@@ -207,7 +207,7 @@ impl ApplicationRejection {
 /// or derives a second runtime identity.
 pub async fn application_guard(
     State(store): State<Arc<ApplicationAccessStore>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let Some(presented) = presented_bearer(request.headers()) else {
@@ -216,6 +216,25 @@ pub async fn application_guard(
     let Some(identity) = store.authenticate(&presented) else {
         return reject(StatusCode::UNAUTHORIZED, "invalid application access token");
     };
+    if let Some(tenancy) = request.extensions().get::<RequestTenancy>()
+        && tenancy.workspace_id != identity.workspace_id
+    {
+        return reject(
+            StatusCode::FORBIDDEN,
+            "application token does not allow this workspace",
+        );
+    }
+    // The application credential is a narrow Workspace authority, not merely
+    // an opaque thread lookup key. Publish the exact authenticated scope for
+    // downstream protocol projections after fencing any path selection.
+    request.extensions_mut().insert(RequestTenancy {
+        workspace_id: identity.workspace_id.clone(),
+    });
+    request
+        .extensions_mut()
+        .insert(awaken_tenancy::WorkspaceScope(
+            identity.workspace_id.clone(),
+        ));
     let path = request.uri().path().to_string();
     let Some(route) = classify_application_route(request.method(), &path) else {
         return reject(

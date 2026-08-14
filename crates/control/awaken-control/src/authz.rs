@@ -704,6 +704,11 @@ fn qualified_action(namespace: ActionNamespace, action: &str) -> awaken_iam_cont
 /// How the guard authorizes a mapped management route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteAuthz {
+    /// Browser application protocol. The Coordinator mounts the canonical
+    /// application-token guard on this family and process composition keeps it
+    /// outside the service-token IAM edge. Reaching either management guard is
+    /// therefore a fail-closed composition error.
+    Application,
     /// The default: fence any named `workspace_id` against the token's
     /// workspace, then authorize this action at the token's workspace scope.
     Scoped {
@@ -846,6 +851,7 @@ pub fn hosted_runtime_route_profile() -> HostedRuntimeRouteProfile {
 
 #[derive(Debug, Clone, Copy)]
 enum RouteFamilyPolicy {
+    Application,
     Scoped {
         read: &'static str,
         write: &'static str,
@@ -882,8 +888,8 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     RoutePolicyDescriptor::hosted_runtime("/v1/a2a", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::hosted_runtime("/v1/message:send", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::hosted_runtime("/v1/message:stream", HOSTED_RUN_POLICY),
-    RoutePolicyDescriptor::hosted_runtime("/v1/ai-sdk", HOSTED_RUN_POLICY),
-    RoutePolicyDescriptor::hosted_runtime("/v1/ag-ui", HOSTED_RUN_POLICY),
+    RoutePolicyDescriptor::hosted_runtime("/v1/ai-sdk", RouteFamilyPolicy::Application),
+    RoutePolicyDescriptor::hosted_runtime("/v1/ag-ui", RouteFamilyPolicy::Application),
     RoutePolicyDescriptor::hosted_runtime("/v1/durable", HOSTED_RUN_POLICY),
     RoutePolicyDescriptor::hosted_runtime(
         "/v1/files",
@@ -1154,6 +1160,9 @@ pub async fn management_guard(
     };
 
     let (action, scope_class, action_namespace) = match route {
+        RouteAuthz::Application => {
+            return forbidden("application protocol must use the application-token guard");
+        }
         RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Management),
         RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Resource),
         RouteAuthz::HostedRuntime {
@@ -1252,6 +1261,9 @@ pub async fn cloud_management_guard(
         return forbidden("no management action is mapped for this route");
     };
     let (action, scope_class, action_namespace) = match route {
+        RouteAuthz::Application => {
+            return forbidden("application protocol must use the application-token guard");
+        }
         RouteAuthz::Scoped { action, scope } => (action, scope, ActionNamespace::Management),
         RouteAuthz::Resource { action, scope } => (action, scope, ActionNamespace::Resource),
         RouteAuthz::HostedRuntime { action, scope, .. } => {
@@ -1366,6 +1378,7 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
         && in_family(path, "/v1/config")
     {
         return match descriptor.policy {
+            RouteFamilyPolicy::Application => Some(RouteAuthz::Application),
             RouteFamilyPolicy::Scoped { read, .. } => Some(RouteAuthz::Scoped {
                 action: read,
                 scope: ScopeClass::Workspace,
@@ -1387,6 +1400,7 @@ fn action_for(method: &Method, path: &str) -> Option<RouteAuthz> {
         };
     }
     Some(match descriptor.policy {
+        RouteFamilyPolicy::Application => RouteAuthz::Application,
         RouteFamilyPolicy::Scoped { read, write } => RouteAuthz::Scoped {
             action: if is_read { read } else { write },
             scope: ScopeClass::Workspace,
@@ -1819,6 +1833,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
+#[cfg(test)]
+#[path = "authz/application_protocol_tests.rs"]
+mod application_protocol_tests;
 #[cfg(test)]
 #[path = "authz_management_profile_tests.rs"]
 mod management_profile_tests;

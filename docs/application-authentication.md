@@ -32,6 +32,14 @@ Awaken does not import that policy model.
 | Application guard | exact route, protocol, operation, external-thread binding, and bound Agent enforcement |
 | AI SDK / AG-UI adapters | protocol translation only; both use the resolved Managed Session |
 
+The process composition keeps two authentication domains disjoint. Session and
+token-management routes use the service/IAM edge; AI SDK and AG-UI routes are
+mounted after that edge because they already carry the application guard. Both
+credentials use the standard `Authorization: Bearer` header, so stacking the
+two guards would reinterpret one credential as two unrelated authorities and
+make every valid request fail. This separation is routing composition only: it
+does not add a proxy, token type, identity store, or alternate protocol path.
+
 An application grant contains:
 
 - opaque `authority_id`, `application_scope`, and optional `actor_key` for
@@ -121,6 +129,12 @@ exact public route with a default-deny table, verifies its protocol and
 operation, and resolves the presented external thread id through the token's
 binding. It then attaches the existing Managed Session and frozen Agent through
 the shared resolved-resource seams before dispatching to the protocol adapter.
+
+The trusted backend reaches Session lifecycle and application-token issuance
+through the service/IAM guard first. The resulting browser request reaches only
+the application guard. If an application protocol is accidentally mounted
+inside the service/IAM edge, process authorization fails closed rather than
+falling back to service credentials or accepting a dual-purpose bearer.
 
 Missing/expired/revoked tokens return `401`. Unknown routes, ungranted protocols
 or operations, unbound threads, and Agent overrides return `403`; conflicting
