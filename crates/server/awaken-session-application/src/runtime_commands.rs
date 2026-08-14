@@ -88,19 +88,6 @@ impl SessionApplication {
             .and_then(|source| source.session_profile_in(workspace_id, agent_id))
     }
 
-    /// Read one exact immutable Agent publication's Session projection.
-    #[must_use]
-    pub fn session_profile_at_revision(
-        &self,
-        workspace_id: &str,
-        agent_id: &str,
-        source_revision: u64,
-    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
-        self.config_source.as_ref().and_then(|source| {
-            source.session_profile_at_revision_in(workspace_id, agent_id, source_revision)
-        })
-    }
-
     #[must_use]
     pub fn has_agent_profile_source(&self) -> bool {
         self.config_source.is_some()
