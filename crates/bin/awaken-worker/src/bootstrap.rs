@@ -223,14 +223,6 @@ impl WorkerDaemonConfig {
         if let Some(limit) = self.worker.max_concurrent {
             manifest = manifest.with_max_concurrent(limit);
         }
-        let memory_factory: crate::RegisteredMemoryMounterFactory = Arc::new(|context| {
-            let repository = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
-                context.upstream().clone(),
-            ));
-            Ok(Arc::new(
-                awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository),
-            ))
-        });
         let inference =
             awaken_credential_materializer::CredentialInferenceMaterializer::from_pinned(
                 credentials.clone(),
@@ -241,7 +233,7 @@ impl WorkerDaemonConfig {
             .with_inference_materializer(Arc::new(inference))
             .with_hand_executor_factory(crate::relay_hand_executor_factory())
             .with_credential_materializer(credentials)
-            .with_registered_memory_mounter_factory(memory_factory)
+            .with_remote_session_resource_support()
             .with_graceful_drain(std::time::Duration::from_secs(self.worker.drain_grace_secs))
             .with_credential_observation_window(
                 std::time::Duration::from_secs(self.worker.credential_probe_interval_secs),

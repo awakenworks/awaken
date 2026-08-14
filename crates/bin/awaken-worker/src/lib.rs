@@ -288,6 +288,25 @@ impl WorkerNodeBuilder {
         self
     }
 
+    /// Install the canonical identity-bound remote Session Resource projection.
+    ///
+    /// Standalone and platform-composed Workers must use this same constructor:
+    /// the registered upstream is the sole File/Memory/Skill/Repository authority,
+    /// and the resulting Memory mounter is the evidence used to advertise
+    /// `session-resources/v1` in the immutable Worker manifest.
+    #[must_use]
+    pub fn with_remote_session_resource_support(mut self) -> Self {
+        self.memory_mounter_factory = Some(Arc::new(|context| {
+            let repository = Arc::new(awaken_resource_worker_http::HttpMemoryRepository::new(
+                context.upstream().clone(),
+            ));
+            Ok(Arc::new(
+                awaken_sandbox_memoryd::MemoryStoreMounter::copy_only(repository),
+            ))
+        }));
+        self
+    }
+
     #[must_use]
     pub fn with_admin_listen(mut self, address: impl Into<String>) -> Self {
         self.admin_listen = Some(address.into());
