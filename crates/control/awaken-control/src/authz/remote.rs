@@ -7,7 +7,7 @@ use awaken_iam_contract::{
 };
 use awaken_iam_host::{AuthReject, HostConfig, IamClient, IamGate, connect_remote};
 
-use super::{now_rfc3339, now_unix, qualify_action, qualify_resource_action};
+use super::{ActionNamespace, now_rfc3339, now_unix, qualified_action};
 
 #[derive(Clone)]
 struct RemoteGateConfig {
@@ -128,33 +128,19 @@ impl RemoteManagementAuthz {
             .map(|(principal, _)| principal)
     }
 
-    pub(super) fn authorize(
+    pub(super) fn authorize_action(
         &self,
         principal: PrincipalRef,
         action: &str,
         scope: ScopeRef,
+        namespace: ActionNamespace,
     ) -> AuthorizationDecision {
         let Ok(gate) = self.gate_for_authorization() else {
             return AuthorizationDecision::Deny;
         };
         IamClient::authorize(
             &gate,
-            AuthorizationRequest::direct(principal, qualify_action(action), scope),
-        )
-    }
-
-    pub(super) fn authorize_resource(
-        &self,
-        principal: PrincipalRef,
-        action: &str,
-        scope: ScopeRef,
-    ) -> AuthorizationDecision {
-        let Ok(gate) = self.gate_for_authorization() else {
-            return AuthorizationDecision::Deny;
-        };
-        IamClient::authorize(
-            &gate,
-            AuthorizationRequest::direct(principal, qualify_resource_action(action), scope),
+            AuthorizationRequest::direct(principal, qualified_action(namespace, action), scope),
         )
     }
 
