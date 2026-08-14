@@ -43,6 +43,21 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Profiled
         })
     }
 
+    fn session_profile_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        (workspace_id == "workspace" && agent_id == "profiled" && source_revision == 7).then(|| {
+            awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                model: Some("historical-model".into()),
+                execution_model_ref: Some("historical-execution-model".into()),
+                ..Default::default()
+            }
+        })
+    }
+
     fn agent_unavailable_in(&self, workspace_id: &str, agent_id: &str) -> bool {
         self.unavailable && workspace_id == "workspace" && agent_id == "profiled"
     }
@@ -59,17 +74,17 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
 
     async fn resolve_current_for_session(
         &self,
-        _environment_id: &str,
+        environment_id: &str,
         _runtime: Option<&str>,
         _mcp_targets: &[awaken_session_contract::McpTarget],
     ) -> Result<Option<ResolvedSessionEnvironment>, EnvironmentImageBuildError> {
-        Ok(Some(ResolvedSessionEnvironment {
-            snapshot: persisted("environment-template", false, "idle")
-                .frozen_baseline()
-                .expect("fixture baseline")
-                .environment
-                .clone(),
-        }))
+        let mut snapshot = persisted("environment-template", false, "idle")
+            .frozen_baseline()
+            .expect("fixture baseline")
+            .environment
+            .clone();
+        snapshot.environment_id = environment_id.to_owned();
+        Ok(Some(ResolvedSessionEnvironment { snapshot }))
     }
 
     async fn resolve_exact_for_session(
@@ -361,6 +376,8 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
         agent_id: "profiled".into(),
+        source_revision: None,
+        environment_id: None,
         model: model.map(str::to_owned),
         mounts: vec![serde_json::json!({"mount_id": "workspace"})],
         env: vec![serde_json::json!({"name": "PROJECT"})],
@@ -391,8 +408,10 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         tools: None,
     };
 
+    let mut explicit_environment = command("profiled-realized", None);
+    explicit_environment.environment_id = Some("project-environment".into());
     let realized = available
-        .create_profiled_session(command("profiled-realized", None))
+        .create_profiled_session(explicit_environment)
         .await
         .expect("P1");
     assert_eq!(realized.model(), Some("published-model"), "P1/E1");
@@ -405,6 +424,10 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     assert_eq!(baseline.mounts.len(), 1, "P1/E1");
     assert_eq!(baseline.env.len(), 1, "P1/E1");
     assert_eq!(baseline.prompts, ["project context"], "P1/E1");
+    assert_eq!(
+        baseline.environment.environment_id, "project-environment",
+        "P1/E1"
+    );
     assert_eq!(
         baseline.environment.network,
         awaken_session_contract::SessionNetworkPolicy::None,
@@ -442,6 +465,24 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             ),
         ],
         "P1/E3"
+    );
+
+    let mut historical_command = command("profiled-historical", None);
+    historical_command.source_revision = Some(7);
+    let historical = available
+        .create_profiled_session(historical_command)
+        .await
+        .expect("exact historical publication");
+    assert_eq!(historical.model(), Some("historical-model"));
+
+    let mut missing_command = command("profiled-missing", None);
+    missing_command.source_revision = Some(8);
+    assert!(
+        available
+            .create_profiled_session(missing_command)
+            .await
+            .is_err(),
+        "an unproven exact publication fails closed"
     );
 
     let mismatched = available

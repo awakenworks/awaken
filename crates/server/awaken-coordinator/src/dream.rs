@@ -224,6 +224,8 @@ impl BuiltInDreamAgent {
                 owner_scope: request.workspace_id.clone(),
                 session_id: session_id.clone(),
                 agent_id: request.agent_id.clone(),
+                source_revision: None,
+                environment_id: None,
                 model: Some(request.model.id.clone()),
                 mounts: mount_values,
                 env: Vec::new(),

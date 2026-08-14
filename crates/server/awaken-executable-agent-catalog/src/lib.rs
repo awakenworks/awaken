@@ -579,6 +579,36 @@ mod tests {
     use crate::test_support::registration;
 
     #[tokio::test]
+    async fn exact_session_profile_does_not_follow_mutable_current_selection() {
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        let registrar = LocalExecutableAgentRegistrar::new(catalog.clone());
+        let mut historical = registration(1, "fp-1");
+        historical.session_profile.model = Some("model-one".into());
+        registrar.register(historical).await.unwrap();
+        let mut current = registration(2, "fp-2");
+        current.session_profile.model = Some("model-two".into());
+        registrar.register(current).await.unwrap();
+
+        assert_eq!(
+            catalog
+                .session_profile_in("workspace-a", "agent-a")
+                .and_then(|profile| profile.model),
+            Some("model-two".into())
+        );
+        assert_eq!(
+            catalog
+                .session_profile_at_revision_in("workspace-a", "agent-a", 1)
+                .and_then(|profile| profile.model),
+            Some("model-one".into())
+        );
+        assert!(
+            catalog
+                .session_profile_at_revision_in("workspace-a", "agent-a", 3)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn agent_reference_projection_is_fenced_monotonic_and_conservative() {
         use awaken_resource_contract::{
             BindingId, FileId, InputBinding, InputResourceId, ResourceAccess,
