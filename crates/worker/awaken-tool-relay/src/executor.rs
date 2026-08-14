@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_channel::AgentChannel;
-use awaken_runtime_contract::tool::{ToolCall, ToolError, ToolExecutor, ToolOutput};
+use awaken_runtime_contract::tool::{
+    ToolCall, ToolError, ToolExecutor, ToolOutput, ToolRecoveryCapability,
+};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -29,6 +31,7 @@ pub struct RemoteToolExecutor<S> {
     next_id: AtomicU64,
     catalog_fingerprint: Option<String>,
     operation_scope: Option<String>,
+    recovery_capability: ToolRecoveryCapability,
 }
 
 impl<S> RemoteToolExecutor<S>
@@ -42,6 +45,7 @@ where
             next_id: AtomicU64::new(1),
             catalog_fingerprint: None,
             operation_scope: None,
+            recovery_capability: ToolRecoveryCapability::NonRecoverable,
         }
     }
 
@@ -58,6 +62,15 @@ where
     #[must_use]
     pub fn with_catalog_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
         self.catalog_fingerprint = Some(fingerprint.into());
+        self
+    }
+
+    /// Declare that this executor addresses one live resident Hand ledger by
+    /// stable operation id. Attached or replaceable Hand processes must retain
+    /// the fail-closed default.
+    #[must_use]
+    pub fn with_durable_request_recovery(mut self) -> Self {
+        self.recovery_capability = ToolRecoveryCapability::DurableRequest;
         self
     }
 
@@ -118,6 +131,10 @@ impl<S> ToolExecutor for RemoteToolExecutor<S>
 where
     S: AgentChannel,
 {
+    fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
+        self.recovery_capability
+    }
+
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
         match self.call_hand(call).await {
             HandResult::Ok { output } => Ok(output),

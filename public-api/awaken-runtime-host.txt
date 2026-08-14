@@ -3,6 +3,12 @@ pub enum awaken_runtime_host::AcpStop
 pub awaken_runtime_host::AcpStop::EndTurn
 pub awaken_runtime_host::AcpStop::MaxTurns
 pub awaken_runtime_host::AcpStop::RequiresAction
+pub enum awaken_runtime_host::ContainerHandResidency
+pub awaken_runtime_host::ContainerHandResidency::AttachedExec
+pub awaken_runtime_host::ContainerHandResidency::Resident
+impl core::str::traits::FromStr for awaken_runtime_host::ContainerHandResidency
+pub type awaken_runtime_host::ContainerHandResidency::Err = alloc::string::String
+pub fn awaken_runtime_host::ContainerHandResidency::from_str(&str) -> core::result::Result<Self, Self::Err>
 pub enum awaken_runtime_host::ContentRedaction
 pub awaken_runtime_host::ContentRedaction::None
 pub awaken_runtime_host::ContentRedaction::Regex
@@ -298,6 +304,7 @@ pub awaken_runtime_host::SandboxSettings::allow_local_fallback: bool
 pub awaken_runtime_host::SandboxSettings::container_forward_proxy: core::option::Option<alloc::string::String>
 pub awaken_runtime_host::SandboxSettings::container_hand_bin: alloc::string::String
 pub awaken_runtime_host::SandboxSettings::container_hand_idle_secs: u64
+pub awaken_runtime_host::SandboxSettings::container_hand_residency: awaken_runtime_host::ContainerHandResidency
 pub awaken_runtime_host::SandboxSettings::inherit_agent_stderr: bool
 pub awaken_runtime_host::SandboxSettings::k8s_buildkit_image: alloc::string::String
 pub awaken_runtime_host::SandboxSettings::k8s_image_pull_secrets: alloc::vec::Vec<alloc::string::String>
@@ -494,7 +501,7 @@ pub fn awaken_runtime_host::AcpToolExporter::export<'life0, 'life1, 'async_trait
 pub trait awaken_runtime_host::CacheVolumeInitializer: core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::CacheVolumeInitializer::initialize<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_runtime_host::CacheVolumeWarmup) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_runtime_host::HandExecutorFactory: core::marker::Send + core::marker::Sync
-pub fn awaken_runtime_host::HandExecutorFactory::bind(&self, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, &str) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>
+pub fn awaken_runtime_host::HandExecutorFactory::bind(&self, alloc::boxed::Box<dyn awaken_agent_channel::AgentChannel>, &str, awaken_runtime_contract::tool::ToolRecoveryCapability) -> alloc::sync::Arc<dyn awaken_runtime_contract::tool::ToolExecutor>
 pub trait awaken_runtime_host::LocalCommit: awaken_agent_contract::thread::commit::coordinator::Coordinator + awaken_agent_contract::thread::commit::coordinator::OperationCoordinator + awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView + awaken_agent_contract::thread::read::recovery::RunRecoverySource + awaken_agent_contract::thread::read::lifecycle::RunLifecycleFeed + core::marker::Send + core::marker::Sync
 pub fn awaken_runtime_host::LocalCommit::authoritative_committed_messages<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::thread::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_runtime_host::LocalCommit::authoritative_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Record>, alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait

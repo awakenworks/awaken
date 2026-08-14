@@ -172,6 +172,7 @@ impl awaken_runtime_host::HandExecutorFactory for UnusedHandFactory {
         &self,
         _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
         _operation_scope: &str,
+        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
         Arc::new(UnusedToolExecutor)
     }

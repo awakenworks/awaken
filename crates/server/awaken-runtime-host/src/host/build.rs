@@ -1153,13 +1153,14 @@ impl SharedHost {
     ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
         self.session_provider = crate::session_environment::SessionEnvironmentProvider::
-            container_with_capacity_and_hand_idle(
+            container_with_capacity_hand_idle_and_residency(
                 provider,
                 capacity,
                 Vec::new(),
                 hand_factory,
                 hand_bin,
                 std::time::Duration::from_secs(self.deployment.sandbox.container_hand_idle_secs),
+                self.deployment.sandbox.container_hand_residency,
             );
         self.session_provider_explicit = true;
         if let Some(mounter) = self.memory_mounter() {
@@ -1180,7 +1181,7 @@ impl SharedHost {
     ) -> Self {
         let hand_bin = self.deployment.sandbox.container_hand_bin.clone();
         self.session_provider = crate::session_environment::SessionEnvironmentProvider::
-            container_with_capacity_and_hand_idle(
+            container_with_capacity_hand_idle_and_residency(
                 components.provider,
                 components.capacity,
                 components.extra_mounts,
@@ -1189,6 +1190,7 @@ impl SharedHost {
                 std::time::Duration::from_secs(
                     self.deployment.sandbox.container_hand_idle_secs,
                 ),
+                self.deployment.sandbox.container_hand_residency,
             );
         if let Some(initializer) = components.cache_volume_initializer {
             self.cache_volume_prewarmer =

@@ -271,13 +271,14 @@ impl crate::host::SharedHost {
                 host.cache_volume_prewarmer =
                     crate::cache_volume::CacheVolumePrewarmer::new(initializer);
             }
-            crate::session_environment::SessionEnvironmentProvider::container_with_capacity_and_hand_idle(
+            crate::session_environment::SessionEnvironmentProvider::container_with_capacity_hand_idle_and_residency(
                 components.provider,
                 components.capacity,
                 components.extra_mounts,
                 hand_factory,
                 deployment.sandbox.container_hand_bin.clone(),
                 std::time::Duration::from_secs(deployment.sandbox.container_hand_idle_secs),
+                deployment.sandbox.container_hand_residency,
             )
         };
         host.session_provider_explicit = true;
@@ -448,6 +449,7 @@ mod tests {
             &self,
             _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
             _operation_scope: &str,
+            _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
         ) -> Arc<dyn awaken_runtime_contract::tool::ToolExecutor> {
             panic!("the native-only startup test never opens a container")
         }

@@ -38,6 +38,7 @@ use crate::{
     BindPlan, ContainerPlan, ContainerRuntime, ContainerState, RuntimeAgentProcess, RuntimeError,
 };
 
+mod channel;
 mod client;
 mod error;
 mod live_inputs;
@@ -89,6 +90,9 @@ pub struct K8sRuntime {
     /// Exact external `awaken-egress=open|restricted` enforcement evidence;
     /// labels alone never imply a boundary.
     restricted_egress_policy: bool,
+    /// Private resident-process port reached only through the authenticated Pod
+    /// port-forward subresource. `None` preserves the legacy channel topology.
+    pod_channel_port: Option<u16>,
 }
 
 impl K8sRuntime {
@@ -110,6 +114,7 @@ impl K8sRuntime {
             rendezvous: None,
             image_pull_secrets: Vec::new(),
             restricted_egress_policy: false,
+            pod_channel_port: None,
         })
     }
 
@@ -149,6 +154,12 @@ impl K8sRuntime {
         self
     }
 
+    #[must_use]
+    pub fn with_pod_channel_port(mut self, port: u16) -> Self {
+        self.pod_channel_port = Some(port);
+        self
+    }
+
     /// A runtime backed by a **lazy** client (no cluster dial), for unit-testing the
     /// builder + Pod-assembly paths; the live `create`/`wait`/… methods still need a
     /// real apiserver (exercised by the gated `k8s_it` integration test).
@@ -164,6 +175,7 @@ impl K8sRuntime {
             rendezvous: None,
             image_pull_secrets: Vec::new(),
             restricted_egress_policy: false,
+            pod_channel_port: None,
         }
     }
 
@@ -732,8 +744,11 @@ impl ContainerRuntime for K8sRuntime {
 
     async fn open_channel(
         &self,
-        _container_id: &str,
+        container_id: &str,
     ) -> Result<Box<dyn AgentChannel>, RuntimeError> {
+        if let Some(port) = self.pod_channel_port {
+            return channel::open_pod_channel(&self.streaming_pods(), container_id, port).await;
+        }
         match self.rendezvous {
             // Reverse-dial: the host listens, the egress-fenced Pod dials out to us.
             Some(addr) => accept_reverse(addr).await,

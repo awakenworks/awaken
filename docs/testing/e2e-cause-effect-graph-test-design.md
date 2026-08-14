@@ -53,7 +53,7 @@ The concrete selectors are anchored in `crates/bin/awaken-cli/src/{config,main,l
 | D19 | Hand 拓扑 | brain 侧:`AWAKEN_REMOTE_HAND_UNIX`(C5 colocated) · `AWAKEN_REMOTE_HAND`(direct) · `AWAKEN_REMOTE_HAND_LISTEN`(reverse) · `AWAKEN_REMOTE_HAND_NATS`+`_SUBJECT`(relay);sandbox 侧 `awaken-sandbox hand --unix/--listen/--dial/--nats` | 四拓扑之一 | — |
 | D20 | 每会话出口 | 会话 environment networking → `NetworkPolicy::None/Unrestricted` | deny · allow | allow |
 | D21 | Worker 上游 & 秘密 | `AWAKEN_UPSTREAM_URL`/`AWAKEN_WORKER_SERVE_URL`;`AWAKEN_WORKER_GATEWAY_ONLY` | 本地凭证 · gateway-only(secretless) | 本地凭证 |
-| D22 | memoryd 实现 | typed `memoryd --mode/--store-id/--mount-path` argv | fuse · copy | copy |
+| D22 | MemoryMounter 实现 | composition 注入的 canonical mounter | fuse · copy | copy |
 
 > 生产模型源(provider/endpoint/credential)在**配置发布时**由 DB 目录 + vault (`/v1/config/*`+`/v1/vaults/*`→`CatalogModelPublicationResolver`)解析一次，作为完整 `ResolvedModelCandidate` 写入快照；执行期只由 `CredentialInferenceMaterializer` 注入该候选已固定的凭证，**禁作 env 选择轴**。e2e 用 `AWAKEN_MODEL_MODE`(scenario-host 专用)选桩/上游路由,不是生产选择器。
 
@@ -76,7 +76,7 @@ The concrete selectors are anchored in `crates/bin/awaken-cli/src/{config,main,l
 - **R11** 投影 ACP 只服务 `AcpWorkerProfile` 中的精确 CLI 路由；未声明的 `backend_ref=acp:<other>` 在 open 处 fail-closed，裸 `acp` 在无唯一 default 时 fail-closed。
 - **R12** 出口封闭边界(D20=deny)⇒ unix 传输是唯一跨界口(C5);**k8s 无 ingress ⇒ reverse hand(`--dial`)必需**;镜像内 ACP 适配器须预置(封闭 pod 不能 `npm install`)。
 - **R13** gateway-only worker(D21)⇒ 不开 vault/无需 seal;本地凭证模型则退 `NoModelConfiguredExecutor`。默认 worker ⇒ 共享控制面 stores(D10+D12)。
-- **R14** hand/memoryd 角色 ⇒ `--features hand`/`memoryd`;memoryd fuse ⇒ `/dev/fuse`+SYS_ADMIN,否则自动退 copy。
+- **R14** hand 角色 ⇒ `--features hand`; MemoryMounter fuse ⇒ `/dev/fuse`，否则同一 mounter 使用 copy/CAS。
 
 ### 合法部署场景(判定表 S:D 轴组合 × 约束)
 
@@ -93,7 +93,7 @@ The concrete selectors are anchored in `crates/bin/awaken-cli/src/{config,main,l
 | **S9** | gateway-only worker | S8 但 D21=gateway-only(secretless) | R13(无 vault) |
 | **S10** | 沙箱 namespace/bwrap | D15=namespace, D20=deny → NET-POLICY | R10 |
 | **S11** | 沙箱容器 docker | D15=docker, D16=image, `--features container-docker`;ACP bridge | R9 |
-| **S12** | 沙箱 k8s + memoryd | D15=k8s, D16, `AWAKEN_K8S_AGENT_ADDR`, D19=reverse `--dial`, D22 sidecar | R9,R12,R14 |
+| **S12** | 沙箱 k8s + MemoryMounter | D15=k8s, D16, `AWAKEN_K8S_AGENT_ADDR`, D19=reverse `--dial`, D22 projector | R9,R12,R14 |
 | **S13** | 共置 hand(unix,出口封闭) | D19=`REMOTE_HAND_UNIX`, D20=deny | R12(C5) |
 | **S14** | ACP-CLI 后端(投影单 CLI) | D18=`ACP_CLI`, D15 tier | R11 |
 

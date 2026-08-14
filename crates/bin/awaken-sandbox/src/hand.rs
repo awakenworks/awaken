@@ -83,6 +83,9 @@ pub enum HandBind {
 /// The default NATS subject a hand serves on (matches the brain's `AWAKEN_HAND_SUBJECT`).
 const DEFAULT_NATS_SUBJECT: &str = "awaken.hand.exec";
 const HAND_LEDGER_DIR: &str = "AWAKEN_HAND_LEDGER_DIR";
+const HAND_LEDGER_MAX_ENTRIES: &str = "AWAKEN_HAND_LEDGER_MAX_ENTRIES";
+const HAND_MAX_CONNECTIONS: &str = "AWAKEN_HAND_MAX_CONNECTIONS";
+const DEFAULT_HAND_MAX_CONNECTIONS: usize = 16;
 
 fn operation_ledger_root(configured: Option<std::ffi::OsString>) -> std::path::PathBuf {
     configured.map_or_else(
@@ -91,9 +94,28 @@ fn operation_ledger_root(configured: Option<std::ffi::OsString>) -> std::path::P
     )
 }
 
+fn positive_limit(
+    name: &'static str,
+    configured: Option<std::ffi::OsString>,
+    default: usize,
+) -> Result<usize, String> {
+    configured.map_or(Ok(default), |value| {
+        value
+            .to_str()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+            .ok_or_else(|| format!("{name} must be a positive integer"))
+    })
+}
+
 fn open_operation_ledger() -> Result<Arc<dyn HandOperationLedger>, String> {
     let root = operation_ledger_root(std::env::var_os(HAND_LEDGER_DIR));
-    FsOperationLedger::open(&root)
+    let max_entries = positive_limit(
+        HAND_LEDGER_MAX_ENTRIES,
+        std::env::var_os(HAND_LEDGER_MAX_ENTRIES),
+        awaken_tool_relay::DEFAULT_FS_LEDGER_MAX_ENTRIES,
+    )?;
+    FsOperationLedger::open_with_max_entries(&root, max_entries)
         .map(|ledger| Arc::new(ledger) as Arc<dyn HandOperationLedger>)
         .map_err(|error| format!("open Hand operation ledger at {}: {error}", root.display()))
 }
@@ -163,13 +185,24 @@ pub async fn serve_with_operation_ledger(
                 eprintln!("awaken-sandbox hand: chmod {path}: {e} (brain may not connect)");
             }
             eprintln!("awaken-sandbox hand: serving the executor channel on unix://{path}");
+            let connections = Arc::new(tokio::sync::Semaphore::new(positive_limit(
+                HAND_MAX_CONNECTIONS,
+                std::env::var_os(HAND_MAX_CONNECTIONS),
+                DEFAULT_HAND_MAX_CONNECTIONS,
+            )?));
             loop {
+                let permit = connections
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "hand connection limiter closed".to_string())?;
                 let channel = listener
                     .accept()
                     .await
                     .map_err(|e| format!("hand accept: {e}"))?;
                 let ledger = ledger.clone();
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let session = HandSession::new(all_hand_tools(), ledger);
                     let _ = serve_hand(channel, session).await;
                 });
@@ -180,13 +213,24 @@ pub async fn serve_with_operation_ledger(
                 .await
                 .map_err(|e| format!("hand bind tcp://{addr}: {e}"))?;
             eprintln!("awaken-sandbox hand: serving the executor channel on tcp://{addr}");
+            let connections = Arc::new(tokio::sync::Semaphore::new(positive_limit(
+                HAND_MAX_CONNECTIONS,
+                std::env::var_os(HAND_MAX_CONNECTIONS),
+                DEFAULT_HAND_MAX_CONNECTIONS,
+            )?));
             loop {
+                let permit = connections
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "hand connection limiter closed".to_string())?;
                 let channel = listener
                     .accept()
                     .await
                     .map_err(|e| format!("hand accept: {e}"))?;
                 let ledger = ledger.clone();
                 tokio::spawn(async move {
+                    let _permit = permit;
                     let session = HandSession::new(all_hand_tools(), ledger);
                     let _ = serve_hand(channel, session).await;
                 });
@@ -277,6 +321,10 @@ mod tests {
 
     #[tokio::test]
     async fn stdio_channel_forwards_flush_and_shutdown_to_its_writer() {
+        // Attached-Hand stream graph: C1=stdio binding selected; C2=reply written;
+        // C3=flush/shutdown requested; E1=all AsyncWrite operations reach the
+        // wrapped stdout. Decision rule HS1=C1+C2+C3=>E1. This detects an adapter
+        // regression that could lose a terminal reply while the tool ran once.
         use tokio::io::AsyncWriteExt as _;
 
         let mut channel = StdioChannel {
@@ -290,6 +338,10 @@ mod tests {
 
     #[test]
     fn parse_hand_args_reads_unix_and_tcp_binds() {
+        // Bind decision table: exactly one of stdio/unix/listen/dial/nats with
+        // its required value selects that canonical transport; missing/unknown
+        // input fails closed. These assertions cover the local and directed
+        // transports changed by resident Hand placement; NATS has its live test.
         assert!(matches!(
             parse_hand_args(&["--stdio".into()]).unwrap(),
             HandBind::Stdio
@@ -326,6 +378,31 @@ mod tests {
             operation_ledger_root(None),
             std::path::PathBuf::from(".awaken/hand-operations"),
             "L2"
+        );
+    }
+
+    #[test]
+    fn resident_resource_limits_are_positive_and_default_to_one_authoritative_bound() {
+        /*
+         * Resource decision table: C1 value absent/positive/zero/malformed;
+         * E1 canonical default, E2 exact override, E3 startup rejection. Rules
+         * RL1 absent=>E1; RL2 positive=>E2; RL3 zero|malformed=>E3. The same
+         * parser owns ledger-entry and connection bounds so invalid deployment
+         * input cannot silently disable either FMECA control.
+         */
+        assert_eq!(positive_limit("LIMIT", None, 16).unwrap(), 16, "RL1");
+        assert_eq!(
+            positive_limit("LIMIT", Some("7".into()), 16).unwrap(),
+            7,
+            "RL2"
+        );
+        assert!(
+            positive_limit("LIMIT", Some("0".into()), 16).is_err(),
+            "RL3"
+        );
+        assert!(
+            positive_limit("LIMIT", Some("many".into()), 16).is_err(),
+            "RL3"
         );
     }
 

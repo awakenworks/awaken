@@ -350,3 +350,29 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
   fallback above (a complete realization, not a stub). The distributed
   `Invalidator` **transport** (NATS/pg-notify) and a pull-based version oracle remain
   future work behind the delivered in-process seam.
+
+## 2026-08-14 amendment: one Memory realizer and no Pod-local store authority
+
+The authoritative realization is the injected `MemoryMounter` backed by the
+configured `MemoryRepository`. Kubernetes copy mode stages one bounded snapshot
+through the provider-owned `memory-projector` into a Pod-local volume and
+reconciles that exact surviving tree through the same mounter on disposal or
+Worker recovery. The projector owns no Repository client, database, credential
+or durable Memory truth.
+
+The standalone `awaken-sandbox memoryd` process that opens a separate SQLite
+database under `--store-dir` is not a valid realization of this architecture. It
+duplicates the configured Repository and can make a Pod-local database compete
+with the authoritative store. The executable role, its dedicated image and its
+sidecar-only tests are retired. The `awaken-sandbox-memoryd` crate name remains
+for compatibility, but its authoritative production responsibility is the
+injected in-process `MemoryStoreMounter`, including FUSE and copy/CAS behavior.
+
+Worker loss while the Kubernetes Pod survives does not lose the projected tree:
+the replacement adopts the same Sandbox and later reconciles it through the
+existing mounter. Pod/node loss destroys unharvested `emptyDir` changes; the last
+durable Repository version remains authoritative. A deployment requiring
+write-through durability must provide it behind the existing `MemoryMounter` /
+`MemoryRepository` ports with claim-scoped, short-lived authority. It must not
+introduce another SQLite store, lifecycle aggregate or provider credential in a
+sidecar.

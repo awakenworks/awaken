@@ -20,8 +20,8 @@ use awaken_runtime_contract::llm::ToolCall;
 use awaken_runtime_contract::tool::{ToolError, ToolExecutor};
 use awaken_sandbox_container::k8s::K8sRuntime;
 use awaken_sandbox_container::{
-    ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime, ContainerSandbox,
-    ContainerState, WarmContainerPool, command_of,
+    ContainerEnvironment, ContainerEnvironmentProvider, ContainerProvider, ContainerRuntime,
+    ContainerSandbox, ContainerState, ResidentHandConfig, WarmContainerPool, command_of,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1072,4 +1072,137 @@ async fn an_expired_hand_exec_is_safe_to_replace_inside_the_same_session_pod() {
     pc::Sandbox::dispose(&sandbox)
         .await
         .expect("dispose the Session Pod");
+}
+
+#[tokio::test]
+async fn resident_hand_joins_and_caches_across_two_provider_owners_of_one_pod() {
+    /*
+     * Real Kubernetes resident-takeover rules H1/H2/H3/H5 and Cloud RH1/RH5.
+     * Causes: C1 provider/Worker A creates a Session Pod whose PID1 is the real
+     * `awaken-sandbox hand --listen`; C2 operation O performs one filesystem
+     * side effect and remains in flight; C3 A's port-forward disappears before
+     * the reply; C4 independent provider/Worker B adopts the durable handle and
+     * opens a new authenticated Pod subresource; C5 B re-drives O, then a third
+     * channel re-drives completed O; C6 the Pod is deleted before another open.
+     * Effects: E1 B joins the original result; E2 the third channel reads the
+     * cache; E3 the side-effect count is one; E4 Pod identity never changes;
+     * E5 the unavailable Pod channel fails within its bound. Constraint: no
+     * attached Hand or Service is created. This is the executable control for
+     * duplicate effect, decorator/channel drift, and API-unavailable FMECA paths.
+     */
+    if !require_live_cluster() {
+        return;
+    }
+
+    let namespace = std::env::var("AWAKEN_K8S_NAMESPACE").unwrap_or_else(|_| "default".into());
+    let image =
+        std::env::var("AWAKEN_K8S_SESSION_IMAGE").unwrap_or_else(|_| "awaken-sandbox:local".into());
+    let scope = format!("k8s-resident-takeover-{}", std::process::id());
+    let runtime_a = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect Worker A provider")
+        .with_pod_channel_port(7777);
+    let provider_a = ContainerProvider::new(Arc::new(runtime_a), image).with_resident_hand(
+        ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
+    );
+    let sandbox = provider_a
+        .create_container(&spec(&scope))
+        .await
+        .expect("Worker A creates resident Session Pod");
+    let pod = pod_of(&sandbox);
+    let handle = pc::Sandbox::handle(&sandbox);
+
+    let mut channel_a = None;
+    for _ in 0..120 {
+        match sandbox.open_agent_channel().await {
+            Ok(channel) => {
+                channel_a = Some(channel);
+                break;
+            }
+            Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    let channel_a = channel_a.expect("resident Hand accepts the bounded initial channel probe");
+    let operation = ToolCall {
+        call_id: "resident-one-effect".into(),
+        tool_id: "bash".into(),
+        arguments: serde_json::json!({
+            "command": "count=$(cat /tmp/awaken-ha-count 2>/dev/null || echo 0); count=$((count+1)); printf '%s' \"$count\" > /tmp/awaken-ha-count; touch /tmp/awaken-ha-started; sleep 2; printf 'resident-result-%s' \"$count\""
+        }),
+    };
+    let worker_a = tokio::spawn({
+        let operation = operation.clone();
+        let scope = scope.clone();
+        async move {
+            awaken_tool_relay::RemoteToolExecutor::new(channel_a)
+                .with_operation_scope(scope)
+                .with_durable_request_recovery()
+                .invoke(&operation)
+                .await
+        }
+    });
+    let mut started = false;
+    for _ in 0..50 {
+        if kubectl(&["exec", &pod, "--", "test", "-f", "/tmp/awaken-ha-started"])
+            .status
+            .success()
+        {
+            started = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(started, "H2/C2 real side effect entered before disconnect");
+    worker_a.abort();
+    let _ = worker_a.await;
+    drop(sandbox);
+    drop(provider_a);
+
+    let runtime_b = K8sRuntime::connect(&namespace, "127.0.0.1:1".parse().unwrap())
+        .await
+        .expect("connect Worker B provider")
+        .with_pod_channel_port(7777);
+    let provider_b = ContainerProvider::new(Arc::new(runtime_b), "unused-on-adopt")
+        .with_resident_hand(
+            ResidentHandConfig::new("/usr/local/bin/awaken-sandbox", 7777).unwrap(),
+        );
+    let adopted = provider_b
+        .adopt_environment(&handle)
+        .await
+        .expect("Worker B adopts the same Pod");
+    assert_eq!(adopted.handle(), handle, "H2/E4");
+    let channel_b = adopted.open_agent_channel().await.expect("RH1/C4");
+    let joined = awaken_tool_relay::RemoteToolExecutor::new(channel_b)
+        .with_operation_scope(scope.clone())
+        .with_durable_request_recovery()
+        .invoke(&operation)
+        .await
+        .expect("H2/E1 replacement joins original operation");
+    assert!(joined.text().contains("resident-result-1"), "H2/E1");
+
+    let channel_c = adopted.open_agent_channel().await.expect("H3/C5");
+    let cached_executor = awaken_tool_relay::RemoteToolExecutor::new(channel_c)
+        .with_operation_scope(scope.clone())
+        .with_durable_request_recovery();
+    let cached = cached_executor
+        .invoke(&operation)
+        .await
+        .expect("H3/E2 cached result");
+    assert_eq!(cached, joined, "H3/E2");
+    let count = cached_executor
+        .invoke(&ToolCall {
+            call_id: "resident-effect-count".into(),
+            tool_id: "bash".into(),
+            arguments: serde_json::json!({"command": "cat /tmp/awaken-ha-count"}),
+        })
+        .await
+        .expect("inspect the real side effect");
+    assert_eq!(count.text().trim(), "1", "H2/H3 E3");
+    drop(cached_executor);
+
+    adopted.dispose().await.expect("delete Session Pod");
+    let unavailable = tokio::time::timeout(Duration::from_secs(20), adopted.open_agent_channel())
+        .await
+        .expect("H5/E5 channel establishment owns a finite bound");
+    assert!(unavailable.is_err(), "H5/E5 deleted Pod is unavailable");
 }

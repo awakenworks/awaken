@@ -145,6 +145,20 @@ impl Drop for ClaimLeaseRenewal {
     }
 }
 
+enum CommittedTerminalSettlement {
+    Applied(RunId, RunState),
+    Fenced,
+}
+
+impl CommittedTerminalSettlement {
+    fn into_processed(self) -> Option<(RunId, RunState)> {
+        match self {
+            Self::Applied(run_id, state) => Some((run_id, state)),
+            Self::Fenced => None,
+        }
+    }
+}
+
 impl Drop for AttemptControlGuard {
     fn drop(&mut self) {
         self.runtime.deregister_attempt_controls(&self.run_id);
@@ -673,6 +687,41 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .then_some((run_id, state)));
         }
 
+        // Committed terminal truth dominates backend-specific recovery. This
+        // also owns cleanup of idle-thread input proven to have been delivered
+        // before the prior owner crashed, so the ACP fail-closed rule below
+        // cannot accidentally make that input visible to a later Run.
+        if let Some(settlement) = self
+            .settle_from_committed_terminal(&claimed, &mut all_pending)
+            .await?
+        {
+            return Ok(settlement.into_processed());
+        }
+
+        // Cause/effect recovery rule A2: a reclaimed ACP turn is opaque. The
+        // previous Worker may have dispatched the prompt or an MCP effect but
+        // failed before committing the reply. Re-executing here would duplicate
+        // an external effect; the existing neutral Indeterminate terminal is the
+        // only sound committed truth until ACP exposes an idempotent turn receipt.
+        if claimed.recovered
+            && awaken_runtime_contract::resolved::Backend::from_ref(
+                &activation
+                    .snapshot
+                    .resolved_spec
+                    .model_binding
+                    .binding
+                    .backend_ref,
+            )
+            .is_acp()
+        {
+            return self
+                .end_claimed_before_execution(
+                    &claimed,
+                    awaken_agent_contract::agent::run::EndCause::Indeterminate,
+                )
+                .await;
+        }
+
         let attempt_executor = self.attempt_executor();
         if !claimed.request.placement.required_credentials.is_empty() {
             let resolver = self.worker_credential_resolver.as_ref().ok_or_else(|| {
@@ -820,46 +869,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // No ticket: a fresh run, or a recovered run that already finished.
             // The committed run record disambiguates so recovery never re-runs a
             // terminal run, and any orphan pending is dropped on settle.
-            None => match self.reader.run_state(&run_id) {
-                Some(state @ RunState::Ended(_)) => {
-                    let thread = claimed.request.thread_id().clone();
-                    self.redeliver_terminal_observers(&run_id, &thread).await;
-                    // A recovered fresh run that already committed a terminal record:
-                    // its crashed prior attempt may have drained unbound idle-thread
-                    // input (ADR-0021) into this run's committed transcript but died
-                    // before recording that consumption in the settle. Consume exactly
-                    // those unbound inbox rows whose message id IS in the committed
-                    // transcript — committed truth is authority: their presence proves
-                    // the crashed attempt delivered them, so they must not be
-                    // re-delivered to a later run. An unbound row NOT in the transcript
-                    // arrived after the terminal commit and was never delivered, so it
-                    // is left for a future run (no loss). Without this, the run's own
-                    // bound pending is dropped but a delivered unbound row lingers and
-                    // is drained a SECOND time by the next fresh run (a duplicate).
-                    let delivered: std::collections::HashSet<String> = self
-                        .reader
-                        .committed_messages(&thread)
-                        .into_iter()
-                        .map(|message| message.id.0)
-                        .collect();
-                    let consumed_unbound = self
-                        .store
-                        .list(&thread)
-                        .await?
-                        .into_iter()
-                        .map(|record| record.input)
-                        .filter(|input| {
-                            input.run_id.0.is_empty() && delivered.contains(&input.message_id)
-                        })
-                        .map(|input| input.message_id);
-                    all_pending.extend(consumed_unbound);
-                    return Ok(self
-                        .settle(&run_id, lease_epoch, DispatchOutcome::Done, &all_pending)
-                        .await?
-                        .applied()
-                        .then_some((run_id, state)));
-                }
-                _ => {
+            None => match self
+                .settle_from_committed_terminal(&claimed, &mut all_pending)
+                .await?
+            {
+                Some(settlement) => return Ok(settlement.into_processed()),
+                None => {
                     // Drain the thread inbox: input addressed to this thread with
                     // no run yet (ADR-0021) becomes new input to this fresh run.
                     let thread = claimed.request.thread_id().clone();
@@ -950,6 +965,55 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .await?
             .applied()
             .then_some((run_id, state)))
+    }
+
+    /// Settle one claim from committed terminal truth without invoking an
+    /// executor. This is the single owner of the crash-window inbox cleanup used
+    /// both before backend recovery and after an awaiting-ticket race.
+    async fn settle_from_committed_terminal(
+        &self,
+        claimed: &Claimed,
+        all_pending: &mut Vec<String>,
+    ) -> Result<Option<CommittedTerminalSettlement>, Error> {
+        let run_id = claimed.request.run_id().clone();
+        let Some(state @ RunState::Ended(_)) = self.reader.run_state(&run_id) else {
+            return Ok(None);
+        };
+        let thread = claimed.request.thread_id().clone();
+        self.redeliver_terminal_observers(&run_id, &thread).await;
+
+        // A recovered fresh run that already committed a terminal record may
+        // have drained unbound idle-thread input before dying prior to settle.
+        // Consume exactly rows whose ids exist in committed transcript truth;
+        // later, undelivered input remains available to the next Run.
+        let delivered: std::collections::HashSet<String> = self
+            .reader
+            .committed_messages(&thread)
+            .into_iter()
+            .map(|message| message.id.0)
+            .collect();
+        let consumed_unbound = self
+            .store
+            .list(&thread)
+            .await?
+            .into_iter()
+            .map(|record| record.input)
+            .filter(|input| input.run_id.0.is_empty() && delivered.contains(&input.message_id))
+            .map(|input| input.message_id);
+        all_pending.extend(consumed_unbound);
+        let settled = self
+            .settle(
+                &run_id,
+                claimed.lease.epoch,
+                DispatchOutcome::Done,
+                all_pending,
+            )
+            .await?;
+        Ok(Some(if settled.applied() {
+            CommittedTerminalSettlement::Applied(run_id, state)
+        } else {
+            CommittedTerminalSettlement::Fenced
+        }))
     }
 
     /// Settle a claimed dispatch and record the operational `runs.settled` counter
@@ -1045,6 +1109,31 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         message: impl Into<String>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         use awaken_agent_contract::agent::run::{EndCause, Failure};
+
+        let run_id = claimed.lease.run_id.clone();
+        let cause = EndCause::Error(Failure::Inference {
+            code: code.into(),
+            message: message.into(),
+        });
+        let claim = RunClaim::from(&claimed.lease);
+        if let Some(projection) = &self.recovery_projection {
+            let snapshot = self.store.load_recovery_snapshot(&claim).await?;
+            projection.install(&run_id, snapshot).map_err(|error| {
+                Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+            })?;
+        }
+        self.end_claimed_before_execution(claimed, cause).await
+    }
+
+    /// Commit one deterministic terminal outcome before invoking an executor.
+    /// Callers install any recovery projection first; this function owns the one
+    /// claim-fenced commit/observer/settle sequence shared by resolution failures
+    /// and opaque ACP crash recovery.
+    async fn end_claimed_before_execution(
+        &self,
+        claimed: &Claimed,
+        cause: awaken_agent_contract::agent::run::EndCause,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
 
         let run_id = claimed.lease.run_id.clone();
@@ -1055,18 +1144,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .iter()
             .map(|pending| pending.message_id.clone())
             .collect::<Vec<_>>();
-        let cause = EndCause::Error(Failure::Inference {
-            code: code.into(),
-            message: message.into(),
-        });
         let state = RunState::Ended(cause.clone());
         let claim = RunClaim::from(&claimed.lease);
-        if let Some(projection) = &self.recovery_projection {
-            let snapshot = self.store.load_recovery_snapshot(&claim).await?;
-            projection.install(&run_id, snapshot).map_err(|error| {
-                Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
-            })?;
-        }
         let context = self.execution_context_with(
             &claim,
             claimed.request.execution_scope.as_ref(),
@@ -1075,7 +1154,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         );
         let coordinator = context.commit.ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(
-                "claimed resolution failure has no commit coordinator".to_string(),
+                "claimed pre-execution terminal has no commit coordinator".to_string(),
             ))
         })?;
         if let Err(error) = commit_run(

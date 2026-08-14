@@ -12,10 +12,16 @@ impl awaken_runtime_host::HandExecutorFactory for RelayHandExecutorFactory {
         &self,
         channel: Box<dyn AgentChannelType>,
         operation_scope: &str,
+        recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
     ) -> Arc<dyn ToolExecutor> {
+        let executor = awaken_tool_relay::RemoteToolExecutor::new(channel)
+            .with_operation_scope(operation_scope);
         Arc::new(
-            awaken_tool_relay::RemoteToolExecutor::new(channel)
-                .with_operation_scope(operation_scope),
+            if recovery == awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest {
+                executor.with_durable_request_recovery()
+            } else {
+                executor
+            },
         )
     }
 }
@@ -56,7 +62,11 @@ mod tests {
             hand,
             awaken_tool_relay::HandSession::in_memory([Arc::new(Echo) as Arc<dyn RawTool>]),
         ));
-        let executor = relay_hand_executor_factory().bind(Box::new(brain), "session-a");
+        let executor = relay_hand_executor_factory().bind(
+            Box::new(brain),
+            "session-a",
+            awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable,
+        );
         let output = executor
             .invoke(&ToolCall {
                 call_id: "call-a".into(),

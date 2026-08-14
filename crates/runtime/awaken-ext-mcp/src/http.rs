@@ -19,8 +19,9 @@
 //! Auth failures (401/403) are handled managed-agents style: the credential is
 //! rotatable in place ([`set_credential`](HttpTransport::set_credential)), and
 //! a host-registered [`CredentialRefresher`] is consulted once per failed
-//! request — on success the request is retried with the fresh credential, on
-//! failure the challenge (including `WWW-Authenticate`) surfaces as a
+//! request — on success only a classified read-only request is retried with the
+//! fresh credential; effectful or unknown methods surface the original challenge
+//! without replay. Refresh failure likewise surfaces the challenge (including `WWW-Authenticate`) as a
 //! [`McpTransportError::ServerError`] prefixed with `auth challenge:`.
 
 use std::collections::HashMap;
@@ -40,7 +41,9 @@ use tokio::sync::broadcast;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::credential::{AuthChallenge, Credential, CredentialRefresher};
+use crate::credential::{
+    AuthChallenge, AuthRetrySafety, Credential, CredentialRefresher, auth_retry_safety,
+};
 use crate::jsonrpc::{ServerNotification, ServerRequestHandler, server_request_reply};
 use crate::progress::McpProgressUpdate;
 use crate::router::{NotificationSinks, route};
@@ -209,11 +212,15 @@ impl HttpShared {
         let mut response = self
             .record_send(self.post_builder(body).send().await)
             .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
-        // Auth failure: consult the host refresher once, retry with the fresh
-        // credential; otherwise surface the challenge (incl. WWW-Authenticate).
+        // Auth failure: rotate once, but resend only the explicit read-only
+        // allowlist. A 401/403 is not proof that an opaque tools/call or vendor
+        // method had no effect upstream.
         if is_auth_failure(response.status()) {
             let challenge = challenge_from(&response);
             if !self.try_refresh(&challenge).await {
+                return Err(unauthorized_error(&challenge));
+            }
+            if auth_retry_safety(body) == AuthRetrySafety::Never {
                 return Err(unauthorized_error(&challenge));
             }
             response = self

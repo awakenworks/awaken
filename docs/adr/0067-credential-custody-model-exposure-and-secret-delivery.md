@@ -664,6 +664,23 @@ join `SessionMcpAttachmentSet` and does not create a common Service authority.
 6. Recovery recreates realization from exact references and policy; it never
    restores serialized plaintext or selects a different holder.
 
+### 2026-08-14 amendment: authentication refresh is effect-aware
+
+Receiving an authentication challenge authorizes refresh of the exact pinned
+credential; it does not by itself authorize replay of an arbitrary MCP request.
+The canonical MCP wire layer classifies protocol methods for this decision.
+Initialization, discovery and other explicitly read-only methods may be retried
+once after a successful refresh. `tools/call`, unknown methods and malformed
+messages are never automatically resent by the relay. Their response or
+transport failure is returned to the owning executor, whose existing recovery
+boundary decides the terminal outcome.
+
+The relay remains an opaque generation-fenced credential mediator. It does not
+parse tool arguments, persist an effect journal, promise exactly-once execution,
+or create a second Tool authority. In particular, an ACP Worker loss after an
+MCP request may have been dispatched terminates the recovered opaque turn as
+`EndCause::Indeterminate` instead of replaying its prompt.
+
 ### Repository Resource realization
 
 1. The Resource Catalog persists one immutable Repository config version with a

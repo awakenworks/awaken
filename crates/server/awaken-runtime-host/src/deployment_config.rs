@@ -165,7 +165,7 @@ pub enum Wake {
 pub enum SandboxTier {
     /// No OS isolation — the ACP CLI runs as a plain child of the runtime process
     /// (`sandbox_tier = "local"`). The environment-agnostic executor drives it
-    /// over the same [`AgentChannelSource`] as any sandboxed tier; only the host's
+    /// over the same agent-channel source as any sandboxed tier; only the host's
     /// choice of source differs (ADR-0057: the executor never learns the tier). For
     /// a trusted CLI or single-tenant dev where isolation is provided elsewhere.
     Local,
@@ -197,6 +197,32 @@ pub enum K8sNetworkPolicyEnforcement {
     /// `app=awaken-sandbox` is ingress-denied; `awaken-egress=open` alone may
     /// egress, while `awaken-egress=restricted` is denied all egress.
     AwakenRestrictedEgressV1,
+}
+
+/// Lifetime of the Session container's Hand role. One enum drives both the Pod
+/// process and the Runtime Host binding, preventing parallel Hand owners.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContainerHandResidency {
+    /// Launch a rebuildable `hand --stdio` process for the current Worker.
+    #[default]
+    AttachedExec,
+    /// Run the Hand as the Session container process and reopen its private
+    /// provider channel after Worker replacement.
+    Resident,
+}
+
+impl std::str::FromStr for ContainerHandResidency {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "attached_exec" | "attached" => Ok(Self::AttachedExec),
+            "resident" => Ok(Self::Resident),
+            other => Err(format!(
+                "invalid container_hand_residency={other:?}: expected attached_exec or resident"
+            )),
+        }
+    }
 }
 
 impl std::str::FromStr for K8sNetworkPolicyEnforcement {
@@ -266,6 +292,8 @@ pub struct SandboxSettings {
     pub k8s_image_pull_secrets: Vec<String>,
     /// Executable path for the Awaken Hand inside a container image.
     pub container_hand_bin: String,
+    /// Whether the container Hand is Worker-attached or Environment-resident.
+    pub container_hand_residency: ContainerHandResidency,
     /// Inactivity horizon after which the Worker-local Session owner releases
     /// its rebuildable Hand process/channel. Zero disables idle hibernation.
     pub container_hand_idle_secs: u64,
@@ -308,6 +336,7 @@ impl Default for SandboxSettings {
             k8s_network_policy_enforcement: None,
             k8s_image_pull_secrets: Vec::new(),
             container_hand_bin: "/usr/local/bin/awaken-sandbox".to_owned(),
+            container_hand_residency: ContainerHandResidency::AttachedExec,
             container_hand_idle_secs: 300,
             podman_bin: "podman".to_owned(),
             package_image_registry: None,

@@ -30,7 +30,7 @@
     "check:dream": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck managed_dream_e2e.ts",
     "test:skill-pin": "node managed_skill_bundle_pin_e2e.mjs",
     "test:harness": "node harness_process_lifecycle_e2e.mjs",
-    "test:memoryd-copy": "node memoryd_copy_lifecycle_e2e.mjs",
+    "test:memory-mounter-copy": "node memory_mounter_copy_lifecycle_e2e.mjs",
     "test:resource-reclamation": "node resource_reclamation_e2e.mjs",
     "test:resource-ephemeral": "node resource_ephemeral_e2e.mjs",
     "test:resource-scope": "node resource_scope_boundary_e2e.mjs",

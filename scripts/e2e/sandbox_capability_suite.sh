@@ -19,7 +19,7 @@
 #                                        | + rust unit      | pool_key shape-match/boundary (mount -> None)
 #   G1 k8s pod tier                     | real k3d         | pod lifecycle ; agent-over-wire port-forward ;
 #                                       |                  | ConfigMap volume ; blob-source file ; binary data
-#   G7 memoryd FUSE write-through       | /dev/fuse host   | read/write/rename/persist-across-remount ;
+#   G7 MemoryMounter FUSE write-through | /dev/fuse host   | read/write/rename/persist-across-remount ;
 #                                       |                  | shared-mount coherence ; copy fallback
 #   G3 fault != success (fail closed)   | real docker      | OOM/read-only surface non-zero exit, never fake ok
 #
@@ -121,24 +121,14 @@ else
 fi
 
 # ── Layer 5: real FUSE (G7 memoryd write-through) ────────────────────────────
-step "G7 memoryd FUSE write-through"
+step "G7 MemoryMounter FUSE write-through"
 if [ -e /dev/fuse ] && { command -v fusermount >/dev/null || command -v fusermount3 >/dev/null; }; then
-  run "memoryd fuse kernel_vfs" cargo test -q -p awaken-sandbox-memoryd --test kernel_vfs
+  run "MemoryMounter fuse kernel_vfs" cargo test -q -p awaken-sandbox-memoryd --test kernel_vfs
   run "sandbox-local memory_mount" cargo test -q -p awaken-sandbox-local --test memory_mount
   # ADR-0053 item 2: a host FUSE mount spliced LIVE into the bwrap namespace (write-through).
   run "bwrap fuse-splice" cargo test -q -p awaken-sandbox-local --test namespace_provider bwrap_splices
 else
   skip "/dev/fuse or fusermount unavailable (copy fallback path is the alternative)"
-fi
-
-# ── Layer 6: memoryd copy sidecar in a real container (G7, portable) ──────────
-# The copy realization (harvest→persist→re-materialize) through the real memoryd image
-# ENTRYPOINT + SIGTERM harvest + sqlite persistence, no /dev/fuse needed.
-step "G7 memoryd copy sidecar (real Docker container)"
-if docker version >/dev/null 2>&1; then
-  run "memoryd container roundtrip" bash scripts/e2e/memoryd_container_e2e.sh
-else
-  skip "no Docker daemon (memoryd copy-sidecar container proof)"
 fi
 
 # ── Optional: line-coverage of the pure-Rust sandbox-change surface (COVERAGE=1) ─
@@ -157,7 +147,7 @@ if [ "${COVERAGE:-0}" = 1 ] && command -v cargo-llvm-cov >/dev/null; then
   step "line coverage — execution-plane binary + container lifecycle"
   CARGO_TARGET_DIR="$COV" \
     cargo llvm-cov --all-features -p awaken-sandbox --summary-only 2>/dev/null \
-      | grep -E "bridge|hand|memoryd|TOTAL" || true
+      | grep -E "bridge|hand|TOTAL" || true
   CARGO_TARGET_DIR="$COV" \
     cargo llvm-cov -p awaken-sandbox-container --features docker,podman,k8s --summary-only 2>/dev/null \
       | grep -E "lease|recovery|TOTAL" || true
@@ -166,11 +156,8 @@ if [ "${COVERAGE:-0}" = 1 ] && command -v cargo-llvm-cov >/dev/null; then
   # substrates (a real binary / container / cluster) rather than unit tests, so
   # `llvm-cov` — which instruments the lib+tests, NOT the spawned real binary — cannot
   # attribute those lines. Specifically:
-  #   - memoryd::from_env is exercised by the real binary via the container e2e;
-  #   - memoryd::serve_fuse: needs /dev/fuse + SYS_ADMIN — the memoryd `kernel_vfs`
-  #     fuse tests cover the FUSE path; the copy fallback + `serve` are unit-covered;
-  #   - memoryd::shutdown_signal + the SIGTERM harvest: proven by the container e2e
-  #     (`docker stop` -> SIGTERM -> "harvested N ...");
+  #   - MemoryStoreMounter FUSE needs /dev/fuse + SYS_ADMIN — `kernel_vfs`
+  #     covers the kernel path while deterministic mounter tests cover copy/CAS;
   #   - hand::serve tcp/reverse-dial/nats binds: proven by the k3d topology e2e
   #     (direct/reverse/relay) + managed_colocated (unix). The pure logic (lease fencing,
   #     parse_hand_args, splice, copy round-trip) is unit-covered (bridge/lib ~90-96%).

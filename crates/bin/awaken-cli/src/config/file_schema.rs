@@ -89,6 +89,7 @@ pub(super) struct FileConfig {
     pub(super) k8s_network_policy_enforcement: Option<String>,
     pub(super) k8s_image_pull_secrets: Option<Vec<String>>,
     pub(super) container_hand_bin: Option<String>,
+    pub(super) container_hand_residency: Option<String>,
     pub(super) container_hand_idle_secs: Option<u64>,
     pub(super) podman_bin: Option<String>,
     pub(super) package_image_registry: Option<String>,

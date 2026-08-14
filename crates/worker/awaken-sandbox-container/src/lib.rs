@@ -32,6 +32,7 @@ mod podman_plan;
 mod process_env;
 use process_env::environment_keepalive_command;
 mod recovery;
+mod resident_hand;
 mod runtime;
 mod secret;
 mod writable;
@@ -41,6 +42,7 @@ pub use live_inputs::{LIVE_INPUTS_ROOT, live_input_relative_path};
 pub use packages::package_containerfile;
 pub use podman_plan::{RootfsError, RootfsPlan, podman_run_argv, rootfs_plan};
 use podman_plan::{image_of, rootfs_of};
+pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
     ContainerRuntime, ContainerState, PackageImageProvisioner, RuntimeAgentProcess, RuntimeError,
 };
@@ -1131,6 +1133,7 @@ pub struct ContainerProvider<R: ContainerRuntime> {
     /// Neutral MemoryStore projection injected by the composition root. Interior
     /// mutability lets an already-shared provider receive the platform adapter.
     memory_mounter: std::sync::RwLock<Option<Arc<dyn pc::MemoryMounter>>>,
+    resident_hand: Option<ResidentHandConfig>,
 }
 
 impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
@@ -1144,7 +1147,16 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             file_store: None,
             secret_broker: std::sync::RwLock::new(None),
             memory_mounter: std::sync::RwLock::new(None),
+            resident_hand: None,
         }
+    }
+
+    /// Make the existing Hand the Session container's resident process. This is
+    /// mutually exclusive with attached-exec Hand launch at the Runtime Host.
+    #[must_use]
+    pub fn with_resident_hand(mut self, config: ResidentHandConfig) -> Self {
+        self.resident_hand = Some(config);
+        self
     }
 
     pub fn install_memory_mounter(&self, mounter: Arc<dyn pc::MemoryMounter>) {
@@ -1228,10 +1240,14 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             )));
         }
 
-        // A Session owns one live environment. PID 1 is only a keepalive;
-        // Native/ACP commands are exec processes and can be replaced or retried
-        // without recreating the workspace.
-        let command = environment_keepalive_command();
+        // A Session owns one live environment. Attached mode retains the legacy
+        // keepalive; resident mode runs the existing Hand as PID 1 so Worker
+        // replacement can reopen its provider-owned channel without a second
+        // process-placement path.
+        let command = self
+            .resident_hand
+            .as_ref()
+            .map_or_else(environment_keepalive_command, ResidentHandConfig::command);
         let mut plan = container_plan(
             spec,
             &self.default_image,
@@ -1239,6 +1255,18 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
             self.forward_proxy.as_ref(),
         )
         .map_err(|e| err(RuntimeError::Backend(e.to_string())))?;
+        if let Some(hand) = &self.resident_hand {
+            plan.env
+                .push(("AWAKEN_HAND_LEDGER_DIR".into(), hand.ledger_dir.clone()));
+            plan.env.push((
+                "AWAKEN_HAND_LEDGER_MAX_ENTRIES".into(),
+                hand.ledger_max_entries.to_string(),
+            ));
+            plan.env.push((
+                "AWAKEN_HAND_MAX_CONNECTIONS".into(),
+                hand.max_connections.to_string(),
+            ));
+        }
         if !plan.packages.is_empty() {
             let base_image = match &plan.rootfs {
                 RootfsPlan::Image(reference) => reference.clone(),
@@ -1382,7 +1410,7 @@ impl<R: ContainerRuntime + 'static> ContainerProvider<R> {
     }
 }
 
-/// A running agent exec, handed to the host's ACP [`AgentChannelSource`]: the duplex
+/// A running agent exec, handed to the host's ACP agent-channel source: the duplex
 /// channel, the exact exec process handle, and the environment handle for reattach.
 pub struct AgentContainerSession {
     pub channel: Box<dyn AgentChannel>,
@@ -1576,6 +1604,15 @@ pub trait ContainerEnvironment: pc::Sandbox {
         command: pc::Command,
     ) -> Result<RuntimeAgentProcess, pc::SandboxError>;
 
+    /// Open the provider's private channel to the resident environment process.
+    /// The concrete runtime owns authentication (for Kubernetes, the Pod
+    /// subresource under Worker workload identity).
+    async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannel>, pc::SandboxError> {
+        Err(pc::SandboxError::new(
+            "container environment does not expose a resident agent channel",
+        ))
+    }
+
     /// Read regular files below an absolute sandbox directory over the environment's
     /// attached exec channel. Implementations enforce an archive-size bound.
     async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError>;
@@ -1615,6 +1652,13 @@ impl<R: ContainerRuntime + 'static> ContainerEnvironment for ContainerSandbox<R>
         command: pc::Command,
     ) -> Result<RuntimeAgentProcess, pc::SandboxError> {
         self.spawn_agent(command).await
+    }
+
+    async fn open_agent_channel(&self) -> Result<Box<dyn AgentChannel>, pc::SandboxError> {
+        self.runtime
+            .open_channel(&self.container_id)
+            .await
+            .map_err(err)
     }
 
     async fn read_files(&self, root: &str) -> Result<Vec<EnvironmentFile>, pc::SandboxError> {

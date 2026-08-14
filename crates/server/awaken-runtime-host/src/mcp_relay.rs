@@ -203,6 +203,9 @@ async fn forward(
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("relay body: {e}")).into_response(),
     };
+    let auth_retry_safety = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map(|body| awaken_ext_mcp::auth_retry_safety(&body))
+        .unwrap_or(awaken_ext_mcp::AuthRetrySafety::Never);
     // Bridge axum (http 1.0) → reqwest (http 0.2) by string/bytes: the two crates pull
     // different `http` versions, so headers/method/status don't share types.
     let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes())
@@ -263,13 +266,20 @@ async fn forward(
                 current.bearer = Some(awaken_agent_contract::RedactedString::from(bearer));
                 current.clone()
             };
-            upstream = match send(&refreshed).send().await {
-                Ok(response) => response,
-                Err(error) => {
-                    return (StatusCode::BAD_GATEWAY, format!("relay upstream: {error}"))
-                        .into_response();
-                }
-            };
+            if auth_retry_safety == awaken_ext_mcp::AuthRetrySafety::Never {
+                // Credential rotation is useful for the next request, but the
+                // challenged effectful/unknown request is not evidence-safe to
+                // replay. Return its original upstream challenge unchanged.
+                let _ = refreshed;
+            } else {
+                upstream = match send(&refreshed).send().await {
+                    Ok(response) => response,
+                    Err(error) => {
+                        return (StatusCode::BAD_GATEWAY, format!("relay upstream: {error}"))
+                            .into_response();
+                    }
+                };
+            }
         }
     }
     let status =
@@ -629,9 +639,7 @@ mod tests {
 
         let transport = HttpTransportBuilder::new(relay.route_url(&generation).unwrap())
             .credential(Credential::None)
-            .connect()
-            .await
-            .expect("the relay must reload and retry the challenged request");
+            .build();
         transport
             .list_tools()
             .await
@@ -648,6 +656,114 @@ mod tests {
                 .map(awaken_agent_contract::RedactedString::expose_secret),
             Some("current-token")
         );
+    }
+
+    #[tokio::test]
+    async fn relay_rotates_but_never_replays_an_auth_challenged_tool_call() {
+        /*
+         * Auth-recovery cause/effect table (ADR-0067): C1 the current bearer is
+         * expired; C2 refresh returns a valid bearer; C3 method is tools/call
+         * (effectful). E1 refresh exactly once; E2 original 401 is returned;
+         * E3 upstream invocation count stays one; E4 the rotated bearer is
+         * retained for a later request. Rule A1=C1+C2+C3=>E1+E2+E3+E4. The
+         * sibling read-only rule is covered by relay_reloads_bearer_once... .
+         * FMECA control: an auth challenge may mean the server executed before
+         * rejecting/losing its response, so automatic tools/call replay has
+         * severity-5 duplicate-effect risk and is forbidden.
+         */
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        struct UpstreamState {
+            calls: Arc<AtomicUsize>,
+        }
+
+        async fn auth_upstream(State(state): State<UpstreamState>, req: Request) -> Response {
+            state.calls.fetch_add(1, Ordering::SeqCst);
+            let current = req
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                == Some("Bearer current-token");
+            if current {
+                StatusCode::OK.into_response()
+            } else {
+                StatusCode::UNAUTHORIZED.into_response()
+            }
+        }
+
+        struct ReloadBearer(Arc<AtomicUsize>);
+
+        #[async_trait::async_trait]
+        impl awaken_ext_mcp::CredentialRefresher for ReloadBearer {
+            async fn refresh(
+                &self,
+                _challenge: &awaken_ext_mcp::AuthChallenge,
+            ) -> Option<awaken_ext_mcp::Credential> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Some(awaken_ext_mcp::Credential::Bearer("current-token".into()))
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route("/", axum::routing::any(auth_upstream))
+            .with_state(UpstreamState {
+                calls: calls.clone(),
+            });
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let material = McpTransportMaterial {
+            name: "effectful-rotation".into(),
+            prompts_as_skills: false,
+            transport: crate::mcp::McpTransportMaterialKind::Http {
+                url: format!("http://{upstream}/"),
+                bearer: Some(awaken_agent_contract::RedactedString::from(
+                    "expired-token".to_string(),
+                )),
+                refresh: Some(Box::new(crate::mcp::McpRefreshMaterial(Arc::new(
+                    ReloadBearer(refreshes.clone()),
+                )))),
+            },
+        };
+        let relay = McpRelay::start().await.unwrap();
+        let generation = generation("session-effect", "mcp-effect", 1);
+        relay.set_route(&generation, &material);
+        let route = relay.route_url(&generation).unwrap();
+        let client = reqwest::Client::new();
+
+        let challenged = client
+            .post(&route)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "charge", "arguments": {} }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            challenged.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "A1/E2"
+        );
+        assert_eq!(refreshes.load(Ordering::SeqCst), 1, "A1/E1");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "A1/E3");
+
+        let later = client
+            .post(route)
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(later.status(), reqwest::StatusCode::OK, "A1/E4");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one later request only");
     }
 
     #[tokio::test]

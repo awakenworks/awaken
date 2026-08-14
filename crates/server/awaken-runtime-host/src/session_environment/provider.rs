@@ -1,6 +1,7 @@
 //! Selection and lifecycle construction for a Session's single environment.
 
 use super::{HandExecutorFactory, SessionEnvironment, container_files};
+use crate::deployment_config::ContainerHandResidency;
 use std::sync::Arc;
 
 use awaken_provisioning_contract as pc;
@@ -18,6 +19,7 @@ pub(crate) enum SessionEnvironmentProvider {
         hand_factory: Arc<dyn HandExecutorFactory>,
         hand_bin: String,
         hand_idle_after: std::time::Duration,
+        hand_residency: ContainerHandResidency,
     },
 }
 
@@ -93,6 +95,7 @@ impl SessionEnvironmentProvider {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn container_with_capacity_and_hand_idle(
         provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
         capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
@@ -101,6 +104,26 @@ impl SessionEnvironmentProvider {
         hand_bin: impl Into<String>,
         hand_idle_after: std::time::Duration,
     ) -> Self {
+        Self::container_with_capacity_hand_idle_and_residency(
+            provider,
+            capacity,
+            extra_mounts,
+            hand_factory,
+            hand_bin,
+            hand_idle_after,
+            ContainerHandResidency::AttachedExec,
+        )
+    }
+
+    pub(crate) fn container_with_capacity_hand_idle_and_residency(
+        provider: Arc<dyn awaken_sandbox_container::ContainerEnvironmentProvider>,
+        capacity: Option<Arc<dyn awaken_sandbox_container::ContainerEnvironmentCapacity>>,
+        extra_mounts: Vec<pc::MountRequirement>,
+        hand_factory: Arc<dyn HandExecutorFactory>,
+        hand_bin: impl Into<String>,
+        hand_idle_after: std::time::Duration,
+        hand_residency: ContainerHandResidency,
+    ) -> Self {
         Self::Container {
             provider,
             capacity,
@@ -108,6 +131,7 @@ impl SessionEnvironmentProvider {
             hand_factory,
             hand_bin: hand_bin.into(),
             hand_idle_after,
+            hand_residency,
         }
     }
 
@@ -128,6 +152,7 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
+                hand_residency,
             } => Self::Container {
                 provider: provider.clone(),
                 capacity: capacity.clone(),
@@ -135,6 +160,7 @@ impl SessionEnvironmentProvider {
                 hand_factory: hand_factory.clone(),
                 hand_bin: hand_bin.clone(),
                 hand_idle_after: *hand_idle_after,
+                hand_residency: *hand_residency,
             },
         }
     }
@@ -178,6 +204,7 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
+                hand_residency,
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
@@ -188,6 +215,7 @@ impl SessionEnvironmentProvider {
                     hand_factory.clone(),
                     hand_bin,
                     *hand_idle_after,
+                    *hand_residency,
                     capabilities,
                 )
                 .await
@@ -271,6 +299,7 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
+                hand_residency,
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
@@ -281,6 +310,7 @@ impl SessionEnvironmentProvider {
                     hand_factory.clone(),
                     hand_bin,
                     *hand_idle_after,
+                    *hand_residency,
                     capabilities,
                 )
                 .await
@@ -308,6 +338,7 @@ impl SessionEnvironmentProvider {
                 hand_factory,
                 hand_bin,
                 hand_idle_after,
+                hand_residency,
                 ..
             } => {
                 let capabilities = provider.sandbox_capabilities();
@@ -320,6 +351,7 @@ impl SessionEnvironmentProvider {
                     hand_factory.clone(),
                     hand_bin,
                     *hand_idle_after,
+                    *hand_residency,
                     capabilities,
                 )
                 .await

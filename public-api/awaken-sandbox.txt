@@ -1,8 +1,24 @@
 pub mod awaken_sandbox
 pub mod awaken_sandbox::bridge
+pub enum awaken_sandbox::bridge::BridgeError
+pub awaken_sandbox::bridge::BridgeError::Accept(core::io::error::Error)
+pub awaken_sandbox::bridge::BridgeError::AcceptTimeout
+pub awaken_sandbox::bridge::BridgeError::Copy
+pub awaken_sandbox::bridge::BridgeError::Copy::direction: &'static str
+pub awaken_sandbox::bridge::BridgeError::Copy::source: core::io::error::Error
+pub awaken_sandbox::bridge::BridgeError::CopyDrainTimeout(&'static str)
+pub awaken_sandbox::bridge::BridgeError::CopyTask
+pub awaken_sandbox::bridge::BridgeError::CopyTask::direction: &'static str
+pub awaken_sandbox::bridge::BridgeError::CopyTask::source: tokio::runtime::task::error::JoinError
+pub awaken_sandbox::bridge::BridgeError::ExitTimeout
+pub awaken_sandbox::bridge::BridgeError::ExitedBeforeConnect(i32)
+pub awaken_sandbox::bridge::BridgeError::SignalTermination
+pub awaken_sandbox::bridge::BridgeError::Spawn(core::io::error::Error)
+pub awaken_sandbox::bridge::BridgeError::Wait(core::io::error::Error)
 pub struct awaken_sandbox::bridge::AcpBridge
 impl awaken_sandbox::bridge::AcpBridge
 pub async fn awaken_sandbox::bridge::AcpBridge::bind(&str) -> core::io::error::Result<(Self, core::net::socket_addr::SocketAddr)>
-pub async fn awaken_sandbox::bridge::AcpBridge::run(self, &[alloc::string::String]) -> core::io::error::Result<i32>
+pub async fn awaken_sandbox::bridge::AcpBridge::run(self, &[alloc::string::String]) -> core::result::Result<i32, awaken_sandbox::bridge::BridgeError>
+pub const awaken_sandbox::bridge::DEFAULT_ACCEPT_TIMEOUT: core::time::Duration
 pub const awaken_sandbox::bridge::DEFAULT_LISTEN: &str
 pub fn awaken_sandbox::bridge::parse_acp_args(&[alloc::string::String]) -> core::result::Result<(alloc::string::String, alloc::vec::Vec<alloc::string::String>), alloc::string::String>

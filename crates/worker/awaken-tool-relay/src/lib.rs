@@ -24,6 +24,8 @@ pub mod wire;
 pub use executor::RemoteToolExecutor;
 #[cfg(any(test, feature = "test-support"))]
 pub use ledger::InMemoryOperationLedger;
-pub use ledger::{FsOperationLedger, HandOperationLedger, LedgerAdmission};
+pub use ledger::{
+    DEFAULT_FS_LEDGER_MAX_ENTRIES, FsOperationLedger, HandOperationLedger, LedgerAdmission,
+};
 pub use serve::{HandSession, ServeError, serve_hand};
 pub use wire::{CorrelationId, HandError, HandErrorKind, HandReply, HandRequest, HandResult};

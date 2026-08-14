@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use awaken_runtime_host::{
-    AcpWorkerProfile, ContentCaptureSettings, ContentRedaction, PackageImageBuilder,
-    SandboxSettings, SandboxTier, Wake,
+    AcpWorkerProfile, ContainerHandResidency, ContentCaptureSettings, ContentRedaction,
+    PackageImageBuilder, SandboxSettings, SandboxTier, Wake,
 };
 
 use super::file_schema::FileConfig;
@@ -63,6 +63,11 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .container_hand_bin
             .clone()
             .unwrap_or_else(|| sandbox_defaults.container_hand_bin.clone()),
+        container_hand_residency: file
+            .container_hand_residency
+            .as_deref()
+            .unwrap_or("attached_exec")
+            .parse::<ContainerHandResidency>()?,
         container_hand_idle_secs: file
             .container_hand_idle_secs
             .unwrap_or(sandbox_defaults.container_hand_idle_secs),
@@ -102,6 +107,11 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
             .unwrap_or(sandbox_defaults.package_local_cache_ttl_secs),
         inherit_agent_stderr: file.sandbox_inherit_agent_stderr.unwrap_or(false),
     };
+    if sandbox.container_hand_residency == ContainerHandResidency::Resident
+        && sandbox_tier != SandboxTier::K8s
+    {
+        return Err("container_hand_residency=resident currently requires sandbox_tier=k8s".into());
+    }
     if sandbox.k8s_namespace.trim().is_empty()
         || sandbox.container_hand_bin.trim().is_empty()
         || sandbox.podman_bin.trim().is_empty()
@@ -161,4 +171,76 @@ pub(super) fn resolve(file: &FileConfig, _data_dir: &Path) -> Result<RuntimeSett
         wake,
         content_capture,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_hand_configuration_fails_closed_outside_kubernetes() {
+        /*
+         * Configuration cause/effect table and FMECA control.
+         * C1 residency omitted => AttachedExec/default; C2 resident+K8s =>
+         * accept; C3 resident+non-K8s => reject; C4 unknown value => reject.
+         * Effects: one explicit placement strategy reaches Host construction;
+         * invalid/unsupported combinations create no environment. FMECA:
+         * silently enabling Resident on a runtime without a private Pod channel
+         * would strand Sessions (severity 4); parse-time rejection is the
+         * preventive control and this table is its detection test.
+         */
+        let data = Path::new("/tmp/awaken-config-test");
+        let defaults = resolve(&FileConfig::default(), data).unwrap();
+        assert_eq!(
+            defaults.sandbox.container_hand_residency,
+            ContainerHandResidency::AttachedExec,
+            "C1"
+        );
+
+        let k8s = resolve(
+            &FileConfig {
+                sandbox_tier: Some("k8s".into()),
+                container_hand_residency: Some("resident".into()),
+                ..Default::default()
+            },
+            data,
+        )
+        .unwrap();
+        assert_eq!(
+            k8s.sandbox.container_hand_residency,
+            ContainerHandResidency::Resident,
+            "C2"
+        );
+
+        for tier in ["namespace", "docker", "podman"] {
+            let error = match resolve(
+                &FileConfig {
+                    sandbox_tier: Some(tier.into()),
+                    container_hand_residency: Some("resident".into()),
+                    ..Default::default()
+                },
+                data,
+            ) {
+                Ok(_) => panic!("C3 must reject resident Hand outside Kubernetes"),
+                Err(error) => error,
+            };
+            assert!(
+                error.contains("requires sandbox_tier=k8s"),
+                "{tier}: {error}"
+            );
+        }
+
+        let error = match resolve(
+            &FileConfig {
+                sandbox_tier: Some("k8s".into()),
+                container_hand_residency: Some("sidecar".into()),
+                ..Default::default()
+            },
+            data,
+        ) {
+            Ok(_) => panic!("C4 must reject an unknown residency"),
+            Err(error) => error,
+        };
+        assert!(error.contains("expected attached_exec or resident"));
+    }
 }

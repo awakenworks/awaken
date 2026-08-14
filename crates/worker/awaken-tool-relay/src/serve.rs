@@ -7,6 +7,7 @@
 //! it returns serializable data only. The brain commits the result.
 
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use awaken_agent_channel::AgentChannel;
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolError, ToolExecutor};
@@ -24,7 +25,10 @@ pub struct HandSession {
     registry: RawToolRegistry,
     catalog_fingerprint: Option<String>,
     ledger: Arc<dyn HandOperationLedger>,
+    in_flight_wait_timeout: Duration,
 }
+
+const DEFAULT_IN_FLIGHT_WAIT_TIMEOUT: Duration = Duration::from_secs(300);
 
 impl HandSession {
     /// A session over `tools`, keyed by each tool's id.
@@ -37,6 +41,7 @@ impl HandSession {
             registry,
             catalog_fingerprint: None,
             ledger,
+            in_flight_wait_timeout: DEFAULT_IN_FLIGHT_WAIT_TIMEOUT,
         }
     }
 
@@ -54,8 +59,18 @@ impl HandSession {
         self
     }
 
-    /// Handle one request. A `correlation_id` already in the ledger returns the
-    /// recorded result without re-running the effect (ADR-0044 D4).
+    /// Bound a reconnect's wait for a live owner. Timing out never cancels or
+    /// replays the original effect; it only returns an indeterminate result to
+    /// this waiter.
+    #[must_use]
+    pub fn with_in_flight_wait_timeout(mut self, timeout: Duration) -> Self {
+        self.in_flight_wait_timeout = timeout;
+        self
+    }
+
+    /// Handle one request. An operation already completed by this Hand process
+    /// returns its process-local result without re-running the effect. A claim
+    /// recovered from a prior process is indeterminate (ADR-0044 D4).
     pub async fn handle(&mut self, request: HandRequest) -> HandReply {
         // Old peers omitted `operation_id`; treating the already-stable tool call
         // id as the operation identity preserves compatibility without falling
@@ -67,6 +82,28 @@ impl HandSession {
         };
         let result = match self.ledger.begin(operation_id).await {
             Ok(LedgerAdmission::Cached(result)) => result,
+            Ok(LedgerAdmission::InFlight) => {
+                let wait = request
+                    .deadline_unix_ms
+                    .map(|deadline| {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
+                        let remaining = u128::from(deadline).saturating_sub(now);
+                        Duration::from_millis(u64::try_from(remaining).unwrap_or(u64::MAX))
+                            .min(self.in_flight_wait_timeout)
+                    })
+                    .unwrap_or(self.in_flight_wait_timeout);
+                match tokio::time::timeout(wait, self.ledger.wait(operation_id)).await {
+                    Ok(Ok(Some(result))) => result,
+                    Ok(Ok(None)) | Err(_) => HandResult::Indeterminate,
+                    Ok(Err(error)) => HandResult::err(HandError::new(
+                        HandErrorKind::Execution,
+                        format!("hand operation join unavailable: {error}"),
+                    )),
+                }
+            }
             Ok(LedgerAdmission::Indeterminate) => HandResult::Indeterminate,
             Err(error) => HandResult::err(HandError::new(
                 HandErrorKind::Execution,
@@ -79,7 +116,7 @@ impl HandSession {
                         correlation_id: request.correlation_id,
                         result: HandResult::err(HandError::new(
                             HandErrorKind::Execution,
-                            format!("hand operation result was not durable: {error}"),
+                            format!("hand operation completion fence was not durable: {error}"),
                         )),
                     };
                 }
