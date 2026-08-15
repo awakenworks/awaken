@@ -243,6 +243,11 @@ pub struct WorkerManifest {
     pub zone: Option<String>,
     pub architecture: String,
     pub sandbox: SandboxCapabilities,
+    /// Trusted recovery capability of the SessionEnvironment-owned Sandbox
+    /// executor. Production derives this from the same typed deployment value
+    /// that constructs the executor; it is never an Agent-authored claim.
+    #[serde(default)]
+    pub sandbox_tool_recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
     #[serde(default)]
     pub sandbox_backends: BTreeSet<String>,
     #[serde(default)]
@@ -275,6 +280,8 @@ impl Default for WorkerManifest {
                 custom_rootfs: false,
                 package_provisioning: false,
             },
+            sandbox_tool_recovery:
+                awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable,
             sandbox_backends: BTreeSet::new(),
             dispatch_contract: VersionRange::ANY,
             runtime_protocol: VersionRange::ANY,
@@ -347,6 +354,10 @@ pub struct PlacementRequirements {
     pub architecture: Option<String>,
     #[serde(default)]
     pub sandbox: SandboxRequirements,
+    /// Every non-default recovery mode frozen on a Sandbox-target tool. The
+    /// selected Worker executor must support all of them before it may claim.
+    #[serde(default)]
+    pub required_sandbox_tool_recovery: BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode>,
     pub sandbox_backend: Option<String>,
     #[serde(default)]
     pub dispatch_contract_version: u32,
@@ -372,6 +383,7 @@ impl Default for PlacementRequirements {
             required_zone: None,
             architecture: None,
             sandbox: SandboxRequirements::default(),
+            required_sandbox_tool_recovery: BTreeSet::new(),
             sandbox_backend: None,
             dispatch_contract_version: 0,
             runtime_protocol_version: 0,
@@ -437,6 +449,11 @@ pub enum Incompatibility {
     Architecture { required: String, actual: String },
     #[error("sandbox isolation or enforcement capabilities are insufficient")]
     SandboxCapabilities,
+    #[error("sandbox tool recovery mode {required:?} is unsupported by {actual:?}")]
+    SandboxToolRecovery {
+        required: awaken_runtime_contract::tool::ToolRecoveryMode,
+        actual: awaken_runtime_contract::tool::ToolRecoveryCapability,
+    },
     #[error("sandbox backend {0} is unsupported")]
     SandboxBackend(String),
     #[error("dispatch contract version {0} is unsupported")]
@@ -494,6 +511,16 @@ pub fn can_claim(
         .satisfies_requirements(&requirements.sandbox)
     {
         return Err(Incompatibility::SandboxCapabilities);
+    }
+    if let Some(required) = requirements
+        .required_sandbox_tool_recovery
+        .iter()
+        .find(|required| !required.is_supported_by(manifest.sandbox_tool_recovery))
+    {
+        return Err(Incompatibility::SandboxToolRecovery {
+            required: *required,
+            actual: manifest.sandbox_tool_recovery,
+        });
     }
     if let Some(backend) = &requirements.sandbox_backend
         && !manifest.sandbox_backends.contains(backend)
@@ -1099,6 +1126,38 @@ mod tests {
         // Sandbox cause is present, therefore claim admission has no rejection
         // effect. Negative rows are partitioned by the two tests below.
         assert!(can_claim(&manifest("a", 0).manifest, &requirements()).is_ok());
+    }
+
+    #[test]
+    fn sandbox_tool_recovery_is_a_hard_claim_axis() {
+        use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
+
+        // Cause/effect decision table:
+        // C1=a snapshot demands no non-default Sandbox recovery; C2=it demands
+        // DurableRequest; C3=the Worker truthfully advertises DurableRequest.
+        // R1 !C2 => any executor remains eligible; R2 C2+C3 => eligible; R3
+        // C2+!C3 => fail closed before ranking with the exact mismatch. This
+        // keeps deployment drift Pending instead of entering an incompatible
+        // SessionEnvironment and discovering the mismatch during tool use.
+        let mut worker = manifest("recovery-worker", 0).manifest;
+        let mut required = requirements();
+        assert!(can_claim(&worker, &required).is_ok(), "R1");
+
+        required
+            .required_sandbox_tool_recovery
+            .insert(ToolRecoveryMode::DurableRequest);
+        worker.sandbox_tool_recovery = ToolRecoveryCapability::DurableRequest;
+        assert!(can_claim(&worker, &required).is_ok(), "R2");
+
+        worker.sandbox_tool_recovery = ToolRecoveryCapability::NonRecoverable;
+        assert_eq!(
+            can_claim(&worker, &required),
+            Err(Incompatibility::SandboxToolRecovery {
+                required: ToolRecoveryMode::DurableRequest,
+                actual: ToolRecoveryCapability::NonRecoverable,
+            }),
+            "R3"
+        );
     }
 
     #[test]

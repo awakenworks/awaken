@@ -617,7 +617,7 @@ impl WorkerNodeBuilder {
                 )));
             }
         };
-        validate_worker_manifest(&manifest)?;
+        validate_worker_manifest(&manifest, &self.deployment)?;
         if !provider_checkpoint_formats.is_subset(&manifest.checkpoint_formats) {
             return Err(WorkerNodeBuildError(
                 "Worker manifest omits an installed provider checkpoint format".to_string(),
@@ -649,7 +649,10 @@ impl WorkerNodeBuilder {
     }
 }
 
-fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), WorkerNodeBuildError> {
+fn validate_worker_manifest(
+    manifest: &WorkerManifest,
+    deployment: &awaken_runtime_host::DeploymentConfig,
+) -> Result<(), WorkerNodeBuildError> {
     if manifest.build_digest.trim().is_empty() {
         return Err(WorkerNodeBuildError(
             "Worker manifest build_digest must not be empty".to_string(),
@@ -664,6 +667,16 @@ fn validate_worker_manifest(manifest: &WorkerManifest) -> Result<(), WorkerNodeB
         return Err(WorkerNodeBuildError(
             "Worker manifest must support dispatch and runtime protocol version 1".to_string(),
         ));
+    }
+    let installed_recovery = deployment
+        .sandbox
+        .container_hand_residency
+        .recovery_capability();
+    if manifest.sandbox_tool_recovery != installed_recovery {
+        return Err(WorkerNodeBuildError(format!(
+            "Worker manifest sandbox tool recovery {:?} does not match installed SessionEnvironment {:?}",
+            manifest.sandbox_tool_recovery, installed_recovery
+        )));
     }
     manifest
         .fingerprint()

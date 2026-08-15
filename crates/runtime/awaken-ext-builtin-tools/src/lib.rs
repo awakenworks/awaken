@@ -41,7 +41,7 @@ pub fn all_hand_tools() -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool:
 }
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
-use awaken_runtime_contract::tool::ToolRecoveryPolicy;
+use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 use serde::{Deserialize, Serialize};
 
 /// The delegation tool id. The model-visible descriptor and the runtime resolver
@@ -62,6 +62,24 @@ pub enum Toolset {
 pub struct BuiltinTool {
     pub toolset: Toolset,
     pub descriptor: ToolDescriptor,
+}
+
+/// Recovery modes frozen on the selected canonical Hand descriptors. This is
+/// the one Hand-catalog membership rule shared by publication admission and
+/// Worker placement; callers remain responsible for their own policy decision.
+pub fn selected_hand_recovery_modes(
+    descriptors: &[ToolDescriptor],
+) -> std::collections::BTreeSet<ToolRecoveryMode> {
+    let hand_ids = builtin_tools()
+        .into_iter()
+        .filter(|tool| tool.toolset == Toolset::Hand)
+        .map(|tool| tool.descriptor.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    descriptors
+        .iter()
+        .filter(|tool| hand_ids.contains(&tool.id))
+        .map(|tool| tool.recovery_policy.mode)
+        .collect()
 }
 
 pub fn builtin_tools() -> Vec<BuiltinTool> {
@@ -227,7 +245,8 @@ pub use agent::{AuxiliaryAgentInput, invoke_auxiliary_agent};
 
 #[cfg(test)]
 mod tests {
-    use super::{Toolset, builtin_tools};
+    use super::{Toolset, builtin_tools, selected_hand_recovery_modes};
+    use awaken_runtime_contract::tool::{ToolRecoveryMode, ToolRecoveryPolicy};
 
     #[test]
     fn delegation_uses_one_stable_agent_run_tool_id() {
@@ -266,5 +285,35 @@ mod tests {
         deduped.sort();
         deduped.dedup();
         assert_eq!(ids.len(), deduped.len(), "builtin tool ids must be unique");
+    }
+
+    #[test]
+    fn selected_hand_recovery_uses_the_canonical_catalog_membership() {
+        // Cause/effect decision table: C1=selected descriptor belongs to Hand;
+        // C2=selected descriptor belongs to Task; C3=its policy is durable.
+        // R1 C1+C3 => DurableRequest is projected; R2 C2+C3 => no Hand mode.
+        // This single projection prevents Cloud and placement from maintaining
+        // parallel concrete tool-id filters.
+        let builtins = builtin_tools();
+        let hand = builtins
+            .iter()
+            .find(|tool| tool.toolset == Toolset::Hand)
+            .unwrap()
+            .descriptor
+            .clone()
+            .with_recovery(ToolRecoveryPolicy::durable_request());
+        let task = builtins
+            .iter()
+            .find(|tool| tool.toolset == Toolset::Task)
+            .unwrap()
+            .descriptor
+            .clone()
+            .with_recovery(ToolRecoveryPolicy::durable_request());
+        assert_eq!(
+            selected_hand_recovery_modes(&[hand]),
+            [ToolRecoveryMode::DurableRequest].into_iter().collect(),
+            "R1"
+        );
+        assert!(selected_hand_recovery_modes(&[task]).is_empty(), "R2");
     }
 }

@@ -299,6 +299,11 @@ pub(crate) fn derive_standard_manifest(inputs: StandardManifestInputs<'_>) -> Wo
         capabilities,
         zone: inputs.config.zone.clone(),
         sandbox,
+        sandbox_tool_recovery: inputs
+            .deployment
+            .sandbox
+            .container_hand_residency
+            .recovery_capability(),
         sandbox_backends: BTreeSet::from([backend.to_string()]),
         dispatch_contract: VersionRange::exact(1),
         runtime_protocol: VersionRange::exact(1),

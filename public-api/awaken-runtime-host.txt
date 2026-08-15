@@ -6,6 +6,8 @@ pub awaken_runtime_host::AcpStop::RequiresAction
 pub enum awaken_runtime_host::ContainerHandResidency
 pub awaken_runtime_host::ContainerHandResidency::AttachedExec
 pub awaken_runtime_host::ContainerHandResidency::Resident
+impl awaken_runtime_host::ContainerHandResidency
+pub const fn awaken_runtime_host::ContainerHandResidency::recovery_capability(self) -> awaken_runtime_contract::tool::ToolRecoveryCapability
 impl core::str::traits::FromStr for awaken_runtime_host::ContainerHandResidency
 pub type awaken_runtime_host::ContainerHandResidency::Err = alloc::string::String
 pub fn awaken_runtime_host::ContainerHandResidency::from_str(&str) -> core::result::Result<Self, Self::Err>

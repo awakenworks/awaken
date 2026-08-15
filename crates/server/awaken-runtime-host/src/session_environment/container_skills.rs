@@ -349,14 +349,7 @@ impl RefreshingHandExecutor {
 #[async_trait]
 impl ToolExecutor for RefreshingHandExecutor {
     fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
-        match self.residency {
-            crate::deployment_config::ContainerHandResidency::AttachedExec => {
-                ToolRecoveryCapability::NonRecoverable
-            }
-            crate::deployment_config::ContainerHandResidency::Resident => {
-                ToolRecoveryCapability::DurableRequest
-            }
-        }
+        self.residency.recovery_capability()
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {

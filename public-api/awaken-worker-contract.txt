@@ -23,6 +23,9 @@ pub awaken_worker_contract::Incompatibility::MissingCapability(alloc::string::St
 pub awaken_worker_contract::Incompatibility::RuntimeVersion(u32)
 pub awaken_worker_contract::Incompatibility::SandboxBackend(alloc::string::String)
 pub awaken_worker_contract::Incompatibility::SandboxCapabilities
+pub awaken_worker_contract::Incompatibility::SandboxToolRecovery
+pub awaken_worker_contract::Incompatibility::SandboxToolRecovery::actual: awaken_runtime_contract::tool::ToolRecoveryCapability
+pub awaken_worker_contract::Incompatibility::SandboxToolRecovery::required: awaken_runtime_contract::tool::ToolRecoveryMode
 pub awaken_worker_contract::Incompatibility::ZeroCapacity
 pub awaken_worker_contract::Incompatibility::Zone
 pub awaken_worker_contract::Incompatibility::Zone::actual: core::option::Option<alloc::string::String>
@@ -80,6 +83,7 @@ pub awaken_worker_contract::PlacementRequirements::recovery: awaken_worker_contr
 pub awaken_worker_contract::PlacementRequirements::required_acp_capabilities: alloc::collections::btree::set::BTreeSet<awaken_worker_contract::WorkerAcpCapabilityRequirement>
 pub awaken_worker_contract::PlacementRequirements::required_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::required_credentials: alloc::collections::btree::set::BTreeSet<awaken_credential_contract::CredentialRef>
+pub awaken_worker_contract::PlacementRequirements::required_sandbox_tool_recovery: alloc::collections::btree::set::BTreeSet<awaken_runtime_contract::tool::ToolRecoveryMode>
 pub awaken_worker_contract::PlacementRequirements::required_zone: core::option::Option<alloc::string::String>
 pub awaken_worker_contract::PlacementRequirements::resources: awaken_provisioning_contract::vocab::ResourceRequests
 pub awaken_worker_contract::PlacementRequirements::runtime_protocol_version: u32
@@ -163,6 +167,7 @@ pub awaken_worker_contract::WorkerManifest::manifest_version: u32
 pub awaken_worker_contract::WorkerManifest::runtime_protocol: awaken_worker_contract::VersionRange
 pub awaken_worker_contract::WorkerManifest::sandbox: awaken_provisioning_contract::sandbox::SandboxCapabilities
 pub awaken_worker_contract::WorkerManifest::sandbox_backends: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_worker_contract::WorkerManifest::sandbox_tool_recovery: awaken_runtime_contract::tool::ToolRecoveryCapability
 pub awaken_worker_contract::WorkerManifest::zone: core::option::Option<alloc::string::String>
 impl awaken_worker_contract::WorkerManifest
 pub fn awaken_worker_contract::WorkerManifest::fingerprint(&self) -> core::result::Result<alloc::string::String, awaken_worker_contract::FingerprintError>

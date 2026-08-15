@@ -6,6 +6,7 @@ use super::{
     CredentialMaterializerSupport, InferenceExecutorMaterializer, ResourceManifestSupport,
     StandardManifestConfig, StandardManifestInputs, WorkerNodeBuilder,
     configured_container_acp_targets, derive_standard_manifest, grace_window,
+    validate_worker_manifest,
 };
 
 struct SchemeMaterializer;
@@ -292,6 +293,14 @@ fn worker_manifest_derives_materialization_capabilities_from_the_adapter() {
     });
 
     assert!(manifest.capabilities.contains("native-runtime"));
+    assert_eq!(
+        manifest.sandbox_tool_recovery,
+        deployment
+            .sandbox
+            .container_hand_residency
+            .recovery_capability(),
+        "the standard manifest and SessionEnvironment share one typed source"
+    );
     assert!(
         !manifest
             .capabilities
@@ -329,6 +338,28 @@ fn standard_builder_derives_from_its_installed_materializer() {
     .expect("installed standard topology is valid");
 
     assert!(worker.manifest().capabilities.contains("test-access/v1"));
+}
+
+#[test]
+fn explicit_manifest_cannot_overstate_session_environment_recovery() {
+    // Cause/effect decision table: C1=the installed default deployment uses
+    // AttachedExec/NonRecoverable; C2=an explicit manifest claims
+    // DurableRequest. R1 C1+!C2 is admitted by the existing manifest tests; R2
+    // C1+C2 is rejected before registration. Explicit JSON therefore cannot
+    // bypass the typed topology used by the actual SessionEnvironment.
+    let mut manifest = awaken_worker_contract::WorkerManifest {
+        build_digest: "test-worker".into(),
+        ..Default::default()
+    };
+    manifest.sandbox_tool_recovery =
+        awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest;
+    let error = validate_worker_manifest(&manifest, &deployment()).expect_err("R2 fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match installed SessionEnvironment"),
+        "R2: {error}"
+    );
 }
 
 #[test]

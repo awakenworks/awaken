@@ -211,6 +211,23 @@ pub enum ContainerHandResidency {
     Resident,
 }
 
+impl ContainerHandResidency {
+    /// Recovery evidence shared by Worker registration and the realized
+    /// SessionEnvironment executor. Keeping this exhaustive mapping here makes
+    /// a new residency mode a compile error until both paths agree.
+    #[must_use]
+    pub const fn recovery_capability(
+        self,
+    ) -> awaken_runtime_contract::tool::ToolRecoveryCapability {
+        match self {
+            Self::AttachedExec => {
+                awaken_runtime_contract::tool::ToolRecoveryCapability::NonRecoverable
+            }
+            Self::Resident => awaken_runtime_contract::tool::ToolRecoveryCapability::DurableRequest,
+        }
+    }
+}
+
 impl std::str::FromStr for ContainerHandResidency {
     type Err = String;
 
