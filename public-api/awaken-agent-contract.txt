@@ -39,6 +39,7 @@ pub awaken_agent_contract::agent::content::ContentBlock::Image::source: awaken_a
 pub awaken_agent_contract::agent::content::ContentBlock::Text
 pub awaken_agent_contract::agent::content::ContentBlock::Text::text: alloc::string::String
 pub awaken_agent_contract::agent::content::ContentBlock::Thinking
+pub awaken_agent_contract::agent::content::ContentBlock::Thinking::signature: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::agent::content::ContentBlock::Thinking::text: alloc::string::String
 pub awaken_agent_contract::agent::content::ContentBlock::ToolResult
 pub awaken_agent_contract::agent::content::ContentBlock::ToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
@@ -51,6 +52,7 @@ pub awaken_agent_contract::agent::content::ContentBlock::ToolUse::name: alloc::s
 impl awaken_agent_contract::agent::content::ContentBlock
 pub fn awaken_agent_contract::agent::content::ContentBlock::image_base64(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::image_url(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_agent_contract::agent::content::ContentBlock::signed_thinking(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<core::option::Option<alloc::string::String>>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::text(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::thinking(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_agent_contract::agent::content::ContentBlock::tool_result(impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>) -> Self
@@ -385,6 +387,16 @@ pub fn awaken_agent_contract::event::fold::fold_messages(&[awaken_agent_contract
 pub fn awaken_agent_contract::event::fold::fold_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
 pub fn awaken_agent_contract::event::fold::terminal(&awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> awaken_agent_contract::event::agent::Fact
 pub fn awaken_agent_contract::event::fold::terminal_awaiting(core::option::Option<&str>) -> awaken_agent_contract::event::agent::Fact
+pub mod awaken_agent_contract::event::stream_terminal
+pub enum awaken_agent_contract::event::stream_terminal::StreamTerminalDecision
+pub awaken_agent_contract::event::stream_terminal::StreamTerminalDecision::AlreadyEmitted
+pub awaken_agent_contract::event::stream_terminal::StreamTerminalDecision::Emit(awaken_agent_contract::event::stream_terminal::StreamTerminalKind)
+pub awaken_agent_contract::event::stream_terminal::StreamTerminalDecision::RejectUnstarted
+pub enum awaken_agent_contract::event::stream_terminal::StreamTerminalKind
+pub awaken_agent_contract::event::stream_terminal::StreamTerminalKind::Awaiting
+pub awaken_agent_contract::event::stream_terminal::StreamTerminalKind::Failed
+pub awaken_agent_contract::event::stream_terminal::StreamTerminalKind::Finished
+pub const fn awaken_agent_contract::event::stream_terminal::decide_stream_terminal(bool, bool, bool, awaken_agent_contract::event::stream_terminal::StreamTerminalKind) -> awaken_agent_contract::event::stream_terminal::StreamTerminalDecision
 pub enum awaken_agent_contract::event::AgentEvent
 pub awaken_agent_contract::event::AgentEvent::Delta(awaken_agent_contract::event::agent::Delta)
 pub awaken_agent_contract::event::AgentEvent::Fact(awaken_agent_contract::event::agent::Fact)
@@ -425,6 +437,14 @@ pub awaken_agent_contract::event::Fact::ToolResult
 pub awaken_agent_contract::event::Fact::ToolResult::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::event::Fact::ToolResult::id: alloc::string::String
 pub awaken_agent_contract::event::Fact::ToolResult::is_error: bool
+pub enum awaken_agent_contract::event::StreamTerminalDecision
+pub awaken_agent_contract::event::StreamTerminalDecision::AlreadyEmitted
+pub awaken_agent_contract::event::StreamTerminalDecision::Emit(awaken_agent_contract::event::stream_terminal::StreamTerminalKind)
+pub awaken_agent_contract::event::StreamTerminalDecision::RejectUnstarted
+pub enum awaken_agent_contract::event::StreamTerminalKind
+pub awaken_agent_contract::event::StreamTerminalKind::Awaiting
+pub awaken_agent_contract::event::StreamTerminalKind::Failed
+pub awaken_agent_contract::event::StreamTerminalKind::Finished
 pub enum awaken_agent_contract::event::Tier
 pub awaken_agent_contract::event::Tier::Delta
 pub awaken_agent_contract::event::Tier::Fact
@@ -451,6 +471,7 @@ pub fn awaken_agent_contract::event::Transcoder::fact(&mut self, &awaken_agent_c
 pub fn awaken_agent_contract::event::Transcoder::transcode(&mut self, &awaken_agent_contract::event::agent::AgentEvent) -> alloc::vec::Vec<Self::Output>
 pub fn awaken_agent_contract::event::Transcoder::transcode_facts(&mut self, &[awaken_agent_contract::event::agent::Fact]) -> alloc::vec::Vec<Self::Output>
 pub fn awaken_agent_contract::event::classify(&awaken_agent_contract::event::agent::AgentEvent) -> awaken_agent_contract::event::classify::Routing
+pub const fn awaken_agent_contract::event::decide_stream_terminal(bool, bool, bool, awaken_agent_contract::event::stream_terminal::StreamTerminalKind) -> awaken_agent_contract::event::stream_terminal::StreamTerminalDecision
 pub fn awaken_agent_contract::event::fold_history(&[awaken_agent_contract::agent::message::Message], &mut impl awaken_agent_contract::event::fold::HistorySink)
 pub fn awaken_agent_contract::event::fold_messages(&[awaken_agent_contract::agent::message::Message], core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
 pub fn awaken_agent_contract::event::fold_step(&[awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::RunState, core::option::Option<(&str, bool)>) -> alloc::vec::Vec<awaken_agent_contract::event::agent::Fact>
@@ -828,6 +849,8 @@ pub awaken_agent_contract::toolset::ToolsetPolicy::overrides: alloc::vec::Vec<aw
 pub awaken_agent_contract::toolset::ToolsetPolicy::source: awaken_agent_contract::toolset::ToolsetSource
 impl awaken_agent_contract::toolset::ToolsetPolicy
 pub fn awaken_agent_contract::toolset::ToolsetPolicy::policy_for(&self, &str) -> awaken_agent_contract::toolset::ToolExecutionPolicy
+pub fn awaken_agent_contract::toolset::ToolsetPolicy::policy_for_registered_call(&self, core::option::Option<&str>, &str, awaken_agent_contract::toolset::ToolPermissionRequirement) -> core::option::Option<awaken_agent_contract::toolset::ToolExecutionPolicy>
+pub const fn awaken_agent_contract::toolset::select_tool_policy(bool, bool, awaken_agent_contract::toolset::ToolExecutionPolicy, awaken_agent_contract::toolset::ToolPermissionRequirement) -> core::option::Option<awaken_agent_contract::toolset::ToolExecutionPolicy>
 pub enum awaken_agent_contract::AgentEvent
 pub awaken_agent_contract::AgentEvent::Delta(awaken_agent_contract::event::agent::Delta)
 pub awaken_agent_contract::AgentEvent::Fact(awaken_agent_contract::event::agent::Fact)
@@ -1045,6 +1068,7 @@ pub awaken_agent_contract::ToolsetPolicy::overrides: alloc::vec::Vec<awaken_agen
 pub awaken_agent_contract::ToolsetPolicy::source: awaken_agent_contract::toolset::ToolsetSource
 impl awaken_agent_contract::toolset::ToolsetPolicy
 pub fn awaken_agent_contract::toolset::ToolsetPolicy::policy_for(&self, &str) -> awaken_agent_contract::toolset::ToolExecutionPolicy
+pub fn awaken_agent_contract::toolset::ToolsetPolicy::policy_for_registered_call(&self, core::option::Option<&str>, &str, awaken_agent_contract::toolset::ToolPermissionRequirement) -> core::option::Option<awaken_agent_contract::toolset::ToolExecutionPolicy>
 pub struct awaken_agent_contract::TranscriptRange
 pub awaken_agent_contract::TranscriptRange::end: u64
 pub awaken_agent_contract::TranscriptRange::start: u64
@@ -1083,6 +1107,7 @@ pub fn awaken_agent_contract::thread::read::lifecycle::CheckpointRunLifecycleFee
 pub trait awaken_agent_contract::StreamSink: core::marker::Send + core::marker::Sync
 pub fn awaken_agent_contract::StreamSink::send<'life0, 'async_trait>(&'life0 self, awaken_agent_contract::stream::event::Event) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_agent_contract::stream::sink::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_agent_contract::classify_run_lifecycle_event(&awaken_agent_contract::agent::run::RunState, core::option::Option<&awaken_agent_contract::agent::run::RunState>) -> awaken_agent_contract::thread::read::lifecycle::RunLifecycleEventKind
+pub const fn awaken_agent_contract::select_tool_policy(bool, bool, awaken_agent_contract::toolset::ToolExecutionPolicy, awaken_agent_contract::toolset::ToolPermissionRequirement) -> core::option::Option<awaken_agent_contract::toolset::ToolExecutionPolicy>
 pub fn awaken_agent_contract::stable_fingerprint(&impl serde_core::ser::Serialize) -> alloc::string::String
 pub fn awaken_agent_contract::validate_agent_skills(&[awaken_agent_contract::skill::AgentSkillBinding]) -> core::result::Result<(), alloc::string::String>
 pub type awaken_agent_contract::RedactedStringSource = (dyn core::ops::function::Fn() -> core::result::Result<awaken_agent_contract::secret::RedactedString, alloc::string::String> + core::marker::Send + core::marker::Sync)

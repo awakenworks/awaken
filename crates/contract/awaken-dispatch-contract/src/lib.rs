@@ -11,6 +11,7 @@ mod claimed_commit;
 mod claimed_session;
 mod claimed_stream;
 pub mod dispatch;
+mod dispatch_transition;
 pub mod operational;
 pub mod run_dispatch;
 mod worker_transport;
@@ -40,6 +41,9 @@ pub use dispatch::{
     DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
     PendingRecord, RunClaim, SettleOutcome, SubmitOptions, compile_attempt_credential_bindings,
     worker_credential_realization_capabilities,
+};
+pub use dispatch_transition::{
+    CancelTransition, DispatchPhase, DispatchTransition, DispatchTransitionError, GuardedTransition,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,

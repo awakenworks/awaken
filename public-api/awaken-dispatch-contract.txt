@@ -268,6 +268,11 @@ pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::decode_pr
 pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::from_projection(awaken_session_contract::baseline::EnvironmentSnapshot, core::option::Option<awaken_session_contract::tool_configuration::SessionToolConfiguration>, alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>) -> core::result::Result<Self, serde_json::error::Error>
 pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub const fn awaken_dispatch_contract::run_dispatch::session_resource_install_decision(bool, bool, bool, u64, u64) -> awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision
+pub enum awaken_dispatch_contract::CancelTransition
+pub awaken_dispatch_contract::CancelTransition::Applied
+pub awaken_dispatch_contract::CancelTransition::Applied::revoked_lease: bool
+pub awaken_dispatch_contract::CancelTransition::Applied::state: awaken_dispatch_contract::DispatchTransition
+pub awaken_dispatch_contract::CancelTransition::NotCancellable
 pub enum awaken_dispatch_contract::CasOutcome
 pub awaken_dispatch_contract::CasOutcome::Applied
 pub awaken_dispatch_contract::CasOutcome::NotFound
@@ -301,6 +306,12 @@ pub fn awaken_dispatch_contract::operational::DispatchOperation::run_id(&self) -
 pub enum awaken_dispatch_contract::DispatchOutcome
 pub awaken_dispatch_contract::DispatchOutcome::Awaiting
 pub awaken_dispatch_contract::DispatchOutcome::Done
+pub enum awaken_dispatch_contract::DispatchPhase
+pub awaken_dispatch_contract::DispatchPhase::Awaiting
+pub awaken_dispatch_contract::DispatchPhase::DeadLetter
+pub awaken_dispatch_contract::DispatchPhase::Leased
+pub awaken_dispatch_contract::DispatchPhase::Pending
+pub awaken_dispatch_contract::DispatchPhase::Superseded
 pub enum awaken_dispatch_contract::DispatchState
 pub awaken_dispatch_contract::DispatchState::Awaiting
 pub awaken_dispatch_contract::DispatchState::DeadLetter
@@ -309,6 +320,12 @@ pub awaken_dispatch_contract::DispatchState::Pending
 pub awaken_dispatch_contract::DispatchState::Superseded
 impl awaken_dispatch_contract::dispatch::DispatchState
 pub fn awaken_dispatch_contract::dispatch::DispatchState::from_db(&str) -> core::option::Option<Self>
+pub enum awaken_dispatch_contract::DispatchTransitionError
+pub awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted
+pub enum awaken_dispatch_contract::GuardedTransition
+pub awaken_dispatch_contract::GuardedTransition::Applied(awaken_dispatch_contract::DispatchTransition)
+pub awaken_dispatch_contract::GuardedTransition::Fenced
+pub awaken_dispatch_contract::GuardedTransition::Removed
 pub enum awaken_dispatch_contract::LeaseLossReason
 pub awaken_dispatch_contract::LeaseLossReason::Cancelled
 pub awaken_dispatch_contract::LeaseLossReason::Expired
@@ -394,6 +411,15 @@ pub awaken_dispatch_contract::DispatchSummary::run_id: awaken_agent_contract::ag
 pub awaken_dispatch_contract::DispatchSummary::sandbox_bound: bool
 pub awaken_dispatch_contract::DispatchSummary::state: awaken_dispatch_contract::dispatch::DispatchState
 pub awaken_dispatch_contract::DispatchSummary::thread_id: awaken_agent_contract::agent::thread::Id
+pub struct awaken_dispatch_contract::DispatchTransition
+pub awaken_dispatch_contract::DispatchTransition::cancellation_requested: bool
+pub awaken_dispatch_contract::DispatchTransition::lease_epoch: u64
+pub awaken_dispatch_contract::DispatchTransition::phase: awaken_dispatch_contract::DispatchPhase
+impl awaken_dispatch_contract::DispatchTransition
+pub fn awaken_dispatch_contract::DispatchTransition::cancel(self) -> core::result::Result<awaken_dispatch_contract::CancelTransition, awaken_dispatch_contract::DispatchTransitionError>
+pub fn awaken_dispatch_contract::DispatchTransition::claim(self) -> core::result::Result<core::option::Option<Self>, awaken_dispatch_contract::DispatchTransitionError>
+pub fn awaken_dispatch_contract::DispatchTransition::relinquish(self, u64, bool) -> awaken_dispatch_contract::GuardedTransition
+pub fn awaken_dispatch_contract::DispatchTransition::settle(self, u64, bool) -> awaken_dispatch_contract::GuardedTransition
 pub struct awaken_dispatch_contract::EnqueueRequest
 pub awaken_dispatch_contract::EnqueueRequest::options: core::option::Option<awaken_dispatch_contract::dispatch::SubmitOptions>
 pub awaken_dispatch_contract::EnqueueRequest::request: awaken_dispatch_contract::run_dispatch::RunDispatch

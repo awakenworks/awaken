@@ -18,6 +18,34 @@ const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 pub(super) const CLAIM_UID_ANNOTATION: &str = "awaken.dev/continuation-claim-uid";
 
+/// Closed admission decision for the irreversible PVC deletion API call. The
+/// Kubernetes adapter supplies exact UID/resourceVersion observations; only a
+/// complete match may be projected into `DeleteParams::preconditions`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClaimDeletionAdmission {
+    DeleteExact,
+    MissingUid,
+    StaleUid,
+    MissingResourceVersion,
+}
+
+#[must_use]
+const fn claim_deletion_admission(
+    uid_present: bool,
+    uid_matches: bool,
+    resource_version_present: bool,
+) -> ClaimDeletionAdmission {
+    if !uid_present {
+        ClaimDeletionAdmission::MissingUid
+    } else if !uid_matches {
+        ClaimDeletionAdmission::StaleUid
+    } else if !resource_version_present {
+        ClaimDeletionAdmission::MissingResourceVersion
+    } else {
+        ClaimDeletionAdmission::DeleteExact
+    }
+}
+
 /// One closed decision shared by PVC allocation and final Pod projection.
 /// Keeping these paths on the same selector prevents an ephemeral plan from
 /// either allocating a claim or retaining a stale claim reference.
@@ -51,6 +79,19 @@ fn continuation_claim_selection_is_total_exact_and_non_widening() {
     assert_eq!(selected, configured && retained);
     assert!(!selected || configured);
     assert!(!selected || retained);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn continuation_claim_deletion_requires_exact_uid_and_resource_version() {
+    let uid_present = kani::any::<bool>();
+    let uid_matches = kani::any::<bool>();
+    let resource_version_present = kani::any::<bool>();
+    let decision = claim_deletion_admission(uid_present, uid_matches, resource_version_present);
+    assert_eq!(
+        matches!(decision, ClaimDeletionAdmission::DeleteExact),
+        uid_present && uid_matches && resource_version_present
+    );
 }
 
 pub(super) fn claim_uid(claim: &PersistentVolumeClaim) -> Result<String, RuntimeError> {
@@ -163,17 +204,31 @@ pub(super) async fn delete_claim(
         Err(error) if api_not_found(&error) => return Ok(()),
         Err(error) => return Err(backend(error)),
     };
-    let uid = claim_uid(&observed)?;
-    if uid != expected_uid {
-        return Err(backend(format!(
-            "continuation PVC `{name}` incarnation changed before disposal"
-        )));
+    let uid = observed.metadata.uid.clone();
+    let resource_version = observed.metadata.resource_version.clone();
+    match claim_deletion_admission(
+        uid.is_some(),
+        uid.as_deref() == Some(expected_uid),
+        resource_version.is_some(),
+    ) {
+        ClaimDeletionAdmission::DeleteExact => {}
+        ClaimDeletionAdmission::MissingUid => {
+            return Err(backend("Kubernetes continuation PVC has no UID"));
+        }
+        ClaimDeletionAdmission::StaleUid => {
+            return Err(backend(format!(
+                "continuation PVC `{name}` incarnation changed before disposal"
+            )));
+        }
+        ClaimDeletionAdmission::MissingResourceVersion => {
+            return Err(backend(
+                "Kubernetes continuation PVC has no resourceVersion",
+            ));
+        }
     }
-    let resource_version = observed
-        .metadata
-        .resource_version
-        .clone()
-        .ok_or_else(|| backend("Kubernetes continuation PVC has no resourceVersion"))?;
+    let uid = uid.expect("deletion admission proved the claim UID is present");
+    let resource_version =
+        resource_version.expect("deletion admission proved the claim resourceVersion is present");
     let params = DeleteParams::default().preconditions(Preconditions {
         uid: Some(uid),
         resource_version: Some(resource_version),
@@ -237,6 +292,26 @@ mod tests {
         assert!(claim_required(&retained, true), "FC1");
         retained.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
         assert!(!claim_required(&retained, true), "FC2");
+    }
+
+    #[test]
+    fn continuation_claim_deletion_fails_closed_on_every_missing_fence() {
+        assert_eq!(
+            claim_deletion_admission(false, false, false),
+            ClaimDeletionAdmission::MissingUid,
+        );
+        assert_eq!(
+            claim_deletion_admission(true, false, true),
+            ClaimDeletionAdmission::StaleUid,
+        );
+        assert_eq!(
+            claim_deletion_admission(true, true, false),
+            ClaimDeletionAdmission::MissingResourceVersion,
+        );
+        assert_eq!(
+            claim_deletion_admission(true, true, true),
+            ClaimDeletionAdmission::DeleteExact,
+        );
     }
 
     #[tokio::test]

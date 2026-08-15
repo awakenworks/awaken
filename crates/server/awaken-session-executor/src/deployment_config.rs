@@ -452,6 +452,90 @@ pub struct DeploymentConfig {
 /// subject.
 pub const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
 
+/// Pure admission kernel for the durable dispatch axis. Commit-store choice is
+/// deliberately absent: only the dispatch backend, its local storage root, or
+/// an explicitly injected durable adapter can preserve queued work.
+#[must_use]
+const fn durable_dispatch_is_admitted(
+    durable: bool,
+    dispatch_backend: DispatchBackend,
+    has_storage_dir: bool,
+    injected: bool,
+) -> bool {
+    if !durable {
+        return true;
+    }
+    matches!(dispatch_backend, DispatchBackend::Postgres) || has_storage_dir || injected
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SandboxBackend {
+    Local,
+    Namespace,
+    Docker,
+    Podman,
+    K8s,
+}
+
+impl SandboxBackend {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Namespace => "namespace",
+            Self::Docker => "docker",
+            Self::Podman => "podman",
+            Self::K8s => "k8s",
+        }
+    }
+}
+
+/// The deployment-authored evidence projection that may affect advertised
+/// sandbox support. This kernel intentionally knows only evidence presence;
+/// adapters remain responsible for validating the external policy, registry,
+/// and builder named by that evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SandboxSupportProjection {
+    backend: SandboxBackend,
+    network_isolation: bool,
+    package_provisioning: bool,
+}
+
+#[must_use]
+const fn sandbox_support_projection(
+    tier: SandboxTier,
+    has_k8s_network_policy: bool,
+    has_package_registry: bool,
+    has_package_builder: bool,
+) -> SandboxSupportProjection {
+    match tier {
+        SandboxTier::Local => SandboxSupportProjection {
+            backend: SandboxBackend::Local,
+            network_isolation: false,
+            package_provisioning: false,
+        },
+        SandboxTier::Namespace => SandboxSupportProjection {
+            backend: SandboxBackend::Namespace,
+            network_isolation: true,
+            package_provisioning: false,
+        },
+        SandboxTier::Docker => SandboxSupportProjection {
+            backend: SandboxBackend::Docker,
+            network_isolation: true,
+            package_provisioning: true,
+        },
+        SandboxTier::Podman => SandboxSupportProjection {
+            backend: SandboxBackend::Podman,
+            network_isolation: true,
+            package_provisioning: true,
+        },
+        SandboxTier::K8s => SandboxSupportProjection {
+            backend: SandboxBackend::K8s,
+            network_isolation: has_k8s_network_policy,
+            package_provisioning: has_package_registry && has_package_builder,
+        },
+    }
+}
+
 impl DeploymentConfig {
     /// Project the configured Sandbox adapter into the exact secret-free support
     /// a Worker may advertise before provider construction. Runtime Host owns this
@@ -466,9 +550,15 @@ impl DeploymentConfig {
     ) {
         use awaken_provisioning_contract::{IsolationClass, SandboxCapabilities};
 
-        match self.sandbox_tier {
-            SandboxTier::Local => (awaken_sandbox_local::LocalProvider::capabilities(), "local"),
-            SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => (
+        let projection = sandbox_support_projection(
+            self.sandbox_tier,
+            self.sandbox.k8s_network_policy_enforcement.is_some(),
+            self.sandbox.package_image_registry.is_some(),
+            self.sandbox.package_image_builder.is_some(),
+        );
+        let capabilities = match self.sandbox_tier {
+            SandboxTier::Local => awaken_sandbox_local::LocalProvider::capabilities(),
+            SandboxTier::Docker | SandboxTier::Podman | SandboxTier::K8s => {
                 SandboxCapabilities {
                     isolation: IsolationClass::Container,
                     tool_transparent: true,
@@ -477,8 +567,7 @@ impl DeploymentConfig {
                     // Docker/Podman structurally apply `network none`. Kubernetes
                     // may claim the same capability only under the exact external
                     // label-policy evidence consumed by its adapter.
-                    network_isolation: !matches!(self.sandbox_tier, SandboxTier::K8s)
-                        || self.sandbox.k8s_network_policy_enforcement.is_some(),
+                    network_isolation: projection.network_isolation,
                     enforced_network_allowlist: false,
                     secret_egress_substitution: false,
                     resource_limits: true,
@@ -487,27 +576,12 @@ impl DeploymentConfig {
                     // image before the Session container starts. Kubernetes may
                     // advertise this only when an external builder and shared
                     // registry are both configured.
-                    package_provisioning: matches!(
-                        self.sandbox_tier,
-                        SandboxTier::Docker | SandboxTier::Podman
-                    ) || (self.sandbox_tier == SandboxTier::K8s
-                        && self.sandbox.package_image_registry.is_some()
-                        && self.sandbox.package_image_builder.is_some()),
-                },
-                match self.sandbox_tier {
-                    SandboxTier::Docker => "docker",
-                    SandboxTier::Podman => "podman",
-                    SandboxTier::K8s => "k8s",
-                    SandboxTier::Local | SandboxTier::Namespace => {
-                        unreachable!("matched container sandbox tier")
-                    }
-                },
-            ),
-            SandboxTier::Namespace => (
-                awaken_sandbox_local::NamespaceProvider::capabilities(),
-                "namespace",
-            ),
-        }
+                    package_provisioning: projection.package_provisioning,
+                }
+            }
+            SandboxTier::Namespace => awaken_sandbox_local::NamespaceProvider::capabilities(),
+        };
+        (capabilities, projection.backend.name())
     }
 
     /// Environment-independent defaults for embedding process startups.
@@ -543,9 +617,12 @@ impl DeploymentConfig {
     /// `injected` is passed in because an assembled shard fan-out lives outside this
     /// config (it owns its own durability contract).
     pub fn durable_needs_persistence_error(&self, injected: bool) -> Option<&'static str> {
-        let postgres_backend = self.dispatch_backend == DispatchBackend::Postgres;
-        let has_storage_dir = self.storage_dir.is_some();
-        if self.durable && !postgres_backend && !has_storage_dir && !injected {
+        if !durable_dispatch_is_admitted(
+            self.durable,
+            self.dispatch_backend,
+            self.storage_dir.is_some(),
+            injected,
+        ) {
             return Some(
                 "typed durable ingress needs a persistent dispatch queue, but none is \
                  configured: the default SQLite backend has no DeploymentConfig::storage_dir, so the \
@@ -573,8 +650,29 @@ pub fn default_postgres_max_connections() -> NonZeroU32 {
 
 #[cfg(kani)]
 mod verification {
-    use super::ContainerHandResidency;
+    use super::{
+        ContainerHandResidency, DispatchBackend, SandboxBackend, SandboxTier,
+        durable_dispatch_is_admitted, sandbox_support_projection,
+    };
     use awaken_runtime_contract::tool::ToolRecoveryCapability;
+
+    fn symbolic_dispatch_backend(value: bool) -> DispatchBackend {
+        if value {
+            DispatchBackend::Postgres
+        } else {
+            DispatchBackend::Sqlite
+        }
+    }
+
+    fn symbolic_sandbox_tier(value: u8) -> SandboxTier {
+        match value % 5 {
+            0 => SandboxTier::Local,
+            1 => SandboxTier::Namespace,
+            2 => SandboxTier::Docker,
+            3 => SandboxTier::Podman,
+            _ => SandboxTier::K8s,
+        }
+    }
 
     #[kani::proof]
     fn container_hand_residency_recovery_mapping_is_total_exact_and_non_widening() {
@@ -594,6 +692,103 @@ mod verification {
                 residency.recovery_capability(),
                 ToolRecoveryCapability::DurableRequest
             );
+        }
+    }
+
+    #[kani::proof]
+    fn durable_dispatch_admission_is_exact_and_commit_store_independent() {
+        let durable: bool = kani::any();
+        let postgres_dispatch: bool = kani::any();
+        let has_storage_dir: bool = kani::any();
+        let injected: bool = kani::any();
+        let backend = symbolic_dispatch_backend(postgres_dispatch);
+
+        let admitted = durable_dispatch_is_admitted(durable, backend, has_storage_dir, injected);
+        assert_eq!(
+            admitted,
+            !durable || postgres_dispatch || has_storage_dir || injected
+        );
+
+        // No commit-store value is accepted by this kernel. When all actual
+        // dispatch persistence evidence is absent, durable ingress is rejected.
+        if durable && !postgres_dispatch && !has_storage_dir && !injected {
+            assert!(!admitted);
+        }
+    }
+
+    #[kani::proof]
+    fn durable_dispatch_admission_is_monotonic_in_persistence_evidence() {
+        let durable: bool = kani::any();
+        let postgres_dispatch: bool = kani::any();
+        let has_storage_dir: bool = kani::any();
+        let injected: bool = kani::any();
+        let admitted = durable_dispatch_is_admitted(
+            durable,
+            symbolic_dispatch_backend(postgres_dispatch),
+            has_storage_dir,
+            injected,
+        );
+
+        if admitted {
+            assert!(durable_dispatch_is_admitted(
+                durable,
+                DispatchBackend::Postgres,
+                has_storage_dir,
+                injected,
+            ));
+            assert!(durable_dispatch_is_admitted(
+                durable,
+                symbolic_dispatch_backend(postgres_dispatch),
+                true,
+                injected,
+            ));
+            assert!(durable_dispatch_is_admitted(
+                durable,
+                symbolic_dispatch_backend(postgres_dispatch),
+                has_storage_dir,
+                true,
+            ));
+        }
+    }
+
+    #[kani::proof]
+    fn sandbox_support_projection_is_total_exact_and_evidence_bound() {
+        let tier = symbolic_sandbox_tier(kani::any());
+        let network_policy: bool = kani::any();
+        let package_registry: bool = kani::any();
+        let package_builder: bool = kani::any();
+        let projection =
+            sandbox_support_projection(tier, network_policy, package_registry, package_builder);
+
+        match tier {
+            SandboxTier::Local => {
+                assert_eq!(projection.backend, SandboxBackend::Local);
+                assert!(!projection.network_isolation);
+                assert!(!projection.package_provisioning);
+            }
+            SandboxTier::Namespace => {
+                assert_eq!(projection.backend, SandboxBackend::Namespace);
+                assert!(projection.network_isolation);
+                assert!(!projection.package_provisioning);
+            }
+            SandboxTier::Docker => {
+                assert_eq!(projection.backend, SandboxBackend::Docker);
+                assert!(projection.network_isolation);
+                assert!(projection.package_provisioning);
+            }
+            SandboxTier::Podman => {
+                assert_eq!(projection.backend, SandboxBackend::Podman);
+                assert!(projection.network_isolation);
+                assert!(projection.package_provisioning);
+            }
+            SandboxTier::K8s => {
+                assert_eq!(projection.backend, SandboxBackend::K8s);
+                assert_eq!(projection.network_isolation, network_policy);
+                assert_eq!(
+                    projection.package_provisioning,
+                    package_registry && package_builder
+                );
+            }
         }
     }
 }
@@ -714,6 +909,19 @@ mod tests {
             !support.enforced_network_allowlist,
             "binary posture is not an allowlist"
         );
+
+        for (registry, builder, expected) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, true, true),
+        ] {
+            let projection = sandbox_support_projection(SandboxTier::K8s, false, registry, builder);
+            assert_eq!(
+                projection.package_provisioning, expected,
+                "Kubernetes requires both registry and builder evidence"
+            );
+        }
 
         assert_eq!(
             "awaken-restricted-egress-v1".parse(),
@@ -838,6 +1046,28 @@ mod tests {
         let err = cfg.durable_needs_persistence_error(false).unwrap();
         assert!(err.contains("DeploymentConfig::storage_dir"), "{err}");
         assert!(err.contains("durable"), "{err}");
+    }
+
+    #[test]
+    fn durable_dispatch_admission_matches_the_complete_boolean_decision_table() {
+        for durable in [false, true] {
+            for postgres in [false, true] {
+                for storage_dir in [false, true] {
+                    for injected in [false, true] {
+                        let backend = if postgres {
+                            DispatchBackend::Postgres
+                        } else {
+                            DispatchBackend::Sqlite
+                        };
+                        assert_eq!(
+                            durable_dispatch_is_admitted(durable, backend, storage_dir, injected,),
+                            !durable || postgres || storage_dir || injected,
+                            "durable={durable} postgres={postgres} storage_dir={storage_dir} injected={injected}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

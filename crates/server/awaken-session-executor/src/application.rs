@@ -41,7 +41,8 @@ fn realization_renewal_failure_disposition(
 fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed() {
     use awaken_session_contract::SessionRealizationControlFailure;
 
-    let error = match kani::any::<u8>() % 8 {
+    let selector = kani::any::<u8>() % 8;
+    let error = match selector {
         0 => SessionRealizationControlFailure::NotFound,
         1 => SessionRealizationControlFailure::NotReady,
         2 => SessionRealizationControlFailure::Retired,
@@ -51,10 +52,11 @@ fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_close
         6 => SessionRealizationControlFailure::Invalid(String::new()),
         _ => SessionRealizationControlFailure::Unavailable(String::new()),
     };
-    let expected_retirement = matches!(
-        error.disposition(),
-        awaken_session_contract::SessionRealizationControlDisposition::Terminal
-    );
+    // Keep the proof oracle independent from both the contract disposition and
+    // this consumer. Terminal Control truth is exactly NotFound, Retired,
+    // Terminal, or Invalid; every other failure must retain the
+    // diagnostic/retry path.
+    let expected_retirement = matches!(selector, 0 | 2 | 3 | 6);
     let disposition = realization_renewal_failure_disposition(&error);
 
     assert_eq!(

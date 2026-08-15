@@ -87,6 +87,20 @@ impl MemoryConfig {
 /// `plugin_ids` to contribute, G30).
 pub const MEMORY_PLUGIN_ID: &str = "memory";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecallContributionDecision {
+    Active,
+    Inert,
+}
+
+const fn recall_contribution_decision(recall_enabled: bool) -> RecallContributionDecision {
+    if recall_enabled {
+        RecallContributionDecision::Active
+    } else {
+        RecallContributionDecision::Inert
+    }
+}
+
 /// Contributes the recall hook. Constructed at the composition root with the memory
 /// store (shared with extraction), the recall bounds, and — optionally — a
 /// relevance selector.
@@ -213,16 +227,32 @@ impl Plugin for MemoryPlugin {
         // The `memory` section overrides the recall bounds; absent uses the
         // constructed defaults. `#[serde(default)]` on `RecallBounds` fills any
         // unset field, so a partial section is valid.
-        let bounds = match config {
-            Some(value) => {
-                MemoryConfig::from_value(Some(value))
-                    .map_err(|e| PluginConfigError::new(MEMORY_PLUGIN_ID, e.to_string()))?
-                    .recall
-            }
-            None => self.bounds.clone(),
+        let configured = match config {
+            Some(value) => MemoryConfig::from_value(Some(value))
+                .map_err(|e| PluginConfigError::new(MEMORY_PLUGIN_ID, e.to_string()))?,
+            None => return Ok(self.contribute(self.bounds.clone())),
         };
-        Ok(self.contribute(bounds))
+        match recall_contribution_decision(configured.recall_enabled) {
+            RecallContributionDecision::Active => Ok(self.contribute(configured.recall)),
+            RecallContributionDecision::Inert => {
+                // Keep the selected plugin installed so the immutable publication is
+                // satisfiable, but contribute no hook or state authority when recall
+                // is explicitly disabled. Extraction is an independent terminal
+                // observer and is gated by `extraction_enabled` at the host boundary.
+                Ok(Contributions::new(MEMORY_PLUGIN_ID))
+            }
+        }
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn memory_recall_contribution_is_exact_and_disabled_is_inert() {
+    let enabled = kani::any::<bool>();
+    let decision = recall_contribution_decision(enabled);
+
+    assert_eq!(decision == RecallContributionDecision::Active, enabled);
+    assert_eq!(decision == RecallContributionDecision::Inert, !enabled);
 }
 
 /// The JSON Schema for the `memory` config section (the recall bounds), for a
@@ -346,6 +376,26 @@ mod config_tests {
             schema["properties"]["extraction_prompt"]["format"],
             "textarea"
         );
+    }
+
+    #[test]
+    fn disabled_recall_keeps_the_plugin_present_but_contributes_no_authority() {
+        let root = std::env::temp_dir().join(format!(
+            "awaken-disabled-memory-plugin-{}",
+            std::process::id()
+        ));
+        let plugin = MemoryPlugin::new(MemoryDir::new(root), RecallBounds::default());
+        let contributions = plugin
+            .resolve_configured(Some(&serde_json::json!({
+                "binding_id": "memory-0",
+                "recall_enabled": false,
+                "extraction_enabled": false
+            })))
+            .expect("disabled recall is a valid plugin configuration");
+
+        assert_eq!(contributions.plugin_id, MEMORY_PLUGIN_ID);
+        assert!(contributions.phase_hooks.is_empty());
+        assert!(contributions.state_keys.is_empty());
     }
 }
 

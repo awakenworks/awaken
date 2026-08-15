@@ -21,6 +21,25 @@ use awaken_tenancy::ScopeId;
 /// org may still seed the assistant here without any tenant colliding with it.
 pub const RESERVED_ADMIN_SCOPE: &str = "__admin";
 
+/// Minimal closed membership decision used by the production catalog. The
+/// descriptor vectors remain the real payload; verification needs only this
+/// finite authority decision and therefore does not model strings or vector
+/// bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopedCatalogMembership {
+    GlobalOnly,
+    GlobalAndAdmin,
+}
+
+#[must_use]
+fn scoped_catalog_membership(is_reserved_scope: bool) -> ScopedCatalogMembership {
+    if is_reserved_scope {
+        ScopedCatalogMembership::GlobalAndAdmin
+    } else {
+        ScopedCatalogMembership::GlobalOnly
+    }
+}
+
 /// The compile-feed's view of the tool catalog: the descriptors an agent config in
 /// `scope` may name. Named for its consumer — `ConfigService`'s compile step.
 pub trait ToolCatalogSource: Send + Sync {
@@ -55,12 +74,13 @@ impl ScopedToolCatalog {
 
 impl ToolCatalogSource for ScopedToolCatalog {
     fn catalog_for(&self, scope: &ScopeId) -> Vec<ToolDescriptor> {
-        if scope == &self.reserved_scope {
-            let mut all = self.global.clone();
-            all.extend(self.admin.iter().cloned());
-            all
-        } else {
-            self.global.clone()
+        match scoped_catalog_membership(scope == &self.reserved_scope) {
+            ScopedCatalogMembership::GlobalOnly => self.global.clone(),
+            ScopedCatalogMembership::GlobalAndAdmin => {
+                let mut all = self.global.clone();
+                all.extend(self.admin.iter().cloned());
+                all
+            }
         }
     }
 }
@@ -108,6 +128,18 @@ mod tests {
     }
 
     #[test]
+    fn membership_kernel_grants_admin_exactly_for_the_reserved_match() {
+        assert_eq!(
+            scoped_catalog_membership(false),
+            ScopedCatalogMembership::GlobalOnly
+        );
+        assert_eq!(
+            scoped_catalog_membership(true),
+            ScopedCatalogMembership::GlobalAndAdmin
+        );
+    }
+
+    #[test]
     fn static_catalog_is_scope_blind() {
         let catalog = StaticToolCatalog(vec![tool("read")]);
         assert_eq!(catalog.catalog_for(&ScopeId::from("a")).len(), 1);
@@ -125,5 +157,32 @@ mod tests {
         // The admin console principal, bound to the reserved scope, does cover it.
         let admin = Authority::bound(ScopeId::from(RESERVED_ADMIN_SCOPE));
         assert!(admin.covers(&ScopeId::from(RESERVED_ADMIN_SCOPE)));
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    fn only_the_reserved_scope_selects_admin_catalog_membership() {
+        let is_reserved_scope: bool = kani::any();
+        let membership = scoped_catalog_membership(is_reserved_scope);
+
+        assert_eq!(
+            membership == ScopedCatalogMembership::GlobalAndAdmin,
+            is_reserved_scope
+        );
+    }
+
+    #[kani::proof]
+    fn every_non_reserved_scope_selects_strictly_global_membership() {
+        let is_reserved_scope: bool = kani::any();
+        kani::assume(!is_reserved_scope);
+
+        assert_eq!(
+            scoped_catalog_membership(is_reserved_scope),
+            ScopedCatalogMembership::GlobalOnly
+        );
     }
 }

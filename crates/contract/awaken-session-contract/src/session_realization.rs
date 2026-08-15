@@ -456,6 +456,31 @@ impl SessionRealizationControlFailure {
     }
 }
 
+#[cfg(kani)]
+#[kani::proof]
+fn session_realization_control_failure_disposition_is_total_exact_and_fail_closed() {
+    let selector = kani::any::<u8>() % 7;
+    let failure = match selector {
+        0 => SessionRealizationControlFailure::NotFound,
+        1 => SessionRealizationControlFailure::NotReady,
+        2 => SessionRealizationControlFailure::Terminal,
+        3 => SessionRealizationControlFailure::StaleOwnership,
+        4 => SessionRealizationControlFailure::Conflict,
+        5 => SessionRealizationControlFailure::Invalid(String::new()),
+        _ => SessionRealizationControlFailure::Unavailable(String::new()),
+    };
+    // This oracle is deliberately derived from the symbolic variant selector,
+    // not from `failure.disposition()`: changing the production table cannot
+    // change the expected result at the same time.
+    let expected = match selector {
+        1 => SessionRealizationControlDisposition::NotReady,
+        3 | 4 | 6 => SessionRealizationControlDisposition::Retryable,
+        _ => SessionRealizationControlDisposition::Terminal,
+    };
+
+    assert_eq!(failure.disposition(), expected);
+}
+
 /// Driving port for the Control-owned realization state machine. It performs no
 /// Runtime I/O; topology adapters execute the returned action and submit exact
 /// receipts/acknowledgements to the next phase.

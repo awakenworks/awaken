@@ -13,6 +13,54 @@ pub(super) mod test_support;
 use claimed_session::install_claimed_session_projection;
 pub(crate) use resolver::HostWorkerResolver;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionRealizationWorkerEffect {
+    /// Keep the claim parked while the Session Work slot is occupied.
+    Defer,
+    /// Relinquish the claim through the retryable execution-failure path.
+    Relinquish,
+    /// Settle the still-current claim with an absorbing Run failure.
+    Absorb,
+}
+
+const fn session_realization_worker_effect(
+    disposition: awaken_session_contract::SessionRealizationControlDisposition,
+) -> SessionRealizationWorkerEffect {
+    match disposition {
+        awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
+            SessionRealizationWorkerEffect::Defer
+        }
+        awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
+            SessionRealizationWorkerEffect::Relinquish
+        }
+        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
+            SessionRealizationWorkerEffect::Absorb
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_realization_control_disposition_projects_exact_worker_effect() {
+    let selector = kani::any::<u8>() % 3;
+    let (disposition, expected) = match selector {
+        0 => (
+            awaken_session_contract::SessionRealizationControlDisposition::NotReady,
+            SessionRealizationWorkerEffect::Defer,
+        ),
+        1 => (
+            awaken_session_contract::SessionRealizationControlDisposition::Retryable,
+            SessionRealizationWorkerEffect::Relinquish,
+        ),
+        _ => (
+            awaken_session_contract::SessionRealizationControlDisposition::Terminal,
+            SessionRealizationWorkerEffect::Absorb,
+        ),
+    };
+
+    assert_eq!(session_realization_worker_effect(disposition), expected);
+}
+
 #[cfg(test)]
 mod tests {
     use super::claimed_dispatch::adopt_bound_sandbox;

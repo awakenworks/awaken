@@ -10,7 +10,7 @@ use awaken_session_contract::{
     DreamCreateParams, DreamError, DreamInput, DreamListParams, DreamModelConfig, DreamModelInput,
     DreamModelSpeed, DreamOutput, DreamPage, DreamPolicyApplication, DreamPolicyApplicationError,
     DreamPolicyRecord, DreamProcessFailure, DreamProcessRecord, DreamProcessStore, DreamStatus,
-    DreamUsage,
+    DreamStatusEvent, DreamUsage,
 };
 pub use awaken_session_contract::{DreamPolicy, DreamPolicyConfig};
 use chrono::{DateTime, Utc};
@@ -651,7 +651,12 @@ impl DreamApplication {
                 continue;
             }
             if let Err(error) = self.commit_job_update(&id, |job| {
-                job.status = DreamStatus::Pending;
+                job.status = job
+                    .status
+                    .transition(DreamStatusEvent::Recover)
+                    .ok_or_else(|| {
+                        DreamApiError::Conflict("terminal Dream cannot be recovered".into())
+                    })?;
                 Ok(())
             }) {
                 tracing::warn!(dream_id = %id, %error, "Dream resume transition did not commit");
@@ -800,10 +805,10 @@ impl DreamApplication {
 
     async fn run_job(&self, id: String, cancellation: DreamCancellation) {
         let running_job = match self.commit_job_update(&id, |job| {
-            if job.status == DreamStatus::Canceled {
-                return Err(DreamApiError::Conflict("Dream is canceled".into()));
-            }
-            job.status = DreamStatus::Running;
+            job.status = job
+                .status
+                .transition(DreamStatusEvent::Start)
+                .ok_or_else(|| DreamApiError::Conflict("only a pending Dream can start".into()))?;
             Ok(())
         }) {
             Ok(job) => job,
@@ -861,13 +866,23 @@ impl DreamApplication {
             match &result {
                 Ok(()) => {
                     if job.status != DreamStatus::Canceled && !cancellation.is_canceled() {
-                        job.status = DreamStatus::Completed;
+                        job.status = job
+                            .status
+                            .transition(DreamStatusEvent::Complete)
+                            .ok_or_else(|| {
+                                DreamApiError::Conflict("only a running Dream can complete".into())
+                            })?;
                         job.ended_at = Some(now_ms());
                     }
                 }
                 Err(error) => {
                     if job.status != DreamStatus::Canceled && !cancellation.is_canceled() {
-                        job.status = DreamStatus::Failed;
+                        job.status =
+                            job.status
+                                .transition(DreamStatusEvent::Fail)
+                                .ok_or_else(|| {
+                                    DreamApiError::Conflict("only a running Dream can fail".into())
+                                })?;
                         job.error = Some(error.clone());
                         job.ended_at = Some(now_ms());
                     }
@@ -929,8 +944,8 @@ impl DreamApplication {
 
     fn fail_if_active(&self, id: &str, error: DreamFailure) -> Result<(), DreamApiError> {
         self.commit_job_update(id, |job| {
-            if job.status != DreamStatus::Canceled {
-                job.status = DreamStatus::Failed;
+            if let Some(failed) = job.status.transition(DreamStatusEvent::Fail) {
+                job.status = failed;
                 job.error = Some(error);
                 job.ended_at = Some(now_ms());
             }
@@ -1008,7 +1023,14 @@ impl DreamApplication {
             ));
         }
         let canceled_job = self.commit_job_update(id, |job| {
-            job.status = DreamStatus::Canceled;
+            job.status = job
+                .status
+                .transition(DreamStatusEvent::Cancel)
+                .ok_or_else(|| {
+                    DreamApiError::BadRequest(
+                        "only pending or running Dreams can be canceled".into(),
+                    )
+                })?;
             job.ended_at = Some(now_ms());
             job.cleanup_pending = true;
             Ok(())
