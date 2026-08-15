@@ -13,6 +13,100 @@ enum RehydrationPurpose {
     TerminalCleanup,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RehydrationPublicationDecision {
+    Available,
+    InteractiveUnpinned,
+    TerminalCleanupUnpinned,
+    TerminalCleanupBypass,
+    RejectMissingExact,
+}
+
+/// Decide whether projection recovery may proceed without a catalog profile.
+/// The sole bypass of an unavailable pinned publication is the non-interactive
+/// terminal-cleanup path; ordinary recovery remains fail-closed.
+#[must_use]
+const fn rehydration_publication_decision(
+    purpose: RehydrationPurpose,
+    has_frozen_revision: bool,
+    profile_available: bool,
+) -> RehydrationPublicationDecision {
+    if profile_available {
+        RehydrationPublicationDecision::Available
+    } else {
+        match (purpose, has_frozen_revision) {
+            (RehydrationPurpose::Interactive, true) => {
+                RehydrationPublicationDecision::RejectMissingExact
+            }
+            (RehydrationPurpose::TerminalCleanup, true) => {
+                RehydrationPublicationDecision::TerminalCleanupBypass
+            }
+            (RehydrationPurpose::Interactive, false) => {
+                RehydrationPublicationDecision::InteractiveUnpinned
+            }
+            (RehydrationPurpose::TerminalCleanup, false) => {
+                RehydrationPublicationDecision::TerminalCleanupUnpinned
+            }
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup() {
+    let terminal_cleanup: bool = kani::any();
+    let has_frozen_revision: bool = kani::any();
+    let profile_available: bool = kani::any();
+    let purpose = if terminal_cleanup {
+        RehydrationPurpose::TerminalCleanup
+    } else {
+        RehydrationPurpose::Interactive
+    };
+    let decision =
+        rehydration_publication_decision(purpose, has_frozen_revision, profile_available);
+
+    assert_eq!(
+        decision == RehydrationPublicationDecision::TerminalCleanupBypass,
+        terminal_cleanup && has_frozen_revision && !profile_available
+    );
+    assert_eq!(
+        decision == RehydrationPublicationDecision::RejectMissingExact,
+        !terminal_cleanup && has_frozen_revision && !profile_available
+    );
+    if has_frozen_revision && !profile_available {
+        assert_eq!(
+            decision != RehydrationPublicationDecision::RejectMissingExact,
+            terminal_cleanup
+        );
+    }
+}
+
+#[cfg(test)]
+mod rehydration_publication_policy_tests {
+    use super::*;
+
+    #[test]
+    fn missing_exact_publication_has_one_noninteractive_bypass() {
+        assert_eq!(
+            rehydration_publication_decision(RehydrationPurpose::Interactive, true, false),
+            RehydrationPublicationDecision::RejectMissingExact
+        );
+        assert_eq!(
+            rehydration_publication_decision(RehydrationPurpose::TerminalCleanup, true, false),
+            RehydrationPublicationDecision::TerminalCleanupBypass
+        );
+        for purpose in [
+            RehydrationPurpose::Interactive,
+            RehydrationPurpose::TerminalCleanup,
+        ] {
+            assert_eq!(
+                rehydration_publication_decision(purpose, true, true),
+                RehydrationPublicationDecision::Available
+            );
+        }
+    }
+}
+
 impl ManagedState {
     fn resolved_session_multiagent(
         &self,
@@ -958,18 +1052,24 @@ impl ManagedState {
                     .then(|| self.application.session_profile(owner_scope, &agent_id))
                     .flatten()
             });
-        if purpose == RehydrationPurpose::Interactive
-            && let Some(revision) = agent_revision
-            && profile.is_none()
-        {
+        let publication_decision =
+            rehydration_publication_decision(purpose, agent_revision.is_some(), profile.is_some());
+        if publication_decision == RehydrationPublicationDecision::RejectMissingExact {
+            let revision = agent_revision.expect("missing exact decision requires a revision");
             return Err(StateError::Run(RunError::unavailable(format!(
                 "Agent `{agent_id}` publication revision {revision} is unavailable during Session recovery"
             ))));
         }
-        let multiagent = if purpose == RehydrationPurpose::TerminalCleanup && profile.is_none() {
-            None
-        } else {
-            self.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps)?
+        let multiagent = match publication_decision {
+            RehydrationPublicationDecision::TerminalCleanupBypass
+            | RehydrationPublicationDecision::TerminalCleanupUnpinned => None,
+            RehydrationPublicationDecision::Available
+            | RehydrationPublicationDecision::InteractiveUnpinned => {
+                self.resolved_session_multiagent(owner_scope, profile.as_ref(), &caps)?
+            }
+            RehydrationPublicationDecision::RejectMissingExact => {
+                unreachable!("missing exact publication was rejected before projection")
+            }
         };
         Ok(Session {
             id: id.to_string(),

@@ -576,25 +576,6 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         "an unproven exact publication fails closed"
     );
 
-    let mut worker = application_with_configuration(
-        repository.clone(),
-        Arc::new(AdmissionEnvironment),
-        SessionApplicationConfiguration {
-            execution_placement: SessionExecutionPlacement::RegisteredWorker,
-            ..Default::default()
-        },
-    );
-    worker.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
-    let mut profile_without_snapshot = command("profiled-worker-missing-snapshot", None);
-    profile_without_snapshot.source_revision = Some(9);
-    assert!(
-        worker
-            .create_profiled_session(profile_without_snapshot)
-            .await
-            .is_err(),
-        "P2: a Worker effect cannot start without the complete immutable publication"
-    );
-
     let mut substituting = application(repository.clone(), Arc::new(AdmissionEnvironment));
     substituting.set_config_source(Arc::new(SubstitutingProfileSource));
     let mut substituted_command = command("profiled-substituted-revision", None);
@@ -612,6 +593,25 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             Err(awaken_session_contract::SessionRepositoryError::NotFound)
         ),
         "revision substitution must fail before Session persistence"
+    );
+
+    let mut worker = application_with_configuration(
+        repository.clone(),
+        Arc::new(AdmissionEnvironment),
+        SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            ..Default::default()
+        },
+    );
+    worker.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+    let mut profile_without_snapshot = command("profiled-worker-missing-snapshot", None);
+    profile_without_snapshot.source_revision = Some(9);
+    assert!(
+        worker
+            .create_profiled_session(profile_without_snapshot)
+            .await
+            .is_err(),
+        "P2: a Worker effect cannot start without the complete immutable publication"
     );
 
     let mismatched = available

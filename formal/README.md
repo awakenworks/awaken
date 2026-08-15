@@ -93,6 +93,8 @@ The named harnesses in the strict gate invoke production pure functions directly
   - a resolved Environment snapshot must retain the selected identity and a
     positive revision; a publication-pinned resolution must also return the
     exact requested revision before the snapshot can be frozen.
+  - a Worker accepts a frozen Agent publication only when Agent identity,
+    revision, and runtime identity all match; missing/conflicting pins fail closed.
 - `awaken-file-store`
   - object-store allocation accepts exactly a nonempty normalized bucket/prefix
     shape with a nonblank S3 region or with no S3-only coordinates for GCS.
@@ -103,11 +105,22 @@ The named harnesses in the strict gate invoke production pure functions directly
   - every retained writable root shares exactly one claim slot while receiving
     a distinct subpath slot; the ephemeral fallback assigns distinct volume
     slots instead.
+  - PVC allocation and final Pod projection share one exact selector, so an
+    ephemeral filesystem never allocates or references a continuation claim.
 - `awaken-worker-contract`
   - non-ready workers never accept work and accepted protocol versions are in range;
   - `NeverReplace` rejects every replacement;
   - sandbox-continuity replacement is authorized exactly when a binding exists;
   - the same incarnation never spends replacement authority.
+  - sandbox-tool recovery is a hard claim axis, manifest recovery matches the
+    installed executor, readiness is probe-independent, and unpublished dynamic
+    evidence can only restrict admission.
+- `awaken-authorization-contract`
+  - hosted admin, workspace member, and runtime member grants equal their exact
+    closed sets; legacy workspace migration is idempotent and authority exact.
+- `awaken-protocol-managed` / `awaken-runtime-host`
+  - only terminal cleanup bypasses a retired Agent publication, and MCP
+    credential realization preserves the authored target exactly.
 - `awaken-store-schema`
   - migration versions are dense and strictly increasing;
   - each step advances at most one version and never rolls back;
@@ -433,10 +446,10 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 268/268 formalizable obligations model-linked or
+checkpoint the ledger is 276/276 formalizable obligations model-linked or
 kernel-proved, plus 10 explicitly external obligations, for 100% formal
 evidence coverage. The evidence dimensions are reported independently: 185
-model-checked, 27 model-proved, 109 Kani-kernel-proved, and 6 linked to the
+model-checked, 27 model-proved, 117 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
 not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
@@ -448,7 +461,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The denominator (previously 237 and now 268 as new obligations were discovered)
+The denominator (previously 237 and now 276 as new obligations were discovered)
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -456,9 +469,9 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 573 candidate modules: all 573 are classified,
-304 have checked formal evidence associated with the production file, 167 have
-a direct Kani/trace proof link, and 212 are linked to an explicit product
+source-oriented inventory finds 574 candidate modules: all 574 are classified,
+307 have checked formal evidence associated with the production file, 172 have
+a direct Kani/trace proof link, and 211 are linked to an explicit product
 requirement boundary. This deliberately over-approximating inventory is not a
 claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set

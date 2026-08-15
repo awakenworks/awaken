@@ -75,6 +75,26 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                 resolved_publication.as_ref()
             }
         };
+        match awaken_session_contract::frozen_agent_publication_decision(
+            &projection.baseline,
+            published_snapshot,
+        ) {
+            awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
+            | awaken_session_contract::FrozenAgentPublicationDecision::OptionalMissing
+            | awaken_session_contract::FrozenAgentPublicationDecision::Exact => {}
+            awaken_session_contract::FrozenAgentPublicationDecision::MissingRequired => {
+                return Err(awaken_session_contract::RunError::classified(
+                    "session_runtime_publication_missing",
+                    "Worker Session realization requires its exact frozen Agent publication",
+                ));
+            }
+            awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
+                return Err(awaken_session_contract::RunError::classified(
+                    "session_runtime_publication_conflict",
+                    "Worker Agent publication does not match the frozen Session identity, revision, or runtime",
+                ));
+            }
+        }
         if let Some(snapshot) = published_snapshot {
             let conflict = self.host.session_slots.update(session_id, |slot| {
                 if slot
@@ -815,8 +835,10 @@ mod tests {
         let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
         let _managed = crate::ManagedHost::new(host.clone());
         let mut projection = frozen_projection();
+        projection.baseline.agent_revision = Some(7);
         projection.baseline.runtime = Some("acp:claude".into());
         let mut snapshot = test_activation(thread, "dynamic-publication").snapshot;
+        snapshot.metadata.source.revision = 7;
         snapshot.resolved_spec.model_binding.backend_ref = "acp:claude".into();
         projection.agent_publication = Some(snapshot.clone());
         let lease = awaken_session_contract::SessionRealizationLease {
@@ -875,6 +897,50 @@ mod tests {
             Some(&snapshot),
             "P3"
         );
+
+        let mut missing = projection.clone();
+        missing.agent_publication = None;
+        let error = WorkerProjectionSynchronizer {
+            host: host.as_ref(),
+            claim: None,
+            published_snapshot: None,
+            rebuild_unavailable_environment: false,
+            requires_runtime_before_effects: false,
+        }
+        .synchronize_session_projection("publication-missing", &missing, &lease, true)
+        .await
+        .expect_err("a cold pinned Worker projection must carry its publication");
+        assert_eq!(error.code, "session_runtime_publication_missing");
+
+        for (session_id, mutate) in [
+            ("publication-agent-mismatch", 0_u8),
+            ("publication-revision-mismatch", 1),
+            ("publication-runtime-mismatch", 2),
+        ] {
+            let mut conflicting = projection.clone();
+            let delivered = conflicting
+                .agent_publication
+                .as_mut()
+                .expect("fixture publication");
+            match mutate {
+                0 => delivered.root_agent_id.0 = "another-agent".into(),
+                1 => delivered.metadata.source.revision = 8,
+                _ => {
+                    delivered.resolved_spec.model_binding.backend_ref = "native:other".into();
+                }
+            }
+            let error = WorkerProjectionSynchronizer {
+                host: host.as_ref(),
+                claim: None,
+                published_snapshot: None,
+                rebuild_unavailable_environment: false,
+                requires_runtime_before_effects: false,
+            }
+            .synchronize_session_projection(session_id, &conflicting, &lease, true)
+            .await
+            .expect_err("mismatched Worker publication must fail closed");
+            assert_eq!(error.code, "session_runtime_publication_conflict");
+        }
     }
 
     /// Concurrent-renewal cause/effect graph: C1 an initial phase driver owns

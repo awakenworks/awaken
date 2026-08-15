@@ -18,12 +18,39 @@ const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 pub(super) const CLAIM_UID_ANNOTATION: &str = "awaken.dev/continuation-claim-uid";
 
-pub(super) fn requires_claim(plan: &ContainerPlan) -> bool {
-    plan.filesystem_continuity == awaken_provisioning_contract::FilesystemContinuity::Retained
+/// One closed decision shared by PVC allocation and final Pod projection.
+/// Keeping these paths on the same selector prevents an ephemeral plan from
+/// either allocating a claim or retaining a stale claim reference.
+pub(super) fn claim_required(plan: &ContainerPlan, configured: bool) -> bool {
+    claim_required_for(plan.filesystem_continuity, configured)
+}
+
+fn claim_required_for(
+    continuity: awaken_provisioning_contract::FilesystemContinuity,
+    configured: bool,
+) -> bool {
+    configured && continuity == awaken_provisioning_contract::FilesystemContinuity::Retained
 }
 
 pub(super) fn claim_name(id: &str, plan: &ContainerPlan, configured: bool) -> Option<String> {
-    (configured && requires_claim(plan)).then(|| continuation_claim_name(id))
+    claim_required(plan, configured).then(|| continuation_claim_name(id))
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn continuation_claim_selection_is_total_exact_and_non_widening() {
+    let configured: bool = kani::any();
+    let retained: bool = kani::any();
+    let continuity = if retained {
+        awaken_provisioning_contract::FilesystemContinuity::Retained
+    } else {
+        awaken_provisioning_contract::FilesystemContinuity::Ephemeral
+    };
+
+    let selected = claim_required_for(continuity, configured);
+    assert_eq!(selected, configured && retained);
+    assert!(!selected || configured);
+    assert!(!selected || retained);
 }
 
 pub(super) fn claim_uid(claim: &PersistentVolumeClaim) -> Result<String, RuntimeError> {
@@ -207,9 +234,9 @@ mod tests {
          * prompt-free capability-probe path and must not consume Session SSD.
          */
         let mut retained = plan();
-        assert!(requires_claim(&retained), "FC1");
+        assert!(claim_required(&retained, true), "FC1");
         retained.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
-        assert!(!requires_claim(&retained), "FC2");
+        assert!(!claim_required(&retained, true), "FC2");
     }
 
     #[tokio::test]

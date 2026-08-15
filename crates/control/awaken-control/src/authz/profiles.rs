@@ -1,7 +1,9 @@
 //! Deterministic authorization profiles owned by Awaken.
 
 use awaken_authorization_contract::{
-    AGENT_PUBLISHER_AUTHORITIES, CREDENTIAL_INGRESS_AUTHORITIES, WorkspaceRoleAuthority,
+    AGENT_PUBLISHER_AUTHORITIES, CREDENTIAL_INGRESS_AUTHORITIES, HostedRuntimeRole,
+    WorkspaceProfileRole, WorkspaceRoleAuthority, hosted_runtime_role_authorities,
+    workspace_profile_role_authorities,
 };
 use awaken_iam_contract::{
     ActionKey, ActionScopeRule, AuthorizationProfileDocument, CreateAuthorizationProfile,
@@ -22,6 +24,8 @@ pub const AWAKEN_WORKSPACE_CREDENTIAL_INGRESS_ROLE: &str = "awaken.workspace:cre
 /// Resources access plus read-only platform model supply. Cloud binds this role
 /// instead of local `workspace_admin`, whose BYOK authority remains self-hosted.
 pub const AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str = "awaken.workspace:hosted_admin";
+pub(super) const AWAKEN_WORKSPACE_LEGACY_HOSTED_ADMIN_ROLE: &str =
+    "awaken.workspace:legacy_hosted_admin";
 /// Hosted human member: the existing read-only Workspace role, fully qualified
 /// under the one Awaken Workspace authorization language.
 pub const AWAKEN_WORKSPACE_USER_ROLE: &str = "awaken.workspace:workspace_user";
@@ -82,6 +86,26 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
     ];
     let mut grants = Vec::new();
     for role in named_role_catalog(&created_at) {
+        if role.id.0 == "workspace_user" {
+            for (index, authority) in
+                workspace_profile_role_authorities(WorkspaceProfileRole::WorkspaceMember)
+                    .iter()
+                    .enumerate()
+            {
+                grants.push(GrantSnapshot {
+                    id: format!(
+                        "{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:workspace_user:{index}"
+                    ),
+                    subject: GrantSubjectRef::Role {
+                        role_id: AWAKEN_WORKSPACE_USER_ROLE.to_owned(),
+                    },
+                    action_pattern: qualify_action(authority.action_pattern()).0,
+                    scope: ScopeRef::Global,
+                    effect: GrantEffect::Allow,
+                });
+            }
+            continue;
+        }
         for (index, pattern) in role.action_patterns.iter().enumerate() {
             if !["workspace.", "apikey.", "file.", "skill."]
                 .iter()
@@ -159,25 +183,32 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
             effect: GrantEffect::Allow,
         });
     }
-    for (index, pattern) in [
-        "workspace.*",
-        "apikey.*",
-        "model_supply.read",
-        "file.*",
-        "skill.*",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        grants.push(GrantSnapshot {
-            id: format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:hosted_admin:{index}"),
-            subject: GrantSubjectRef::Role {
-                role_id: AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE.to_owned(),
-            },
-            action_pattern: qualify_action(pattern).0,
-            scope: ScopeRef::Global,
-            effect: GrantEffect::Allow,
-        });
+    for (profile_role, role_id, id) in [
+        (
+            WorkspaceProfileRole::HostedAdmin,
+            AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE,
+            "hosted_admin",
+        ),
+        (
+            WorkspaceProfileRole::LegacyHostedAdmin,
+            AWAKEN_WORKSPACE_LEGACY_HOSTED_ADMIN_ROLE,
+            "legacy_hosted_admin",
+        ),
+    ] {
+        for (index, authority) in workspace_profile_role_authorities(profile_role)
+            .iter()
+            .enumerate()
+        {
+            grants.push(GrantSnapshot {
+                id: format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:grant:role:{id}:{index}"),
+                subject: GrantSubjectRef::Role {
+                    role_id: role_id.to_owned(),
+                },
+                action_pattern: qualify_action(authority.action_pattern()).0,
+                scope: ScopeRef::Global,
+                effect: GrantEffect::Allow,
+            });
+        }
     }
 
     CreateAuthorizationProfile {
@@ -208,7 +239,36 @@ pub fn workspace_authorization_profile() -> CreateAuthorizationProfile {
 pub fn hosted_runtime_authorization_profile() -> CreateAuthorizationProfile {
     let created_at = Timestamp(AUTHORIZATION_PROFILE_EPOCH.to_owned());
     let actions = ["run.create", "run.read", "run.resume", "run.cancel"];
-    let action_pattern = qualify_hosted_runtime_action("run.*").0;
+    let mut grants = Vec::new();
+    for (profile_role, role_id, id) in [
+        (
+            HostedRuntimeRole::WorkspaceAdmin,
+            HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE,
+            "workspace_admin",
+        ),
+        (
+            HostedRuntimeRole::WorkspaceMember,
+            HOSTED_RUNTIME_WORKSPACE_USER_ROLE,
+            "workspace_user",
+        ),
+        (
+            HostedRuntimeRole::AgentExecutor,
+            HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE,
+            "agent_executor",
+        ),
+    ] {
+        for authority in hosted_runtime_role_authorities(profile_role) {
+            grants.push(GrantSnapshot {
+                id: format!("{HOSTED_RUNTIME_POLICY_NAMESPACE}:grant:role:{id}"),
+                subject: GrantSubjectRef::Role {
+                    role_id: role_id.to_owned(),
+                },
+                action_pattern: qualify_hosted_runtime_action(authority.action_pattern()).0,
+                scope: ScopeRef::Global,
+                effect: GrantEffect::Allow,
+            });
+        }
+    }
     CreateAuthorizationProfile {
         namespace: NamespaceId(HOSTED_RUNTIME_POLICY_NAMESPACE.to_owned()),
         document: AuthorizationProfileDocument {
@@ -226,35 +286,7 @@ pub fn hosted_runtime_authorization_profile() -> CreateAuthorizationProfile {
                     allowed_scope_kinds: vec![ScopeKind::Workspace],
                 })
                 .collect(),
-            grants: vec![
-                GrantSnapshot {
-                    id: format!("{HOSTED_RUNTIME_POLICY_NAMESPACE}:grant:role:workspace_admin"),
-                    subject: GrantSubjectRef::Role {
-                        role_id: HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE.to_owned(),
-                    },
-                    action_pattern: action_pattern.clone(),
-                    scope: ScopeRef::Global,
-                    effect: GrantEffect::Allow,
-                },
-                GrantSnapshot {
-                    id: format!("{HOSTED_RUNTIME_POLICY_NAMESPACE}:grant:role:workspace_user"),
-                    subject: GrantSubjectRef::Role {
-                        role_id: HOSTED_RUNTIME_WORKSPACE_USER_ROLE.to_owned(),
-                    },
-                    action_pattern: qualify_hosted_runtime_action("run.read").0,
-                    scope: ScopeRef::Global,
-                    effect: GrantEffect::Allow,
-                },
-                GrantSnapshot {
-                    id: format!("{HOSTED_RUNTIME_POLICY_NAMESPACE}:grant:role:agent_executor"),
-                    subject: GrantSubjectRef::Role {
-                        role_id: HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE.to_owned(),
-                    },
-                    action_pattern,
-                    scope: ScopeRef::Global,
-                    effect: GrantEffect::Allow,
-                },
-            ],
+            grants,
             ..AuthorizationProfileDocument::default()
         },
         created_at,

@@ -59,7 +59,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness run_backed_route_policy_uses_exact_run_actions \
     --harness application_route_policy_never_enters_the_service_guard \
     --harness credential_ingress_role_contains_only_workspace_apikey_authority \
-    --harness agent_publisher_role_contains_only_workspace_model_read_and_skill_authority
+    --harness agent_publisher_role_contains_only_workspace_model_read_and_skill_authority \
+    --harness hosted_admin_role_contains_exactly_its_five_workspace_authorities \
+    --harness workspace_member_role_contains_exactly_read_only_workspace_authorities \
+    --harness runtime_member_role_contains_exactly_run_read \
+    --harness legacy_workspace_binding_migration_is_idempotent_and_authority_exact
   run_kani awaken-acp-contract \
     --harness acp_capability_is_detected_exactly_after_a_verified_observation
   run_kani awaken-session-contract \
@@ -80,7 +84,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness bounded_runtime_capability_iterator_uses_exact_member_projection \
     --harness runtime_capability_member_projection_is_total_exact_and_bounded \
     --harness skill_execution_pin_requires_exact_workspace_revision_and_hash \
-    --harness every_skill_execution_pin_axis_is_binding
+    --harness every_skill_execution_pin_axis_is_binding \
+    --harness frozen_worker_agent_publication_is_exact_or_fails_closed
   run_kani awaken-service-auth-contract \
     --harness service_token_retry_is_enabled_only_for_an_exact_changed_token
   run_kani awaken-session-application \
@@ -143,7 +148,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness organization_bucket_saturated_refill_is_canonical_and_bounded \
     --harness organization_bucket_refill_clamp_preserves_capacity_invariant \
     --harness organization_bucket_consumption_is_exact_and_non_over_admitting \
-    --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening
+    --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening \
+    --harness retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup
   run_kani awaken-protocol-a2a \
     --harness a2a_task_state_projection_is_total_exact_and_non_strengthening
   run_kani awaken-ext-mcp \
@@ -152,6 +158,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness notification_admission_is_exact_and_unknown_fails_closed
   run_kani awaken-sandbox-container \
     --harness continuation_writable_roots_share_one_claim_without_aliasing
+  run_kani awaken-sandbox-container --features k8s --solver kissat \
+    --harness continuation_claim_selection_is_total_exact_and_non_widening
   run_kani awaken-store-schema \
     --harness dense_migration_versions_are_strictly_increasing \
     --harness migration_step_never_rolls_back_or_skips_a_version \
@@ -202,7 +210,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-runtime-host \
     --harness trace_capture_clamp_is_exact_and_never_widens_persisted_content \
     --harness configured_capture_redactor_selection_is_total_and_exact \
-    --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed
+    --harness session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed \
+    --harness container_hand_residency_recovery_mapping_is_total_exact_and_non_widening \
+    --harness mcp_credential_realization_preserves_the_request_target_exactly
   run_kani awaken-service-lifecycle \
     --harness startup_wiring_is_exact_for_every_service_role \
     --harness startup_wiring_requires_every_role_owned_component \
@@ -220,7 +230,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness non_ready_worker_never_accepts_work \
     --harness never_replace_rejects_every_replacement \
     --harness sandbox_continuity_authorizes_replacement_exactly_when_bound \
-    --harness same_incarnation_never_spends_replacement_authority
+    --harness same_incarnation_never_spends_replacement_authority \
+    --harness sandbox_tool_recovery_claim_axis_is_exact_and_non_widening \
+    --harness manifest_recovery_mapping_accepts_only_the_exact_installed_capability \
+    --harness dynamic_evidence_can_only_restrict_ready_worker_admission \
+    --harness process_readiness_after_startup_is_probe_independent
   run_kani awaken-worker-transport-security \
     --harness worker_transport_selector_admits_only_three_exact_postures \
     --harness remote_transport_never_downgrades_or_widens_identity

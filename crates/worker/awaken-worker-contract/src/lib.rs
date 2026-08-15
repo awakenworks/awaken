@@ -175,6 +175,25 @@ impl WorkerState {
     }
 }
 
+/// State of the asynchronous dynamic-evidence probe relative to process
+/// startup. Probe evidence affects placement, never process liveness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DynamicEvidenceProbeState {
+    Pending,
+    Succeeded,
+    Failed,
+}
+
+/// Readiness policy after registration and runtime assembly have succeeded.
+///
+/// The probe state is explicit so the independence claim is executable and
+/// exhaustively provable. Callers still publish no dynamic evidence until a
+/// successful probe; [`dynamic_evidence_admits`] enforces that claim fence.
+#[must_use]
+pub const fn process_ready_after_startup(_probe: DynamicEvidenceProbeState) -> bool {
+    true
+}
+
 /// Inclusive protocol-version range supported by a worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionRange {
@@ -464,6 +483,44 @@ pub enum Incompatibility {
     CheckpointFormat(String),
 }
 
+/// Exact compatibility kernel for one Sandbox-owned tool-recovery demand.
+///
+/// Placement and the exhaustive proof both call this production selector. A
+/// non-default recovery mode is therefore a hard admission axis, rather than a
+/// ranking hint that an incompatible Worker could ignore.
+#[must_use]
+pub const fn sandbox_tool_recovery_is_compatible(
+    required: awaken_runtime_contract::tool::ToolRecoveryMode,
+    installed: awaken_runtime_contract::tool::ToolRecoveryCapability,
+) -> bool {
+    required.is_supported_by(installed)
+}
+
+/// A Worker manifest may advertise only the recovery capability derived from
+/// the executor that this process actually installs.
+#[must_use]
+pub fn manifest_recovery_matches_installed(
+    advertised: awaken_runtime_contract::tool::ToolRecoveryCapability,
+    installed: awaken_runtime_contract::tool::ToolRecoveryCapability,
+) -> bool {
+    advertised == installed
+}
+
+/// Final admission projection for asynchronous Worker observations.
+///
+/// Process readiness and static placement are intentionally computed without
+/// waiting for Sandbox-backed probes. Missing dynamic evidence can only make a
+/// ready Worker ineligible; it can never manufacture readiness or widen static
+/// eligibility.
+#[must_use]
+pub const fn dynamic_evidence_admits(
+    process_and_static_eligible: bool,
+    credential_evidence_satisfied: bool,
+    acp_evidence_satisfied: bool,
+) -> bool {
+    process_and_static_eligible && credential_evidence_satisfied && acp_evidence_satisfied
+}
+
 /// Non-replaceable compatibility kernel. It is intentionally independent from
 /// liveness and ranking; callers re-run it inside the atomic claim transaction.
 pub fn can_claim(
@@ -515,7 +572,9 @@ pub fn can_claim(
     if let Some(required) = requirements
         .required_sandbox_tool_recovery
         .iter()
-        .find(|required| !required.is_supported_by(manifest.sandbox_tool_recovery))
+        .find(|required| {
+            !sandbox_tool_recovery_is_compatible(**required, manifest.sandbox_tool_recovery)
+        })
     {
         return Err(Incompatibility::SandboxToolRecovery {
             required: *required,
@@ -770,25 +829,32 @@ pub trait WorkerDirectory: WorkerObservationSource {
 impl WorkerSnapshot {
     #[must_use]
     pub fn accepts(&self, requirements: &PlacementRequirements, now_ms: u64) -> bool {
-        self.state.accepts_work()
+        let process_and_static_eligible = self.state.accepts_work()
             && self.expires_at_ms > now_ms
             && self.in_flight < self.manifest.capacity.max_concurrent
             && self.manifest.fingerprint().ok().as_deref()
                 == Some(self.capability_fingerprint.as_str())
-            && can_claim(&self.manifest, requirements).is_ok()
-            && requirements.required_credentials.iter().all(|required| {
+            && can_claim(&self.manifest, requirements).is_ok();
+        let credential_evidence_satisfied =
+            requirements.required_credentials.iter().all(|required| {
                 self.credential_observations
                     .iter()
                     .any(|observation| observation.is_selectable_at(required, now_ms))
-            })
-            && requirements
+            });
+        let acp_evidence_satisfied =
+            requirements
                 .required_acp_capabilities
                 .iter()
                 .all(|required| {
                     self.acp_capability_observations
                         .iter()
                         .any(|observation| observation.is_selectable_at(required, now_ms))
-                })
+                });
+        dynamic_evidence_admits(
+            process_and_static_eligible,
+            credential_evidence_satisfied,
+            acp_evidence_satisfied,
+        )
     }
 }
 
@@ -962,6 +1028,34 @@ fn rank_eligible(
 mod verification {
     use super::*;
 
+    fn symbolic_recovery_capability() -> awaken_runtime_contract::tool::ToolRecoveryCapability {
+        use awaken_runtime_contract::tool::ToolRecoveryCapability;
+        match kani::any::<u8>() % 4 {
+            0 => ToolRecoveryCapability::NonRecoverable,
+            1 => ToolRecoveryCapability::ReplaySafe,
+            2 => ToolRecoveryCapability::Idempotent,
+            _ => ToolRecoveryCapability::DurableRequest,
+        }
+    }
+
+    fn symbolic_recovery_mode() -> awaken_runtime_contract::tool::ToolRecoveryMode {
+        use awaken_runtime_contract::tool::ToolRecoveryMode;
+        match kani::any::<u8>() % 4 {
+            0 => ToolRecoveryMode::NeverReplay,
+            1 => ToolRecoveryMode::ReplaySafe,
+            2 => ToolRecoveryMode::Idempotent,
+            _ => ToolRecoveryMode::DurableRequest,
+        }
+    }
+
+    fn symbolic_probe_state() -> DynamicEvidenceProbeState {
+        match kani::any::<u8>() % 3 {
+            0 => DynamicEvidenceProbeState::Pending,
+            1 => DynamicEvidenceProbeState::Succeeded,
+            _ => DynamicEvidenceProbeState::Failed,
+        }
+    }
+
     #[kani::proof]
     fn accepted_version_is_inside_worker_range() {
         let min = kani::any::<u32>();
@@ -984,6 +1078,79 @@ mod verification {
             _ => WorkerState::Dead,
         };
         assert!(!state.accepts_work());
+    }
+
+    #[kani::proof]
+    fn sandbox_tool_recovery_claim_axis_is_exact_and_non_widening() {
+        use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode};
+
+        let required = symbolic_recovery_mode();
+        let installed = symbolic_recovery_capability();
+        let expected = matches!(
+            (required, installed),
+            (ToolRecoveryMode::NeverReplay, _)
+                | (
+                    ToolRecoveryMode::ReplaySafe,
+                    ToolRecoveryCapability::ReplaySafe
+                )
+                | (
+                    ToolRecoveryMode::Idempotent,
+                    ToolRecoveryCapability::Idempotent
+                )
+                | (
+                    ToolRecoveryMode::DurableRequest,
+                    ToolRecoveryCapability::DurableRequest
+                )
+        );
+        assert_eq!(
+            sandbox_tool_recovery_is_compatible(required, installed),
+            expected
+        );
+    }
+
+    #[kani::proof]
+    fn manifest_recovery_mapping_accepts_only_the_exact_installed_capability() {
+        let advertised = symbolic_recovery_capability();
+        let installed = symbolic_recovery_capability();
+        assert_eq!(
+            manifest_recovery_matches_installed(advertised, installed),
+            advertised == installed
+        );
+    }
+
+    #[kani::proof]
+    fn dynamic_evidence_can_only_restrict_ready_worker_admission() {
+        let process_and_static_eligible = kani::any::<bool>();
+        let credential_evidence_satisfied = kani::any::<bool>();
+        let acp_evidence_satisfied = kani::any::<bool>();
+        let admitted = dynamic_evidence_admits(
+            process_and_static_eligible,
+            credential_evidence_satisfied,
+            acp_evidence_satisfied,
+        );
+
+        assert_eq!(
+            admitted,
+            process_and_static_eligible && credential_evidence_satisfied && acp_evidence_satisfied
+        );
+        if admitted {
+            assert!(process_and_static_eligible);
+        }
+        assert!(!dynamic_evidence_admits(
+            process_and_static_eligible,
+            false,
+            acp_evidence_satisfied,
+        ));
+        assert!(!dynamic_evidence_admits(
+            process_and_static_eligible,
+            credential_evidence_satisfied,
+            false,
+        ));
+    }
+
+    #[kani::proof]
+    fn process_readiness_after_startup_is_probe_independent() {
+        assert!(process_ready_after_startup(symbolic_probe_state()));
     }
 
     #[kani::proof]

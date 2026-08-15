@@ -60,6 +60,15 @@ from closed decision tables. Production builders use typestate such as
 without its required authorization gate. Unrestricted construction is isolated
 behind an explicit test-only API.
 
+### Shared browser route-scope kernel
+
+Move workspace scope precedence and route parsing out of TypeScript into a
+small shared Rust contract compiled to WASM. The browser supplies route and
+server context to this pure selector; local/session storage is never an
+authority input. Kani can then prove exact precedence and fail-closed handling,
+while browser tests retain responsibility for URI APIs, navigation, rendering,
+and deployment integration.
+
 ### Decide -> CommitPlan -> CommitReceipt
 
 Pure code decides an effect and emits a stable plan identity. An adapter performs
