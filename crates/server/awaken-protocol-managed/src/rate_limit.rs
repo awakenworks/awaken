@@ -15,6 +15,13 @@ use axum::response::{IntoResponse, Response};
 
 use crate::types::ErrorResponse;
 
+const MILLIS_PER_SECOND: u64 = 1_000;
+const TOKEN_QUANTA_PER_TOKEN: u64 = 60 * MILLIS_PER_SECOND;
+const TOKEN_QUANTA_PER_TOKEN_U32: u32 = TOKEN_QUANTA_PER_TOKEN as u32;
+/// Explicit product admission bound, over 54 times the documented 1,200/minute
+/// read limit. It keeps exact fixed-point arithmetic and its proof domain finite.
+const MAX_ORGANIZATION_RATE_LIMIT: u32 = u16::MAX as u32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagedOperation {
     Create,
@@ -77,48 +84,170 @@ impl Default for ManagedRateLimits {
 
 #[derive(Debug)]
 struct Bucket {
-    capacity: u32,
-    tokens: f64,
+    capacity: u16,
+    token_quanta: u64,
     last_refill: Duration,
 }
 
 impl Bucket {
     fn new(capacity: u32) -> Self {
-        assert!(capacity > 0, "a Managed API rate limit must be positive");
+        assert!(
+            (1..=MAX_ORGANIZATION_RATE_LIMIT).contains(&capacity),
+            "a Managed API rate limit must be within the admitted product domain"
+        );
+        let capacity = u16::try_from(capacity).expect("admission bound fits u16");
         Self {
             capacity,
-            tokens: f64::from(capacity),
+            token_quanta: capacity_quanta(capacity),
             last_refill: Duration::ZERO,
         }
     }
 
     fn take(&mut self, now: Duration) -> ManagedRateLimitDecision {
-        let elapsed = now.saturating_sub(self.last_refill).as_secs_f64();
-        let refill_per_second = f64::from(self.capacity) / 60.0;
-        self.tokens = (self.tokens + elapsed * refill_per_second).min(f64::from(self.capacity));
+        let elapsed = now.saturating_sub(self.last_refill);
+        let elapsed_millis = elapsed
+            .as_millis()
+            .min(u128::from(TOKEN_QUANTA_PER_TOKEN_U32)) as u32;
+        let refill = refill_quanta_for_elapsed(self.capacity, elapsed_millis);
+        self.token_quanta = clamp_refilled_tokens(self.capacity, self.token_quanta, refill);
         self.last_refill = now;
 
-        let allowed = self.tokens >= 1.0;
-        if allowed {
-            self.tokens -= 1.0;
-        }
+        let (allowed, remaining_quanta) = consume_available_token(self.token_quanta);
+        self.token_quanta = remaining_quanta;
         let retry_after = if allowed {
             None
         } else {
-            Some(seconds_ceil((1.0 - self.tokens) / refill_per_second))
+            Some(seconds_for_quanta(
+                TOKEN_QUANTA_PER_TOKEN - self.token_quanta,
+                self.capacity,
+            ))
         };
         ManagedRateLimitDecision {
             allowed,
-            limit: self.capacity,
-            remaining: self.tokens.floor() as u32,
+            limit: u32::from(self.capacity),
+            remaining: (self.token_quanta / TOKEN_QUANTA_PER_TOKEN) as u32,
             retry_after,
-            reset_after: seconds_ceil((f64::from(self.capacity) - self.tokens) / refill_per_second),
+            reset_after: seconds_for_quanta(
+                capacity_quanta(self.capacity) - self.token_quanta,
+                self.capacity,
+            ),
         }
     }
 }
 
-fn seconds_ceil(seconds: f64) -> u64 {
-    (seconds.ceil() as u64).max(1)
+/// Amount credited by one monotonic elapsed interval. Once a complete refill
+/// period has elapsed the clamp must yield capacity, so every `>= 60s` duration
+/// is represented by that canonical value. This both avoids needless floating
+/// point growth and gives the verifier a bounded equivalent state space.
+const fn capacity_quanta(capacity: u16) -> u64 {
+    capacity as u64 * TOKEN_QUANTA_PER_TOKEN
+}
+
+fn refill_quanta_for_elapsed(capacity: u16, elapsed_millis: u32) -> u64 {
+    if elapsed_millis >= TOKEN_QUANTA_PER_TOKEN_U32 {
+        capacity_quanta(capacity)
+    } else {
+        u64::from(capacity) * u64::from(elapsed_millis)
+    }
+}
+
+fn clamp_refilled_tokens(capacity: u16, tokens: u64, refill: u64) -> u64 {
+    let available = capacity_quanta(capacity) - tokens;
+    if refill >= available {
+        capacity_quanta(capacity)
+    } else {
+        tokens + refill
+    }
+}
+
+fn consume_available_token(tokens: u64) -> (bool, u64) {
+    if tokens >= TOKEN_QUANTA_PER_TOKEN {
+        (true, tokens - TOKEN_QUANTA_PER_TOKEN)
+    } else {
+        (false, tokens)
+    }
+}
+
+fn seconds_for_quanta(quanta: u64, capacity: u16) -> u64 {
+    let quanta_per_second = u64::from(capacity) * MILLIS_PER_SECOND;
+    quanta.div_ceil(quanta_per_second).max(1)
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn organization_bucket_refill_is_exact_and_bounded() {
+    let capacity: u16 = kani::any();
+    let elapsed_millis: u32 = kani::any();
+    kani::assume(capacity > 0);
+    kani::assume(elapsed_millis < TOKEN_QUANTA_PER_TOKEN_U32);
+
+    let refill = refill_quanta_for_elapsed(capacity, elapsed_millis);
+    assert_eq!(refill, u64::from(capacity) * u64::from(elapsed_millis));
+    // Kani's generated arithmetic property proves this exact multiplication
+    // cannot overflow in the admitted domain. The independent clamp harness
+    // proves the resulting bucket state never exceeds capacity.
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn organization_bucket_saturated_refill_is_canonical_and_bounded() {
+    let capacity: u16 = kani::any();
+    let elapsed_millis: u32 = kani::any();
+    kani::assume(capacity > 0);
+    kani::assume(elapsed_millis >= TOKEN_QUANTA_PER_TOKEN_U32);
+
+    let refill = refill_quanta_for_elapsed(capacity, elapsed_millis);
+    assert_eq!(refill, capacity_quanta(capacity));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn organization_bucket_refill_clamp_preserves_capacity_invariant() {
+    let capacity_u16: u16 = kani::any();
+    let token_whole: u16 = kani::any();
+    let token_fraction: u16 = kani::any();
+    let refill_whole: u16 = kani::any();
+    let refill_fraction: u16 = kani::any();
+    kani::assume(capacity_u16 > 0);
+    kani::assume(token_whole <= capacity_u16);
+    kani::assume(refill_whole <= capacity_u16);
+    kani::assume(u64::from(token_fraction) < TOKEN_QUANTA_PER_TOKEN);
+    kani::assume(u64::from(refill_fraction) < TOKEN_QUANTA_PER_TOKEN);
+    kani::assume(token_whole < capacity_u16 || token_fraction == 0);
+    kani::assume(refill_whole < capacity_u16 || refill_fraction == 0);
+    let tokens = u64::from(token_whole) * TOKEN_QUANTA_PER_TOKEN + u64::from(token_fraction);
+    let refill = u64::from(refill_whole) * TOKEN_QUANTA_PER_TOKEN + u64::from(refill_fraction);
+
+    let refilled = clamp_refilled_tokens(capacity_u16, tokens, refill);
+    assert!(refilled >= tokens);
+    assert!(refilled <= capacity_quanta(capacity_u16));
+    if refill < capacity_quanta(capacity_u16) - tokens {
+        assert_eq!(refilled, tokens + refill);
+    } else {
+        assert_eq!(refilled, capacity_quanta(capacity_u16));
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn organization_bucket_consumption_is_exact_and_non_over_admitting() {
+    let capacity_u16: u16 = kani::any();
+    let whole: u16 = kani::any();
+    let fraction: u16 = kani::any();
+    kani::assume(capacity_u16 > 0);
+    kani::assume(whole <= capacity_u16);
+    kani::assume(u64::from(fraction) < TOKEN_QUANTA_PER_TOKEN);
+    kani::assume(whole < capacity_u16 || fraction == 0);
+    let tokens = u64::from(whole) * TOKEN_QUANTA_PER_TOKEN + u64::from(fraction);
+
+    let (allowed, remaining) = consume_available_token(tokens);
+    assert_eq!(allowed, tokens >= TOKEN_QUANTA_PER_TOKEN);
+    assert!(remaining <= tokens);
+    if allowed {
+        assert_eq!(remaining, tokens - TOKEN_QUANTA_PER_TOKEN);
+    } else {
+        assert_eq!(remaining, tokens);
+    }
 }
 
 #[derive(Debug)]
@@ -456,6 +585,12 @@ mod tests {
                 .allowed,
             "T4"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "within the admitted product domain")]
+    fn organization_bucket_rejects_capacity_above_the_proved_domain() {
+        let _ = Bucket::new(MAX_ORGANIZATION_RATE_LIMIT + 1);
     }
 
     #[tokio::test]

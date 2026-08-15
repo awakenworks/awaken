@@ -138,7 +138,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness acp_session_load_preserves_the_exact_mcp_projection \
     --harness acp_permission_tool_identity_normalization_is_exact
   run_kani awaken-protocol-managed \
+    --solver kissat \
     --harness organization_bucket_refill_is_exact_and_bounded \
+    --harness organization_bucket_saturated_refill_is_canonical_and_bounded \
     --harness organization_bucket_refill_clamp_preserves_capacity_invariant \
     --harness organization_bucket_consumption_is_exact_and_non_over_admitting \
     --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening
