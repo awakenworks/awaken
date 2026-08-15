@@ -6,8 +6,7 @@
 //! Typed deployment `identity_mode = "self-managed"` installs this guard;
 //! `identity_mode = "open"` is the explicit local-machine mode. When enabled,
 //! every management route demands a bearer
-//! credential in the Awaken `sk-awaken-<prefix>.<secret>` shape (`sk-ant-` is
-//! accepted as a legacy alias during the deprecation window) — either
+//! credential in the canonical Awaken `sk-awaken-<prefix>.<secret>` shape — either
 //! `Authorization: Bearer …` or the SDK's `x-api-key` header). Secrets are
 //! argon2id-hashed at rest by `awaken-iam-core`; the cleartext exists only in
 //! the mint response and — for the bootstrap admin token — in
@@ -198,10 +197,10 @@ const RUN_CREATE: &str = "run.create";
 #[cfg(test)]
 const RUN_READ: &str = "run.read";
 
+const CANONICAL_API_TOKEN_PREFIX: &str = "sk-awaken-";
+
 fn persisted_role(role: &str) -> RoleId {
-    if let Some(local) = legacy_local_role(role) {
-        qualify_role(local)
-    } else if role.contains(':') {
+    if role.contains(':') {
         RoleId(role.to_owned())
     } else {
         qualify_role(role)
@@ -210,19 +209,12 @@ fn persisted_role(role: &str) -> RoleId {
 
 fn local_role(role: &str) -> &str {
     role.strip_prefix(&format!("{AWAKEN_WORKSPACE_POLICY_NAMESPACE}:"))
-        .or_else(|| legacy_local_role(role))
         .unwrap_or(role)
 }
 
-fn legacy_local_role(role: &str) -> Option<&str> {
-    let local = role
-        .strip_prefix(&format!("{LEGACY_MANAGEMENT_POLICY_NAMESPACE}:"))
-        .or_else(|| role.strip_prefix(&format!("{LEGACY_RESOURCE_POLICY_NAMESPACE}:")))?;
-    Some(match local {
-        "hosted_workspace_admin" => "hosted_admin",
-        "agent_publisher" => "publisher",
-        unchanged => unchanged,
-    })
+fn is_legacy_workspace_role(role: &str) -> bool {
+    role.starts_with(&format!("{LEGACY_MANAGEMENT_POLICY_NAMESPACE}:"))
+        || role.starts_with(&format!("{LEGACY_RESOURCE_POLICY_NAMESPACE}:"))
 }
 
 fn legacy_binding_coordinates(role: &str) -> Option<(bool, WorkspaceBindingRole)> {
@@ -466,6 +458,9 @@ impl ManagementAuthz {
     /// principal and workspace binding — or the reason it failed, so the guard
     /// can answer the distinct expired / revoked / invalid 401s.
     fn authenticate(&self, presented: &str) -> Result<(PrincipalRef, WorkspaceId), AuthReject> {
+        if !presented.starts_with(CANONICAL_API_TOKEN_PREFIX) {
+            return Err(AuthReject::Invalid);
+        }
         // now_unix is unused for API tokens (this plane mints no JWTs); pass 0.
         match self
             .gate
@@ -612,12 +607,22 @@ fn retire_legacy_profile(
 
 /// Consolidate durable local bindings before live-PDP hydration. The old two
 /// profile roles carried the same local role intent at the same scope, so both
-/// map to one canonical Workspace role and are then removed.
-fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) -> bool {
+/// map to one canonical Workspace role and are then removed. Validation is a
+/// separate first pass: an incomplete authority pair cannot partially mutate
+/// the store before the process refuses startup. A canonical binding left by a
+/// prior interrupted migration authorizes removal of its remaining legacy rows.
+fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) -> Result<(), String> {
     let bindings = RoleBindingRepo::list(store).expect("list legacy role bindings");
+    let mut migration = Vec::new();
     for legacy in &bindings {
-        let Some((_, role)) = legacy_binding_coordinates(&legacy.role.0) else {
+        if !is_legacy_workspace_role(&legacy.role.0) {
             continue;
+        }
+        let Some((_, role)) = legacy_binding_coordinates(&legacy.role.0) else {
+            return Err(format!(
+                "unsupported legacy role `{}` for principal {:?} at {:?}",
+                legacy.role.0, legacy.principal, legacy.scope
+            ));
         };
         let has_management_binding = bindings.iter().any(|candidate| {
             candidate.principal == legacy.principal
@@ -629,25 +634,42 @@ fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) -> bool {
                 && candidate.scope == legacy.scope
                 && legacy_binding_coordinates(&candidate.role.0) == Some((false, role))
         });
-        let Some(target) = legacy_workspace_binding_migration_target(
-            role,
-            has_management_binding,
-            has_resource_binding,
-        ) else {
-            continue;
-        };
         let canonical = RoleBinding {
             principal: legacy.principal.clone(),
-            role: qualify_role(target.canonical_local_name()),
+            role: qualify_role(role.canonical_local_name()),
             scope: legacy.scope.clone(),
         };
-        RoleBindingRepo::add(store, canonical).expect("add canonical Workspace role binding");
-        RoleBindingRepo::remove(store, legacy).expect("remove legacy Workspace role binding");
+        let canonical_exists = bindings.contains(&canonical);
+        if !canonical_exists
+            && legacy_workspace_binding_migration_target(
+                role,
+                has_management_binding,
+                has_resource_binding,
+            )
+            .is_none()
+        {
+            return Err(format!(
+                "legacy role `{}` for principal {:?} at {:?} has no authority-equivalent canonical binding",
+                legacy.role.0, legacy.principal, legacy.scope
+            ));
+        }
+        migration.push((canonical, legacy.clone()));
     }
-    !RoleBindingRepo::list(store)
+    for (canonical, legacy) in migration {
+        RoleBindingRepo::add(store, canonical).expect("add canonical Workspace role binding");
+        RoleBindingRepo::remove(store, &legacy).expect("remove legacy Workspace role binding");
+    }
+    if let Some(remaining) = RoleBindingRepo::list(store)
         .expect("list remaining legacy role bindings")
-        .iter()
-        .any(|binding| legacy_local_role(&binding.role.0).is_some())
+        .into_iter()
+        .find(|binding| is_legacy_workspace_role(&binding.role.0))
+    {
+        return Err(format!(
+            "legacy role `{}` remains for principal {:?} at {:?}",
+            remaining.role.0, remaining.principal, remaining.scope
+        ));
+    }
+    Ok(())
 }
 
 /// Open embedded IAM for the platform-owned `Org -> Workspace` coordinates.
@@ -666,7 +688,9 @@ pub fn embedded_iam_for_tenant(
     // and any external reader see the same catalog the evaluator derives from.
     let now = Timestamp(now_rfc3339());
     seed_named_roles(&store, &now).expect("seed the preset role catalog");
-    let legacy_profiles_are_retiable = migrate_legacy_workspace_bindings(&store);
+    migrate_legacy_workspace_bindings(&store).unwrap_or_else(|error| {
+        panic!("legacy Workspace binding migration requires operator repair: {error}")
+    });
 
     // Single-machine Runtime has one hidden Org and one platform-provisioned
     // Workspace. Bind bootstrap authority at the Org (never Global) so it can
@@ -708,10 +732,8 @@ pub fn embedded_iam_for_tenant(
     .expect("migrate authorization profile store");
     let profiles = AuthorizationProfileAdmin::new(Arc::new(profile_store));
     reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
-    if legacy_profiles_are_retiable {
-        retire_legacy_profile(&profiles, &mut engine, LEGACY_MANAGEMENT_POLICY_NAMESPACE);
-        retire_legacy_profile(&profiles, &mut engine, LEGACY_RESOURCE_POLICY_NAMESPACE);
-    }
+    retire_legacy_profile(&profiles, &mut engine, LEGACY_MANAGEMENT_POLICY_NAMESPACE);
+    retire_legacy_profile(&profiles, &mut engine, LEGACY_RESOURCE_POLICY_NAMESPACE);
 
     engine.policy_mut().scope_graph_mut().assign_workspace(
         WorkspaceId(workspace_id.to_owned()),
@@ -1916,6 +1938,9 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 #[path = "authz/application_protocol_tests.rs"]
 mod application_protocol_tests;
+#[cfg(test)]
+#[path = "authz/credential_authentication_tests.rs"]
+mod credential_authentication_tests;
 #[cfg(test)]
 #[path = "authz_management_profile_tests.rs"]
 mod management_profile_tests;
