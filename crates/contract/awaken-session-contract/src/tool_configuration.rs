@@ -25,8 +25,7 @@ impl SessionToolConfiguration {
             .then(|| ToolsetPolicy {
                 source: ToolsetSource::Agent,
                 default: ToolExecutionPolicy::default(),
-                overrides: crate::AGENT_TOOLSET_TOOL_IDS
-                    .into_iter()
+                overrides: crate::agent_toolset_members()
                     .filter_map(|name| {
                         match capabilities
                             .builtin_tools

@@ -38,6 +38,13 @@ struct SkillBundleRequest {
     binding: ResolvedSkillBinding,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkillBundleResponse {
+    workspace_id: String,
+    version: SkillVersion,
+}
+
 /// Handler dependencies for claim-fenced exact custom-Skill reads.
 pub struct WorkerSkillBundleService {
     source: Arc<dyn SkillBundleSource<RunClaim>>,
@@ -134,7 +141,11 @@ async fn read_skill_bundle(
         .load(&request.workspace_id, &request.binding, None)
         .await
     {
-        Ok(Some(version)) => Json(version).into_response(),
+        Ok(Some(version)) => Json(SkillBundleResponse {
+            workspace_id: request.workspace_id,
+            version,
+        })
+        .into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
@@ -196,10 +207,16 @@ impl SkillBundleSource<RunClaim> for HttpSkillBundleSource {
                 response.status()
             )));
         }
-        let version = response
-            .json::<SkillVersion>()
+        let response = response
+            .json::<SkillBundleResponse>()
             .await
             .map_err(|error| SkillBundleSourceError::new(error.to_string()))?;
-        validate_skill_bundle(binding, version).map(Some)
+        validate_skill_bundle(
+            workspace_id,
+            &response.workspace_id,
+            binding,
+            response.version,
+        )
+        .map(Some)
     }
 }
