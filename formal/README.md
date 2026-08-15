@@ -451,7 +451,10 @@ feature gate rejects orphaned formal obligations and external assumptions, so a
 high claim-oriented ratio cannot hide a product area that was omitted from the
 denominator. `formal/assumptions.json` records the environmental contracts that
 repository-owned proofs consume, including their integration and runtime
-evidence. Run `scripts/ci/check_feature_coverage.py --require-complete` to make
+evidence. An `evidenced` external assumption means its boundary has executable
+or operational detection evidence; it does not promote third-party correctness
+into a repository theorem. Run `scripts/ci/check_feature_coverage.py
+--require-complete` to make
 unverified product requirements or open external assumptions fatal; the normal
 formal gate always validates the inventory and reports those remaining gaps.
 

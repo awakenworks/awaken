@@ -130,6 +130,21 @@ def main() -> None:
             fail(f"{assumption_id} runtime_evidence must be a list")
         for relative in integration:
             require_path(str(relative), assumption_id)
+        for evidence in runtime:
+            if not isinstance(evidence, dict):
+                fail(f"{assumption_id} runtime evidence must be an object")
+            kind = str(evidence.get("kind", ""))
+            name = str(evidence.get("name", ""))
+            relative = str(evidence.get("path", ""))
+            if kind not in {"durable_state", "log", "metric", "state"}:
+                fail(f"{assumption_id} has invalid runtime evidence kind {kind!r}")
+            if not name:
+                fail(f"{assumption_id} runtime evidence has no observable name")
+            require_path(relative, assumption_id)
+            if name not in (ROOT / relative).read_text(encoding="utf-8"):
+                fail(
+                    f"{assumption_id} runtime evidence {name!r} is absent from {relative}"
+                )
         assumptions[assumption_id] = item
     if assumption_obligations != external_obligations:
         missing = sorted(external_obligations - assumption_obligations)
