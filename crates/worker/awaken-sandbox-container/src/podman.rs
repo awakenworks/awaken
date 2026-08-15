@@ -960,6 +960,7 @@ mod tests {
             network: NetworkMode::None,
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
+            filesystem_continuity: pc::FilesystemContinuity::Retained,
             memory_mounts: vec![],
             rootfs: RootfsPlan::Image("img:latest".into()),
         }

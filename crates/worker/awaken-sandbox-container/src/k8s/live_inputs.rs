@@ -188,6 +188,7 @@ mod tests {
             network: crate::NetworkMode::Open,
             requests: pc::ResourceRequests::default(),
             limits: Default::default(),
+            filesystem_continuity: pc::FilesystemContinuity::Retained,
             memory_mounts: Vec::new(),
             rootfs: crate::RootfsPlan::HostUserland,
         }

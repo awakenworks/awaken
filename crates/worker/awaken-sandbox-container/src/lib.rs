@@ -116,6 +116,8 @@ pub struct ContainerPlan {
     pub network: NetworkMode,
     pub requests: pc::ResourceRequests,
     pub limits: pc::ResourceLimits,
+    /// Exact writable-filesystem lifecycle requested by the neutral spec.
+    pub filesystem_continuity: pc::FilesystemContinuity,
     /// Memory-store mounts, realized as runtime-native writable volumes (NOT binds).
     pub memory_mounts: Vec<MemoryMount>,
     /// The rootfs the agent runs on (Image / private IsolatedRoot). Honored by the
@@ -207,6 +209,7 @@ mod planner_tests {
                 pids: Some(256),
                 disk_bytes: None,
             },
+            filesystem_continuity: pc::FilesystemContinuity::Retained,
             memory_mounts: Vec::new(),
             rootfs: RootfsPlan::HostUserland,
         }
@@ -1054,6 +1057,7 @@ pub fn container_plan(
         network: egress.network,
         requests: spec.requests.clone(),
         limits: spec.limits.clone(),
+        filesystem_continuity: spec.filesystem_continuity,
         memory_mounts: memory_mounts_of(spec),
         rootfs: rootfs_of(spec, default_image),
     })

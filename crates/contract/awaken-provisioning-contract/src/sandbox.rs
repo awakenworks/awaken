@@ -923,6 +923,7 @@ mod tests {
             outputs_path: "/mnt/session/outputs".into(),
             requests: Default::default(),
             limits: Default::default(),
+            filesystem_continuity: crate::FilesystemContinuity::Retained,
             lease_ttl_secs: Some(60),
             extra: None,
         }

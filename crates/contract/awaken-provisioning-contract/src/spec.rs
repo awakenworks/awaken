@@ -319,6 +319,22 @@ mod process_secret_tests {
     }
 }
 
+/// Whether the writable filesystem must survive the process that realizes it.
+///
+/// Retention is fail-safe by default: an older serialized request that predates
+/// this field must not silently lose Session state. Deliberately prompt-free
+/// capability probes and other disposable housekeeping work opt into
+/// [`Self::Ephemeral`] explicitly.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemContinuity {
+    #[default]
+    Retained,
+    Ephemeral,
+}
+
 /// The request to realize a sandbox environment. `extra` is forward-compatible,
 /// provider-specific data (image tag, seccomp profile, …) opaque to this crate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -345,6 +361,11 @@ pub struct SandboxSpec {
     pub requests: ResourceRequests,
     #[serde(default)]
     pub limits: ResourceLimits,
+    /// Typed lifecycle demand for the writable filesystem. Providers without a
+    /// retention mechanism may ignore `Ephemeral`; a configured retention
+    /// mechanism must not allocate durable storage for it.
+    #[serde(default)]
+    pub filesystem_continuity: FilesystemContinuity,
     /// Optional dead-man's-switch: the owner must `renew_lease` within this window
     /// or the sandbox self-reaps. `None` = no lease (a local child dies with its
     /// parent anyway); set it for remote sandboxes that outlive the owning host.
@@ -538,6 +559,7 @@ mod tests {
             outputs_path: "/mnt/session/outputs".into(),
             requests: Default::default(),
             limits: Default::default(),
+            filesystem_continuity: FilesystemContinuity::Retained,
             lease_ttl_secs: None,
             extra: Some(serde_json::json!({
                 "command": ["agent", "--acp"],
@@ -630,6 +652,35 @@ mod tests {
             required: true,
         });
         assert_eq!(SandboxCapacityShapeId::from_spec(&mounted), None, "S4");
+    }
+
+    #[test]
+    fn legacy_specs_default_to_retained_filesystem_continuity() {
+        /* Compatibility cause/effect rule: C1 serialized input predates the
+         * continuity field; C2 input explicitly selects ephemeral. E1 C1 must
+         * deserialize as Retained (fail-safe); E2 C2 must remain Ephemeral.
+         */
+        let mut legacy = serde_json::to_value(capacity_spec()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("filesystem_continuity");
+        let retained: SandboxSpec = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            retained.filesystem_continuity,
+            FilesystemContinuity::Retained,
+            "E1"
+        );
+
+        let mut ephemeral = capacity_spec();
+        ephemeral.filesystem_continuity = FilesystemContinuity::Ephemeral;
+        let round_trip: SandboxSpec =
+            serde_json::from_slice(&serde_json::to_vec(&ephemeral).unwrap()).unwrap();
+        assert_eq!(
+            round_trip.filesystem_continuity,
+            FilesystemContinuity::Ephemeral,
+            "E2"
+        );
     }
 }
 
@@ -736,6 +787,7 @@ mod sandbox_override_tests {
             outputs_path: "/outputs".into(),
             requests: ResourceRequests::default(),
             limits: ResourceLimits::default(),
+            filesystem_continuity: FilesystemContinuity::Retained,
             lease_ttl_secs: None,
             extra: None,
         }

@@ -77,6 +77,7 @@ async fn full_lifecycle_harvests_memory_collects_outputs_then_shreds_and_reaps()
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: None,
     };

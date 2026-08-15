@@ -47,6 +47,7 @@ pub struct awaken_sandbox_container::ContainerPlan
 pub awaken_sandbox_container::ContainerPlan::binds: alloc::vec::Vec<awaken_sandbox_container::BindPlan>
 pub awaken_sandbox_container::ContainerPlan::command: alloc::vec::Vec<alloc::string::String>
 pub awaken_sandbox_container::ContainerPlan::env: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub awaken_sandbox_container::ContainerPlan::filesystem_continuity: awaken_provisioning_contract::spec::FilesystemContinuity
 pub awaken_sandbox_container::ContainerPlan::image: alloc::string::String
 pub awaken_sandbox_container::ContainerPlan::limits: awaken_provisioning_contract::vocab::ResourceLimits
 pub awaken_sandbox_container::ContainerPlan::memory_mounts: alloc::vec::Vec<awaken_sandbox_container::MemoryMount>

@@ -1126,31 +1126,12 @@ impl WorkerNode {
             observation_ttl: self.credential_observation_ttl,
             warm_environments: Default::default(),
         });
-        // Publish Ready before starting the pull loop. Starting the pool while the
-        // directory still says Starting creates a tight claim/reject race; publishing
-        // first is safe because any assignment remains queued until this process starts
-        // polling immediately below.
-        if let Err(error) = lifecycle
-            .observations
-            .refresh(
-                lifecycle.credential_observation_resolver.as_deref(),
-                lifecycle.acp_capability_observation_source.as_deref(),
-                wall_clock_ms(),
-                self.credential_observation_ttl,
-            )
-            .await
-        {
-            eprintln!("worker_observation_probe_failed: {error}; publishing no dynamic evidence");
-        }
-        match lifecycle.reconcile_environment_warmups().await {
-            Ok(ready) if ready > 0 => {
-                eprintln!("awaken-worker reconciled {ready} current Environment shapes")
-            }
-            Ok(_) => {}
-            Err(error) => eprintln!(
-                "initial Environment warmup reconciliation failed; cold path retained: {error}"
-            ),
-        }
+        // Publish Ready before starting the pull loop. Dynamic capability probes
+        // and capacity warmups are eligibility evidence, not process liveness:
+        // they start immediately below and remain absent until proven. Keeping
+        // them off this boundary prevents an unavailable Sandbox backend from
+        // making the Worker itself permanently Starting while claim admission
+        // still fails closed for any Run that needs their evidence.
         let initial = control
             .heartbeat(
                 &lifecycle.identity,

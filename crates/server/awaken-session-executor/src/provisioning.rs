@@ -149,6 +149,7 @@ fn sandbox_spec_from_projection(
         outputs_path: OUTPUTS_PATH.to_owned(),
         requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: pc::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra,
     };
@@ -216,6 +217,7 @@ pub(crate) fn agent_run_sandbox_spec(thread: &str) -> pc::SandboxSpec {
         outputs_path: OUTPUTS_PATH.to_string(),
         requests: pc::ResourceRequests::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: pc::FilesystemContinuity::Ephemeral,
         lease_ttl_secs: None,
         extra: None,
     }
@@ -644,6 +646,33 @@ mod provisioning_registry_tests {
 
     fn host() -> SharedHost {
         SharedHost::new(Arc::new(NoLlm), "test")
+    }
+
+    #[test]
+    fn session_and_housekeeping_filesystem_continuity_are_distinct() {
+        /* Continuity cause/effect table.
+         * Causes: C1 the spec realizes the canonical Session environment; C2
+         * the spec realizes a disposable child/probe environment. Effects: E1
+         * request retained writable state for DurableRequest recovery; E2
+         * request ephemeral state and therefore no configured continuation PVC.
+         * Rules: SC1 C1=>E1; SC2 C2=>E2. The typed field participates in the
+         * capacity identity, so the two requests cannot share warm capacity.
+         */
+        assert_eq!(
+            host().sandbox_spec("session").filesystem_continuity,
+            pc::FilesystemContinuity::Retained,
+            "SC1"
+        );
+        assert_eq!(
+            agent_run_sandbox_spec("probe").filesystem_continuity,
+            pc::FilesystemContinuity::Ephemeral,
+            "SC2"
+        );
+        assert_ne!(
+            pc::SandboxCapacityShapeId::from_spec(&host().sandbox_spec("session")),
+            pc::SandboxCapacityShapeId::from_spec(&agent_run_sandbox_spec("probe")),
+            "SC1/SC2"
+        );
     }
 
     /// A resource mount realized read-only under `.mnt/<logical>`.

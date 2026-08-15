@@ -18,6 +18,10 @@ const DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const DELETE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 pub(super) const CLAIM_UID_ANNOTATION: &str = "awaken.dev/continuation-claim-uid";
 
+pub(super) fn requires_claim(plan: &ContainerPlan) -> bool {
+    plan.filesystem_continuity == awaken_provisioning_contract::FilesystemContinuity::Retained
+}
+
 pub(super) fn claim_uid(claim: &PersistentVolumeClaim) -> Result<String, RuntimeError> {
     claim
         .metadata
@@ -182,9 +186,26 @@ mod tests {
             network: NetworkMode::Open,
             requests: pc::ResourceRequests::default(),
             limits: pc::ResourceLimits::default(),
+            filesystem_continuity: pc::FilesystemContinuity::Retained,
             memory_mounts: Vec::new(),
             rootfs: RootfsPlan::HostUserland,
         }
+    }
+
+    #[test]
+    fn continuation_claim_decision_table() {
+        /* Filesystem-continuity cause/effect table.
+         * Causes: C1 the deployment has a continuation-volume policy (covered
+         * by the existing creation tests); C2 the neutral spec requests a
+         * retained or ephemeral filesystem. Effects: E1 allocate/reuse the
+         * canonical PVC; E2 realize the same Pod without a PVC.
+         * Rules: FC1 C1+retained=>E1; FC2 C1+ephemeral=>E2. FC2 is the
+         * prompt-free capability-probe path and must not consume Session SSD.
+         */
+        let mut retained = plan();
+        assert!(requires_claim(&retained), "FC1");
+        retained.filesystem_continuity = pc::FilesystemContinuity::Ephemeral;
+        assert!(!requires_claim(&retained), "FC2");
     }
 
     #[test]

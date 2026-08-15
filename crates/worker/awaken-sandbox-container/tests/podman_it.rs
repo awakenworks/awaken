@@ -72,6 +72,7 @@ fn plan(cmd: &[&str], rootfs: RootfsPlan) -> ContainerPlan {
             memory_bytes: Some(256 * 1024 * 1024),
             ..Default::default()
         },
+        filesystem_continuity: pc::FilesystemContinuity::Retained,
         memory_mounts: Vec::new(),
         rootfs,
     }
@@ -200,6 +201,7 @@ async fn podman_materializes_inline_content_through_the_provider() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["sh", "-c", "grep -q hello-podman-inline /data/config.toml"],
@@ -265,6 +267,7 @@ async fn podman_separates_container_environment_from_cli_environment() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: pc::ResourceLimits::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
     };
@@ -317,6 +320,7 @@ async fn podman_peer_adoption_renews_only_a_live_environment() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({ "command": ["sleep", "30"] })),
     };
@@ -375,6 +379,7 @@ async fn podman_rotates_and_persists_a_native_credential_file() {
         outputs_path: "/mnt/session/outputs".into(),
         requests: Default::default(),
         limits: Default::default(),
+        filesystem_continuity: awaken_provisioning_contract::FilesystemContinuity::Retained,
         lease_ttl_secs: None,
         extra: Some(serde_json::json!({
             "command": ["sh", "-c", format!("test \"$(cat /acp-config/.credentials.json)\" = '{}' && printf '%s' '{}' > /acp-config/.credentials.json", String::from_utf8_lossy(initial), String::from_utf8_lossy(refreshed))]
