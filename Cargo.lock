@@ -1562,6 +1562,7 @@ dependencies = [
  "tokio-stream",
  "tower",
  "tracing",
+ "uuid",
  "zip",
 ]
 

@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, HashSet};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
 
+#[cfg(any(test, feature = "test-support"))]
+use crate::catalog::{ManagedVault, ManagedVaultCredential};
 use crate::{
     CredentialCreateParams, CredentialError, CredentialKind, CredentialPool, CredentialPoolId,
     CredentialSource, CredentialSourceId, CredentialStatus, SecretStore, WorkerLocalBinding,
@@ -89,16 +91,18 @@ pub trait CredentialRepo: Send + Sync {
 /// In-memory [`CredentialRepo`] for tests and scenario fixtures.
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
-struct RepoState {
+pub(super) struct RepoState {
     rows: HashMap<String, CredentialSource>,
     pools: HashMap<String, CredentialPool>,
     intents: HashMap<String, CredentialMutationIntent>,
+    pub(super) vaults: HashMap<String, ManagedVault>,
+    pub(super) vault_credentials: HashMap<String, ManagedVaultCredential>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Default)]
 pub struct InMemoryCredentialRepo {
-    state: Mutex<RepoState>,
+    pub(super) state: Mutex<RepoState>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
