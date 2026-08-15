@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 mod catalog;
+mod deployment_backing;
 mod execution;
 mod input;
 mod lifecycle;
@@ -32,6 +33,9 @@ pub use catalog::{
     RepositoryConfigVersion, RepositoryDefinition, ResourceBindingValidator, ResourceCatalog,
     ResourceCatalogError, ResourceCatalogRules, ResourceConfigSource, ResourceState,
     ResourceTimestamps, RetentionPolicy,
+};
+pub use deployment_backing::{
+    DeploymentBackingAllocationKind, DeploymentBackingRole, select_deployment_backing_role,
 };
 pub use execution::{
     ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,

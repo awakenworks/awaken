@@ -49,6 +49,31 @@ pub enum ToolPermissionRequirement {
     AlwaysAsk,
 }
 
+/// Admit an execution request against the published tool policy. The returned
+/// requirement is never stronger than the authored one: asking when automatic
+/// execution was allowed is a safe narrowing, while skipping a required ask is
+/// rejected.
+#[must_use]
+pub const fn select_tool_policy(
+    registered: bool,
+    exact_tool_match: bool,
+    authored: ToolExecutionPolicy,
+    requested: ToolPermissionRequirement,
+) -> Option<ToolExecutionPolicy> {
+    if !registered || !exact_tool_match || !authored.enabled {
+        return None;
+    }
+    if matches!(authored.permission, ToolPermissionRequirement::AlwaysAsk)
+        && matches!(requested, ToolPermissionRequirement::AlwaysAllow)
+    {
+        return None;
+    }
+    Some(ToolExecutionPolicy {
+        enabled: true,
+        permission: requested,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolPolicyOverride {
     pub name: String,
@@ -63,6 +88,65 @@ impl ToolsetPolicy {
             .find(|entry| entry.name == name)
             .map(|entry| entry.policy)
             .unwrap_or(self.default)
+    }
+
+    /// Select a policy for a call only after the executable registry supplies
+    /// its canonical tool name. Missing registration and alias/name mismatch
+    /// fail closed before the default toolset policy can grant authority.
+    #[must_use]
+    pub fn policy_for_registered_call(
+        &self,
+        registered_name: Option<&str>,
+        requested_name: &str,
+        requested_permission: ToolPermissionRequirement,
+    ) -> Option<ToolExecutionPolicy> {
+        select_tool_policy(
+            registered_name.is_some(),
+            registered_name == Some(requested_name),
+            self.policy_for(requested_name),
+            requested_permission,
+        )
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn symbolic_permission(value: bool) -> ToolPermissionRequirement {
+        if value {
+            ToolPermissionRequirement::AlwaysAllow
+        } else {
+            ToolPermissionRequirement::AlwaysAsk
+        }
+    }
+
+    #[kani::proof]
+    fn tool_policy_selector_fails_closed_for_unregistered_widened_or_mismatched_calls() {
+        let registered: bool = kani::any();
+        let exact_tool_match: bool = kani::any();
+        let enabled: bool = kani::any();
+        let authored_permission = symbolic_permission(kani::any());
+        let requested = symbolic_permission(kani::any());
+        let selected = select_tool_policy(
+            registered,
+            exact_tool_match,
+            ToolExecutionPolicy {
+                enabled,
+                permission: authored_permission,
+            },
+            requested,
+        );
+        let widened = authored_permission == ToolPermissionRequirement::AlwaysAsk
+            && requested == ToolPermissionRequirement::AlwaysAllow;
+        let expected = registered && exact_tool_match && enabled && !widened;
+
+        assert_eq!(selected.is_some(), expected);
+        if let Some(policy) = selected {
+            assert!(policy.enabled);
+            assert_eq!(policy.permission, requested);
+            assert!(!widened);
+        }
     }
 }
 
@@ -87,5 +171,52 @@ mod tests {
         );
         let object = serde_json::to_value(descriptor).unwrap();
         assert_eq!(object.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn registered_tool_policy_selector_is_exact_and_non_widening() {
+        let policy = ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAsk,
+            },
+            overrides: Vec::new(),
+        };
+        assert!(
+            policy
+                .policy_for_registered_call(
+                    Some("read"),
+                    "read",
+                    ToolPermissionRequirement::AlwaysAsk,
+                )
+                .is_some()
+        );
+        assert!(
+            policy
+                .policy_for_registered_call(None, "read", ToolPermissionRequirement::AlwaysAsk,)
+                .is_none(),
+            "unregistered"
+        );
+        assert!(
+            policy
+                .policy_for_registered_call(
+                    Some("write"),
+                    "read",
+                    ToolPermissionRequirement::AlwaysAsk,
+                )
+                .is_none(),
+            "mismatched identity"
+        );
+        assert!(
+            policy
+                .policy_for_registered_call(
+                    Some("read"),
+                    "read",
+                    ToolPermissionRequirement::AlwaysAllow,
+                )
+                .is_none(),
+            "authority widening"
+        );
     }
 }
