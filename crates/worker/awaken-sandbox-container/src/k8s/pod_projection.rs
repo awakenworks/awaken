@@ -8,6 +8,7 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, OwnerReference};
 
 use super::names::{cfg_owner_label, configmap_name, credential_secret_name};
+use crate::writable::{WritableRootTopology, writable_root_topology};
 use crate::{BindPlan, ContainerPlan};
 
 pub(super) const CONFIGMAP_KEY: &str = "content";
@@ -20,13 +21,7 @@ pub(super) fn append_writable_and_cache_volumes(
     agent_mounts: &mut Vec<VolumeMount>,
 ) -> Vec<String> {
     let writable = crate::writable_dirs(plan);
-    let continuation_subpaths = continuation_claim
-        .map(|_| {
-            (0..writable.len())
-                .map(|index| format!("root-{index}"))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut continuation_subpaths = Vec::new();
     if let Some(claim_name) = continuation_claim {
         volumes.push(Volume {
             name: CONTINUATION_VOLUME.to_owned(),
@@ -38,26 +33,35 @@ pub(super) fn append_writable_and_cache_volumes(
         });
     }
     for (index, directory) in writable.into_iter().enumerate() {
-        if continuation_claim.is_some() {
-            agent_mounts.push(VolumeMount {
-                name: CONTINUATION_VOLUME.to_owned(),
-                mount_path: directory,
-                sub_path: Some(continuation_subpaths[index].clone()),
-                read_only: Some(false),
-                ..Default::default()
-            });
-        } else {
-            let name = format!("rw-{index}");
-            volumes.push(Volume {
-                name: name.clone(),
-                empty_dir: Some(EmptyDirVolumeSource::default()),
-                ..Default::default()
-            });
-            agent_mounts.push(VolumeMount {
-                name,
-                mount_path: directory,
-                ..Default::default()
-            });
+        match writable_root_topology(continuation_claim.is_some(), index) {
+            WritableRootTopology::Retained {
+                claim_slot,
+                subpath_slot,
+            } => {
+                debug_assert_eq!(claim_slot, 0);
+                let subpath = format!("root-{subpath_slot}");
+                continuation_subpaths.push(subpath.clone());
+                agent_mounts.push(VolumeMount {
+                    name: CONTINUATION_VOLUME.to_owned(),
+                    mount_path: directory,
+                    sub_path: Some(subpath),
+                    read_only: Some(false),
+                    ..Default::default()
+                });
+            }
+            WritableRootTopology::Ephemeral { volume_slot } => {
+                let name = format!("rw-{volume_slot}");
+                volumes.push(Volume {
+                    name: name.clone(),
+                    empty_dir: Some(EmptyDirVolumeSource::default()),
+                    ..Default::default()
+                });
+                agent_mounts.push(VolumeMount {
+                    name,
+                    mount_path: directory,
+                    ..Default::default()
+                });
+            }
         }
     }
     for (index, bind) in plan.binds.iter().enumerate() {

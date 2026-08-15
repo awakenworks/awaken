@@ -49,7 +49,7 @@ pub use baseline::{
     EnvironmentSnapshot, SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint,
     SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
     SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
-    SessionRuntimePlacement,
+    SessionRuntimePlacement, resolved_environment_snapshot_is_exact,
 };
 pub use budget::{
     ManagedBudgetUsageCursor, ManagedListPriceError, ManagedListPriceProvider,

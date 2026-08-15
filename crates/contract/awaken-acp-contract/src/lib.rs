@@ -87,6 +87,37 @@ pub enum AcpCapabilityObservationState {
     ProbeFailed,
 }
 
+/// Whether one live observation is sufficient evidence to advertise an ACP
+/// runtime as detected. A manifest or failed/missing probe is never evidence.
+#[must_use]
+pub const fn has_verified_capability_observation(
+    state: Option<AcpCapabilityObservationState>,
+) -> bool {
+    matches!(state, Some(AcpCapabilityObservationState::Verified))
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn acp_capability_is_detected_exactly_after_a_verified_observation() {
+    let present: bool = kani::any();
+    let verified: bool = kani::any();
+    let probe_failed: bool = kani::any();
+    let state = if !present {
+        None
+    } else if verified {
+        Some(AcpCapabilityObservationState::Verified)
+    } else if probe_failed {
+        Some(AcpCapabilityObservationState::ProbeFailed)
+    } else {
+        Some(AcpCapabilityObservationState::Unavailable)
+    };
+
+    assert_eq!(
+        has_verified_capability_observation(state),
+        present && verified
+    );
+}
+
 /// Point-in-time, secret-free capability evidence from one Worker-local ACP.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcpCapabilityObservation {

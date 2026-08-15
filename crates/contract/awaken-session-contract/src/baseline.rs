@@ -3,6 +3,45 @@
 use awaken_credential_contract::CredentialRealizationProfile;
 use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
 
+/// Exact Environment snapshot admission shared by Session creation and Kani.
+/// Every resolved snapshot has a positive revision; an immutable published pin
+/// additionally requires equality with the requested revision.
+#[must_use]
+pub const fn resolved_environment_snapshot_is_exact(
+    identity_matches: bool,
+    actual_revision: u64,
+    required_revision: Option<u64>,
+) -> bool {
+    identity_matches
+        && actual_revision > 0
+        && match required_revision {
+            Some(required) => required > 0 && actual_revision == required,
+            None => true,
+        }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::resolved_environment_snapshot_is_exact;
+
+    #[kani::proof]
+    fn resolved_environment_snapshot_accepts_only_exact_positive_identity_and_revision() {
+        let identity_matches: bool = kani::any();
+        let actual_revision: u64 = kani::any();
+        let has_required_revision: bool = kani::any();
+        let required_revision: u64 = kani::any();
+        let required = has_required_revision.then_some(required_revision);
+
+        assert_eq!(
+            resolved_environment_snapshot_is_exact(identity_matches, actual_revision, required),
+            identity_matches
+                && actual_revision > 0
+                && (!has_required_revision
+                    || (required_revision > 0 && actual_revision == required_revision))
+        );
+    }
+}
+
 /// Frozen network fact. This is Session state, not a provider request; the Host
 /// projects it to the provisioning contract at realization time.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

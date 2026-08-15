@@ -53,6 +53,13 @@ pub enum awaken_dispatch_contract::dispatch::CasOutcome
 pub awaken_dispatch_contract::dispatch::CasOutcome::Applied
 pub awaken_dispatch_contract::dispatch::CasOutcome::NotFound
 pub awaken_dispatch_contract::dispatch::CasOutcome::RevisionMismatch
+pub enum awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError
+pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::Attempt(awaken_runtime_contract::credential::AttemptCredentialBindingError)
+pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(alloc::string::String)
+pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding
+pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage
+pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::SessionAdmission(awaken_credential_contract::CredentialAdmissionError)
+pub awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder
 pub enum awaken_dispatch_contract::dispatch::DispatchError
 pub awaken_dispatch_contract::dispatch::DispatchError::Rejected(alloc::string::String)
 pub enum awaken_dispatch_contract::dispatch::DispatchOutcome
@@ -174,7 +181,7 @@ pub trait awaken_dispatch_contract::dispatch::Outbox: core::marker::Send + core:
 pub fn awaken_dispatch_contract::dispatch::Outbox::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::dispatch::can_admit_attempt_credentials(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> bool
-pub fn awaken_dispatch_contract::dispatch::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
+pub fn awaken_dispatch_contract::dispatch::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError>
 pub fn awaken_dispatch_contract::dispatch::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub mod awaken_dispatch_contract::operational
 pub enum awaken_dispatch_contract::operational::DispatchOperation
@@ -212,6 +219,14 @@ pub fn awaken_dispatch_contract::operational::DispatchOperationalFeed::events_af
 pub mod awaken_dispatch_contract::run_dispatch
 pub use awaken_dispatch_contract::run_dispatch::ExecutionScopeRef
 pub use awaken_dispatch_contract::run_dispatch::PlacementRequirements
+pub enum awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision
+pub awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision::Reject
+pub awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision::Replace
+pub awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision::Stage
+pub struct awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection
+pub awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection::environment: awaken_session_contract::baseline::EnvironmentSnapshot
+pub awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection::mcp_stages: core::option::Option<alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>>
+pub awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection::toolsets: core::option::Option<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>>
 pub struct awaken_dispatch_contract::run_dispatch::RunDispatch
 pub awaken_dispatch_contract::run_dispatch::RunDispatch::activation: awaken_runtime_contract::activation::RunActivation
 pub awaken_dispatch_contract::run_dispatch::RunDispatch::agent_publications: alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
@@ -249,11 +264,21 @@ pub fn awaken_dispatch_contract::run_dispatch::SessionResourceEnvelope::new(impl
 pub struct awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope
 pub awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::projection_json: alloc::string::String
 impl awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope
+pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::decode_projection(&self) -> core::result::Result<awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection, serde_json::error::Error>
+pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::from_projection(awaken_session_contract::baseline::EnvironmentSnapshot, core::option::Option<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>>, alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>) -> core::result::Result<Self, serde_json::error::Error>
 pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub const fn awaken_dispatch_contract::run_dispatch::session_resource_install_decision(bool, bool, bool, u64, u64) -> awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision
 pub enum awaken_dispatch_contract::CasOutcome
 pub awaken_dispatch_contract::CasOutcome::Applied
 pub awaken_dispatch_contract::CasOutcome::NotFound
 pub awaken_dispatch_contract::CasOutcome::RevisionMismatch
+pub enum awaken_dispatch_contract::DispatchCredentialAdmissionError
+pub awaken_dispatch_contract::DispatchCredentialAdmissionError::Attempt(awaken_runtime_contract::credential::AttemptCredentialBindingError)
+pub awaken_dispatch_contract::DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(alloc::string::String)
+pub awaken_dispatch_contract::DispatchCredentialAdmissionError::InvalidSessionMcpCredentialBinding
+pub awaken_dispatch_contract::DispatchCredentialAdmissionError::InvalidSessionMcpCredentialUsage
+pub awaken_dispatch_contract::DispatchCredentialAdmissionError::SessionAdmission(awaken_credential_contract::CredentialAdmissionError)
+pub awaken_dispatch_contract::DispatchCredentialAdmissionError::UnsupportedSessionMcpHolder
 pub enum awaken_dispatch_contract::DispatchError
 pub awaken_dispatch_contract::DispatchError::Rejected(alloc::string::String)
 pub enum awaken_dispatch_contract::DispatchOperation
@@ -289,6 +314,10 @@ pub awaken_dispatch_contract::LeaseLossReason::Cancelled
 pub awaken_dispatch_contract::LeaseLossReason::Expired
 pub awaken_dispatch_contract::LeaseLossReason::Relinquished
 pub awaken_dispatch_contract::LeaseLossReason::RetryExhausted
+pub enum awaken_dispatch_contract::SessionResourceInstallDecision
+pub awaken_dispatch_contract::SessionResourceInstallDecision::Reject
+pub awaken_dispatch_contract::SessionResourceInstallDecision::Replace
+pub awaken_dispatch_contract::SessionResourceInstallDecision::Stage
 pub enum awaken_dispatch_contract::SettleOutcome
 pub awaken_dispatch_contract::SettleOutcome::Applied
 pub awaken_dispatch_contract::SettleOutcome::Fenced
@@ -441,6 +470,8 @@ pub fn awaken_dispatch_contract::run_dispatch::SessionResourceEnvelope::new(impl
 pub struct awaken_dispatch_contract::SessionRuntimeEnvelope
 pub awaken_dispatch_contract::SessionRuntimeEnvelope::projection_json: alloc::string::String
 impl awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope
+pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::decode_projection(&self) -> core::result::Result<awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection, serde_json::error::Error>
+pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::from_projection(awaken_session_contract::baseline::EnvironmentSnapshot, core::option::Option<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>>, alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>) -> core::result::Result<Self, serde_json::error::Error>
 pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_dispatch_contract::SettleRequest
 pub awaken_dispatch_contract::SettleRequest::consumed: alloc::vec::Vec<alloc::string::String>
@@ -516,5 +547,6 @@ pub fn awaken_dispatch_contract::Inbox::retract<'life0, 'life1, 'async_trait>(&'
 pub trait awaken_dispatch_contract::Outbox: core::marker::Send + core::marker::Sync
 pub fn awaken_dispatch_contract::Outbox::relay<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_dispatch_contract::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_runtime_contract::credential::AttemptCredentialBindingError>
+pub fn awaken_dispatch_contract::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::dispatch::DispatchCredentialAdmissionError>
+pub const fn awaken_dispatch_contract::session_resource_install_decision(bool, bool, bool, u64, u64) -> awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision
 pub fn awaken_dispatch_contract::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>

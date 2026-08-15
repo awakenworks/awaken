@@ -64,6 +64,13 @@ struct RecordingEnvelopeIssuer {
     issued: Mutex<Vec<(String, u64, String)>>,
 }
 
+enum AdversarialEnvelopeResponse {
+    SubstitutedPayload,
+    Failure,
+}
+
+struct AdversarialEnvelopeIssuer(AdversarialEnvelopeResponse);
+
 #[async_trait::async_trait]
 impl awaken_credential_contract::CredentialEnvelopeIssuer for RecordingEnvelopeIssuer {
     async fn issue(
@@ -90,6 +97,28 @@ impl awaken_credential_contract::CredentialEnvelopeIssuer for RecordingEnvelopeI
                 expires_at_unix_ms: u64::MAX,
             },
         )
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_credential_contract::CredentialEnvelopeIssuer for AdversarialEnvelopeIssuer {
+    async fn issue(
+        &self,
+        request: awaken_credential_contract::CredentialEnvelopeIssuance,
+    ) -> Result<awaken_credential_contract::CredentialEnvelope, String> {
+        match self.0 {
+            AdversarialEnvelopeResponse::Failure => Err("issuer unavailable".into()),
+            AdversarialEnvelopeResponse::SubstitutedPayload => Ok(
+                awaken_credential_contract::CredentialEnvelope::SealedForWorker {
+                    envelope_ref: awaken_credential_contract::SealedCredentialEnvelopeRef {
+                        id: "substituted-envelope".into(),
+                        payload_fingerprint: "substituted-payload".into(),
+                    },
+                    recipient: request.selected_holder.trust_domain,
+                    expires_at_unix_ms: u64::MAX,
+                },
+            ),
+        }
     }
 }
 
@@ -1491,6 +1520,8 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     // | R1 | yes | yes | yes | open the selected revision once and attach one envelope |
     // | R2 | yes | no | yes | reject before the issuer and attach nothing |
     // | R3 | no | yes | yes | reject before the issuer and attach nothing |
+    // | R4 | yes | source-only | no | reject a cross-Workspace material binding before opening |
+    // | R5 | yes | yes | no | reject a holder outside the exact policy before opening |
     //
     // Holder/target integrity is cryptographically represented by the payload
     // fingerprint returned by the issuer; the contract admission decision table
@@ -1528,6 +1559,43 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     );
     assert_eq!(issuer.issued.lock().unwrap().len(), 1);
 
+    let cross_workspace_binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+        "workspace-b",
+        &"https://mcp.example.com/sse",
+        &usage,
+    );
+    assert!(
+        SessionCredentialSource::mcp_access_for_source(
+            &state,
+            &source_id,
+            &source_workspace,
+            &holder,
+            &cross_workspace_binding,
+        )
+        .await
+        .is_err(),
+        "R4 binding Workspace must match the admitted source Workspace"
+    );
+    assert_eq!(issuer.issued.lock().unwrap().len(), 1);
+
+    let unauthorized_holder = awaken_credential_contract::PlaintextHolder::new(
+        awaken_credential_contract::PlaintextBoundary::Platform,
+        "untrusted-platform",
+    );
+    assert!(
+        SessionCredentialSource::mcp_access_for_source(
+            &state,
+            &source_id,
+            &source_workspace,
+            &unauthorized_holder,
+            &binding,
+        )
+        .await
+        .is_err(),
+        "R5 selected holder must be authorized before material opens"
+    );
+    assert_eq!(issuer.issued.lock().unwrap().len(), 1);
+
     let mut source = h.credentials.get(&source_id).await.unwrap();
     source.status = awaken_credential_vault::CredentialStatus::Disabled;
     h.credentials.put(source).await.unwrap();
@@ -1544,6 +1612,32 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         "R3 disabled source must fail before plaintext opens"
     );
     assert_eq!(issuer.issued.lock().unwrap().len(), 1);
+
+    // A hosted issuer is untrusted output at this boundary: substitution and
+    // failure both reject the whole access compilation. Neither may silently
+    // fall back to an unsealed Control reference after plaintext was opened.
+    let mut active_source = h.credentials.get(&source_id).await.unwrap();
+    active_source.status = awaken_credential_vault::CredentialStatus::Active;
+    h.credentials.put(active_source).await.unwrap();
+    for response in [
+        AdversarialEnvelopeResponse::SubstitutedPayload,
+        AdversarialEnvelopeResponse::Failure,
+    ] {
+        let adversarial = VaultState::new(h.secrets.clone(), h.credentials.clone())
+            .with_envelope_issuer(Arc::new(AdversarialEnvelopeIssuer(response)));
+        assert!(
+            SessionCredentialSource::mcp_access_for_source(
+                &adversarial,
+                &source_id,
+                &source_workspace,
+                &holder,
+                &binding,
+            )
+            .await
+            .is_err(),
+            "substitution or issuer failure must reject without fallback"
+        );
+    }
 }
 
 #[tokio::test]

@@ -83,7 +83,9 @@ pub trait ExecutableAgentProfileSource: Send + Sync {
         source_revision: u64,
     ) -> Option<ExecutableAgentSessionProfile> {
         self.session_profile_in(workspace_id, agent_id)
-            .filter(|profile| profile.source_revision == source_revision)
+            .filter(|profile| {
+                requested_profile_revision_matches(profile.source_revision, source_revision)
+            })
     }
 
     /// Resolve the complete immutable publication behind an exact Session
@@ -104,6 +106,28 @@ pub trait ExecutableAgentProfileSource: Send + Sync {
             .into_iter()
             .map(|delegate| delegate.agent_id)
             .find(|delegate| self.agent_unavailable_in(workspace_id, delegate))
+    }
+}
+
+/// Exact revision check shared by the default profile-source adapter, Session
+/// admission and Kani. Revision zero is never a published executable profile.
+#[must_use]
+pub const fn requested_profile_revision_matches(candidate: u64, requested: u64) -> bool {
+    candidate > 0 && requested > 0 && candidate == requested
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::requested_profile_revision_matches;
+
+    #[kani::proof]
+    fn requested_agent_profile_accepts_only_the_same_positive_revision() {
+        let candidate: u64 = kani::any();
+        let requested: u64 = kani::any();
+        assert_eq!(
+            requested_profile_revision_matches(candidate, requested),
+            candidate > 0 && requested > 0 && candidate == requested
+        );
     }
 }
 
