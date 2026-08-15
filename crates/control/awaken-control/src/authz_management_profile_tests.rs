@@ -99,6 +99,30 @@ fn workspace_profile_is_one_deterministic_workspace_scoped_contract() {
         ["awaken.workspace::apikey.*"],
         "credential ingress must not inherit any non-credential authority"
     );
+
+    let member_grants = first
+        .document
+        .grants
+        .iter()
+        .filter(|grant| {
+            matches!(
+                &grant.subject,
+                GrantSubjectRef::Role { role_id }
+                    if role_id == AWAKEN_WORKSPACE_USER_ROLE
+            )
+        })
+        .map(|grant| grant.action_pattern.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        member_grants,
+        [
+            "awaken.workspace::file.read",
+            "awaken.workspace::skill.read",
+            "awaken.workspace::workspace.read",
+            "awaken.workspace::model_supply.read",
+        ],
+        "the Workspace member is read-only across every hosted product family"
+    );
 }
 
 #[test]

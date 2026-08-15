@@ -223,33 +223,134 @@ pub enum RunError {
     McpEgressBlockedError { message: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunErrorKind {
+    EnvironmentArchived,
+    AgentArchived,
+    EnvironmentNotFound,
+    VaultNotFound,
+    VaultArchived,
+    FileNotFound,
+    MemoryStoreArchived,
+    SkillNotFound,
+    SessionResourceNotFound,
+    WorkspaceArchived,
+    OrganizationDisabled,
+    SessionRateLimited,
+    SessionCreationRejected,
+    Unknown,
+    SelfHostedResourcesUnsupported,
+    McpEgressBlocked,
+}
+
 impl RunError {
+    fn kind(&self) -> RunErrorKind {
+        match self {
+            Self::EnvironmentArchivedError { .. } => RunErrorKind::EnvironmentArchived,
+            Self::AgentArchivedError { .. } => RunErrorKind::AgentArchived,
+            Self::EnvironmentNotFoundError { .. } => RunErrorKind::EnvironmentNotFound,
+            Self::VaultNotFoundError { .. } => RunErrorKind::VaultNotFound,
+            Self::VaultArchivedError { .. } => RunErrorKind::VaultArchived,
+            Self::FileNotFoundError { .. } => RunErrorKind::FileNotFound,
+            Self::MemoryStoreArchivedError { .. } => RunErrorKind::MemoryStoreArchived,
+            Self::SkillNotFoundError { .. } => RunErrorKind::SkillNotFound,
+            Self::SessionResourceNotFoundError { .. } => RunErrorKind::SessionResourceNotFound,
+            Self::WorkspaceArchivedError { .. } => RunErrorKind::WorkspaceArchived,
+            Self::OrganizationDisabledError { .. } => RunErrorKind::OrganizationDisabled,
+            Self::SessionRateLimitedError { .. } => RunErrorKind::SessionRateLimited,
+            Self::SessionCreationRejectedError { .. } => RunErrorKind::SessionCreationRejected,
+            Self::UnknownError { .. } => RunErrorKind::Unknown,
+            Self::SelfHostedResourcesUnsupportedError { .. } => {
+                RunErrorKind::SelfHostedResourcesUnsupported
+            }
+            Self::McpEgressBlockedError { .. } => RunErrorKind::McpEgressBlocked,
+        }
+    }
+
     #[must_use]
     pub fn paused_reason(&self) -> Option<PausedReasonError> {
-        Some(match self {
-            Self::EnvironmentArchivedError { .. } => PausedReasonError::EnvironmentArchivedError,
-            Self::AgentArchivedError { .. } => PausedReasonError::AgentArchivedError,
-            Self::EnvironmentNotFoundError { .. } => PausedReasonError::EnvironmentNotFoundError,
-            Self::VaultNotFoundError { .. } => PausedReasonError::VaultNotFoundError,
-            Self::VaultArchivedError { .. } => PausedReasonError::VaultArchivedError,
-            Self::FileNotFoundError { .. } => PausedReasonError::FileNotFoundError,
-            Self::MemoryStoreArchivedError { .. } => PausedReasonError::MemoryStoreArchivedError,
-            Self::SkillNotFoundError { .. } => PausedReasonError::SkillNotFoundError,
-            Self::SessionResourceNotFoundError { .. } => {
-                PausedReasonError::SessionResourceNotFoundError
-            }
-            Self::WorkspaceArchivedError { .. } => PausedReasonError::WorkspaceArchivedError,
-            Self::OrganizationDisabledError { .. } => PausedReasonError::OrganizationDisabledError,
-            Self::UnknownError { .. } => PausedReasonError::UnknownError,
-            Self::SelfHostedResourcesUnsupportedError { .. } => {
-                PausedReasonError::SelfHostedResourcesUnsupportedError
-            }
-            Self::McpEgressBlockedError { .. } => PausedReasonError::McpEgressBlockedError,
-            Self::SessionRateLimitedError { .. } | Self::SessionCreationRejectedError { .. } => {
-                return None;
-            }
-        })
+        paused_reason_for_run_error(self.kind())
     }
+}
+
+const fn paused_reason_for_run_error(kind: RunErrorKind) -> Option<PausedReasonError> {
+    Some(match kind {
+        RunErrorKind::EnvironmentArchived => PausedReasonError::EnvironmentArchivedError,
+        RunErrorKind::AgentArchived => PausedReasonError::AgentArchivedError,
+        RunErrorKind::EnvironmentNotFound => PausedReasonError::EnvironmentNotFoundError,
+        RunErrorKind::VaultNotFound => PausedReasonError::VaultNotFoundError,
+        RunErrorKind::VaultArchived => PausedReasonError::VaultArchivedError,
+        RunErrorKind::FileNotFound => PausedReasonError::FileNotFoundError,
+        RunErrorKind::MemoryStoreArchived => PausedReasonError::MemoryStoreArchivedError,
+        RunErrorKind::SkillNotFound => PausedReasonError::SkillNotFoundError,
+        RunErrorKind::SessionResourceNotFound => PausedReasonError::SessionResourceNotFoundError,
+        RunErrorKind::WorkspaceArchived => PausedReasonError::WorkspaceArchivedError,
+        RunErrorKind::OrganizationDisabled => PausedReasonError::OrganizationDisabledError,
+        RunErrorKind::Unknown => PausedReasonError::UnknownError,
+        RunErrorKind::SelfHostedResourcesUnsupported => {
+            PausedReasonError::SelfHostedResourcesUnsupportedError
+        }
+        RunErrorKind::McpEgressBlocked => PausedReasonError::McpEgressBlockedError,
+        RunErrorKind::SessionRateLimited | RunErrorKind::SessionCreationRejected => return None,
+    })
+}
+
+#[cfg(kani)]
+fn arbitrary_run_error_kind(bits: u8) -> RunErrorKind {
+    match bits & 0x0f {
+        0 => RunErrorKind::EnvironmentArchived,
+        1 => RunErrorKind::AgentArchived,
+        2 => RunErrorKind::EnvironmentNotFound,
+        3 => RunErrorKind::VaultNotFound,
+        4 => RunErrorKind::VaultArchived,
+        5 => RunErrorKind::FileNotFound,
+        6 => RunErrorKind::MemoryStoreArchived,
+        7 => RunErrorKind::SkillNotFound,
+        8 => RunErrorKind::SessionResourceNotFound,
+        9 => RunErrorKind::WorkspaceArchived,
+        10 => RunErrorKind::OrganizationDisabled,
+        11 => RunErrorKind::SessionRateLimited,
+        12 => RunErrorKind::SessionCreationRejected,
+        13 => RunErrorKind::Unknown,
+        14 => RunErrorKind::SelfHostedResourcesUnsupported,
+        _ => RunErrorKind::McpEgressBlocked,
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn deployment_run_failure_projection_is_total_exact_and_non_strengthening() {
+    let kind = arbitrary_run_error_kind(kani::any());
+    let projected = paused_reason_for_run_error(kind);
+    let expected = match kind {
+        RunErrorKind::EnvironmentArchived => Some(PausedReasonError::EnvironmentArchivedError),
+        RunErrorKind::AgentArchived => Some(PausedReasonError::AgentArchivedError),
+        RunErrorKind::EnvironmentNotFound => Some(PausedReasonError::EnvironmentNotFoundError),
+        RunErrorKind::VaultNotFound => Some(PausedReasonError::VaultNotFoundError),
+        RunErrorKind::VaultArchived => Some(PausedReasonError::VaultArchivedError),
+        RunErrorKind::FileNotFound => Some(PausedReasonError::FileNotFoundError),
+        RunErrorKind::MemoryStoreArchived => Some(PausedReasonError::MemoryStoreArchivedError),
+        RunErrorKind::SkillNotFound => Some(PausedReasonError::SkillNotFoundError),
+        RunErrorKind::SessionResourceNotFound => {
+            Some(PausedReasonError::SessionResourceNotFoundError)
+        }
+        RunErrorKind::WorkspaceArchived => Some(PausedReasonError::WorkspaceArchivedError),
+        RunErrorKind::OrganizationDisabled => Some(PausedReasonError::OrganizationDisabledError),
+        RunErrorKind::SessionRateLimited | RunErrorKind::SessionCreationRejected => None,
+        RunErrorKind::Unknown => Some(PausedReasonError::UnknownError),
+        RunErrorKind::SelfHostedResourcesUnsupported => {
+            Some(PausedReasonError::SelfHostedResourcesUnsupportedError)
+        }
+        RunErrorKind::McpEgressBlocked => Some(PausedReasonError::McpEgressBlockedError),
+    };
+    assert_eq!(projected, expected);
+    assert_eq!(
+        projected.is_none(),
+        matches!(
+            kind,
+            RunErrorKind::SessionRateLimited | RunErrorKind::SessionCreationRejected
+        )
+    );
 }
 
 /// `BetaManagedAgentsDeployment` — an agent bound to an environment with initial

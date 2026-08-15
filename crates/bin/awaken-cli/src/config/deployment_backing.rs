@@ -2,6 +2,9 @@
 
 use std::path::Path;
 
+use awaken_resource_contract::{
+    DeploymentBackingAllocationKind, DeploymentBackingRole, select_deployment_backing_role,
+};
 use awaken_resource_persistence::{ObjectBackingConfig, ObjectBackingProvider};
 use serde::Deserialize;
 
@@ -105,10 +108,12 @@ pub(super) fn load(path: &Path) -> Result<ObjectBackingConfig, String> {
             }
         }
     }
-    let mut resource_databases = contract
-        .databases
-        .iter()
-        .filter(|database| database.role == "resources");
+    let mut resource_databases = contract.databases.iter().filter(|database| {
+        select_deployment_backing_role(
+            DeploymentBackingAllocationKind::Database,
+            database.role.as_bytes(),
+        ) == Some(DeploymentBackingRole::ResourcesDatabase)
+    });
     resource_databases.next().ok_or_else(|| {
         "deployment_backing_file requires exactly one resources database role".to_owned()
     })?;
@@ -132,10 +137,12 @@ pub(super) fn load(path: &Path) -> Result<ObjectBackingConfig, String> {
             }
         }
     }
-    let mut files = contract
-        .objects
-        .into_iter()
-        .filter(|allocation| allocation.role == "files");
+    let mut files = contract.objects.into_iter().filter(|allocation| {
+        select_deployment_backing_role(
+            DeploymentBackingAllocationKind::Object,
+            allocation.role.as_bytes(),
+        ) == Some(DeploymentBackingRole::FilesObject)
+    });
     let allocation = files.next().ok_or_else(|| {
         "deployment_backing_file requires exactly one files object role".to_owned()
     })?;

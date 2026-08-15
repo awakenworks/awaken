@@ -104,7 +104,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_authorization_contract::{
-    RouteAccess, RouteGuardSelection, application_route_policy, run_backed_route_policy,
+    RouteAccess, RouteGuardSelection, WorkspaceBindingRole, application_route_policy,
+    legacy_workspace_binding_migration_target, run_backed_route_policy,
 };
 use awaken_iam_contract::{
     ActivateAuthorizationProfile, ApiToken, ApiTokenId, AuthorizationDecision,
@@ -222,6 +223,35 @@ fn legacy_local_role(role: &str) -> Option<&str> {
         "agent_publisher" => "publisher",
         unchanged => unchanged,
     })
+}
+
+fn legacy_binding_coordinates(role: &str) -> Option<(bool, WorkspaceBindingRole)> {
+    let (management, local) =
+        if let Some(local) = role.strip_prefix(&format!("{LEGACY_MANAGEMENT_POLICY_NAMESPACE}:")) {
+            (true, local)
+        } else {
+            (
+                false,
+                role.strip_prefix(&format!("{LEGACY_RESOURCE_POLICY_NAMESPACE}:"))?,
+            )
+        };
+    let role = match local {
+        "admin" => WorkspaceBindingRole::Admin,
+        "developer" => WorkspaceBindingRole::Developer,
+        "billing" => WorkspaceBindingRole::Billing,
+        "user" => WorkspaceBindingRole::User,
+        "claude_code_user" => WorkspaceBindingRole::ClaudeCodeUser,
+        "workspace_admin" => WorkspaceBindingRole::WorkspaceAdmin,
+        "workspace_developer" => WorkspaceBindingRole::WorkspaceDeveloper,
+        "workspace_restricted_developer" => WorkspaceBindingRole::WorkspaceRestrictedDeveloper,
+        "workspace_user" => WorkspaceBindingRole::WorkspaceUser,
+        "workspace_billing" => WorkspaceBindingRole::WorkspaceBilling,
+        "agent_publisher" => WorkspaceBindingRole::AgentPublisher,
+        "credential_ingress" => WorkspaceBindingRole::CredentialIngress,
+        "hosted_workspace_admin" => WorkspaceBindingRole::HostedWorkspaceAdmin,
+        _ => return None,
+    };
+    Some((management, role))
 }
 
 /// The embedded management-plane authorizer: authn (bearer token → principal)
@@ -583,19 +613,41 @@ fn retire_legacy_profile(
 /// Consolidate durable local bindings before live-PDP hydration. The old two
 /// profile roles carried the same local role intent at the same scope, so both
 /// map to one canonical Workspace role and are then removed.
-fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) {
-    for legacy in RoleBindingRepo::list(store).expect("list legacy role bindings") {
-        let Some(local) = legacy_local_role(&legacy.role.0) else {
+fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) -> bool {
+    let bindings = RoleBindingRepo::list(store).expect("list legacy role bindings");
+    for legacy in &bindings {
+        let Some((_, role)) = legacy_binding_coordinates(&legacy.role.0) else {
+            continue;
+        };
+        let has_management_binding = bindings.iter().any(|candidate| {
+            candidate.principal == legacy.principal
+                && candidate.scope == legacy.scope
+                && legacy_binding_coordinates(&candidate.role.0) == Some((true, role))
+        });
+        let has_resource_binding = bindings.iter().any(|candidate| {
+            candidate.principal == legacy.principal
+                && candidate.scope == legacy.scope
+                && legacy_binding_coordinates(&candidate.role.0) == Some((false, role))
+        });
+        let Some(target) = legacy_workspace_binding_migration_target(
+            role,
+            has_management_binding,
+            has_resource_binding,
+        ) else {
             continue;
         };
         let canonical = RoleBinding {
             principal: legacy.principal.clone(),
-            role: qualify_role(local),
+            role: qualify_role(target.canonical_local_name()),
             scope: legacy.scope.clone(),
         };
         RoleBindingRepo::add(store, canonical).expect("add canonical Workspace role binding");
-        RoleBindingRepo::remove(store, &legacy).expect("remove legacy Workspace role binding");
+        RoleBindingRepo::remove(store, legacy).expect("remove legacy Workspace role binding");
     }
+    !RoleBindingRepo::list(store)
+        .expect("list remaining legacy role bindings")
+        .iter()
+        .any(|binding| legacy_local_role(&binding.role.0).is_some())
 }
 
 /// Open embedded IAM for the platform-owned `Org -> Workspace` coordinates.
@@ -614,7 +666,7 @@ pub fn embedded_iam_for_tenant(
     // and any external reader see the same catalog the evaluator derives from.
     let now = Timestamp(now_rfc3339());
     seed_named_roles(&store, &now).expect("seed the preset role catalog");
-    migrate_legacy_workspace_bindings(&store);
+    let legacy_profiles_are_retiable = migrate_legacy_workspace_bindings(&store);
 
     // Single-machine Runtime has one hidden Org and one platform-provisioned
     // Workspace. Bind bootstrap authority at the Org (never Global) so it can
@@ -656,8 +708,10 @@ pub fn embedded_iam_for_tenant(
     .expect("migrate authorization profile store");
     let profiles = AuthorizationProfileAdmin::new(Arc::new(profile_store));
     reconcile_builtin_profile(&profiles, &mut engine, workspace_authorization_profile());
-    retire_legacy_profile(&profiles, &mut engine, LEGACY_MANAGEMENT_POLICY_NAMESPACE);
-    retire_legacy_profile(&profiles, &mut engine, LEGACY_RESOURCE_POLICY_NAMESPACE);
+    if legacy_profiles_are_retiable {
+        retire_legacy_profile(&profiles, &mut engine, LEGACY_MANAGEMENT_POLICY_NAMESPACE);
+        retire_legacy_profile(&profiles, &mut engine, LEGACY_RESOURCE_POLICY_NAMESPACE);
+    }
 
     engine.policy_mut().scope_graph_mut().assign_workspace(
         WorkspaceId(workspace_id.to_owned()),

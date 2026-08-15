@@ -57,6 +57,153 @@ impl FrozenSessionProjection {
     }
 }
 
+/// Total decision for binding an immutable Agent publication to one frozen
+/// Session baseline. A pinned Worker projection is never allowed to continue
+/// without the exact publication; local compatibility projections may omit it,
+/// but any publication that is present must match every frozen coordinate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrozenAgentPublicationDecision {
+    Unpinned,
+    OptionalMissing,
+    Exact,
+    MissingRequired,
+    Mismatch,
+}
+
+#[must_use]
+const fn frozen_agent_publication_facts(
+    has_frozen_revision: bool,
+    worker_placement: bool,
+    publication_present: bool,
+    agent_id_matches: bool,
+    source_revision_matches: bool,
+    runtime_matches: bool,
+) -> FrozenAgentPublicationDecision {
+    if !has_frozen_revision {
+        FrozenAgentPublicationDecision::Unpinned
+    } else if !publication_present {
+        if worker_placement {
+            FrozenAgentPublicationDecision::MissingRequired
+        } else {
+            FrozenAgentPublicationDecision::OptionalMissing
+        }
+    } else if agent_id_matches && source_revision_matches && runtime_matches {
+        FrozenAgentPublicationDecision::Exact
+    } else {
+        FrozenAgentPublicationDecision::Mismatch
+    }
+}
+
+/// Compare a delivered executable publication with the immutable coordinates
+/// in the Session baseline. Both Coordinator and Worker call this kernel, so a
+/// transport cannot weaken the validation performed before dispatch.
+#[must_use]
+pub fn frozen_agent_publication_decision(
+    baseline: &crate::SessionBaseline,
+    publication: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+) -> FrozenAgentPublicationDecision {
+    let Some(source_revision) = baseline.agent_revision else {
+        return FrozenAgentPublicationDecision::Unpinned;
+    };
+    let Some(publication) = publication else {
+        return frozen_agent_publication_facts(
+            true,
+            baseline.runtime_placement == crate::SessionRuntimePlacement::Worker,
+            false,
+            false,
+            false,
+            false,
+        );
+    };
+    frozen_agent_publication_facts(
+        true,
+        baseline.runtime_placement == crate::SessionRuntimePlacement::Worker,
+        true,
+        publication.root_agent_id.0 == baseline.agent_id,
+        publication.metadata.source.revision == source_revision,
+        baseline
+            .runtime
+            .as_ref()
+            .is_none_or(|runtime| publication.resolved_spec.model_binding.backend_ref == *runtime),
+    )
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn frozen_worker_agent_publication_is_exact_or_fails_closed() {
+    let has_frozen_revision: bool = kani::any();
+    let worker_placement: bool = kani::any();
+    let publication_present: bool = kani::any();
+    let agent_id_matches: bool = kani::any();
+    let source_revision_matches: bool = kani::any();
+    let runtime_matches: bool = kani::any();
+    let decision = frozen_agent_publication_facts(
+        has_frozen_revision,
+        worker_placement,
+        publication_present,
+        agent_id_matches,
+        source_revision_matches,
+        runtime_matches,
+    );
+
+    if has_frozen_revision && worker_placement {
+        assert_eq!(
+            decision == FrozenAgentPublicationDecision::Exact,
+            publication_present && agent_id_matches && source_revision_matches && runtime_matches
+        );
+        assert_ne!(decision, FrozenAgentPublicationDecision::OptionalMissing);
+    }
+    if decision == FrozenAgentPublicationDecision::Exact {
+        assert!(has_frozen_revision);
+        assert!(publication_present);
+        assert!(agent_id_matches && source_revision_matches && runtime_matches);
+    }
+    if decision == FrozenAgentPublicationDecision::MissingRequired {
+        assert!(has_frozen_revision && worker_placement && !publication_present);
+    }
+}
+
+#[cfg(test)]
+mod frozen_agent_publication_tests {
+    use super::*;
+
+    #[test]
+    fn worker_publication_decision_table_is_total_and_fail_closed() {
+        for has_revision in [false, true] {
+            for worker in [false, true] {
+                for present in [false, true] {
+                    for id_matches in [false, true] {
+                        for revision_matches in [false, true] {
+                            for runtime_matches in [false, true] {
+                                let decision = frozen_agent_publication_facts(
+                                    has_revision,
+                                    worker,
+                                    present,
+                                    id_matches,
+                                    revision_matches,
+                                    runtime_matches,
+                                );
+                                let exact =
+                                    present && id_matches && revision_matches && runtime_matches;
+                                if has_revision && worker {
+                                    assert_eq!(
+                                        decision == FrozenAgentPublicationDecision::Exact,
+                                        exact
+                                    );
+                                }
+                                assert_eq!(
+                                    decision == FrozenAgentPublicationDecision::MissingRequired,
+                                    has_revision && worker && !present
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Canonical Session-realization lease boundary. A lease is half-open: it is
 /// live strictly before its expiry and stale at the exact expiry millisecond.
 #[must_use]

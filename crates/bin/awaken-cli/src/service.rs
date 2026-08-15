@@ -13,6 +13,14 @@ pub enum ServiceRole {
 }
 
 impl ServiceRole {
+    fn startup_role(self) -> awaken_service_lifecycle::StartupRole {
+        match self {
+            Self::AllInOne => awaken_service_lifecycle::StartupRole::AllInOne,
+            Self::Control => awaken_service_lifecycle::StartupRole::Control,
+            Self::Coordinator => awaken_service_lifecycle::StartupRole::Coordinator,
+        }
+    }
+
     fn deployment_role(self) -> Role {
         match self {
             Self::AllInOne => Role::AllInOne,
@@ -88,7 +96,10 @@ pub async fn run_service(args: ServiceArgs, role: ServiceRole) -> Result<(), Str
     warn_deprecations(&deployment);
     deployment.ensure_data_layout()?;
     let seal_key = role_seal_key(&deployment)?;
-    let local_worker = if role == ServiceRole::AllInOne {
+    let local_worker = if awaken_service_lifecycle::startup_requires(
+        role.startup_role(),
+        awaken_service_lifecycle::StartupComponent::LocalWorker,
+    ) {
         Some(
             crate::prepare_local_worker(
                 &mut deployment,

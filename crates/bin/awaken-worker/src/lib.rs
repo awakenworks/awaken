@@ -672,7 +672,10 @@ fn validate_worker_manifest(
         .sandbox
         .container_hand_residency
         .recovery_capability();
-    if manifest.sandbox_tool_recovery != installed_recovery {
+    if !awaken_worker_contract::manifest_recovery_matches_installed(
+        manifest.sandbox_tool_recovery,
+        installed_recovery,
+    ) {
         return Err(WorkerNodeBuildError(format!(
             "Worker manifest sandbox tool recovery {:?} does not match installed SessionEnvironment {:?}",
             manifest.sandbox_tool_recovery, installed_recovery
@@ -1137,7 +1140,9 @@ impl WorkerNode {
                 &lifecycle.identity,
                 WorkerHeartbeat {
                     sequence: 1,
-                    ready: true,
+                    ready: awaken_worker_contract::process_ready_after_startup(
+                        awaken_worker_contract::DynamicEvidenceProbeState::Pending,
+                    ),
                     in_flight: 0,
                     warm_environment_shapes: lifecycle.warm_environment_shapes(),
                     credential_observations: lifecycle.observations.credential_snapshot(),
