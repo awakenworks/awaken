@@ -13,6 +13,7 @@ authority = "worker-placement"
 awaken-acp-contract.workspace = true
 awaken-credential-contract.workspace = true
 awaken-provisioning-contract.workspace = true
+awaken-runtime-contract.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

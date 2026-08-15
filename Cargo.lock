@@ -2460,6 +2460,7 @@ dependencies = [
  "awaken-acp-contract",
  "awaken-credential-contract",
  "awaken-provisioning-contract",
+ "awaken-runtime-contract",
  "proptest",
  "serde",
  "serde_json",

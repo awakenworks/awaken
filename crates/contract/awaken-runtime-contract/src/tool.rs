@@ -118,7 +118,7 @@ pub enum ToolRecoveryCapability {
 /// The recovery behavior selected for one tool in an executable agent snapshot.
 /// `NeverReplay` is always legal; every other mode requires the matching trusted
 /// [`ToolRecoveryCapability`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRecoveryMode {
     #[default]
