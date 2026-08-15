@@ -1215,14 +1215,14 @@ impl SessionRuntime for ManagedHost {
         Ok(())
     }
 
-    async fn replace_session_toolsets(
+    async fn replace_session_tools(
         &self,
         thread: &str,
-        toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
+        tools: awaken_session_contract::SessionToolConfiguration,
     ) -> Result<(), RunError> {
         self.host
             .session_slots
-            .update(thread, |slot| slot.toolsets = Some(toolsets));
+            .update(thread, |slot| slot.tools = Some(tools));
         self.host.evict_session_for_rebuild(thread).await;
         Ok(())
     }
