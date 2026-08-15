@@ -1037,3 +1037,8 @@ environments request `Ephemeral`. The existing Kubernetes realization remains
 the sole Pod/PVC owner and omits its configured continuation claim only for the
 typed ephemeral case. No probe-specific Kubernetes client, provider, PVC owner,
 or environment store is introduced.
+
+The same typed decision is applied both when the PVC is created and when the
+Pod volume is projected. A Pod cannot retain a reference to a claim that the
+ephemeral branch intentionally omitted; this keeps disposable observations out
+of durable-storage capacity without weakening Session continuity.

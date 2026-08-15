@@ -309,10 +309,7 @@ impl K8sRuntime {
 
     fn pod(&self, id: &str, plan: &ContainerPlan) -> Pod {
         let rendezvous = self.rendezvous.map(|a| a.to_string());
-        let claim = self
-            .continuation_volume
-            .as_ref()
-            .map(|_| continuation_claim_name(id));
+        let claim = continuation::claim_name(id, plan, self.continuation_volume.is_some());
         let mut pod = build_pod_with_continuation(
             id,
             plan,
