@@ -136,7 +136,7 @@ StartOrRetry(s, t, c) ==
 \* executor-entry fact together, then runs the child futures concurrently.
 \* Result commits remain ordered and use CompleteCall below.
 StartParallelDelegations(s, t) ==
-    /\ AgentCalls # {}
+    /\ Cardinality(AgentCalls) > 1
     /\ s.runState = "Running"
     /\ s.ticketKind = "None"
     /\ s.batchState = "Open"
@@ -271,6 +271,43 @@ EndRun(s, t) ==
           s.version + 1)
     /\ Bump(s, t)
 
+\* Stable names shared by the production trace emitter, coverage manifest, and
+\* generated TLC modules. TransitionById is deliberately part of the model
+\* interface: an emitted ID is accepted only when the corresponding operator
+\* accepts the exact adjacent pair of projected production states.
+TransitionIds ==
+    {"PersistBatch", "CommitNoop", "StartOrRetry",
+     "StartParallelDelegations", "AwaitCall", "ResumeExecuting",
+     "CompleteCall", "CompleteAndFinalize", "CompleteImmediate",
+     "CompleteImmediateAndFinalize", "MarkIndeterminate", "FinalizeBatch",
+     "EndRun"}
+
+TransitionById(id, s, t) ==
+    CASE id = "PersistBatch" -> PersistBatch(s, t)
+      [] id = "CommitNoop" -> CommitNoop(s, t)
+      [] id = "StartOrRetry" -> \E c \in Calls: StartOrRetry(s, t, c)
+      [] id = "StartParallelDelegations" -> StartParallelDelegations(s, t)
+      [] id = "AwaitCall" ->
+           \E c \in Calls, kind \in TicketKinds \ {"None"}:
+               AwaitCall(s, t, c, kind)
+      [] id = "ResumeExecuting" ->
+           \E c \in Calls: ResumeExecuting(s, t, c)
+      [] id = "CompleteCall" -> \E c \in Calls: CompleteCall(s, t, c)
+      [] id = "CompleteAndFinalize" ->
+           \E c \in Calls: CompleteAndFinalize(s, t, c)
+      [] id = "CompleteImmediate" ->
+           \E c \in Calls: CompleteImmediate(s, t, c)
+      [] id = "CompleteImmediateAndFinalize" ->
+           \E c \in Calls: CompleteImmediateAndFinalize(s, t, c)
+      [] id = "MarkIndeterminate" ->
+           \E c \in Calls: MarkIndeterminate(s, t, c)
+      [] id = "FinalizeBatch" -> FinalizeBatch(s, t)
+      [] id = "EndRun" -> EndRun(s, t)
+      [] OTHER -> FALSE
+
+\* Keep the disjunction explicit so the existing per-family TLAPS lemmas remain
+\* the proof decomposition for NextSafety. TransitionById is an equivalent
+\* named interface used specifically by emitted production traces.
 NextState(s, t) ==
     \/ PersistBatch(s, t)
     \/ CommitNoop(s, t)
@@ -301,5 +338,11 @@ TraceIsRefinement(trace) ==
     /\ trace[1] = InitialState
     /\ \A i \in 1..Len(trace): Safety(trace[i])
     /\ \A i \in 1..(Len(trace) - 1): NextState(trace[i], trace[i + 1])
+
+TraceTransitionIdsRefine(trace, transitionIds) ==
+    /\ Len(transitionIds) = Len(trace) - 1
+    /\ \A i \in 1..Len(transitionIds):
+          /\ transitionIds[i] \in TransitionIds
+          /\ TransitionById(transitionIds[i], trace[i], trace[i + 1])
 
 =============================================================================

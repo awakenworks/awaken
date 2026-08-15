@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "trace_schema_version": 2,
+  "projection_id": "thread-commit-durable-v1",
+  "projected_fields": [
+    {
+      "name": "run_state",
+      "source": "ThreadCommit::run_state",
+      "meaning": "Durable Run lifecycle class: Running, Awaiting, or Ended."
+    },
+    {
+      "name": "ticket_kind",
+      "source": "ThreadCommit::resume_ticket.reason",
+      "meaning": "Durable wait-reason class; None when no resume ticket exists."
+    },
+    {
+      "name": "ticket_call",
+      "source": "ThreadCommit::resume_ticket.call_id",
+      "meaning": "Tool call correlated with the durable resume ticket, or no_call."
+    },
+    {
+      "name": "call_state",
+      "source": "ActiveToolBatch.calls[*].phase",
+      "meaning": "Per-call durable phase, with payloads erased."
+    },
+    {
+      "name": "attempts",
+      "source": "ToolCallPhase::Executing.attempt",
+      "meaning": "Latest durably observed execution attempt per call, carried forward after execution."
+    },
+    {
+      "name": "batch_state",
+      "source": "ActiveToolBatch.phase",
+      "meaning": "Absence, Open, or Finalized state of the durable active batch."
+    },
+    {
+      "name": "link_state",
+      "source": "RunDelegations.delegations[*].status",
+      "meaning": "Per-parent-call durable delegation relationship state."
+    },
+    {
+      "name": "version",
+      "source": "observed successful ThreadCommit ordinal",
+      "meaning": "Trace-local contiguous commit ordinal; it is not a store record version."
+    }
+  ],
+  "erased_fields": [
+    {
+      "name": "message_and_output_payloads",
+      "reason": "The model proves commit ordering and lifecycle state, not content semantics."
+    },
+    {
+      "name": "tool_arguments_and_continuations",
+      "reason": "Opaque executor payloads do not affect the modeled durable transition guards."
+    },
+    {
+      "name": "usage_and_stop_metadata",
+      "reason": "Accounting payload values are outside RustCommitSystem's lifecycle projection."
+    },
+    {
+      "name": "state_commands_outside_active_batch_and_delegations",
+      "reason": "Only ActiveToolBatch and RunDelegations are consumed by this model; other state keys require separate obligations."
+    },
+    {
+      "name": "delegation_identity_except_parent_call_and_status",
+      "reason": "Child IDs, lineage, target, and budget are covered by delegation-specific models rather than this commit-shape model."
+    },
+    {
+      "name": "run_thread_snapshot_and_catalog_identity",
+      "reason": "Each scenario fixes these identities; their selection and isolation are covered by separate contracts."
+    },
+    {
+      "name": "storage_record_metadata",
+      "reason": "The projection observes successful commit order and does not claim refinement of database timestamps or record-version implementation."
+    }
+  ],
+  "transition_families": [
+    { "id": "PersistBatch", "operator": "PersistBatch" },
+    { "id": "CommitNoop", "operator": "CommitNoop" },
+    { "id": "StartOrRetry", "operator": "StartOrRetry" },
+    { "id": "StartParallelDelegations", "operator": "StartParallelDelegations" },
+    { "id": "AwaitCall", "operator": "AwaitCall" },
+    { "id": "ResumeExecuting", "operator": "ResumeExecuting" },
+    { "id": "CompleteCall", "operator": "CompleteCall" },
+    { "id": "CompleteAndFinalize", "operator": "CompleteAndFinalize" },
+    { "id": "CompleteImmediate", "operator": "CompleteImmediate" },
+    { "id": "CompleteImmediateAndFinalize", "operator": "CompleteImmediateAndFinalize" },
+    { "id": "MarkIndeterminate", "operator": "MarkIndeterminate" },
+    { "id": "FinalizeBatch", "operator": "FinalizeBatch" },
+    { "id": "EndRun", "operator": "EndRun" }
+  ]
+}
