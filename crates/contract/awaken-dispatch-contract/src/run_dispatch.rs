@@ -119,8 +119,10 @@ pub const fn session_resource_install_decision(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DispatchedSessionRuntimeProjection {
     pub environment: awaken_session_contract::EnvironmentSnapshot,
-    /// `None` retains publication inheritance; `Some([])` is an explicit clear.
-    pub toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+    /// `None` retains publication inheritance; `Some(default())` explicitly
+    /// clears the complete Session tool configuration.
+    #[serde(default)]
+    pub tools: Option<awaken_session_contract::SessionToolConfiguration>,
     /// `None` is reserved for legacy rows predating MCP effect projection. New
     /// dispatches always carry `Some`, including `Some([])`.
     #[serde(default)]
@@ -148,13 +150,13 @@ impl SessionRuntimeEnvelope {
 
     pub fn from_projection(
         environment: awaken_session_contract::EnvironmentSnapshot,
-        toolsets: Option<Vec<awaken_agent_contract::ToolsetPolicy>>,
+        tools: Option<awaken_session_contract::SessionToolConfiguration>,
         mcp_stages: Vec<awaken_session_contract::StageMcpAttachment>,
     ) -> Result<Self, serde_json::Error> {
         Ok(Self::new(serde_json::to_string(
             &DispatchedSessionRuntimeProjection {
                 environment,
-                toolsets,
+                tools,
                 mcp_stages: Some(mcp_stages),
             },
         )?))
@@ -526,15 +528,27 @@ mod tests {
             credential_realization:
                 awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native(),
         };
+        let tools = awaken_session_contract::SessionToolConfiguration {
+            toolsets: Vec::new(),
+            client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
+                name: "review_plan".into(),
+                description: "Review the exact plan revision".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {"revision": {"type": "integer"}},
+                    "required": ["revision"]
+                }),
+            }],
+        };
         let runtime = SessionRuntimeEnvelope::from_projection(
             environment.clone(),
-            Some(Vec::new()),
+            Some(tools.clone()),
             Vec::new(),
         )
         .expect("P1 encode");
         let projection = runtime.decode_projection().expect("P1 decode");
         assert_eq!(projection.environment, environment, "P1/E1");
-        assert_eq!(projection.toolsets, Some(Vec::new()), "P1/E1");
+        assert_eq!(projection.tools, Some(tools), "P1/E1");
         assert_eq!(projection.mcp_stages, Some(Vec::new()), "P1/E1");
 
         let request = RunDispatch::new(activation()).with_session_runtime(runtime.clone());

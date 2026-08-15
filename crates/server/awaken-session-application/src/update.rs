@@ -193,10 +193,7 @@ impl SessionApplication {
             && (outcome.changes.tools || !outcome.command_applied)
             && let Err(source) = self
                 .runtime()
-                .replace_session_toolsets(
-                    &outcome.session.session_id,
-                    outcome.session.tools.toolsets.clone(),
-                )
+                .replace_session_tools(&outcome.session.session_id, outcome.session.tools.clone())
                 .await
         {
             return Err(SessionUpdateError::ProjectionAfterCommit {

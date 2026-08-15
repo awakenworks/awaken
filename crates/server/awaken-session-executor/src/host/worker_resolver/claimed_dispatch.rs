@@ -301,7 +301,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             host.install_environment_projection(&thread_id.0, &projection.environment)
                 .map_err(|error| Self::execution_error(error.to_string()))?;
             host.session_slots
-                .update(&thread_id.0, |slot| slot.toolsets = projection.toolsets);
+                .update(&thread_id.0, |slot| slot.tools = projection.tools);
             projection.mcp_stages
         } else {
             None

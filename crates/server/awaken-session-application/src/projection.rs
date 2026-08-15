@@ -101,7 +101,7 @@ impl SessionApplication {
             environment: session.environment.clone(),
             resource_revision,
             resources,
-            toolsets: session.tools.toolsets.clone(),
+            tools: session.tools.clone(),
             mcp: session.mcp.attachments.clone(),
             request_context,
         })

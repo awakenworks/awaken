@@ -850,10 +850,13 @@ impl SharedHost {
             .as_ref()
             .map(|snapshot| snapshot.resolved_spec.plugin_config.agent.toolsets.clone())
             .unwrap_or_default();
-        let toolsets = self
+        let session_tools = self
             .session_slots
-            .read(thread, |slot| slot.toolsets.clone())
-            .flatten()
+            .read(thread, |slot| slot.tools.clone())
+            .flatten();
+        let toolsets = session_tools
+            .as_ref()
+            .map(|tools| tools.toolsets.clone())
             .unwrap_or(published_toolsets);
         // Management tools (ADR-0052) remain pre-authorized: they are read-only,
         // and only the reserved-scope assistant's config names them.
@@ -1164,18 +1167,39 @@ impl SharedHost {
                 context_policy,
             )
         });
-        // Session tool policy is transported in the frozen runtime envelope and
-        // applied to the Runtime gate above. It may augment a generated fallback
-        // config, but it must never rewrite an immutable publication carried by a
-        // claimed activation: doing so makes the next turn appear to replace the
-        // Session's retained publication and terminalizes a valid continuation.
-        if generated_config
-            && self
-                .session_slots
-                .read(thread, |slot| slot.toolsets.is_some())
-                .unwrap_or(false)
-        {
+        // The durable Session configuration is a complete execution overlay. It
+        // is applied to this per-Session clone, never to the retained immutable
+        // Agent publication. Replacing all ClientExecuted descriptors prevents a
+        // removed published custom tool from leaking beside an official
+        // `agent_with_overrides` surface, while preserving built-in, Skill, MCP,
+        // and delegation ownership.
+        if generated_config && session_tools.is_some() {
             config.resolved_spec.plugin_config.agent.toolsets = toolsets;
+        }
+        if let Some(session_tools) = &session_tools {
+            let projected = session_tools
+                .client_tools
+                .iter()
+                .map(crate::config::session_client_tool_descriptor)
+                .collect::<Vec<_>>();
+            let current = config
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .filter(|descriptor| {
+                    descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if current != projected {
+                config.resolved_spec.tool_descriptors.retain(|descriptor| {
+                    descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
+                });
+                config.resolved_spec.tool_descriptors.extend(projected);
+                config.recompute_fingerprint().map_err(|error| {
+                    HostError::internal(format!("fingerprint Session tool projection: {error}"))
+                })?;
+            }
         }
         // WebSearch has one configuration/dispatch owner for both execution
         // backends. Native lets Runtime resolve the plugin once; ACP resolves

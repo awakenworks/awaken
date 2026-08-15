@@ -728,7 +728,7 @@ impl crate::SharedHost {
         self.register_thread_delegates(thread, init.delegate_ids.clone());
         self.session_slots.update(thread, |slot| {
             slot.agent_id = Some(init.agent_id.clone());
-            slot.toolsets = init.toolsets.clone();
+            slot.tools = init.tools.clone();
         });
         Ok(())
     }
