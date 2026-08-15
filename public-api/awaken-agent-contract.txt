@@ -513,6 +513,7 @@ impl awaken_agent_contract::model_spec::ModelSpec
 pub fn awaken_agent_contract::model_spec::ModelSpec::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub mod awaken_agent_contract::model_target
 pub struct awaken_agent_contract::model_target::ModelTarget
+pub awaken_agent_contract::model_target::ModelTarget::api_dialect: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::model_target::ModelTarget::endpoint_name: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::model_target::ModelTarget::model_id: alloc::string::String
 pub awaken_agent_contract::model_target::ModelTarget::protocol_endpoint_id: core::option::Option<alloc::string::String>
@@ -961,6 +962,7 @@ pub awaken_agent_contract::ModelSpec::output_token_price_per_million_usd: core::
 impl awaken_agent_contract::model_spec::ModelSpec
 pub fn awaken_agent_contract::model_spec::ModelSpec::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_agent_contract::ModelTarget
+pub awaken_agent_contract::ModelTarget::api_dialect: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::ModelTarget::endpoint_name: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::ModelTarget::model_id: alloc::string::String
 pub awaken_agent_contract::ModelTarget::protocol_endpoint_id: core::option::Option<alloc::string::String>

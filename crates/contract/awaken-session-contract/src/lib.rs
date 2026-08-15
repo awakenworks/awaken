@@ -18,6 +18,7 @@ mod environment;
 mod lifecycle;
 mod mcp_attachment;
 mod mcp_probe;
+mod model_resolution;
 mod resource;
 mod resource_activation;
 mod run_application;
@@ -90,6 +91,10 @@ pub use mcp_attachment::{
     McpTargetIdentity, SessionMcpAttachment, SessionMcpAttachmentSet, StageMcpAttachment,
 };
 pub use mcp_probe::{McpProbe, McpProbeStatus};
+pub use model_resolution::{
+    SessionModelOverride, SessionModelPublication, SessionModelPublicationResolver,
+    SessionModelResolutionError,
+};
 pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
     ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,

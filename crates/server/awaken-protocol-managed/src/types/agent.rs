@@ -13,40 +13,51 @@ use awaken_session_contract::AgentTool;
 
 use crate::types::{ModelConfig, ModelConfigParams};
 
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-/// One Agent-owned MCP binding on both request and response wires. `url` is the
-/// Managed Agents-compatible variant; `sandbox_stdio` is an Awaken extension
-/// whose executable is realized inside the Session Environment. Keeping one
-/// tagged union prevents create, update, override, and response projections from
-/// developing separate transport vocabularies.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AgentMcpServer {
-    Url {
-        name: String,
-        url: String,
-        #[serde(default, skip_serializing_if = "is_false")]
-        prompts_as_skills: bool,
-    },
-    SandboxStdio {
-        name: String,
-        command: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        args: Vec<String>,
-        #[serde(default, skip_serializing_if = "is_false")]
-        prompts_as_skills: bool,
-    },
+/// The one Managed MCP wire shape shared by Agent and Session requests:
+/// `{name, type:"url", url}`. Internal sandbox-stdio bindings never become a
+/// second public transport variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMcpServer {
+    pub name: String,
+    pub url: String,
 }
 
 impl AgentMcpServer {
     #[must_use]
     pub fn name(&self) -> &str {
-        match self {
-            Self::Url { name, .. } | Self::SandboxStdio { name, .. } => name,
+        &self.name
+    }
+}
+
+impl Serialize for AgentMcpServer {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut value = serializer.serialize_struct("AgentMcpServer", 3)?;
+        value.serialize_field("name", &self.name)?;
+        value.serialize_field("type", "url")?;
+        value.serialize_field("url", &self.url)?;
+        value.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentMcpServer {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            name: String,
+            url: String,
+            #[serde(rename = "type")]
+            kind: String,
         }
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.kind != "url" {
+            return Err(serde::de::Error::custom("MCP server type must be `url`"));
+        }
+        Ok(Self {
+            name: wire.name,
+            url: wire.url,
+        })
     }
 }
 
@@ -108,19 +119,19 @@ pub enum MultiagentRosterEntry {
     Id(String),
     Reference(AgentRosterReference),
     SelfReference(SelfRosterReference),
-    Advisor(AdvisorRosterReference),
+    Advisor(AdvisorRosterEntry),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdvisorRosterReference {
+pub struct AdvisorRosterEntry {
     pub model: String,
     #[serde(rename = "type")]
-    pub kind: AdvisorRosterReferenceKind,
+    pub kind: AdvisorRosterEntryKind,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum AdvisorRosterReferenceKind {
+pub enum AdvisorRosterEntryKind {
     #[serde(rename = "advisor")]
     Advisor,
 }
@@ -158,16 +169,6 @@ pub enum SelfRosterReferenceKind {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MultiagentConfig {
     Coordinator { agents: Vec<MultiagentRosterEntry> },
-}
-
-/// Awaken-owned Agent controls namespaced away from upstream Managed fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AwakenAgentExtensions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_steps: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_machine: Option<serde_json::Value>,
 }
 
 /// A client's `model` input: a bare id string or a full `{id, speed?}` config
@@ -210,8 +211,6 @@ pub struct AgentCreateParams {
     pub tools: Vec<AgentTool>,
     #[serde(default)]
     pub multiagent: Option<MultiagentConfig>,
-    #[serde(default)]
-    pub x_awaken: Option<AwakenAgentExtensions>,
 }
 
 /// `AgentUpdateParams` — a partial update under optimistic concurrency: `version`
@@ -239,8 +238,6 @@ pub struct AgentUpdateParams {
     pub tools: Option<Option<Vec<AgentTool>>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub multiagent: Option<Option<MultiagentConfig>>,
-    #[serde(default)]
-    pub x_awaken: Option<AwakenAgentExtensions>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -314,8 +311,6 @@ pub struct Agent {
     #[serde(rename = "type")]
     pub object_type: &'static str,
     pub archived_at: Option<String>,
-    pub disabled_at: Option<String>,
-    pub status: AgentStatus,
     pub created_at: String,
     pub updated_at: String,
     pub name: String,
@@ -327,17 +322,7 @@ pub struct Agent {
     pub skills: Vec<AgentSkill>,
     pub tools: Vec<AgentTool>,
     pub multiagent: Option<MultiagentConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub x_awaken: Option<AwakenAgentExtensions>,
     pub version: u64,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentStatus {
-    Published,
-    Disabled,
-    Archived,
 }
 
 #[cfg(test)]
@@ -356,21 +341,12 @@ mod tests {
         // | unknown discriminator                      | reject    |
         // | known discriminator + misspelled field     | reject    |
         // | custom input_schema extension keyword      | preserve  |
-        // | namespaced Awaken max_steps                | preserve  |
+        // | non-standard extension field               | reject    |
         let valid = json!({
             "name": "typed",
-            "model": {
-                "id": "acp:codex/model-1",
-                "x_awaken": {
-                    "acp": {
-                        "mode": "plan",
-                        "options": {"reasoning_effort": "high"}
-                    }
-                }
-            },
+            "model": "model-1;executor=acp:codex",
             "mcp_servers": [
-                {"type":"url","name":"docs","url":"https://mcp.test"},
-                {"type":"sandbox_stdio","name":"browser","command":"playwright-mcp","args":["--headless"]}
+                {"type":"url","name":"docs","url":"https://mcp.test"}
             ],
             "skills": [{"type":"custom","skill_id":"skill_1","version":"2"}],
             "tools": [
@@ -380,52 +356,78 @@ mod tests {
                     "type":"object","properties":{"id":{"type":"string"}},"additionalProperties":false
                 }}
             ],
-            "multiagent": {"type":"coordinator","agents":["worker",{"type":"self"}]},
-            "x_awaken": {"max_steps":40,"state_machine":{"machines":[]}}
+            "multiagent": {"type":"coordinator","agents":[
+                "worker", {"type":"self"}, {"type":"advisor","model":"claude-opus-4-6"}
+            ]},
         });
         let parsed: AgentCreateParams = serde_json::from_value(valid).expect("SDK union parses");
-        let model = parsed.model.clone().into_config();
-        let acp = model
-            .x_awaken
-            .and_then(|extension| extension.acp)
-            .expect("namespaced ACP configuration");
-        assert_eq!(acp.mode.as_deref(), Some("plan"));
-        assert_eq!(acp.options["reasoning_effort"], "high");
         let AgentTool::Custom { input_schema, .. } = &parsed.tools[2] else {
             panic!("custom tool retained its variant")
         };
         assert_eq!(input_schema.keywords["additionalProperties"], false);
+        assert_eq!(parsed.mcp_servers[0].name, "docs");
         assert!(matches!(
-            &parsed.mcp_servers[1],
-            AgentMcpServer::SandboxStdio { name, command, args, .. }
-                if name == "browser" && command == "playwright-mcp" && args == &["--headless"]
+            parsed.multiagent,
+            Some(MultiagentConfig::Coordinator { ref agents })
+                if matches!(agents[2], MultiagentRosterEntry::Advisor(_))
         ));
-        assert_eq!(parsed.x_awaken.unwrap().max_steps, Some(40));
+        assert_eq!(
+            serde_json::to_value(&parsed.mcp_servers[0]).unwrap()["type"],
+            "url"
+        );
 
         let update: AgentUpdateParams = serde_json::from_value(json!({
             "version": 3,
             "mcp_servers": [{
-                "type": "sandbox_stdio",
-                "name": "browser",
-                "command": "playwright-mcp",
-                "args": ["--headless"]
+                "type": "url",
+                "name": "docs",
+                "url": "https://mcp.test"
             }]
         }))
-        .expect("update uses the same tagged MCP union");
+        .expect("update reuses the one URL MCP DTO");
         assert!(matches!(
             update.mcp_servers,
-            Some(Some(ref servers))
-                if matches!(&servers[0], AgentMcpServer::SandboxStdio { command, .. } if command == "playwright-mcp")
+            Some(Some(ref servers)) if servers[0].url == "https://mcp.test"
         ));
 
         for invalid in [
             json!({"name":"x","model":"m","skills":[{"type":"unknown","skill_id":"s"}]}),
+            json!({"name":"x","model":"m","mcp_servers":[{"name":"s","url":"https://x"}]}),
             json!({"name":"x","model":"m","mcp_servers":[{"type":"url","name":"s","uri":"https://x"}]}),
-            json!({"name":"x","model":"m","mcp_servers":[{"type":"sandbox_stdio","name":"s","command":"tool","env":{}}]}),
+            json!({"name":"x","model":"m","mcp_servers":[{"type":"sandbox_stdio","name":"s","command":"tool"}]}),
+            json!({"name":"x","model":"m","mcp_servers":[{"type":"url","name":"s","url":"https://x","prompts_as_skills":true}]}),
             json!({"name":"x","model":"m","tools":[{"type":"mcp_toolset","mcp_server":"s"}]}),
-            json!({"name":"x","model":"m","x_awaken":{"step_limit":40}}),
+            json!({"name":"x","model":"m","max_steps":40}),
         ] {
             assert!(serde_json::from_value::<AgentCreateParams>(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn agent_response_contains_only_the_sdk_fields() {
+        // Cause/effect decision table: official fields serialize; historical
+        // Awaken-only lifecycle fields (`status`, `disabled_at`) have no DTO owner
+        // and therefore cannot appear in the response object.
+        let value = serde_json::to_value(Agent {
+            id: "agent_1".into(),
+            object_type: "agent",
+            archived_at: None,
+            created_at: "2026-08-15T00:00:00Z".into(),
+            updated_at: "2026-08-15T00:00:00Z".into(),
+            name: "assistant".into(),
+            description: None,
+            model: ModelConfig::new("claude-sonnet-4-6"),
+            system: None,
+            metadata: BTreeMap::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+            tools: Vec::new(),
+            multiagent: None,
+            version: 1,
+        })
+        .unwrap();
+        assert!(value.get("status").is_none());
+        assert!(value.get("disabled_at").is_none());
+        assert_eq!(value["type"], "agent");
     }
 }

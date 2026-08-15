@@ -291,63 +291,49 @@ it never becomes a secret in any spec, preserving G22.
 
 ## How the Managed Agents API consumes management-plane Provider/Model
 
-The public Agent `model.id` remains one string, so official Managed Agents clients
-do not need a second Awaken request shape. Provider, endpoint, executor, and model
-are encoded only when they are needed to disambiguate execution:
+The public Agent `model.id` remains one opaque string, so an official Managed
+Agents client does not need a second request shape. One named-qualifier grammar
+composes model, Provider, API dialect, endpoint, and executor without positional
+overloading:
 
 | Model id | Meaning |
 |---|---|
 | `<model>` | native executor; accepted only when one active Offering matches |
-| `<provider>/<model>` | native executor through one Provider |
-| `<provider>@<endpoint>/<model>` | native executor through one endpoint selector |
-| `acp:<cli>` | ACP CLI with its own default model and Worker-local login |
-| `acp:<cli>/<model>` | ACP CLI with an exact backend-owned model |
-| `acp:<cli>@<provider>/<model>` | ACP CLI using an Awaken-managed Provider route |
-| `acp:<cli>@<provider>@<endpoint>/<model>` | the same with an endpoint selector |
-| `a2a:<absolute-http-url>` | one remote A2A Agent; publication discovers and pins its Agent Card security |
+| `<model>;provider=<provider>` | native executor through one Provider |
+| `<model>;provider=<provider>;api=<dialect>` | native executor through one API surface |
+| `<model>;provider=<provider>;api=<dialect>;endpoint=<name>` | native executor through one named endpoint |
+| `<model>;executor=acp:<cli>` | ACP CLI consuming the selected model Offering |
+| `executor=acp:<cli>` | ACP CLI with its backend-owned default model and Worker-local login |
+| `executor=a2a:<absolute-http-url>` | one remote A2A Agent; publication discovers and pins its Agent Card security |
+| `profile=<profile-id>` | one existing control-plane inference Profile |
 
-The model portion is the complete remainder after the route separator, so ids
-such as `anyrouter/qwen/qwen3-235b` mean provider `anyrouter`, model
-`qwen/qwen3-235b`. Credentials never appear in this string. Dialect is normally
-negotiated from the selected Offering and appears only when it is needed as an
-endpoint selector.
+Qualifiers are always rendered in `provider`, `api`, `endpoint`, `executor`
+order. `%`, `;`, and `=` inside a component use percent encoding. Credentials
+and internal `ProtocolEndpointId` values never appear in this string. `api`
+requires `provider`; `endpoint` requires both `provider` and `api`; A2A is an
+executor-only selection. Unknown, duplicated, or structurally invalid
+qualifiers fail during request admission.
 
-The endpoint selector is the dialect for an unnamed/default surface (for example
-`glm@anthropic_messages/glm-5`) and the explicit `endpoint_name` when multiple
-surfaces share that dialect. If the same short endpoint name occurs under two
-dialects, discovery emits `<dialect>.<endpoint_name>` to keep the id unambiguous.
-These qualifiers are returned by `/v1/models`; clients do not construct internal
-`ProtocolEndpointId` values.
+The model head remains intact, including slashes. For example,
+`qwen/qwen3-235b;provider=anyrouter;api=open_ai_responses;executor=acp:codex`
+selects the slash-bearing model `qwen/qwen3-235b`; it does not infer Provider or
+executor identity from delimiters inside the model name.
 
 `/v1/models` associates each entry with its Provider through the canonical id.
 Different Providers may publish the same model name, so a bare `<model>` is
-returned only when globally unique; otherwise discovery returns
-`<provider>/<model>`. Multiple endpoints for the same Provider/model add
-`@<endpoint>`. The response retains the official `BetaModelInfo` fields rather
-than adding a second Provider field that could disagree with the id.
+returned only when globally unique; otherwise discovery adds `provider` and,
+when needed, `api` and `endpoint`. The response retains the official
+`BetaModelInfo` fields rather than adding Provider or executor fields that could
+disagree with `id`.
 
-ACP-native Session configuration is orthogonal to route identity. The optional
-namespaced extension on the official model object carries only that configuration:
-
-```json
-{
-  "id": "acp:codex@anyrouter/qwen/qwen3-235b",
-  "effort": "high",
-  "x_awaken": {
-    "acp": {
-      "mode": "plan",
-      "options": {"reasoning_effort": "high"}
-    }
-  }
-}
-```
-
-`id`, `speed`, and `effort` retain their Managed Agents meanings. Omitting
-`x_awaken` retains the official shape. An ACP extension on a native or A2A id
-fails immediately. Publication checks every mode, option id, and value against
-one fresh negotiated Worker profile, then freezes the adapter version,
-fingerprint, and exact configuration into the same candidate as the Provider
-route.
+ACP-native mode and option configuration is orthogonal to route identity. It
+remains owned by the existing typed `AcpSessionConfiguration` inside control-
+plane `AgentConfig`; the Managed Agents wire neither accepts nor projects a
+parallel extension object. Control-plane-authored values are validated against
+one fresh negotiated Worker profile and frozen with adapter version and
+capability fingerprint. Managed clients use the standard `model` field to choose
+the executor and route, and the standard `effort`/`speed` fields for the
+corresponding Managed controls.
 
 `parse_managed_model_id` is the sole ACL. It creates a `ModelSelection::Target`
 intent rather than an incomplete `Pinned` binding. `select_offering` is the sole
@@ -357,7 +343,7 @@ catalog selector. Publication then intersects:
 Target
   × one active Offering (Provider + ProtocolEndpoint + dialect)
   × one compatible active Credential
-  × Executor capability (native or ACP CLI)
+  × Executor capability, including its exact API-dialect allow-list
   × current Worker capability when the backend owns execution
   → immutable ResolvedModelCandidate
 ```
@@ -433,36 +419,33 @@ candidate and never renegotiates Provider, credential, dialect, or executor.
    POST /v1/agents
    Content-Type: application/json
 
-   {"name":"support","model":"acp:claude@glm/glm-5","tools":[]}
+   {"name":"support","model":"glm-5;provider=glm;api=anthropic_messages;executor=acp:claude","tools":[]}
    ```
 
-   Adapter-native configuration stays in the same model field:
+   Slash-bearing model ids remain readable because every selector is named:
 
    ```json
    {
      "name": "research",
-     "model": {
-       "id": "acp:codex@anyrouter/qwen/qwen3-235b",
-       "x_awaken": {
-         "acp": {
-           "mode": "plan",
-           "options": {"reasoning_effort": "high"}
-         }
-       }
-     },
+     "model": "qwen/qwen3-235b;provider=anyrouter;api=open_ai_responses;executor=acp:codex",
      "tools": []
    }
    ```
 
-   A backend-owned CLI login uses `acp:codex` for its default model or
-   `acp:codex/gpt-5` for an exact model. A remote Agent uses
-   `a2a:https://agent.example/a2a`; it is absent from `/v1/models` because it is
-   an Agent, not a model. Backend-owned ACP routes are runtime capabilities, so
+   A backend-owned CLI login uses `executor=acp:codex` for its default model or
+   `gpt-5;executor=acp:codex` for an exact model. A remote Agent uses
+   `executor=a2a:https://agent.example/a2a`; it is absent from `/v1/models`
+   because it is an Agent, not a model. Backend-owned ACP routes are runtime capabilities, so
    clients discover their availability through `/v1/config/capabilities`;
    `/v1/models` owns Provider-backed model routes only.
 
    Create/update dry-runs the complete publication first and returns `400` for an
-   unsupported combination. The config authoring API may retain drafts; the
+   unsupported combination. In particular, `acp:claude` accepts only an
+   `anthropic_messages` Offering and `acp:codex` accepts only an
+   `open_ai_responses` Offering. No incompatible pair falls back to native or a
+   different API. A deterministic dialect/executor mismatch is rejected by the
+   shared resolver before the Managed adapter's authoring CAS, so it leaves no
+   Agent draft. The separate config authoring API may retain its own drafts; the
    Managed Agents API exposes only successfully published Agents.
 
 4. Create a Session with the Agent id through `/v1/sessions`. The Session inherits

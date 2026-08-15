@@ -260,7 +260,15 @@ async fn durable_plane_shares_its_managed_siblings_open_local_trust_posture() {
 
     // Sibling baseline: an unauthenticated managed session create is admitted
     // (this plane is open by design — IAM is the separate management router).
-    let (status, body) = post_json(&app, "/v1/sessions", json!({ "agent": "assistant" })).await;
+    let (status, body) = post_json(
+        &app,
+        "/v1/sessions",
+        json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::OK,

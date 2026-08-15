@@ -14,7 +14,7 @@ ANTHROPIC_MANAGED_ROUTES = frozenset(
     {
         ("GET", "/v1/agents"), ("POST", "/v1/agents"),
         ("GET", "/v1/agents/{}"), ("POST", "/v1/agents/{}"),
-        ("POST", "/v1/agents/{}/disable"), ("POST", "/v1/agents/{}/archive"),
+        ("POST", "/v1/agents/{}/archive"),
         ("GET", "/v1/agents/{}/versions"),
         ("GET", "/v1/deployments"), ("POST", "/v1/deployments"),
         ("GET", "/v1/deployments/{}"), ("POST", "/v1/deployments/{}"),

@@ -307,6 +307,48 @@ impl SessionApplication {
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             )));
         }
+        // Model-override cause/effect rules: R1 absent -> inherit the Agent
+        // publication; R2 equal -> reuse it; R3 different + resolvable -> freeze
+        // the complete replacement route; R4 different + invalid/unavailable ->
+        // fail before persistence or external realization.
+        let published_model = profile
+            .as_ref()
+            .and_then(|profile| profile.model.clone())
+            .unwrap_or_else(|| self.model());
+        let model_override = match requested_model.as_deref() {
+            Some(requested) => Some(
+                self.resolve_session_model_override(
+                    &owner_scope,
+                    requested,
+                    &published_model,
+                    Default::default(),
+                )
+                .await?,
+            ),
+            None => None,
+        };
+        let model = requested_model.clone().unwrap_or(published_model);
+        let execution_model_ref = model_override
+            .as_ref()
+            .and_then(|model_override| model_override.publication.as_ref())
+            .map(|publication| publication.primary.binding.model_ref.clone())
+            .or_else(|| {
+                profile
+                    .as_ref()
+                    .and_then(|profile| profile.execution_model_ref.clone())
+            })
+            .unwrap_or_else(|| model.clone());
+        let published_backend_ref = model_override
+            .as_ref()
+            .and_then(|model_override| model_override.publication.as_ref())
+            .map(|publication| publication.primary.binding.backend_ref.clone())
+            .or_else(|| {
+                profile
+                    .as_ref()
+                    .map(|profile| profile.backend_ref.trim())
+                    .filter(|backend| !backend.is_empty())
+                    .map(str::to_owned)
+            });
         let capabilities = self.capabilities_for(&session_id);
         let capability_tools = SessionToolConfiguration::from_capabilities(&capabilities);
         let inherited_tools = profile.as_ref().map_or_else(
@@ -361,17 +403,13 @@ impl SessionApplication {
             .iter()
             .map(|attachment| attachment.target.clone())
             .collect::<Vec<_>>();
-        let published_backend_ref = profile
-            .as_ref()
-            .map(|profile| profile.backend_ref.trim())
-            .filter(|backend| !backend.is_empty());
         let mut environment = self
             .resolve_session_environment(
                 requested_environment_id.as_deref(),
                 profile
                     .as_ref()
                     .and_then(|profile| profile.environment.as_ref()),
-                published_backend_ref,
+                published_backend_ref.as_deref(),
                 &mcp_targets,
             )
             .await?
@@ -397,24 +435,6 @@ impl SessionApplication {
         )
         .await
         .map_err(preparation_error)?;
-        if let (Some(requested), Some(published)) = (
-            requested_model.as_deref(),
-            profile
-                .as_ref()
-                .and_then(|profile| profile.model.as_deref()),
-        ) && requested != published
-        {
-            return Err(RunError::bad_request(
-                "agent_model_override_unpublished: publish or update an Agent with this model id before creating the Session",
-            ));
-        }
-        let model = requested_model
-            .or_else(|| profile.as_ref().and_then(|profile| profile.model.clone()))
-            .unwrap_or_else(|| self.model());
-        let execution_model_ref = profile
-            .as_ref()
-            .and_then(|profile| profile.execution_model_ref.clone())
-            .unwrap_or_else(|| model.clone());
         let intent = SessionCreationIntent {
             control: ControlSessionCreationInputs {
                 environment,
@@ -423,7 +443,8 @@ impl SessionApplication {
                 agent_revision: profile.as_ref().map(|profile| profile.source_revision),
                 model,
                 execution_model_ref,
-                runtime: published_backend_ref.map(str::to_string),
+                model_override,
+                runtime: published_backend_ref,
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 delegate_ids: profile
                     .as_ref()

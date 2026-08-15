@@ -10,9 +10,10 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{Value, json};
+use serde::Serialize;
 
 use crate::common::scope::RequiredWorkspaceScope;
+use crate::types::{ErrorResponse, Page};
 
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 1_000;
@@ -25,36 +26,53 @@ pub fn files_router(files: Arc<dyn FileApplicationService>) -> Router {
         .with_state(files)
 }
 
-fn metadata(record: &FileRecord) -> Value {
-    let purpose = if record.harvest_key.is_some() {
-        "artifact"
-    } else {
-        "input"
-    };
-    json!({
-        "id": record.id,
-        "type": "file",
-        "filename": record.filename,
-        "mime_type": record.mime_type,
-        "size_bytes": record.size_bytes,
-        "created_at": record.created_at,
-        "downloadable": record.downloadable,
-        // Awaken extension fields. Artifacts remain ordinary File records; these
-        // fields let the Console project separate input and output views without
-        // introducing a second Artifact aggregate.
-        "purpose": purpose,
-        "session_id": record.scope_id,
-        "logical_path": record.logical_path,
-    })
+#[derive(Debug, Serialize)]
+struct FileScope<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct FileMetadata<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    filename: &'a str,
+    mime_type: &'a str,
+    size_bytes: u64,
+    created_at: &'a str,
+    downloadable: bool,
+    scope: Option<FileScope<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeletedFile {
+    id: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+fn metadata(record: &FileRecord) -> FileMetadata<'_> {
+    FileMetadata {
+        id: &record.id,
+        kind: "file",
+        filename: &record.filename,
+        mime_type: &record.mime_type,
+        size_bytes: record.size_bytes,
+        created_at: &record.created_at,
+        downloadable: record.downloadable,
+        scope: record.scope_id.as_deref().map(|id| FileScope {
+            id,
+            kind: "session",
+        }),
+    }
 }
 
 fn error(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
     (
         status,
-        Json(json!({
-            "type": "error",
-            "error": { "type": "invalid_request_error", "message": message.into() }
-        })),
+        Json(ErrorResponse::new("invalid_request_error", message)),
     )
         .into_response()
 }
@@ -64,6 +82,17 @@ async fn list_files(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if let Some(name) = query.keys().find(|name| {
+        !matches!(
+            name.as_str(),
+            "before_id" | "after_id" | "limit" | "scope_id"
+        )
+    }) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            format!("unsupported Files list parameter `{name}`"),
+        );
+    }
     let before_id = query.get("before_id");
     let after_id = query.get("after_id");
     if before_id.is_some() && after_id.is_some() {
@@ -94,30 +123,6 @@ async fn list_files(
             return error(StatusCode::INTERNAL_SERVER_ERROR, error_value.to_string());
         }
     };
-    let purpose = match query.get("purpose").map(String::as_str) {
-        None => None,
-        Some("input") => Some("input"),
-        Some("artifact") => Some("artifact"),
-        Some(_) => {
-            return error(
-                StatusCode::BAD_REQUEST,
-                "purpose must be either input or artifact",
-            );
-        }
-    };
-    let records = records
-        .into_iter()
-        .filter(|record| {
-            purpose.is_none_or(|purpose| {
-                let record_purpose = if record.harvest_key.is_some() {
-                    "artifact"
-                } else {
-                    "input"
-                };
-                record_purpose == purpose
-            })
-        })
-        .collect::<Vec<_>>();
     let start = if let Some(cursor) = after_id.map(String::as_str) {
         match records.iter().position(|record| record.id == cursor) {
             Some(position) => position + 1,
@@ -144,14 +149,8 @@ async fn list_files(
     let has_more = start + selected.len() < end_bound;
     let first_id = selected.first().map(|record| record.id.clone());
     let last_id = selected.last().map(|record| record.id.clone());
-    let data = selected.into_iter().map(metadata).collect::<Vec<Value>>();
-    Json(json!({
-        "data": data,
-        "has_more": has_more,
-        "first_id": first_id,
-        "last_id": last_id,
-    }))
-    .into_response()
+    let data = selected.into_iter().map(metadata).collect::<Vec<_>>();
+    Json(Page::new(data, has_more, first_id, last_id)).into_response()
 }
 
 fn valid_filename(filename: &str) -> bool {
@@ -225,7 +224,10 @@ async fn delete_file(
     match files.delete(&workspace, &id, now).await {
         Ok(Some(_)) => (
             StatusCode::OK,
-            Json(json!({ "id": id, "type": "file_deleted" })),
+            Json(DeletedFile {
+                id,
+                kind: "file_deleted",
+            }),
         )
             .into_response(),
         Ok(None) => error(StatusCode::NOT_FOUND, "file not found"),
@@ -251,5 +253,57 @@ async fn download_file(
         }
         Ok(None) => error(StatusCode::NOT_FOUND, "file not found"),
         Err(error_value) => error(StatusCode::INTERNAL_SERVER_ERROR, error_value.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_file_responses_are_owned_by_typed_dtos() {
+        // Cause/effect decision table: F1 unscoped metadata -> `scope:null`;
+        // F2 session-scoped metadata -> exact `{id,type}` scope; F3 deletion ->
+        // exact delete receipt. In every rule the DTO owns the fixed field set,
+        // so a manually assembled alternate envelope cannot drift into the API.
+        let plain = FileMetadata {
+            id: "file_1",
+            kind: "file",
+            filename: "notes.txt",
+            mime_type: "text/plain",
+            size_bytes: 5,
+            created_at: "2026-01-01T00:00:00Z",
+            downloadable: true,
+            scope: None,
+        };
+        let plain = serde_json::to_value(plain).unwrap();
+        assert!(plain["scope"].is_null(), "F1");
+        assert_eq!(plain.as_object().unwrap().len(), 8, "F1 exact fields");
+
+        let scoped = FileMetadata {
+            id: "file_2",
+            kind: "file",
+            filename: "notes.txt",
+            mime_type: "text/plain",
+            size_bytes: 5,
+            created_at: "2026-01-01T00:00:00Z",
+            downloadable: true,
+            scope: Some(FileScope {
+                id: "session_1",
+                kind: "session",
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(scoped).unwrap()["scope"]["type"],
+            "session",
+            "F2"
+        );
+        let deleted = serde_json::to_value(DeletedFile {
+            id: "file_2".into(),
+            kind: "file_deleted",
+        })
+        .unwrap();
+        assert_eq!(deleted["type"], "file_deleted", "F3");
+        assert_eq!(deleted.as_object().unwrap().len(), 2, "F3 exact fields");
     }
 }

@@ -124,7 +124,10 @@ async fn managed_multi_turn_remembers_context() {
         &app,
         "POST",
         "/v1/sessions",
-        json!({ "agent": "assistant" }),
+        json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
     )
     .await;
     let session = serde_json::from_str::<Value>(&body).unwrap()["id"]
@@ -245,7 +248,10 @@ async fn multi_agent_graded_outcome_runs_a_judge_subagent() {
         &app,
         "POST",
         "/v1/sessions",
-        json!({ "agent": "assistant" }),
+        json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
     )
     .await;
     let session = serde_json::from_str::<Value>(&body).unwrap()["id"]

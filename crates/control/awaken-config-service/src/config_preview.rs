@@ -34,6 +34,8 @@ impl ConfigService {
             AgentConfigRevision {
                 config: config.clone(),
                 revision: 0,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
             },
         )
         .await
@@ -95,6 +97,8 @@ impl ConfigService {
             AgentConfigRevision {
                 config: config.clone(),
                 revision: source_revision,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
             },
         )
         .await?;

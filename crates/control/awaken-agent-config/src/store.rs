@@ -20,6 +20,10 @@ pub struct ConfigStoreError(pub String);
 pub struct AgentConfigRevision {
     pub config: AgentConfig,
     pub revision: u64,
+    /// First durable authoring write, when the store exposes lifecycle time.
+    pub created_at_unix_ms: Option<u64>,
+    /// Durable write time of this exact revision.
+    pub updated_at_unix_ms: Option<u64>,
 }
 
 /// Outcome of an atomic compare-and-set config write.
@@ -162,6 +166,8 @@ pub trait ConfigRegistry: Send + Sync {
             .map(|config| AgentConfigRevision {
                 config,
                 revision: 0,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
             }))
     }
 
@@ -349,6 +355,8 @@ pub trait ScopedConfigRegistry: Send + Sync {
             .map(|config| AgentConfigRevision {
                 config,
                 revision: 0,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
             }))
     }
 

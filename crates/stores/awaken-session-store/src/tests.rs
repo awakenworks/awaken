@@ -233,6 +233,7 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 agent_id: "coder".into(),
                 agent_revision: None,
+                model_override: None,
                 toolsets: Vec::new(),
                 model: "kimi-k2".into(),
                 runtime: None,

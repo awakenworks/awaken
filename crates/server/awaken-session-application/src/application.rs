@@ -130,6 +130,8 @@ pub struct SessionApplication {
     repository_credential_ingress: Option<Arc<dyn RepositoryCredentialIngress>>,
     environments: Arc<dyn SessionEnvironmentSource>,
     config_source: Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>>,
+    model_publication_resolver:
+        Option<Arc<dyn awaken_session_contract::SessionModelPublicationResolver>>,
     resource_catalog: Option<Arc<dyn awaken_resource_contract::ResourceCatalog>>,
     resource_purge_scheduler: Option<Arc<dyn awaken_resource_contract::ResourcePurgeScheduler>>,
     resource_references: Option<Arc<dyn awaken_resource_contract::ResourceReferenceIndex>>,
@@ -193,6 +195,7 @@ impl SessionApplication {
             repository_credential_ingress: None,
             environments,
             config_source: None,
+            model_publication_resolver: None,
             resource_catalog: None,
             resource_purge_scheduler: None,
             resource_references: None,
@@ -353,30 +356,23 @@ impl SessionApplication {
             .unwrap_or_else(|| {
                 awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.to_string()
             });
-        let required_revision = match (requested_environment_id, published_environment) {
-            (None, Some(binding)) => Some(binding.revision),
-            _ => None,
-        };
-        let resolved = match (requested_environment_id, published_environment) {
-            (None, Some(binding)) => {
-                self.environments
-                    .resolve_exact_for_session(
-                        &binding.environment_id,
-                        binding.revision,
-                        published_backend_ref,
-                        mcp_targets,
-                    )
-                    .await
-            }
-            _ => {
-                self.environments
-                    .resolve_current_for_session(
-                        &environment_id,
-                        published_backend_ref,
-                        mcp_targets,
-                    )
-                    .await
-            }
+        let exact_publication = published_environment.filter(|binding| {
+            requested_environment_id.is_none_or(|requested| requested == binding.environment_id)
+        });
+        let required_revision = exact_publication.map(|binding| binding.revision);
+        let resolved = if let Some(binding) = exact_publication {
+            self.environments
+                .resolve_exact_for_session(
+                    &binding.environment_id,
+                    binding.revision,
+                    published_backend_ref,
+                    mcp_targets,
+                )
+                .await
+        } else {
+            self.environments
+                .resolve_current_for_session(&environment_id, published_backend_ref, mcp_targets)
+                .await
         }
         .map_err(|error| RunError::unavailable(error.to_string()))?
         .ok_or_else(|| {
@@ -471,6 +467,49 @@ impl SessionApplication {
         source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     ) {
         self.config_source = Some(source);
+    }
+
+    pub fn set_model_publication_resolver(
+        &mut self,
+        resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+    ) {
+        self.model_publication_resolver = Some(resolver);
+    }
+
+    /// Resolve a Session override only when it differs from the immutable Agent
+    /// publication. This is the single admission rule shared by every protocol
+    /// and internal Session creator.
+    pub async fn resolve_session_model_override(
+        &self,
+        workspace_id: &str,
+        requested_model: &str,
+        published_model: &str,
+        inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
+    ) -> Result<awaken_session_contract::SessionModelOverride, RunError> {
+        let publication = if published_model == requested_model {
+            None
+        } else {
+            let resolver = self.model_publication_resolver.as_deref().ok_or_else(|| {
+                RunError::unavailable("Session model override resolution is not configured")
+            })?;
+            Some(Box::new(
+                resolver
+                    .resolve_session_model(workspace_id, requested_model)
+                    .await
+                    .map_err(|error| match error {
+                        awaken_session_contract::SessionModelResolutionError::Invalid(_) => {
+                            RunError::bad_request(error.to_string())
+                        }
+                        awaken_session_contract::SessionModelResolutionError::Unavailable(_) => {
+                            RunError::unavailable(error.to_string())
+                        }
+                    })?,
+            ))
+        };
+        Ok(awaken_session_contract::SessionModelOverride {
+            publication,
+            inference,
+        })
     }
 
     /// Resolve the complete published multi-agent model roster before a

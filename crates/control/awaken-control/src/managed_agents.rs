@@ -15,8 +15,8 @@ use awaken_config_service::{
     ConfigPlane, RESERVED_ADMIN_SCOPE, parse_managed_model_id, render_managed_model_id,
 };
 use awaken_protocol_managed::types::agent::{
-    Agent, AgentCreateParams, AgentListParams, AgentMcpServer, AgentSkill, AgentStatus,
-    AgentUpdateParams, AwakenAgentExtensions, MultiagentConfig as WireMultiagent,
+    AdvisorRosterEntry, AdvisorRosterEntryKind, Agent, AgentCreateParams, AgentListParams,
+    AgentMcpServer, AgentSkill, AgentUpdateParams, MultiagentConfig as WireMultiagent,
     MultiagentRosterEntry,
 };
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
@@ -24,18 +24,13 @@ use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
 use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_session_contract::{
-    AGENT_TOOLSET_TOOL_IDS, AgentTool, CustomToolInputSchema, is_agent_toolset_member,
-    resolved_toolsets, toolset_policies,
+    AgentTool, CustomToolInputSchema, is_agent_toolset_member, resolved_toolsets, toolset_policies,
 };
 use awaken_tenancy::ScopeId;
 
 mod lifecycle_identity;
-mod model_controls;
 use lifecycle_identity::{lifecycle_timestamp, new_agent_id};
-use model_controls::{apply_model_extensions, inference_from_wire, model_config};
 
-const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
-const STATE_MACHINE_PLUGIN_ID: &str = "state_machine";
 const MAX_MCP_SERVER_URL_BYTES: usize = 2048;
 pub struct ConfigPlaneManagedAgentRepository {
     plane: ConfigPlane,
@@ -305,36 +300,13 @@ fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
 fn typed_mcp_servers(values: Vec<AgentMcpServer>) -> Vec<AgentMcpServerBinding> {
     values
         .into_iter()
-        .map(|server| {
-            let (name, transport, prompts_as_skills) = match server {
-                AgentMcpServer::Url {
-                    name,
-                    url,
-                    prompts_as_skills,
-                } => (
-                    name,
-                    awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(url),
-                    prompts_as_skills,
-                ),
-                AgentMcpServer::SandboxStdio {
-                    name,
-                    command,
-                    args,
-                    prompts_as_skills,
-                } => (
-                    name,
-                    awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(
-                        command, args,
-                    ),
-                    prompts_as_skills,
-                ),
-            };
-            AgentMcpServerBinding {
-                name,
-                transport,
-                prompts_as_skills,
-                credential: None,
-            }
+        .map(|server| AgentMcpServerBinding {
+            name: server.name,
+            transport: awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::http(
+                server.url,
+            ),
+            prompts_as_skills: false,
+            credential: None,
         })
         .collect()
 }
@@ -367,43 +339,23 @@ fn config_from_create(
     id: String,
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
-    let model = params.model.into_config();
-    let inference = inference_from_wire(
-        model.speed,
-        model.effort.map(|value| value.resolved()),
-        model.inference_geo,
-    )?;
-    let mut model_binding = parse_managed_model_id(&model.id)
+    let model = params.model.into_config().into_resolved();
+    let inference = model.inference_options();
+    let model_binding = parse_managed_model_id(&model.id)
         .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
-    apply_model_extensions(&mut model_binding, model.x_awaken)?;
     let multiagent = params.multiagent.map(typed_multiagent);
-    let extensions = params.x_awaken.unwrap_or(AwakenAgentExtensions {
-        max_steps: None,
-        state_machine: None,
-    });
-    let plugin_ids = extensions
-        .state_machine
-        .as_ref()
-        .map(|_| vec![STATE_MACHINE_PLUGIN_ID.to_string()])
-        .unwrap_or_default();
-    let plugin_config = extensions
-        .state_machine
-        .map(|config| BTreeMap::from([(STATE_MACHINE_PLUGIN_ID.to_string(), config)]))
-        .unwrap_or_default();
     let config = AgentConfig {
         id,
         instructions: params.system.unwrap_or_default(),
-        max_steps: extensions
-            .max_steps
-            .unwrap_or(awaken_runtime_contract::DEFAULT_MAX_STEPS),
+        max_steps: awaken_runtime_contract::DEFAULT_MAX_STEPS,
         delegation_limits: Default::default(),
         model_binding,
         inference,
         tool_ids: Vec::new(),
         toolsets: toolset_policies(&params.tools),
         client_tools: client_tools(&params.tools),
-        plugin_ids,
-        plugin_config,
+        plugin_ids: Vec::new(),
+        plugin_config: BTreeMap::new(),
         context_policy: Default::default(),
         tool_patterns: Vec::new(),
         model_fallbacks: Vec::new(),
@@ -424,9 +376,45 @@ fn config_from_create(
 }
 
 fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgentError> {
+    let name_chars = config.name.as_deref().unwrap_or_default().chars().count();
+    if !(1..=256).contains(&name_chars) {
+        return Err(ManagedAgentError::Invalid(
+            "name must be 1-256 characters".into(),
+        ));
+    }
+    if config
+        .description
+        .as_ref()
+        .is_some_and(|description| description.chars().count() > 2_048)
+    {
+        return Err(ManagedAgentError::Invalid(
+            "description supports at most 2048 characters".into(),
+        ));
+    }
+    if config.instructions.chars().count() > 100_000 {
+        return Err(ManagedAgentError::Invalid(
+            "system supports at most 100000 characters".into(),
+        ));
+    }
+    if config.metadata.len() > 16
+        || config
+            .metadata
+            .iter()
+            .any(|(key, value)| key.chars().count() > 64 || value.chars().count() > 512)
+    {
+        return Err(ManagedAgentError::Invalid(
+            "metadata supports at most 16 pairs with 64-character keys and 512-character values"
+                .into(),
+        ));
+    }
+    if config.skills.len() > 20 {
+        return Err(ManagedAgentError::Invalid(
+            "skills supports at most 20 entries".into(),
+        ));
+    }
     if config.max_steps == 0 {
         return Err(ManagedAgentError::Invalid(
-            "x_awaken.max_steps must be greater than or equal to 1".into(),
+            "max_steps must be greater than or equal to 1".into(),
         ));
     }
     if config.mcp_servers.len() > 20 {
@@ -514,15 +502,7 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
             .validate(&config.id)
             .map_err(ManagedAgentError::Invalid)?;
     }
-    let declared_count = config.client_tools.len()
-        + config
-            .toolsets
-            .iter()
-            .map(|toolset| match toolset.source {
-                ToolsetSource::Agent => AGENT_TOOLSET_TOOL_IDS.len(),
-                ToolsetSource::Mcp { .. } => toolset.overrides.len(),
-            })
-            .sum::<usize>();
+    let declared_count = config.client_tools.len() + config.toolsets.len();
     if declared_count > 128 {
         return Err(ManagedAgentError::Invalid(
             "tools supports at most 128 declared entries".into(),
@@ -534,15 +514,12 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
 fn acp_configuration_to_preserve(
     config: &AgentConfig,
     incoming_model_id: &str,
-    extension_omitted: bool,
 ) -> Option<awaken_runtime_contract::resolved::AcpSessionConfiguration> {
     let same_model = render_managed_model_id(&config.model_binding)
         .is_ok_and(|current| current == incoming_model_id);
-    (same_model
-        && extension_omitted
-        && matches!(config.kind(), AgentKind::Acp { ref cli } if !cli.is_empty()))
-    .then(|| config.model_binding.acp_configuration().cloned())
-    .flatten()
+    (same_model && matches!(config.kind(), AgentKind::Acp { ref cli } if !cli.is_empty()))
+        .then(|| config.model_binding.acp_configuration().cloned())
+        .flatten()
 }
 
 fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Vec<AgentTool> {
@@ -570,64 +547,43 @@ fn wire_tools(toolsets: &[ToolsetPolicy], client_tools: &[ToolDescriptor]) -> Ve
 
 fn project(revision: AgentConfigRevision) -> Agent {
     let revision_number = revision.revision;
+    let fallback_timestamp = lifecycle_timestamp();
+    let created_at = revision
+        .created_at_unix_ms
+        .map(awaken_session_contract::epoch_millis_to_rfc3339)
+        .unwrap_or_else(|| fallback_timestamp.clone());
+    let updated_at = revision
+        .updated_at_unix_ms
+        .map(awaken_session_contract::epoch_millis_to_rfc3339)
+        .unwrap_or(fallback_timestamp);
     let config = revision.config;
     let id = config.id.clone();
     let model = render_managed_model_id(&config.model_binding).unwrap_or_default();
     let tools = wire_tools(&config.toolsets, &config.client_tools);
-    let status = match config.lifecycle() {
-        AgentLifecycle::Published => AgentStatus::Published,
-        AgentLifecycle::Disabled => AgentStatus::Disabled,
-        AgentLifecycle::Archived => AgentStatus::Archived,
-    };
-    let state_machine = config
-        .plugin_ids
-        .iter()
-        .any(|id| id == STATE_MACHINE_PLUGIN_ID)
-        .then(|| config.plugin_config.get(STATE_MACHINE_PLUGIN_ID).cloned())
-        .flatten();
-    let x_awaken = (config.max_steps != awaken_runtime_contract::DEFAULT_MAX_STEPS
-        || state_machine.is_some())
-    .then_some(AwakenAgentExtensions {
-        max_steps: (config.max_steps != awaken_runtime_contract::DEFAULT_MAX_STEPS)
-            .then_some(config.max_steps),
-        state_machine,
-    });
     Agent {
         id: id.clone(),
         object_type: "agent",
         archived_at: config.archived_at,
-        disabled_at: config.disabled_at,
-        status,
-        created_at: OBJECT_AT.to_string(),
-        updated_at: OBJECT_AT.to_string(),
+        created_at,
+        updated_at,
         name: config.name.unwrap_or_else(|| id.clone()),
         description: config.description,
-        model: model_config(
-            model,
-            config.inference,
-            config.model_binding.acp_configuration(),
-        ),
+        model: awaken_protocol_managed::types::ModelConfig::from_inference(model, config.inference),
         system: (!config.instructions.is_empty()).then_some(config.instructions),
         metadata: config.metadata,
         mcp_servers: config
             .mcp_servers
             .into_iter()
-            .map(|server| match server.transport {
+            .filter_map(|server| match server.transport {
                 awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::Http(
                     transport,
-                ) => awaken_protocol_managed::types::agent::AgentMcpServer::Url {
+                ) => Some(awaken_protocol_managed::types::agent::AgentMcpServer {
                     name: server.name,
                     url: transport.url,
-                    prompts_as_skills: server.prompts_as_skills,
-                },
+                }),
                 awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::SandboxStdio(
-                    transport,
-                ) => awaken_protocol_managed::types::agent::AgentMcpServer::SandboxStdio {
-                    name: server.name,
-                    command: transport.command,
-                    args: transport.args,
-                    prompts_as_skills: server.prompts_as_skills,
-                },
+                    _,
+                ) => None,
             })
             .collect(),
         skills: config
@@ -637,8 +593,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
             .collect(),
         tools,
         multiagent: config.multiagent.map(|value| {
-            let mut advisor = None;
-            let mut agents = value
+            let agents = value
                 .agents
                 .into_iter()
                 .filter_map(|target| match target {
@@ -658,21 +613,16 @@ fn project(revision: AgentConfigRevision) -> Agent {
                             version: Some(revision_number),
                         },
                     )),
-                    MultiagentTarget::Advisor { model } => {
-                        advisor = Some(MultiagentRosterEntry::Advisor(
-                            awaken_protocol_managed::types::agent::AdvisorRosterReference {
-                                model,
-                                kind: awaken_protocol_managed::types::agent::AdvisorRosterReferenceKind::Advisor,
-                            },
-                        ));
-                        None
-                    }
+                    MultiagentTarget::Advisor { model } => Some(MultiagentRosterEntry::Advisor(
+                        AdvisorRosterEntry {
+                            model,
+                            kind: AdvisorRosterEntryKind::Advisor,
+                        },
+                    )),
                 })
                 .collect::<Vec<_>>();
-            agents.extend(advisor);
             WireMultiagent::Coordinator { agents }
         }),
-        x_awaken,
         version: revision.revision,
     }
 }
@@ -840,13 +790,9 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
             let preserve_effort =
                 current_model.as_deref() == Some(model.id.as_str()) && model.effort.is_none();
             let prior_effort = config.inference.effort;
-            let prior_acp =
-                acp_configuration_to_preserve(&config, &model.id, model.x_awaken.is_none());
-            config.inference = inference_from_wire(
-                model.speed,
-                model.effort.map(|value| value.resolved()),
-                model.inference_geo,
-            )?;
+            let prior_acp = acp_configuration_to_preserve(&config, &model.id);
+            let model = model.into_resolved();
+            config.inference = model.inference_options();
             if preserve_effort {
                 config.inference.effort = prior_effort;
             }
@@ -857,8 +803,6 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                     .model_binding
                     .set_acp_configuration(configuration)
                     .map_err(|error| ManagedAgentError::Invalid(error.into()))?;
-            } else {
-                apply_model_extensions(&mut config.model_binding, model.x_awaken)?;
             }
         }
         if let Some(description) = params.description {
@@ -899,23 +843,6 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         if let Some(multiagent) = params.multiagent {
             config.multiagent = multiagent.map(typed_multiagent);
         }
-        if let Some(extensions) = params.x_awaken {
-            if let Some(max_steps) = extensions.max_steps {
-                config.max_steps = max_steps;
-            }
-            if let Some(state_machine) = extensions.state_machine {
-                if !config
-                    .plugin_ids
-                    .iter()
-                    .any(|id| id == STATE_MACHINE_PLUGIN_ID)
-                {
-                    config.plugin_ids.push(STATE_MACHINE_PLUGIN_ID.to_string());
-                }
-                config
-                    .plugin_config
-                    .insert(STATE_MACHINE_PLUGIN_ID.to_string(), state_machine);
-            }
-        }
         validate_managed_agent_config(&config)?;
         self.resolve_multiagent_references(workspace_id, &mut config)
             .await?;
@@ -951,47 +878,6 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
     }
 
-    async fn disable(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
-        if workspace_id == RESERVED_ADMIN_SCOPE {
-            return Err(ManagedAgentError::NotFound);
-        }
-        let scope = Self::scope(workspace_id);
-        let current = self
-            .plane
-            .get_versioned(&scope, id)
-            .await
-            .map_err(ManagedAgentError::Storage)?
-            .ok_or(ManagedAgentError::NotFound)?;
-        match current.config.lifecycle() {
-            AgentLifecycle::Disabled => return Ok(project(current)),
-            AgentLifecycle::Archived => {
-                return Err(ManagedAgentError::Invalid(
-                    "archived Agent cannot be disabled".into(),
-                ));
-            }
-            AgentLifecycle::Published => {}
-        }
-        let mut config = current.config;
-        config.disabled_at = Some(lifecycle_timestamp());
-        match self
-            .plane
-            .put_if_revision(&scope, &config, current.revision)
-            .await
-            .map_err(ManagedAgentError::Storage)?
-        {
-            ConfigWrite::Applied { revision } => {
-                self.plane
-                    .withdraw(workspace_id, id, revision)
-                    .await
-                    .map_err(ManagedAgentError::Storage)?;
-                Ok(project(AgentConfigRevision { config, revision }))
-            }
-            ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
-                format!("Agent changed concurrently (current version: {current_revision:?})"),
-            )),
-        }
-    }
-
     async fn archive(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError> {
         if workspace_id == RESERVED_ADMIN_SCOPE {
             return Err(ManagedAgentError::NotFound);
@@ -1020,7 +906,14 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
                     .withdraw(workspace_id, id, revision)
                     .await
                     .map_err(ManagedAgentError::Storage)?;
-                Ok(project(AgentConfigRevision { config, revision }))
+                self.plane
+                    .get_versioned(&scope, id)
+                    .await
+                    .map_err(ManagedAgentError::Storage)?
+                    .map(project)
+                    .ok_or_else(|| {
+                        ManagedAgentError::Storage("archived Agent is not readable".into())
+                    })
             }
             ConfigWrite::Conflict { current_revision } => Err(ManagedAgentError::Conflict(
                 format!("Agent changed concurrently (current version: {current_revision:?})"),
@@ -1066,7 +959,9 @@ mod tests {
     use awaken_config_store::SqliteConfigStore;
     use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
     use awaken_protocol_managed::types::agent::{AgentCreateParams, AgentUpdateParams, ModelInput};
-    use awaken_protocol_managed::types::{ModelEffort, ModelSpeed};
+    use awaken_protocol_managed::types::{
+        ModelConfigParams, ModelEffort, ModelEffortInput, ModelInferenceGeo, ModelSpeed,
+    };
     use awaken_runtime_contract::agent_bindings::{
         InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
     };
@@ -1176,7 +1071,6 @@ mod tests {
                 .unwrap(),
             ],
             multiagent: None,
-            x_awaken: None,
         }
     }
 
@@ -1192,7 +1086,6 @@ mod tests {
             skills: None,
             tools: None,
             multiagent: None,
-            x_awaken: None,
         }
     }
 
@@ -1217,10 +1110,7 @@ mod tests {
             "U1"
         );
 
-        let AgentMcpServer::Url { url, .. } = &mut at_max.mcp_servers[0] else {
-            unreachable!("HTTP fixture")
-        };
-        url.push('x');
+        at_max.mcp_servers[0].url.push('x');
         assert!(
             matches!(
                 config_from_create("agent_over_max".into(), at_max),
@@ -1263,16 +1153,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_create_fails_fast_and_never_exposes_an_unpublished_draft() {
-        // Causes: C1 valid Managed request; C2 model planning rejects before
-        // persistence; C3 a race could reject again after a staged CAS write.
-        // Effects: E1 create returns Invalid; E2 retrieve/list expose no Agent;
-        // E3 config-authoring may retain an internal draft without becoming a
-        // second Managed aggregate. The rejecting resolver covers C2; E2 also
-        // protects the C3 staged-write boundary.
+    async fn managed_create_fails_fast_before_authoring_persistence() {
+        // Causes: C1 valid Managed request; C2 the shared publication resolver
+        // rejects its model/executor route during the write-free validation.
+        // Effects: E1 create returns Invalid; E2 neither Managed reads nor the
+        // authoritative ConfigPlane contain an Agent.
+        //
+        // Decision table:
+        // | rule | request | resolver | Managed result | ConfigPlane write |
+        // | F1   | valid   | rejects  | Invalid        | none              |
         let temp = tempfile::tempdir().unwrap();
         let plane = rejecting_plane(temp.path().join("config.sqlite").to_str().unwrap());
-        let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
+        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
         let error = repository
             .create("workspace-a", create_params("invalid"))
             .await
@@ -1285,6 +1177,14 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "E2"
+        );
+        assert!(
+            plane
+                .list(&ScopeId::from("workspace-a"))
+                .await
+                .unwrap()
+                .is_empty(),
+            "E2: validation must reject before the authoring CAS"
         );
     }
 
@@ -1306,109 +1206,24 @@ mod tests {
         let projected = project(AgentConfigRevision {
             config,
             revision: 1,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
         });
         assert!(projected.tools.is_empty());
     }
 
     #[tokio::test]
-    async fn managed_agent_stdio_mcp_create_update_decision_table() {
-        // Cause/effect graph: the tagged Managed MCP union is normalized into
-        // the one AgentMcpTransportBinding before persistence/publication. A
-        // valid stdio replacement produces an exact executable MCP target;
-        // an invalid command fails before a new Agent revision is committed.
-        //
-        // | rule | current transport | update transport       | effect |
-        // | S1   | URL               | sandbox_stdio valid    | revision + exact stdio target |
-        // | S2   | sandbox_stdio     | sandbox_stdio invalid  | Invalid; current revision retained |
-        // | S3   | sandbox_stdio     | read projection        | same tagged command/args returned |
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("config.sqlite");
-        let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
-        let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
-        let created = repository
-            .create("workspace-a", create_params("browser"))
-            .await
-            .unwrap();
-
-        let mut update = update_params(created.version);
-        update.mcp_servers = Some(Some(vec![
-            serde_json::from_value(json!({
-                "type": "sandbox_stdio",
-                "name": "docs",
-                "command": "playwright-mcp",
-                "args": ["--headless"]
-            }))
-            .unwrap(),
-        ]));
-        let updated = repository
-            .update("workspace-a", &created.id, update)
-            .await
-            .unwrap();
-        assert_eq!(updated.version, created.version + 1, "S1");
-        assert!(
-            matches!(
-                &updated.mcp_servers[0],
-                AgentMcpServer::SandboxStdio { command, args, .. }
-                    if command == "playwright-mcp" && args == &["--headless"]
-            ),
-            "S3"
-        );
-        let registration = catalog
-            .current("workspace-a", &created.id)
-            .expect("S1 registered");
-        assert!(
-            matches!(
-                &registration.session_profile.mcp_servers[0].target,
-                awaken_agent_contract::McpTarget::SandboxStdio(target)
-                    if target.command == "playwright-mcp" && target.args == ["--headless"]
-            ),
-            "S1"
-        );
-
-        let mut invalid = update_params(updated.version);
-        invalid.mcp_servers = Some(Some(vec![
-            serde_json::from_value(json!({
-                "type": "sandbox_stdio",
-                "name": "docs",
-                "command": ""
-            }))
-            .unwrap(),
-        ]));
-        assert!(
-            matches!(
-                repository.update("workspace-a", &created.id, invalid).await,
-                Err(ManagedAgentError::Invalid(_))
-            ),
-            "S2"
-        );
-        assert_eq!(
-            repository
-                .retrieve("workspace-a", &created.id, None)
-                .await
-                .unwrap()
-                .version,
-            updated.version,
-            "S2"
-        );
-    }
-
-    #[tokio::test]
-    async fn managed_agent_lifecycle_follows_disable_archive_retention_rules() {
+    async fn managed_agent_archive_retains_immutable_publication() {
         // Cause/effect graph:
-        // C1 Published + disable -> E1 current execution is unavailable while
-        // the immutable publication remains addressable; C2 Disabled + disable
-        // -> E2 idempotent; C3 Disabled + update/publish -> E3 fail closed;
-        // C4 Disabled + archive -> E4 Archived terminal state with the same
-        // historical publication retained; C5 Archived + archive -> E5
-        // idempotent.
+        // C1 Published + archive -> E1 current execution becomes unavailable while
+        // the immutable publication remains addressable; C2 Archived + archive ->
+        // E2 idempotent. Disable remains a native configuration-plane lifecycle
+        // operation and is deliberately absent from the Managed SDK repository.
         //
         // Decision table:
         // | rule | current   | command | current executable | exact snapshot | result |
-        // | L1   | Published | disable | no                 | yes            | Disabled |
-        // | L2   | Disabled  | disable | no                 | yes            | no new revision |
-        // | L3   | Disabled  | update  | no                 | yes            | reject |
-        // | L4   | Disabled  | archive | no                 | yes            | Archived |
-        // | L5   | Archived  | archive | no                 | yes            | no new revision |
+        // | L1   | Published | archive | no                 | yes            | archived |
+        // | L2   | Archived  | archive | no                 | yes            | no new revision |
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
         let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
@@ -1419,17 +1234,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.version, 1);
-        assert!(matches!(
-            &created.mcp_servers[0],
-            awaken_protocol_managed::types::agent::AgentMcpServer::Url { name, .. }
-                if name == "docs"
-        ));
+        assert_eq!(created.mcp_servers[0].name, "docs");
         assert!(matches!(
             &created.skills[0],
             AgentSkill::Custom { skill_id, .. } if skill_id == "skill-docs"
         ));
         assert!(catalog.current("workspace-a", &created.id).is_some());
-        assert_eq!(created.status, AgentStatus::Published);
         let fingerprint = catalog
             .current("workspace-a", &created.id)
             .expect("published")
@@ -1437,13 +1247,12 @@ mod tests {
             .fingerprint
             .0;
 
-        let disabled = repository
-            .disable("workspace-a", &created.id)
+        let archived = repository
+            .archive("workspace-a", &created.id)
             .await
             .unwrap();
-        assert_eq!(disabled.version, 2, "L1");
-        assert_eq!(disabled.status, AgentStatus::Disabled, "L1");
-        assert!(disabled.disabled_at.is_some(), "L1");
+        assert_eq!(archived.version, 2, "L1");
+        assert!(archived.archived_at.is_some(), "L1");
         assert!(catalog.current("workspace-a", &created.id).is_none(), "L1");
         assert!(
             plane
@@ -1453,50 +1262,11 @@ mod tests {
                 .is_some(),
             "L1"
         );
-
-        let disabled_again = repository
-            .disable("workspace-a", &created.id)
-            .await
-            .unwrap();
-        assert_eq!(disabled_again.version, 2, "L2");
-        assert!(
-            matches!(
-                repository
-                    .update("workspace-a", &created.id, update_params(2))
-                    .await,
-                Err(ManagedAgentError::Invalid(_))
-            ),
-            "L3"
-        );
-        assert!(
-            plane
-                .publish(&ScopeId::from("workspace-a"), &created.id)
-                .await
-                .is_err(),
-            "L3"
-        );
-
-        let archived = repository
-            .archive("workspace-a", &created.id)
-            .await
-            .unwrap();
-        assert_eq!(archived.version, 3, "L4");
-        assert_eq!(archived.status, AgentStatus::Archived, "L4");
-        assert!(archived.disabled_at.is_none(), "L4");
-        assert!(archived.archived_at.is_some(), "L4");
-        assert!(
-            plane
-                .publication(&ScopeId::from("workspace-a"), &fingerprint)
-                .await
-                .unwrap()
-                .is_some(),
-            "L4"
-        );
         let archived_again = repository
             .archive("workspace-a", &created.id)
             .await
             .unwrap();
-        assert_eq!(archived_again.version, 3, "L5");
+        assert_eq!(archived_again.version, 2, "L2");
     }
 
     #[tokio::test]
@@ -1554,13 +1324,12 @@ mod tests {
             let (plane, catalog) = plane_with_catalog(path.to_str().unwrap());
             let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
             let mut params = create_params("controlled");
-            params.model = serde_json::from_value(json!({
-                "id": "claude-opus-4-8",
-                "speed": "fast",
-                "effort": {"type": "xhigh"},
-                "inference_geo": "us"
-            }))
-            .unwrap();
+            params.model = ModelInput::Config(ModelConfigParams {
+                id: "claude-opus-4-8".into(),
+                speed: Some(ModelSpeed::Fast),
+                effort: Some(ModelEffortInput::Tagged(ModelEffort::Xhigh)),
+                inference_geo: Some(ModelInferenceGeo::Us),
+            });
             let created = repository.create("workspace-a", params).await.unwrap();
             assert_eq!(created.model.speed, Some(ModelSpeed::Fast));
             assert_eq!(created.model.effort, Some(ModelEffort::Xhigh));
@@ -1583,7 +1352,7 @@ mod tests {
         let restored = repository.retrieve("workspace-a", &id, None).await.unwrap();
         assert_eq!(restored.model.speed, Some(ModelSpeed::Fast));
         assert_eq!(restored.model.effort, Some(ModelEffort::Xhigh));
-        assert_eq!(restored.model.inference_geo.as_deref(), Some("us"));
+        assert_eq!(restored.model.inference_geo, Some(ModelInferenceGeo::Us));
         plane
             .publish(&ScopeId::from("workspace-a"), &id)
             .await
@@ -1633,21 +1402,23 @@ mod tests {
         );
         let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
         let mut worker = create_params("worker");
-        worker.model = serde_json::from_value(json!({
-            "id": "model-a",
-            "inference_geo": "us"
-        }))
-        .unwrap();
+        worker.model = ModelInput::Config(ModelConfigParams {
+            id: "model-a".into(),
+            speed: None,
+            effort: None,
+            inference_geo: Some(ModelInferenceGeo::Us),
+        });
         let worker = repository.create("workspace-a", worker).await.unwrap();
 
-        let coordinator = |geo: Option<&str>| {
+        let coordinator = |geo: Option<ModelInferenceGeo>| {
             let mut params = create_params("coordinator");
             params.model = match geo {
-                Some(geo) => serde_json::from_value(json!({
-                    "id": "model-a",
-                    "inference_geo": geo
-                }))
-                .unwrap(),
+                Some(geo) => ModelInput::Config(ModelConfigParams {
+                    id: "model-a".into(),
+                    speed: None,
+                    effort: None,
+                    inference_geo: Some(geo),
+                }),
                 None => ModelInput::Id("model-a".into()),
             };
             params.multiagent = Some(
@@ -1660,11 +1431,15 @@ mod tests {
             params
         };
         let accepted = repository
-            .create("workspace-a", coordinator(Some("us")))
+            .create("workspace-a", coordinator(Some(ModelInferenceGeo::Us)))
             .await
             .expect("G1");
-        assert_eq!(accepted.model.inference_geo.as_deref(), Some("us"), "G1");
-        for (rule, geo) in [("G2", Some("global")), ("G3", None)] {
+        assert_eq!(
+            accepted.model.inference_geo,
+            Some(ModelInferenceGeo::Us),
+            "G1"
+        );
+        for (rule, geo) in [("G2", Some(ModelInferenceGeo::Global)), ("G3", None)] {
             let error = repository
                 .create("workspace-a", coordinator(geo))
                 .await
@@ -1676,80 +1451,47 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn advisor_pairing_and_projection_follow_the_official_matrix() {
-        // Cause/effect graph: Managed advisor DTO -> canonical roster validation
-        // -> official executor/advisor compatibility matrix -> exact advisor
-        // publication. Projection always places the reserved advisor last.
-        //
-        // Decision table:
-        // | Rule | executor     | advisor      | effect                       |
-        // | D1   | sonnet-5    | opus-5      | publish, advisor projected    |
-        // | D2   | opus-4-6    | opus-4-6    | supported matrix edge         |
-        // | D3   | opus-5      | opus-4-8    | reject before Agent mutation  |
-        // | D4   | unknown     | opus-5      | reject before Agent mutation  |
+    #[test]
+    fn managed_multiagent_accepts_the_official_advisor_entry() {
+        // Causes: C1 Agent reference; C2 official advisor entry; C3 unknown tag.
+        // Effects: E1/E2 typed roster; E3 fail-fast decode before repository access.
+        // Decision table: C1 -> E1; C2 -> E2; C3 -> E3.
         assert!(
-            advisor_pair_supported("claude-opus-4-6", "claude-opus-4-6"),
-            "D2"
+            serde_json::from_value::<WireMultiagent>(json!({
+                "type": "coordinator",
+                "agents": [{"type":"agent", "id":"researcher"}]
+            }))
+            .is_ok(),
+            "E1"
         );
         assert!(
-            !advisor_pair_supported("claude-opus-5", "claude-opus-4-8"),
-            "D3"
-        );
-        assert!(!advisor_pair_supported("unknown", "claude-opus-5"), "D4");
-
-        let temp = tempfile::tempdir().unwrap();
-        let repository = ConfigPlaneManagedAgentRepository::new(
-            plane(temp.path().join("config.sqlite").to_str().unwrap()),
-            "workspace-a",
-        );
-        let mut accepted = create_params("advisor-compatible");
-        accepted.model = ModelInput::Id("claude-sonnet-5".into());
-        accepted.multiagent = Some(
-            serde_json::from_value(json!({
+            serde_json::from_value::<WireMultiagent>(json!({
                 "type": "coordinator",
                 "agents": [{"type":"advisor", "model":"claude-opus-5"}]
             }))
-            .unwrap(),
-        );
-        let created = repository
-            .create("workspace-a", accepted)
-            .await
-            .expect("D1");
-        let projected = serde_json::to_value(created.multiagent).unwrap();
-        assert_eq!(projected["agents"][0]["type"], "advisor", "D1");
-        assert_eq!(projected["agents"][0]["model"], "claude-opus-5", "D1");
-
-        let mut rejected = create_params("advisor-incompatible");
-        rejected.model = ModelInput::Id("claude-opus-5".into());
-        rejected.multiagent = Some(
-            serde_json::from_value(json!({
-                "type": "coordinator",
-                "agents": [{"type":"advisor", "model":"claude-opus-4-8"}]
-            }))
-            .unwrap(),
+            .is_ok(),
+            "E2"
         );
         assert!(
-            matches!(
-                repository.create("workspace-a", rejected).await,
-                Err(ManagedAgentError::Invalid(ref message))
-                    if message.contains("unsupported advisor model pairing")
-            ),
-            "D3"
+            serde_json::from_value::<WireMultiagent>(json!({
+                "type": "coordinator",
+                "agents": [{"type":"future", "model":"claude-opus-5"}]
+            }))
+            .is_err(),
+            "E3"
         );
     }
 
     #[tokio::test]
     async fn model_update_preserves_acp_configuration_only_for_an_explicit_acp_executor() {
-        // Cause/effect graph: a Managed update may repeat the current model id
-        // while omitting x_awaken.acp. The durable ModelSelection carries a
-        // configuration field for both native and ACP targets, but only an
-        // explicit acp:<cli> executor gives that field ACP semantics.
+        // Cause/effect graph: advanced ACP configuration is authored in the
+        // canonical AgentConfig control plane and is absent from the Managed
+        // wire. Repeating the same public model id must preserve that intent;
+        // native selection must never acquire it.
         //
-        // Decision table:
-        // | rule | current executor | same model | extension omitted | effect |
-        // | U1   | native           | yes        | yes               | update succeeds; no ACP attachment |
-        // | U2   | acp:<cli>        | yes        | yes               | prior ACP mode/options preserved |
+        // | rule | current executor | same model | effect |
+        // | U1   | native           | yes        | no ACP attachment |
+        // | U2   | acp:<cli>        | yes        | control-plane ACP intent preserved |
         let native_temp = tempfile::tempdir().unwrap();
         let native_repository = ConfigPlaneManagedAgentRepository::new(
             plane(native_temp.path().join("config.sqlite").to_str().unwrap()),
@@ -1768,145 +1510,77 @@ mod tests {
         assert_eq!(updated.model.id, "model-a", "U1");
 
         let mut acp_params = create_params("acp");
-        acp_params.model = serde_json::from_value(json!({
-            "id": "acp:codex/gpt-5",
-            "x_awaken": {"acp": {"mode": "plan", "options": {"reasoning_effort": "high"}}}
-        }))
-        .unwrap();
-        let acp_config = config_from_create("agent_acp".into(), acp_params).expect("U2");
-        let incoming = ModelInput::Id("acp:codex/gpt-5".into()).into_config();
-        let preserved =
-            acp_configuration_to_preserve(&acp_config, &incoming.id, incoming.x_awaken.is_none())
-                .expect("U2");
+        acp_params.model = ModelInput::Id("gpt-5;executor=acp:codex".into());
+        let mut acp_config = config_from_create("agent_acp".into(), acp_params).expect("U2");
+        acp_config
+            .model_binding
+            .set_acp_configuration(
+                serde_json::from_value(json!({
+                    "mode": "plan",
+                    "options": {"reasoning_effort": "high"}
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let incoming = ModelInput::Id("gpt-5;executor=acp:codex".into()).into_config();
+        let preserved = acp_configuration_to_preserve(&acp_config, &incoming.id).expect("U2");
         assert_eq!(preserved.mode.as_deref(), Some("plan"), "U2");
         assert_eq!(preserved.options["reasoning_effort"], "high", "U2");
     }
 
-    #[tokio::test]
-    async fn managed_agent_namespaced_step_budget_is_validated_and_versioned() {
-        // Cause/effect graph: namespaced Managed controls project onto existing
-        // AgentConfig max-step and plugin sources of truth. Omission selects or
-        // preserves defaults; explicit values replace them; zero steps would
-        // eliminate the first inference and must fail admission.
+    #[test]
+    fn managed_agent_uses_standard_defaults_without_projecting_private_controls() {
+        // Cause/effect graph: C1 a standard Managed create has no private
+        // controls; C2 the canonical control-plane AgentConfig may contain a
+        // non-default step limit and plugins; C3 it may contain a native
+        // sandbox-stdio MCP binding. Effects: E1 Managed authoring uses the
+        // runtime default; E2 projection remains the official Agent/URL-MCP
+        // shape; E3 internal controls and stdio binding remain in AgentConfig.
         //
-        // | rule | operation | extension | effect |
-        // | S1 | create | omitted | stores canonical default; response omits extension |
-        // | S2 | create | 40 + state machine | stores and returns both |
-        // | S3 | update | omitted | preserves 40 + state machine |
-        // | S4 | update | 24, machine omitted | versions 24; preserves machine |
-        // | S5 | create | 0 | rejects before persistence |
-        let temp = tempfile::tempdir().unwrap();
-        let repository = ConfigPlaneManagedAgentRepository::new(
-            plane(temp.path().join("config.sqlite").to_str().unwrap()),
-            "workspace-a",
-        );
-
-        let default_config =
-            config_from_create("default-proof".into(), create_params("default-proof"))
-                .expect("S1 config");
+        // | rule | source | private controls | effect |
+        // | S1 | Managed create | absent | E1 |
+        // | S2 | control-plane config | present | E2,E3 |
+        // | S3 | control-plane stdio MCP | present | omitted from wire; no fake URL |
+        let mut config = config_from_create("default-proof".into(), create_params("default-proof"))
+            .expect("S1 config");
         assert_eq!(
-            default_config.max_steps,
+            config.max_steps,
             awaken_runtime_contract::DEFAULT_MAX_STEPS,
             "S1"
         );
-        let default = repository
-            .create("workspace-a", create_params("default"))
-            .await
-            .expect("S1");
-        assert!(default.x_awaken.is_none(), "S1");
-
-        let mut configured_params = create_params("configured");
-        configured_params.x_awaken = Some(AwakenAgentExtensions {
-            max_steps: Some(40),
-            state_machine: Some(json!({
-                "machines": [{
-                    "name": "submit",
-                    "scope": "run",
-                    "key": "",
-                    "initial": "pending",
-                    "terminal": ["done"],
-                    "transitions": [
-                        {"on":{"event":"step.after_inference"},"from":"pending","to":"pending"},
-                        {"on":"design_submit_artifact","from":"pending","to":"done","when":"success"}
-                    ]
-                }],
-                "continuation": {"max_continuations": 2}
-            })),
+        config.max_steps = 40;
+        config.plugin_ids.push("state_machine".into());
+        config
+            .plugin_config
+            .insert("state_machine".into(), json!({"machines": []}));
+        config.mcp_servers.push(AgentMcpServerBinding {
+            name: "browser".into(),
+            transport:
+                awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::sandbox_stdio(
+                    "playwright-mcp",
+                    vec!["--headless".into()],
+                ),
+            prompts_as_skills: false,
+            credential: None,
         });
-        let configured = repository
-            .create("workspace-a", configured_params)
-            .await
-            .expect("S2");
-        let configured_extensions = configured.x_awaken.unwrap();
-        assert_eq!(configured_extensions.max_steps, Some(40), "S2");
-        assert!(configured_extensions.state_machine.is_some(), "S2");
-
-        let preserved = repository
-            .update(
-                "workspace-a",
-                &configured.id,
-                update_params(configured.version),
-            )
-            .await
-            .expect("S3");
-        let preserved_extensions = preserved.x_awaken.unwrap();
-        assert_eq!(preserved_extensions.max_steps, Some(40), "S3");
-        assert!(preserved_extensions.state_machine.is_some(), "S3");
-
-        let mut replacement = update_params(preserved.version);
-        replacement.x_awaken = Some(AwakenAgentExtensions {
-            max_steps: Some(24),
-            state_machine: None,
-        });
-        let replaced = repository
-            .update("workspace-a", &configured.id, replacement)
-            .await
-            .expect("S4");
-        let replaced_extensions = replaced.x_awaken.unwrap();
-        assert_eq!(replaced_extensions.max_steps, Some(24), "S4");
-        assert!(replaced_extensions.state_machine.is_some(), "S4");
-
-        let mut invalid = create_params("invalid");
-        invalid.x_awaken = Some(AwakenAgentExtensions {
-            max_steps: Some(0),
-            state_machine: None,
-        });
-        assert!(
-            matches!(
-                repository.create("workspace-a", invalid).await,
-                Err(ManagedAgentError::Invalid(message)) if message.contains("max_steps")
-            ),
-            "S5"
-        );
-    }
-
-    #[test]
-    fn managed_model_extension_configures_only_the_selected_acp_executor() {
-        // Causes: C1 model id selects explicit ACP/native; C2 x_awaken.acp is
-        // absent/present. Effects: E1 omitted extension preserves the official
-        // Managed shape; E2 explicit ACP stores native mode/options on the same
-        // ModelSelection; E3 native+Acp extension fails at the ACL.
-        //
-        // | Rule | executor | extension | Effect |
-        // | X1   | ACP      | present   | E2     |
-        // | X2   | native   | present   | E3     |
-        let configured = |id: &str| {
-            let mut params = create_params("configured");
-            params.model = serde_json::from_value(json!({
-                "id": id,
-                "x_awaken": {"acp": {
-                    "mode": "plan",
-                    "options": {"reasoning_effort": "high"}
-                }}
-            }))
-            .unwrap();
-            config_from_create("agent_configured".into(), params)
-        };
-        let config = configured("acp:codex/gpt-5").expect("X1");
-        let acp = config.model_binding.acp_configuration().expect("X1");
-        assert_eq!(acp.mode.as_deref(), Some("plan"), "X1");
-        assert_eq!(acp.options["reasoning_effort"], "high", "X1");
-        assert!(configured("gpt-5").is_err(), "X2");
+        let projected = serde_json::to_value(project(AgentConfigRevision {
+            revision: 1,
+            config: config.clone(),
+            created_at_unix_ms: Some(1_000),
+            updated_at_unix_ms: Some(2_000),
+        }))
+        .unwrap();
+        // T1: durable first-write time owns created_at; T2: this exact revision's
+        // write time owns updated_at. Neither value is a protocol constant.
+        assert_eq!(projected["created_at"], "1970-01-01T00:00:01Z", "T1");
+        assert_eq!(projected["updated_at"], "1970-01-01T00:00:02Z", "T2");
+        assert!(projected.get("max_steps").is_none(), "S2/E2");
+        assert!(projected.get("state_machine").is_none(), "S2/E2");
+        assert_eq!(projected["mcp_servers"].as_array().unwrap().len(), 1, "S3");
+        assert_eq!(projected["mcp_servers"][0]["type"], "url", "S3");
+        assert_eq!(config.max_steps, 40, "S2/E3");
+        assert!(config.plugin_config.contains_key("state_machine"), "S2/E3");
+        assert_eq!(config.mcp_servers.len(), 2, "S3/E3");
     }
 
     #[tokio::test]

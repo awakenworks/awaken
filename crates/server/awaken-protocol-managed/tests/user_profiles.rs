@@ -105,7 +105,7 @@ async fn user_profile_crud_and_metadata_merge() {
     // List — one full page, our profile present.
     let (s, page) = call(&app, "GET", "/v1/user_profiles", None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(page["has_more"], false);
+    assert!(page.get("has_more").is_none());
     assert!(page["next_page"].is_null());
     let ids: Vec<&str> = page["data"]
         .as_array()
@@ -186,7 +186,7 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
         .map(|v| v["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids1.len(), 2);
-    assert_eq!(p1["has_more"], true);
+    assert!(p1.get("has_more").is_none());
     assert_eq!(p1["next_page"], ids1[1]);
 
     // RunResume with `?page=<next_page>` → the remaining row, terminal (next_page null).
@@ -210,7 +210,7 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
         p2["next_page"].is_null(),
         "the last page has no continuation cursor"
     );
-    assert_eq!(p2["has_more"], false);
+    assert!(p2.get("has_more").is_none());
 }
 
 #[tokio::test]

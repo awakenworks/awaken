@@ -139,7 +139,9 @@ impl awaken_agent_config::AgentConfig
 pub fn awaken_agent_config::AgentConfig::lifecycle(&self) -> awaken_agent_config::AgentLifecycle
 pub struct awaken_agent_config::AgentConfigRevision
 pub awaken_agent_config::AgentConfigRevision::config: awaken_agent_config::AgentConfig
+pub awaken_agent_config::AgentConfigRevision::created_at_unix_ms: core::option::Option<u64>
 pub awaken_agent_config::AgentConfigRevision::revision: u64
+pub awaken_agent_config::AgentConfigRevision::updated_at_unix_ms: core::option::Option<u64>
 pub struct awaken_agent_config::CompactionStrategy
 pub awaken_agent_config::CompactionStrategy::keep_recent: core::option::Option<u32>
 pub awaken_agent_config::CompactionStrategy::window: core::option::Option<u32>

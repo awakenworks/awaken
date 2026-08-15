@@ -11,7 +11,7 @@
 //! domain state — projecting engine events into [`OutboundKind`], building a
 //! [`Session`] record — lives in `state` and `project`, kept deliberately apart.
 
-use awaken_agent_contract::{AcpSessionConfiguration, agent::content::ContentBlock};
+use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +80,7 @@ pub struct ErrorResponse {
     #[serde(rename = "type")]
     pub kind: &'static str,
     pub error: ApiError,
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,64 +99,57 @@ impl ErrorResponse {
                 kind: error_type,
                 message: message.into(),
             },
+            request_id: None,
         }
     }
 }
 
-/// The resolved `model` axis of an `agent_with_overrides` session reference — the
-/// SDK's override semantics for a single field made explicit: **omit** = inherit the
-/// agent's model; **`null`** = clear, rejected for `model` since a session always
-/// needs one (400 `agent_model_required`); **a value** = replace for this session.
-/// This is the domain-facing tri-state [`AgentRef::model_override`] returns; the wire
-/// form is the double-`Option` on [`AgentRefObject::model`].
+/// The resolved `model` axis of an `agent_with_overrides` session reference.
 #[derive(Debug, Clone)]
 pub enum ModelOverride {
-    /// `model` key absent — inherit the referenced agent version's model.
     Absent,
-    /// `model: null` — an explicit clear, which the API forbids for the model axis.
-    Cleared,
-    /// `model` set to a bare id or `{id, speed?}` — replace for this session only.
     Set(ModelConfig),
 }
 
-/// The `type` discriminator on an [`AgentRefObject`]. Optional and tolerant: an object
-/// without a `type` (or with an unrecognized one) is the plain `agent` reference,
-/// preserving the pre-overrides behavior where the tag was ignored.
+/// The two exact object forms accepted by the Managed SDK. The discriminator is
+/// mandatory and closed; plain references cannot accidentally carry overrides.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRefKind {
-    Agent,
-    AgentWithOverrides,
-    #[serde(other)]
-    Other,
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentRefObject {
+    Agent {
+        id: String,
+        #[serde(default)]
+        version: Option<u64>,
+    },
+    AgentWithOverrides {
+        id: String,
+        #[serde(default)]
+        mcp_servers: Option<Vec<AgentMcpServer>>,
+        #[serde(default, deserialize_with = "super::presence::optional_non_null")]
+        model: Option<super::agent::ModelInput>,
+        #[serde(default)]
+        skills: Option<Vec<AgentSkill>>,
+        #[serde(default, deserialize_with = "super::presence::double_option")]
+        system: Option<Option<String>>,
+        #[serde(default)]
+        tools: Option<Vec<AgentTool>>,
+        #[serde(default)]
+        version: Option<u64>,
+    },
 }
 
-/// The object form of `agent`: `{id, type?, version?, model?, ...}`. A strongly-typed
-/// struct rather than a hand-rolled deserializer — the one field needing more than a
-/// plain `Option` is `model`, whose absent/`null`/value tri-state (the not-clearable
-/// rule) rides the standard double-`Option` idiom. The other override fields
-/// (`system`/`tools`/`mcp_servers`/`skills`) are session-local replacements. They
-/// are normalized into the same baseline/attachment authorities as non-override
-/// authoring; the wire values never form a second runtime configuration path.
-#[derive(Debug, Clone, Deserialize)]
-pub struct AgentRefObject {
-    pub id: String,
-    #[serde(rename = "type", default)]
-    pub kind: Option<AgentRefKind>,
-    #[serde(default)]
-    pub version: Option<u64>,
-    #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub system: Option<Option<String>>,
-    #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub tools: Option<Option<Vec<AgentTool>>>,
-    #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub mcp_servers: Option<Option<Vec<AgentMcpServer>>>,
-    #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub skills: Option<Option<Vec<AgentSkill>>>,
-    /// Outer `None` = `model` omitted; `Some(None)` = `model: null`; `Some(Some(_))` =
-    /// a value. Only meaningful when `kind` is `agent_with_overrides`.
-    #[serde(default, deserialize_with = "super::presence::double_option")]
-    pub model: Option<Option<super::agent::ModelInput>>,
+impl AgentRefObject {
+    fn id(&self) -> &str {
+        match self {
+            Self::Agent { id, .. } | Self::AgentWithOverrides { id, .. } => id,
+        }
+    }
+
+    fn version(&self) -> Option<u64> {
+        match self {
+            Self::Agent { version, .. } | Self::AgentWithOverrides { version, .. } => *version,
+        }
+    }
 }
 
 /// The standard serde double-`Option` reader: distinguishes an absent field (handled
@@ -179,7 +173,7 @@ impl AgentRef {
     pub fn id(&self) -> &str {
         match self {
             AgentRef::Id(id) => id,
-            AgentRef::Object(obj) => &obj.id,
+            AgentRef::Object(object) => object.id(),
         }
     }
 
@@ -187,7 +181,7 @@ impl AgentRef {
     pub fn version(&self) -> Option<u64> {
         match self {
             AgentRef::Id(_) => None,
-            AgentRef::Object(obj) => obj.version,
+            AgentRef::Object(object) => object.version(),
         }
     }
 
@@ -195,25 +189,97 @@ impl AgentRef {
     /// one; every other form reports [`ModelOverride::Absent`].
     pub fn model_override(&self) -> ModelOverride {
         match self {
-            AgentRef::Object(object)
-                if matches!(object.kind.as_ref(), Some(AgentRefKind::AgentWithOverrides)) =>
-            {
-                match &object.model {
-                    None => ModelOverride::Absent,
-                    Some(None) => ModelOverride::Cleared,
-                    Some(Some(input)) => {
-                        ModelOverride::Set(input.clone().into_config().into_resolved())
-                    }
-                }
-            }
+            AgentRef::Object(object) => match object.as_ref() {
+                AgentRefObject::AgentWithOverrides {
+                    model: Some(input), ..
+                } => ModelOverride::Set(input.clone().into_config().into_resolved()),
+                _ => ModelOverride::Absent,
+            },
             _ => ModelOverride::Absent,
         }
     }
+
+    pub fn mcp_servers_override(&self) -> Option<&[AgentMcpServer]> {
+        match self {
+            AgentRef::Object(object) => match object.as_ref() {
+                AgentRefObject::AgentWithOverrides {
+                    mcp_servers: Some(servers),
+                    ..
+                } => Some(servers),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn skills_override(&self) -> Option<&[AgentSkill]> {
+        match self {
+            AgentRef::Object(object) => match object.as_ref() {
+                AgentRefObject::AgentWithOverrides {
+                    skills: Some(skills),
+                    ..
+                } => Some(skills),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn tools_override(&self) -> Option<&[AgentTool]> {
+        match self {
+            AgentRef::Object(object) => match object.as_ref() {
+                AgentRefObject::AgentWithOverrides {
+                    tools: Some(tools), ..
+                } => Some(tools),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn system_override(&self) -> Option<Option<&str>> {
+        match self {
+            AgentRef::Object(object) => match object.as_ref() {
+                AgentRefObject::AgentWithOverrides { system, .. } => {
+                    system.as_ref().map(|value| value.as_deref())
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn validate_sdk_limits(&self) -> Result<(), String> {
+        if self.version() == Some(0) {
+            return Err("agent version must be greater than or equal to 1".into());
+        }
+        if self
+            .system_override()
+            .flatten()
+            .is_some_and(|system| system.chars().count() > 100_000)
+        {
+            return Err("agent system override supports at most 100000 characters".into());
+        }
+        if self
+            .mcp_servers_override()
+            .is_some_and(|items| items.len() > 20)
+        {
+            return Err("agent mcp_servers override supports at most 20 entries".into());
+        }
+        if self.skills_override().is_some_and(|items| items.len() > 20) {
+            return Err("agent skills override supports at most 20 entries".into());
+        }
+        if self.tools_override().is_some_and(|items| items.len() > 128) {
+            return Err("agent tools override supports at most 128 entries".into());
+        }
+        Ok(())
+    }
 }
 
-/// `POST /v1/sessions` request body (only the fields the runtime slice reads;
-/// unknown fields are ignored so the full SDK payload is accepted).
+/// `POST /v1/sessions` request body. The boundary is deliberately closed: an
+/// unsupported extension must fail instead of being silently ignored.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionCreateParams {
     pub agent: AgentRef,
     #[serde(default)]
@@ -223,16 +289,11 @@ pub struct SessionCreateParams {
     /// same event command used by `POST .../events`.
     #[serde(default)]
     pub initial_events: Vec<InboundEvent>,
-    #[serde(default)]
-    pub environment_id: Option<String>,
+    pub environment_id: String,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     pub metadata: std::collections::BTreeMap<String, String>,
-    /// MCP servers this session connects to (ADR-0043 Phase 3). Bound to vault
-    /// credentials via `vault_ids` at session creation.
-    #[serde(default)]
-    pub mcp_servers: Vec<McpServer>,
     /// Vaults whose credentials the session may use (matched to `mcp_servers`
     /// by exact `mcp_server_url`).
     #[serde(default)]
@@ -241,26 +302,53 @@ pub struct SessionCreateParams {
     /// state layer lowers them into neutral input bindings.
     #[serde(default)]
     pub resources: Vec<ResourceInput>,
-    /// Explicit Awaken compatibility extensions. Product workflows may select a
-    /// committed source prefix without making it part of Anthropic's wire model.
-    #[serde(default)]
-    pub x_awaken: Option<SessionCreateExtensions>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionCreateExtensions {
-    #[serde(default)]
-    pub transcript_prefix: Option<TranscriptPrefixInput>,
-}
+impl SessionCreateParams {
+    /// Build the smallest valid official SDK request without assembling a JSON
+    /// object. Optional Managed fields remain absent/empty until explicitly set.
+    #[must_use]
+    pub fn new(agent: impl Into<String>, environment_id: impl Into<String>) -> Self {
+        Self {
+            agent: AgentRef::Id(agent.into()),
+            budget: None,
+            initial_events: Vec::new(),
+            environment_id: environment_id.into(),
+            title: None,
+            metadata: std::collections::BTreeMap::new(),
+            vault_ids: Vec::new(),
+            resources: Vec::new(),
+        }
+    }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TranscriptPrefixInput {
-    pub session_id: String,
-    /// Half-open committed message ordinal. Omitted freezes the latest prefix.
-    #[serde(default)]
-    pub end_seq: Option<u64>,
+    pub fn validate_common(&self) -> Result<(), String> {
+        self.agent.validate_sdk_limits()?;
+        if self.metadata.len() > 16
+            || self
+                .metadata
+                .iter()
+                .any(|(key, value)| key.chars().count() > 64 || value.chars().count() > 512)
+        {
+            return Err(
+                "metadata supports at most 16 pairs with 64-character keys and 512-character values"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn validate_public(&self) -> Result<(), String> {
+        self.validate_common()?;
+        if self.initial_events.iter().any(|event| {
+            !matches!(
+                event,
+                InboundEvent::UserMessage { .. } | InboundEvent::UserDefineOutcome { .. }
+            )
+        }) {
+            return Err("initial_events accepts only user.message and user.define_outcome".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -289,32 +377,9 @@ pub struct SessionUpdateParams {
     pub vault_ids: Option<Vec<String>>,
 }
 
-/// One MCP server on the wire (`BetaManagedAgentsMCPServerURLDefinition` /
-/// `BetaManagedAgentsURLMCPServerParams`): `{ name, type: "url", url }`. The
-/// SDK's `type: "url"` tag is tolerated (and ignored) on input — there is only
-/// one variant — and always re-serialized on output.
-#[derive(Debug, Clone, Deserialize)]
-pub struct McpServer {
-    pub name: String,
-    pub url: String,
-    #[serde(default)]
-    pub prompts_as_skills: bool,
-}
-
-impl Serialize for McpServer {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut s =
-            serializer.serialize_struct("McpServer", if self.prompts_as_skills { 4 } else { 3 })?;
-        s.serialize_field("name", &self.name)?;
-        s.serialize_field("type", "url")?;
-        s.serialize_field("url", &self.url)?;
-        if self.prompts_as_skills {
-            s.serialize_field("prompts_as_skills", &true)?;
-        }
-        s.end()
-    }
-}
+/// Session requests reuse the exact Agent URL-MCP DTO; there is one Managed MCP
+/// vocabulary and one serializer/deserializer authority.
+pub type McpServer = super::agent::AgentMcpServer;
 
 /// The resolved `BetaManagedAgentsModelConfig` object. A session/agent's
 /// `model` is this object on the wire, never a bare string (the SDK reads
@@ -328,12 +393,7 @@ pub struct ModelConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ModelEffort>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub inference_geo: Option<String>,
-    /// Optional Awaken behavior carried beside the fully compatible Managed
-    /// model fields. Official clients that do not need ACP-native options omit
-    /// it and retain the exact SDK shape.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub x_awaken: Option<AwakenModelExtensions>,
+    pub inference_geo: Option<ModelInferenceGeo>,
 }
 
 impl ModelConfig {
@@ -343,7 +403,6 @@ impl ModelConfig {
             speed: None,
             effort: None,
             inference_geo: None,
-            x_awaken: None,
         }
     }
 
@@ -372,19 +431,47 @@ impl ModelConfig {
                 ReasoningEffort::Max => ModelEffort::Max,
             }),
             inference_geo: (inference.inference_geo == Some(InferenceGeography::Us))
-                .then(|| "us".to_owned()),
-            x_awaken: None,
+                .then_some(ModelInferenceGeo::Us),
+        }
+    }
+
+    /// Lower official Managed inference controls into the one neutral runtime
+    /// contract. `global` is the absence of an extra geography restriction.
+    #[must_use]
+    pub fn inference_options(&self) -> awaken_runtime_contract::agent_bindings::InferenceOptions {
+        use awaken_runtime_contract::agent_bindings::{
+            InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
+        };
+
+        let inference_geo = match self.inference_geo {
+            None | Some(ModelInferenceGeo::Global) => None,
+            Some(ModelInferenceGeo::Us) => Some(InferenceGeography::Us),
+        };
+        InferenceOptions {
+            speed: self.speed.map(|speed| match speed {
+                ModelSpeed::Standard => InferenceSpeed::Standard,
+                ModelSpeed::Fast => InferenceSpeed::Fast,
+            }),
+            effort: self.effort.map(|effort| match effort {
+                ModelEffort::Low => ReasoningEffort::Low,
+                ModelEffort::Medium => ReasoningEffort::Medium,
+                ModelEffort::High => ReasoningEffort::High,
+                ModelEffort::Xhigh => ReasoningEffort::Xhigh,
+                ModelEffort::Max => ReasoningEffort::Max,
+            }),
+            inference_geo,
         }
     }
 }
 
-/// Namespaced model extensions. Route identity remains exclusively in `id`;
-/// this object carries only executor-native configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AwakenModelExtensions {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acp: Option<AcpSessionConfiguration>,
+/// The SDK's closed inference-geography vocabulary. Unsupported geography
+/// strings fail at the serde boundary instead of surviving as partially
+/// validated configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelInferenceGeo {
+    Global,
+    Us,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,9 +539,7 @@ pub struct ModelConfigParams {
     #[serde(default)]
     pub effort: Option<ModelEffortInput>,
     #[serde(default)]
-    pub inference_geo: Option<String>,
-    #[serde(default)]
-    pub x_awaken: Option<AwakenModelExtensions>,
+    pub inference_geo: Option<ModelInferenceGeo>,
 }
 
 impl ModelConfigParams {
@@ -464,7 +549,6 @@ impl ModelConfigParams {
             speed: None,
             effort: None,
             inference_geo: None,
-            x_awaken: None,
         }
     }
 
@@ -475,7 +559,6 @@ impl ModelConfigParams {
             speed: self.speed,
             effort: self.effort.map(ModelEffortInput::resolved),
             inference_geo: self.inference_geo,
-            x_awaken: self.x_awaken,
         }
     }
 }
@@ -514,7 +597,18 @@ pub struct SessionMultiagentCoordinator {
 #[serde(untagged)]
 pub enum SessionMultiagentRosterEntry {
     Agent(SessionThreadAgent),
-    Advisor(super::agent::AdvisorRosterReference),
+    Advisor(super::agent::AdvisorRosterEntry),
+}
+
+impl SessionMultiagentRosterEntry {
+    /// Returns an executable child Agent. An advisor is deliberately not a
+    /// thread target and therefore cannot be lowered to `SessionThreadAgent`.
+    pub(crate) const fn as_agent(&self) -> Option<&SessionThreadAgent> {
+        match self {
+            Self::Agent(agent) => Some(agent),
+            Self::Advisor(_) => None,
+        }
+    }
 }
 
 /// `BetaManagedAgentsSessionThreadAgent` — the agent snapshot frozen for one
@@ -743,6 +837,15 @@ pub enum ConfirmResult {
     Deny,
 }
 
+/// The SDK's closed permission decision attached to Agent tool-use events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluatedPermission {
+    Allow,
+    Ask,
+    Deny,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OutcomeRubric {
@@ -754,18 +857,10 @@ pub enum OutcomeRubric {
 /// `user.message`; the rest deserialize (so the batch is accepted) and are
 /// wired in later milestones.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum InboundEvent {
     #[serde(rename = "user.message")]
-    UserMessage {
-        content: Vec<ContentBlock>,
-        #[serde(default)]
-        session_thread_id: Option<String>,
-        /// Per-turn model override (R5): switches the thread to `model` for this
-        /// turn onward. Absent → keep the session's current model.
-        #[serde(default)]
-        model: Option<String>,
-    },
+    UserMessage { content: Vec<ContentBlock> },
     #[serde(rename = "system.message")]
     SystemMessage { content: Vec<ContentBlock> },
     #[serde(rename = "user.tool_confirmation")]
@@ -857,13 +952,9 @@ impl SessionCreateParams {
 
 /// `POST .../events` request body.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SendEventsRequest {
     pub events: Vec<InboundEvent>,
-    /// Optional request-grained data owner. It deliberately belongs to this
-    /// event batch, not the durable Session: one Session may serve more than one
-    /// end user over its lifetime.
-    #[serde(default)]
-    pub user_profile_id: Option<String>,
 }
 
 /// One receipt in the `POST .../events` response `data` array.
@@ -969,13 +1060,7 @@ fn code_message_server_name(code: &str, message: &str) -> Option<String> {
 )]
 pub enum OutboundKind {
     #[serde(rename = "user.message")]
-    UserMessage {
-        content: Vec<ContentBlock>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        session_thread_id: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        model: Option<String>,
-    },
+    UserMessage { content: Vec<ContentBlock> },
     #[serde(rename = "system.message")]
     SystemMessage { content: Vec<ContentBlock> },
     #[serde(rename = "user.tool_confirmation")]
@@ -1025,7 +1110,7 @@ pub enum OutboundKind {
         name: String,
         input: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
-        evaluated_permission: Option<String>,
+        evaluated_permission: Option<EvaluatedPermission>,
     },
     #[serde(rename = "agent.tool_result")]
     AgentToolResult {
@@ -1044,7 +1129,7 @@ pub enum OutboundKind {
         mcp_server_name: String,
         input: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
-        evaluated_permission: Option<String>,
+        evaluated_permission: Option<EvaluatedPermission>,
     },
     /// The result of an MCP tool call (`agent.mcp_tool_result`), keyed by
     /// `mcp_tool_use_id`.
@@ -1353,7 +1438,6 @@ impl StreamFrame {
 pub struct ListEventsResponse {
     pub data: Vec<Event>,
     pub next_page: Option<String>,
-    pub has_more: bool,
 }
 
 #[cfg(test)]
@@ -1364,9 +1448,10 @@ mod tests {
 
     #[test]
     fn model_geo_projection_exposes_only_the_official_boundary() {
-        // Cause/effect graph: C1=US official boundary, C2=internal Provider
-        // boundary. Effects: E1=official inference_geo; E2=Provider details stay
-        // absent from the Managed projection. R1(C1)->E1; R2(C2)->E2.
+        // Cause/effect graph: C1=neutral US, C2=neutral Provider-only region,
+        // C3=wire global, C4=wire US. Effects: E1=typed official US; E2=Provider
+        // detail stays absent; E3=no neutral restriction; E4=neutral US.
+        // Decision rules: R1(C1)->E1; R2(C2)->E2; R3(C3)->E3; R4(C4)->E4.
         let us = ModelConfig::from_inference(
             "model",
             InferenceOptions {
@@ -1374,8 +1459,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(us.inference_geo.as_deref(), Some("us"), "R1");
-        assert!(us.x_awaken.is_none(), "R1");
+        assert_eq!(us.inference_geo, Some(ModelInferenceGeo::Us), "R1");
 
         let eu = ModelConfig::from_inference(
             "model",
@@ -1385,7 +1469,16 @@ mod tests {
             },
         );
         assert!(eu.inference_geo.is_none(), "R2");
-        assert!(eu.x_awaken.is_none(), "R2");
+
+        let mut wire = ModelConfig::new("model");
+        wire.inference_geo = Some(ModelInferenceGeo::Global);
+        assert!(wire.inference_options().inference_geo.is_none(), "R3");
+        wire.inference_geo = Some(ModelInferenceGeo::Us);
+        assert_eq!(
+            wire.inference_options().inference_geo,
+            Some(InferenceGeography::Us),
+            "R4"
+        );
     }
 
     /// Causal graph: rubric object tag + variant payload -> one closed domain
@@ -1446,11 +1539,14 @@ mod tests {
 
     #[test]
     fn agent_ref_parses_a_bare_id_and_a_tagged_object() {
-        // Bare string id.
+        // Cause/effect decision table:
+        // | wire form                          | result                    |
+        // | string                             | latest Agent reference    |
+        // | object + `type: agent`             | versioned Agent reference |
+        // | object missing/unknown discriminator | reject                 |
+        // | plain Agent object with override   | reject                    |
         let bare: AgentRef = serde_json::from_str(r#""assistant""#).unwrap();
         assert_eq!(bare.id(), "assistant");
-        // The SDK's `{ id, type:"agent", version }` object — the `type` tag is
-        // tolerated (ignored) on input.
         let obj: AgentRef =
             serde_json::from_str(r#"{"id":"assistant","type":"agent","version":3}"#).unwrap();
         assert_eq!(obj.id(), "assistant");
@@ -1458,16 +1554,20 @@ mod tests {
         // A plain reference never overrides the model.
         assert!(matches!(bare.model_override(), ModelOverride::Absent));
         assert!(matches!(obj.model_override(), ModelOverride::Absent));
-        // An unrecognized `type` degrades to a plain reference (tolerant), and does
-        // not surface a model override even if one rode along.
-        let odd: AgentRef =
-            serde_json::from_str(r#"{"id":"a","type":"future_kind","model":"x"}"#).unwrap();
-        assert_eq!(odd.id(), "a");
-        assert!(matches!(odd.model_override(), ModelOverride::Absent));
+        for invalid in [
+            r#"{"id":"a"}"#,
+            r#"{"id":"a","type":"future_kind"}"#,
+            r#"{"id":"a","type":"agent","model":"x"}"#,
+        ] {
+            assert!(serde_json::from_str::<AgentRef>(invalid).is_err());
+        }
     }
 
     #[test]
     fn agent_with_overrides_replaces_the_model_for_the_session() {
+        // Cause/effect decision table: string model -> typed default controls;
+        // object + official geography -> typed geography; object + any unknown
+        // geography literal -> serde rejection before state construction.
         // Bare-string model override.
         let s: AgentRef = serde_json::from_str(
             r#"{"id":"assistant","type":"agent_with_overrides","model":"claude-sonnet-5"}"#,
@@ -1490,10 +1590,17 @@ mod tests {
             ModelOverride::Set(cfg) => {
                 assert_eq!(cfg.id, "claude-opus-4-8");
                 assert_eq!(cfg.speed, Some(ModelSpeed::Fast));
-                assert_eq!(cfg.inference_geo.as_deref(), Some("us"));
+                assert_eq!(cfg.inference_geo, Some(ModelInferenceGeo::Us));
             }
             other => panic!("expected Set, got {other:?}"),
         }
+        assert!(
+            serde_json::from_str::<AgentRef>(
+                r#"{"id":"assistant","type":"agent_with_overrides","model":{"id":"claude-opus-4-8","inference_geo":"eu"}}"#,
+            )
+            .is_err(),
+            "an unsupported closed-enum literal never reaches model resolution"
+        );
     }
 
     #[test]
@@ -1514,16 +1621,21 @@ mod tests {
     }
 
     #[test]
-    fn overrides_distinguish_absent_from_null_model() {
-        // `model` omitted → inherit (Absent), not a clear.
+    fn model_override_is_omitted_or_a_non_null_sdk_model() {
+        // Cause/effect decision table:
+        // | model field | DTO effect |
+        // | omitted     | inherit    |
+        // | valid value | replace    |
+        // | null        | reject     |
         let absent: AgentRef =
             serde_json::from_str(r#"{"id":"a","type":"agent_with_overrides"}"#).unwrap();
         assert!(matches!(absent.model_override(), ModelOverride::Absent));
-        // `model: null` → an explicit clear (rejected downstream with 400).
-        let cleared: AgentRef =
-            serde_json::from_str(r#"{"id":"a","type":"agent_with_overrides","model":null}"#)
-                .unwrap();
-        assert!(matches!(cleared.model_override(), ModelOverride::Cleared));
+        assert!(
+            serde_json::from_str::<AgentRef>(
+                r#"{"id":"a","type":"agent_with_overrides","model":null}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1545,12 +1657,9 @@ mod tests {
             "skills": [{"type":"custom", "skill_id":"skill_1", "version":"2"}]
         });
         let parsed: AgentRef = serde_json::from_value(valid).expect("typed composites parse");
-        let AgentRef::Object(object) = parsed else {
-            panic!("object form retained")
-        };
         assert!(matches!(
-            object.tools.as_ref(),
-            Some(Some(tools)) if matches!(tools[0], AgentTool::McpToolset { .. })
+            parsed.tools_override(),
+            Some(tools) if matches!(tools[0], AgentTool::McpToolset { .. })
         ));
 
         for invalid in [
@@ -1572,24 +1681,101 @@ mod tests {
     }
 
     #[test]
-    fn user_message_carries_a_per_turn_model_override() {
-        let with: InboundEvent = serde_json::from_str(
-            r#"{"type":"user.message","content":[{"type":"text","text":"hi"}],"model":"fast"}"#,
-        )
-        .unwrap();
-        match with {
-            InboundEvent::UserMessage { model, .. } => assert_eq!(model.as_deref(), Some("fast")),
-            _ => panic!("expected user.message"),
+    fn session_create_requires_environment_and_rejects_non_sdk_mcp_field() {
+        // Cause/effect decision table:
+        // | environment_id | top-level mcp_servers | result |
+        // | present        | absent                | typed construction/accept |
+        // | absent         | absent                | reject |
+        // | present        | present               | reject |
+        let parsed = SessionCreateParams::new("assistant", "environment_1");
+        assert_eq!(parsed.environment_id, "environment_1");
+        assert_eq!(parsed.agent.id(), "assistant");
+        for invalid in [
+            serde_json::json!({"agent":"assistant"}),
+            serde_json::json!({
+                "agent":"assistant",
+                "environment_id":"environment_1",
+                "mcp_servers":[]
+            }),
+        ] {
+            assert!(serde_json::from_value::<SessionCreateParams>(invalid).is_err());
         }
-        // Absent → None (backward compatible).
-        let without: InboundEvent = serde_json::from_str(
+    }
+
+    #[test]
+    fn session_create_validation_enforces_sdk_boundaries_before_state_mutation() {
+        // Cause/effect graph: C1 version is zero; C2 an override exceeds an SDK
+        // collection/string limit; C3 metadata exceeds its pair/key/value limit;
+        // C4 a create-only event uses a non-create event variant. Each cause must
+        // produce E1 invalid-request admission and E2 no state-layer mutation.
+        //
+        // Decision table: R1 !C1..!C4 -> accept; R2 C1 -> E1+E2; R3 C2 -> E1+E2;
+        // R4 C3 -> E1+E2; R5 C4 -> E1+E2. The shared initial-event validator owns
+        // the independent 50-event/outcome-cardinality rules.
+        let valid: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent": {"id":"assistant", "type":"agent", "version":1},
+            "environment_id":"environment_1",
+            "metadata":{"key":"value"},
+            "initial_events":[{
+                "type":"user.message", "content":[{"type":"text", "text":"hello"}]
+            }]
+        }))
+        .unwrap();
+        assert!(valid.validate_public().is_ok(), "R1");
+
+        let zero_version: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent":{"id":"assistant", "type":"agent", "version":0},
+            "environment_id":"environment_1"
+        }))
+        .unwrap();
+        assert!(zero_version.validate_public().is_err(), "R2");
+
+        let too_many_tools: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent":{
+                "id":"assistant", "type":"agent_with_overrides",
+                "tools": (0..129).map(|index| serde_json::json!({
+                    "type":"custom", "name":format!("tool_{index}"),
+                    "description":"tool", "input_schema":{"type":"object"}
+                })).collect::<Vec<_>>()
+            },
+            "environment_id":"environment_1"
+        }))
+        .unwrap();
+        assert!(too_many_tools.validate_public().is_err(), "R3");
+
+        let too_many_metadata: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent":"assistant", "environment_id":"environment_1",
+            "metadata": (0..17).map(|index| (format!("key_{index}"), "value"))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        }))
+        .unwrap();
+        assert!(too_many_metadata.validate_public().is_err(), "R4");
+
+        let unsupported_initial_event: SessionCreateParams =
+            serde_json::from_value(serde_json::json!({
+                "agent":"assistant", "environment_id":"environment_1",
+                "initial_events":[{"type":"user.interrupt"}]
+            }))
+            .unwrap();
+        assert!(unsupported_initial_event.validate_public().is_err(), "R5");
+    }
+
+    #[test]
+    fn user_message_rejects_non_sdk_routing_fields() {
+        // Cause/effect decision table: the SDK content-only message is admitted;
+        // historical per-event `model` and `session_thread_id` fields are rejected
+        // before any event is appended.
+        let valid: InboundEvent = serde_json::from_str(
             r#"{"type":"user.message","content":[{"type":"text","text":"hi"}]}"#,
         )
         .unwrap();
-        assert!(matches!(
-            without,
-            InboundEvent::UserMessage { model: None, .. }
-        ));
+        assert!(matches!(valid, InboundEvent::UserMessage { .. }));
+        for invalid in [
+            r#"{"type":"user.message","content":[{"type":"text","text":"hi"}],"model":"fast"}"#,
+            r#"{"type":"user.message","content":[{"type":"text","text":"hi"}],"session_thread_id":"thread_1"}"#,
+        ] {
+            assert!(serde_json::from_str::<InboundEvent>(invalid).is_err());
+        }
     }
 
     /// The newly catalogued outbound wire types serialize to exactly the shape the
@@ -1738,34 +1924,6 @@ mod tests {
         assert!(
             projected.get("multiagent").is_none(),
             "the thread contract has no duplicate roster field"
-        );
-    }
-
-    #[test]
-    fn mcp_prompt_skill_switch_is_opt_in_and_wire_compatible() {
-        let omitted: McpServer = serde_json::from_value(serde_json::json!({
-            "name": "docs",
-            "type": "url",
-            "url": "https://docs.test/mcp"
-        }))
-        .unwrap();
-        assert!(!omitted.prompts_as_skills, "R1 omitted means disabled");
-        assert!(
-            serde_json::to_value(&omitted)
-                .unwrap()
-                .get("prompts_as_skills")
-                .is_none(),
-            "R1 false remains absent on the legacy wire shape"
-        );
-
-        let enabled = McpServer {
-            prompts_as_skills: true,
-            ..omitted
-        };
-        assert_eq!(
-            serde_json::to_value(enabled).unwrap()["prompts_as_skills"],
-            true,
-            "R2 explicit opt-in survives serialization"
         );
     }
 }

@@ -5,7 +5,6 @@ use super::application::initial_mcp_candidates;
 use super::*;
 
 use super::session_mcp_projection::typed_mcp_servers;
-use crate::types::AgentRef;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RehydrationPurpose {
@@ -114,24 +113,22 @@ impl ManagedState {
         profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
         caps: &AgentCapabilities,
     ) -> Result<Option<crate::types::SessionMultiagentCoordinator>, StateError> {
-        let (delegates, advisor_model) = profile.map_or_else(
+        let delegates = profile.map_or_else(
             || {
-                (
-                    caps.delegates
-                        .iter()
-                        .cloned()
-                        .map(
-                            |agent_id| awaken_executable_agent_contract::ExecutableAgentDelegate {
-                                agent_id,
-                                source_revision: None,
-                            },
-                        )
-                        .collect(),
-                    None,
-                )
+                caps.delegates
+                    .iter()
+                    .cloned()
+                    .map(
+                        |agent_id| awaken_executable_agent_contract::ExecutableAgentDelegate {
+                            agent_id,
+                            source_revision: None,
+                        },
+                    )
+                    .collect()
             },
-            |profile| (profile.delegates.clone(), profile.advisor_model.clone()),
+            |profile| profile.delegates.clone(),
         );
+        let advisor_model = profile.and_then(|profile| profile.advisor_model.clone());
         if delegates.is_empty() && advisor_model.is_none() {
             return Ok(None);
         }
@@ -166,9 +163,9 @@ impl ManagedState {
         }
         if let Some(model) = advisor_model {
             agents.push(crate::types::SessionMultiagentRosterEntry::Advisor(
-                crate::types::agent::AdvisorRosterReference {
+                crate::types::agent::AdvisorRosterEntry {
                     model,
-                    kind: crate::types::agent::AdvisorRosterReferenceKind::Advisor,
+                    kind: crate::types::agent::AdvisorRosterEntryKind::Advisor,
                 },
             ));
         }
@@ -351,6 +348,8 @@ impl ManagedState {
         workspace_id: Option<String>,
         explicit_id: Option<String>,
     ) -> Result<Session, StateError> {
+        req.validate_common()
+            .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
         // Initial-event admission is atomic with Session creation: validate the
         // complete batch before bind checks, identity allocation, persistence, or
         // Runtime preparation. The shared validator is also used by Deployments.
@@ -360,52 +359,6 @@ impl ManagedState {
             .clone()
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         self.check_bind(&owner_scope, &req).await?;
-        let transcript_prefix = match req
-            .x_awaken
-            .as_ref()
-            .and_then(|extensions| extensions.transcript_prefix.as_ref())
-        {
-            Some(prefix) => {
-                if prefix.session_id.trim().is_empty() {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "x_awaken.transcript_prefix.session_id must be non-empty",
-                    )));
-                }
-                let committed = self
-                    .application
-                    .session_transcript(&owner_scope, &prefix.session_id)
-                    .await
-                    .map_err(StateError::Run)?;
-                let available_end = u64::try_from(committed.len()).unwrap_or(u64::MAX);
-                let end_seq = prefix.end_seq.unwrap_or(available_end);
-                if end_seq > available_end {
-                    return Err(StateError::Run(RunError::bad_request(format!(
-                        "transcript prefix end_seq {end_seq} exceeds committed end {available_end}"
-                    ))));
-                }
-                let end = usize::try_from(end_seq).map_err(|_| {
-                    StateError::Run(RunError::bad_request(
-                        "transcript prefix end_seq cannot be represented",
-                    ))
-                })?;
-                let snapshot = awaken_agent_contract::thread::read::transcript::TranscriptSnapshot::new(
-                    awaken_agent_contract::agent::thread::Id(prefix.session_id.clone()),
-                    awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
-                    committed[..end].to_vec(),
-                );
-                Some(
-                    awaken_agent_contract::thread::read::transcript::TranscriptSliceSpec {
-                        snapshot: snapshot.reference().clone(),
-                        ranges: vec![
-                            awaken_agent_contract::thread::read::transcript::TranscriptRange::new(
-                                0, end_seq,
-                            ),
-                        ],
-                    },
-                )
-            }
-            None => None,
-        };
         // Mint from the process-incarnation namespace so active-active peers and
         // restarted processes cannot choose the same Session id. The repository
         // check remains the final collision fence; `ensure_session` is still the
@@ -481,37 +434,43 @@ impl ManagedState {
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
             ))));
         }
-        // Cause/effect decision table for Session model authority:
-        // R1 no override + published Agent -> inherit its complete publication;
-        // R2 equal official override -> accept without changing the route;
-        // R3 different official override + published Agent -> reject before state;
-        // R4 cleared override -> reject. Metadata never selects execution.
-        // This prevents a model string from being stitched to the Agent's old
-        // backend/credential pins. Selecting another route requires publishing an
-        // Agent for that Managed model id first.
-        let selected_model: Option<ModelConfig> = match req.agent.model_override() {
+        // Cause/effect decision table for Session model authority: R1 absent ->
+        // inherit the Agent publication; R2 equal override -> reuse its route and
+        // replace inference controls;
+        // R3 different override + resolver -> freeze the complete newly resolved
+        // publication; R4 different override + unavailable/invalid resolver ->
+        // fail before Session persistence. A public id is never stitched onto the
+        // Agent's old backend, endpoint, or credential provisioning.
+        let published_model = config_view
+            .as_ref()
+            .and_then(|view| view.model.clone())
+            .unwrap_or_else(|| self.application.model());
+        let (selected_model, model_override): (
+            Option<ModelConfig>,
+            Option<awaken_session_contract::SessionModelOverride>,
+        ) = match req.agent.model_override() {
             ModelOverride::Set(cfg) => {
-                if config_view
-                    .as_ref()
-                    .and_then(|view| view.model.as_deref())
-                    .is_some_and(|published| published != cfg.id)
-                {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "agent_model_override_unpublished: publish or update an Agent with this model id before creating the Session",
-                    )));
-                }
-                Some(cfg)
+                let inference = cfg.inference_options();
+                let model_override = self
+                    .application
+                    .resolve_session_model_override(
+                        &owner_scope,
+                        &cfg.id,
+                        &published_model,
+                        inference,
+                    )
+                    .await
+                    .map_err(StateError::Run)?;
+                (Some(cfg), Some(model_override))
             }
-            ModelOverride::Cleared => {
-                return Err(StateError::Run(RunError::bad_request(
-                    "agent_model_required: a session override cannot clear `model`",
-                )));
-            }
-            ModelOverride::Absent => config_view.as_ref().and_then(|view| {
-                view.model
-                    .clone()
-                    .map(|id| ModelConfig::from_inference(id, view.inference.clone()))
-            }),
+            ModelOverride::Absent => (
+                config_view.as_ref().and_then(|view| {
+                    view.model
+                        .clone()
+                        .map(|id| ModelConfig::from_inference(id, view.inference.clone()))
+                }),
+                None,
+            ),
         };
         // Echo the agent version the client pinned (or overrode over), defaulting to 1.
         let agent_version = requested_agent_version
@@ -529,7 +488,7 @@ impl ManagedState {
             .unwrap_or_default();
         let selected_geo = selected_model
             .as_ref()
-            .and_then(|model| model.inference_geo.as_deref());
+            .and_then(|model| model.inference_options().inference_geo);
         for delegate_ref in config_view
             .as_ref()
             .into_iter()
@@ -551,12 +510,7 @@ impl ManagedState {
                         "multiagent_unavailable: Agent `{delegate_id}` has no executable profile"
                     )))
                 })?;
-            if delegate
-                .inference
-                .inference_geo
-                .map(|geography| geography.as_str())
-                != selected_geo
-            {
+            if delegate.inference.inference_geo != selected_geo {
                 return Err(StateError::Run(RunError::bad_request(format!(
                     "multiagent_inference_geo_mismatch: coordinator is {:?}, Agent `{delegate_id}` is {:?}",
                     selected_geo, delegate.inference.inference_geo
@@ -566,9 +520,8 @@ impl ManagedState {
         // Anthropic requires MCP declarations and toolsets to be a bijective
         // reference: every declared server has a toolset and every toolset names
         // a declared server. Validate create-time overrides before provisioning.
-        if let AgentRef::Object(override_ref) = &req.agent
-            && let (Some(Some(mcp_servers)), Some(Some(tools))) =
-                (&override_ref.mcp_servers, &override_ref.tools)
+        if let (Some(mcp_servers), Some(tools)) =
+            (req.agent.mcp_servers_override(), req.agent.tools_override())
         {
             let declared = mcp_servers
                 .iter()
@@ -589,22 +542,12 @@ impl ManagedState {
                 )));
             }
         }
-        let agent_mcp_override = match &req.agent {
-            AgentRef::Object(override_ref) => override_ref
-                .mcp_servers
-                .as_ref()
-                .map(|servers| servers.as_deref().unwrap_or_default().to_vec()),
-            AgentRef::Id(_) => None,
-        };
+        let agent_mcp_override = req.agent.mcp_servers_override();
         let mcp_drafts = self
             .application
             .normalize_mcp_drafts(
                 &owner_scope,
-                initial_mcp_candidates(
-                    &req.mcp_servers,
-                    config_view.as_ref(),
-                    agent_mcp_override.as_deref(),
-                ),
+                initial_mcp_candidates(config_view.as_ref(), agent_mcp_override),
                 &req.vault_ids,
             )
             .await?;
@@ -660,26 +603,33 @@ impl ManagedState {
         let attachments = self
             .lower_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)
             .await?;
-        // Resolve the session's environment (defaulting to the local one) and its
-        // networking policy once, for both the SessionInit (staged before the first
-        // turn) and the echoed Session object.
+        // Resolve the SDK-required Environment and networking policy once, for both
+        // SessionInit and the echoed Session object. Managed never invokes the
+        // native application's optional local-environment fallback.
         let agent_environment = config_view
             .as_ref()
             .and_then(|view| view.environment.as_ref());
-        // The immutable Agent publication is the only backend authority.  The
-        // baseline persists this projection so recovery and Worker placement do
-        // not need to reopen the publication registry.
-        let published_backend_ref = config_view
+        // The frozen Agent publication, or a complete resolved Session model
+        // replacement, is the only backend authority. The baseline persists the
+        // selected publication so recovery and Worker placement never reopen the
+        // registry or stitch together coordinates from different routes.
+        let published_backend_ref = model_override
             .as_ref()
-            .map(|view| view.backend_ref.clone())
-            .filter(|backend_ref| !backend_ref.trim().is_empty());
+            .and_then(|model_override| model_override.publication.as_ref())
+            .map(|publication| publication.primary.binding.backend_ref.clone())
+            .or_else(|| {
+                config_view
+                    .as_ref()
+                    .map(|view| view.backend_ref.clone())
+                    .filter(|backend_ref| !backend_ref.trim().is_empty())
+            });
         let mcp_targets = mcp_drafts
             .iter()
             .map(|draft| draft.target.clone())
             .collect::<Vec<_>>();
         let (environment_id, environment) = self
             .resolve_session_environment(
-                req.environment_id.as_deref(),
+                &req.environment_id,
                 agent_environment,
                 published_backend_ref.as_deref(),
                 &mcp_targets,
@@ -693,18 +643,17 @@ impl ManagedState {
             .application
             .resolve_session_inputs(&owner_scope, agent_defaults, &attachments)
             .map_err(StateError::Run)?;
-        let effective_skills = match &req.agent {
-            AgentRef::Object(override_ref) => override_ref.skills.as_ref().map(|skills| {
+        let effective_skills = req
+            .agent
+            .skills_override()
+            .map(|skills| {
                 skills
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .map(crate::types::agent::AgentSkill::into_binding)
                     .collect::<Vec<_>>()
-            }),
-            AgentRef::Id(_) => None,
-        }
-        .or_else(|| config_view.as_ref().map(|view| view.skills.clone()));
+            })
+            .or_else(|| config_view.as_ref().map(|view| view.skills.clone()));
         self.application
             .validate_session_skill_total(
                 &owner_scope,
@@ -748,22 +697,23 @@ impl ManagedState {
                 client_tools: profile.client_tools.clone(),
             },
         );
-        let effective_tools = match &req.agent {
-            AgentRef::Object(reference) => reference
-                .tools
-                .as_ref()
-                .map(|tools| {
-                    project::session_tool_configuration(tools.as_deref().unwrap_or_default())
-                })
-                .unwrap_or(inherited_tools),
-            AgentRef::Id(_) => inherited_tools,
-        };
+        let effective_tools = req
+            .agent
+            .tools_override()
+            .map(project::session_tool_configuration)
+            .unwrap_or(inherited_tools);
         let resolved_model = selected_model
             .clone()
             .unwrap_or_else(|| ModelConfig::new(self.application.model()));
-        let execution_model_ref = config_view
+        let execution_model_ref = model_override
             .as_ref()
-            .and_then(|view| view.execution_model_ref.clone())
+            .and_then(|model_override| model_override.publication.as_ref())
+            .map(|publication| publication.primary.binding.model_ref.clone())
+            .or_else(|| {
+                config_view
+                    .as_ref()
+                    .and_then(|view| view.execution_model_ref.clone())
+            })
             .unwrap_or_else(|| resolved_model.id.clone());
         let budget_state = match &req.budget {
             Some(budget) => {
@@ -813,13 +763,14 @@ impl ManagedState {
                 }),
                 model: resolved_model.id.clone(),
                 execution_model_ref,
+                model_override,
                 runtime: published_backend_ref,
                 delegate_ids: delegate_ids.clone(),
                 toolsets: effective_tools.toolsets.clone(),
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: Vec::new(),
-                transcript_prefix,
+                transcript_prefix: None,
                 resources: resolved_resources,
                 initial_mcp: mcp_drafts,
             },
@@ -899,21 +850,17 @@ impl ManagedState {
             deployment_id,
         };
         // Anthropic's create-time overrides are session-local replacements. Null
-        // clears nullable/list fields; an empty list also clears a list field.
-        if let AgentRef::Object(override_ref) = &req.agent {
-            if let Some(system) = &override_ref.system {
-                session.agent.system = system.clone();
+        // clears only `system`; an empty array clears a list field.
+        if let Some(system) = req.agent.system_override() {
+            session.agent.system = system.map(str::to_owned);
+        }
+        if let Some(tools) = req.agent.tools_override() {
+            if tools.is_empty() && !session.agent.skills.is_empty() {
+                return Err(StateError::Run(RunError::bad_request(
+                    "cannot clear tools while skills are configured",
+                )));
             }
-            if let Some(tools) = &override_ref.tools {
-                if tools.as_ref().is_none_or(|tools| tools.is_empty())
-                    && !session.agent.skills.is_empty()
-                {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "cannot clear tools while skills are configured",
-                    )));
-                }
-                session.agent.tools = project::resolved_tools(tools.as_deref().unwrap_or_default());
-            }
+            session.agent.tools = project::resolved_tools(tools);
         }
         self.owners.lock().unwrap().insert(id.clone(), owner_scope);
         let record = SessionRecord::new(

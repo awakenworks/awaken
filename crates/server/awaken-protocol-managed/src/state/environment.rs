@@ -37,7 +37,7 @@ impl ManagedState {
     /// catalog before the Session baseline is committed.
     pub(crate) async fn resolve_session_environment(
         &self,
-        requested_environment_id: Option<&str>,
+        requested_environment_id: &str,
         published_environment: Option<
             &awaken_executable_agent_contract::ExecutableAgentEnvironment,
         >,
@@ -47,7 +47,7 @@ impl ManagedState {
         let resolved = self
             .application
             .resolve_session_environment(
-                requested_environment_id,
+                Some(requested_environment_id),
                 published_environment,
                 published_backend_ref,
                 mcp_targets,

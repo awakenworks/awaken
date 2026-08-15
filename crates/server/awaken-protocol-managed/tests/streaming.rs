@@ -292,7 +292,11 @@ fn end_turn(messages: Vec<Message>) -> StepOutcome {
 async fn state_create(state: &ManagedState) -> String {
     state
         .create_session(
-            serde_json::from_value(serde_json::json!({ "agent": "coder" })).unwrap(),
+            serde_json::from_value(serde_json::json!({
+                "agent": "coder",
+                "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+            }))
+            .unwrap(),
             None,
         )
         .await
@@ -383,7 +387,10 @@ async fn http_create(app: &Router) -> String {
         app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({ "agent": "coder" }),
+        serde_json::json!({
+            "agent": "coder",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+        }),
     )
     .await["id"]
         .as_str()

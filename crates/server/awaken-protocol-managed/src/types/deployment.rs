@@ -48,11 +48,9 @@ impl InitialEventSpec for DeploymentInitialEvent {
 impl From<DeploymentInitialEvent> for InboundEvent {
     fn from(value: DeploymentInitialEvent) -> Self {
         match value {
-            DeploymentInitialEvent::UserMessage { content } => InboundEvent::UserMessage {
-                content,
-                session_thread_id: None,
-                model: None,
-            },
+            DeploymentInitialEvent::UserMessage { content } => {
+                InboundEvent::UserMessage { content }
+            }
             DeploymentInitialEvent::SystemMessage { content } => {
                 InboundEvent::SystemMessage { content }
             }

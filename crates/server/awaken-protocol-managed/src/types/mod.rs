@@ -38,12 +38,12 @@ pub mod deployment;
 pub mod environment;
 pub(crate) mod initial_event;
 pub mod page;
-mod presence;
+pub(crate) mod presence;
 pub mod resource;
 pub mod session;
 pub mod tunnel;
 pub mod user_profile;
 pub mod vault;
 
-pub use page::{Page, PageQuery, paginate, paginate_by};
+pub use page::{Page, PageCursor, PageQuery, paginate, paginate_by};
 pub use session::*;

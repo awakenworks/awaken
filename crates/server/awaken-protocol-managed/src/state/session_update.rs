@@ -3,11 +3,6 @@
 use super::*;
 
 impl ManagedState {
-    #[must_use]
-    pub(crate) fn update_operation_id(id: &str, idempotency_key: &str) -> String {
-        awaken_session_application::SessionApplication::update_operation_id(id, idempotency_key)
-    }
-
     /// MCP projection recovery entry point. It consumes the same canonical
     /// repository recovery index as Resource activation, then drives only the
     /// MCP aggregate state machine through the application owner.

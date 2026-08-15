@@ -30,6 +30,8 @@ pub struct CreateMemoryStoreCommand {
 pub struct UpdateMemoryStoreCommand {
     pub workspace_id: String,
     pub id: MemoryStoreId,
+    /// `None` preserves; `Some(value)` replaces the human-readable name.
+    pub name: Option<String>,
     /// `None` preserves; `Some("")` clears.
     pub description: Option<String>,
     /// String values upsert and `None` values delete.

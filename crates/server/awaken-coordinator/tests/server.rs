@@ -61,7 +61,10 @@ async fn create_session(app: &Router) -> String {
         app,
         "POST",
         "/v1/sessions",
-        serde_json::json!({ "agent": "assistant" }),
+        serde_json::json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
     )
     .await;
     s["id"].as_str().unwrap().to_string()

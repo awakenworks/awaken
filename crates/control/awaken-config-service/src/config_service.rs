@@ -47,6 +47,8 @@ use axum::{Extension, Json};
 #[cfg(test)]
 use serde_json::json;
 
+mod lifecycle;
+
 /// The config domain service: validate, store, and publish Agent configuration.
 ///
 /// **Authorization-free by design (ADR-0051/0052).** The already-scoped authoring
@@ -80,7 +82,7 @@ impl ConfigService {
         registry: &dyn ConfigRegistry,
         config: &AgentConfig,
     ) -> Result<(), String> {
-        self.reject_archived_rewrite(registry, config).await?;
+        lifecycle::reject_archived_rewrite(registry, config).await?;
         registry.put_config(config).await.map_err(|e| e.to_string())
     }
 
@@ -90,33 +92,11 @@ impl ConfigService {
         config: &AgentConfig,
         expected_generation: u64,
     ) -> Result<ConfigWrite, String> {
-        self.reject_archived_rewrite(registry, config).await?;
+        lifecycle::reject_archived_rewrite(registry, config).await?;
         registry
             .put_config_if_revision(config, expected_generation)
             .await
             .map_err(|e| e.to_string())
-    }
-
-    async fn reject_archived_rewrite(
-        &self,
-        registry: &dyn ConfigRegistry,
-        config: &AgentConfig,
-    ) -> Result<(), String> {
-        let current = registry
-            .get_config(&config.id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let invalid = current.as_ref().is_some_and(|stored| {
-            use awaken_agent_config::AgentLifecycle::{Archived, Disabled, Published};
-            match (stored.lifecycle(), config.lifecycle()) {
-                (Published, _) | (Disabled, Archived) => false,
-                (Disabled | Archived, _) => stored != config,
-            }
-        });
-        if invalid {
-            return Err(format!("agent `{}` is not published", config.id));
-        }
-        Ok(())
     }
 
     /// Load a stored config draft by id from the scope-bound `registry`.
@@ -474,6 +454,8 @@ pub(crate) mod resource_prompt_tests {
             AgentConfigRevision {
                 config,
                 revision: 1,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
             },
         )
         .await
@@ -817,6 +799,8 @@ pub(crate) mod resource_prompt_tests {
             Ok(Some(AgentConfigRevision {
                 config: agent_config(id),
                 revision: 7,
+                created_at_unix_ms: None,
+                updated_at_unix_ms: None,
             }))
         }
 
@@ -1324,6 +1308,7 @@ pub(crate) mod resource_prompt_tests {
             target: awaken_agent_config::ModelTarget {
                 model_id: "m-first".into(),
                 provider_id: Some("openai".into()),
+                api_dialect: Some("open_ai_chat".into()),
                 protocol_endpoint_id: None,
                 endpoint_name: Some("edge".into()),
             },
@@ -1337,11 +1322,10 @@ pub(crate) mod resource_prompt_tests {
         let view = catalog
             .session_profile_in(DEFAULT_SCOPE, &config.id)
             .unwrap();
-        // Cause/effect rule: a provider-qualified Managed target (C1) projects
-        // its full display id for the API (E1) and the already-published exact
-        // candidate model_ref for execution (E2); neither string substitutes for
-        // the other at Session preparation.
-        assert_eq!(view.model.as_deref(), Some("openai@edge/m-first"), "E1");
+        // Rule: provider-qualified Target (C1) -> full API id (E1) + exact
+        // published execution model_ref (E2); neither substitutes for the other.
+        let public_model = "m-first;provider=openai;api=open_ai_chat;endpoint=edge";
+        assert_eq!(view.model.as_deref(), Some(public_model), "E1");
         assert_eq!(view.execution_model_ref.as_deref(), Some("m-first"), "E2");
     }
 

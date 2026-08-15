@@ -156,7 +156,10 @@ async fn ai_sdk_awaits_then_managed_resumes_same_thread() {
         &app,
         "POST",
         "/v1/sessions",
-        json!({ "agent": "assistant" }),
+        json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
     )
     .await;
     let session: Value = serde_json::from_str(&created).unwrap();
@@ -263,7 +266,10 @@ async fn ag_ui_awaits_then_managed_resumes_visible_via_ai_sdk() {
         &app,
         "POST",
         "/v1/sessions",
-        json!({ "agent": "assistant" }),
+        json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
     )
     .await;
     let session: Value = serde_json::from_str(&created).unwrap();
@@ -527,7 +533,10 @@ async fn a2a_awaits_input_required_then_resumes_completed() {
         &app,
         "POST",
         "/v1/sessions",
-        json!({ "agent": "assistant" }),
+        json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        }),
     )
     .await;
     let thread = serde_json::from_str::<Value>(&created).unwrap()["id"]

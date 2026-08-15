@@ -307,6 +307,8 @@ mod tests {
                 ..Default::default()
             },
             revision: 7,
+            created_at_unix_ms: None,
+            updated_at_unix_ms: None,
         }
     }
 

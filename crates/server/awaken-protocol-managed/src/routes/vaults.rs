@@ -64,7 +64,7 @@ use crate::types::vault::{
     TokenEndpointAuthParams, TokenEndpointAuthResponse, TokenEndpointAuthUpdate, Vault,
     VaultCreateParams, VaultUpdateParams,
 };
-use crate::types::{ErrorResponse, Page, PageQuery, paginate};
+use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
 /// Deterministic timestamp stamped on every vault/credential object, matching the
 /// session surface's `PROCESSED_AT` convention (no wall-clock/uuid dependency, so
@@ -914,7 +914,7 @@ async fn list_vaults(
     State(state): State<Arc<VaultState>>,
     Query(query): Query<ListQuery>,
     Query(page): Query<PageQuery>,
-) -> Json<Page<Vault>> {
+) -> Json<PageCursor<Vault>> {
     let store = state.inner.lock().unwrap();
     let mut ids: Vec<&String> = store
         .vaults
@@ -1215,7 +1215,7 @@ async fn list_credentials(
     Path(vault_id): Path<String>,
     Query(query): Query<ListQuery>,
     Query(page): Query<PageQuery>,
-) -> Result<Json<Page<Credential>>, WireError> {
+) -> Result<Json<PageCursor<Credential>>, WireError> {
     let store = state.inner.lock().unwrap();
     if !store.vaults.contains_key(&vault_id) {
         return Err(not_found("vault"));
