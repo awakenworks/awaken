@@ -22,7 +22,7 @@ fn split_exact_vault_reference(reference: &str) -> Result<(&str, Option<u64>), S
     Ok((source_id, Some(revision)))
 }
 
-#[cfg(feature = "authority")]
+#[cfg(any(feature = "authority", kani))]
 fn exact_vault_revision_is_admitted(actual: i64, expected: Option<u64>) -> bool {
     actual > 0 && expected.is_none_or(|expected| u64::try_from(actual) == Ok(expected))
 }
