@@ -48,7 +48,9 @@ use awaken_runtime_contract::resolved::{
 };
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult, validate_resume};
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::runtime_context::{
+    RuntimeRunContext, TranscriptContextDestination, transcript_prefix_projects_to,
+};
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
 use awaken_runtime_contract::tool::{
     ToolError, ToolExecutionTarget, ToolExecutor, ToolOperationContext, ToolOutput,
@@ -109,7 +111,12 @@ fn map_resolver_error(err: resolver::Error) -> Error {
 /// same context semantics without creating another durable transcript.
 fn model_transcript(context: &RuntimeRunContext, committed: Vec<Message>) -> Vec<Message> {
     let mut transcript = Vec::with_capacity(context.request_context.len() + committed.len());
-    transcript.extend(context.request_context.iter().cloned());
+    if transcript_prefix_projects_to(TranscriptContextDestination::ModelRequest) {
+        transcript.extend(context.request_context.iter().cloned());
+    }
+    debug_assert!(!transcript_prefix_projects_to(
+        TranscriptContextDestination::DurableThreadTruth
+    ));
     transcript.extend(committed);
     transcript
 }

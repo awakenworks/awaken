@@ -76,22 +76,77 @@ pub struct AgentToolDefaultConfig {
     pub permission_policy: Option<AgentToolPermissionPolicy>,
 }
 
+/// Closed discriminant for the official versioned Runtime capability surface.
+/// The finite enum keeps symbolic proofs away from unbounded string comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentToolsetMember {
+    Bash,
+    Read,
+    Write,
+    Edit,
+    Glob,
+    Grep,
+    WebFetch,
+    WebSearch,
+}
+
+impl AgentToolsetMember {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bash => "bash",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Edit => "edit",
+            Self::Glob => "glob",
+            Self::Grep => "grep",
+            Self::WebFetch => "web_fetch",
+            Self::WebSearch => "web_search",
+        }
+    }
+}
+
+const AGENT_TOOLSET_MEMBERS: [AgentToolsetMember; 8] = [
+    AgentToolsetMember::Bash,
+    AgentToolsetMember::Read,
+    AgentToolsetMember::Write,
+    AgentToolsetMember::Edit,
+    AgentToolsetMember::Glob,
+    AgentToolsetMember::Grep,
+    AgentToolsetMember::WebFetch,
+    AgentToolsetMember::WebSearch,
+];
+
 /// The official Managed Agent toolset's versioned membership. It lives beside
 /// the wire value so every adapter normalizes the same closed set.
 pub const AGENT_TOOLSET_TOOL_IDS: [&str; 8] = [
-    "bash",
-    "read",
-    "write",
-    "edit",
-    "glob",
-    "grep",
-    "web_fetch",
-    "web_search",
+    AgentToolsetMember::Bash.as_str(),
+    AgentToolsetMember::Read.as_str(),
+    AgentToolsetMember::Write.as_str(),
+    AgentToolsetMember::Edit.as_str(),
+    AgentToolsetMember::Glob.as_str(),
+    AgentToolsetMember::Grep.as_str(),
+    AgentToolsetMember::WebFetch.as_str(),
+    AgentToolsetMember::WebSearch.as_str(),
 ];
+
+/// Allocation-free traversal of the complete versioned Runtime capability
+/// projection. Keeping the iterator beside the closed array prevents adapters
+/// from maintaining a second list or accidentally omitting the final member.
+#[must_use]
+pub fn agent_toolset_members() -> impl ExactSizeIterator<Item = &'static str> + DoubleEndedIterator
+{
+    bounded_agent_toolset_members().map(AgentToolsetMember::as_str)
+}
+
+#[must_use]
+fn bounded_agent_toolset_members() -> core::array::IntoIter<AgentToolsetMember, 8> {
+    AGENT_TOOLSET_MEMBERS.into_iter()
+}
 
 #[must_use]
 pub fn is_agent_toolset_member(name: &str) -> bool {
-    AGENT_TOOLSET_TOOL_IDS.contains(&name)
+    agent_toolset_members().any(|member| member == name)
 }
 
 /// Normalize the durable wire vocabulary into the one neutral execution policy.
@@ -146,8 +201,7 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
             };
             let overrides = match &source {
                 ToolsetSource::Agent => {
-                    let mut resolved = AGENT_TOOLSET_TOOL_IDS
-                        .into_iter()
+                    let mut resolved = agent_toolset_members()
                         .map(|name| {
                             let config = configs.iter().find(|config| config.name == name);
                             ToolPolicyOverride {
@@ -202,6 +256,49 @@ pub fn toolset_policies(tools: &[AgentTool]) -> Vec<awaken_agent_contract::Tools
             })
         })
         .collect()
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(9)]
+fn bounded_runtime_capability_iterator_uses_exact_member_projection() {
+    let expected = [
+        AgentToolsetMember::Bash,
+        AgentToolsetMember::Read,
+        AgentToolsetMember::Write,
+        AgentToolsetMember::Edit,
+        AgentToolsetMember::Glob,
+        AgentToolsetMember::Grep,
+        AgentToolsetMember::WebFetch,
+        AgentToolsetMember::WebSearch,
+    ];
+    let mut projected = bounded_agent_toolset_members();
+    let mut index = 0usize;
+    while index < expected.len() {
+        assert_eq!(projected.next(), Some(expected[index]));
+        index += 1;
+    }
+    assert_eq!(projected.next(), None);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn runtime_capability_member_projection_is_total_exact_and_bounded() {
+    let index: u8 = kani::any();
+    kani::assume(index <= 8);
+    let projected = bounded_agent_toolset_members().nth(usize::from(index));
+    let expected = match index {
+        0 => Some(AgentToolsetMember::Bash),
+        1 => Some(AgentToolsetMember::Read),
+        2 => Some(AgentToolsetMember::Write),
+        3 => Some(AgentToolsetMember::Edit),
+        4 => Some(AgentToolsetMember::Glob),
+        5 => Some(AgentToolsetMember::Grep),
+        6 => Some(AgentToolsetMember::WebFetch),
+        7 => Some(AgentToolsetMember::WebSearch),
+        _ => None,
+    };
+    assert_eq!(projected, expected);
 }
 
 /// Project a resolved policy back to its canonical durable wire value.

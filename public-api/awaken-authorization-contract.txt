@@ -1,0 +1,30 @@
+pub mod awaken_authorization_contract
+pub enum awaken_authorization_contract::AuthorizationAction
+pub awaken_authorization_contract::AuthorizationAction::RunCreate
+pub awaken_authorization_contract::AuthorizationAction::RunRead
+pub awaken_authorization_contract::AuthorizationAction::WorkspaceRead
+pub awaken_authorization_contract::AuthorizationAction::WorkspaceWrite
+impl awaken_authorization_contract::AuthorizationAction
+pub const fn awaken_authorization_contract::AuthorizationAction::as_str(self) -> &'static str
+pub enum awaken_authorization_contract::RouteAccess
+pub awaken_authorization_contract::RouteAccess::Read
+pub awaken_authorization_contract::RouteAccess::Write
+pub enum awaken_authorization_contract::RouteGuardSelection
+pub awaken_authorization_contract::RouteGuardSelection::Application
+pub awaken_authorization_contract::RouteGuardSelection::HostedRuntime
+pub awaken_authorization_contract::RouteGuardSelection::HostedRuntime::action: awaken_authorization_contract::AuthorizationAction
+pub awaken_authorization_contract::RouteGuardSelection::HostedRuntime::embedded_action: awaken_authorization_contract::AuthorizationAction
+pub enum awaken_authorization_contract::WorkspaceRoleAuthority
+pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceApiKeyAll
+pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceConfigurationAll
+pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceModelSupplyRead
+pub awaken_authorization_contract::WorkspaceRoleAuthority::WorkspaceSkillAll
+impl awaken_authorization_contract::WorkspaceRoleAuthority
+pub const fn awaken_authorization_contract::WorkspaceRoleAuthority::management_action_pattern(self) -> core::option::Option<&'static str>
+pub const fn awaken_authorization_contract::WorkspaceRoleAuthority::resource_action_pattern(self) -> core::option::Option<&'static str>
+pub const awaken_authorization_contract::AGENT_PUBLISHER_AUTHORITIES: &[awaken_authorization_contract::WorkspaceRoleAuthority]
+pub const awaken_authorization_contract::CREDENTIAL_INGRESS_AUTHORITIES: &[awaken_authorization_contract::WorkspaceRoleAuthority]
+pub fn awaken_authorization_contract::agent_publisher_role_contains(awaken_authorization_contract::WorkspaceRoleAuthority) -> bool
+pub const fn awaken_authorization_contract::application_route_policy(awaken_authorization_contract::RouteAccess) -> awaken_authorization_contract::RouteGuardSelection
+pub fn awaken_authorization_contract::credential_ingress_role_contains(awaken_authorization_contract::WorkspaceRoleAuthority) -> bool
+pub const fn awaken_authorization_contract::run_backed_route_policy(awaken_authorization_contract::RouteAccess) -> awaken_authorization_contract::RouteGuardSelection

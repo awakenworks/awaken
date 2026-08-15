@@ -139,6 +139,25 @@ pub struct PlaintextHolder {
     pub trust_domain: TrustDomainRef,
 }
 
+/// Allocation-free projection used by Worker-private material adapters. Keeping
+/// the opaque identity generic lets the security-significant projection be
+/// exhaustively proved without constructing strings or touching filesystem IO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerPlaintextHolderProjection<T> {
+    pub boundary: PlaintextBoundary,
+    pub trust_domain: T,
+}
+
+#[must_use]
+pub const fn project_worker_plaintext_holder<T>(
+    trust_domain: T,
+) -> WorkerPlaintextHolderProjection<T> {
+    WorkerPlaintextHolderProjection {
+        boundary: PlaintextBoundary::Worker,
+        trust_domain,
+    }
+}
+
 impl PlaintextHolder {
     #[must_use]
     pub fn new(boundary: PlaintextBoundary, trust_domain: impl Into<String>) -> Self {
@@ -889,9 +908,19 @@ impl CredentialMaterial {
                 | CredentialUsage::File { .. },
             )
             | (Self::OAuth(_), CredentialUsage::ProviderAdapter) => true,
-            (Self::Secret(_), CredentialUsage::HttpEffect { fields }) => fields.len() == 1,
+            (Self::Secret(_), CredentialUsage::HttpEffect { fields }) => {
+                http_effect::http_effect_material_shape_is_exact(
+                    http_effect::HttpEffectMaterialShape::Secret,
+                    fields.len(),
+                    false,
+                )
+            }
             (Self::Structured(material), CredentialUsage::HttpEffect { fields }) => {
-                material.fields.keys().eq(fields.keys())
+                http_effect::http_effect_material_shape_is_exact(
+                    http_effect::HttpEffectMaterialShape::Structured,
+                    fields.len(),
+                    material.fields.keys().eq(fields.keys()),
+                )
             }
             _ => false,
         };

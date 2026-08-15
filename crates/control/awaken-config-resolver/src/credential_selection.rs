@@ -11,6 +11,26 @@ use awaken_credential_vault::{
     CredentialPoolId, CredentialPoolMember, CredentialSource, CredentialStatus, SelectionPolicy,
 };
 
+/// Allocation-free kernel for the provider x endpoint scope join.
+///
+/// The caller supplies equality facts for the concrete catalog/source strings;
+/// this kernel owns the security-significant shape rule. In particular, an
+/// endpoint scope is never interpreted as provider-wide, and Worker-local
+/// material without a provider namespace is never treated as a legacy global
+/// credential.
+#[must_use]
+const fn credential_scope_admits(
+    worker_local: bool,
+    provider_scoped: bool,
+    provider_matches: bool,
+    endpoint_scoped: bool,
+    endpoint_matches: bool,
+) -> bool {
+    (!worker_local || provider_scoped)
+        && (!provider_scoped || provider_matches)
+        && (!endpoint_scoped || (provider_scoped && endpoint_matches))
+}
+
 /// May this credential authenticate the model provider?
 #[must_use]
 pub fn can_consume(
@@ -21,19 +41,56 @@ pub fn can_consume(
     if source.is_claude_code_setup_token() {
         return false;
     }
-    if source.protocol_endpoint_id.is_some() && source.provider_id.is_none() {
-        return false;
+    let provider_scope = source.provider_id.as_deref();
+    let endpoint_scope = source.protocol_endpoint_id.as_deref();
+    credential_scope_admits(
+        source.material_origin() == CredentialMaterialOrigin::WorkerLocal,
+        provider_scope.is_some(),
+        provider_scope.is_none_or(|scoped| scoped == offering_provider_id),
+        endpoint_scope.is_some(),
+        endpoint_scope.is_none_or(|scoped| offering_endpoint_id == Some(scoped)),
+    )
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::credential_scope_admits;
+
+    /// Proves every scope axis is binding: admission of a scoped source implies
+    /// exact equality, malformed endpoint-only scopes fail closed, and the only
+    /// unscoped compatibility path excludes Worker-local material.
+    #[kani::proof]
+    fn provider_scope_never_widens_endpoint_scope() {
+        let worker_local = kani::any::<bool>();
+        let provider_scoped = kani::any::<bool>();
+        let provider_matches = kani::any::<bool>();
+        let endpoint_scoped = kani::any::<bool>();
+        let endpoint_matches = kani::any::<bool>();
+        let admitted = credential_scope_admits(
+            worker_local,
+            provider_scoped,
+            provider_matches,
+            endpoint_scoped,
+            endpoint_matches,
+        );
+
+        if admitted && provider_scoped {
+            assert!(provider_matches);
+        }
+        if admitted && endpoint_scoped {
+            assert!(provider_scoped);
+            assert!(endpoint_matches);
+        }
+        if endpoint_scoped && !provider_scoped {
+            assert!(!admitted);
+        }
+        if worker_local && !provider_scoped {
+            assert!(!admitted);
+        }
+        if !worker_local && !provider_scoped && !endpoint_scoped {
+            assert!(admitted);
+        }
     }
-    let provider_matches = match (source.material_origin(), source.provider_id.as_deref()) {
-        (CredentialMaterialOrigin::WorkerLocal, None) => false,
-        (_, None) => true,
-        (_, Some(scoped)) => scoped == offering_provider_id,
-    };
-    provider_matches
-        && source
-            .protocol_endpoint_id
-            .as_deref()
-            .is_none_or(|scoped| offering_endpoint_id == Some(scoped))
 }
 
 /// The resolver-owned provider/backend validity join used by both default

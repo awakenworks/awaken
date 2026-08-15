@@ -87,7 +87,7 @@ impl ManualClock {
     pub fn advance(&self, delta_ms: u64) {
         let _ = self
             .now
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
                 Some(deadline_millis(now, delta_ms))
             });
     }

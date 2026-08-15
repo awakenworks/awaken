@@ -268,6 +268,17 @@ impl ToolGateHook for SuspendGate {
     }
 }
 
+struct BlockGate;
+
+#[async_trait::async_trait]
+impl ToolGateHook for BlockGate {
+    async fn gate(&self, _: &ToolCall, _: &Store) -> GateOutcome {
+        GateOutcome::Block {
+            reason: "formal policy denial".to_string(),
+        }
+    }
+}
+
 struct AwaitingDelegation {
     trace: TracingCoordinator,
 }
@@ -511,16 +522,33 @@ fn register_snapshot(runtime: &Runtime, snapshot: &ExecutableAgentSnapshot) {
     runtime.register_snapshot(snapshot.clone());
 }
 
+const TRACE_SCHEMA_VERSION: u16 = 2;
+const PROJECTION_ID: &str = "thread-commit-durable-v1";
+const PROJECTED_FIELDS: [&str; 8] = [
+    "run_state",
+    "ticket_kind",
+    "ticket_call",
+    "call_state",
+    "attempts",
+    "batch_state",
+    "link_state",
+    "version",
+];
+
 #[derive(Serialize)]
 struct TraceDocument {
+    schema_version: u16,
+    projection_id: &'static str,
+    projected_fields: [&'static str; 8],
     name: String,
     calls: Vec<String>,
     agent_calls: Vec<String>,
     max_attempts: u16,
     states: Vec<TraceState>,
+    transitions: Vec<TraceTransition>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct TraceState {
     run_state: String,
     ticket_kind: String,
@@ -530,6 +558,151 @@ struct TraceState {
     batch_state: String,
     link_state: BTreeMap<String, String>,
     version: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+enum TransitionId {
+    PersistBatch,
+    CommitNoop,
+    StartOrRetry,
+    StartParallelDelegations,
+    AwaitCall,
+    ResumeExecuting,
+    CompleteCall,
+    CompleteAndFinalize,
+    CompleteImmediate,
+    CompleteImmediateAndFinalize,
+    MarkIndeterminate,
+    FinalizeBatch,
+    EndRun,
+}
+
+#[derive(Debug, Serialize)]
+struct TraceTransition {
+    id: TransitionId,
+    from_version: usize,
+    to_version: usize,
+}
+
+fn same_except_version(before: &TraceState, after: &TraceState) -> bool {
+    let mut normalized = after.clone();
+    normalized.version = before.version;
+    &normalized == before
+}
+
+fn changed_calls<'a>(
+    calls: &'a [String],
+    before: &TraceState,
+    after: &TraceState,
+) -> Vec<&'a String> {
+    calls
+        .iter()
+        .filter(|call| {
+            before.call_state[*call] != after.call_state[*call]
+                || before.attempts[*call] != after.attempts[*call]
+                || before.link_state[*call] != after.link_state[*call]
+        })
+        .collect()
+}
+
+/// Classify one real durable commit by its projected before/after shape. TLC
+/// independently checks that this ID names an operator which accepts the same
+/// state pair; this classifier cannot make an invalid commit refine the model.
+fn classify_transition(
+    calls: &[String],
+    agent_calls: &BTreeSet<String>,
+    before: &TraceState,
+    after: &TraceState,
+) -> TransitionId {
+    assert_eq!(
+        after.version,
+        before.version + 1,
+        "each observed ThreadCommit advances the projection version once"
+    );
+
+    if before.run_state != "Ended" && after.run_state == "Ended" {
+        return TransitionId::EndRun;
+    }
+    if before.batch_state == "Absent"
+        && after.batch_state == "Open"
+        && before.run_state == after.run_state
+        && before.ticket_kind == after.ticket_kind
+        && before.ticket_call == after.ticket_call
+        && before.call_state == after.call_state
+        && before.attempts == after.attempts
+        && before.link_state == after.link_state
+    {
+        return TransitionId::PersistBatch;
+    }
+    if before.batch_state == "Open"
+        && after.batch_state == "Finalized"
+        && before.run_state == after.run_state
+        && before.ticket_kind == after.ticket_kind
+        && before.ticket_call == after.ticket_call
+        && before.call_state == after.call_state
+        && before.attempts == after.attempts
+        && before.link_state == after.link_state
+    {
+        return TransitionId::FinalizeBatch;
+    }
+    if before.run_state == "Running"
+        && after.run_state == "Awaiting"
+        && before.ticket_kind == "None"
+        && after.ticket_kind != "None"
+        && after.ticket_call != "no_call"
+    {
+        return TransitionId::AwaitCall;
+    }
+    if before.run_state == "Awaiting"
+        && after.run_state == "Running"
+        && before.ticket_call != "no_call"
+        && after.ticket_kind == "None"
+        && after.ticket_call == "no_call"
+        && before.call_state[&before.ticket_call] == "Awaiting"
+        && after.call_state[&before.ticket_call] == "Executing"
+    {
+        return TransitionId::ResumeExecuting;
+    }
+
+    let changed = changed_calls(calls, before, after);
+    if changed.len() > 1
+        && changed.len() == agent_calls.len()
+        && changed.iter().all(|call| {
+            agent_calls.contains(*call)
+                && before.call_state[*call] == "Requested"
+                && after.call_state[*call] == "Executing"
+                && after.attempts[*call] == before.attempts[*call] + 1
+        })
+    {
+        return TransitionId::StartParallelDelegations;
+    }
+    if changed.len() == 1 {
+        let call = changed[0];
+        let source = before.call_state[call].as_str();
+        let target = after.call_state[call].as_str();
+        if target == "Completed" {
+            return match (source == "Requested", after.batch_state == "Finalized") {
+                (true, true) => TransitionId::CompleteImmediateAndFinalize,
+                (true, false) => TransitionId::CompleteImmediate,
+                (false, true) => TransitionId::CompleteAndFinalize,
+                (false, false) => TransitionId::CompleteCall,
+            };
+        }
+        if target == "Indeterminate" {
+            return TransitionId::MarkIndeterminate;
+        }
+        if target == "Executing" && after.attempts[call] == before.attempts[call] + 1 {
+            return TransitionId::StartOrRetry;
+        }
+    }
+    if same_except_version(before, after) {
+        return TransitionId::CommitNoop;
+    }
+
+    panic!(
+        "unclassified production transition v{} -> v{}: before={before:?}, after={after:?}",
+        before.version, after.version
+    );
 }
 
 fn ticket_kind(commit: &ThreadCommit) -> String {
@@ -685,12 +858,25 @@ fn project_trace(name: &str, commits: Vec<ThreadCommit>) -> TraceDocument {
         });
     }
 
+    let transitions = states
+        .windows(2)
+        .map(|pair| TraceTransition {
+            id: classify_transition(&calls, &agent_calls, &pair[0], &pair[1]),
+            from_version: pair[0].version,
+            to_version: pair[1].version,
+        })
+        .collect();
+
     TraceDocument {
+        schema_version: TRACE_SCHEMA_VERSION,
+        projection_id: PROJECTION_ID,
+        projected_fields: PROJECTED_FIELDS,
         name: name.to_string(),
         calls,
         agent_calls: agent_calls.into_iter().collect(),
         max_attempts,
         states,
+        transitions,
     }
 }
 
@@ -741,6 +927,33 @@ async fn ordinary_parallel_batch_produces_a_refinement_trace() {
         .expect("ordinary trace runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     emit_trace("ordinary_parallel", &trace);
+}
+
+#[tokio::test]
+async fn policy_blocked_batch_produces_immediate_completion_refinement_transitions() {
+    // Gate denials are answered by the Runtime without entering an external
+    // executor. Two calls exercise both the intermediate immediate completion
+    // and the final immediate completion/publication barrier.
+    let trace = TracingCoordinator::default();
+    let calls = vec![
+        tool_call("blocked_a", "tool_a"),
+        tool_call("blocked_b", "tool_b"),
+    ];
+    let snapshot = snapshot(&["tool_a", "tool_b"]);
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(CallsThenText::new(calls)))
+        .with_gate(Arc::new(BlockGate));
+    register_snapshot(&runtime, &snapshot);
+
+    let outcome = runtime
+        .execute(
+            activation(snapshot),
+            RuntimeRunContext::new().with_commit(Arc::new(trace.clone())),
+        )
+        .await
+        .expect("policy-blocked trace runs");
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    emit_trace("policy_blocked_batch", &trace);
 }
 
 #[tokio::test]

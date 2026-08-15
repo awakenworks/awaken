@@ -112,6 +112,47 @@ pub enum Mode {
     BypassPermissions,
 }
 
+impl Mode {
+    /// Resolve an unmatched call without consulting any ambient default.
+    /// Planning fails closed, bypass is the one explicit allow-all posture,
+    /// and the ordinary modes preserve the authored default exactly.
+    #[must_use]
+    const fn unmatched_behavior(
+        self,
+        authored_default: ToolPermissionBehavior,
+    ) -> ToolPermissionBehavior {
+        match self {
+            Self::Plan => ToolPermissionBehavior::Deny,
+            Self::BypassPermissions => ToolPermissionBehavior::Allow,
+            Self::Default | Self::AcceptEdits => authored_default,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatchedRuleSelection {
+    Deny,
+    Continue(Option<(Specificity, ToolPermissionBehavior)>),
+}
+
+/// Fold one matching rule into the current non-deny winner. A deny is an
+/// absorbing result; otherwise only a strictly more-specific candidate may
+/// replace the winner, preserving deterministic first-wins behavior on ties.
+fn select_matched_rule(
+    best: Option<(Specificity, ToolPermissionBehavior)>,
+    specificity: Specificity,
+    behavior: ToolPermissionBehavior,
+) -> MatchedRuleSelection {
+    if behavior == ToolPermissionBehavior::Deny {
+        return MatchedRuleSelection::Deny;
+    }
+    if best.is_none_or(|(best_specificity, _)| specificity > best_specificity) {
+        MatchedRuleSelection::Continue(Some((specificity, behavior)))
+    } else {
+        MatchedRuleSelection::Continue(best)
+    }
+}
+
 /// One rule: a pattern and the behavior it grants.
 #[derive(Debug, Clone)]
 pub struct PermissionRule {
@@ -156,21 +197,85 @@ impl PermissionRuleset {
             let Some(spec) = rule.pattern.matches(tool_id, args) else {
                 continue;
             };
-            if rule.behavior == ToolPermissionBehavior::Deny {
-                return ToolPermissionBehavior::Deny; // deny is absolute
-            }
-            if best.is_none_or(|(best_spec, _)| spec > best_spec) {
-                best = Some((spec, rule.behavior));
+            match select_matched_rule(best, spec, rule.behavior) {
+                MatchedRuleSelection::Deny => return ToolPermissionBehavior::Deny,
+                MatchedRuleSelection::Continue(selected) => best = selected,
             }
         }
         if let Some((_, behavior)) = best {
             return behavior;
         }
 
-        match self.mode {
-            Mode::Plan => ToolPermissionBehavior::Deny,
-            _ => self.default_behavior,
+        self.mode.unmatched_behavior(self.default_behavior)
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{
+        MatchedRuleSelection, Mode, Specificity, ToolPermissionBehavior, select_matched_rule,
+    };
+
+    fn arbitrary_behavior() -> ToolPermissionBehavior {
+        match kani::any::<u8>() % 3 {
+            0 => ToolPermissionBehavior::Allow,
+            1 => ToolPermissionBehavior::RequireConfirmation,
+            _ => ToolPermissionBehavior::Deny,
         }
+    }
+
+    fn arbitrary_specificity() -> Specificity {
+        Specificity {
+            tool_kind: kani::any(),
+            has_args: kani::any(),
+            field_count: kani::any(),
+            field_precision: kani::any(),
+        }
+    }
+
+    #[kani::proof]
+    fn unmatched_permission_mode_is_exact_and_plan_fails_closed() {
+        let mode = match kani::any::<u8>() % 4 {
+            0 => Mode::Default,
+            1 => Mode::AcceptEdits,
+            2 => Mode::Plan,
+            _ => Mode::BypassPermissions,
+        };
+        let authored = arbitrary_behavior();
+        let selected = mode.unmatched_behavior(authored);
+        let expected = match mode {
+            Mode::Plan => ToolPermissionBehavior::Deny,
+            Mode::BypassPermissions => ToolPermissionBehavior::Allow,
+            Mode::Default | Mode::AcceptEdits => authored,
+        };
+        assert_eq!(selected, expected);
+        if mode == Mode::Plan {
+            assert_eq!(selected, ToolPermissionBehavior::Deny);
+        }
+    }
+
+    #[kani::proof]
+    fn matched_deny_is_absolute_and_only_stricter_non_deny_replaces_authority() {
+        let existing = if kani::any() {
+            Some((arbitrary_specificity(), arbitrary_behavior()))
+        } else {
+            None
+        };
+        let candidate_specificity = arbitrary_specificity();
+        let candidate_behavior = arbitrary_behavior();
+        let selected = select_matched_rule(existing, candidate_specificity, candidate_behavior);
+
+        if candidate_behavior == ToolPermissionBehavior::Deny {
+            assert_eq!(selected, MatchedRuleSelection::Deny);
+            return;
+        }
+        let expected =
+            if existing.is_none_or(|(specificity, _)| candidate_specificity > specificity) {
+                Some((candidate_specificity, candidate_behavior))
+            } else {
+                existing
+            };
+        assert_eq!(selected, MatchedRuleSelection::Continue(expected));
     }
 }
 

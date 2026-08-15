@@ -19,9 +19,9 @@ pub(crate) fn capture_decision(
     settings: crate::deployment_config::ContentCaptureSettings,
     trace_file_present: bool,
 ) -> CaptureDecision {
-    let redactor: Arc<dyn ContentRedactor> = match settings.redaction {
-        crate::deployment_config::ContentRedaction::Regex => Arc::new(PiiRedactor::new()),
-        crate::deployment_config::ContentRedaction::None => Arc::new(NoopRedactor),
+    let redactor: Arc<dyn ContentRedactor> = match select_capture_redactor(settings.redaction) {
+        CaptureRedactorSelection::Regex => Arc::new(PiiRedactor::new()),
+        CaptureRedactorSelection::None => Arc::new(NoopRedactor),
     };
     let level = clamp_for_trace_file(settings.level, trace_file_present);
     CaptureDecision::with_redactor(level, redactor)
@@ -30,11 +30,72 @@ pub(crate) fn capture_decision(
 /// Clamp the level for the active sink (ADR-0050 D7): the append-only trace file
 /// has no subject key and no TTL, so it cannot honor erasure — it must never hold
 /// `Full` content. When it is the sink, cap at `Structured`.
-fn clamp_for_trace_file(level: ContentCapture, trace_file_present: bool) -> ContentCapture {
-    if trace_file_present && level == ContentCapture::Full {
-        ContentCapture::Structured
-    } else {
-        level
+const fn clamp_for_trace_file(level: ContentCapture, trace_file_present: bool) -> ContentCapture {
+    match (trace_file_present, level) {
+        (true, ContentCapture::Full) => ContentCapture::Structured,
+        _ => level,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureRedactorSelection {
+    None,
+    Regex,
+}
+
+const fn select_capture_redactor(
+    configured: crate::deployment_config::ContentRedaction,
+) -> CaptureRedactorSelection {
+    match configured {
+        crate::deployment_config::ContentRedaction::None => CaptureRedactorSelection::None,
+        crate::deployment_config::ContentRedaction::Regex => CaptureRedactorSelection::Regex,
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{CaptureRedactorSelection, clamp_for_trace_file, select_capture_redactor};
+    use crate::deployment_config::ContentRedaction;
+    use awaken_runtime_contract::ContentCapture;
+
+    fn arbitrary_capture() -> ContentCapture {
+        match kani::any::<u8>() % 3 {
+            0 => ContentCapture::Off,
+            1 => ContentCapture::Structured,
+            _ => ContentCapture::Full,
+        }
+    }
+
+    #[kani::proof]
+    fn trace_capture_clamp_is_exact_and_never_widens_persisted_content() {
+        let configured = arbitrary_capture();
+        let trace_file_present: bool = kani::any();
+        let effective = clamp_for_trace_file(configured, trace_file_present);
+        let expected = if trace_file_present && configured == ContentCapture::Full {
+            ContentCapture::Structured
+        } else {
+            configured
+        };
+
+        assert_eq!(effective, expected);
+        assert!(effective <= configured);
+        if trace_file_present {
+            assert_ne!(effective, ContentCapture::Full);
+        }
+    }
+
+    #[kani::proof]
+    fn configured_capture_redactor_selection_is_total_and_exact() {
+        let configured = if kani::any() {
+            ContentRedaction::None
+        } else {
+            ContentRedaction::Regex
+        };
+        let expected = match configured {
+            ContentRedaction::None => CaptureRedactorSelection::None,
+            ContentRedaction::Regex => CaptureRedactorSelection::Regex,
+        };
+        assert_eq!(select_capture_redactor(configured), expected);
     }
 }
 

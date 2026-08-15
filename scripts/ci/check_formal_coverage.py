@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate the versioned formal-safety obligation coverage ledger."""
 
+import argparse
 import json
 import pathlib
 import re
@@ -10,7 +11,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "formal" / "coverage.json"
 ALLOWED = {
-    "machine_linked",
+    "model_linked",
     "kernel_proved",
     "modeled_only",
     "executable_only",
@@ -22,6 +23,10 @@ def fail(message: str) -> None:
     print(f"formal coverage: {message}", file=sys.stderr)
     raise SystemExit(1)
 
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--json", action="store_true")
+args = parser.parse_args()
 
 data = json.loads(LEDGER.read_text(encoding="utf-8"))
 minimum = float(data["minimum_ratio"])
@@ -84,11 +89,11 @@ for obligation in obligations:
             if f"--harness {harness}" not in formal_gate:
                 fail(f"{obligation_id} Kani harness {harness} is absent from strict CI")
 
-    if status == "machine_linked":
+    if status == "model_linked":
         if not has_formal_model:
-            fail(f"{obligation_id} is machine-linked without a formal model or proof")
+            fail(f"{obligation_id} is model-linked without a formal model or proof")
         if not has_executable_link:
-            fail(f"{obligation_id} is machine-linked without executable Rust evidence")
+            fail(f"{obligation_id} is model-linked without executable Rust evidence")
     elif status == "kernel_proved":
         if not has_executable_link:
             fail(f"{obligation_id} is kernel-proved without production Rust evidence")
@@ -122,13 +127,60 @@ formalizable = [item for item in obligations if item["formalizable"]]
 linked = [
     item
     for item in formalizable
-    if item["status"] in {"machine_linked", "kernel_proved"}
+    if item["status"] in {"model_linked", "kernel_proved"}
 ]
 ratio = len(linked) / len(formalizable) if formalizable else 0.0
-print(
-    f"formal safety coverage: {len(linked)}/{len(formalizable)} "
-    f"machine-linked or kernel-proved obligations = {ratio:.1%} "
-    f"(required {minimum:.1%})"
-)
+model_checked = [
+    item
+    for item in formalizable
+    if any(
+        relative.startswith("formal/tla/") and relative.endswith(".tla")
+        for relative in item.get("evidence", [])
+    )
+]
+model_proved = [
+    item
+    for item in formalizable
+    if any(
+        relative.startswith("formal/tla/") and relative.endswith("Proof.tla")
+        for relative in item.get("evidence", [])
+    )
+]
+kernel_proved = [
+    item
+    for item in formalizable
+    if item["status"] == "kernel_proved" or item.get("proof_harnesses")
+]
+trace_refined = [
+    item
+    for item in formalizable
+    if "crates/runtime/awaken-runtime/tests/formal_refinement.rs"
+    in item.get("evidence", [])
+]
+executable_only = [
+    item for item in formalizable if item["status"] == "executable_only"
+]
+summary = {
+    "formalizable": len(formalizable),
+    "checked_formal_evidence": len(linked),
+    "checked_formal_evidence_ratio": ratio,
+    "model_checked": len(model_checked),
+    "model_proved": len(model_proved),
+    "kernel_proved": len(kernel_proved),
+    "trace_refined": len(trace_refined),
+    "executable_only": len(executable_only),
+    "external": len(obligations) - len(formalizable),
+}
+if args.json:
+    print(json.dumps(summary, indent=2, sort_keys=True))
+else:
+    print(
+        f"formal evidence coverage: {len(linked)}/{len(formalizable)} "
+        f"model-linked or kernel-proved obligations = {ratio:.1%} "
+        f"(required {minimum:.1%}); "
+        f"dimensions: model-checked={len(model_checked)}, "
+        f"model-proved={len(model_proved)}, kernel-proved={len(kernel_proved)}, "
+        f"trace-refined={len(trace_refined)}, executable-only={len(executable_only)}"
+    )
 if ratio < minimum:
     fail("coverage is below the required threshold")
