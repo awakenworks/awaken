@@ -923,6 +923,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
             workspace_id: "workspace".into(),
             revision: awaken_session_contract::SessionRevision(2),
             baseline,
+            agent_publication: None,
             environment: Default::default(),
             resource_revision: 7,
             resources: awaken_session_contract::ResolvedSessionResources {
@@ -3442,6 +3443,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
             workspace_id: workspace,
             revision: awaken_session_contract::SessionRevision(1),
             baseline,
+            agent_publication: None,
             environment: Default::default(),
             resource_revision: 0,
             resources: Default::default(),

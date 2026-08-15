@@ -20,6 +20,11 @@ pub struct FrozenSessionProjection {
     pub workspace_id: String,
     pub revision: crate::SessionRevision,
     pub baseline: crate::SessionBaseline,
+    /// Exact executable publication selected by the frozen baseline. This is a
+    /// rebuildable Coordinator projection delivered to an authority-store-free
+    /// Worker, never a second persisted Session or Agent authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_publication: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
     #[serde(default)]
     pub environment: crate::SessionEnvironmentState,
     #[serde(default)]

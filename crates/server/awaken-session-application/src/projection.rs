@@ -61,10 +61,44 @@ impl SessionApplication {
         } else {
             Vec::new()
         };
+        let agent_publication = match baseline.agent_revision {
+            Some(source_revision) => {
+                let snapshot = self.config_source.as_ref().and_then(|source| {
+                    source.executable_snapshot_at_revision_in(
+                        &owner_scope,
+                        &baseline.agent_id,
+                        source_revision,
+                    )
+                });
+                if baseline.runtime_placement == crate::SessionRuntimePlacement::Worker
+                    && snapshot.is_none()
+                {
+                    return Err(RunError::unavailable(format!(
+                        "Agent '{}' publication revision {} is unavailable for Worker realization",
+                        baseline.agent_id, source_revision
+                    )));
+                }
+                if let Some(snapshot) = &snapshot {
+                    if snapshot.root_agent_id.0 != baseline.agent_id
+                        || snapshot.metadata.source.revision != source_revision
+                        || baseline.runtime.as_ref().is_some_and(|runtime| {
+                            snapshot.resolved_spec.model_binding.backend_ref != *runtime
+                        })
+                    {
+                        return Err(RunError::internal(
+                            "exact Agent publication does not match the frozen Session baseline",
+                        ));
+                    }
+                }
+                snapshot
+            }
+            None => None,
+        };
         Ok(FrozenSessionProjection {
             workspace_id: owner_scope,
             revision: session.revision,
             baseline,
+            agent_publication,
             environment: session.environment.clone(),
             resource_revision,
             resources,
