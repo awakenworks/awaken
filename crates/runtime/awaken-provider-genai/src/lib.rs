@@ -537,7 +537,7 @@ impl LlmExecutor for GenaiExecutor {
         // Prefer genai's captured turn (parsed tool arguments, same shape as
         // `infer`); fall back to the chunk-assembled blocks only if no End
         // content arrived (e.g. a stream that ends without a captured block).
-        let mut output = match captured {
+        let output = match captured {
             Some(content) => map_assistant_output(&content),
             None => {
                 let mut blocks: Vec<ContentBlock> = Vec::new();
@@ -554,12 +554,9 @@ impl LlmExecutor for GenaiExecutor {
                 AssistantOutput::from_blocks(blocks)
             }
         };
-        // Fold the turn's reasoning into a leading `Thinking` block: it precedes the
-        // answer, is ignored by `extract_text`, and the Managed wire projects its
-        // presence as a contentless `agent.thinking` marker.
-        if !reasoning.trim().is_empty() {
-            output.blocks.insert(0, ContentBlock::thinking(reasoning));
-        }
+        // Fold the turn's reasoning through the same canonical response mapper
+        // used by non-streaming inference so both paths commit an identical turn.
+        let output = with_reasoning(output, Some(&reasoning));
         require_usable_response(ChatResponse {
             output,
             usage,
@@ -775,19 +772,16 @@ pub async fn probe_credential(
 pub fn to_genai_request(request: &ChatRequest) -> Result<GenaiChatRequest> {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
     for message in &request.messages {
-        // Reasoning is output-only: a folded `Thinking` block is never replayed to
-        // the provider as input (the answer text carries the turn's meaning).
-        let parts: Vec<ContentPart> = message
-            .content
-            .iter()
-            .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
-            .map(to_genai_part)
-            .collect();
-        // A reasoning-only assistant turn has no replayable content after its
-        // Thinking blocks are removed. Sending that empty row violates strict
-        // provider protocols (notably Anthropic Messages), while omitting it
-        // preserves the exact visible conversation used for the retry.
-        if parts.is_empty() {
+        let parts: Vec<ContentPart> = message.content.iter().map(to_genai_part).collect();
+        // A standalone reasoning-only history row is not a complete assistant
+        // turn and some provider protocols reject it. Reasoning that accompanies
+        // text or a tool call remains attached and is replayed by adapters that
+        // require it (notably DeepSeek's OpenAI-compatible tool loop).
+        if parts.is_empty()
+            || parts
+                .iter()
+                .all(|part| matches!(part, ContentPart::ReasoningContent(_)))
+        {
             continue;
         }
         // The neutral transcript commits one Tool message per completed call.
@@ -855,9 +849,7 @@ fn to_genai_part(block: &ContentBlock) -> ContentPart {
             tool_use_id.clone(),
             extract_text(content),
         )),
-        // Filtered out before this map (reasoning is not replayed); mapped
-        // defensively to its text so the match stays exhaustive.
-        ContentBlock::Thinking { text } => ContentPart::Text(text.clone()),
+        ContentBlock::Thinking { text } => ContentPart::ReasoningContent(text.clone()),
     }
 }
 
@@ -899,8 +891,12 @@ pub fn from_genai_tool_call(call: &GenaiToolCall) -> ToolCall {
 
 /// Map a `genai::ChatResponse` onto the neutral `ChatResponse`.
 pub fn from_genai_response(response: genai::chat::ChatResponse) -> ChatResponse {
+    let output = with_reasoning(
+        map_assistant_output(&response.content),
+        response.reasoning_content.as_deref(),
+    );
     ChatResponse {
-        output: map_assistant_output(&response.content),
+        output,
         usage: Some(map_usage(&response.usage)),
         stop_reason: response.stop_reason.as_ref().and_then(map_stop_reason),
     }
@@ -1020,10 +1016,30 @@ pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
                 call.fn_name.clone(),
                 call.fn_arguments.clone(),
             )),
+            ContentPart::ReasoningContent(reasoning) => {
+                Some(ContentBlock::thinking(reasoning.clone()))
+            }
             _ => None,
         })
         .collect();
     AssistantOutput::from_blocks(blocks)
+}
+
+/// Add provider-normalized reasoning to the front of one assistant turn. The
+/// SDK usually carries reasoning outside `MessageContent`, but a custom adapter
+/// may already have supplied a `ReasoningContent` part; avoid duplicating it.
+fn with_reasoning(mut output: AssistantOutput, reasoning: Option<&str>) -> AssistantOutput {
+    let Some(reasoning) = reasoning.filter(|reasoning| !reasoning.trim().is_empty()) else {
+        return output;
+    };
+    if !output
+        .blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Thinking { text } if text == reasoning))
+    {
+        output.blocks.insert(0, ContentBlock::thinking(reasoning));
+    }
+    output
 }
 
 pub fn map_usage(usage: &Usage) -> TokenUsage {

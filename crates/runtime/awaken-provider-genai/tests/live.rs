@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use std::sync::Mutex;
 
 #[derive(Default)]
@@ -156,6 +156,110 @@ async fn live_deepseek_openai_responses_completion() {
         .expect("construct Responses executor");
 
     assert_text_completion(&executor, model).await;
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_openai_chat_reasoning_tool_round_trip() {
+    // Cause/effect graph: C1 DeepSeek OpenAI Chat is reachable; C2 the Pro model
+    // emits reasoning; C3 one model-visible tool is offered and explicitly
+    // requested; C4 the correlated tool result is returned with the complete
+    // assistant turn. Effects: E1 receive Thinking+ToolUse; E2 preserve typed
+    // tool identity/arguments; E3 the follow-up is accepted and produces public
+    // text. Constraint: tool_choice is omitted (`auto`) because DeepSeek V4
+    // thinking rejects forced/required selection.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effects |
+    // | R1   | Y  | Y  | Y  | -  | E1+E2   |
+    // | R2   | Y  | Y  | Y  | Y  | E3      |
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    let model = std::env::var("AWAKEN_DEEPSEEK_CHAT_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-pro".to_string());
+    let executor = GenaiExecutor::from_resolved(
+        awaken_provider_genai::AdapterKind::OpenAI,
+        Some("https://api.deepseek.com/v1".to_string()),
+        key,
+    );
+    let tool = ToolDescriptor::pinned(
+        "live-fixture-v1",
+        "read_compatibility_fixture",
+        "Read the fixed compatibility marker requested by the user.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "marker": {"type": "string"}
+            },
+            "required": ["marker"],
+            "additionalProperties": false
+        }),
+    );
+    let user = ChatMessage {
+        role: Role::User,
+        content: vec![ContentBlock::text(
+            "Call read_compatibility_fixture exactly once with marker `openai-chat`, then report its result. Do not guess the result.",
+        )],
+    };
+    let first = executor
+        .infer(ChatRequest {
+            model_binding: ModelBinding {
+                provider_identity_ref: "deepseek".into(),
+                model_ref: model.clone(),
+                backend_ref: "genai".into(),
+            },
+            inference: Default::default(),
+            messages: vec![user.clone()],
+            tools: vec![tool.clone()],
+        })
+        .await
+        .expect("R1 DeepSeek reasoning tool request");
+
+    let calls = first.output.tool_calls();
+    assert_eq!(calls.len(), 1, "R1/E1 one typed tool call");
+    assert_eq!(calls[0].tool_id, "read_compatibility_fixture", "R1/E2");
+    assert_eq!(calls[0].arguments["marker"], "openai-chat", "R1/E2");
+    assert!(
+        first
+            .output
+            .blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Thinking { text } if !text.is_empty())),
+        "R1/E1 reasoning must be retained for the continuation"
+    );
+
+    let second = executor
+        .infer(ChatRequest {
+            model_binding: ModelBinding {
+                provider_identity_ref: "deepseek".into(),
+                model_ref: model,
+                backend_ref: "genai".into(),
+            },
+            inference: Default::default(),
+            messages: vec![
+                user,
+                ChatMessage {
+                    role: Role::Assistant,
+                    content: first.output.blocks,
+                },
+                ChatMessage {
+                    role: Role::Tool,
+                    content: vec![ContentBlock::tool_result(
+                        calls[0].call_id.clone(),
+                        vec![ContentBlock::text("OPENAI_CHAT_ROUND_TRIP_OK")],
+                    )],
+                },
+            ],
+            tools: vec![tool],
+        })
+        .await
+        .expect("R2 DeepSeek reasoning and tool result continuation");
+
+    assert!(
+        second
+            .output
+            .text_content()
+            .contains("OPENAI_CHAT_ROUND_TRIP_OK"),
+        "R2/E3 final answer must use the returned tool result"
+    );
 }
 
 async fn assert_text_completion(executor: &dyn LlmExecutor, model: String) {

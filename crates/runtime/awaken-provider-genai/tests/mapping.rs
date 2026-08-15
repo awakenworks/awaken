@@ -6,8 +6,8 @@ use std::time::Duration;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{
-    GenaiExecutor, classify_error, from_genai_tool_call, map_assistant_output, map_usage,
-    to_genai_request,
+    GenaiExecutor, classify_error, from_genai_response, from_genai_tool_call, map_assistant_output,
+    map_usage, to_genai_request,
 };
 use awaken_runtime_contract::llm::{AssistantOutput, ChatMessage, ChatRequest};
 use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
@@ -161,6 +161,10 @@ fn adjacent_tool_results_coalesce_for_anthropic_turn_ordering() {
 
 #[test]
 fn reasoning_only_history_rows_are_not_replayed_as_empty_provider_messages() {
+    // Cause/effect rule R1: a standalone Thinking-only synthetic history row
+    // has no public answer or tool call -> omit the incomplete assistant turn
+    // rather than send a provider-invalid empty message. Reasoning attached to
+    // a real assistant tool turn is covered separately by R2 below.
     let request = ChatRequest {
         model_binding: binding("deepseek-v4-pro"),
         inference: Default::default(),
@@ -188,6 +192,47 @@ fn reasoning_only_history_rows_are_not_replayed_as_empty_provider_messages() {
             .messages
             .iter()
             .all(|message| !message.content.parts().is_empty())
+    );
+}
+
+#[test]
+fn assistant_reasoning_is_replayed_with_its_tool_call() {
+    // Cause/effect graph and decision table: C1 assistant reasoning exists; C2
+    // a typed tool call exists in the same committed turn. E1 preserve reasoning
+    // as genai ReasoningContent; E2 preserve the correlated ToolCall. R2=C1&C2
+    // => E1+E2. This is the DeepSeek OpenAI-compatible continuation contract:
+    // dropping E1 makes the tool-result follow-up fail or lose its reasoning
+    // context, while dropping E2 detaches the subsequent tool response.
+    let request = ChatRequest {
+        model_binding: binding("deepseek-v4-pro"),
+        inference: Default::default(),
+        messages: vec![ChatMessage {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::thinking("select the deterministic fixture"),
+                ContentBlock::tool_use(
+                    "call-1",
+                    "read_fixture",
+                    serde_json::json!({"id":"compat"}),
+                ),
+            ],
+        }],
+        tools: Vec::new(),
+    };
+
+    let genai = to_genai_request(&request).unwrap();
+    let parts = genai.messages[0].content.parts();
+    assert!(
+        parts
+            .iter()
+            .any(|part| matches!(part, ContentPart::ReasoningContent(text) if text == "select the deterministic fixture")),
+        "R2/E1"
+    );
+    assert!(
+        parts
+            .iter()
+            .any(|part| matches!(part, ContentPart::ToolCall(call) if call.call_id == "call-1")),
+        "R2/E2"
     );
 }
 
@@ -263,6 +308,39 @@ fn tool_call_content_maps_to_tool_calls_output() {
     let calls = map_assistant_output(&content).tool_calls();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].tool_id, "search");
+}
+
+#[test]
+fn non_streaming_reasoning_precedes_the_public_answer() {
+    // Cause/effect rule R3: a non-streaming SDK response carries private
+    // reasoning separately from public content -> commit one leading Thinking
+    // block and retain the public text. This must match the streaming terminal
+    // shape so execution behavior does not depend on transport selection.
+    let model = genai::ModelIden::new(genai::adapter::AdapterKind::OpenAI, "deepseek-v4-pro");
+    let response = genai::chat::ChatResponse {
+        content: MessageContent::from_text("final answer"),
+        reasoning_content: Some("private reasoning".into()),
+        model_iden: model.clone(),
+        provider_model_iden: model,
+        stop_reason: Some(genai::chat::StopReason::Completed("stop".into())),
+        usage: Usage::default(),
+        captured_raw_body: None,
+        response_id: None,
+    };
+
+    let mapped = from_genai_response(response);
+    assert!(
+        matches!(
+            mapped.output.blocks.first(),
+            Some(ContentBlock::Thinking { text }) if text == "private reasoning"
+        ),
+        "R3/private reasoning"
+    );
+    assert_eq!(
+        mapped.output.text_content(),
+        "final answer",
+        "R3/public text"
+    );
 }
 
 #[test]
