@@ -66,6 +66,7 @@ pub(crate) fn register(
                 expires_at_ms: now_ms.saturating_add(ttl_ms),
             },
             heartbeat_sequence: 0,
+            observation_sequence: 0,
             registered_at_ms: now_ms,
             heartbeat_at_ms: now_ms,
             drain_deadline_ms: None,
@@ -106,6 +107,9 @@ pub(crate) fn heartbeat(
     ) {
         return (None, RegistryMutation::InvalidTransition);
     }
+    let observations_changed = current.snapshot.credential_observations
+        != heartbeat.credential_observations
+        || current.snapshot.acp_capability_observations != heartbeat.acp_capability_observations;
     let mut next = current.clone();
     if !matches!(next.snapshot.state, WorkerState::Draining) {
         next.snapshot.state = if heartbeat.ready {
@@ -118,6 +122,11 @@ pub(crate) fn heartbeat(
     next.snapshot.warm_environment_shapes = heartbeat.warm_environment_shapes;
     next.snapshot.credential_observations = heartbeat.credential_observations;
     next.snapshot.acp_capability_observations = heartbeat.acp_capability_observations;
+    if observations_changed {
+        // The heartbeat sequence is already checked to be strictly newer, so it
+        // is also a non-wrapping generation for dynamic observation changes.
+        next.observation_sequence = heartbeat.sequence;
+    }
     next.snapshot.expires_at_ms = now_ms.saturating_add(ttl_ms);
     next.heartbeat_sequence = heartbeat.sequence;
     next.heartbeat_at_ms = now_ms;
@@ -289,10 +298,29 @@ mod tests {
             100,
         );
         assert_eq!(result, RegistryMutation::Applied);
+        let updated = updated.unwrap();
+        assert_eq!(updated.observation_sequence, 1);
         assert_eq!(
-            updated.unwrap().snapshot.credential_observations,
+            updated.snapshot.credential_observations,
             std::collections::BTreeSet::from([observation])
         );
+
+        let (unchanged, result) = heartbeat(
+            Some(&updated),
+            &identity,
+            WorkerHeartbeat {
+                sequence: 2,
+                ready: true,
+                in_flight: 0,
+                warm_environment_shapes: Default::default(),
+                credential_observations: updated.snapshot.credential_observations.clone(),
+                acp_capability_observations: Default::default(),
+            },
+            21,
+            100,
+        );
+        assert_eq!(result, RegistryMutation::Applied);
+        assert_eq!(unchanged.unwrap().observation_sequence, 1);
     }
 
     #[test]
