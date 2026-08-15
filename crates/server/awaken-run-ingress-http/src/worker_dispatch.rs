@@ -452,6 +452,7 @@ fn respond_realization(result: Result<Value, RealizationHttpError>) -> (StatusCo
             let status = match &error {
                 SessionRealizationControlFailure::NotFound => StatusCode::NOT_FOUND,
                 SessionRealizationControlFailure::NotReady
+                | SessionRealizationControlFailure::Terminal
                 | SessionRealizationControlFailure::StaleOwnership
                 | SessionRealizationControlFailure::Conflict => StatusCode::CONFLICT,
                 SessionRealizationControlFailure::Invalid(_) => StatusCode::BAD_REQUEST,

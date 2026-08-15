@@ -310,3 +310,13 @@
 - Unified the final Kubernetes Pod volume projection with the same typed
   retained/ephemeral decision used by claim creation, removing stale references
   to deliberately omitted probe claims without adding another storage path.
+
+## 2026-08-15 — Preserve terminal Session truth at the Worker boundary
+
+- Added one typed disposition to the existing Session realization control
+  contract and reused it across embedded and HTTP Worker paths.
+- Kept `NotReady` and transient authority failures on their existing retry
+  paths, while terminal durable Session truth now absorbs the Run instead of
+  creating an unbounded claim/relinquish loop.
+- Added no Session, WorkQueue, Run, or retry authority; a later business attempt
+  preserves the failed Session as history and creates fresh execution truth.

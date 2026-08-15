@@ -447,6 +447,13 @@ while malformed projections, invalid policy, and exhausted realization remain
 absorbing failures. The MCP generation protocol and its receipt remain the sole
 durable effect authority; claim admission adds no second attachment state.
 
+The Session control contract carries that boundary as a typed disposition.
+`NotReady` means temporary backpressure, stale/conflicting/unavailable authority
+means retry through the existing claim lifecycle, and absent/terminal/invalid
+durable Session truth means terminal Run resolution. Worker transports and the
+embedded Host consume the same classification, preventing a terminal Session
+from being reinterpreted as an endlessly retryable Work slot.
+
 For File inputs, the local and distributed paths now use the same
 `FileContentSource` port. `StoreFileContentSource` resolves the public `FileId`
 through the authoritative `FileCatalog` and reads its immutable blob. A remote

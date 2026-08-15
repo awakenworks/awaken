@@ -240,17 +240,22 @@ impl HostWorkerResolver {
             {
                 Self::execution_error(error.to_string())
             }
-            awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::NotReady,
-            ) => awaken_run_ingress::Error::ResolutionNotReady(
-                "Session realization is not ready".into(),
-            ),
-            retryable @ (awaken_session_contract::SessionRealizationDriveError::Control(
-                awaken_session_contract::SessionRealizationControlFailure::StaleOwnership
-                | awaken_session_contract::SessionRealizationControlFailure::Conflict
-                | awaken_session_contract::SessionRealizationControlFailure::Unavailable(_),
-            )
-            | awaken_session_contract::SessionRealizationDriveError::DidNotConverge) => {
+            awaken_session_contract::SessionRealizationDriveError::Control(control) => {
+                match control.disposition() {
+                    awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
+                        awaken_run_ingress::Error::ResolutionNotReady(
+                            "Session realization is not ready".into(),
+                        )
+                    }
+                    awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
+                        Self::execution_error(control.to_string())
+                    }
+                    awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
+                        Self::terminal_resolution_error(control.to_string())
+                    }
+                }
+            }
+            retryable @ awaken_session_contract::SessionRealizationDriveError::DidNotConverge => {
                 Self::execution_error(retryable.to_string())
             }
             error => Self::terminal_resolution_error(error.to_string()),

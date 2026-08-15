@@ -624,7 +624,7 @@ impl SessionApplication {
         // Stage/Publish sets as `Complete` would allow a retried Run claim to
         // execute after silently dropping the failed MCP/Resource projection.
         if session.is_terminal() {
-            return Err(SessionRealizationControlFailure::NotReady);
+            return Err(SessionRealizationControlFailure::Terminal);
         }
         if session.frozen_baseline().is_none() {
             return Err(SessionRealizationControlFailure::NotReady);

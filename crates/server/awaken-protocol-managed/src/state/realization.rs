@@ -7,7 +7,8 @@ impl ManagedState {
     fn map_realization_failure(error: SessionRealizationControlFailure) -> StateError {
         match error {
             SessionRealizationControlFailure::NotFound => StateError::NotFound,
-            SessionRealizationControlFailure::Conflict => StateError::Conflict,
+            SessionRealizationControlFailure::Conflict
+            | SessionRealizationControlFailure::Terminal => StateError::Conflict,
             SessionRealizationControlFailure::Invalid(message) => {
                 StateError::Run(RunError::bad_request(message))
             }
@@ -855,7 +856,7 @@ mod tests {
         // | F2 | T | empty | activate+ack | idle, one commit per phase |
         // | F3 | T | Realizing | fail | Failed + activation_failed |
         // | F4 | T | Failed | same fail | replay/no revision |
-        // | F5 | any | Failed | later begin/retry | NotReady; never Complete |
+        // | F5 | any | Failed | later begin/retry | Terminal; never Complete |
         let mut baseline_only = persisted_session("session-baseline-only");
         baseline_only.resources = Default::default();
         baseline_only.mcp = SessionMcpAttachmentSet::default();
@@ -996,7 +997,7 @@ mod tests {
                     },
                 })
                 .await,
-            Err(SessionRealizationControlFailure::NotReady),
+            Err(SessionRealizationControlFailure::Terminal),
             "F5"
         );
     }

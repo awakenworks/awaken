@@ -113,10 +113,10 @@ pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
     FailSessionRealization, FrozenAgentPublicationDecision, FrozenSessionProjection,
     SessionProjectionSynchronizer, SessionRealizationAction, SessionRealizationControl,
-    SessionRealizationControlFailure, SessionRealizationDirective, SessionRealizationDriveError,
-    SessionRealizationProgress, SessionRealizationTarget, drive_session_realization,
-    frozen_agent_publication_decision, realization_generation_authorizes,
-    realization_lease_authorizes, realization_lease_is_live_at,
+    SessionRealizationControlDisposition, SessionRealizationControlFailure,
+    SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationProgress,
+    SessionRealizationTarget, drive_session_realization, frozen_agent_publication_decision,
+    realization_generation_authorizes, realization_lease_authorizes, realization_lease_is_live_at,
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,

@@ -19,10 +19,17 @@ impl ClaimedSessionControlError {
     }
 
     #[must_use]
+    pub const fn disposition(
+        &self,
+    ) -> awaken_session_contract::SessionRealizationControlDisposition {
+        self.0.disposition()
+    }
+
+    #[must_use]
     pub const fn is_not_ready(&self) -> bool {
         matches!(
-            self.0,
-            awaken_session_contract::SessionRealizationControlFailure::NotReady
+            self.disposition(),
+            awaken_session_contract::SessionRealizationControlDisposition::NotReady
         )
     }
 }

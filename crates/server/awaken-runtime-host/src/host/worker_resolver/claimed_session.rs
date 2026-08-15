@@ -12,6 +12,29 @@ async fn acquire_session_realization_admission(
         .await
 }
 
+fn map_claimed_session_control_error(
+    run_id: &str,
+    error: awaken_run_ingress_contract::ClaimedSessionControlError,
+) -> awaken_run_ingress::Error {
+    match error.disposition() {
+        awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
+            awaken_run_ingress::Error::ResolutionNotReady(format!(
+                "run {run_id} is waiting for its Session Environment Work slot"
+            ))
+        }
+        awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
+            HostWorkerResolver::execution_error(format!(
+                "run {run_id} frozen Session resume failed: {error}"
+            ))
+        }
+        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
+            HostWorkerResolver::terminal_resolution_error(format!(
+                "run {run_id} frozen Session cannot resume: {error}"
+            ))
+        }
+    }
+}
+
 /// Install the frozen Session projection under the authenticated Run claim.
 /// Session authoring is complete before WorkQueue dispatch; the Worker can
 /// realize committed truth but cannot contribute another desired-state input.
@@ -63,19 +86,7 @@ pub(super) async fn install_claimed_session_projection(
     let directive = control
         .resume_frozen(&claim, &thread_id.0)
         .await
-        .map_err(|error| {
-            if error.is_not_ready() {
-                awaken_run_ingress::Error::ResolutionNotReady(format!(
-                    "run {} is waiting for its Session Environment Work slot",
-                    claimed.lease.run_id.0
-                ))
-            } else {
-                HostWorkerResolver::execution_error(format!(
-                    "run {} frozen Session resume failed: {error}",
-                    claimed.lease.run_id.0
-                ))
-            }
-        })?
+        .map_err(|error| map_claimed_session_control_error(&claimed.lease.run_id.0, error))?
         .ok_or_else(|| {
             HostWorkerResolver::execution_error(
                 "WorkQueue dispatched a Session whose creation was not finalized",
@@ -113,6 +124,48 @@ pub(super) async fn install_claimed_session_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claimed_session_control_uses_the_contract_disposition() {
+        // Cause/effect graph: C1 temporary Work-slot backpressure, C2 a
+        // retryable dependency failure, and C3 durable terminal Session truth.
+        // Effects: E1 defer, E2 relinquish through Execution, and E3 absorb the
+        // Run. In particular C3 must never enter the claim/relinquish hot loop.
+        //
+        // | Rule | Control cause | RunIngress effect |
+        // | R1 | NotReady | ResolutionNotReady |
+        // | R2 | Unavailable | Execution |
+        // | R3 | Terminal | TerminalResolution |
+        let cases = [
+            (
+                "R1",
+                awaken_session_contract::SessionRealizationControlFailure::NotReady,
+                "resolution_not_ready",
+            ),
+            (
+                "R2",
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(
+                    "dependency".into(),
+                ),
+                "execution",
+            ),
+            (
+                "R3",
+                awaken_session_contract::SessionRealizationControlFailure::Terminal,
+                "terminal_resolution",
+            ),
+        ];
+        for (rule, failure, expected) in cases {
+            let actual = map_claimed_session_control_error("run-a", failure.into());
+            let actual = match actual {
+                awaken_run_ingress::Error::ResolutionNotReady(_) => "resolution_not_ready",
+                awaken_run_ingress::Error::Execution(_) => "execution",
+                awaken_run_ingress::Error::TerminalResolution(_) => "terminal_resolution",
+                error => panic!("{rule}: unexpected {error:?}"),
+            };
+            assert_eq!(actual, expected, "{rule}");
+        }
+    }
 
     #[tokio::test]
     async fn realization_admission_precedes_concurrent_control_mutation() {

@@ -549,3 +549,17 @@ This classification changes no Session state machine, retry queue, or effect
 protocol. The same Session realization generation, lease fence, MCP publication
 receipt, and crash-retry budget remain authoritative; a Runtime Host adapter may
 map an error into those outcomes but cannot create another retry authority.
+
+## 2026-08-15 amendment: terminal realization crosses the Worker boundary as a type
+
+An exhausted or otherwise terminal Session realization is distinct from
+temporary `NotReady` backpressure. The canonical Session control contract owns
+one disposition for every control failure: not-ready defers, transient
+authority/dependency failure reuses the existing claim retry, and absent,
+terminal, or invalid durable truth absorbs the Run. Embedded and HTTP Workers
+consume that typed disposition; they do not reconstruct it from status text.
+
+This keeps the existing Session aggregate, WorkQueue, Run dispatch, and retry
+budget as the only authorities. A terminal Session therefore retires its
+current Run instead of entering an unbounded claim/relinquish loop, while a new
+business attempt may create a new Session without deleting the failed history.

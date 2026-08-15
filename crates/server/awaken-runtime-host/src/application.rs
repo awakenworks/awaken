@@ -25,16 +25,12 @@ enum RenewalFailureDisposition {
 fn realization_renewal_failure_disposition(
     error: &awaken_session_contract::SessionRealizationControlFailure,
 ) -> RenewalFailureDisposition {
-    use awaken_session_contract::SessionRealizationControlFailure;
-
-    match error {
-        SessionRealizationControlFailure::NotFound | SessionRealizationControlFailure::NotReady => {
+    match error.disposition() {
+        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
             RenewalFailureDisposition::Retire
         }
-        SessionRealizationControlFailure::StaleOwnership
-        | SessionRealizationControlFailure::Conflict
-        | SessionRealizationControlFailure::Invalid(_)
-        | SessionRealizationControlFailure::Unavailable(_) => {
+        awaken_session_contract::SessionRealizationControlDisposition::NotReady
+        | awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
             RenewalFailureDisposition::DiagnoseAndRevoke
         }
     }
@@ -45,17 +41,18 @@ fn realization_renewal_failure_disposition(
 fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed() {
     use awaken_session_contract::SessionRealizationControlFailure;
 
-    let error = match kani::any::<u8>() % 6 {
+    let error = match kani::any::<u8>() % 7 {
         0 => SessionRealizationControlFailure::NotFound,
         1 => SessionRealizationControlFailure::NotReady,
-        2 => SessionRealizationControlFailure::StaleOwnership,
-        3 => SessionRealizationControlFailure::Conflict,
-        4 => SessionRealizationControlFailure::Invalid(String::new()),
+        2 => SessionRealizationControlFailure::Terminal,
+        3 => SessionRealizationControlFailure::StaleOwnership,
+        4 => SessionRealizationControlFailure::Conflict,
+        5 => SessionRealizationControlFailure::Invalid(String::new()),
         _ => SessionRealizationControlFailure::Unavailable(String::new()),
     };
     let expected_retirement = matches!(
-        error,
-        SessionRealizationControlFailure::NotFound | SessionRealizationControlFailure::NotReady
+        error.disposition(),
+        awaken_session_contract::SessionRealizationControlDisposition::Terminal
     );
     let disposition = realization_renewal_failure_disposition(&error);
 
@@ -75,14 +72,15 @@ mod realization_renewal_tests {
 
     #[test]
     fn terminal_session_replies_retire_only_the_stale_local_projection() {
-        // Renewal decision table: N1 NotFound and N2 NotReady prove the local
+        // Renewal decision table: N1 NotFound, N2 Terminal, and N3 Invalid prove the local
         // projection no longer has a renewable frozen Control owner -> retire it
-        // quietly; N3 stale/conflict/invalid and N4 unavailable do not prove a
+        // quietly; N4 NotReady/stale/conflict and N5 unavailable do not prove a
         // terminal Control state -> surface diagnostics, but the shared safety
         // effect still interrupts and revokes only this local Session.
         for error in [
             SessionRealizationControlFailure::NotFound,
-            SessionRealizationControlFailure::NotReady,
+            SessionRealizationControlFailure::Terminal,
+            SessionRealizationControlFailure::Invalid("bad target".into()),
         ] {
             assert_eq!(
                 realization_renewal_failure_disposition(&error),
@@ -90,9 +88,9 @@ mod realization_renewal_tests {
             );
         }
         for error in [
+            SessionRealizationControlFailure::NotReady,
             SessionRealizationControlFailure::StaleOwnership,
             SessionRealizationControlFailure::Conflict,
-            SessionRealizationControlFailure::Invalid("bad target".into()),
             SessionRealizationControlFailure::Unavailable("network unavailable".into()),
         ] {
             assert_eq!(
