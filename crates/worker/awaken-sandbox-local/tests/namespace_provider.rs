@@ -10,6 +10,7 @@ use awaken_provisioning_contract::{Sandbox, SandboxProvider};
 mod common;
 use awaken_file_store::{FileStore, FsFileStore};
 use awaken_sandbox_local::NamespaceProvider;
+use tokio::io::AsyncReadExt as _;
 
 fn spec(scope: &str) -> pc::SandboxSpec {
     pc::SandboxSpec {
@@ -100,9 +101,10 @@ async fn probe_ready_reflects_the_os_native_sandbox_availability() {
 }
 
 #[tokio::test]
-async fn native_bash_tool_writes_to_the_artifact_scan_output_root() {
-    // Cause/effect graph: C1=Namespace sandbox is available; C2=native bash uses
-    // the reserved project/output paths; C3=artifact scan reads provider outputs.
+async fn opaque_process_writes_to_the_artifact_scan_output_root() {
+    // Cause/effect graph: C1=Namespace sandbox is available; C2=the authoritative
+    // process launcher uses the reserved project/output paths; C3=artifact scan
+    // reads provider outputs.
     // Effects: E1=PWD/project path is /workspace; E2=output write succeeds through
     // the authoritative bind; E3=scan returns exactly those bytes.
     //
@@ -118,22 +120,20 @@ async fn native_bash_tool_writes_to_the_artifact_scan_output_root() {
         .create_sandbox(&spec("t-native-tool-outputs"))
         .await
         .unwrap();
-    let bash = sandbox
-        .rooted_tools()
-        .into_iter()
-        .find(|tool| tool.id() == "bash")
-        .expect("bash tool");
-    let output = bash
-        .invoke(awaken_runtime_contract::llm::ToolCall {
-            call_id: "write-output".into(),
-            tool_id: "bash".into(),
-            arguments: serde_json::json!({
-                "command": "test \"$PWD\" = \"$AWAKEN_PROJECT_DIR\" && printf staged > \"$AWAKEN_OUTPUTS_DIR/result.txt\""
-            }),
-        })
+    let (process, mut channel) = sandbox
+        .spawn_agent(pc::Command::new([
+            "/bin/sh",
+            "-c",
+            "test \"$PWD\" = \"$AWAKEN_PROJECT_DIR\" && printf staged > \"$AWAKEN_OUTPUTS_DIR/result.txt\"",
+        ]))
         .await
         .unwrap();
-    assert!(!output.is_error, "T2/E1,E2: {}", output.text());
+    let mut stderr_free_output = String::new();
+    channel
+        .read_to_string(&mut stderr_free_output)
+        .await
+        .unwrap();
+    assert_eq!(process.wait().await.unwrap().code, Some(0), "T2/E1,E2");
 
     let artifact = sandbox
         .artifacts()

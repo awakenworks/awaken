@@ -611,7 +611,9 @@ impl ManagedHost {
                 } => Some((
                     input.binding_id.to_string(),
                     memory_store_id.to_string(),
-                    format!(".mnt/{}", input.mount_path.trim_start_matches('/')),
+                    crate::managed_resource_projection::managed_resource_mount_path(
+                        &input.mount_path,
+                    ),
                     match input.access {
                         awaken_resource_contract::ResourceAccess::ReadOnly => {
                             awaken_provisioning_contract::MountAccess::ReadOnly
@@ -679,6 +681,13 @@ impl ManagedHost {
             .publish_thread_repositories(thread)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
+        let projection_update = match &live_environment {
+            Some(environment) => environment
+                .begin_live_projection_update()
+                .await
+                .map_err(|error| RunError::internal(error.to_string()))?,
+            None => None,
+        };
         if let Some(environment) = &live_environment {
             // Realize the desired live projection before committing its logical
             // manifest. Every operation is idempotent, so a failed attempt leaves
@@ -738,6 +747,9 @@ impl ManagedHost {
         }
         self.install_effective_inputs(thread, workspace_id, resource_revision, inputs, compiled)
             .await?;
+        if let Some(update) = projection_update {
+            update.commit();
+        }
         self.host
             .session_slots
             .update(thread, |slot| slot.skills = skill_versions);

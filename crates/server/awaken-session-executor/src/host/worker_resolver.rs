@@ -906,6 +906,9 @@ mod tests {
             crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
                 storage.path().join("sandboxes"),
                 false,
+                Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+                "/bin/sh",
+                std::time::Duration::ZERO,
             );
         let host = Arc::new(raw_host);
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
