@@ -48,5 +48,5 @@ pub use thread::read::transcript::{
 };
 pub use toolset::{
     ClientToolDescriptor, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
-    ToolsetPolicy, ToolsetSource,
+    ToolsetPolicy, ToolsetSource, select_tool_policy,
 };

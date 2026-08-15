@@ -571,6 +571,33 @@ pub fn default_postgres_max_connections() -> NonZeroU32 {
     NonZeroU32::new(value).expect("parallelism plus eight is non-zero")
 }
 
+#[cfg(kani)]
+mod verification {
+    use super::ContainerHandResidency;
+    use awaken_runtime_contract::tool::ToolRecoveryCapability;
+
+    #[kani::proof]
+    fn container_hand_residency_recovery_mapping_is_total_exact_and_non_widening() {
+        let residency = if kani::any::<bool>() {
+            ContainerHandResidency::AttachedExec
+        } else {
+            ContainerHandResidency::Resident
+        };
+        let expected = match residency {
+            ContainerHandResidency::AttachedExec => ToolRecoveryCapability::NonRecoverable,
+            ContainerHandResidency::Resident => ToolRecoveryCapability::DurableRequest,
+        };
+
+        assert_eq!(residency.recovery_capability(), expected);
+        if residency == ContainerHandResidency::AttachedExec {
+            assert_ne!(
+                residency.recovery_capability(),
+                ToolRecoveryCapability::DurableRequest
+            );
+        }
+    }
+}
+
 /// One parser for the positive deployment axis and its legacy negated alias.
 /// An explicit new value wins, matching the CLI validation layer.
 #[cfg(test)]

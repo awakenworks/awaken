@@ -70,21 +70,20 @@ impl SessionApplication {
                         source_revision,
                     )
                 });
-                if baseline.runtime_placement == crate::SessionRuntimePlacement::Worker
-                    && snapshot.is_none()
-                {
-                    return Err(RunError::unavailable(format!(
-                        "Agent '{}' publication revision {} is unavailable for Worker realization",
-                        baseline.agent_id, source_revision
-                    )));
-                }
-                if let Some(snapshot) = &snapshot {
-                    if snapshot.root_agent_id.0 != baseline.agent_id
-                        || snapshot.metadata.source.revision != source_revision
-                        || baseline.runtime.as_ref().is_some_and(|runtime| {
-                            snapshot.resolved_spec.model_binding.backend_ref != *runtime
-                        })
-                    {
+                match awaken_session_contract::frozen_agent_publication_decision(
+                    &baseline,
+                    snapshot.as_ref(),
+                ) {
+                    awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
+                    | awaken_session_contract::FrozenAgentPublicationDecision::OptionalMissing
+                    | awaken_session_contract::FrozenAgentPublicationDecision::Exact => {}
+                    awaken_session_contract::FrozenAgentPublicationDecision::MissingRequired => {
+                        return Err(RunError::unavailable(format!(
+                            "Agent '{}' publication revision {} is unavailable for Worker realization",
+                            baseline.agent_id, source_revision
+                        )));
+                    }
+                    awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
                         return Err(RunError::internal(
                             "exact Agent publication does not match the frozen Session baseline",
                         ));

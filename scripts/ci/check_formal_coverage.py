@@ -26,6 +26,11 @@ def fail(message: str) -> None:
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--json", action="store_true")
+parser.add_argument(
+    "--require-complete",
+    action="store_true",
+    help="require every formalizable obligation to have checked formal evidence",
+)
 args = parser.parse_args()
 
 data = json.loads(LEDGER.read_text(encoding="utf-8"))
@@ -184,3 +189,8 @@ else:
     )
 if ratio < minimum:
     fail("coverage is below the required threshold")
+if args.require_complete and (ratio != 1.0 or executable_only):
+    fail(
+        "complete coverage required: every formalizable obligation must be "
+        "model-linked or kernel-proved and none may remain executable-only"
+    )

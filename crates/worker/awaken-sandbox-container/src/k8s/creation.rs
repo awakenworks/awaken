@@ -16,9 +16,12 @@ pub(super) async fn create(
         )));
     }
     let runtime_id = k8s_runtime_id(id)?;
-    let claim_outcome = if continuation::requires_claim(plan)
-        && let Some(config) = &runtime.continuation_volume
+    let claim_outcome = if continuation::claim_required(plan, runtime.continuation_volume.is_some())
     {
+        let config = runtime
+            .continuation_volume
+            .as_ref()
+            .expect("claim selector requires configured continuation storage");
         let mut claim = continuation::build_claim(&runtime_id, config)?;
         stamp_realization(&mut claim)?;
         Some(create_or_verify_with_status(&runtime.persistent_volume_claims(), &claim).await?)

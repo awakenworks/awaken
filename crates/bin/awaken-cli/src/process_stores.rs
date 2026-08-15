@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+use awaken_service_lifecycle::{StartupComponent, StartupRole, startup_requires};
+
 use crate::config;
 
 pub(super) struct ProcessStores {
@@ -96,17 +98,29 @@ pub(super) fn migration_manifest(role: config::Role) -> &'static [MigrationCompo
     }
 }
 
+pub(super) const fn lifecycle_startup_role(role: config::Role) -> Option<StartupRole> {
+    match role {
+        config::Role::AllInOne => Some(StartupRole::AllInOne),
+        config::Role::Control => Some(StartupRole::Control),
+        config::Role::Coordinator => Some(StartupRole::Coordinator),
+        config::Role::Worker => None,
+    }
+}
+
 pub(super) fn role_owns_control_component(role: config::Role) -> bool {
-    matches!(role, config::Role::AllInOne | config::Role::Control)
+    lifecycle_startup_role(role)
+        .is_some_and(|role| startup_requires(role, StartupComponent::Control))
 }
 
 pub(super) fn role_owns_managed_execution(role: config::Role) -> bool {
-    matches!(role, config::Role::AllInOne | config::Role::Coordinator)
+    lifecycle_startup_role(role)
+        .is_some_and(|role| startup_requires(role, StartupComponent::Coordinator))
 }
 
 #[cfg(test)]
 pub(super) fn role_hosts_resources(role: config::Role) -> bool {
-    role_owns_managed_execution(role)
+    lifecycle_startup_role(role)
+        .is_some_and(|role| startup_requires(role, StartupComponent::Resources))
 }
 
 #[cfg(test)]

@@ -12,6 +12,83 @@ use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
+/// The three product service assemblies that share this lifecycle owner.
+///
+/// `Worker` is intentionally absent: a Worker has its own authority-free
+/// executable and cannot be smuggled through a Control/Coordinator startup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum StartupRole {
+    AllInOne = 0,
+    Control = 1,
+    Coordinator = 2,
+}
+
+impl StartupRole {
+    /// Decode a role supplied at a serialization/process boundary. Unknown
+    /// discriminants fail closed instead of inheriting an assembly manifest.
+    #[must_use]
+    pub const fn from_discriminant(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::AllInOne),
+            1 => Some(Self::Control),
+            2 => Some(Self::Coordinator),
+            _ => None,
+        }
+    }
+}
+
+/// Independently owned pieces of a service startup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum StartupComponent {
+    Control = 0,
+    Resources = 1,
+    Coordinator = 2,
+    LocalWorker = 3,
+}
+
+impl StartupComponent {
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+const ALL_STARTUP_COMPONENTS: u8 = StartupComponent::Control.bit()
+    | StartupComponent::Resources.bit()
+    | StartupComponent::Coordinator.bit()
+    | StartupComponent::LocalWorker.bit();
+
+/// The exact authority manifest for one product service role.
+#[must_use]
+pub const fn required_startup_components(role: StartupRole) -> u8 {
+    match role {
+        StartupRole::AllInOne => ALL_STARTUP_COMPONENTS,
+        StartupRole::Control => StartupComponent::Control.bit(),
+        StartupRole::Coordinator => {
+            StartupComponent::Resources.bit() | StartupComponent::Coordinator.bit()
+        }
+    }
+}
+
+/// Whether a role owns one startup component. Product wiring consumes this
+/// selector instead of recreating role tests at every store/service boundary.
+#[must_use]
+pub const fn startup_requires(role: StartupRole, component: StartupComponent) -> bool {
+    required_startup_components(role) & component.bit() != 0
+}
+
+/// Validate a complete startup manifest received at a process boundary.
+/// Unknown roles, missing required components, and extra authority bits all
+/// fail closed.
+#[must_use]
+pub const fn startup_wiring_is_exact(role_discriminant: u8, components: u8) -> bool {
+    let Some(role) = StartupRole::from_discriminant(role_discriminant) else {
+        return false;
+    };
+    components & !ALL_STARTUP_COMPONENTS == 0 && components == required_startup_components(role)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaskFailure {
     pub task: String,
@@ -232,6 +309,69 @@ impl ServiceLifecycle {
             Ok(())
         } else {
             Err(ShutdownError { timed_out })
+        }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn symbolic_role(value: u8) -> StartupRole {
+        match value % 3 {
+            0 => StartupRole::AllInOne,
+            1 => StartupRole::Control,
+            _ => StartupRole::Coordinator,
+        }
+    }
+
+    fn symbolic_component(value: u8) -> StartupComponent {
+        match value % 4 {
+            0 => StartupComponent::Control,
+            1 => StartupComponent::Resources,
+            2 => StartupComponent::Coordinator,
+            _ => StartupComponent::LocalWorker,
+        }
+    }
+
+    #[kani::proof]
+    fn startup_wiring_is_exact_for_every_service_role() {
+        let role = symbolic_role(kani::any());
+        let component = symbolic_component(kani::any());
+        let expected = match role {
+            StartupRole::AllInOne => true,
+            StartupRole::Control => component == StartupComponent::Control,
+            StartupRole::Coordinator => matches!(
+                component,
+                StartupComponent::Resources | StartupComponent::Coordinator
+            ),
+        };
+        assert_eq!(startup_requires(role, component), expected);
+    }
+
+    #[kani::proof]
+    fn startup_wiring_requires_every_role_owned_component() {
+        let role = symbolic_role(kani::any());
+        let components: u8 = kani::any();
+        if startup_wiring_is_exact(role as u8, components) {
+            let component = symbolic_component(kani::any());
+            assert_eq!(
+                components & component.bit() != 0,
+                startup_requires(role, component)
+            );
+        }
+    }
+
+    #[kani::proof]
+    fn startup_wiring_fails_closed_for_unknown_missing_or_extra_authority() {
+        let role_discriminant: u8 = kani::any();
+        let components: u8 = kani::any();
+        let admitted = startup_wiring_is_exact(role_discriminant, components);
+        match StartupRole::from_discriminant(role_discriminant) {
+            Some(role) => {
+                assert_eq!(admitted, components == required_startup_components(role));
+            }
+            None => assert!(!admitted),
         }
     }
 }

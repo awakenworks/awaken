@@ -1,8 +1,10 @@
 ------------------------- MODULE SessionRealizationMutex -------------------------
 EXTENDS Naturals
 
-CONSTANTS DriverA, DriverB, NoDriver
-ASSUME /\ DriverA # DriverB /\ NoDriver \notin {DriverA, DriverB}
+CONSTANTS DriverA, DriverB, NoDriver, MaxCompleted
+ASSUME /\ DriverA # DriverB
+       /\ NoDriver \notin {DriverA, DriverB}
+       /\ MaxCompleted \in Nat \ {0}
 
 Drivers == {DriverA, DriverB}
 VARIABLES owner, phase, completed
@@ -26,6 +28,7 @@ Advance(d) ==
 Release(d) ==
   /\ owner = d
   /\ phase = "Committing"
+  /\ completed < MaxCompleted
   /\ owner' = NoDriver
   /\ phase' = "Idle"
   /\ completed' = completed + 1
@@ -35,7 +38,7 @@ Spec == Init /\ [][Next]_vars
 
 TypeOK == /\ owner \in Drivers \cup {NoDriver}
           /\ phase \in {"Idle", "Driving", "Committing"}
-          /\ completed \in Nat
+          /\ completed \in 0..MaxCompleted
 OneDriver == phase = "Idle" <=> owner = NoDriver
 Safety == TypeOK /\ OneDriver
 =============================================================================
