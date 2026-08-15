@@ -45,8 +45,31 @@ impl ContentCapture {
     /// Whether prompt/completion/tool content may be recorded at this level.
     #[must_use]
     pub fn allows_content(self) -> bool {
-        matches!(self, Self::Full)
+        self.projection() == ContentProjection::Redact
     }
+
+    /// Select the only record-safe handling for content at this level.
+    ///
+    /// Keeping this as a closed, allocation-free decision kernel lets every
+    /// sink share the same fail-closed rule: `Full` may enter the configured
+    /// redactor, while `Off` and `Structured` omit the content before the
+    /// redactor is invoked.
+    #[must_use]
+    pub(crate) const fn projection(self) -> ContentProjection {
+        match self {
+            Self::Full => ContentProjection::Redact,
+            Self::Off | Self::Structured => ContentProjection::Omit,
+        }
+    }
+}
+
+/// Record-safe projection selected before any content sink or redactor runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContentProjection {
+    /// Do not expose the content to the persistence projection at all.
+    Omit,
+    /// Pass the content through the configured redactor before persistence.
+    Redact,
 }
 
 /// The kind of content passing through a [`ContentRedactor`], so a redactor can
@@ -117,9 +140,58 @@ impl CaptureDecision {
     /// redactor-scrubbed text. This is the single gate every content sink calls.
     #[must_use]
     pub fn content<'a>(&self, kind: ContentKind, text: &'a str) -> Option<Cow<'a, str>> {
-        self.level
-            .allows_content()
-            .then(|| self.redactor.redact(kind, text))
+        match self.level.projection() {
+            ContentProjection::Omit => None,
+            ContentProjection::Redact => Some(self.redactor.redact(kind, text)),
+        }
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{ContentCapture, ContentProjection};
+
+    fn arbitrary_capture() -> ContentCapture {
+        match kani::any::<u8>() % 3 {
+            0 => ContentCapture::Off,
+            1 => ContentCapture::Structured,
+            _ => ContentCapture::Full,
+        }
+    }
+
+    #[kani::proof]
+    fn capture_meet_is_exact_commutative_and_non_widening() {
+        let left = arbitrary_capture();
+        let right = arbitrary_capture();
+        let effective = left.meet(right);
+
+        assert_eq!(effective, left.min(right));
+        assert_eq!(effective, right.meet(left));
+        assert!(effective <= left);
+        assert!(effective <= right);
+    }
+
+    #[kani::proof]
+    fn capture_projection_admits_content_only_at_full() {
+        let level = arbitrary_capture();
+        assert_eq!(
+            level.projection(),
+            if level == ContentCapture::Full {
+                ContentProjection::Redact
+            } else {
+                ContentProjection::Omit
+            }
+        );
+        assert_eq!(level.allows_content(), level == ContentCapture::Full);
+    }
+
+    #[kani::proof]
+    fn non_full_capture_fails_closed_before_redaction() {
+        let level = arbitrary_capture();
+        if level != ContentCapture::Full {
+            assert_eq!(level.projection(), ContentProjection::Omit);
+            assert!(!level.allows_content());
+        }
     }
 }
 

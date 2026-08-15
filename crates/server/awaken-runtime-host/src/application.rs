@@ -14,15 +14,58 @@ use awaken_run_ingress::RunClaim;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{ExecutorCapabilities, RunAttemptExecutor};
 
-fn realization_renewal_is_retired(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenewalFailureDisposition {
+    /// Control proves the Session projection is no longer renewable.
+    Retire,
+    /// Authority cannot be proved; surface diagnostics and revoke locally.
+    DiagnoseAndRevoke,
+}
+
+fn realization_renewal_failure_disposition(
     error: &awaken_session_contract::SessionRealizationControlFailure,
-) -> bool {
+) -> RenewalFailureDisposition {
     use awaken_session_contract::SessionRealizationControlFailure;
 
-    matches!(
+    match error {
+        SessionRealizationControlFailure::NotFound | SessionRealizationControlFailure::NotReady => {
+            RenewalFailureDisposition::Retire
+        }
+        SessionRealizationControlFailure::StaleOwnership
+        | SessionRealizationControlFailure::Conflict
+        | SessionRealizationControlFailure::Invalid(_)
+        | SessionRealizationControlFailure::Unavailable(_) => {
+            RenewalFailureDisposition::DiagnoseAndRevoke
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_realization_renewal_failure_disposition_is_total_exact_and_fail_closed() {
+    use awaken_session_contract::SessionRealizationControlFailure;
+
+    let error = match kani::any::<u8>() % 6 {
+        0 => SessionRealizationControlFailure::NotFound,
+        1 => SessionRealizationControlFailure::NotReady,
+        2 => SessionRealizationControlFailure::StaleOwnership,
+        3 => SessionRealizationControlFailure::Conflict,
+        4 => SessionRealizationControlFailure::Invalid(String::new()),
+        _ => SessionRealizationControlFailure::Unavailable(String::new()),
+    };
+    let expected_retirement = matches!(
         error,
         SessionRealizationControlFailure::NotFound | SessionRealizationControlFailure::NotReady
-    )
+    );
+    let disposition = realization_renewal_failure_disposition(&error);
+
+    assert_eq!(
+        disposition == RenewalFailureDisposition::Retire,
+        expected_retirement
+    );
+    if !expected_retirement {
+        assert_eq!(disposition, RenewalFailureDisposition::DiagnoseAndRevoke);
+    }
 }
 
 #[cfg(test)]
@@ -41,7 +84,10 @@ mod realization_renewal_tests {
             SessionRealizationControlFailure::NotFound,
             SessionRealizationControlFailure::NotReady,
         ] {
-            assert!(realization_renewal_is_retired(&error));
+            assert_eq!(
+                realization_renewal_failure_disposition(&error),
+                RenewalFailureDisposition::Retire
+            );
         }
         for error in [
             SessionRealizationControlFailure::StaleOwnership,
@@ -49,7 +95,10 @@ mod realization_renewal_tests {
             SessionRealizationControlFailure::Invalid("bad target".into()),
             SessionRealizationControlFailure::Unavailable("network unavailable".into()),
         ] {
-            assert!(!realization_renewal_is_retired(&error));
+            assert_eq!(
+                realization_renewal_failure_disposition(&error),
+                RenewalFailureDisposition::DiagnoseAndRevoke
+            );
         }
     }
 }
@@ -551,7 +600,12 @@ impl crate::SharedHost {
                     .await
                 {
                     Ok(directive) => directive,
-                    Err(error) if realization_renewal_is_retired(&error) => return Ok(false),
+                    Err(error)
+                        if realization_renewal_failure_disposition(&error)
+                            == RenewalFailureDisposition::Retire =>
+                    {
+                        return Ok(false);
+                    }
                     Err(error) => return Err(crate::HostError::internal(error.to_string())),
                 };
                 let realization = self.session_slots.realization_lock(session_id);

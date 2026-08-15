@@ -24,6 +24,56 @@ pub enum ToolPermissionVerdict {
     RequireConfirmation { correlation_id: String },
 }
 
+/// Closed decision vocabulary used by the permission-to-gate projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolPermissionVerdictKind {
+    Allow,
+    Deny,
+    RequireConfirmation,
+}
+
+impl ToolPermissionVerdictKind {
+    /// Exact authority projection into the final gate vocabulary.
+    #[must_use]
+    pub const fn gate_outcome_kind(self) -> GateOutcomeKind {
+        match self {
+            Self::Allow => GateOutcomeKind::Allow,
+            Self::Deny => GateOutcomeKind::Block,
+            Self::RequireConfirmation => GateOutcomeKind::RequireConfirmation,
+        }
+    }
+}
+
+impl ToolPermissionVerdict {
+    /// Return the payload-free decision kind without changing its authority.
+    #[must_use]
+    pub const fn kind(&self) -> ToolPermissionVerdictKind {
+        match self {
+            Self::Allow => ToolPermissionVerdictKind::Allow,
+            Self::Deny { .. } => ToolPermissionVerdictKind::Deny,
+            Self::RequireConfirmation { .. } => ToolPermissionVerdictKind::RequireConfirmation,
+        }
+    }
+
+    /// Project a policy verdict onto the runtime gate exactly once.
+    ///
+    /// Denial reasons and confirmation correlation ids are moved unchanged;
+    /// only `Allow` can become the executable gate outcome.
+    #[must_use]
+    pub fn into_gate_outcome(self) -> GateOutcome {
+        let expected_kind = self.kind().gate_outcome_kind();
+        let outcome = match self {
+            Self::Allow => GateOutcome::Allow,
+            Self::Deny { reason } => GateOutcome::Block { reason },
+            Self::RequireConfirmation { correlation_id } => {
+                GateOutcome::RequireConfirmation { correlation_id }
+            }
+        };
+        debug_assert_eq!(outcome.kind(), expected_kind);
+        outcome
+    }
+}
+
 /// The authorization policy. Async because a real policy may consult an
 /// external system; it returns only a decision, never executes the tool.
 #[async_trait]
@@ -47,6 +97,16 @@ impl ToolCapabilityNarrowing {
     #[must_use]
     pub fn is_configured(&self) -> bool {
         *self == Self::Configured
+    }
+
+    /// Intersect two per-Run restrictions. `DenyAll` is absorbing, so
+    /// composition can preserve or remove configured authority, never add it.
+    #[must_use]
+    pub const fn intersect(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Configured, Self::Configured) => Self::Configured,
+            _ => Self::DenyAll,
+        }
     }
 }
 
@@ -104,13 +164,138 @@ impl GateOutcome {
     /// the type so a new outcome variant forces a label here, not in each caller.
     #[must_use]
     pub fn decision_label(&self) -> &'static str {
+        self.kind().audit_decision().as_str()
+    }
+
+    /// Payload-free gate kind for exact audit and execution projections.
+    #[must_use]
+    pub const fn kind(&self) -> GateOutcomeKind {
         match self {
-            GateOutcome::Allow => "allow",
-            GateOutcome::Block { .. } => "deny",
-            GateOutcome::RequireConfirmation { .. } => "ask",
-            GateOutcome::SetResult(_) => "set_result",
-            GateOutcome::Schedule { .. } => "schedule",
+            Self::Allow => GateOutcomeKind::Allow,
+            Self::Block { .. } => GateOutcomeKind::Block,
+            Self::SetResult(_) => GateOutcomeKind::SetResult,
+            Self::RequireConfirmation { .. } => GateOutcomeKind::RequireConfirmation,
+            Self::Schedule { .. } => GateOutcomeKind::Schedule,
         }
+    }
+}
+
+/// Closed set of outcomes emitted by the final tool gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateOutcomeKind {
+    Allow,
+    Block,
+    SetResult,
+    RequireConfirmation,
+    Schedule,
+}
+
+impl GateOutcomeKind {
+    #[must_use]
+    pub const fn audit_decision(self) -> GateAuditDecision {
+        match self {
+            Self::Allow => GateAuditDecision::Allow,
+            Self::Block => GateAuditDecision::Deny,
+            Self::SetResult => GateAuditDecision::SetResult,
+            Self::RequireConfirmation => GateAuditDecision::Ask,
+            Self::Schedule => GateAuditDecision::Schedule,
+        }
+    }
+}
+
+/// Typed audit decision selected before its stable wire label is rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateAuditDecision {
+    Allow,
+    Deny,
+    Ask,
+    SetResult,
+    Schedule,
+}
+
+impl GateAuditDecision {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::Deny => "deny",
+            Self::Ask => "ask",
+            Self::SetResult => "set_result",
+            Self::Schedule => "schedule",
+        }
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::{
+        GateAuditDecision, GateOutcomeKind, ToolCapabilityNarrowing, ToolPermissionVerdictKind,
+    };
+
+    #[kani::proof]
+    fn tool_capability_intersection_never_widens_configured_authority() {
+        let left = if kani::any() {
+            ToolCapabilityNarrowing::Configured
+        } else {
+            ToolCapabilityNarrowing::DenyAll
+        };
+        let right = if kani::any() {
+            ToolCapabilityNarrowing::Configured
+        } else {
+            ToolCapabilityNarrowing::DenyAll
+        };
+        let effective = left.intersect(right);
+
+        assert_eq!(
+            effective == ToolCapabilityNarrowing::Configured,
+            left == ToolCapabilityNarrowing::Configured
+                && right == ToolCapabilityNarrowing::Configured
+        );
+        assert_eq!(effective, right.intersect(left));
+    }
+
+    #[kani::proof]
+    fn permission_verdict_projects_to_exact_non_widening_gate_outcome() {
+        let verdict = match kani::any::<u8>() % 3 {
+            0 => ToolPermissionVerdictKind::Allow,
+            1 => ToolPermissionVerdictKind::Deny,
+            _ => ToolPermissionVerdictKind::RequireConfirmation,
+        };
+        let outcome = verdict.gate_outcome_kind();
+        let expected = match verdict {
+            ToolPermissionVerdictKind::Allow => GateOutcomeKind::Allow,
+            ToolPermissionVerdictKind::Deny => GateOutcomeKind::Block,
+            ToolPermissionVerdictKind::RequireConfirmation => GateOutcomeKind::RequireConfirmation,
+        };
+
+        assert_eq!(outcome, expected);
+        assert_eq!(
+            outcome == GateOutcomeKind::Allow,
+            verdict == ToolPermissionVerdictKind::Allow
+        );
+    }
+
+    #[kani::proof]
+    fn every_gate_outcome_has_one_exact_audit_label() {
+        let kind = match kani::any::<u8>() % 5 {
+            0 => GateOutcomeKind::Allow,
+            1 => GateOutcomeKind::Block,
+            2 => GateOutcomeKind::SetResult,
+            3 => GateOutcomeKind::RequireConfirmation,
+            _ => GateOutcomeKind::Schedule,
+        };
+        let expected = match kind {
+            GateOutcomeKind::Allow => GateAuditDecision::Allow,
+            GateOutcomeKind::Block => GateAuditDecision::Deny,
+            GateOutcomeKind::SetResult => GateAuditDecision::SetResult,
+            GateOutcomeKind::RequireConfirmation => GateAuditDecision::Ask,
+            GateOutcomeKind::Schedule => GateAuditDecision::Schedule,
+        };
+        assert_eq!(kind.audit_decision(), expected);
+        assert_eq!(
+            kind.audit_decision() == GateAuditDecision::Allow,
+            matches!(kind, GateOutcomeKind::Allow)
+        );
     }
 }
 
@@ -136,6 +321,28 @@ pub trait ToolGateHook: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_projection_preserves_denial_and_confirmation_identity() {
+        assert_eq!(
+            ToolPermissionVerdict::Deny {
+                reason: "bound denial".into(),
+            }
+            .into_gate_outcome(),
+            GateOutcome::Block {
+                reason: "bound denial".into(),
+            }
+        );
+        assert_eq!(
+            ToolPermissionVerdict::RequireConfirmation {
+                correlation_id: "call-bound-ticket".into(),
+            }
+            .into_gate_outcome(),
+            GateOutcome::RequireConfirmation {
+                correlation_id: "call-bound-ticket".into(),
+            }
+        );
+    }
 
     #[test]
     fn decision_label_is_the_authoritative_audit_vocabulary_for_every_outcome() {

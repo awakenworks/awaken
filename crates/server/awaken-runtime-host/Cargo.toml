@@ -128,3 +128,6 @@ tower = { version = "0.5", features = ["util"] }
 [[test]]
 name = "durable_child_run"
 required-features = ["test-support"]
+
+[lints]
+workspace = true

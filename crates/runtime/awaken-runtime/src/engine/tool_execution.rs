@@ -303,15 +303,7 @@ pub(super) async fn gate_decision(
         arguments: call.arguments.clone(),
     };
     if let Some(narrowing) = &context.tool_permission_policy {
-        let outcome = match narrowing.evaluate(&ctx).await {
-            awaken_runtime_contract::permission::ToolPermissionVerdict::Allow => GateOutcome::Allow,
-            awaken_runtime_contract::permission::ToolPermissionVerdict::Deny { reason } => {
-                GateOutcome::Block { reason }
-            }
-            awaken_runtime_contract::permission::ToolPermissionVerdict::RequireConfirmation {
-                correlation_id,
-            } => GateOutcome::RequireConfirmation { correlation_id },
-        };
+        let outcome = narrowing.evaluate(&ctx).await.into_gate_outcome();
         if !matches!(outcome, GateOutcome::Allow) {
             return outcome;
         }
