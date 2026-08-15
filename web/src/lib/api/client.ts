@@ -49,11 +49,19 @@ export function getToken(): string {
   }
 }
 
+export function clearProductSessionBearer(): void {
+  try {
+    globalThis.sessionStorage?.removeItem(CLOUD_SESSION_TOKEN_KEY);
+  } catch {
+    // The redirect still fails closed when browser storage is unavailable.
+  }
+}
+
 // ---- workspace scope seam (ADR-0048 path addressing / ADR-0051 tenancy) ----
-// Tenancy resolves to one opaque scope. With NO workspace set, scoped calls go to
-// the flat `/v1/…` surface (DEFAULT_SCOPE — single-tenant, Option A). Setting a
-// workspace routes them through `/v1/workspaces/{ws}/…`, which the host rewrites
-// back to flat `/v1/…` and stamps `{ws}` as the edge scope (multi-tenant, Option B).
+// Tenancy resolves to one opaque scope. With no route or server-resolved
+// workspace, scoped calls use the flat `/v1/…` surface (standalone default
+// scope). A hosted `/w/{workspace}` route is the sole browser-selected IAM
+// coordinate; the stored workspace below remains a presentation preference.
 const WS_KEY = "awaken.console.workspace";
 let resolvedWorkspaceId = "";
 export function getWorkspace(): string {
@@ -62,6 +70,20 @@ export function getWorkspace(): string {
 export function setWorkspace(workspace: string): void {
   if (workspace) localStorage.setItem(WS_KEY, workspace);
   else localStorage.removeItem(WS_KEY);
+}
+
+export function workspaceFromPath(pathname: string): string {
+  const encoded = pathname.match(/^\/w\/([^/]+)/)?.[1];
+  if (!encoded) return "";
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return "";
+  }
+}
+
+function routeWorkspace(): string {
+  return workspaceFromPath(globalThis.location?.pathname ?? "");
 }
 
 /** Pure decision seam: the route-selected workspace wins; the authenticated
@@ -80,7 +102,7 @@ export function setResolvedWorkspace(workspace: string): void {
 }
 
 export function requestWorkspaceId(displayWorkspace: string): string | undefined {
-  return workspaceIdForRequest(displayWorkspace, getWorkspace(), resolvedWorkspaceId);
+  return workspaceIdForRequest(displayWorkspace, routeWorkspace(), resolvedWorkspaceId);
 }
 
 export function workspaceQuery(path: string, displayWorkspace: string): string {
@@ -93,14 +115,13 @@ export function workspaceFields(displayWorkspace: string): { workspace_id?: stri
   const workspace_id = requestWorkspaceId(displayWorkspace);
   return workspace_id ? { workspace_id } : {};
 }
-/** Scope a flat `/v1/...` path to the active workspace. No workspace → unchanged
- * (default scope); otherwise `/v1/foo` → `/v1/workspaces/{ws}/foo`. This is the
- * one seam every tenant-scoped call routes through, so enabling multi-tenant
- * addressing is a single setWorkspace() away. */
+/** Scope a flat `/v1/...` path to the route or authenticated server context.
+ * No trusted coordinate means standalone default scope; localStorage never
+ * selects the authorization target. */
 export function ws(path: string): string {
-  const w = getWorkspace();
+  const w = routeWorkspace() || resolvedWorkspaceId;
   if (!w) return path;
-  return path.replace(/^\/v1\//, `/v1/workspaces/${w}/`);
+  return path.replace(/^\/v1\//, `/v1/workspaces/${encodeURIComponent(w)}/`);
 }
 
 export class ApiClientError extends Error {
@@ -237,7 +258,15 @@ export const api = {
 };
 
 export async function resolveWorkspaceContext(): Promise<string> {
+  const selected = routeWorkspace();
   const context = await api.get<{ workspace_id: string }>(ws("/v1/config/workspace-context"));
+  if (selected && context.workspace_id !== selected) {
+    throw new ApiClientError(
+      403,
+      "workspace_context_mismatch",
+      "The authenticated Workspace does not match this route.",
+    );
+  }
   setResolvedWorkspace(context.workspace_id);
   return context.workspace_id;
 }

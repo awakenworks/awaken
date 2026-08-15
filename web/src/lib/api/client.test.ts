@@ -1,5 +1,15 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { API_BETAS, ApiClientError, api, betaForPath, getToken, workspaceIdForRequest } from "./client";
+import {
+  API_BETAS,
+  ApiClientError,
+  api,
+  betaForPath,
+  getToken,
+  setResolvedWorkspace,
+  workspaceFromPath,
+  workspaceIdForRequest,
+  ws,
+} from "./client";
 
 describe("cloud product session bearer", () => {
   // Cause/effect decision table:
@@ -22,6 +32,7 @@ describe("cloud product session bearer", () => {
   beforeEach(() => {
     globalThis.sessionStorage.clear();
     globalThis.localStorage.clear();
+    setResolvedWorkspace("");
   });
 
   it("uses the short-lived IAM product token", () => {
@@ -117,12 +128,30 @@ describe("API beta cause/effect graph", () => {
 });
 
 describe("workspace identity cause/effect graph", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("never sends the presentation-only default label as an IAM target", () => {
     // Route scope > authenticated context > real named display fallback.
     expect(workspaceIdForRequest("default", "team-path", "team-session")).toBe("team-path");
     expect(workspaceIdForRequest("default", "", "workspace_local_1")).toBe("workspace_local_1");
     expect(workspaceIdForRequest("team-display", "", "")).toBe("team-display");
     expect(workspaceIdForRequest("default", "", "")).toBeUndefined();
+  });
+
+  it("addresses the first request from the route and ignores stale presentation storage", () => {
+    // Decision table: C1 exact /w route, C2 stale local preference, C3 no
+    // route. R1(C1+any C2)->encoded route Workspace; R2(!C1+C2)->unscoped
+    // until the authenticated server context is resolved. localStorage is a
+    // presentation preference and never an IAM target.
+    expect(workspaceFromPath("/w/awaken%3Atenant/overview")).toBe("awaken:tenant");
+    expect(workspaceFromPath("/w/%E0%A4%A/overview")).toBe("");
+    globalThis.localStorage.setItem("awaken.console.workspace", "stale-workspace");
+    vi.stubGlobal("location", { pathname: "/w/awaken%3Atenant/overview" });
+    expect(ws("/v1/config/workspace-context")).toBe(
+      "/v1/workspaces/awaken%3Atenant/config/workspace-context",
+    );
+    vi.stubGlobal("location", { pathname: "/" });
+    expect(ws("/v1/config/workspace-context")).toBe("/v1/config/workspace-context");
   });
 });
 

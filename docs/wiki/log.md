@@ -279,3 +279,13 @@
   holder, usage, and target-binding admission.
 - Kept `CredentialAccess` and the pinned materializer authoritative; hosted
   transports cannot add a plaintext API, copied Vault, or unsealed fallback.
+
+## 2026-08-15 — Make the hosted route the first authorization scope
+
+- Removed persisted Workspace preferences from the request-addressing boundary;
+  the exact `/w/{workspace}` route now wins before the first hosted API request.
+- Reused Cloud `/entry`, the existing Workspace-context probe and the existing
+  PDP; no product login, session store or authorization path was added.
+- Classified expired bearer (`401`), exact deny (`403`) and infrastructure
+  failure before mounting the product router, preventing both stale-scope
+  requests and authentication loops.
