@@ -21,6 +21,7 @@ async fn startup_reconciliation_reuses_registration_and_keeps_latest_current() {
         target: awaken_agent_config::ModelTarget {
             model_id: "m-first".into(),
             provider_id: Some("openai".into()),
+            api_dialect: Some("open_ai_chat".into()),
             protocol_endpoint_id: None,
             endpoint_name: Some("warm".into()),
         },
@@ -50,7 +51,7 @@ async fn startup_reconciliation_reuses_registration_and_keeps_latest_current() {
         .unwrap();
     assert_eq!(
         view.model.as_deref(),
-        Some("openai@warm/m-first"),
+        Some("m-first;provider=openai;api=open_ai_chat;endpoint=warm"),
         "warm install must pair the snapshot with its exact source revision"
     );
 
@@ -200,8 +201,14 @@ async fn startup_reconciliation_quarantines_one_bad_history_without_blocking_goo
         .await
         .expect_err("R1 reports degraded history");
     assert!(error.contains("1 quarantined"), "R1: {error}");
-    assert!(catalog.current(scope.as_str(), "healthy-agent").is_some(), "R1");
-    assert!(catalog.current(scope.as_str(), "damaged-agent").is_some(), "R1");
+    assert!(
+        catalog.current(scope.as_str(), "healthy-agent").is_some(),
+        "R1"
+    );
+    assert!(
+        catalog.current(scope.as_str(), "damaged-agent").is_some(),
+        "R1"
+    );
     assert!(
         store
             .get_publication_scoped(&scope, "orphan-publication")

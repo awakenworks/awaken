@@ -1105,6 +1105,7 @@ mod runtime_session_store_tests {
                 runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 agent_id: "assistant".into(),
                 agent_revision: None,
+                model_override: None,
                 model: "test-model".into(),
                 execution_model_ref: "test-model".into(),
                 runtime: None,

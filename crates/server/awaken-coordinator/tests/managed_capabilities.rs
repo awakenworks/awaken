@@ -24,7 +24,11 @@ async fn create_session(app: &Router) -> serde_json::Value {
         .uri("/v1/sessions")
         .header("content-type", "application/json")
         .body(Body::from(
-            serde_json::to_vec(&serde_json::json!({ "agent": "assistant" })).unwrap(),
+            serde_json::to_vec(&serde_json::json!({
+                "agent": "assistant",
+                "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+            }))
+            .unwrap(),
         ))
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();

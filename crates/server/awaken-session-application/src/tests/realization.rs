@@ -920,6 +920,7 @@ fn realization_owner_follows_the_frozen_placement_decision_table() {
                     runtime_placement: SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     agent_revision: baseline.agent_revision,
+                    model_override: baseline.model_override,
                     model: baseline.model,
                     execution_model_ref: baseline.execution_model_ref,
                     runtime: baseline.runtime,

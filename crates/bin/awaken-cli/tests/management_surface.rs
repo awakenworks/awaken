@@ -92,7 +92,10 @@ async fn admin_and_vault_surfaces_are_served_together() {
         &app,
         "POST",
         "/v1/sessions",
-        Some(json!({ "agent": "default" })),
+        Some(json!({
+            "agent": "default",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+        })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);

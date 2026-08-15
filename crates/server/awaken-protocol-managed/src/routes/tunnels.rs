@@ -11,7 +11,7 @@ use crate::routes::{ManagedJson, WorkspaceScope};
 use crate::types::tunnel::{
     CertificateCreateParams, TunnelCreateParams, TunnelListQuery, TunnelRotateTokenParams,
 };
-use crate::types::{ErrorResponse, Page, paginate};
+use crate::types::{ErrorResponse, PageCursor, paginate};
 use crate::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
 
 type WireError = (StatusCode, Json<ErrorResponse>);
@@ -120,7 +120,7 @@ async fn list(
     workspace: Option<Extension<WorkspaceScope>>,
     headers: HeaderMap,
     Query(query): Query<TunnelListQuery>,
-) -> Result<Json<Page<crate::types::tunnel::Tunnel>>, WireError> {
+) -> Result<Json<PageCursor<crate::types::tunnel::Tunnel>>, WireError> {
     let rows = app
         .list_tunnels(scope(workspace, &headers), query.include_archived)
         .await
@@ -211,7 +211,7 @@ async fn list_certificates(
     workspace: Option<Extension<WorkspaceScope>>,
     headers: HeaderMap,
     Query(query): Query<TunnelListQuery>,
-) -> Result<Json<Page<crate::types::tunnel::TunnelCertificate>>, WireError> {
+) -> Result<Json<PageCursor<crate::types::tunnel::TunnelCertificate>>, WireError> {
     let rows = app
         .list_certificates(
             scope(workspace, &headers),

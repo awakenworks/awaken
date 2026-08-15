@@ -114,8 +114,8 @@ async fn app() -> (Router, String) {
 #[tokio::test]
 async fn environment_is_pinned_at_creation() {
     // Cause/effect rules: R1 a Control-published current Environment is admitted
-    // and frozen by id; R2 omission selects the immutable built-in `env_local`;
-    // an unregistered id has no ambient fallback.
+    // and frozen by id; R2 omission is rejected at the SDK boundary. Managed
+    // never turns a missing Environment into ambient local execution.
     let (app, environment_id) = app().await;
 
     // Explicit environment is echoed on the session.
@@ -129,10 +129,10 @@ async fn environment_is_pinned_at_creation() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(session["environment_id"], environment_id);
 
-    // Omitting it defaults to the local environment.
+    // Omitting the SDK-required field fails before Session creation.
     let (s, defaulted) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
-    assert_eq!(s, StatusCode::OK);
-    assert_eq!(defaulted["environment_id"], "env_local");
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(defaulted["error"]["type"], "invalid_request_error");
 }
 
 #[tokio::test]

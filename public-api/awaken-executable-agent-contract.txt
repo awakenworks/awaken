@@ -13,6 +13,16 @@ pub enum awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome
 pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::AlreadyWithdrawn
 pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::HistoricalNoop
 pub awaken_executable_agent_contract::ExecutableAgentWithdrawalOutcome::WithdrawnCurrent
+pub enum awaken_executable_agent_contract::SnapshotPinError
+pub awaken_executable_agent_contract::SnapshotPinError::FingerprintMismatch
+pub awaken_executable_agent_contract::SnapshotPinError::MissingAgent
+pub awaken_executable_agent_contract::SnapshotPinError::MissingFingerprint
+pub awaken_executable_agent_contract::SnapshotPinError::MissingPublishedMetadata
+pub awaken_executable_agent_contract::SnapshotPinError::MissingSourceRevision
+pub awaken_executable_agent_contract::SnapshotPinError::MissingWorkspace
+pub awaken_executable_agent_contract::SnapshotPinError::SnapshotRootMismatch
+pub awaken_executable_agent_contract::SnapshotPinError::SourceAgentMismatch
+pub awaken_executable_agent_contract::SnapshotPinError::SourceRevisionMismatch
 pub struct awaken_executable_agent_contract::ExecutableAgentDelegate
 pub awaken_executable_agent_contract::ExecutableAgentDelegate::agent_id: alloc::string::String
 pub awaken_executable_agent_contract::ExecutableAgentDelegate::source_revision: core::option::Option<u64>
@@ -57,10 +67,28 @@ pub awaken_executable_agent_contract::ExecutableAgentWithdrawal::lifecycle_revis
 pub awaken_executable_agent_contract::ExecutableAgentWithdrawal::workspace_id: alloc::string::String
 impl awaken_executable_agent_contract::ExecutableAgentWithdrawal
 pub fn awaken_executable_agent_contract::ExecutableAgentWithdrawal::validate(&self) -> core::result::Result<(), awaken_executable_agent_contract::ExecutableAgentRegistrationError>
+pub struct awaken_executable_agent_contract::ExecutableSnapshotIdentity<T>
+pub awaken_executable_agent_contract::ExecutableSnapshotIdentity::envelope_fingerprint: core::option::Option<T>
+pub awaken_executable_agent_contract::ExecutableSnapshotIdentity::metadata_fingerprint: core::option::Option<T>
+pub awaken_executable_agent_contract::ExecutableSnapshotIdentity::published_metadata: bool
+pub awaken_executable_agent_contract::ExecutableSnapshotIdentity::resolved_fingerprint: core::option::Option<T>
+pub awaken_executable_agent_contract::ExecutableSnapshotIdentity::root_agent: T
+pub awaken_executable_agent_contract::ExecutableSnapshotIdentity::source_agent: T
+pub awaken_executable_agent_contract::ExecutableSnapshotIdentity::source_revision: u64
+pub struct awaken_executable_agent_contract::PublishedSnapshotPin<T>
+pub awaken_executable_agent_contract::PublishedSnapshotPin::agent: T
+pub awaken_executable_agent_contract::PublishedSnapshotPin::fingerprint: T
+pub awaken_executable_agent_contract::PublishedSnapshotPin::source_revision: u64
+pub awaken_executable_agent_contract::PublishedSnapshotPin::workspace: T
+pub struct awaken_executable_agent_contract::SnapshotRegistrationIdentity<T>
+pub awaken_executable_agent_contract::SnapshotRegistrationIdentity::agent: core::option::Option<T>
+pub awaken_executable_agent_contract::SnapshotRegistrationIdentity::source_revision: u64
+pub awaken_executable_agent_contract::SnapshotRegistrationIdentity::workspace: core::option::Option<T>
 pub trait awaken_executable_agent_contract::ExecutableAgentInventorySource: core::marker::Send + core::marker::Sync
 pub fn awaken_executable_agent_contract::ExecutableAgentInventorySource::current_registrations<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_executable_agent_contract::ExecutableAgentProfileSource: core::marker::Send + core::marker::Sync
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::agent_unavailable_in(&self, &str, &str) -> bool
+pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::executable_snapshot_at_revision_in(&self, &str, &str, u64) -> core::option::Option<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_at_revision_in(&self, &str, &str, u64) -> core::option::Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile>
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_in(&self, &str, &str) -> core::option::Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile>
 pub fn awaken_executable_agent_contract::ExecutableAgentProfileSource::unavailable_delegate_in(&self, &str, &str) -> core::option::Option<alloc::string::String>
@@ -71,4 +99,5 @@ pub trait awaken_executable_agent_contract::ExecutableAgentRegistrationSource: c
 pub fn awaken_executable_agent_contract::ExecutableAgentRegistrationSource::current_registration<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_executable_agent_contract::ExecutableAgentRegistration>, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_executable_agent_contract::ExecutableAgentRegistrationSource::registration_at_revision<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_executable_agent_contract::ExecutableAgentRegistration>, awaken_executable_agent_contract::ExecutableAgentRegistrationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub async fn awaken_executable_agent_contract::current_model_references(&dyn awaken_executable_agent_contract::ExecutableAgentInventorySource, &str) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_executable_agent_contract::ExecutableAgentRegistrationError>
+pub fn awaken_executable_agent_contract::published_snapshot_pin<T: core::marker::Copy + core::cmp::Eq>(awaken_executable_agent_contract::SnapshotRegistrationIdentity<T>, awaken_executable_agent_contract::ExecutableSnapshotIdentity<T>) -> core::result::Result<awaken_executable_agent_contract::PublishedSnapshotPin<T>, awaken_executable_agent_contract::SnapshotPinError>
 pub const fn awaken_executable_agent_contract::requested_profile_revision_matches(u64, u64) -> bool

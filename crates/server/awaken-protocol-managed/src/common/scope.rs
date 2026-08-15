@@ -11,6 +11,8 @@ use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, request::Parts};
 use axum::response::{IntoResponse, Response};
 
+use crate::types::ErrorResponse;
+
 /// Workspace selected and stamped by the trusted startup edge.
 ///
 /// Missing and empty values fail as `404` so an incorrectly wired route cannot
@@ -33,7 +35,7 @@ where
             Some(scope) => Ok(Self(scope.to_owned())),
             _ => Err((
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "workspace not found" })),
+                Json(ErrorResponse::new("not_found_error", "workspace not found")),
             )
                 .into_response()),
         }

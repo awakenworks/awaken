@@ -24,7 +24,7 @@ use tokio_stream::Stream;
 
 use crate::state::{ManagedState, RunError, RunErrorKind, StateError};
 use crate::types::{
-    DeletedSession, ErrorResponse, ListEventsResponse, Page, PageQuery, SendEventsRequest,
+    DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
     SendEventsResponse, Session, SessionCreateParams, SessionThread,
 };
 use crate::types::{Event, StreamFrame};
@@ -724,6 +724,8 @@ async fn create_session(
     headers: HeaderMap,
     ManagedJson(req): ManagedJson<SessionCreateParams>,
 ) -> Result<(HeaderMap, Json<Session>), (StatusCode, Json<ErrorResponse>)> {
+    req.validate_public()
+        .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))?;
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
     // RunError to the envelope exactly like a turn's failure, so a failed create
     // is loud rather than a half-provisioned session.
@@ -747,16 +749,7 @@ async fn create_session(
         }
     }
     .map_err(error_response)?;
-    let operation_id = idempotency_key.as_deref().map(|key| {
-        awaken_session_contract::stable_fingerprint(&(
-            "managed-session-create-operation",
-            workspace_id
-                .as_deref()
-                .unwrap_or(crate::state::DEFAULT_SCOPE),
-            key,
-        ))
-    });
-    versioned_session_response(&state, session, operation_id).await
+    versioned_session_response(&state, session).await
 }
 
 pub(crate) fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, WireErr> {
@@ -802,29 +795,23 @@ async fn retrieve_session(
         .await
         .map_err(error_response)?;
     let session = state.get_session(&id).map_err(error_response)?;
-    versioned_session_response(&state, session, None).await
+    versioned_session_response(&state, session).await
 }
 
 async fn versioned_session_response(
     state: &ManagedState,
     session: Session,
-    operation_id: Option<String>,
 ) -> Result<(HeaderMap, Json<Session>), WireErr> {
     let revision = state
         .session_revision(&session.id)
         .await
         .map_err(error_response)?;
-    Ok(versioned_session_response_at_revision(
-        session,
-        revision,
-        operation_id,
-    ))
+    Ok(versioned_session_response_at_revision(session, revision))
 }
 
 fn versioned_session_response_at_revision(
     session: Session,
     revision: awaken_session_contract::SessionRevision,
-    operation_id: Option<String>,
 ) -> (HeaderMap, Json<Session>) {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -832,12 +819,6 @@ fn versioned_session_response_at_revision(
         HeaderValue::from_str(&format!("\"{}\"", revision.0))
             .expect("numeric Session revision is a valid ETag"),
     );
-    if let Some(operation_id) = operation_id {
-        headers.insert(
-            "x-awaken-operation-id",
-            HeaderValue::from_str(&operation_id).expect("fingerprint is a valid header value"),
-        );
-    }
     (headers, Json(session))
 }
 
@@ -900,9 +881,6 @@ async fn update_session(
     };
     let idempotency_key = parse_idempotency_key(&headers)?;
     let if_match = parse_if_match(&headers)?;
-    let operation_id = idempotency_key
-        .as_deref()
-        .map(|key| ManagedState::update_operation_id(&id, key));
     let (session, command_revision) = state
         .update_session(
             &id,
@@ -932,7 +910,6 @@ async fn update_session(
     Ok(versioned_session_response_at_revision(
         session,
         command_revision,
-        operation_id,
     ))
 }
 
@@ -965,11 +942,11 @@ async fn archive_session(
 async fn list_threads(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<Page<SessionThread>>, WireErr> {
+) -> Result<Json<PageCursor<SessionThread>>, WireErr> {
     state.ensure_session(&id).await.map_err(error_response)?;
     state
         .list_threads(&id)
-        .map(Page::single)
+        .map(PageCursor::single)
         .map(Json)
         .map_err(error_response)
 }
@@ -1226,9 +1203,6 @@ pub async fn replace_resource_manifest(
         .map(crate::types::resource::ResourceInput::idempotency_fingerprint)
         .collect::<Vec<_>>();
     let request_fingerprint = awaken_session_contract::stable_fingerprint(&fingerprints);
-    let operation_id = idempotency_key.as_deref().map(|key| {
-        awaken_session_application::SessionApplication::resource_manifest_operation_id(&id, key)
-    });
     let (manifest, command_revision) = state
         .replace_resource_manifest(&id, body, idempotency_key, if_match, request_fingerprint)
         .await
@@ -1239,12 +1213,6 @@ pub async fn replace_resource_manifest(
         HeaderValue::from_str(&format!("\"{}\"", command_revision.0))
             .expect("numeric Session revision is a valid ETag"),
     );
-    if let Some(operation_id) = operation_id {
-        response_headers.insert(
-            "x-awaken-operation-id",
-            HeaderValue::from_str(&operation_id).expect("fingerprint is a valid header value"),
-        );
-    }
     Ok((response_headers, Json(manifest)))
 }
 
@@ -1263,14 +1231,14 @@ async fn create_resource(
 async fn list_resources(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
-) -> Result<Json<Page<crate::types::resource::SessionResource>>, WireErr> {
+) -> Result<Json<PageCursor<crate::types::resource::SessionResource>>, WireErr> {
     state
         .refresh_committed_events(&id)
         .await
         .map_err(error_response)?;
     state
         .list_resources(&id)
-        .map(Page::single)
+        .map(PageCursor::single)
         .map(Json)
         .map_err(error_response)
 }

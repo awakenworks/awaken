@@ -506,7 +506,15 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         id: &str,
     ) -> Result<Option<AgentConfigRevision>, ConfigStoreError> {
         let row = sqlx::query(&format!(
-            "SELECT data, generation FROM {NS}_agent WHERE id = $1 AND scope_id = $2"
+            "SELECT a.data, a.generation, \
+             (EXTRACT(EPOCH FROM first.created_at) * 1000)::BIGINT AS created_at_unix_ms, \
+             (EXTRACT(EPOCH FROM current.created_at) * 1000)::BIGINT AS updated_at_unix_ms \
+             FROM {NS}_agent a \
+             JOIN {NS}_agent_revision first ON first.scope_id = a.scope_id \
+               AND first.id = a.id AND first.generation = 1 \
+             JOIN {NS}_agent_revision current ON current.scope_id = a.scope_id \
+               AND current.id = a.id AND current.generation = a.generation \
+             WHERE a.id = $1 AND a.scope_id = $2"
         ))
         .bind(id)
         .bind(&scope.0)
@@ -517,9 +525,13 @@ impl ScopedConfigRegistry for PostgresConfigStore {
             Some(row) => {
                 let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
                 let revision: i64 = row.try_get("generation").map_err(reject)?;
+                let created_at_unix_ms: i64 = row.try_get("created_at_unix_ms").map_err(reject)?;
+                let updated_at_unix_ms: i64 = row.try_get("updated_at_unix_ms").map_err(reject)?;
                 Ok(Some(AgentConfigRevision {
                     config,
                     revision: domain_generation(revision)?,
+                    created_at_unix_ms: Some(u64::try_from(created_at_unix_ms).map_err(reject)?),
+                    updated_at_unix_ms: Some(u64::try_from(updated_at_unix_ms).map_err(reject)?),
                 }))
             }
             None => Ok(None),
@@ -532,7 +544,10 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         id: &str,
     ) -> Result<Vec<AgentConfigRevision>, ConfigStoreError> {
         let rows = sqlx::query(&format!(
-            "SELECT data, generation FROM {NS}_agent_revision \
+            "SELECT data, generation, \
+             (EXTRACT(EPOCH FROM MIN(created_at) OVER ()) * 1000)::BIGINT AS created_at_unix_ms, \
+             (EXTRACT(EPOCH FROM created_at) * 1000)::BIGINT AS updated_at_unix_ms \
+             FROM {NS}_agent_revision \
              WHERE scope_id = $1 AND id = $2 ORDER BY generation ASC"
         ))
         .bind(&scope.0)
@@ -544,9 +559,13 @@ impl ScopedConfigRegistry for PostgresConfigStore {
         for row in rows {
             let Json(config): Json<AgentConfig> = row.try_get("data").map_err(reject)?;
             let revision: i64 = row.try_get("generation").map_err(reject)?;
+            let created_at_unix_ms: i64 = row.try_get("created_at_unix_ms").map_err(reject)?;
+            let updated_at_unix_ms: i64 = row.try_get("updated_at_unix_ms").map_err(reject)?;
             revisions.push(AgentConfigRevision {
                 config,
                 revision: u64::try_from(revision).map_err(reject)?,
+                created_at_unix_ms: Some(u64::try_from(created_at_unix_ms).map_err(reject)?),
+                updated_at_unix_ms: Some(u64::try_from(updated_at_unix_ms).map_err(reject)?),
             });
         }
         Ok(revisions)

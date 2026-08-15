@@ -115,6 +115,12 @@ pub fn frozen_agent_publication_decision(
             false,
         );
     };
+    let expected_backend = baseline
+        .model_override
+        .as_ref()
+        .and_then(|model_override| model_override.publication.as_ref())
+        .map(|publication| &publication.primary.binding.backend_ref)
+        .unwrap_or(&publication.resolved_spec.model_binding.backend_ref);
     frozen_agent_publication_facts(
         true,
         baseline.runtime_placement == crate::SessionRuntimePlacement::Worker,
@@ -124,7 +130,7 @@ pub fn frozen_agent_publication_decision(
         baseline
             .runtime
             .as_ref()
-            .is_none_or(|runtime| publication.resolved_spec.model_binding.backend_ref == *runtime),
+            .is_none_or(|runtime| expected_backend == runtime),
     )
 }
 

@@ -68,7 +68,10 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     let state = ManagedState::new_with_mcp(RehydrateFake::default())
         .with_config_source(profiles.clone())
         .with_session_repo(repo);
-    let request = serde_json::from_value(serde_json::json!({"agent":"coordinator"})).unwrap();
+    let request = serde_json::from_value(serde_json::json!({
+        "agent":"coordinator", "environment_id":"env_local"
+    }))
+    .unwrap();
     let created = state.create_session(request, None).await.unwrap();
     assert_eq!(created.agent.name, "coordinator-v7", "R1");
     profiles.0.store(8, std::sync::atomic::Ordering::SeqCst);
@@ -77,15 +80,14 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     let recovered = state.get_session(&created.id).unwrap();
     assert_eq!(recovered.agent.name, "coordinator-v7", "R3/E1");
     assert_eq!(recovered.agent.version, 7, "R3/E1");
-    let crate::types::SessionMultiagentRosterEntry::Agent(child) = &recovered
+    let child = &recovered
         .agent
         .multiagent
         .as_ref()
         .expect("coordinator roster")
         .agents[0]
-    else {
-        panic!("expected child Agent");
-    };
+        .as_agent()
+        .expect("first roster entry is a child agent");
     assert_eq!(child.name, "researcher-v7", "R3/E2-E3");
     assert_eq!(child.version, 7, "R3/E2-E3");
 }

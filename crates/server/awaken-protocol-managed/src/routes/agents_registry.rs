@@ -11,7 +11,7 @@ use crate::state::DEFAULT_SCOPE;
 use crate::types::agent::{
     Agent, AgentCreateParams, AgentListParams, AgentRetrieveParams, AgentUpdateParams,
 };
-use crate::types::{ErrorResponse, Page, PageQuery, paginate, paginate_by};
+use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate, paginate_by};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -58,7 +58,6 @@ pub trait ManagedAgentRepository: Send + Sync {
         id: &str,
         params: AgentUpdateParams,
     ) -> Result<Agent, ManagedAgentError>;
-    async fn disable(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError>;
     async fn archive(&self, workspace_id: &str, id: &str) -> Result<Agent, ManagedAgentError>;
     async fn versions(&self, workspace_id: &str, id: &str)
     -> Result<Vec<Agent>, ManagedAgentError>;
@@ -106,7 +105,6 @@ pub fn agents_router(state: Arc<AgentRegistryState>) -> Router {
     Router::new()
         .route("/v1/agents", post(create_agent).get(list_agents))
         .route("/v1/agents/{id}", get(retrieve_agent).post(update_agent))
-        .route("/v1/agents/{id}/disable", post(disable_agent))
         .route("/v1/agents/{id}/archive", post(archive_agent))
         .route("/v1/agents/{id}/versions", get(list_versions))
         .with_state(state)
@@ -166,7 +164,7 @@ async fn list_agents(
     State(state): State<Arc<AgentRegistryState>>,
     scope: Option<Extension<WorkspaceScope>>,
     Query(params): Query<AgentListParams>,
-) -> Result<Json<Page<Agent>>, WireError> {
+) -> Result<Json<PageCursor<Agent>>, WireError> {
     state
         .repository
         .list(&request_scope(&scope), &params)
@@ -188,19 +186,6 @@ async fn update_agent(
     state
         .repository
         .update(&request_scope(&scope), &id, params)
-        .await
-        .map(Json)
-        .map_err(wire_error)
-}
-
-async fn disable_agent(
-    State(state): State<Arc<AgentRegistryState>>,
-    Path(id): Path<String>,
-    scope: Option<Extension<WorkspaceScope>>,
-) -> Result<Json<Agent>, WireError> {
-    state
-        .repository
-        .disable(&request_scope(&scope), &id)
         .await
         .map(Json)
         .map_err(wire_error)
@@ -236,7 +221,7 @@ async fn list_versions(
     Path(id): Path<String>,
     scope: Option<Extension<WorkspaceScope>>,
     Query(page): Query<PageQuery>,
-) -> Result<Json<Page<Agent>>, WireError> {
+) -> Result<Json<PageCursor<Agent>>, WireError> {
     state
         .repository
         .versions(&request_scope(&scope), &id)

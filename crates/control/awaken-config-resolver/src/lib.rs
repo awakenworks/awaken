@@ -164,6 +164,10 @@ pub fn select_offering<'a>(
                     .as_deref()
                     .is_none_or(|provider| offering.provider_id.as_str() == provider)
                 && target
+                    .api_dialect
+                    .as_deref()
+                    .is_none_or(|dialect| offering.dialect.as_str() == dialect)
+                && target
                     .protocol_endpoint_id
                     .as_deref()
                     .is_none_or(|endpoint| offering.protocol_endpoint_id.as_str() == endpoint)
@@ -202,12 +206,12 @@ mod offering_selection_tests {
         ApiDialect, Offering, OfferingSource, OfferingStatus, ProtocolEndpointId, ProviderId,
     };
 
-    fn offering(provider: &str, endpoint: &str) -> Offering {
+    fn offering_with_dialect(provider: &str, endpoint: &str, dialect: ApiDialect) -> Offering {
         Offering {
             model_id: "shared/model".into(),
             provider_id: ProviderId::new(provider),
             protocol_endpoint_id: ProtocolEndpointId::new(endpoint),
-            dialect: ApiDialect::OpenAiChat,
+            dialect,
             upstream_model: None,
             source: OfferingSource::Manual,
             status: OfferingStatus::Active,
@@ -215,17 +219,28 @@ mod offering_selection_tests {
         }
     }
 
+    fn offering(provider: &str, endpoint: &str) -> Offering {
+        offering_with_dialect(provider, endpoint, ApiDialect::OpenAiChat)
+    }
+
     #[test]
     fn catalog_selector_fails_closed_and_honors_each_qualifier() {
         // Causes: C1 model exists; C2 provider qualifier; C3 endpoint-name
-        // qualifier; C4 exact endpoint qualifier; C5 multiple active matches.
+        // qualifier; C4 exact endpoint qualifier; C5 API dialect qualifier; C6
+        // multiple active matches.
         // Effects: E1 one Offering; E2 not-found; E3 ambiguous; E4 invalid.
-        // Rules: no qualifier+C5 -> E3; provider narrows to one -> E1;
-        // provider+name -> E1; exact endpoint -> E1; both endpoint forms -> E4.
+        // Rules: no qualifier+C6 -> E3; provider narrows to one -> E1;
+        // provider+name -> E1; provider+API chooses the exact dialect -> E1;
+        // exact endpoint -> E1; both endpoint forms -> E4.
         let catalog = ProviderCatalog {
             offerings: vec![
                 offering("anyrouter", "anyrouter.open_ai_chat.primary"),
                 offering("qwen", "qwen.open_ai_chat"),
+                offering_with_dialect(
+                    "anyrouter",
+                    "anyrouter.open_ai_responses.primary",
+                    ApiDialect::OpenAiResponses,
+                ),
             ],
             ..ProviderCatalog::default()
         };
@@ -236,6 +251,7 @@ mod offering_selection_tests {
         let provider = ModelTarget {
             model_id: "shared/model".into(),
             provider_id: Some("qwen".into()),
+            api_dialect: None,
             protocol_endpoint_id: None,
             endpoint_name: None,
         };
@@ -252,11 +268,25 @@ mod offering_selection_tests {
             ..ModelTarget::unqualified("shared/model")
         };
         assert_eq!(
+            select_offering(&catalog, &named, &[]).unwrap_err(),
+            OfferingSelectionError::Ambiguous {
+                model_id: "shared/model".into(),
+                candidates: vec![
+                    "anyrouter/anyrouter.open_ai_chat.primary".into(),
+                    "anyrouter/anyrouter.open_ai_responses.primary".into(),
+                ],
+            }
+        );
+        let named = ModelTarget {
+            api_dialect: Some("open_ai_responses".into()),
+            ..named
+        };
+        assert_eq!(
             select_offering(&catalog, &named, &[])
                 .unwrap()
                 .protocol_endpoint_id
                 .as_str(),
-            "anyrouter.open_ai_chat.primary"
+            "anyrouter.open_ai_responses.primary"
         );
         let conflicting = ModelTarget {
             protocol_endpoint_id: Some("anyrouter.open_ai_chat.primary".into()),
@@ -1020,6 +1050,7 @@ mod tests {
             &ModelTarget {
                 model_id: "claude-opus-4-8".into(),
                 provider_id: Some("anthropic".into()),
+                api_dialect: None,
                 protocol_endpoint_id: Some("ep2".into()),
                 endpoint_name: None,
             },

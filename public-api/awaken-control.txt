@@ -77,12 +77,14 @@ pub const awaken_control::authz::ADMIN_TOKEN_FILE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::authz::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
+pub const awaken_control::authz::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::authz::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::authz::BOOTSTRAP_WORKSPACE: &str
 pub const awaken_control::authz::DEFAULT_ORG_ID: &str
 pub const awaken_control::authz::HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE: &str
 pub const awaken_control::authz::HOSTED_RUNTIME_POLICY_NAMESPACE: &str
 pub const awaken_control::authz::HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE: &str
+pub const awaken_control::authz::HOSTED_RUNTIME_WORKSPACE_USER_ROLE: &str
 pub async fn awaken_control::authz::cloud_management_guard(axum::extract::state::State<alloc::sync::Arc<awaken_control::RemoteManagementAuthz>>, axum_core::extract::Request, axum::middleware::from_fn::Next) -> axum_core::response::Response
 pub fn awaken_control::authz::embedded_iam(&std::path::Path) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
 pub fn awaken_control::authz::embedded_iam_for_tenant(&std::path::Path, &str, &str) -> alloc::sync::Arc<awaken_control::authz::ManagementAuthz>
@@ -162,7 +164,6 @@ pub fn awaken_control::ConfigPlaneManagedAgentRepository::request_scoped(awaken_
 impl awaken_protocol_managed::routes::agents_registry::ManagedAgentRepository for awaken_control::ConfigPlaneManagedAgentRepository
 pub fn awaken_control::ConfigPlaneManagedAgentRepository::archive<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::routes::agents_registry::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_control::ConfigPlaneManagedAgentRepository::create<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_protocol_managed::types::agent::AgentCreateParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::routes::agents_registry::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_control::ConfigPlaneManagedAgentRepository::disable<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::routes::agents_registry::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_control::ConfigPlaneManagedAgentRepository::list<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_protocol_managed::types::agent::AgentListParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_protocol_managed::types::agent::Agent>, awaken_protocol_managed::routes::agents_registry::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_control::ConfigPlaneManagedAgentRepository::retrieve<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::routes::agents_registry::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_control::ConfigPlaneManagedAgentRepository::update<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_protocol_managed::types::agent::AgentUpdateParams) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_protocol_managed::types::agent::Agent, awaken_protocol_managed::routes::agents_registry::ManagedAgentError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -336,12 +337,14 @@ pub const awaken_control::ADMIN_TOKEN_FILE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_HOSTED_ADMIN_ROLE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_POLICY_NAMESPACE: &str
 pub const awaken_control::AWAKEN_WORKSPACE_PUBLISHER_ROLE: &str
+pub const awaken_control::AWAKEN_WORKSPACE_USER_ROLE: &str
 pub const awaken_control::BOOTSTRAP_PRINCIPAL: &str
 pub const awaken_control::BOOTSTRAP_WORKSPACE: &str
 pub const awaken_control::DEFAULT_ORG_ID: &str
 pub const awaken_control::HOSTED_RUNTIME_AGENT_EXECUTOR_ROLE: &str
 pub const awaken_control::HOSTED_RUNTIME_POLICY_NAMESPACE: &str
 pub const awaken_control::HOSTED_RUNTIME_WORKSPACE_ADMIN_ROLE: &str
+pub const awaken_control::HOSTED_RUNTIME_WORKSPACE_USER_ROLE: &str
 pub fn awaken_control::admin_assistant_lifecycle_router(awaken_config_service::config_plane::ConfigPlane, core::option::Option<alloc::string::String>, core::option::Option<awaken_agent_config::config::ModelSelection>) -> axum::routing::Router
 pub fn awaken_control::application_mcp_credentials_router(alloc::sync::Arc<awaken_protocol_managed::routes::vaults::VaultState>) -> axum::routing::Router
 pub async fn awaken_control::build_control_component(awaken_control::ControlDependencies) -> awaken_control::ControlComponent

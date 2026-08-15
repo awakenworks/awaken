@@ -151,6 +151,7 @@ fn frozen_projection() -> awaken_session_contract::FrozenSessionProjection {
             mcp_authoring: Default::default(),
             agent_id: "agent".into(),
             agent_revision: None,
+            model_override: None,
             model: "model".into(),
             runtime: None,
             delegate_ids: Vec::new(),

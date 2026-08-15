@@ -220,6 +220,20 @@ impl ManagedState {
         self
     }
 
+    /// Wire the same canonical model-publication authority used by Agent
+    /// publication. Test fixtures use this builder to prove override admission
+    /// without creating a protocol-local catalog or parser.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_model_publication_resolver(
+        mut self,
+        resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
+    ) -> Self {
+        self.application_mut()
+            .set_model_publication_resolver(resolver);
+        self
+    }
+
     /// Wire the platform Resource Catalog used to resolve Memory/Repository
     /// configuration once at Session creation.
     #[cfg(any(test, feature = "test-support"))]

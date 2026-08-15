@@ -586,6 +586,13 @@ pub(super) async fn prepare_runtime_routers(
     // Share the SAME config plane `/v1/agents` reads, so a session inheriting a
     // published agent's model sees the authoritative config-plane truth (M2).
     session_application.set_config_source(executable_agent_catalog.clone());
+    if let Some(model_services) = &model_services {
+        session_application.set_model_publication_resolver(Arc::new(
+            awaken_config_service::ConfigSessionModelPublicationResolver::new(
+                model_services.publication_resolver.clone(),
+            ),
+        ));
+    }
     session_application.set_lifecycle_notifier(webhook_notifier);
     if let Some(provider) = process.managed_services.list_price_provider.clone() {
         session_application.set_managed_list_price_provider(provider);

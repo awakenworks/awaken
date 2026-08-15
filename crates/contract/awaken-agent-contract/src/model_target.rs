@@ -14,6 +14,11 @@ pub struct ModelTarget {
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
+    /// Public API-dialect qualifier (for example `anthropic_messages` or
+    /// `open_ai_responses`). It narrows a provider's protocol surfaces without
+    /// exposing the catalog's internal endpoint identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_dialect: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_endpoint_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -26,6 +31,7 @@ impl ModelTarget {
         Self {
             model_id: model_id.into(),
             provider_id: None,
+            api_dialect: None,
             protocol_endpoint_id: None,
             endpoint_name: None,
         }

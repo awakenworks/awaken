@@ -268,9 +268,10 @@ AcpSessionConfiguration
 ```
 
 It is carried by the existing `ModelSelection::Target`, `BackendDefault`, or
-`BackendExact` variant; there is no parallel ACP selection record. The Managed
-Agents ACL projects the optional `model.x_awaken.acp` object into this value.
-Omission retains the official Managed model shape.
+`BackendExact` variant; there is no parallel ACP selection record. Native
+control-plane authoring writes this typed value directly. The Managed Agents ACL
+uses only the standard `model` field for route/executor selection and does not
+accept or project a parallel ACP configuration object.
 
 - `BackendDefault` sends no exact-model override.
 - Exact ACP model selection uses the existing exact/pinned selection projected

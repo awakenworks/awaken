@@ -1,8 +1,15 @@
 //! Managed Agents model-id ACL.
 //!
-//! The public field stays a string exactly as the Managed Agents API expects.
-//! This codec is the only place where Awaken's provider / endpoint / ACP
-//! qualifiers become config-domain model-selection intent.
+//! The public field stays an opaque string exactly as the Managed Agents API
+//! expects. A model id is the readable head; optional named qualifiers select
+//! provider, API dialect, endpoint, and executor without positional coupling:
+//!
+//! `qwen/qwen3-235b;provider=anyrouter;api=open_ai_responses;endpoint=primary;executor=acp:codex`
+//!
+//! This codec is the only place where those public selectors become config-
+//! domain model-selection intent. Runtime consumes only the resolved binding.
+
+use std::collections::BTreeMap;
 
 use awaken_agent_config::{ModelSelection, ModelTarget};
 use awaken_runtime_contract::resolved::{AcpSessionConfiguration, Backend, ModelBinding};
@@ -27,92 +34,106 @@ pub fn parse_managed_model_id(value: &str) -> Result<ModelSelection, ManagedMode
         return Err(ManagedModelIdError::Invalid(value.into()));
     }
 
-    if let Some(endpoint) = value.strip_prefix("a2a:") {
-        if endpoint.is_empty() {
+    if let Some(profile) = value.strip_prefix("profile=") {
+        let profile_id = decode_component(profile, value)?;
+        if profile_id.is_empty() || profile_id.contains(';') {
             return Err(ManagedModelIdError::Invalid(value.into()));
         }
-        return Ok(ModelSelection::Pinned(ModelBinding::new("", "", value)));
+        return Ok(ModelSelection::Profile { profile_id });
     }
 
-    if let Some(acp) = value.strip_prefix("acp:") {
-        return parse_acp(acp, value);
+    if let Some(executor) = value.strip_prefix("executor=") {
+        if executor.contains(';') {
+            return Err(ManagedModelIdError::Invalid(value.into()));
+        }
+        return executor_only(&decode_component(executor, value)?, value);
     }
 
-    let (route, model_id) = match value.split_once('/') {
-        Some((route, model_id)) => (Some(route), model_id),
-        None => (None, value),
-    };
+    let mut parts = value.split(';');
+    let model_id = decode_component(parts.next().unwrap_or_default(), value)?;
     if model_id.is_empty() {
         return Err(ManagedModelIdError::Invalid(value.into()));
     }
-    let (provider_id, endpoint_name) = route.map(parse_provider_route).transpose()?.unzip();
-    Ok(ModelSelection::Target {
-        target: ModelTarget {
-            model_id: model_id.into(),
-            provider_id,
-            protocol_endpoint_id: None,
-            endpoint_name: endpoint_name.flatten(),
-        },
-        backend_ref: "genai".into(),
-        configuration: AcpSessionConfiguration::default(),
-    })
-}
+    let mut qualifiers = BTreeMap::new();
+    for part in parts {
+        let Some((key, encoded)) = part.split_once('=') else {
+            return Err(ManagedModelIdError::Invalid(value.into()));
+        };
+        if !matches!(key, "provider" | "api" | "endpoint" | "executor")
+            || encoded.is_empty()
+            || qualifiers
+                .insert(key, decode_component(encoded, value)?)
+                .is_some()
+        {
+            return Err(ManagedModelIdError::Invalid(value.into()));
+        }
+    }
 
-fn parse_acp(acp: &str, original: &str) -> Result<ModelSelection, ManagedModelIdError> {
-    let (executor_route, model_id) = match acp.split_once('/') {
-        Some((route, model)) if !model.is_empty() => (route, Some(model)),
-        Some(_) => return Err(ManagedModelIdError::Invalid(original.into())),
-        None => (acp, None),
-    };
-    let mut coordinates = executor_route.split('@');
-    let cli = coordinates.next().unwrap_or_default();
-    if cli.is_empty() {
-        return Err(ManagedModelIdError::Invalid(original.into()));
-    }
-    let provider_id = coordinates.next();
-    let endpoint_name = coordinates.next();
-    if coordinates.next().is_some()
-        || provider_id.is_some_and(str::is_empty)
-        || endpoint_name.is_some_and(str::is_empty)
+    let provider_id = qualifiers.remove("provider");
+    let api_dialect = qualifiers.remove("api");
+    let endpoint_name = qualifiers.remove("endpoint");
+    let executor = qualifiers
+        .remove("executor")
+        .unwrap_or_else(|| "native".into());
+    if !qualifiers.is_empty()
+        || api_dialect.is_some() && provider_id.is_none()
+        || endpoint_name.is_some() && (provider_id.is_none() || api_dialect.is_none())
     {
-        return Err(ManagedModelIdError::Invalid(original.into()));
+        return Err(ManagedModelIdError::Invalid(value.into()));
     }
-    let backend_ref = format!("acp:{cli}");
-    match (provider_id, model_id) {
-        (None, None) => Ok(ModelSelection::BackendDefault {
-            backend_ref,
-            configuration: AcpSessionConfiguration::default(),
-        }),
-        (None, Some(model_ref)) => Ok(ModelSelection::BackendExact {
-            backend_ref,
-            model_ref: model_ref.into(),
-            configuration: AcpSessionConfiguration::default(),
-        }),
-        (Some(provider_id), Some(model_id)) => Ok(ModelSelection::Target {
+
+    let backend_ref = parse_executor(&executor, value)?;
+    match Backend::from_ref(&backend_ref) {
+        Backend::Native | Backend::Acp { .. } => Ok(ModelSelection::Target {
             target: ModelTarget {
-                model_id: model_id.into(),
-                provider_id: Some(provider_id.into()),
+                model_id,
+                provider_id,
+                api_dialect,
                 protocol_endpoint_id: None,
-                endpoint_name: endpoint_name.map(str::to_string),
+                endpoint_name,
             },
             backend_ref,
             configuration: AcpSessionConfiguration::default(),
         }),
-        (Some(_), None) => Err(ManagedModelIdError::Invalid(original.into())),
+        Backend::Remote { .. } => Err(ManagedModelIdError::Invalid(value.into())),
     }
 }
 
-fn parse_provider_route(route: &str) -> Result<(String, Option<String>), ManagedModelIdError> {
-    let mut coordinates = route.split('@');
-    let provider = coordinates.next().unwrap_or_default();
-    let endpoint = coordinates.next();
-    if provider.is_empty() || endpoint.is_some_and(str::is_empty) || coordinates.next().is_some() {
-        return Err(ManagedModelIdError::Invalid(route.into()));
+fn executor_only(executor: &str, original: &str) -> Result<ModelSelection, ManagedModelIdError> {
+    let backend_ref = parse_executor(executor, original)?;
+    match Backend::from_ref(&backend_ref) {
+        Backend::Acp { cli } if !cli.is_empty() => Ok(ModelSelection::BackendDefault {
+            backend_ref,
+            configuration: AcpSessionConfiguration::default(),
+        }),
+        Backend::Remote { endpoint } if !endpoint.is_empty() => Ok(ModelSelection::Pinned(
+            ModelBinding::new("", "", backend_ref),
+        )),
+        Backend::Native | Backend::Acp { .. } | Backend::Remote { .. } => {
+            Err(ManagedModelIdError::Invalid(original.into()))
+        }
     }
-    Ok((provider.into(), endpoint.map(str::to_string)))
 }
 
-/// Render authored or resolved selection back to the one Managed string field.
+fn parse_executor(value: &str, original: &str) -> Result<String, ManagedModelIdError> {
+    if value == "native" {
+        return Ok("genai".into());
+    }
+    if value
+        .strip_prefix("acp:")
+        .is_some_and(|adapter| !adapter.is_empty())
+        || value
+            .strip_prefix("a2a:")
+            .is_some_and(|endpoint| !endpoint.is_empty())
+    {
+        return Ok(value.into());
+    }
+    Err(ManagedModelIdError::Invalid(original.into()))
+}
+
+/// Render authored or resolved selection back to the one canonical Managed
+/// string field. Qualifiers always use model, provider, API, endpoint, executor
+/// order; the default native executor is omitted.
 pub fn render_managed_model_id(selection: &ModelSelection) -> Result<String, ManagedModelIdError> {
     match selection {
         ModelSelection::Target {
@@ -120,13 +141,16 @@ pub fn render_managed_model_id(selection: &ModelSelection) -> Result<String, Man
             backend_ref,
             ..
         } => render_target(target, backend_ref),
-        ModelSelection::BackendDefault { backend_ref, .. } => render_acp_backend(backend_ref, None),
+        ModelSelection::BackendDefault { backend_ref, .. } => render_executor_only(backend_ref),
         ModelSelection::BackendExact {
             backend_ref,
             model_ref,
             ..
-        } => render_acp_backend(backend_ref, Some(model_ref)),
+        } => render_model_and_executor(model_ref, backend_ref),
         ModelSelection::Pinned(binding) => render_binding(binding),
+        ModelSelection::Profile { profile_id } if !profile_id.is_empty() => {
+            Ok(format!("profile={}", encode_component(profile_id)))
+        }
         ModelSelection::Auto | ModelSelection::Profile { .. } => {
             Err(ManagedModelIdError::UnsupportedSelection)
         }
@@ -134,72 +158,150 @@ pub fn render_managed_model_id(selection: &ModelSelection) -> Result<String, Man
 }
 
 fn render_target(target: &ModelTarget, backend_ref: &str) -> Result<String, ManagedModelIdError> {
-    if target.model_id.is_empty() {
+    if target.model_id.is_empty()
+        || target.api_dialect.is_some() && target.provider_id.is_none()
+        || target.endpoint_name.is_some()
+            && (target.provider_id.is_none() || target.api_dialect.is_none())
+        || target.protocol_endpoint_id.is_some()
+    {
         return Err(ManagedModelIdError::UnsupportedSelection);
     }
-    let endpoint = target
-        .endpoint_name
-        .as_deref()
-        .or(target.protocol_endpoint_id.as_deref());
-    let provider_route = match (&target.provider_id, endpoint) {
-        (None, None) => None,
-        (Some(provider), None) => Some(provider.clone()),
-        (Some(provider), Some(endpoint)) => Some(format!("{provider}@{endpoint}")),
-        (None, Some(_)) => return Err(ManagedModelIdError::UnsupportedSelection),
-    };
+    let mut rendered = encode_component(&target.model_id);
+    if let Some(provider) = &target.provider_id {
+        push_qualifier(&mut rendered, "provider", provider);
+    }
+    if let Some(api) = &target.api_dialect {
+        push_qualifier(&mut rendered, "api", api);
+    }
+    if let Some(endpoint) = &target.endpoint_name {
+        push_qualifier(&mut rendered, "endpoint", endpoint);
+    }
     match Backend::from_ref(backend_ref) {
-        Backend::Native => Ok(provider_route.map_or_else(
-            || target.model_id.clone(),
-            |route| format!("{route}/{}", target.model_id),
-        )),
-        Backend::Acp { cli } if !cli.is_empty() => match provider_route {
-            Some(route) => Ok(format!("acp:{cli}@{route}/{}", target.model_id)),
-            None => Ok(format!("acp:{cli}/{}", target.model_id)),
-        },
+        Backend::Native => Ok(rendered),
+        Backend::Acp { cli } if !cli.is_empty() => {
+            push_qualifier(&mut rendered, "executor", &format!("acp:{cli}"));
+            Ok(rendered)
+        }
         _ => Err(ManagedModelIdError::UnsupportedSelection),
     }
 }
 
-fn render_acp_backend(
+fn render_executor_only(backend_ref: &str) -> Result<String, ManagedModelIdError> {
+    match Backend::from_ref(backend_ref) {
+        Backend::Acp { cli } if !cli.is_empty() => Ok(format!("executor=acp:{cli}")),
+        _ => Err(ManagedModelIdError::UnsupportedSelection),
+    }
+}
+
+fn render_model_and_executor(
+    model_ref: &str,
     backend_ref: &str,
-    model_ref: Option<&String>,
 ) -> Result<String, ManagedModelIdError> {
-    let Backend::Acp { cli } = Backend::from_ref(backend_ref) else {
-        return Err(ManagedModelIdError::UnsupportedSelection);
-    };
-    if cli.is_empty() {
+    if model_ref.is_empty() {
         return Err(ManagedModelIdError::UnsupportedSelection);
     }
-    Ok(model_ref.map_or_else(
-        || format!("acp:{cli}"),
-        |model| format!("acp:{cli}/{model}"),
-    ))
+    let mut rendered = encode_component(model_ref);
+    match Backend::from_ref(backend_ref) {
+        Backend::Acp { cli } if !cli.is_empty() => {
+            push_qualifier(&mut rendered, "executor", &format!("acp:{cli}"));
+            Ok(rendered)
+        }
+        _ => Err(ManagedModelIdError::UnsupportedSelection),
+    }
 }
 
 fn render_binding(binding: &ModelBinding) -> Result<String, ManagedModelIdError> {
     match Backend::from_ref(&binding.backend_ref) {
-        Backend::Native if binding.provider_identity_ref.is_empty() => {
-            Ok(binding.model_ref.clone())
+        Backend::Native if binding.model_ref.is_empty() => {
+            Err(ManagedModelIdError::UnsupportedSelection)
         }
-        Backend::Native => Ok(format!(
-            "{}/{}",
-            binding.provider_identity_ref, binding.model_ref
-        )),
-        Backend::Acp { cli } if !cli.is_empty() && binding.provider_identity_ref.is_empty() => {
-            Ok(format!("acp:{cli}/{}", binding.model_ref))
+        Backend::Native => {
+            let mut rendered = encode_component(&binding.model_ref);
+            if !binding.provider_identity_ref.is_empty() {
+                push_qualifier(&mut rendered, "provider", &binding.provider_identity_ref);
+            }
+            Ok(rendered)
         }
-        Backend::Acp { cli } if !cli.is_empty() => Ok(format!(
-            "acp:{cli}@{}/{}",
-            binding.provider_identity_ref, binding.model_ref
-        )),
+        Backend::Acp { cli } if !cli.is_empty() && binding.model_ref.is_empty() => {
+            render_executor_only(&binding.backend_ref)
+        }
+        Backend::Acp { cli } if !cli.is_empty() => {
+            let mut rendered = encode_component(&binding.model_ref);
+            if !binding.provider_identity_ref.is_empty() {
+                push_qualifier(&mut rendered, "provider", &binding.provider_identity_ref);
+            }
+            push_qualifier(&mut rendered, "executor", &format!("acp:{cli}"));
+            Ok(rendered)
+        }
         Backend::Remote { endpoint }
             if !endpoint.is_empty()
                 && binding.provider_identity_ref.is_empty()
                 && binding.model_ref.is_empty() =>
         {
-            Ok(format!("a2a:{endpoint}"))
+            Ok(format!(
+                "executor={}",
+                encode_component(&format!("a2a:{endpoint}"))
+            ))
         }
         _ => Err(ManagedModelIdError::UnsupportedSelection),
+    }
+}
+
+fn push_qualifier(rendered: &mut String, key: &str, value: &str) {
+    rendered.push(';');
+    rendered.push_str(key);
+    rendered.push('=');
+    rendered.push_str(&encode_component(value));
+}
+
+fn encode_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '%' => encoded.push_str("%25"),
+            ';' => encoded.push_str("%3B"),
+            '=' => encoded.push_str("%3D"),
+            other => encoded.push(other),
+        }
+    }
+    encoded
+}
+
+fn decode_component(value: &str, original: &str) -> Result<String, ManagedModelIdError> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        if index + 2 >= bytes.len() {
+            return Err(ManagedModelIdError::Invalid(original.into()));
+        }
+        let high = hex(bytes[index + 1]);
+        let low = hex(bytes[index + 2]);
+        let (Some(high), Some(low)) = (high, low) else {
+            return Err(ManagedModelIdError::Invalid(original.into()));
+        };
+        decoded.push(high << 4 | low);
+        index += 3;
+    }
+    let decoded =
+        String::from_utf8(decoded).map_err(|_| ManagedModelIdError::Invalid(original.into()))?;
+    if decoded.chars().any(char::is_whitespace) {
+        return Err(ManagedModelIdError::Invalid(original.into()));
+    }
+    Ok(decoded)
+}
+
+fn hex(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -208,39 +310,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_the_complete_managed_model_id_decision_table() {
-        // Causes: C1 native/ACP executor; C2 provider absent/present; C3 endpoint
-        // absent/present; C4 model absent/present; C5 remote endpoint
-        // absent/present. Effects: E1 catalog Target; E2 backend-owned default;
-        // E3 backend-owned exact; E4 remote pinned selection; E5 reject.
-        // Decision rules: native+model -> E1; ACP+C2=N+C4=N -> E2;
-        // ACP+C2=N+C4=Y -> E3; ACP+C2=Y+C4=Y -> E1; endpoint without
-        // provider or provider without model -> E5; A2A+C5=Y -> E4;
-        // A2A+C5=N -> E5.
+    fn parses_the_complete_composable_model_reference_decision_table() {
+        // Cause/effect graph:
+        // C1=model present; C2=provider present; C3=API present; C4=endpoint
+        // present; C5=executor native/ACP/A2A; C6=profile; C7=reserved bytes.
+        // Effects: E1=catalog Target; E2=ACP backend default; E3=remote pin;
+        // E4=profile selection; E5=reject; E6=canonical round trip.
+        //
+        // | Rule | model | provider/api/endpoint | executor | effect |
+        // | R1   | yes   | none                  | native   | E1,E6  |
+        // | R2   | yes   | provider[/api[/ep]]   | native   | E1,E6  |
+        // | R3   | yes   | any valid chain       | ACP      | E1,E6  |
+        // | R4   | no    | none                  | ACP      | E2,E6  |
+        // | R5   | no    | none                  | A2A      | E3,E6  |
+        // | R6   | no    | profile only          | n/a      | E4,E6  |
+        // | R7   | any invalid dependency/dup    | any      | E5     |
+        // | R8   | reserved component bytes      | any      | E6     |
         let cases = [
             ("gpt-5", "gpt-5"),
-            ("openai/gpt-5", "openai/gpt-5"),
-            ("openai@edge/gpt-5", "openai@edge/gpt-5"),
-            ("acp:codex", "acp:codex"),
-            ("acp:codex/gpt-5", "acp:codex/gpt-5"),
-            ("acp:codex@openai/gpt-5", "acp:codex@openai/gpt-5"),
-            ("acp:codex@openai@edge/gpt-5", "acp:codex@openai@edge/gpt-5"),
+            ("gpt-5;provider=openai", "gpt-5;provider=openai"),
             (
-                "a2a:https://agent.example/a2a",
-                "a2a:https://agent.example/a2a",
+                "gpt-5;provider=openai;api=open_ai_responses",
+                "gpt-5;provider=openai;api=open_ai_responses",
             ),
-            ("anyrouter/qwen/qwen3-235b", "anyrouter/qwen/qwen3-235b"),
+            (
+                "gpt-5;provider=openai;api=open_ai_responses;endpoint=primary",
+                "gpt-5;provider=openai;api=open_ai_responses;endpoint=primary",
+            ),
+            (
+                "gpt-5;executor=acp:codex;provider=openai;api=open_ai_responses",
+                "gpt-5;provider=openai;api=open_ai_responses;executor=acp:codex",
+            ),
+            ("gpt-5;executor=acp:codex", "gpt-5;executor=acp:codex"),
+            ("executor=acp:codex", "executor=acp:codex"),
+            (
+                "executor=a2a:https://agent.example/a2a",
+                "executor=a2a:https://agent.example/a2a",
+            ),
+            ("profile=research-primary", "profile=research-primary"),
+            (
+                "model%3Bspecial;provider=vendor%3Dedge",
+                "model%3Bspecial;provider=vendor%3Dedge",
+            ),
+            (
+                "qwen/qwen3-235b;provider=anyrouter;api=open_ai_chat;executor=acp:codex",
+                "qwen/qwen3-235b;provider=anyrouter;api=open_ai_chat;executor=acp:codex",
+            ),
         ];
         for (wire, canonical) in cases {
             let selection = parse_managed_model_id(wire).expect(wire);
-            assert_eq!(render_managed_model_id(&selection).unwrap(), canonical);
-            if wire.starts_with("a2a:") {
-                assert!(selection.resolved().is_some(), "{wire} is an exact remote");
-            } else {
-                assert!(selection.resolved().is_none(), "{wire} must remain intent");
-            }
+            assert_eq!(
+                render_managed_model_id(&selection).unwrap(),
+                canonical,
+                "{wire}"
+            );
         }
-        for invalid in ["", "acp:", "a2a:", "acp:codex@openai", "openai@/gpt-5"] {
+        for invalid in [
+            "",
+            "executor=native",
+            "executor=acp:",
+            "executor=a2a:",
+            "gpt-5;api=open_ai_chat",
+            "gpt-5;endpoint=primary",
+            "gpt-5;provider=openai;endpoint=primary",
+            "gpt-5;provider=openai;provider=other",
+            "gpt-5;unknown=value",
+            "gpt-5;executor=a2a:https://agent.example/a2a",
+            "profile=one;executor=acp:codex",
+            "gpt%20five",
+            "gpt-5%ZZ",
+        ] {
             assert!(parse_managed_model_id(invalid).is_err(), "{invalid}");
         }
     }

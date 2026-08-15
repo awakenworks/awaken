@@ -1258,6 +1258,7 @@ mod tests {
             target: crate::ModelTarget {
                 model_id: "qwen/qwen3".into(),
                 provider_id: Some("anyrouter".into()),
+                api_dialect: Some("open_ai_chat".into()),
                 protocol_endpoint_id: None,
                 endpoint_name: Some("primary".into()),
             },

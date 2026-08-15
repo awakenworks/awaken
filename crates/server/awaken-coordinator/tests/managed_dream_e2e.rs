@@ -76,7 +76,10 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
         &app,
         "POST",
         "/v1/sessions",
-        Some(json!({"agent":"assistant"})),
+        Some(json!({
+            "agent": "assistant",
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
+        })),
     )
     .await;
     let session_id = session["id"].as_str().unwrap();

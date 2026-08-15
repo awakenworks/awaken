@@ -226,7 +226,7 @@ pub awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision::Stag
 pub struct awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection
 pub awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection::environment: awaken_session_contract::baseline::EnvironmentSnapshot
 pub awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection::mcp_stages: core::option::Option<alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>>
-pub awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection::toolsets: core::option::Option<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>>
+pub awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection::tools: core::option::Option<awaken_session_contract::tool_configuration::SessionToolConfiguration>
 pub struct awaken_dispatch_contract::run_dispatch::RunDispatch
 pub awaken_dispatch_contract::run_dispatch::RunDispatch::activation: awaken_runtime_contract::activation::RunActivation
 pub awaken_dispatch_contract::run_dispatch::RunDispatch::agent_publications: alloc::vec::Vec<awaken_runtime_contract::snapshot::ExecutableAgentSnapshot>
@@ -265,7 +265,7 @@ pub struct awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope
 pub awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::projection_json: alloc::string::String
 impl awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope
 pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::decode_projection(&self) -> core::result::Result<awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection, serde_json::error::Error>
-pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::from_projection(awaken_session_contract::baseline::EnvironmentSnapshot, core::option::Option<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>>, alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>) -> core::result::Result<Self, serde_json::error::Error>
+pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::from_projection(awaken_session_contract::baseline::EnvironmentSnapshot, core::option::Option<awaken_session_contract::tool_configuration::SessionToolConfiguration>, alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>) -> core::result::Result<Self, serde_json::error::Error>
 pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub const fn awaken_dispatch_contract::run_dispatch::session_resource_install_decision(bool, bool, bool, u64, u64) -> awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision
 pub enum awaken_dispatch_contract::CasOutcome
@@ -359,6 +359,7 @@ impl awaken_dispatch_contract::ClaimedCommitRequest
 pub fn awaken_dispatch_contract::ClaimedCommitRequest::new(awaken_dispatch_contract::dispatch::ClaimedCommitCommand, awaken_worker_contract::WorkerIdentity) -> Self
 pub struct awaken_dispatch_contract::ClaimedSessionControlError(_)
 impl awaken_dispatch_contract::ClaimedSessionControlError
+pub const fn awaken_dispatch_contract::ClaimedSessionControlError::disposition(&self) -> awaken_session_contract::session_realization::SessionRealizationControlDisposition
 pub const fn awaken_dispatch_contract::ClaimedSessionControlError::is_not_ready(&self) -> bool
 pub fn awaken_dispatch_contract::ClaimedSessionControlError::new(impl core::convert::Into<alloc::string::String>) -> Self
 impl core::convert::From<awaken_session_contract::session_realization::SessionRealizationControlFailure> for awaken_dispatch_contract::ClaimedSessionControlError
@@ -471,7 +472,7 @@ pub struct awaken_dispatch_contract::SessionRuntimeEnvelope
 pub awaken_dispatch_contract::SessionRuntimeEnvelope::projection_json: alloc::string::String
 impl awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope
 pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::decode_projection(&self) -> core::result::Result<awaken_dispatch_contract::run_dispatch::DispatchedSessionRuntimeProjection, serde_json::error::Error>
-pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::from_projection(awaken_session_contract::baseline::EnvironmentSnapshot, core::option::Option<alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>>, alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>) -> core::result::Result<Self, serde_json::error::Error>
+pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::from_projection(awaken_session_contract::baseline::EnvironmentSnapshot, core::option::Option<awaken_session_contract::tool_configuration::SessionToolConfiguration>, alloc::vec::Vec<awaken_session_contract::mcp_attachment::StageMcpAttachment>) -> core::result::Result<Self, serde_json::error::Error>
 pub fn awaken_dispatch_contract::run_dispatch::SessionRuntimeEnvelope::new(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_dispatch_contract::SettleRequest
 pub awaken_dispatch_contract::SettleRequest::consumed: alloc::vec::Vec<alloc::string::String>
