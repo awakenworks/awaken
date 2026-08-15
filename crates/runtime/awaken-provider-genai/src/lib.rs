@@ -17,7 +17,7 @@ use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidat
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
-    Tool as GenaiTool, ToolCall as GenaiToolCall, ToolResponse, Usage,
+    ThinkingBlock, Tool as GenaiTool, ToolCall as GenaiToolCall, ToolResponse, Usage,
 };
 use genai::chat::{ChatOptions, ReasoningEffort as GenaiReasoningEffort};
 
@@ -232,6 +232,7 @@ fn normalize_provider_base_url(adapter: AdapterKind, base_url: Option<String>) -
 /// A `genai::Client` behind the neutral `LlmExecutor` port.
 pub struct GenaiExecutor {
     client: Client,
+    adapter: Option<AdapterKind>,
     timeout: Duration,
     idle_timeout: Duration,
 }
@@ -276,8 +277,19 @@ impl GenaiExecutor {
     /// another explicit `ServiceTargetResolver`. There is intentionally no
     /// `Default`/`new` path because the SDK default reads ambient provider env.
     pub fn with_client(client: Client) -> Self {
+        Self::with_client_and_adapter(client, None)
+    }
+
+    /// Construct from a custom client while retaining the provider dialect
+    /// needed to replay provider-specific assistant continuation blocks.
+    pub fn with_client_for_adapter(client: Client, adapter: AdapterKind) -> Self {
+        Self::with_client_and_adapter(client, Some(adapter))
+    }
+
+    fn with_client_and_adapter(client: Client, adapter: Option<AdapterKind>) -> Self {
         Self {
             client,
+            adapter,
             timeout: DEFAULT_TIMEOUT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
@@ -331,7 +343,7 @@ impl GenaiExecutor {
         let client = Client::builder()
             .with_service_target_resolver(resolver)
             .build();
-        Self::with_client(client)
+        Self::with_client_for_adapter(client, adapter)
     }
 
     /// An executor pointed at a custom **Anthropic-compatible** endpoint (e.g.
@@ -385,7 +397,7 @@ impl GenaiExecutor {
         let client = Client::builder()
             .with_service_target_resolver(resolver)
             .build();
-        Self::with_client(client)
+        Self::with_client_for_adapter(client, AdapterKind::Vertex)
     }
 }
 
@@ -393,7 +405,7 @@ impl GenaiExecutor {
 impl LlmExecutor for GenaiExecutor {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse> {
         let model = request.model_binding.model_ref.clone();
-        let genai_request = to_genai_request(&request)?;
+        let genai_request = to_genai_request_with_adapter(&request, self.adapter)?;
         let options = to_genai_options(&request, false)?;
 
         let response = tokio::time::timeout(
@@ -417,7 +429,7 @@ impl LlmExecutor for GenaiExecutor {
         use genai::chat::ChatStreamEvent;
 
         let model = request.model_binding.model_ref.clone();
-        let genai_request = to_genai_request(&request)?;
+        let genai_request = to_genai_request_with_adapter(&request, self.adapter)?;
 
         // Have genai assemble the committed turn for us. It concatenates the text
         // chunks and parses the accumulated tool-argument fragments into a JSON
@@ -537,7 +549,7 @@ impl LlmExecutor for GenaiExecutor {
         // Prefer genai's captured turn (parsed tool arguments, same shape as
         // `infer`); fall back to the chunk-assembled blocks only if no End
         // content arrived (e.g. a stream that ends without a captured block).
-        let mut output = match captured {
+        let output = match captured {
             Some(content) => map_assistant_output(&content),
             None => {
                 let mut blocks: Vec<ContentBlock> = Vec::new();
@@ -554,12 +566,9 @@ impl LlmExecutor for GenaiExecutor {
                 AssistantOutput::from_blocks(blocks)
             }
         };
-        // Fold the turn's reasoning into a leading `Thinking` block: it precedes the
-        // answer, is ignored by `extract_text`, and the Managed wire projects its
-        // presence as a contentless `agent.thinking` marker.
-        if !reasoning.trim().is_empty() {
-            output.blocks.insert(0, ContentBlock::thinking(reasoning));
-        }
+        // Fold the turn's reasoning through the same canonical response mapper
+        // used by non-streaming inference so both paths commit an identical turn.
+        let output = with_reasoning(output, Some(&reasoning));
         require_usable_response(ChatResponse {
             output,
             usage,
@@ -773,21 +782,40 @@ pub async fn probe_credential(
 
 /// Map the neutral request onto a `genai::ChatRequest`.
 pub fn to_genai_request(request: &ChatRequest) -> Result<GenaiChatRequest> {
+    to_genai_request_with_adapter(request, None)
+}
+
+/// Map the neutral request using an explicit provider wire dialect.
+pub fn to_genai_request_for_adapter(
+    request: &ChatRequest,
+    adapter: AdapterKind,
+) -> Result<GenaiChatRequest> {
+    to_genai_request_with_adapter(request, Some(adapter))
+}
+
+fn to_genai_request_with_adapter(
+    request: &ChatRequest,
+    adapter: Option<AdapterKind>,
+) -> Result<GenaiChatRequest> {
     let mut messages: Vec<ChatMessage> = Vec::with_capacity(request.messages.len());
     for message in &request.messages {
-        // Reasoning is output-only: a folded `Thinking` block is never replayed to
-        // the provider as input (the answer text carries the turn's meaning).
         let parts: Vec<ContentPart> = message
             .content
             .iter()
-            .filter(|b| !matches!(b, ContentBlock::Thinking { .. }))
-            .map(to_genai_part)
+            .map(|block| to_genai_part(block, adapter))
             .collect();
-        // A reasoning-only assistant turn has no replayable content after its
-        // Thinking blocks are removed. Sending that empty row violates strict
-        // provider protocols (notably Anthropic Messages), while omitting it
-        // preserves the exact visible conversation used for the retry.
-        if parts.is_empty() {
+        // A standalone reasoning-only history row is not a complete assistant
+        // turn and some provider protocols reject it. Reasoning that accompanies
+        // text or a tool call remains attached and is replayed by adapters that
+        // require it (notably DeepSeek's OpenAI-compatible tool loop).
+        if parts.is_empty()
+            || parts.iter().all(|part| {
+                matches!(
+                    part,
+                    ContentPart::ReasoningContent(_) | ContentPart::Thinking(_)
+                )
+            })
+        {
             continue;
         }
         // The neutral transcript commits one Tool message per completed call.
@@ -837,7 +865,7 @@ pub fn to_genai_request(request: &ChatRequest) -> Result<GenaiChatRequest> {
 
 /// Map one neutral content block onto a `genai` content part. Text maps to text;
 /// an image maps to a `Binary` (base64 inline or a URL the provider fetches).
-fn to_genai_part(block: &ContentBlock) -> ContentPart {
+fn to_genai_part(block: &ContentBlock, adapter: Option<AdapterKind>) -> ContentPart {
     match block {
         ContentBlock::Text { text } => ContentPart::Text(text.clone()),
         ContentBlock::Image { source } => ContentPart::Binary(to_genai_binary(source)),
@@ -855,9 +883,10 @@ fn to_genai_part(block: &ContentBlock) -> ContentPart {
             tool_use_id.clone(),
             extract_text(content),
         )),
-        // Filtered out before this map (reasoning is not replayed); mapped
-        // defensively to its text so the match stays exhaustive.
-        ContentBlock::Thinking { text } => ContentPart::Text(text.clone()),
+        ContentBlock::Thinking { text, signature } if adapter == Some(AdapterKind::Anthropic) => {
+            ContentPart::Thinking(ThinkingBlock::new(text.clone(), signature.clone()))
+        }
+        ContentBlock::Thinking { text, .. } => ContentPart::ReasoningContent(text.clone()),
     }
 }
 
@@ -899,8 +928,12 @@ pub fn from_genai_tool_call(call: &GenaiToolCall) -> ToolCall {
 
 /// Map a `genai::ChatResponse` onto the neutral `ChatResponse`.
 pub fn from_genai_response(response: genai::chat::ChatResponse) -> ChatResponse {
+    let output = with_reasoning(
+        map_assistant_output(&response.content),
+        response.reasoning_content.as_deref(),
+    );
     ChatResponse {
-        output: map_assistant_output(&response.content),
+        output,
         usage: Some(map_usage(&response.usage)),
         stop_reason: response.stop_reason.as_ref().and_then(map_stop_reason),
     }
@@ -1020,10 +1053,34 @@ pub fn map_assistant_output(content: &MessageContent) -> AssistantOutput {
                 call.fn_name.clone(),
                 call.fn_arguments.clone(),
             )),
+            ContentPart::ReasoningContent(reasoning) => {
+                Some(ContentBlock::thinking(reasoning.clone()))
+            }
+            ContentPart::Thinking(thinking) => Some(ContentBlock::signed_thinking(
+                thinking.thinking.clone(),
+                thinking.signature.clone(),
+            )),
             _ => None,
         })
         .collect();
     AssistantOutput::from_blocks(blocks)
+}
+
+/// Add provider-normalized scalar reasoning only when ordered content did not
+/// already carry a Thinking block. Ordered blocks are the replay authority;
+/// the scalar is a compatibility projection and must never duplicate them.
+fn with_reasoning(mut output: AssistantOutput, reasoning: Option<&str>) -> AssistantOutput {
+    let Some(reasoning) = reasoning.filter(|reasoning| !reasoning.trim().is_empty()) else {
+        return output;
+    };
+    if !output
+        .blocks
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Thinking { .. }))
+    {
+        output.blocks.insert(0, ContentBlock::thinking(reasoning));
+    }
+    output
 }
 
 pub fn map_usage(usage: &Usage) -> TokenUsage {

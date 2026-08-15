@@ -11,7 +11,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
 use awaken_provider_genai::{GenaiExecutor, OpenAiResponsesExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
-use awaken_runtime_contract::resolved::ModelBinding;
+use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use std::sync::Mutex;
 
 #[derive(Default)]
@@ -131,14 +131,7 @@ async fn live_streaming_emits_public_or_reasoning_delta_before_returning_the_com
 #[tokio::test]
 #[ignore = "requires network and DEEPSEEK_API_KEY"]
 async fn live_deepseek_anthropic_messages_completion() {
-    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
-    let model =
-        std::env::var("AWAKEN_ANTHROPIC_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string());
-    let executor = GenaiExecutor::from_resolved(
-        awaken_provider_genai::AdapterKind::Anthropic,
-        Some("https://api.deepseek.com/anthropic".to_string()),
-        key,
-    );
+    let (executor, model) = live_deepseek_anthropic_executor();
 
     assert_text_completion(&executor, model).await;
 }
@@ -156,6 +149,239 @@ async fn live_deepseek_openai_responses_completion() {
         .expect("construct Responses executor");
 
     assert_text_completion(&executor, model).await;
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_anthropic_messages_streaming_binds_signed_thinking_in_order() {
+    // Cause/effect decision rule S1: split Anthropic thinking/signature deltas
+    // plus a following tool-use block -> live reasoning/tool deltas and one
+    // committed turn whose signed Thinking precedes ToolUse. The terminal turn,
+    // not the transient deltas, is the continuation authority.
+    let (executor, model) = live_deepseek_anthropic_executor();
+    let deltas = RecordingDeltas::default();
+    let response = executor
+        .infer_streaming(
+            ChatRequest {
+                model_binding: ModelBinding {
+                    provider_identity_ref: "deepseek".into(),
+                    model_ref: model,
+                    backend_ref: "genai".into(),
+                },
+                inference: Default::default(),
+                messages: vec![compatibility_user("anthropic-stream")],
+                tools: vec![compatibility_tool()],
+            },
+            &deltas,
+        )
+        .await
+        .expect("S1 streaming signed thinking tool request");
+
+    assert!(
+        !deltas.reasoning.lock().unwrap().is_empty(),
+        "S1/reasoning delta"
+    );
+    assert!(
+        !deltas.tool_arguments.lock().unwrap().is_empty(),
+        "S1/tool delta"
+    );
+    let thinking_index = response
+        .output
+        .blocks
+        .iter()
+        .position(|block| {
+            matches!(
+                block,
+                ContentBlock::Thinking {
+                    signature: Some(signature),
+                    ..
+                } if !signature.is_empty()
+            )
+        })
+        .expect("S1 committed signed thinking");
+    let tool_index = response
+        .output
+        .blocks
+        .iter()
+        .position(|block| matches!(block, ContentBlock::ToolUse { .. }))
+        .expect("S1 committed tool use");
+    assert!(
+        thinking_index < tool_index,
+        "S1 preserves provider block order"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_anthropic_messages_signed_thinking_tool_round_trip() {
+    // Cause/effect decision rules: A1 reachable Anthropic Messages + Pro
+    // reasoning + requested tool -> ordered signed Thinking and one ToolUse;
+    // A2 replay that exact assistant turn + correlated result -> accepted final
+    // answer containing the fixture marker. A missing signature, reordered turn,
+    // or string-only reasoning path must fail A1 or make A2 fail at the provider.
+    let (executor, model) = live_deepseek_anthropic_executor();
+
+    assert_deepseek_reasoning_tool_round_trip(
+        &executor,
+        model,
+        "anthropic-messages",
+        "ANTHROPIC_MESSAGES_ROUND_TRIP_OK",
+        true,
+    )
+    .await;
+}
+
+fn live_deepseek_anthropic_executor() -> (GenaiExecutor, String) {
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    let model =
+        std::env::var("AWAKEN_ANTHROPIC_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string());
+    (
+        GenaiExecutor::from_resolved(
+            awaken_provider_genai::AdapterKind::Anthropic,
+            Some("https://api.deepseek.com/anthropic".to_string()),
+            key,
+        ),
+        model,
+    )
+}
+
+#[tokio::test]
+#[ignore = "requires network and DEEPSEEK_API_KEY"]
+async fn live_deepseek_openai_chat_reasoning_tool_round_trip() {
+    // Cause/effect graph: C1 DeepSeek OpenAI Chat is reachable; C2 the Pro model
+    // emits reasoning; C3 one model-visible tool is offered and explicitly
+    // requested; C4 the correlated tool result is returned with the complete
+    // assistant turn. Effects: E1 receive Thinking+ToolUse; E2 preserve typed
+    // tool identity/arguments; E3 the follow-up is accepted and produces public
+    // text. Constraint: tool_choice is omitted (`auto`) because DeepSeek V4
+    // thinking rejects forced/required selection.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effects |
+    // | R1   | Y  | Y  | Y  | -  | E1+E2   |
+    // | R2   | Y  | Y  | Y  | Y  | E3      |
+    let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
+    let model = std::env::var("AWAKEN_DEEPSEEK_CHAT_MODEL")
+        .unwrap_or_else(|_| "deepseek-v4-pro".to_string());
+    let executor = GenaiExecutor::from_resolved(
+        awaken_provider_genai::AdapterKind::OpenAI,
+        Some("https://api.deepseek.com/v1".to_string()),
+        key,
+    );
+
+    assert_deepseek_reasoning_tool_round_trip(
+        &executor,
+        model,
+        "openai-chat",
+        "OPENAI_CHAT_ROUND_TRIP_OK",
+        false,
+    )
+    .await;
+}
+
+async fn assert_deepseek_reasoning_tool_round_trip(
+    executor: &GenaiExecutor,
+    model: String,
+    requested_marker: &str,
+    result_marker: &str,
+    require_signature: bool,
+) {
+    let tool = compatibility_tool();
+    let user = compatibility_user(requested_marker);
+    let first = executor
+        .infer(ChatRequest {
+            model_binding: ModelBinding {
+                provider_identity_ref: "deepseek".into(),
+                model_ref: model.clone(),
+                backend_ref: "genai".into(),
+            },
+            inference: Default::default(),
+            messages: vec![user.clone()],
+            tools: vec![tool.clone()],
+        })
+        .await
+        .expect("R1 DeepSeek reasoning tool request");
+
+    let calls = first.output.tool_calls();
+    assert_eq!(calls.len(), 1, "R1/E1 one typed tool call");
+    assert_eq!(calls[0].tool_id, "read_compatibility_fixture", "R1/E2");
+    assert_eq!(calls[0].arguments["marker"], requested_marker, "R1/E2");
+    assert!(
+        first
+            .output
+            .blocks
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Thinking { text, .. } if !text.is_empty())),
+        "R1/E1 reasoning must be retained for the continuation"
+    );
+    if require_signature {
+        assert!(
+            first.output.blocks.iter().any(|block| matches!(
+                block,
+                ContentBlock::Thinking {
+                    signature: Some(signature),
+                    ..
+                } if !signature.is_empty()
+            )),
+            "R1/E1 Anthropic thinking must retain its replay signature"
+        );
+    }
+
+    let second = executor
+        .infer(ChatRequest {
+            model_binding: ModelBinding {
+                provider_identity_ref: "deepseek".into(),
+                model_ref: model,
+                backend_ref: "genai".into(),
+            },
+            inference: Default::default(),
+            messages: vec![
+                user,
+                ChatMessage {
+                    role: Role::Assistant,
+                    content: first.output.blocks,
+                },
+                ChatMessage {
+                    role: Role::Tool,
+                    content: vec![ContentBlock::tool_result(
+                        calls[0].call_id.clone(),
+                        vec![ContentBlock::text(result_marker)],
+                    )],
+                },
+            ],
+            tools: vec![tool],
+        })
+        .await
+        .expect("R2 DeepSeek reasoning and tool result continuation");
+
+    assert!(
+        second.output.text_content().contains(result_marker),
+        "R2/E3 final answer must use the returned tool result"
+    );
+}
+
+fn compatibility_tool() -> ToolDescriptor {
+    ToolDescriptor::pinned(
+        "live-fixture-v1",
+        "read_compatibility_fixture",
+        "Read the fixed compatibility marker requested by the user.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "marker": {"type": "string"}
+            },
+            "required": ["marker"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+fn compatibility_user(requested_marker: &str) -> ChatMessage {
+    ChatMessage {
+        role: Role::User,
+        content: vec![ContentBlock::text(format!(
+            "Call read_compatibility_fixture exactly once with marker `{requested_marker}`, then report its result. Do not guess the result."
+        ))],
+    }
 }
 
 async fn assert_text_completion(executor: &dyn LlmExecutor, model: String) {
