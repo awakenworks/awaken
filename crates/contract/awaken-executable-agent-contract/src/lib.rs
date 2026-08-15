@@ -13,6 +13,7 @@ mod session_profile;
 pub use session_profile::{
     ExecutableAgentDelegate, ExecutableAgentEnvironment, ExecutableAgentMcpServer,
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
+    requested_profile_revision_matches,
 };
 
 /// One immutable Control publication made available for future Coordinator

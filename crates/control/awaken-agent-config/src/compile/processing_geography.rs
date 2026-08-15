@@ -7,6 +7,25 @@ use awaken_runtime_contract::resolved::{
 
 use super::CompileError;
 
+#[must_use]
+fn candidate_geography_admitted(
+    required: Option<InferenceGeography>,
+    provider_candidate: bool,
+    placement: Option<awaken_runtime_contract::resolved::InferencePlacement>,
+    anthropic_messages: bool,
+) -> bool {
+    let Some(required) = required else {
+        return true;
+    };
+    let Some(placement) = placement else {
+        return false;
+    };
+    provider_candidate
+        && placement.geography == required
+        && (placement.mechanism != InferencePlacementMechanism::AnthropicRequestBody
+            || (required == InferenceGeography::Us && anthropic_messages))
+}
+
 pub(super) fn validate_candidate_pool(
     required: Option<InferenceGeography>,
     agent: &str,
@@ -18,18 +37,29 @@ pub(super) fn validate_candidate_pool(
         return Ok(());
     };
     for candidate in std::iter::once(primary).chain(fallbacks).chain(advisor) {
-        let endpoint = match &candidate.provisioning {
-            ModelProvisioning::Provider { endpoint, .. } => endpoint,
-            _ => {
-                return Err(invalid(
-                    agent,
-                    format!(
-                        "model candidate {:?} cannot prove inference_geo `{required}`",
-                        candidate.binding
-                    ),
-                ));
-            }
+        let ModelProvisioning::Provider { endpoint, .. } = &candidate.provisioning else {
+            debug_assert!(!candidate_geography_admitted(
+                Some(required),
+                false,
+                None,
+                false
+            ));
+            return Err(invalid(
+                agent,
+                format!(
+                    "model candidate {:?} cannot prove inference_geo `{required}`",
+                    candidate.binding
+                ),
+            ));
         };
+        if candidate_geography_admitted(
+            Some(required),
+            true,
+            endpoint.processing_placement,
+            endpoint.api_dialect == "anthropic_messages",
+        ) {
+            continue;
+        }
         let Some(placement) = endpoint.processing_placement else {
             return Err(invalid(
                 agent,
@@ -48,19 +78,60 @@ pub(super) fn validate_candidate_pool(
                 ),
             ));
         }
-        if placement.mechanism == InferencePlacementMechanism::AnthropicRequestBody
-            && (required != InferenceGeography::Us || endpoint.api_dialect != "anthropic_messages")
-        {
-            return Err(invalid(
-                agent,
-                format!(
-                    "model candidate {:?} uses Anthropic placement on protocol `{}`",
-                    candidate.binding, endpoint.api_dialect
-                ),
-            ));
-        }
+        return Err(invalid(
+            agent,
+            format!(
+                "model candidate {:?} uses Anthropic placement on protocol `{}`",
+                candidate.binding, endpoint.api_dialect
+            ),
+        ));
     }
     Ok(())
+}
+
+#[cfg(kani)]
+fn arbitrary_geography(value: u8) -> InferenceGeography {
+    match value % 9 {
+        0 => InferenceGeography::Us,
+        1 => InferenceGeography::Eu,
+        2 => InferenceGeography::Apac,
+        3 => InferenceGeography::Cn,
+        4 => InferenceGeography::Jp,
+        5 => InferenceGeography::Au,
+        6 => InferenceGeography::Ca,
+        7 => InferenceGeography::Uk,
+        _ => InferenceGeography::Hk,
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn processing_geography_requires_exact_evidence_from_every_candidate() {
+    let required = kani::any::<bool>().then(|| arbitrary_geography(kani::any()));
+    let provider_candidate = kani::any();
+    let placement =
+        kani::any::<bool>().then(|| awaken_runtime_contract::resolved::InferencePlacement {
+            geography: arbitrary_geography(kani::any()),
+            mechanism: if kani::any() {
+                InferencePlacementMechanism::AnthropicRequestBody
+            } else {
+                InferencePlacementMechanism::FrozenRegionalRoute
+            },
+        });
+    let anthropic_messages = kani::any();
+    let admitted =
+        candidate_geography_admitted(required, provider_candidate, placement, anthropic_messages);
+    let expected = required.is_none()
+        || required.is_some_and(|required| {
+            provider_candidate
+                && placement.is_some_and(|placement| {
+                    placement.geography == required
+                        && (placement.mechanism
+                            != InferencePlacementMechanism::AnthropicRequestBody
+                            || (required == InferenceGeography::Us && anthropic_messages))
+                })
+        });
+    assert_eq!(admitted, expected);
 }
 
 fn invalid(agent: &str, reason: String) -> CompileError {

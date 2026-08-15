@@ -64,6 +64,22 @@ pub const fn realization_lease_is_live_at(expires_at_unix_ms: u64, now_unix_ms: 
     expires_at_unix_ms > now_unix_ms
 }
 
+#[must_use]
+const fn realization_lease_facts_authorize(
+    same_owner: bool,
+    same_runtime_incarnation: bool,
+    same_epoch: bool,
+    current_expires_at_unix_ms: u64,
+    asserted_expires_at_unix_ms: u64,
+    now_unix_ms: u64,
+) -> bool {
+    same_owner
+        && same_runtime_incarnation
+        && same_epoch
+        && current_expires_at_unix_ms >= asserted_expires_at_unix_ms
+        && realization_lease_is_live_at(current_expires_at_unix_ms, now_unix_ms)
+}
+
 /// Whether an asserted realization remains authorized by the aggregate's
 /// current lease. A same-epoch renewal is a monotonic extension of one owner
 /// incarnation, so work admitted under the shorter lease may finish while the
@@ -75,11 +91,41 @@ pub fn realization_lease_authorizes(
     asserted: &SessionRealizationLease,
     now_unix_ms: u64,
 ) -> bool {
-    current.owner == asserted.owner
-        && current.runtime_incarnation == asserted.runtime_incarnation
-        && current.epoch == asserted.epoch
-        && current.expires_at_unix_ms >= asserted.expires_at_unix_ms
-        && realization_lease_is_live_at(current.expires_at_unix_ms, now_unix_ms)
+    realization_lease_facts_authorize(
+        current.owner == asserted.owner,
+        current.runtime_incarnation == asserted.runtime_incarnation,
+        current.epoch == asserted.epoch,
+        current.expires_at_unix_ms,
+        asserted.expires_at_unix_ms,
+        now_unix_ms,
+    )
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn realization_renewal_never_widens_owner_epoch_or_expiry_authority() {
+    let same_owner = kani::any();
+    let same_runtime_incarnation = kani::any();
+    let same_epoch = kani::any();
+    let current_expires_at_unix_ms = kani::any();
+    let asserted_expires_at_unix_ms = kani::any();
+    let now_unix_ms = kani::any();
+    let authorized = realization_lease_facts_authorize(
+        same_owner,
+        same_runtime_incarnation,
+        same_epoch,
+        current_expires_at_unix_ms,
+        asserted_expires_at_unix_ms,
+        now_unix_ms,
+    );
+    assert_eq!(
+        authorized,
+        same_owner
+            && same_runtime_incarnation
+            && same_epoch
+            && current_expires_at_unix_ms >= asserted_expires_at_unix_ms
+            && current_expires_at_unix_ms > now_unix_ms
+    );
 }
 
 /// Whether the current exact-generation fence is the asserted fence or a

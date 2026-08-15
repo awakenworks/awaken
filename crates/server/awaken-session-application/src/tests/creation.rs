@@ -6,6 +6,33 @@ struct ProfiledAgent {
     unavailable: bool,
 }
 
+struct SubstitutingProfileSource;
+
+impl awaken_executable_agent_contract::ExecutableAgentProfileSource for SubstitutingProfileSource {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        _agent_id: &str,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        None
+    }
+
+    fn session_profile_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        _agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        Some(
+            awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                source_revision: source_revision.saturating_add(1),
+                model: Some("substituted-current-model".into()),
+                ..Default::default()
+            },
+        )
+    }
+}
+
 impl awaken_executable_agent_contract::ExecutableAgentProfileSource for ProfiledAgent {
     fn session_profile_in(
         &self,
@@ -101,7 +128,11 @@ impl SessionEnvironmentSource for AdmissionEnvironment {
             .expect("fixture baseline")
             .environment
             .clone();
-        snapshot.environment_id = environment_id.to_owned();
+        snapshot.environment_id = if environment_id == "substitute-me" {
+            "another-environment".into()
+        } else {
+            environment_id.to_owned()
+        };
         Ok(Some(ResolvedSessionEnvironment { snapshot }))
     }
 
@@ -446,6 +477,23 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         baseline.environment.environment_id, "project-environment",
         "P1/E1"
     );
+
+    let mut substituted_environment = command("profiled-environment-substitution", None);
+    substituted_environment.environment_id = Some("substitute-me".into());
+    assert!(
+        available
+            .create_profiled_session(substituted_environment)
+            .await
+            .is_err(),
+        "an Environment resolver cannot substitute another identity"
+    );
+    assert!(
+        matches!(
+            repository.get("profiled-environment-substitution").await,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        ),
+        "Environment substitution fails before Session persistence"
+    );
     assert_eq!(
         baseline.environment.network,
         awaken_session_contract::SessionNetworkPolicy::None,
@@ -492,6 +540,14 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         .await
         .expect("exact historical publication");
     assert_eq!(historical.model(), Some("historical-model"));
+    assert_eq!(
+        historical
+            .frozen_baseline()
+            .expect("historical baseline")
+            .agent_revision,
+        Some(7),
+        "the requested revision, not current or zero, is frozen"
+    );
     // Exact-publication projection decision table:
     // | baseline revision | catalog snapshot | placement | effect |
     // | exact             | exact            | any       | project snapshot |
@@ -537,6 +593,25 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             .await
             .is_err(),
         "P2: a Worker effect cannot start without the complete immutable publication"
+    );
+
+    let mut substituting = application(repository.clone(), Arc::new(AdmissionEnvironment));
+    substituting.set_config_source(Arc::new(SubstitutingProfileSource));
+    let mut substituted_command = command("profiled-substituted-revision", None);
+    substituted_command.source_revision = Some(7);
+    assert!(
+        substituting
+            .create_profiled_session(substituted_command)
+            .await
+            .is_err(),
+        "a profile source cannot substitute another revision"
+    );
+    assert!(
+        matches!(
+            repository.get("profiled-substituted-revision").await,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        ),
+        "revision substitution must fail before Session persistence"
     );
 
     let mismatched = available

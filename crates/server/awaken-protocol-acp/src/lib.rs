@@ -241,6 +241,77 @@ pub enum PermissionVerdict {
     Await { correlation_id: String },
 }
 
+/// Correlation-free authorization lattice used when several existing policy
+/// namespaces must agree on one ACP permission request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionConsensus {
+    Allow,
+    Await,
+    Deny,
+}
+
+#[must_use]
+pub fn permission_consensus_class(verdict: &PermissionVerdict) -> PermissionConsensus {
+    match verdict {
+        PermissionVerdict::Allow => PermissionConsensus::Allow,
+        PermissionVerdict::Await { .. } => PermissionConsensus::Await,
+        PermissionVerdict::Deny => PermissionConsensus::Deny,
+    }
+}
+
+#[must_use]
+pub const fn combine_permission_consensus(
+    left: PermissionConsensus,
+    right: PermissionConsensus,
+) -> PermissionConsensus {
+    match (left, right) {
+        (PermissionConsensus::Deny, _) | (_, PermissionConsensus::Deny) => {
+            PermissionConsensus::Deny
+        }
+        (PermissionConsensus::Await, _) | (_, PermissionConsensus::Await) => {
+            PermissionConsensus::Await
+        }
+        (PermissionConsensus::Allow, PermissionConsensus::Allow) => PermissionConsensus::Allow,
+    }
+}
+
+#[cfg(kani)]
+fn arbitrary_permission_consensus(first: bool, second: bool) -> PermissionConsensus {
+    if first {
+        PermissionConsensus::Deny
+    } else if second {
+        PermissionConsensus::Await
+    } else {
+        PermissionConsensus::Allow
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn permission_consensus_is_a_conservative_order_independent_semilattice() {
+    let a = arbitrary_permission_consensus(kani::any(), kani::any());
+    let b = arbitrary_permission_consensus(kani::any(), kani::any());
+    let c = arbitrary_permission_consensus(kani::any(), kani::any());
+
+    assert_eq!(combine_permission_consensus(a, a), a);
+    assert_eq!(
+        combine_permission_consensus(a, b),
+        combine_permission_consensus(b, a)
+    );
+    assert_eq!(
+        combine_permission_consensus(combine_permission_consensus(a, b), c),
+        combine_permission_consensus(a, combine_permission_consensus(b, c))
+    );
+    assert_eq!(
+        combine_permission_consensus(a, PermissionConsensus::Allow),
+        a
+    );
+    assert_eq!(
+        combine_permission_consensus(a, PermissionConsensus::Deny),
+        PermissionConsensus::Deny
+    );
+}
+
 /// Resolves an agent permission request. Injected like [`RunFactAppender`]: this
 /// low wire crate defines the narrow port; the executor supplies an adapter that
 /// bridges it to the single neutral `ToolPermissionPolicy` authority (G21). This is a

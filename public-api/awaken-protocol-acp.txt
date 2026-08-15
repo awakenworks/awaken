@@ -94,6 +94,10 @@ impl awaken_protocol_acp::error::CredentialKind
 pub fn awaken_protocol_acp::error::CredentialKind::code(self) -> &'static str
 pub enum awaken_protocol_acp::Injection
 pub awaken_protocol_acp::Injection::Interrupt
+pub enum awaken_protocol_acp::PermissionConsensus
+pub awaken_protocol_acp::PermissionConsensus::Allow
+pub awaken_protocol_acp::PermissionConsensus::Await
+pub awaken_protocol_acp::PermissionConsensus::Deny
 pub enum awaken_protocol_acp::PermissionVerdict
 pub awaken_protocol_acp::PermissionVerdict::Allow
 pub awaken_protocol_acp::PermissionVerdict::Await
@@ -189,6 +193,8 @@ pub fn awaken_protocol_acp::AllowAll::resolve<'life0, 'life1, 'async_trait>(&'li
 pub trait awaken_protocol_acp::RunFactAppender: core::marker::Send
 pub fn awaken_protocol_acp::RunFactAppender::append<'life0, 'life1, 'async_trait>(&'life0 mut self, u64, &'life1 awaken_protocol_acp::AcpProjectedEvent) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_protocol_acp::AppendError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_protocol_acp::classify_error(awaken_protocol_acp::error::Stage, &awaken_protocol_acp::error::RawAcpError) -> awaken_protocol_acp::error::AcpFailure
+pub const fn awaken_protocol_acp::combine_permission_consensus(awaken_protocol_acp::PermissionConsensus, awaken_protocol_acp::PermissionConsensus) -> awaken_protocol_acp::PermissionConsensus
 pub fn awaken_protocol_acp::deadline_exceeded(u64) -> awaken_protocol_acp::error::AcpFailure
+pub fn awaken_protocol_acp::permission_consensus_class(&awaken_protocol_acp::PermissionVerdict) -> awaken_protocol_acp::PermissionConsensus
 pub fn awaken_protocol_acp::refusal(impl core::convert::Into<alloc::string::String>) -> awaken_protocol_acp::error::AcpFailure
 pub fn awaken_protocol_acp::streamed_hard_limit(&str) -> core::option::Option<awaken_protocol_acp::error::AcpFailure>

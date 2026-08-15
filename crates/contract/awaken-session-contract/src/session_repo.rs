@@ -351,7 +351,10 @@ impl PersistedSession {
     /// has committed its logical owner. Replays and overlapping activities join
     /// the existing interval.
     pub fn begin_runtime_interval(&mut self, started_at_unix_ms: u64) -> bool {
-        if self.execution != SessionExecutionState::Running || self.running_interval.is_some() {
+        if !runtime_interval_may_open(
+            self.execution == SessionExecutionState::Running,
+            self.running_interval.is_some(),
+        ) {
             return false;
         }
         self.running_interval = Some(crate::SessionRuntimeIntervalStart {
@@ -373,7 +376,8 @@ impl PersistedSession {
         ended_at_unix_ms: u64,
     ) -> Option<crate::SessionRuntimeInterval> {
         self.running_interval.take().map(|start| {
-            let ended_at_unix_ms = ended_at_unix_ms.max(start.started_at_unix_ms);
+            let ended_at_unix_ms =
+                normalized_runtime_interval_end(start.started_at_unix_ms, ended_at_unix_ms);
             self.runtime_active_millis = self
                 .runtime_active_millis
                 .saturating_add(ended_at_unix_ms.saturating_sub(start.started_at_unix_ms));
@@ -539,6 +543,44 @@ impl PersistedSession {
             })
             .collect()
     }
+}
+
+#[must_use]
+const fn runtime_interval_may_open(execution_is_running: bool, interval_is_open: bool) -> bool {
+    execution_is_running && !interval_is_open
+}
+
+#[must_use]
+const fn normalized_runtime_interval_end(started_at_unix_ms: u64, ended_at_unix_ms: u64) -> u64 {
+    if ended_at_unix_ms < started_at_unix_ms {
+        started_at_unix_ms
+    } else {
+        ended_at_unix_ms
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn runtime_intervals_open_once_and_never_close_before_start() {
+    let execution_is_running = kani::any();
+    let interval_is_open = kani::any();
+    assert_eq!(
+        runtime_interval_may_open(execution_is_running, interval_is_open),
+        execution_is_running && !interval_is_open
+    );
+
+    let started_at_unix_ms = kani::any();
+    let ended_at_unix_ms = kani::any();
+    let normalized = normalized_runtime_interval_end(started_at_unix_ms, ended_at_unix_ms);
+    assert!(normalized >= started_at_unix_ms);
+    assert_eq!(
+        normalized,
+        if ended_at_unix_ms < started_at_unix_ms {
+            started_at_unix_ms
+        } else {
+            ended_at_unix_ms
+        }
+    );
 }
 
 /// One durable Session together with its intrinsic Workspace partition.

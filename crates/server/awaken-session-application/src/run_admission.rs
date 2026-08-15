@@ -284,6 +284,17 @@ impl SessionApplication {
             || self.session_profile(&owner_scope, &agent_id),
             |revision| self.session_profile_at_revision(&owner_scope, &agent_id, revision),
         );
+        if let (Some(requested), Some(resolved)) = (source_revision, profile.as_ref())
+            && !awaken_executable_agent_contract::requested_profile_revision_matches(
+                resolved.source_revision,
+                requested,
+            )
+        {
+            return Err(RunError::bad_request(format!(
+                "agent_version_mismatch: agent `{agent_id}` returned version {} for requested version {requested}",
+                resolved.source_revision
+            )));
+        }
         if let Some(revision) = source_revision
             && profile.is_none()
         {

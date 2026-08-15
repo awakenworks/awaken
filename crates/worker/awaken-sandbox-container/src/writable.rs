@@ -4,6 +4,85 @@ use awaken_provisioning_contract as pc;
 
 use super::ContainerPlan;
 
+/// Runtime-neutral storage topology for one canonical writable root.
+///
+/// Kubernetes consumes the retained branch as one PVC plus a distinct subpath;
+/// Docker/Podman and the Kubernetes fallback consume the ephemeral branch as
+/// one independent writable volume per root. Keeping this relation outside the
+/// Kubernetes adapter makes the no-aliasing rule directly model-checkable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(any(feature = "k8s", test, kani))]
+pub(crate) enum WritableRootTopology {
+    Retained {
+        claim_slot: usize,
+        subpath_slot: usize,
+    },
+    Ephemeral {
+        volume_slot: usize,
+    },
+}
+
+#[must_use]
+#[cfg(any(feature = "k8s", test, kani))]
+pub(crate) const fn writable_root_topology(
+    retained_claim: bool,
+    root_index: usize,
+) -> WritableRootTopology {
+    if retained_claim {
+        WritableRootTopology::Retained {
+            claim_slot: 0,
+            subpath_slot: root_index,
+        }
+    } else {
+        WritableRootTopology::Ephemeral {
+            volume_slot: root_index,
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn continuation_writable_roots_share_one_claim_without_aliasing() {
+    let first: usize = kani::any();
+    let second: usize = kani::any();
+    kani::assume(first != second);
+
+    let (
+        WritableRootTopology::Retained {
+            claim_slot: first_claim,
+            subpath_slot: first_subpath,
+        },
+        WritableRootTopology::Retained {
+            claim_slot: second_claim,
+            subpath_slot: second_subpath,
+        },
+    ) = (
+        writable_root_topology(true, first),
+        writable_root_topology(true, second),
+    )
+    else {
+        unreachable!();
+    };
+    assert_eq!(first_claim, second_claim);
+    assert_ne!(first_subpath, second_subpath);
+
+    let (
+        WritableRootTopology::Ephemeral {
+            volume_slot: first_volume,
+        },
+        WritableRootTopology::Ephemeral {
+            volume_slot: second_volume,
+        },
+    ) = (
+        writable_root_topology(false, first),
+        writable_root_topology(false, second),
+    )
+    else {
+        unreachable!();
+    };
+    assert_ne!(first_volume, second_volume);
+}
+
 fn bounded_absolute(path: &str) -> bool {
     !path.is_empty()
         && path != "/"
@@ -107,6 +186,21 @@ mod tests {
             lease_ttl_secs: Some(60),
             extra: None,
         }
+    }
+
+    #[test]
+    fn retained_root_topology_shares_one_claim_but_never_a_subpath() {
+        assert_eq!(
+            writable_root_topology(true, 2),
+            WritableRootTopology::Retained {
+                claim_slot: 0,
+                subpath_slot: 2,
+            }
+        );
+        assert_eq!(
+            writable_root_topology(false, 2),
+            WritableRootTopology::Ephemeral { volume_slot: 2 }
+        );
     }
 
     #[test]

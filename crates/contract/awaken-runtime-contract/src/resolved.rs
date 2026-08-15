@@ -264,23 +264,23 @@ impl ResolvedSpec {
         model_ref_override: Option<&str>,
     ) -> Vec<&ResolvedModelCandidate> {
         let mut candidates = self.execution_candidates(model_ref_override);
-        // An Advisor cannot make an otherwise invalid explicit model selector
-        // executable. Primary admission remains the prerequisite for every
-        // auxiliary candidate in the attempt.
-        if candidates.is_empty() {
-            return candidates;
-        }
-        if let Some(advisor) = self
+        let advisor = self
             .plugin_config
             .agent
             .advisor
             .as_ref()
-            .map(|advisor| &advisor.candidate)
-            && !candidates
+            .map(|advisor| &advisor.candidate);
+        let advisor_is_duplicate = advisor.is_some_and(|advisor| {
+            candidates
                 .iter()
                 .any(|candidate| candidate.binding == advisor.binding)
-        {
-            candidates.push(advisor);
+        });
+        if advisor_candidate_is_admitted(
+            !candidates.is_empty(),
+            advisor.is_some(),
+            advisor_is_duplicate,
+        ) {
+            candidates.push(advisor.expect("advisor admission requires a candidate"));
         }
         candidates
     }
@@ -347,6 +347,30 @@ impl ResolvedSpec {
         self.model_candidates = selected;
         true
     }
+}
+
+/// Representation-free admission relation for the auxiliary Advisor route.
+/// An Advisor never creates primary admission and an identical binding never
+/// spends a second credential/claim slot.
+#[must_use]
+const fn advisor_candidate_is_admitted(
+    primary_admitted: bool,
+    advisor_present: bool,
+    advisor_is_duplicate: bool,
+) -> bool {
+    primary_admitted && advisor_present && !advisor_is_duplicate
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn advisor_never_substitutes_for_primary_model_admission() {
+    let primary_admitted = kani::any();
+    let advisor_present = kani::any();
+    let advisor_is_duplicate = kani::any();
+    assert_eq!(
+        advisor_candidate_is_admitted(primary_admitted, advisor_present, advisor_is_duplicate),
+        primary_admitted && advisor_present && !advisor_is_duplicate
+    );
 }
 
 /// The execution backend a resolved agent binds to (R3/R4): the in-process awaken

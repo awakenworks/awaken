@@ -487,14 +487,22 @@ async fn snapshot_from_registration(
     let packages = item.config.packages();
     let network = session_network_policy(&item.config, mcp_targets);
     let acp = runtime.is_some_and(|value| value.starts_with("acp:"));
-    let credential_realization = if acp {
-        awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
-    } else if matches!(item.config, EnvironmentConfig::Cloud { .. }) {
-        cloud_native_credential_realization.cloned().unwrap_or_else(
-            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native,
-        )
-    } else {
-        awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
+    let credential_realization = match awaken_credential_contract::credential_realization_selection(
+        acp,
+        matches!(item.config, EnvironmentConfig::Cloud { .. }),
+        cloud_native_credential_realization.is_some(),
+    ) {
+        awaken_credential_contract::CredentialRealizationSelection::SelfHostedAcp => {
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_acp()
+        }
+        awaken_credential_contract::CredentialRealizationSelection::HostedCloud => {
+            cloud_native_credential_realization
+                .cloned()
+                .expect("hosted profile selection requires an installed profile")
+        }
+        awaken_credential_contract::CredentialRealizationSelection::SelfHostedNative => {
+            awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
+        }
     };
     let (sandbox, sandbox_provisioning, idle_retention) = match &registration.sandbox_policy {
         Some(policy) if policy.disabled => return Ok(None),
