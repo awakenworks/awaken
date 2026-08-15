@@ -149,9 +149,47 @@ impl LiveInbox {
         notify.notify_waiters();
     }
 
+    fn next_message_id(current: u64) -> Option<LiveInboxMessageId> {
+        current.checked_add(1).map(LiveInboxMessageId)
+    }
+
+    /// Reorder only after validating the complete request.  In particular, an
+    /// invalid suffix must not leave behind the valid-but-reordered prefix that
+    /// was inspected before it.  The helper is generic so the exact production
+    /// transition can also be model-checked with small symbolic identities.
+    fn reorder_exactly<T, K: Copy + Eq>(
+        entries: &mut VecDeque<T>,
+        order: &[K],
+        key: impl Fn(&T) -> K,
+    ) -> bool {
+        if entries.len() != order.len()
+            || entries.iter().any(|entry| {
+                let id = key(entry);
+                order.iter().filter(|candidate| **candidate == id).count() != 1
+            })
+            || order
+                .iter()
+                .any(|id| entries.iter().filter(|entry| key(entry) == *id).count() != 1)
+        {
+            return false;
+        }
+
+        let mut remaining = std::mem::take(entries);
+        for id in order {
+            let index = remaining
+                .iter()
+                .position(|entry| key(entry) == *id)
+                .expect("validated reorder identity");
+            entries.push_back(remaining.remove(index).expect("validated reorder index"));
+        }
+        true
+    }
+
     /// Queue a message for the run as the run's own input
-    /// ([`MessageOrigin::Run`]). Best-effort: `Closed` means the attempt is gone
-    /// and the sender must decide (durable fallback or drop).
+    /// ([`MessageOrigin::Run`]). Best-effort: `Closed` means this inbox can no
+    /// longer issue an identity (the attempt closed or the finite identity
+    /// space was exhausted), and the sender must decide (durable fallback or
+    /// drop).
     pub fn offer(&self, message: Message) -> Offer {
         self.offer_as(MessageOrigin::Run, message)
     }
@@ -164,8 +202,13 @@ impl LiveInbox {
         if state.closed {
             return Offer::Closed;
         }
-        state.next_id += 1;
-        let id = LiveInboxMessageId(state.next_id);
+        let Some(id) = Self::next_message_id(state.next_id) else {
+            // The identity space is finite in the implementation. Refuse the
+            // offer without changing the queue instead of wrapping and
+            // resurrecting an already-retired identity.
+            return Offer::Closed;
+        };
+        state.next_id = id.0;
         state.entries.push_back(LiveInboxMessage {
             id,
             origin,
@@ -234,30 +277,9 @@ impl LiveInbox {
         if state.closed {
             return Err(EditError::Closed);
         }
-        if order.len() != state.entries.len() {
+        if !Self::reorder_exactly(&mut state.entries, order, |entry| entry.id) {
             return Err(EditError::StaleOrder);
         }
-        let mut reordered = VecDeque::with_capacity(order.len());
-        let mut remaining: Vec<Option<LiveInboxMessage>> =
-            state.entries.drain(..).map(Some).collect();
-        for id in order {
-            match remaining
-                .iter_mut()
-                .find(|slot| slot.as_ref().is_some_and(|entry| entry.id == *id))
-            {
-                Some(slot) => reordered.push_back(slot.take().expect("slot just matched")),
-                None => {
-                    // Unknown or duplicated id: restore and refuse.
-                    state.entries = remaining.into_iter().flatten().collect();
-                    let mut restored = std::mem::take(&mut reordered);
-                    while let Some(entry) = restored.pop_back() {
-                        state.entries.push_front(entry);
-                    }
-                    return Err(EditError::StaleOrder);
-                }
-            }
-        }
-        state.entries = reordered;
         Self::bump_and_notify(&mut state, &self.shared.notify);
         Ok(())
     }
@@ -472,19 +494,31 @@ mod tests {
         let inbox = LiveInbox::new();
         let a = offered(&inbox, "a");
         let b = offered(&inbox, "b");
+        let c = offered(&inbox, "c");
 
         // Wrong length (stale after a concurrent offer the caller missed).
-        assert_eq!(inbox.reorder(&[a]), Err(EditError::StaleOrder));
-        // Unknown id.
+        assert_eq!(inbox.reorder(&[a, b]), Err(EditError::StaleOrder));
+        // A reordered valid prefix followed by an unknown id used to expose a
+        // check-while-mutating bug: the call returned StaleOrder but left
+        // [c, a, b] behind. Rejection must be an atomic stutter instead.
         assert_eq!(
-            inbox.reorder(&[a, LiveInboxMessageId(999)]),
+            inbox.reorder(&[c, LiveInboxMessageId(999), b]),
             Err(EditError::StaleOrder)
         );
         // Duplicate id.
-        assert_eq!(inbox.reorder(&[a, a]), Err(EditError::StaleOrder));
+        assert_eq!(inbox.reorder(&[c, c, a]), Err(EditError::StaleOrder));
         // Every rejection left the original order intact.
-        assert_eq!(texts(&inbox.list()), ["a", "b"]);
-        let _ = b;
+        assert_eq!(texts(&inbox.list()), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn exhausted_identity_space_refuses_offer_without_reusing_an_id() {
+        let inbox = LiveInbox::new();
+        inbox.state().next_id = u64::MAX;
+
+        assert_eq!(inbox.offer(msg("cannot-wrap")), Offer::Closed);
+        assert!(inbox.list().is_empty());
+        assert_eq!(inbox.state().next_id, u64::MAX);
     }
 
     #[test]
@@ -605,5 +639,37 @@ mod tests {
             waiter.await.expect("waiter finished"),
             WaitOutcome::Changed(_)
         ));
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn rejected_live_inbox_reorder_is_an_atomic_stutter() {
+        let mut entries = VecDeque::from([kani::any::<u8>(), kani::any::<u8>(), kani::any::<u8>()]);
+        let requested = [kani::any::<u8>(), kani::any::<u8>(), kani::any::<u8>()];
+        let before = entries.clone();
+
+        let accepted = LiveInbox::reorder_exactly(&mut entries, &requested, |value| *value);
+        if accepted {
+            assert_eq!(entries.iter().copied().collect::<Vec<_>>(), requested);
+        } else {
+            assert_eq!(entries, before);
+        }
+    }
+
+    #[kani::proof]
+    fn live_inbox_identity_advances_strictly_or_exhausts() {
+        let current = kani::any::<u64>();
+        match LiveInbox::next_message_id(current) {
+            Some(next) => {
+                assert!(next.0 > current);
+                assert_eq!(next.0, current + 1);
+            }
+            None => assert_eq!(current, u64::MAX),
+        }
     }
 }
